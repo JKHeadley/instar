@@ -230,7 +230,7 @@ import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
 import { PinThrottle, normalizePinSource } from '../core/PinThrottle.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
-import { setDocumentScopedSend } from './mobilePairingRoutes.js';
+import { setDocumentScopedSend, deviceRouteTakesBody } from './mobilePairingRoutes.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
 import { DocumentService } from '../documents/service.js';
@@ -292,7 +292,7 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
-import { credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
+import { boundedBody, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -2016,14 +2016,16 @@ export class AgentServer {
         && this.dashboardSessionStore.verify(token),
       memorySessionValid: options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) !== null : undefined,
       activeDevice: (id) => this.mobilePairing?.enabled() === true && this.mobilePairing.devices.get(id)?.status === 'active',
+      // SEC-118: a device id unlocks the large budget only on a device route that takes a body.
+      deviceRouteTakesBody: (method, reqPath) => deviceRouteTakesBody(method, reqPath),
       activeMachine: (id) => this.machineRouteContext?.authDeps.identityManager.loadRegistry().machines[id]?.status === 'active',
       selfMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
       verify: keepRawBody,
     };
-    this.app.use('/completion-claim/observe', express.json({ limit: '96kb', verify: keepRawBody }));
+    this.app.use('/completion-claim/observe', boundedBody(96 * 1024, express.json({ limit: '96kb', verify: keepRawBody })));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
-    this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
+    this.app.use('/mcp/threadline', boundedBody(256 * 1024, express.json({ limit: '256kb' })));
     // PostCompact record route (context-budget-layered-summaries §14 body cap):
     // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
     this.app.use('/hooks/post-compact', credentialAwareJsonParser({ ...bodyBudgetDeps, verify: undefined }, 2 * 1024 * 1024));
@@ -2035,18 +2037,18 @@ export class AgentServer {
     this.nativeHookIngest = new NativeHookEventIngest({ getAuthToken: () => this.config.authToken });
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
-    this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    this.app.use('/mobile/pairing-codes/redeem', boundedBody(4 * 1024, express.json({ limit: '4kb', verify: keepRawBody })));
     // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
-    this.app.use('/mobile/local-owner-device', express.json({ limit: '4kb' }));
+    this.app.use('/mobile/local-owner-device', boundedBody(4 * 1024, express.json({ limit: '4kb' })));
     // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
-    this.app.use('/org/checkin', express.json({ limit: '4kb' }));
-    this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
+    this.app.use('/org/checkin', boundedBody(4 * 1024, express.json({ limit: '4kb' })));
+    this.app.use('/org/pack/propose', boundedBody(80 * 1024, express.json({ limit: '80kb' })));
     // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
     this.app.use('/mobile/org/recover', credentialAwareJsonParser(bodyBudgetDeps, 32 * 1024 * 1024));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
-    this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
+    this.app.use('/mobile/media/uploads', boundedBody(1024 * 1024, express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }), 'application/octet-stream'));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
-    this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, express.text({ type: 'text/plain', limit: '8kb' }));
+    this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, boundedBody(8 * 1024, express.text({ type: 'text/plain', limit: '8kb' }), 'text/plain'));
     // Graph peer storage ingress has independent vault credentials and member
     // signatures, admitted before reading a separately bounded transport body.
     if (options.conversationGraphReplicationRuntime) this.app.use('/internal/conversation-graph',
