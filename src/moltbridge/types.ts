@@ -76,7 +76,7 @@ export interface ProfileDraft {
   signals: StructuredSignals;
   status: 'pending' | 'approved' | 'rejected';
   approvedAt?: string;
-  approvedBy?: string;       // 'human' | 'auto'
+  approvedBy?: string;       // 'human' | 'auto' | 'agent-proposal' (a bearer-token call)
 }
 
 /** Content-hash state for freshness tracking */

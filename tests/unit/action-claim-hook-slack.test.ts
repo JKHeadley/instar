@@ -42,8 +42,32 @@ describe('getActionClaimFollowthroughHook — Slack generalization', () => {
     expect(body).not.toMatch(/length\s*<\s*20/);
   });
 
-  it('clamps the POST payload to 16KB', () => {
-    expect(body).toContain('slice(0, 16384)');
+  it('clamps the POST payload keeping the 16KB dedup prefix AND the tail, and discloses the cut', () => {
+    // Run the emitted clamp itself (not a text match): the promise that closes
+    // a long reply must survive, the cut must say it is a cut, and the first
+    // 16384 characters must be byte-identical to the raw reply, because the
+    // route dedups against the completion-claim path by fingerprinting exactly
+    // that prefix (CompletionClaimVerifier messageFingerprint).
+    const head = /const ACTION_CLAIM_HEAD_CHARS = (\d+);/.exec(body);
+    const tail = /const ACTION_CLAIM_TAIL_CHARS = (\d+);/.exec(body);
+    const decl = /const message = (rawMessage\.length[^\n]*);/.exec(body);
+    expect(head && tail && decl).toBeTruthy();
+    const clamp = new Function(
+      'rawMessage',
+      `const ACTION_CLAIM_HEAD_CHARS = ${head![1]}; const ACTION_CLAIM_TAIL_CHARS = ${tail![1]}; return ${decl![1]};`,
+    ) as (m: string) => string;
+
+    const short = 'I will fix it.';
+    expect(clamp(short)).toBe(short);
+    const justOver16k = 'b'.repeat(16_500);
+    expect(clamp(justOver16k)).toBe(justOver16k); // used to be cut at 16384; now whole
+
+    const long = Array.from({ length: 4000 }, (_, i) => `line ${i} of the work log`).join('\n') + "\nI'll follow up in an hour with the result.";
+    const out = clamp(long);
+    expect(out.slice(0, 16_384)).toBe(long.slice(0, 16_384)); // dedup fingerprint prefix unchanged
+    expect(out.endsWith("I'll follow up in an hour with the result.")).toBe(true);
+    expect(out).toMatch(/\n\[BOUNDED INPUT: \d+ characters removed from the MIDDLE/);
+    expect(out.length).toBeLessThan(16_384 + 8_000 + 400);
   });
 
   it('still ALWAYS exit(0) (signal-only, never blocks a turn)', () => {

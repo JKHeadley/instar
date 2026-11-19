@@ -48,7 +48,7 @@ export type WorkRecordType = typeof WORK_RECORD_TYPES[number];
 
 export const MATERIAL_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links'] as const;
 export type MaterialField = typeof MATERIAL_FIELDS[number];
-const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey'] as const;
+const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
 export type EditableField = typeof EDITABLE_FIELDS[number];
 
 export const PERMITTING_TAPS = ['approve', 'answer', 'confirm-done', 'unhold', 'retry', 'unarchive'] as const;
@@ -65,7 +65,16 @@ export type DispatchOutcome = typeof DISPATCH_OUTCOMES[number];
 
 /** Absolute schema ceilings (every machine must accept what any owner-raised limit allows).
  *  The owner-set per-field limits (`workBoard.limits`) are enforced at the write route. */
-export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000 } as const;
+export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, whyYou: 32000, coverKeys: 256, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000, closeNote: 2000 } as const;
+
+/**
+ * How a person closes a card (work-front-doors §6, Luna's board): "Done" with a closeout note, or "Not
+ * important" with a reason the agent learns from. Both are an `archive` tap carrying `closeAs` + `note`, so a
+ * machine on an older build still folds the card as archived (it drops the two unknown fields) instead of
+ * reading the card as unreadable; `unarchive` (naming the tap) reopens it.
+ */
+export const CLOSE_AS = ['done', 'not-important'] as const;
+export type CloseAs = typeof CLOSE_AS[number];
 
 // ── identity ────────────────────────────────────────────────────────────────
 
@@ -80,6 +89,11 @@ const RECORD_ID_RE = /^(wc:wc_[0-9a-f]{16}:[A-Za-z0-9_.:-]{1,200}|wb-policy:[A-Z
 const ATTACHMENT_ID_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 const CONVERSATION_KEY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PROJECT_KEY_RE = /^(telegram|app|slack|imessage|whatsapp):[A-Za-z0-9_.:-]{1,128}$/;
+/** A Needs-you item key a card says it is about (docs/specs/work-board-cards-appear.md §3). Which ones a writer may use is the service's rule. */
+export const NEED_REF_RE = /^[a-z][a-z0-9-]*:[A-Za-z0-9_.:#@-]{1,200}$/;
+const MIRROR_REF_MAX = 300;
+/** The opening check's note a wait card keeps (the Chief of Staff store records at most 500 characters). */
+const MIRROR_NOTE_MAX = 2000;
 
 export function isCardId(v: unknown): v is string { return typeof v === 'string' && CARD_ID_RE.test(v); }
 export function isRecordId(v: unknown): v is string { return typeof v === 'string' && RECORD_ID_RE.test(v); }
@@ -102,6 +116,19 @@ export type CardLink = { label: string; url: string } | { label: string; attachm
 export type Carrier = 'agent' | { personKey: string };
 export type Principal = 'agent' | 'none' | { personKey: string };
 export type By = { kind: 'person'; personKey: string; proof: 'pin' | 'presence' } | { kind: 'agent' } | { kind: 'system' };
+export interface CardMirror { ref: string; hlc: HlcTimestamp; waitSince?: string; note?: string; waitRef?: string; cleared?: boolean }
+
+/** A done-when item's state as a card's brief shows it. */
+export const BRIEF_CHECK_STATUSES = ['passes', 'needs-you', 'unknown', 'fails'] as const;
+export type BriefCheckStatus = typeof BRIEF_CHECK_STATUSES[number];
+/**
+ * The structured, plain-text summary a server-owned card carries next to its prose `need` (a Chief of Staff wait
+ * card: what is asked, the goal, the done-when items with their state, the check's own words, when the wait
+ * started). Display only and NOT material: it is outside the material hash, so writing or changing it voids no
+ * approval, evidence or finish. Only the server's own writer sets it.
+ */
+export interface CardBrief { ask: string; goal?: string; checks?: Array<{ text: string; status: BriefCheckStatus }>; chiefSaid?: string; waitingSince?: string }
+export const BRIEF_MAX = { ask: 2000, goal: 8000, checks: 256, chiefSaid: 8000 } as const;
 
 const isStr = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
 const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_RE.test(v);
@@ -175,6 +202,27 @@ function vIdList(v: unknown, max = 256): string[] | null {
   return [...new Set(v as string[])].sort();
 }
 
+function vBrief(v: unknown): CardBrief | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const b = v as Record<string, unknown>;
+  if (!isStr(b.ask, BRIEF_MAX.ask)) return null;
+  const out: CardBrief = { ask: b.ask };
+  if (b.goal !== undefined) { if (!isStr(b.goal, BRIEF_MAX.goal)) return null; out.goal = b.goal; }
+  if (b.checks !== undefined) {
+    if (!Array.isArray(b.checks) || b.checks.length > BRIEF_MAX.checks) return null;
+    const checks: NonNullable<CardBrief['checks']> = [];
+    for (const raw of b.checks) {
+      const c = raw as Record<string, unknown> | null;
+      if (!c || typeof c !== 'object' || !isStr(c.text, SCHEMA_MAX.doneItemText) || !(BRIEF_CHECK_STATUSES as ReadonlyArray<string>).includes(c.status as string)) return null;
+      checks.push({ text: c.text, status: c.status as BriefCheckStatus });
+    }
+    out.checks = checks;
+  }
+  if (b.chiefSaid !== undefined) { if (!isStr(b.chiefSaid, BRIEF_MAX.chiefSaid)) return null; out.chiefSaid = b.chiefSaid; }
+  if (b.waitingSince !== undefined) { if (!isIso(b.waitingSince)) return null; out.waitingSince = b.waitingSince; }
+  return out;
+}
+
 /** Validates the editable-field subset present on a `created` / `edited` record. */
 function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
@@ -193,6 +241,33 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
   }
   if (has('due')) { if (raw.due !== null && !(typeof raw.due === 'string' && DATE_RE.test(raw.due))) return null; out.due = raw.due; }
   if (has('projectKey')) { if (raw.projectKey !== null && !(typeof raw.projectKey === 'string' && PROJECT_KEY_RE.test(raw.projectKey))) return null; out.projectKey = raw.projectKey; }
+  if (has('whyYou')) {
+    if (raw.whyYou !== null && !isStr(raw.whyYou, SCHEMA_MAX.whyYou)) return null;
+    out.whyYou = raw.whyYou;
+  }
+  if (has('covers')) {
+    const c = raw.covers;
+    if (!Array.isArray(c) || c.length > SCHEMA_MAX.coverKeys || !c.every((k) => typeof k === 'string' && NEED_REF_RE.test(k))) return null;
+    out.covers = [...new Set(c as string[])];
+  }
+  if (has('mirror')) {
+    // The source record a server-owned card mirrors (work-board-cards-appear §1 Fencing). Null clears it.
+    const m = raw.mirror as Record<string, unknown> | null;
+    if (m !== null) {
+      if (!m || typeof m !== 'object' || !isStr(m.ref, MIRROR_REF_MAX) || !isHlc(m.hlc)) return null;
+      if (m.waitSince !== undefined && !isIso(m.waitSince)) return null;
+      if (m.note !== undefined && !(typeof m.note === 'string' && m.note.length <= MIRROR_NOTE_MAX)) return null;
+      if (m.waitRef !== undefined && !isStr(m.waitRef, MIRROR_REF_MAX)) return null;
+      if (m.cleared !== undefined && typeof m.cleared !== 'boolean') return null;
+      const h = m.hlc as HlcTimestamp;
+      out.mirror = { ref: m.ref, hlc: { physical: h.physical, logical: h.logical, node: h.node }, ...(m.waitSince !== undefined ? { waitSince: m.waitSince } : {}), ...(m.note !== undefined ? { note: m.note } : {}), ...(m.waitRef !== undefined ? { waitRef: m.waitRef } : {}), ...(m.cleared === true ? { cleared: true } : {}) };
+    } else out.mirror = null;
+  }
+  if (has('brief')) {
+    // Display only (not material). Null clears it. An older machine drops the unknown field and keeps the record.
+    if (raw.brief === null) out.brief = null;
+    else { const b = vBrief(raw.brief); if (!b) return null; out.brief = b; }
+  }
   return out;
 }
 
@@ -201,6 +276,7 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
 const KNOWN_FIELDS = [
   'recordType', 'cardId', 'by', 'at',
   'title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'conversationKey',
+  'whyYou', 'covers', 'mirror', 'brief',
   'principal', 'question', 'supersedes', 'reason',
   'action', 'materialHash', 'questionId', 'answer', 'claimId', 'retryOf', 'names', 'titleHash', 'policy',
   'itemId', 'text', 'attachmentIds', 'reopens', 'evidenceIds',
@@ -277,6 +353,12 @@ export const workCardRecordStoreSchema: StoreFieldSchema = {
         if (r.names !== undefined) { if (!isRecordId(r.names)) return null; out.names = r.names; }
         if (r.reopens !== undefined) { const l = vIdList(r.reopens); if (!l) return null; out.reopens = l; }
         if (r.titleHash !== undefined) { if (typeof r.titleHash !== 'string' || !SHA256_RE.test(r.titleHash)) return null; out.titleHash = r.titleHash; }
+        if (r.closeAs !== undefined || r.note !== undefined) {
+          // A close is an archive with its note: both fields together, never on another action, never an empty note.
+          if (r.action !== 'archive' || typeof r.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(r.closeAs)) return null;
+          if (!isStr(r.note, SCHEMA_MAX.closeNote) || !(r.note as string).trim()) return null;
+          out.closeAs = r.closeAs; out.note = r.note;
+        }
         const a = r.action as TapAction;
         if (a === 'approve' && !out.materialHash) return null;
         if (a === 'answer' && (!out.questionId || !out.answer)) return null;
@@ -383,12 +465,16 @@ export function materialHashOf(m: MaterialFields): string {
 export function sameValue(a: unknown, b: unknown): boolean { return canonicalJson(a) === canonicalJson(b); }
 
 /** The closed set of fields a phone presence signature covers (§4). */
-export function tapActionLine(t: { action: string; cardId: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }): string {
+export function tapActionLine(t: { action: string; cardId: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }): string {
+  // `closeAs` and `note` enter the digest only when present, so every line an existing app signs is unchanged.
+  const close = t.closeAs !== undefined || t.note !== undefined ? { closeAs: t.closeAs ?? null, note: t.note ?? null } : {};
   const digest = sha256Hex(canonicalJson({
     action: t.action, cardId: t.cardId, materialHash: t.materialHash ?? null, questionId: t.questionId ?? null,
     answer: t.answer ?? null, claimId: t.claimId ?? null, retryOf: t.retryOf ?? null, names: t.names ?? null, titleHash: t.titleHash ?? null,
+    ...close,
   }));
-  return `Work card ${t.cardId}: ${t.action} [${digest}]`;
+  const label = t.closeAs === 'done' ? 'close as done' : t.closeAs === 'not-important' ? 'close as not important' : t.action;
+  return `Work card ${t.cardId}: ${label} [${digest}]`;
 }
 
 // ── the fold ────────────────────────────────────────────────────────────────
@@ -404,7 +490,10 @@ export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-ap
 export interface QuestionState { id: string; text: string; options?: string[]; principal: Principal; state: 'open' | 'answered' | 'replaced'; replacedBy?: string; reason?: string; answer?: string; answeredBy?: string; at: string }
 export interface EvidenceState { id: string; itemId: string; text: string; attachmentIds?: string[]; materialHash: string; reopens: string[]; at: string; by: By; counts: boolean }
 export interface ClaimState { id: string; materialHash: string; reopens: string[]; evidenceIds: string[]; at: string; counts: boolean; confirmedBy?: string }
-export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string }
+export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; closeAs?: CloseAs; note?: string }
+
+/** The person's close in force (the newest archive tap still standing that carries a note). */
+export interface CloseoutState { as: CloseAs; note: string; by: By; at: string; tapId: string }
 
 export interface CardFold {
   cardId: string;
@@ -415,6 +504,14 @@ export interface CardFold {
   // fields
   title: string; need: string; doneWhen: DoneWhenItem[]; carrier: Carrier; outward: boolean; links: CardLink[];
   recommendation: string | null; due: string | null; projectKey: string | null; source: { conversationKey: string; messageId: string } | null;
+  /** Why this needs the person (required on agent-written cards, work-board-cards-appear §2). */
+  whyYou: string | null;
+  /** The Needs-you item keys this card is about (§3). */
+  covers: string[];
+  /** The source record a server-owned card mirrors (§1 Fencing); null on every other card. */
+  mirror: CardMirror | null;
+  /** A server-owned card's structured summary (display only, not material); null on every other card. */
+  brief: CardBrief | null;
   waitingOn: Principal;
   materialHash: string;
   lastWriter: Record<MaterialField, 'person' | 'agent'>;
@@ -427,6 +524,8 @@ export interface CardFold {
   reopens: string[];
   holds: string[];
   archives: string[];
+  /** The newest standing archive when it was a person's Done or Not important close; null otherwise. */
+  closeout: CloseoutState | null;
   redacted: { by: By; at: string } | null;
   approvalRequired: boolean;
   approvalValid: boolean;
@@ -488,8 +587,9 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const f: CardFold = {
     cardId, conversationKey: cardConversationKey(cardId), created: false, createdBy: null, createdAt: null,
     title: '', need: '', doneWhen: [], carrier: 'agent', outward: true, links: [], recommendation: null, due: null, projectKey: null, source: null,
+    whyYou: null, covers: [], mirror: null, brief: null,
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
-    evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], redacted: null,
+    evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
     unknown: [], newestRecordAt: 0, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
   };
@@ -502,7 +602,12 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const evidenceIdx = new Map<string, number>(); const claimIdx = new Map<string, number>();
   const confirms: Array<{ tap: TapState; idx: number; reopens: string[] }> = [];
   let idx = -1;
-  for (const rec of records) {
+  // A card's `created` record is folded first whatever its clock: a fixed-id card's `created` written
+  // again in a lease race (before the first replicated) takes the newer clock under its one key, and must
+  // not make the card's earlier records read as written before the card existed (work-board-cards-appear §1).
+  const createdAt = records.findIndex((r) => r.d.cardId === cardId && r.d.recordType === 'created');
+  const ordered = createdAt > 0 ? [records[createdAt], ...records.slice(0, createdAt), ...records.slice(createdAt + 1)] : records;
+  for (const rec of ordered) {
     idx++;
     if (rec.d.cardId !== cardId) continue;
     const v = validate(rec.d, ctx);
@@ -562,7 +667,8 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         const t: TapState = { id: rec.id, action: v.action as TapAction, by, at, hlc: rec.hlc,
           ...(v.materialHash ? { materialHash: v.materialHash as string } : {}), ...(v.questionId ? { questionId: v.questionId as string } : {}),
           ...(v.answer ? { answer: v.answer as string } : {}), ...(v.claimId ? { claimId: v.claimId as string } : {}),
-          ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}) };
+          ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}),
+          ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}) };
         f.taps.push(t);
         switch (t.action) {
           case 'approve': {
@@ -607,6 +713,9 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   f.reopens.sort();
   f.holds = holdIds.filter((h) => !releasedHolds.has(h));
   f.archives = archiveIds.filter((a) => !releasedArchives.has(a));
+  // The close in force is the newest standing archive (fold order); a plain archive after a close replaces it.
+  const standing = f.archives.length ? f.taps.find((t) => t.id === f.archives[f.archives.length - 1]) : undefined;
+  f.closeout = standing?.closeAs && standing.note ? { as: standing.closeAs, note: standing.note, by: standing.by, at: standing.at, tapId: standing.id } : null;
   f.materialHash = f.created ? materialHashOf(f) : '';
   // The caller passes the policy records that apply (all of them for a read; the prefix seen so far when deriving causes).
   f.policy = opts?.policyOverride ?? policyAt(policies);
@@ -617,6 +726,11 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const allPerson = MATERIAL_FIELDS.every((k) => f.lastWriter[k] === 'person');
   if (f.withdrawn) f.approvalRequired = true;
   else if (f.outward) f.approvalRequired = true; // an outward card always needs its own approve tap
+  // A card a person carries that sends nothing outward has no agent work for an approval to cover
+  // (workable needs carrier: agent), so it needs no approve tap (work-board-cards-appear §2, the
+  // narrowest part of the approved rule C). Moving the carrier to the agent is a material edit and
+  // brings the rule below back before any agent work.
+  else if (typeof f.carrier === 'object') f.approvalRequired = false;
   else if (f.policy === 'outward-only') f.approvalRequired = false;
   else f.approvalRequired = !allPerson;
   f.approvalValid = !f.withdrawn && approveIdx >= 0 && approveIdx > f.lastMaterialIdx && approveRec !== null;
@@ -638,7 +752,12 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   }
   f.currentClaim = [...f.claims].reverse().find((c) => c.counts) ?? null;
   if (f.currentClaim) {
-    f.needsConfirm = f.doneWhen.some((it) => it.certify === 'owner-confirms') || f.reopens.length > 0;
+    // A card a person carries and that sends nothing outward needs no approve tap (above), so the agent's
+    // claim on it is finished only by that person's Confirm done, whatever its items say: the agent never
+    // opens and closes an ask the person never saw. The one exception is a server-owned card (it covers a
+    // `cos:` key), whose single item rests on a recorded source verdict (work-board-cards-appear §2).
+    const personCarriedInward = typeof f.carrier === 'object' && !f.outward && !f.covers.some((k) => k.startsWith('cos:'));
+    f.needsConfirm = f.doneWhen.some((it) => it.certify === 'owner-confirms') || f.reopens.length > 0 || personCarriedInward;
     const claim = f.currentClaim;
     const cIdx = claimIdx.get(claim.id) ?? -1;
     const confirm = confirms.find((x) => x.tap.claimId === claim.id && x.tap.materialHash === f.materialHash && currentGen(x.reopens) && x.idx > f.lastMaterialIdx && x.idx > cIdx);
@@ -674,7 +793,9 @@ const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown'
 
 /** The lane for a viewer. Phase 1: only the team owner acts, so only the owner has "Waiting on you". */
 export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false): Lane {
-  if (status === 'removed' || status === 'archived') return 'archived';
+  if (status === 'removed') return 'archived';
+  // A person's "Done" close shows with the done cards; "Not important" and a plain archive stay archived.
+  if (status === 'archived') return f.closeout?.as === 'done' ? 'done' : 'archived';
   if (status === 'done') return 'done';
   if (viewerIsOwner) {
     if (WAITING_STATUSES.has(status) || capacityWaitSurfaced) return 'waiting-on-you';
@@ -704,6 +825,11 @@ export interface PickupCause { id: string; cardId: string; kind: CauseKind; agen
 export function derivePickupCauses(cardId: string, records: FoldRecord[], policies: FoldRecord[]): PickupCause[] {
   const card = records.filter((r) => r.d.cardId === cardId);
   const timeline = [...card, ...policies].sort(foldOrder);
+  // The card's `created` record first, as foldCard folds it (work-board-cards-appear §1 Create).
+  // Only among the card's own records: policy records keep their place in the walk.
+  const ci = timeline.findIndex((r) => r.d.recordType === 'created' && r.d.cardId === cardId);
+  const first = timeline.findIndex((r) => r.d.cardId === cardId);
+  if (ci > first && first >= 0) timeline.splice(first, 0, ...timeline.splice(ci, 1));
   const causes: PickupCause[] = [];
   let prevWorkable = false; let prevDone = false;
   let last: CardFold | null = null;
@@ -828,7 +954,7 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
 export function redactedView(f: CardFold, name: string): Partial<CardFold> & { removedBy: string } {
   return {
     cardId: f.cardId, conversationKey: f.conversationKey, redacted: f.redacted, removedBy: name,
-    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, questions: [], openQuestion: null, evidence: [], claims: [],
+    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [],
   };
 }
 

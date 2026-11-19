@@ -37,6 +37,7 @@ import {
   buildGeminiOneShotArgv,
   spawnGeminiAndWait,
 } from '../providers/adapters/gemini-cli/transport/geminiSpawn.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from './boundedInput.js';
 import {
   decideGeminiCapacityPolicy,
   getGeminiCapacityGate,
@@ -45,6 +46,15 @@ import {
 } from '../providers/adapters/gemini-cli/observability/geminiCapacityPolicy.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * How much Gemini stderr an error MESSAGE carries. Derived: the 600 characters
+ * of stderr the message always held (enough for the circuit breaker's
+ * rate-limit wording to show), plus room for the in-band disclosure, so a cut
+ * now says it is a cut instead of reading as the whole error. The capacity
+ * decision does not depend on this number; it reads the full stderr.
+ */
+const GEMINI_STDERR_MESSAGE_CHARS = 600 + BOUNDED_INPUT_MIN_CHARS;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface GeminiCliIntelligenceProviderOptions {
@@ -107,7 +117,7 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
       // can see usage/limit language. Fail loudly so callers can fall back.
       const stderr = typeof err.stderr === 'string' ? err.stderr : '';
       throw new Error(
-        `Gemini CLI error: ${err.message}` + (stderr ? ` — ${stderr.slice(0, 600)}` : ''),
+        `Gemini CLI error: ${err.message}` + (stderr ? ` — ${boundedHead(stderr, GEMINI_STDERR_MESSAGE_CHARS)}` : ''),
       );
     });
 
@@ -115,9 +125,14 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
       // The benign `Loaded cached credentials` stderr line only appears on a
       // SUCCESSFUL (exit 0) call; a non-zero exit means a real failure.
       const message = `Gemini CLI exited ${result.exitCode}` +
-        (result.stderr ? ` — ${result.stderr.slice(0, 600)}` : '');
+        (result.stderr ? ` — ${boundedHead(result.stderr, GEMINI_STDERR_MESSAGE_CHARS)}` : '');
+      // The capacity decision (retry / switch model / defer) reads the FULL
+      // stderr, as the transport adapter's twin already does
+      // (providers/adapters/gemini-cli/transport/oneShotCompletion.ts). It used to
+      // read the 600-char head, so a quota or retry-after line printed after a
+      // long preamble was invisible and the call failed instead of retrying.
       const capacity = decideGeminiCapacityPolicy({
-        errorMessage: message,
+        errorMessage: `${message}\n${result.stderr ?? ''}`,
         attempt,
         model: currentModel,
         config: this.capacityPolicy,

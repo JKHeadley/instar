@@ -43,7 +43,7 @@ describe('desktop viewer explains a session the machine ended', () => {
       { machineId: 'm_mama', label: 'Mama PC', ready: false, unavailableReason: lockedReason },
     ]);
     await v.ended('m_mama', 'Desktop access ended. Open it again when needed.');
-    expect(v.fetched).toContain('/desktop/targets');
+    expect(v.fetched.filter(path => path === '/desktop/targets')).toHaveLength(1);
     expect(v.status()).toBe(lockedReason);
     expect(v.window.document.getElementById('machineNotes')!.textContent).toContain('This Windows PC is locked');
     v.dom.window.close();

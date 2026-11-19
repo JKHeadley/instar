@@ -99,13 +99,28 @@ describe('TopicSummarizer', () => {
       ];
 
       const prompt = buildSummaryPrompt(messages, null, null);
-      expect(prompt).toContain('...');
-      // Should be truncated to ~1000 chars
-      expect(prompt.length).toBeLessThan(3000);
+      // ~1000 chars of content kept, and the cut is disclosed in-band (was a bare "...").
+      expect(prompt).toContain('x'.repeat(1000));
+      expect(prompt).not.toContain('x'.repeat(1100));
+      expect(prompt).toContain('LATER content was omitted');
     });
   });
 
   describe('summarize', () => {
+    it('discloses a cut message to the summarizer instead of a bare "..." (bounded-input review)', async () => {
+      topicMemory.insertMessage({
+        messageId: 1, topicId: 100, text: `${'context '.repeat(200)}DETAIL-AFTER-THE-CUT`,
+        fromUser: true, timestamp: new Date(2026, 0, 1, 12, 0).toISOString(), sessionName: null,
+      });
+      const intelligence = createMockIntelligence('A sufficiently long summary response.');
+      const summarizer = new TopicSummarizer(intelligence, topicMemory, { messageThreshold: 1 });
+      await summarizer.summarize(100);
+      const prompt = intelligence._calls[0].prompt as string;
+      expect(prompt).not.toContain('DETAIL-AFTER-THE-CUT');
+      expect(prompt).toContain('LATER content was omitted');
+      expect(prompt).toContain('context '.repeat(120));
+    });
+
     it('enrolls the LLM path with identity-only conversation provenance', async () => {
       insertMessages(100, 2);
       topicMemory.insertMessage({

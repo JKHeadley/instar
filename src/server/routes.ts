@@ -33,10 +33,11 @@ import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
+const stampPromiseNotice = notificationStamper('src/server/routes.ts', 'promise-notice');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { jobReportChoice } from '../messaging/notificationCategories.js';
-import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
+import { verifiedReplyEnvelope, requireTelegramDelivery, isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
 import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
@@ -72,6 +73,8 @@ import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } fro
 import { answerPhoneCardCreate, phoneCardPrecheck } from './phoneWorkCards.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
+import { projectTapPort } from './workProjectActions.js';
+import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
 import { mountProjectAppCustomRoutes } from './projectAppCustomRoutes.js';
@@ -96,6 +99,7 @@ import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { cleanMergeHoldReason } from '../localVerify/operatorQueue.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
@@ -133,7 +137,7 @@ import { Router } from 'express';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
-import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
@@ -213,10 +217,12 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 import fs from 'node:fs';
 import { findSessionTranscriptFile, sessionConversations, readTranscriptAnswer, parseTranscriptQuery, SESSION_TRANSCRIPT_PULL_MAX_BYTES, SESSION_TRANSCRIPT_PULL_TIMEOUT_MS } from '../core/sessionTranscriptPull.js';
 import { resolveTranscriptAudience, TRANSCRIPT_AUDIENCE_SENTENCES, type TranscriptAudienceVerdict } from '../core/transcriptAudience.js';
-import { SignedReadCapability, signedThenBearer, BearerReadRefused } from '../core/poolSignedReads.js';
+import { SignedReadCapability, signedThenBearer, BearerReadRefused, PeerVersionFloor } from '../core/poolSignedReads.js';
 import { TOPIC_HISTORY_POOL_MAX_MESSAGES, TOPIC_HISTORY_POOL_TIMEOUT_MS, poolRowId } from '../core/topicHistoryPull.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
-import { boundedHead } from '../core/boundedInput.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
+import { SESSION_HISTORY_MESSAGE_CHARS } from '../memory/TopicMemory.js';
+import { SUBJECT_MAX as LEDGER_SUBJECT_MAX, SUMMARY_MAX as LEDGER_SUMMARY_MAX } from '../core/SharedStateLedger.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -423,6 +429,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
 import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
+import { AgentSessionPlacementService, AgentSessionPlacementStore, agentSessionPlacementEnabled, decideAgentSessionPlacement, isUnresolved, setActiveAgentSessionPlacement, travelBlocker } from '../core/agentSessionPlacement.js';
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
@@ -486,6 +493,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { TopicCreationProvenanceStore, checkCitation, parseOnBehalfOf, crossTopicEligible, safeConversationName, CROSS_TOPIC_FIELDS, type CitationDeps } from '../core/topicCreationProvenance.js';
 import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
 import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -621,7 +629,7 @@ import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
-import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
+import { historySenderLabel, resolveSignedByAgent, aspClassifiedText, labelFromEnvelope, signedInboundSnapshot } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -870,6 +878,8 @@ import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
+import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 
 /**
  * Build the /whoami request handler.
@@ -3101,6 +3111,30 @@ export function findReservedObjectKey(value: unknown, prefix = ''): string | nul
 }
 
 export function createRoutes(ctx: RouteContext): Router {
+  const creationProvenance = new TopicCreationProvenanceStore(ctx.config.stateDir);
+  /** identity-security-creation-provenance v5: one refusal notice per (A, B, reason) per 10 minutes. */
+  const crossTopicNoticeAt = new Map<string, number>();
+  /** identity-security-creation-provenance v5: may a yes in conversation A reach conversation B? */
+  const crossTopicEligibilityFor = (sourceTopicId: number, destKey: string) => {
+    const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
+    const owner = ctx.telegram?.getOwnerUserId();
+    return crossTopicEligible({
+      ownerUid: typeof owner === 'number' && owner > 0 ? String(owner) : null,
+      confirmerUid: ctx.topicOperatorStore?.getOperator(sourceTopicId)?.uid ?? null,
+      destKnown: dest !== null && !!ctx.topicOperatorStore && !!ctx.telegram && ctx.telegram.getTopicName(dest) !== null,
+      destBinding: dest !== null ? ctx.topicOperatorStore?.getBinding(dest) ?? null : null,
+      destVerifiedUid: dest !== null ? ctx.topicOperatorStore?.getOperator(dest)?.uid ?? null : null,
+      destConfined: dest !== null ? new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${dest}`) : null,
+      sourceConfined: new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${sourceTopicId}`),
+    });
+  };
+  /** identity-security-creation-provenance: identity checks for a cited owner message. */
+  const ownerCitationDeps = (): CitationDeps => ({
+    verifiedOperatorUid: (t) => ctx.topicOperatorStore?.getOperator(t)?.uid ?? null,
+    findMessage: (t, m, notBefore) => ctx.telegram ? ctx.telegram.findTopicMessage(t, m, notBefore) : { entry: null, unreadable: true },
+    ownerUid: () => { const o = ctx.telegram?.getOwnerUserId(); return typeof o === 'number' && o > 0 ? String(o) : null; },
+    now: () => Date.now(),
+  });
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
   // (GET /spec/constitution-checks), refreshed in the background at most once a minute
@@ -3135,6 +3169,30 @@ export function createRoutes(ctx: RouteContext): Router {
   const peerVersionOf = (machineId: string): string | null => {
     const cap = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
     return cap?.coherenceAdvert?.instarVersion ?? cap?.hardware?.instarVersion ?? null;
+  };
+  /** SEC-114 (interim): the highest version ever seen for a peer, from every source, never lowered. */
+  const peerVersionFloor = new PeerVersionFloor(
+    ctx.config.stateDir ? path.join(ctx.config.stateDir, 'state', 'peer-version-floor.json') : null,
+    (file, data) => SafeFsExecutor.atomicWriteJsonSync(file, data, { operation: 'routes.peerVersionFloor' }),
+  );
+  const versionFloorOf = (machineId: string): string | null => {
+    const cap = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
+    return peerVersionFloor.observe(machineId, cap?.coherenceAdvert?.instarVersion, cap?.hardware?.instarVersion);
+  };
+  /** SEC-114: a refused bearer fallback is loud, at most once per machine and kind of read per 15 minutes. */
+  const fallbackRefusedReportedAt = new Map<string, number>();
+  const onSignedReadFallbackRefused = (machineId: string, kind: string) => (why: string): void => {
+    const key = `${machineId}\u0000${kind}`;
+    const now = Date.now();
+    if (now - (fallbackRefusedReportedAt.get(key) ?? 0) < 15 * 60_000) return;
+    fallbackRefusedReportedAt.set(key, now);
+    DegradationReporter.getInstance().report({
+      feature: 'poolSignedReads.bearerFallbackRefused',
+      primary: 'Read another machine over the signed mesh, sending the agent token only to a machine too old for it',
+      fallback: 'The read failed instead of sending the agent token, because that machine has been seen at a version that serves this read',
+      reason: why,
+      impact: 'That machine is missing from this pool view until the read succeeds; the agent token was not sent. A forged answer on the network path, or a real fault on that machine, causes this.',
+    });
   };
   /** A machine that did not answer, named plainly with its last-seen time (§3d item 5). */
   const asleepEntry = (machineId: string, error: string, unreachable: boolean): Record<string, unknown> => {
@@ -3220,6 +3278,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const prLinkDeps = {
       enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
       reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      // Echo Bugs 10000002791: request only where the repository's rules may require an approval.
+      requestWhenNotRequired: () => (ctx.config as { prLinkReviewRequest?: { requestWhenNotRequired?: boolean } }).prLinkReviewRequest?.requestWhenNotRequired === true,
       gh: ghFor,
       selfLogin: async () => {
         const gh = ghFor();
@@ -3333,6 +3393,9 @@ export function createRoutes(ctx: RouteContext): Router {
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     // Project apps (docs/specs/project-apps.md §3.3): additive fields on each row, only when the feature is on.
     appsFor: (key) => { const rt = ctx.projectAppsRuntime?.() ?? null; return rt && projectAppsEnabled(ctx.config) ? rt.view(key) : null; },
+    // docs/specs/work-door-project-rows.md §3.1.4 / §3.2: whether this machine runs the checks, and "Ask for an update".
+    checkContext: () => ({ here: ctx.chiefOfStaffLoop?.checksHere() ?? false, gapMs: ctx.chiefOfStaffLoop?.requestGapMs() ?? 14 * 60_000 }),
+    ...(ctx.chiefOfStaffLoop ? { checkNow: (key: string, by: 'owner-tap' | 'chief-of-staff') => ctx.chiefOfStaffLoop!.checkNow(key, by) } : {}),
   });
   ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
   mountProjectAppsRoutes(router, {
@@ -3360,6 +3423,23 @@ export function createRoutes(ctx: RouteContext): Router {
     enabled: () => projectAppsEnabled(ctx.config) && customProjectAppsEnabled(ctx.config),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     log: (entry) => projectAppsLog(ctx.config.stateDir, entry),
+  });
+  // Bring your Claude and ChatGPT history into Instar (docs/specs/import-from-claude-chatgpt.md): local only.
+  mountImportedHistoryRoutes(router, {
+    stateDir: ctx.config.stateDir,
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    ownerOk: (req) => {
+      const token = req.headers['x-instar-operator-session'];
+      return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true;
+    },
+    // The owner's own app device (signed through DEVICE_ALLOWLIST, which already refuses others there).
+    deviceOwnerOk: isOwnerAppDevice,
+    rememberFact: ctx.semanticMemory ? ({ text, from }) => ctx.semanticMemory!.remember({
+      type: 'fact', name: text.slice(0, 80), content: text, confidence: 0.8, lastVerified: new Date().toISOString(),
+      source: `import:${from}`, tags: ['imported', from],
+      ownerId: ctx.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? 'owner', privacyScope: 'private',
+    }) : undefined,
+    log: (entry) => console.log(`[imported-history] ${JSON.stringify(entry)}`),
   });
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
@@ -5634,6 +5714,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // block, delay, or rewrite the message. Stays route-side (NOT in
     // evaluateOutbound) — there is nothing for it to catch on the proactive-digest
     // path, and keeping it here preserves byte-identical behavior for callers.
+    // ── Organization never rules on outgoing messages (org-never-actions §C) ──
+    // Block: checked before sending; a breach or an uncheckable message is refused with the reason
+    // (returns true: the caller must not send). Observe: checked only after the message went out
+    // (a 2xx answer), fire-and-forget, a note for the next session start — see below.
+    const orgCheck = await import('../core/OrgActionCheck.js');
+    const orgConv = options.attributionConversation ?? (options.topicId !== undefined ? String(options.topicId) : channel); // the raw id, as the other channels key it
+    const orgCtx = { stateDir: ctx.config.stateDir, config: ctx.config as never, provider: ctx.intelligence ?? null, journal: orgCheck.orgDecisionJournal(ctx.config.stateDir) };
+    const orgBlock = orgCheck.orgCheckMode(ctx.config as never) === 'block';
+    if (orgBlock) {
+      const r = await orgCheck.runOrgCheck(orgCtx, orgCheck.messageEvidence(text, channel, orgConv), { userRequest: '', deadlineAt: Date.now() + 6000 });
+      if (r.decision === 'deny') {
+        res.status(422).json({ error: 'org-policy', reason: r.reason, checkId: r.checkId });
+        return true;
+      }
+    }
     void observeSelfViolation(text, options.topicId).catch(() => {
       /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
     });
@@ -5656,6 +5751,14 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!decision.ok) {
       res.status(decision.status).json(decision.body);
       return true;
+    }
+    if (!orgBlock) {
+      res.once('finish', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) return;
+        void orgCheck.runOrgCheck(orgCtx, orgCheck.messageEvidence(text, channel, orgConv), { userRequest: '', deadlineAt: Date.now() + 6000 })
+          .then((r) => { if (r.decision === 'allow' && r.note) orgCheck.appendMessageNote(ctx.config.stateDir, orgConv, r.note); })
+          .catch(() => { /* @silent-fallback-ok — observe-only; a check error never affects delivery */ });
+      });
     }
     // Send-side record (attribution-paper-trail section 5): after delivery, in the background, never
     // blocking a send. The route answering 2xx is what says the message went out.
@@ -6249,6 +6352,8 @@ export function createRoutes(ctx: RouteContext): Router {
           slack: ledger ? { ...ledger.counters, coversSince: ledger.coversSince === null ? null : new Date(ledger.coversSince).toISOString() } : null,
         };
       }
+      // SEC-106 decision 9: agent-signed label framing per delivery path since boot (counts only).
+      base.signedInboundLabel = signedInboundSnapshot();
       // Origin worker health rides the AUTHED extension: a held-sends outage is
       // visible without a status fan-out, and never inferred from silence.
       if (ctx.telegramOrigin) {
@@ -6380,6 +6485,10 @@ export function createRoutes(ctx: RouteContext): Router {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        // Memory held outside the V8 heap (native addons' C++ objects, Buffers),
+        // so resident size can be split without attaching a profiler.
+        external: Math.round(mem.external / 1024 / 1024),
+        arrayBuffers: Math.round(mem.arrayBuffers / 1024 / 1024),
       };
       if (ctx.autoUpdater) {
         const auto = ctx.autoUpdater.getStatus();
@@ -8766,6 +8875,7 @@ export function createRoutes(ctx: RouteContext): Router {
     return { rec: final, sweep, unbuilt, clearedCount, degraded: sweep.degraded || corr.degraded };
   };
 
+  // bounded-input-reviewed: caps an ARRAY of paths and discloses the rest in-band (" — and N more"); its readers (the operator notice, the attention item, the session's scope-accretion hold reason) are all told the list continues.
   const clampPathList = (paths: string[], limit = 50): string => {
     const shown = paths.slice(0, limit);
     const more = paths.length - shown.length;
@@ -8977,6 +9087,7 @@ export function createRoutes(ctx: RouteContext): Router {
       windowLedger,
       nowMs: Date.parse(windowNow()),
     });
+    // bounded-input-reviewed: the slice inside this call clamps an idempotencyKey (an identifier) before storage.
     const result = autonomousRunStore.register({
       topicId,
       condition,
@@ -9022,6 +9133,7 @@ export function createRoutes(ctx: RouteContext): Router {
     runDailySweepBackstop();
     const topic = String(req.params.topic);
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // bounded-input-reviewed: run-end reason stored on the run record and shown in the operator's topic and an attention item ("run-end: <reason>"); display text, never a judgment's input.
     const reason = typeof body.reason === 'string' ? body.reason.slice(0, 200) : 'run-end';
     const runId = typeof body.runId === 'string' ? body.runId : undefined;
     const rec = autonomousRunStore.getRecord(topic);
@@ -11922,8 +12034,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'agent worktree reaper unavailable' });
       return;
     }
-    await ctx.agentWorktreeReaper.prepare();
-    res.json(ctx.agentWorktreeReaper.snapshot());
+    // Answers from the last pass (off the event loop) when the server wired the
+    // off-thread evaluator; a synchronous re-evaluation here blocked the server ~45 s.
+    res.json(await ctx.agentWorktreeReaper.report());
   });
 
   // ── External-Hog zombie auto-kill sentinel (CMT-1901) ──
@@ -12743,7 +12856,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // first; the bearer hop only on a definite "cannot serve", never after a timeout.
           const listCommand = { type: 'session-transcript-pull' as const, mode: 'list' as const, ...(includeAll ? { include: 'all' as const } : explicitStatus ? { status: explicitStatus } : {}) };
           const outcome = await signedThenBearer<Record<string, unknown>[] | { httpStatus: number }>({
-            machineId: p.machineId, kind: 'list', peerVersion: peerVersionOf(p.machineId), capability: signedReads,
+            machineId: p.machineId, kind: 'list', peerVersion: peerVersionOf(p.machineId), capability: signedReads, versionFloor: versionFloorOf(p.machineId), onFallbackRefused: onSignedReadFallbackRefused(p.machineId, 'list'),
             signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, listCommand, 5000) : null,
             accept: (result) => {
               const b = result as { ok?: unknown; sessions?: unknown; reason?: unknown } | null;
@@ -13000,7 +13113,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ cleaned: cleaned.length, sessionIds: cleaned, purgedFailedMessages: purgedFiles });
   });
 
-  router.get('/sessions/:name/output', (req, res) => {
+  router.get('/sessions/:name/output', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.name)) {
       res.status(400).json({ error: 'Invalid session name' });
       return;
@@ -13011,6 +13124,33 @@ export function createRoutes(ctx: RouteContext): Router {
     const output = tmuxSession === null
       ? null
       : ctx.sessionManager.captureOutput(tmuxSession, lines);
+
+    // agent-sessions-placed-by-load §1b: a helper this machine placed on a peer is read
+    // there (target resolved at call time; a forwarded read is never proxied again).
+    if (output === null && agentSessionPlacement && req.headers['x-instar-placed'] !== '1') {
+      const entry = agentSessionPlacement.deps.store.get(req.params.name);
+      if (entry && (isUnresolved(entry) || entry.state === 'gone')) {
+        const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === entry.machineId) ?? null;
+        const placedOn = { machineId: entry.machineId, nickname: ctx.machinePoolRegistry?.getCapacity(entry.machineId)?.nickname ?? null };
+        if (!peer) {
+          res.status(502).json({ error: 'placed-on-peer-unreachable', placedOn });
+          return;
+        }
+        try {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/output?lines=${lines}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
+            signal: AbortSignal.timeout(10_000),
+          });
+          // @silent-fallback-ok — an unparseable peer body still returns the peer's status with placedOn
+          const body = await r.json().catch(() => ({})) as Record<string, unknown>;
+          res.status(r.status).json({ ...body, placedOn });
+        } catch (err) {
+          // @silent-fallback-ok — not silent: the caller gets 502 placed-on-peer-unreachable naming the machine
+          res.status(502).json({ error: 'placed-on-peer-unreachable', placedOn, detail: operatorError(err, res.app?.locals?.stateDir) });
+        }
+        return;
+      }
+    }
 
     if (output === null) {
       res.status(404).json({ error: `Session "${req.params.name}" not found or not running` });
@@ -13145,7 +13285,7 @@ export function createRoutes(ctx: RouteContext): Router {
         limit: q.limit, ...(q.full ? { full: true } : {}), ...(q.row ? { row: q.row, byteFrom: q.byteFrom ?? 0 } : {}),
       };
       const outcome = await signedThenBearer<Remote>({
-        machineId, kind: 'transcript', peerVersion: peerVersionOf(machineId), capability: signedReads,
+        machineId, kind: 'transcript', peerVersion: peerVersionOf(machineId), capability: signedReads, versionFloor: versionFloorOf(machineId), onFallbackRefused: onSignedReadFallbackRefused(machineId, 'transcript'),
         signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(machineId, command, SESSION_TRANSCRIPT_PULL_TIMEOUT_MS) : null,
         accept: (result) => {
           const b = result as Record<string, unknown> | null;
@@ -13595,24 +13735,74 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       patch[field] = value;
     }
+    // identity-security-creation-provenance v5: `confirmIn` — the owner asked for this change in
+    // another conversation; the proposal and the owner's "yes" happen THERE, and the yes applies the
+    // change here. Checked now and again when the yes arrives (crossTopicEligible).
+    let confirmIn: number | null = null;
+    if (body.confirmIn !== undefined) {
+      const raw = body.confirmIn;
+      const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+      if (!Number.isSafeInteger(n) || (n as number) <= 0 || String(n) === gate.key) {
+        res.status(400).json({ error: '"confirmIn" must be the positive id of another Telegram topic' });
+        return;
+      }
+      confirmIn = n as number;
+      // A cross-conversation yes may change only everyday run settings. Framework, escalation
+      // override and origin display keep today's rule (confirm in that conversation itself).
+      const allowedCross = new Set(CROSS_TOPIC_FIELDS);
+      const outside = Object.keys(patch).filter((k) => !allowedCross.has(k));
+      if (outside.length) {
+        res.status(400).json({ error: `confirmIn may change only model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
+        return;
+      }
+      // Ships behind the umbrella's per-piece switch: live on a development agent, dark on the fleet.
+      const switchLive = ctx.liveConfig?.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined)
+        ?? (ctx.config as { security?: { crossTopicConfirm?: { enabled?: boolean } } }).security?.crossTopicConfirm?.enabled;
+      if (!resolveDevAgentGate(switchLive, ctx.config)) {
+        res.status(503).json({ ok: false, reason: 'confirmIn-dark' });
+        return;
+      }
+      const eligible = crossTopicEligibilityFor(confirmIn, gate.key);
+      if (!eligible.ok) {
+        // A refusal stays a refusal: when the owner asked in A and B is what can't be reached, the
+        // owner hears it in A too, not only the agent.
+        const noticeKey = `${confirmIn}\u0000${gate.key}\u0000${eligible.reason}`;
+        const lastNotice = crossTopicNoticeAt.get(noticeKey) ?? 0;
+        if (eligible.reason.startsWith('destination-') && Date.now() - lastNotice > 10 * 60_000) {
+          crossTopicNoticeAt.set(noticeKey, Date.now());
+          const why = eligible.reason === 'destination-bound' ? 'someone else runs it' : eligible.reason === 'destination-confined' ? 'it belongs to a team member' : 'I could not confirm who runs it';
+          try {
+            await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(confirmIn as number,
+              `I can't change the conversation "${safeConversationName(ctx.telegram!.getTopicName(Number(gate.key)), gate.key)}" from here: ${why}. You can ask for it in that conversation instead.`));
+          } catch { /* @silent-fallback-ok: the refusal is also returned to the caller below */ }
+        }
+        res.status(422).json({ ok: false, reason: 'confirmIn-refused', refusal: eligible.reason });
+        return;
+      }
+    }
     const rendered = gate.surface.renderProposalEcho(gate.key, patch);
     if (!rendered.ok) {
       res.status(400).json({ ok: false, message: rendered.reply });
       return;
     }
-    const armed = ctx.topicProfile.confirmSlots.arm(gate.key, 'propose-confirm', rendered.patch, rendered.echo, 'agent-composed');
+    const echoTopic = confirmIn ?? Number(gate.key);
+    let echoText = confirmIn !== null
+      ? rendered.echo.replace('Proposed profile change for this topic:', `Proposed change for the conversation "${safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key)}" (not this one):`)
+      : rendered.echo;
+    const armed = ctx.topicProfile.confirmSlots.arm(String(echoTopic), 'propose-confirm', rendered.patch, echoText, 'agent-composed', confirmIn !== null ? gate.key : undefined);
+    if (armed.ok && armed.superseded) echoText = `${echoText}\n(This replaces the earlier proposal here.)`;
     if (!armed.ok) {
       res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
       return;
     }
     try {
-      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(Number(gate.key), rendered.echo));
-      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, requireTelegramDelivery(sent).messageId);
-      res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
+      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
+      res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
       // Echo undelivered — tear the slot down (an unseen echo must never be
       // confirmable; matchConfirm would refuse on no-echo-id anyway).
-      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
       res.status(502).json({ ok: false, error: `Echo delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
@@ -13715,8 +13905,42 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // agent-sessions-placed-by-load Step 1: the shadow log for every agent-started spawn and
+  // opt-in live placement of topicless helpers. Built once per router; null when the
+  // feature is off (dev-gated) or there is no pool. The pool tick drives its reconciler.
+  const agentSessionPlacement: AgentSessionPlacementService | null = (() => {
+    if (!ctx.machinePoolRegistry || !agentSessionPlacementEnabled(ctx.config as never, resolveDevAgentGate as never)) return null;
+    const stateRoot = ctx.config.stateDir;
+    const peerTarget = (id: string) => (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === id) ?? null;
+    const svc = new AgentSessionPlacementService({
+      store: new AgentSessionPlacementStore(path.join(stateRoot, 'state', 'agent-session-placements.json')),
+      logPath: path.join(stateRoot, '..', 'logs', 'agent-session-placement.jsonl'),
+      readPeerSessions: async (machineId) => {
+        const peer = peerTarget(machineId);
+        if (!peer) throw new Error('no-address');
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/sessions?enrich=false', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      },
+      raiseAttention: (item) => {
+        void ctx.telegram?.createAttentionItem({ id: item.id, title: item.title, summary: item.summary, category: 'agent-session-placement', priority: 'normal', sourceContext: 'agent-session-placement', healthKey: item.id } as never)
+          .catch(() => { /* @silent-fallback-ok — best-effort; the placement store and audit log keep the state */ });
+      },
+      nickname: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+    });
+    setActiveAgentSessionPlacement(svc);
+    return svc;
+  })();
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight, placement } = req.body;
+    if (placement !== undefined && placement !== 'auto') {
+      res.status(400).json({ error: '"placement" must be "auto" (or omitted)' });
+      return;
+    }
     // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
     // says so, and this machine counts it in its advertised `heavyPending`.
     if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
@@ -13858,6 +14082,66 @@ export function createRoutes(ctx: RouteContext): Router {
       }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
     }
 
+    // agent-sessions-placed-by-load §1a/§1b. A forwarded spawn (X-Instar-Placed) is never
+    // re-placed; it was logged at its origin and is tagged `forwarded` here.
+    let localPlacement: { outcome: string; reason: string } | undefined;
+    if (agentSessionPlacement) {
+      const weight = (workWeight ?? 'standard') as 'light' | 'standard' | 'heavy';
+      if (req.headers['x-instar-placed'] === '1') {
+        agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'forwarded' });
+      } else {
+        // One start decision per name at a time, held until this response is sent, so a
+        // local start and a placement of the same name cannot race.
+        const releaseNameLock = await agentSessionPlacement.acquireNameLock(name);
+        res.once('close', releaseNameLock);
+        res.once('finish', releaseNameLock);
+        let sent = false;
+        try {
+          // A name with an unresolved placement is read-only for every request, auto or not.
+          const bound = await agentSessionPlacement.boundAnswer(name);
+          if (bound) { res.status(bound.status).json(bound.body); return; }
+          const blocker = travelBlocker(req.body ?? {}, req.headers as Record<string, unknown>);
+          const decide = () => decideAgentSessionPlacement({ capacities: ctx.machinePoolRegistry!.getCapacities(), selfMachineId: ctx.meshSelfId ?? null, workWeight: weight });
+          const runningHere = resolveActiveSessionTmux(ctx.state.listSessions(), name) !== null;
+          if (placement !== 'auto' || blocker || runningHere) {
+            const d = decide();
+            agentSessionPlacement.log({ name, topicBound: parsedTopicId !== undefined, weight, mode: 'shadow', self: d.self, wouldPlaceOn: d.target, wouldPlaceOnNickname: d.targetNickname, why: d.reason, blocker: blocker ?? (runningHere ? 'name-running-here' : null) });
+            if (placement === 'auto') localPlacement = { outcome: 'local', reason: blocker ?? 'name-running-here' };
+          } else {
+            const result = await agentSessionPlacement.placeLive({
+              name, weight, lockHeld: true,
+              body: { name, prompt, workWeight: weight, ...(framework !== undefined ? { framework } : {}), ...(model !== undefined ? { model } : {}) },
+              decision: decide,
+              forward: async (machineId, body) => {
+                const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId) ?? null;
+                if (!peer) return 'no-address';
+                sent = true;
+                return forwardHeavySpawn({
+                  url: peer.url,
+                  authHeader: `Bearer ${ctx.config.authToken}`,
+                  headers: { 'X-Instar-AgentId': ctx.config.projectName ?? '', 'X-Instar-Placed': '1' },
+                  body,
+                  dial: (init: RequestInit) => poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/sessions/spawn', init),
+                });
+              },
+            });
+            if (result.kind === 'respond') { res.status(result.status).json(result.body); return; }
+            localPlacement = { outcome: result.outcome, reason: result.reason };
+          }
+        } catch (err) {
+          // Placement must never stop a spawn from answering. Before anything was sent to a
+          // peer, the session starts here as today; after a send, the peer may have it, so no
+          // local start (the placement record, if written, keeps the name read-only).
+          console.warn(`[sessions/spawn] agent-session placement error for "${name}": ${err instanceof Error ? err.message : String(err)}`);
+          if (sent) {
+            res.status(500).json({ error: 'placement-error-after-send', placementOutcome: 'unconfirmed', tmuxSession: name, next: 'The hand-off may have started this session on another machine. Do not start the same work again; check the pool.' });
+            return;
+          }
+          if (placement === 'auto') localPlacement = { outcome: 'local', reason: 'placement-error' };
+        }
+      }
+    }
+
     const persistTopicBinding = (boundTopicId: number, tmuxSession: string): void => {
       if (ctx.telegram?.registerTopicSession) {
         ctx.telegram.registerTopicSession(boundTopicId, tmuxSession, cleanTopicName);
@@ -13928,6 +14212,7 @@ export function createRoutes(ctx: RouteContext): Router {
         ...session,
         ...(graphDelegation ? { graphDelegation } : {}),
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
+        ...(localPlacement ? { placementOutcome: localPlacement.outcome, placementReason: localPlacement.reason } : {}),
       });
     } catch (err) {
       // resource-aware placement §6: a DEFINITE refusal is a 409 with a code, so a caller
@@ -14186,6 +14471,14 @@ export function createRoutes(ctx: RouteContext): Router {
         target = allSessions.find(s => s.tmuxSession === req.params.id) ?? null;
       }
       if (!target) {
+        // agent-sessions-placed-by-load §1b: a kill is never proxied (it carries operator
+        // provenance); a helper placed on a peer is stopped on that machine.
+        const placed = agentSessionPlacement?.deps.store.findByAnyName(req.params.id) ?? null;
+        if (placed && isUnresolved(placed[1])) {
+          const nick = ctx.machinePoolRegistry?.getCapacity(placed[1].machineId)?.nickname ?? null;
+          res.status(409).json({ error: 'placed-on-peer', placedOn: { machineId: placed[1].machineId, nickname: nick }, next: `This session runs on ${nick ?? placed[1].machineId}. Stop it there (the dashboard's remote session close carries your proof), not through this machine.` });
+          return;
+        }
         res.status(404).json({ error: `Session "${req.params.id}" not found` });
         return;
       }
@@ -15224,9 +15517,8 @@ export function createRoutes(ctx: RouteContext): Router {
       if (probe.ready) return { ready: true };
       return { ready: false, unavailableReason: desktopProbeUnavailableReason(probe) };
     } catch {
-      // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
+      return { ready: false, unavailableReason: DESKTOP_CHECK_FAILED_REASON };
     }
-    return { ready: false, unavailableReason: 'Remote desktop is not ready on this machine.' };
   };
   router.get('/desktop/availability', async (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -15387,7 +15679,7 @@ export function createRoutes(ctx: RouteContext): Router {
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch {
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
-          unavailableReason: 'Remote desktop is not ready on this machine.' };
+          unavailableReason: DESKTOP_CHECK_FAILED_REASON };
       }
     }));
     const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
@@ -17626,6 +17918,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Server-computed readiness authority proposal for the dashboard card. Read-only
   // (Bearer): it derives every binding the runtime later compares, so the operator
   // only chooses the envelope. Registering still requires the PIN route below.
+  // This machine's Codex binary, so an authority proposal names a model its CLI runs.
+  const codexBinaryForProposal = (): string | undefined => resolveFrameworkBinaryPath({
+    framework: CODEX_CLI_FRAMEWORK,
+    frameworkBinaryPaths: ctx.config.sessions?.frameworkBinaryPaths,
+    claudePath: ctx.config.sessions?.claudePath,
+    configuredFramework: ctx.config.sessions?.framework,
+  }) ?? undefined;
+  // The proposal builders read the version cache synchronously; warm it at
+  // boot and before each proposal read so the first one names the right model.
+  const warmCodexVersion = async (): Promise<void> => {
+    const binary = codexBinaryForProposal();
+    if (binary && codexCliVersionCached(binary) === undefined) await refreshCodexCliVersion(binary);
+  };
+  void warmCodexVersion();
+  // An approval that names the model it was shown must bind exactly that model.
+  const assertShownModel = (body: Record<string, unknown>, rebuilt: string): void => {
+    if (typeof body.shownModelFamily === 'string' && body.shownModelFamily !== rebuilt) {
+      throw new Error(`authority proposal changed since it was shown: it now names ${rebuilt}, not ${body.shownModelFamily}; review it again`);
+    }
+  };
   const readinessAuthorityProposal = (envelope?: Partial<ReadinessEnvelope>) => {
     const drain = ctx.feedbackDrain!;
     const intel = ctx.intelligence;
@@ -17639,6 +17951,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       agentId: ctx.config.projectName ?? '',
       binding,
       route,
+      codexBinaryPath: codexBinaryForProposal(),
       piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'],
       current,
       currentMode: current ? drain.store.authorityPosture(current.authorityId, current.generation).mode : undefined,
@@ -17648,8 +17961,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   };
 
-  router.get('/feedback-factory/readiness-authorities/proposal', (req, res) => {
+  router.get('/feedback-factory/readiness-authorities/proposal', async (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    await warmCodexVersion();
     const q = req.query;
     res.json(readinessAuthorityProposal({
       maxBatch: typeof q.maxBatch === 'string' && q.maxBatch.trim() !== '' ? Number(q.maxBatch) : undefined,
@@ -17662,10 +17976,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // with Bearer alone, so “registered” is a real security boundary.
   // `useProposal: true` (create/replace) makes the SERVER derive every binding
   // field from the live proposal; only the operator's envelope comes from the body.
-  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+  router.post('/feedback-factory/readiness-authorities', async (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
+    await warmCodexVersion();
     try {
       const body = req.body ?? {};
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
@@ -17675,6 +17990,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (body.useProposal === true && (action === 'create' || action === 'replace')) {
         const built = readinessAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
         if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+        assertShownModel(body, built.proposal.modelFamily);
         proposed = { ...built.proposal };
       }
       const source = proposed ?? ((action === 'revoke' || action === 'restore') && existing ? existing : body);
@@ -17843,24 +18159,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
     const posture = current ? drain.store.authorityPosture(current.authorityId, current.generation) : null;
     return buildTriageAuthorityProposal({
-      agentId: ctx.config.projectName ?? '', binding, route, piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
+      agentId: ctx.config.projectName ?? '', binding, route, codexBinaryPath: codexBinaryForProposal(), piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
       currentMode: posture?.mode, currentModeReason: posture?.reason,
       currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
       envelope, maxCallsPerDay: ctx.feedbackTriage!.service.summary().maxCallsPerDay as number,
     });
   };
 
-  router.get('/feedback-factory/triage/authority/proposal', (req, res) => {
+  router.get('/feedback-factory/triage/authority/proposal', async (req, res) => {
     if (triageUnavailable(res)) return;
+    await warmCodexVersion();
     const q = req.query;
     const num = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? Number(v) : undefined);
     res.json(triageAuthorityProposal({ maxBatch: num(q.maxBatch), maxTokens: num(q.maxTokens), maxDailySpendUsd: num(q.maxDailySpendUsd) }));
   });
 
-  router.post('/feedback-factory/triage/authority', (req, res) => {
+  router.post('/feedback-factory/triage/authority', async (req, res) => {
     if (triageUnavailable(res)) return;
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
+    await warmCodexVersion();
     try {
       const body = req.body ?? {};
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
@@ -17871,6 +18189,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (body.useProposal === true) {
           const built = triageAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
           if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+          assertShownModel(body, built.proposal.modelFamily);
           source = { ...built.proposal };
         } else {
           // Explicit fields: the prompt, schema and decision point are always the deployed ones.
@@ -19136,6 +19455,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const caller = `bearer:${req.ip ?? 'unknown'}`;
+    // bounded-input-reviewed: API input clamped for the stored spend-cap freeze audit; never a model's input.
     const reason = typeof (req.body ?? {}).reason === 'string' ? String((req.body ?? {}).reason).slice(0, 300) : 'not stated';
     try {
       const def = DEFAULT_METERED_CAPS[keyRef];
@@ -19292,6 +19612,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           leaseEpoch: () => ctx.coordinator!.getSyncStatus().leaseEpoch ?? null,
         }
       : undefined,
+    // SEC-113 D2.5: the peer quarantine clear is owner-only (the dashboard operator session).
+    ...(ctx.verifyDashboardOperatorSession ? { verifyOperatorSession: (token: string | undefined) => ctx.verifyDashboardOperatorSession!(token) } : {}),
+    // Queue controls: a hold with `blockMerge` also applies the merge-side [HOLD] marker, through
+    // the same function POST /green-pr-automerge/hold calls (read at call time: the watcher is late-bound).
+    ...(ctx.greenPrAutoMerger ? { applyMergeHold: (pr: number, reason: string) => ctx.greenPrAutoMerger!.applyHold(pr, reason) } : {}),
   });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
@@ -19484,7 +19809,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'pr must be a positive integer' });
       return;
     }
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
+    // bounded-input-reviewed: API input clamped for the auto-merge hold note; display/audit text, never a model's input.
+    // One cleaning for both callers: this route and a Local Verify queue hold with `blockMerge`.
+    const reason = cleanMergeHoldReason(req.body?.reason);
     const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
     res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
   });
@@ -20961,7 +21288,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const rawReason = (req.body?.reason as string) || 'manual';
-    const reason = typeof rawReason === 'string' ? rawReason.slice(0, 500) : 'manual';
+    // The trigger reason reaches the Jev completion-audit prompt as a trigger
+    // label (JobScheduler triggeredBy -> JevJobCompletionAudit), so a cut says
+    // so. 500 characters of content kept, as before.
+    const reason = typeof rawReason === 'string' ? boundedHead(rawReason, 500 + BOUNDED_INPUT_MIN_CHARS) : 'manual';
 
     try {
       const result = await ctx.scheduler.triggerJob(req.params.slug, reason);
@@ -21589,6 +21919,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // identity-security-creation-provenance: why a conversation exists (machine-local).
+  router.get('/topic-creation-provenance/:topicId', (req, res) => {
+    const id = Number(req.params.topicId);
+    if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: 'topicId must be a positive integer' }); return; }
+    // Ids and times only, never message text: the owner opens the source message in their own Telegram.
+    res.json({ topicId: id, provenance: creationProvenance.get(id) });
+  });
+
   router.post('/telegram/topics', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -21596,6 +21934,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { name, color, firstMessage, kind } = req.body;
+    // identity-security-creation-provenance: an optional citation of the operator message this
+    // conversation is started from. Checked before anything is created; a refusal creates nothing.
+    const onBehalfOf = parseOnBehalfOf(req.body?.onBehalfOf);
+    if (onBehalfOf === null) {
+      res.status(400).json({ error: '"onBehalfOf" must be { topicId, messageId } with positive integer ids' });
+      return;
+    }
+    const citation = onBehalfOf ? checkCitation(onBehalfOf, ownerCitationDeps()) : null;
+    if (citation && !citation.ok) {
+      res.status(422).json({ error: 'onBehalfOf-refused', reason: citation.reason });
+      return;
+    }
     if (kind !== undefined && kind !== 'issue' && kind !== 'conversation') {
       res.status(400).json({ error: '"kind" must be "issue" or "conversation" when given' });
       return;
@@ -21637,6 +21987,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions
       // spawned in this topic will see the context in their thread history.
+      // identity-security-creation-provenance: record why this conversation exists. A record only:
+      // it grants nothing and is never posted into the conversation.
+      try {
+        creationProvenance.record({
+          topicId: topic.topicId,
+          createdAt: new Date().toISOString(),
+          session: typeof req.get?.('X-Instar-Session') === 'string' ? String(req.get('X-Instar-Session')).slice(0, 120) : null,
+          sessionAsserted: true,
+          source: citation && citation.ok ? { kind: 'linked-message', linked: citation.cited, authorship: 'unverified' } : { kind: 'source-unknown' },
+        });
+      } catch (err) {
+        console.error(`[topic-creation-provenance] could not record topic ${topic.topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       let messageSent = false;
       if (firstMessage && !topic.reused) {
         await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topic.topicId, firstMessage));
@@ -21650,6 +22013,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         reused: topic.reused,
         messageSent,
         group: space,
+        provenance: citation && citation.ok ? 'linked-message' : 'source-unknown',
       });
     } catch (err) {
       res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
@@ -21933,6 +22297,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof metadata?.toneAdvisoryAck === 'string'
         ? metadata.toneAdvisoryAck.slice(0, 64)
         : undefined;
+    // bounded-input-reviewed: an identifier (job slug) clamp on message metadata, not text a judgment reads.
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
     // A relay hop carries the origin machine's structural classification. For
     // a local call, derive it at this send seam: ordinary replies are agent
@@ -22795,7 +23160,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(beforeMs === null ? {} : { before: beforeMs }), ...(beforeMessageId === null ? {} : { beforeMessageId }),
       };
       const outcome = await signedThenBearer<{ messages: unknown; truncated?: unknown; oldest?: unknown; rowTruncated?: unknown }>({
-        machineId: p.machineId, kind: 'historyPool', peerVersion: peerVersionOf(p.machineId), capability: signedReads,
+        machineId: p.machineId, kind: 'historyPool', peerVersion: peerVersionOf(p.machineId), capability: signedReads, versionFloor: versionFloorOf(p.machineId), onFallbackRefused: onSignedReadFallbackRefused(p.machineId, 'historyPool'),
         signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, command, TOPIC_HISTORY_POOL_TIMEOUT_MS) : null,
         accept: (result) => {
           const b = result as Record<string, unknown> | null;
@@ -24976,6 +25341,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (refuseInadmissibleWrite(req, res)) return;
+    // bounded-input-reviewed: the slice inside this call clamps stored display text (the resolution note), never fed to a model.
     const result = ctx.telegram.clearAttentionCondition(
       { conditionKey: conditionKey?.trim(), id: id?.trim(), idPrefix: idPrefix?.trim() },
       resolution.trim().slice(0, 2000), // bounded-input-reviewed: stored display text, never fed to a model
@@ -26772,6 +27138,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'lease hand-back reconciler not constructed (single-machine / mesh dark)' });
       return;
     }
+    // bounded-input-reviewed: API input clamped for the stored lease hand-back latch; never a model's input.
     const reason = typeof (req.body ?? {}).reason === 'string' ? String((req.body as { reason: string }).reason).slice(0, 300) : undefined;
     const latch = ctx.leaseHandback.latchWrite(reason);
     res.json({ ok: true, latch });
@@ -27292,7 +27659,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const out = await forwardHeavySpawn({
       url,
       authHeader: `Bearer ${ctx.config.authToken}`,
-      headers: { 'X-Instar-AgentId': ctx.config.projectName },
+      headers: { 'X-Instar-AgentId': ctx.config.projectName, 'X-Instar-Placed': '1' },
       body: { name, prompt, workWeight: weight, ...(framework !== undefined ? { framework } : {}), ...(model !== undefined ? { model } : {}) },
       ...(peerTarget ? { dial: (init: RequestInit) => poolPeerFetch(ctx.recordRopeResult ?? undefined, peerTarget, '/sessions/spawn', init) } : {}),
     });
@@ -30692,7 +31059,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               for (const m of history) {
                 const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-                const histText = (m.text || '').slice(0, 2000);
+                // Same per-message bound as TopicMemory.formatContextForSession.
+                const histText = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
               historyLines.push(``);
@@ -31311,7 +31679,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (the 2026-06-25 lockout mechanism) routes THROUGH (falls past this block to
         // normal routing) instead of consuming the operator's message; a long-form
         // genuine stop is rescued to a kill.
-        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
+        // One verdict per Telegram message: the lifeline re-sends a forward it gave up
+        // on (10s), and a classification can take longer than that. Without the key,
+        // each re-send asked the model again and any one 'emergency-stop' among the
+        // answers killed the session (2026-11-18, topic 144201).
+        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId),
+          messageId ? `telegram:${Number(topicId)}:${messageId}` : undefined);
         if (decision.disposition === 'kill' || decision.disposition === 'pause') {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since
@@ -31455,6 +31828,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // duplicate/in-flight event we return ok+deduped WITHOUT routing — the
     // structural no-duplicate-reply guarantee. FAIL-OPEN: any ledger error
     // falls through to normal routing (the gate must never drop a real message).
+    // SEC-106 decisions 5a and 6: the classifier read for THIS message's classified text (the same
+    // form the log call above logged), and the processing ledger's ingress-time label for a reclaim.
+    const lifelineClassifiedText = aspClassifiedText(
+      typeof text === 'string' ? text : '',
+      fwdMedia.media.length > 0 ? fwdMedia.media : null,
+    );
+    const lifelineMessageIdNum = typeof messageId === 'number' ? messageId : Number(messageId) || null;
+    const readLifelineClassifier = (): string | null => trust ? null : resolveSignedByAgent(
+      ctx.getAspClassifier?.() ?? null,
+      typeof topicId === 'number' ? topicId : null,
+      lifelineMessageIdNum,
+      lifelineClassifiedText,
+      // The ingress read counts a mismatch; these route reads of the same message do not.
+      { count: false },
+    );
+    let ledgerLabel: string | undefined;
     let shouldClaimInbound = true;
     if (ctx.sessionOwnershipRegistry && ctx.meshSelfId) {
       try {
@@ -31483,6 +31872,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             userId: fromUserId,
             username: fromUsername,
             firstName: fromFirstName,
+            // SEC-106 decision 2c: the label is written in the SAME call that creates the row.
+            ...((): { signedByAgent?: string } => { const l = readLifelineClassifier(); return l ? { signedByAgent: l } : {}; })(),
           },
           epoch,
           maxProcessingMs: ctx.config.multiMachine?.maxProcessingMs ?? 5 * 60_000,
@@ -31494,6 +31885,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         // Claimed for processing — remember it so the outbound reply commits it.
         ctx.currentInboundByTopic?.set(String(topicId), dedupeKey);
+        // SEC-106 decision 6: a reclaimed row (restart + re-forward) still holds the label written when
+        // the message was first seen. Copied ONLY when the row's stored input equals this text (a
+        // dedupe key can fall back from update_id to message_id, so two messages could share a row)
+        // and never for an app message.
+        if (!trust) {
+          const row = ctx.messageLedger.get(dedupeKey);
+          if (row && row.inputSnapshot === text) {
+            const carried = labelFromEnvelope(row.senderEnvelope);
+            if (carried) ledgerLabel = carried;
+          }
+        }
       } catch (err) {
         console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
       }
@@ -31550,11 +31952,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // this human's account is not evidence the human is present, so it never
     // binds them. The verdict is the classifier's own, cached when the message
     // was logged above (single-use nonce — never re-verified), read by message id.
-    const lifelineSignedByAgent = resolveSignedByAgent(
-      ctx.getAspClassifier?.() ?? null,
-      typeof topicId === 'number' ? topicId : null,
-      typeof messageId === 'number' ? messageId : Number(messageId) || null,
-    );
+    // SEC-106 decision 6: the classifier's text-bound verdict, else the ledger copy — a reclaim after a
+    // restart sees a used nonce, but the row still says agent-written, so neither site binds.
+    const lifelineSignedByAgent = readLifelineClassifier() ?? ledgerLabel ?? null;
     if (lifelineSignedByAgent) {
       console.log(`[telegram-forward] ${topicRef(topicId)} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
@@ -31626,6 +32026,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // lifeline that omits the field reads as `false` here (it cannot send
           // a real forward through the legacy wire), which is the safe direction.
           forwarded: req.body.forwarded === true,
+          // SEC-106 decision 6: the ledger copy, in process; ingress reconciles it and removes it.
+          ...(ledgerLabel ? { ledgerSignedByAgent: ledgerLabel } : {}),
         },
       };
 
@@ -31756,7 +32158,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               for (const m of history) {
                 const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-                const histText = (m.text || '').slice(0, 2000);
+                // Same per-message bound as TopicMemory.formatContextForSession.
+                const histText = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
               historyLines.push(``);
@@ -33413,7 +33816,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       // Say only what is running: the outbound check exists only with responseReview on (org-pack-and-join §D).
-      const block = formatOrgIntentForSessionStart(parsed, { outboundGateOn: ctx.config.responseReview?.enabled === true });
+      let block = formatOrgIntentForSessionStart(parsed, { outboundGateOn: ctx.config.responseReview?.enabled === true });
+      // Notes from the organization policy check on messages already sent (org-never-actions §C observe).
+      const { takeMessageNotes } = await import('../core/OrgActionCheck.js');
+      const notes = takeMessageNotes(ctx.config.stateDir);
+      const noteLines = notes.map((n) => '  - (' + n.conversation + ') ' + n.note).join('\n');
+      if (notes.length) block += '\n\nPOLICY CHECK NOTES ON MESSAGES YOU SENT:\n' + noteLines;
       res.json({
         present: true,
         block,
@@ -38075,6 +38483,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       delete (patch as Record<string, unknown>).pin; // PIN is auth, never config
     }
 
+    // The action check's mode is set only from the app (org-never-actions §C): refused with its own
+    // plain reason, before the generic allowed-keys check.
+    if ('orgPolicy' in (patch as Record<string, unknown>)) {
+      res.status(403).json({ error: 'org-policy-cap', message: 'The organization policy check is set from the Instar app, not here.' });
+      return;
+    }
     const disallowed = Object.keys(patch).filter(k => !allowedKeys.has(k));
     if (disallowed.length > 0) {
       res.status(400).json({
@@ -39070,7 +39484,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return { ok: true, suppressedDuplicate: true } as unknown;
           }
           try {
-            const send = () => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
+            // A promise-notice envelope, not this module's 'uncategorized' one: under that, the
+            // notification policy filed every reminder in the Notifications feed (CMT-1951).
+            const send = () => withNotificationEnvelope(stampPromiseNotice(), async () => (telegram)!.sendToTopic(topicId, text));
             let r;
             if (ctx.telegramOrigin) {
               const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
@@ -39082,7 +39498,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
               r = await service.runWithAutomationReply(token, topicId, body, send);
             } else r = await send();
-            if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+            // A held (quiet) send is not delivered: release, so the retry is not taken for a duplicate.
+            if (!originOwnsContent) { if (isQuietReceipt(r)) outboundContentDedup.releaseReservation(topicId, text); else outboundContentDedup.record(topicId, text); }
             return r;
           } catch (err) {
             // Release so a genuine transport failure is retried rather than
@@ -39863,6 +40280,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       lane = 'time';
+      // bounded-input-reviewed: a dedup KEY hashed into externalKey; keying on the normalized OPENING is deliberate coarse dedup (two time-promises in one topic that open alike are the same promise re-stated), mirroring Lane A's topic+verb key. No reader sees it.
       const normalizedPromiseText = agentResponse.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
       externalKey =
         'timepromise:' + createHash('sha256').update(`${topicId}|${normalizedPromiseText}`).digest('hex').slice(0, 16);
@@ -42042,6 +42460,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
       // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
       addAccount: (input) => runAddAccountSignIn(input),
+      // The owner's project taps (docs/specs/work-door-project-rows.md §3.3–3.5): the write gate proved the owner's phone and Face ID.
+      ...(ctx.chiefOfStaffLoop ? { projects: projectTapPort(ctx.chiefOfStaffLoop, (req, key) => _projectsRoute.rowFor(req, key)) } : {}),
       // A tap on a work card (work-board-asks §4): the write gate proved the owner's phone and Face ID.
       workCardTap: async (cardId, tap) => {
         const svc = workBoardRouteDeps.enabled() ? workBoardRouteDeps.svc() : null;
@@ -47374,6 +47794,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       // Use a test session ID to avoid interfering with real sessions
       const testSessionId = `test-${Date.now()}`;
+      // bounded-input-reviewed: the slice inside this call clamps fixtureId, a test-fixture identifier, not the reviewed message.
       const result = await ctx.responseReviewGate.evaluate({
         message,
         sessionId: testSessionId,
@@ -48873,7 +49294,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const note = typeof body.note === 'string' ? body.note.slice(0, 400) : undefined;
         const evidenceRef =
           typeof body.evidenceRef === 'string' ? body.evidenceRef.slice(0, 200) : undefined;
-        const subject = `${outcome === 'success' ? 'resolved' : 'cancelled'}: ${commitmentEntry.subject}`.slice(0, 200);
+        // The ledger subject is rendered into every session's context (GET
+        // /shared-state/render via the session-start hook), and the ledger
+        // refuses a subject over LEDGER_SUBJECT_MAX. It is a label: `supersedes`
+        // below links the full commitment entry it closes. A cut now ends in "…".
+        const rawSubject = `${outcome === 'success' ? 'resolved' : 'cancelled'}: ${commitmentEntry.subject}`;
+        // bounded-input-reviewed: a label held to the ledger's own SUBJECT_MAX (longer throws); the cut is marked with "…" and the full commitment is linked by `supersedes`.
+        const subject = rawSubject.length > LEDGER_SUBJECT_MAX ? `${rawSubject.slice(0, LEDGER_SUBJECT_MAX - 1)}…` : rawSubject;
         const appended = await ctx.sharedStateLedger!.append({
           emittedBy: { subsystem: 'session', instance: sessionId },
           kind: 'note',
@@ -48918,17 +49345,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           res.status(429).json({ error: 'dispute rate exceeded', reason: capReason });
           return;
         }
-        const disputeReason =
-          typeof body.disputeReason === 'string' ? body.disputeReason.slice(0, 200) : '';
+        // The dispute reason is the load-bearing part of a dispute, and it is
+        // rendered into every session's context through the shared ledger. It
+        // used to be cut to 200 (and again inside the subject) with no sign.
+        // REFUSE rather than cut: a reason longer than the ledger's summary field
+        // is sent back to the calling session to shorten. The whole reason goes
+        // into `summary`; the subject is a label that says it continues there.
+        const disputeReason = typeof body.disputeReason === 'string' ? body.disputeReason.trim() : '';
         if (!disputeReason) {
           res.setHeader('X-Invalid-Field', 'disputeReason');
           res.status(400).json({ error: 'disputeReason required for dispute resolution' });
           return;
         }
+        if (disputeReason.length > LEDGER_SUMMARY_MAX) {
+          res.setHeader('X-Invalid-Field', 'disputeReason');
+          res.status(400).json({
+            error: `disputeReason is ${disputeReason.length} characters; the ledger holds ${LEDGER_SUMMARY_MAX}. Shorten it and resend — it is not cut for you, because a cut reason would read as the whole reason.`,
+          });
+          return;
+        }
+        const disputeLabel = `disputed: ${disputeReason}`;
+        const disputeSubject = disputeLabel.length > LEDGER_SUBJECT_MAX
+          ? `${disputeLabel.slice(0, LEDGER_SUBJECT_MAX - 1)}…`
+          : disputeLabel;
         const appended = await ctx.sharedStateLedger!.append({
           emittedBy: { subsystem: 'session', instance: sessionId },
           kind: 'note',
-          subject: `disputed: ${disputeReason}`.slice(0, 200),
+          subject: disputeSubject,
+          summary: disputeReason,
           counterparty: {
             type: commitmentEntry.counterparty.type,
             name: commitmentEntry.counterparty.name,

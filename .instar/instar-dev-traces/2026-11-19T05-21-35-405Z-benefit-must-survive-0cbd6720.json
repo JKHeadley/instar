@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "benefit-must-survive",
+  "sessionId": "557df37c-91a0-4ec9-a265-bebbdf05b55e",
+  "timestamp": "2026-11-19T05:21:35.405Z",
+  "artifactPath": "upgrades/side-effects/benefit-must-survive.md",
+  "artifactSha256": "0b98a43540bd42a79fdbbdc87200f0b84ca5708adfd37e40ba2beb49925f3e5b",
+  "coveredFiles": [
+    "docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
+    "docs/specs/benefit-must-survive.eli16.md",
+    "docs/specs/reports/safeguard-benefit-and-standalone-docs-family-review-2026-11-18.md",
+    "docs/standards-registry-area-audits.json",
+    "skills/instar-dev/templates/eli16-overview.md",
+    "skills/spec-converge/templates/reviewer-lessons-aware.md",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/benefit-must-survive.md",
+    "upgrades/side-effects/benefit-must-survive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "constitution articles ratified by the operator; docs, audit records and reviewer-template text; no runtime code; independent second pass because docs/audits is a protected path",
+  "eli16Path": "docs/specs/benefit-must-survive.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/benefit-must-survive.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

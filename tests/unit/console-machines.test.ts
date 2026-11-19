@@ -86,6 +86,30 @@ describe('machines page model', () => {
 describe('machines page in a DOM', () => {
   let dom: JSDOM;
   afterEach(() => dom?.window.close());
+  it.each([false, true])('shows a legacy self reading on the serving card and its sheet (pool enabled: %s)', async (pooled) => {
+    dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/machines' });
+    Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    const { renderMachines } = await import('../../dashboard/console/machines.js');
+    const legacy = { machine: 'This machine', enabled: true, headline: '4% CPU', server: { name: 'Agent server' }, sessions: [{ name: 'Local task' }] };
+    const pool = pooled ? { selfMachineId: 'm1', machines: [mach({}), mach({ machineId: 'm2', nickname: 'This machine' })] } : { enabled: false, machines: [] };
+    const get = async (url: string) => url === '/pool' ? ok(pool) : url === '/mobile/resources' ? ok(legacy) : { ok: false, reason: 'off' };
+    const doc = dom.window.document;
+    await renderMachines(doc.querySelector('main'), { get });
+    const cards = [...doc.querySelectorAll<HTMLButtonElement>('.machine-card')];
+    const self = cards.find((c) => c.querySelector('.mc-name')?.textContent === (pooled ? 'Mac Studio' : 'Your machine'))!;
+    expect(self.textContent).toContain('Using 4% CPU');
+    self.click();
+    expect(doc.querySelector('.sheet-body')?.textContent).toContain('Agent server');
+    expect(doc.querySelector('.sheet-body')?.textContent).toContain('Local task');
+    if (pooled) {
+      const peer = cards.find((c) => c !== self)!;
+      expect(peer.textContent).not.toContain('4% CPU');
+      peer.click();
+      const detail = [...doc.querySelectorAll('.sheet-body')].pop()!;
+      expect(detail.textContent).toContain('no resource reading here');
+      expect(detail.textContent).not.toContain('Local task');
+    }
+  });
   it('renders cards without stray text and opens a machine sheet', async () => {
     dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/machines' });
     const g = globalThis as Record<string, unknown>;

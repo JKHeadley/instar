@@ -237,3 +237,16 @@ describe('the page', () => {
     expect(main.textContent).toContain('Couldn’t read my health'.replace('’', "'"));
   });
 });
+
+it('keeps capacity on Health while only explicit non-actionable metadata removes a Needs row', async () => {
+ const {healthNeedRows,buildHealthPage} = await model();
+ const waiting = issue({id:'health:sessions-full',requiresUserAction:false});
+ const legacy = issue({id:'legacy'});
+ const required = issue({id:'required',requiresUserAction:true});
+ const malformed = issue({id:'malformed',requiresUserAction:'false'});
+ const res = answer('attention',[waiting,legacy,required,malformed]);
+ expect(healthNeedRows(res).map(i=>i.key)).toEqual(['legacy','required','malformed']);
+ expect(buildHealthPage(res).problems).toContain(waiting);
+ const {NEED_SOURCES} = await import(path.join(CONSOLE,'needs-model.js'));
+ expect(NEED_SOURCES.find(s=>s.id==='health').rows({issues:answer('attention',[waiting])})).toEqual([]);
+});

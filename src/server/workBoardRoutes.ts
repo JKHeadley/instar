@@ -6,6 +6,7 @@
  *     GET  /work-board/cards/:id
  *     POST /work-board/cards                create (agent)
  *     POST /work-board/cards/:id/records    edited | waiting-on | evidence | claimed-done
+ *     GET  /work-board/lessons              "Not important" reasons, read before raising a card (bearer only)
  *   Team owner from the console (dashboard PIN):
  *     POST /work-board/cards                create (person-written)
  *     POST /work-board/cards/:id/records    edited (person-written)
@@ -26,6 +27,7 @@ import type { Router, Request, Response } from 'express';
 import type { WorkBoardService, WorkPrincipal, WorkBoardSettings, CardView } from '../core/WorkBoardService.js';
 import { validateSettingsPatch, transcriptLineFor, lineIdFor } from '../core/WorkBoardService.js';
 import { cardJson, boardJson, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
+import { sourceCardQuery, sourceCardsJson } from '../core/workSourceCards.js';
 import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
 import { isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
 import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
@@ -200,6 +202,19 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
   };
   deps.exposeBoardRead?.(boardRead);
   const listBoard = (req: Request, res: Response) => {
+    const source = sourceCardQuery(req.query);
+    // Keep the shared Needs-you/Projects board reader independent of public query routing.
+    if (source.kind !== 'board') {
+      const svc = gate(res); if (!svc) return;
+      const caller = deps.caller(req);
+      if (caller.kind === 'session') { res.status(403).json({ error: 'scoped-session-reads-its-own-card-only' }); return; }
+      const viewer = viewerFor(caller);
+      if (!viewer) { res.status(401).json({ error: 'unauthorized' }); return; }
+      if (!viewer.isOwner && !viewer.isAgent) { res.status(403).json({ error: 'source-cards-owner-required' }); return; }
+      if (source.kind === 'invalid') { res.status(400).json({ error: 'invalid-source-card-query' }); return; }
+      res.json({ ...sourceCardsJson(svc, viewer, source.key, source.page, deps.displayName, extraFor(svc)), behind: deps.behind() });
+      return;
+    }
     const r = boardRead(req); // the board page keeps its cut lanes
     res.status(r.status).json(r.body);
   };
@@ -251,12 +266,15 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const svc = gate(res); if (!svc) return;
     const p = writerOf(req, res, 'Enter your dashboard PIN to add this card'); if (!p) return;
     const { pin: _pin, ...body } = (req.body ?? {}) as Record<string, unknown>;
+    const ask = svc.askFieldsRefusal(p, body, null); if (ask) { send(res, ask); return; }
     if (!(await specApprovalAllows(p, body, res))) return;
     const r = svc.createCard(p, body);
     if (!r.ok) { send(res, r); return; }
     await afterCardCreate(deps, r.cardId, r.conversationKey, String(body.title ?? ''));
     const v = svc.view(r.cardId)!;
-    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}) });
+    // The agent sees the owner's recent "Not important" reasons at the moment it raises a card (work-front-doors §6).
+    const lessons = p.kind === 'agent' ? { lessons: lessonsJson(svc, deps.displayName, 10) } : {};
+    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}), ...lessons });
   });
 
   router.post('/work-board/cards/:id/records', async (req, res) => {
@@ -281,6 +299,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const wasApproved = !!before?.card.approvalValid;
     switch (kind) {
       case 'edited': {
+        const ask = svc.askFieldsRefusal(p, fields, id); if (ask) { send(res, ask); return; }
         const r = svc.edit(p, id, fields);
         if (r.ok && r.recordId) {
           const after = svc.view(id)!;
@@ -323,6 +342,14 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const owner = deps.ownerPersonKey();
     if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return; }
     await applyTap(svc, req, res, { kind: 'person', personKey: owner, proof: 'pin', isOwner: true });
+  });
+
+  // ── dismissal lessons (work-front-doors §6): the agent's own read; a phone or a scoped session gets none ──
+  router.get('/work-board/lessons', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    if (deps.caller(req).kind !== 'bearer') { res.status(403).json({ error: 'not-available-to-this-caller' }); return; }
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(req.query?.limit ?? '50'), 10) || 50));
+    res.json({ lessons: lessonsJson(svc, deps.displayName, limit) });
   });
 
   // ── graduation (Maturation plan): the pilot's own measurement, written by the scheduled job ──
@@ -381,6 +408,14 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     if (Object.keys(patch).length && !deps.saveSettings(patch)) { res.status(500).json({ error: 'settings-not-saved' }); return; }
     res.json({ settings: deps.settings(), policy: svc.policy(), ...(policyResult ? { policyChange: policyResult } : {}) });
   });
+}
+
+/** The dismissal lessons as the agent reads them: the reason, who gave it, and where it came from. */
+export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => string, limit: number): Array<Record<string, unknown>> {
+  return svc.dismissalLessons(limit).map((l) => ({
+    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, tapId: l.tapId, conversationKey: l.conversationKey,
+    by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
+  }));
 }
 
 /**

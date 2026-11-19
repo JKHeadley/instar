@@ -30,6 +30,15 @@ function options(stateDir: string, extra: Partial<OriginStoreOptions> = {}): Ori
 // healthyWindowMs is 1: a response in the same millisecond the generation became
 // ready is (correctly) still inside the window and does not close the episode.
 const pastHealthyWindow = () => new Promise(resolve => setTimeout(resolve, 5));
+// A read that waits, bounded, for the row: a read that only ran out its caller deadline is asked
+// again (reads change nothing), and a row that never appears still fails the case.
+async function readOrigin(store: OriginStore, originId: string, timeout = 10_000) {
+  return vi.waitFor(async () => {
+    const row = await store.getOrigin(originId);
+    expect(row).not.toBeNull();
+    return row!;
+  }, { timeout, interval: 50 });
+}
 function quietReports() {
   return vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
 }
@@ -37,9 +46,13 @@ function quietReports() {
 describe('origin store worker: a slow moment never permanently silences the agent', () => {
   it('a caller deadline answers only that caller; a slow disk keeps the same worker serving', async () => {
     const stateDir = temporaryState(), report = quietReports();
-    const store = await OriginStore.open(options(stateDir, { stallTimeoutMs: 10_000 }), worker); stores.push(store);
+    // A 3 s caller deadline and a 4.5 s stall (was 1 s and 2.5 s): the stall still outlasts the
+    // deadline by half, and the re-read and the next admit below get 3 s of real work each. With
+    // 1 s they hit their own deadline on a loaded host (2026-11-07..17, "origin request deadline
+    // exceeded" on the re-read and on the admit that must resolve).
+    const store = await OriginStore.open(options(stateDir, { requestTimeoutMs: 3000, stallTimeoutMs: 10_000 }), worker); stores.push(store);
     const slow = admission('slow-disk');
-    inject(stateDir, 'stall-ms', 2500);
+    inject(stateDir, 'stall-ms', 4500);
     const error = await store.admit(slow).catch(e => e);
     expect(error).toBeInstanceOf(OriginStoreUnavailableError);
     expect(error.mutationMayHaveCommitted).toBe(true);
@@ -48,8 +61,9 @@ describe('origin store worker: a slow moment never permanently silences the agen
     expect(store.health()).toMatchObject({ state: 'ready', generation: 1, restarts: 0 });
     // Reads serialize behind the slow write, so a re-read once the disk catches
     // up sees what it committed — exactly once, never replayed.
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    expect((await store.getOrigin(slow.record.originId))?.record.originId).toBe(slow.record.originId);
+    // Wait for the committed row itself, bounded, instead of a fixed 2 s guess at when the disk
+    // has caught up.
+    expect((await readOrigin(store, slow.record.originId)).record.originId).toBe(slow.record.originId);
     await expect(store.admit(admission('after-slow'))).resolves.toBeTruthy();
     expect(report).not.toHaveBeenCalled();
   });
@@ -109,17 +123,23 @@ describe('origin store worker: a slow moment never permanently silences the agen
 
   it('queue wait behind a progressing worker is not a stall', async () => {
     const stateDir = temporaryState(); quietReports();
-    const store = await OriginStore.open(options(stateDir), worker); stores.push(store);
-    // Three slow-but-progressing operations, 900ms each, posted together: the
-    // last waits ~2.7s from posting (past the 1.5s stall deadline) while the
+    // Five slow-but-progressing operations, 900ms each, posted together: the
+    // last waits ~4.5s from posting (past the 3.5s stall deadline) while the
     // worker answers every 900ms. A per-request clock would kill this worker.
-    inject(stateDir, 'stall-n', '3,900');
+    // It was three operations against a 1.5 s stall deadline, which left one 900 ms operation
+    // only 600 ms of slack: on a loaded host a single answer came later than 1.5 s, the watchdog
+    // (correctly) replaced the worker and the case failed (2026-11-02..14: generation 2, and the
+    // last row never appearing). One answer now has 2.6 s of slack; the queue wait still exceeds
+    // the stall deadline, which the elapsed-time assertion below pins.
+    const stallTimeoutMs = 3500;
+    const store = await OriginStore.open(options(stateDir, { stallTimeoutMs }), worker); stores.push(store);
+    inject(stateDir, 'stall-n', '5,900');
     const started = Date.now();
-    await Promise.all([0, 1, 2].map(i => store.admit(admission(`queued-${i}`)).catch(() => undefined)));
-    await vi.waitFor(async () => expect(await store.getOrigin('origin-queued-2').catch(() => null)).not.toBeNull(), { timeout: 10_000, interval: 50 });
-    expect(Date.now() - started).toBeGreaterThan(2500);
+    await Promise.all([0, 1, 2, 3, 4].map(i => store.admit(admission(`queued-${i}`)).catch(() => undefined)));
+    await readOrigin(store, 'origin-queued-4', 15_000);
+    expect(Date.now() - started).toBeGreaterThan(stallTimeoutMs);
     expect(store.health()).toMatchObject({ state: 'ready', generation: 1, restarts: 0 });
-    for (let i = 0; i < 3; i++) expect(await store.getOrigin(`origin-queued-${i}`)).not.toBeNull();
+    for (let i = 0; i < 5; i++) expect(await readOrigin(store, `origin-queued-${i}`)).not.toBeNull();
   });
 
   it('within the restart cap: a failing boot generation recovers by itself, reported once', async () => {
@@ -129,7 +149,11 @@ describe('origin store worker: a slow moment never permanently silences the agen
     expect(store.isUnavailable()).toBe(true);
     await vi.waitFor(() => expect(store.health().state).toBe('ready'), { timeout: 5000 });
     await pastHealthyWindow();
-    await store.healthTransaction();
+    // Wait, bounded, for a health transaction the worker actually served: one that only ran out
+    // its 1 s caller deadline on a loaded host says nothing about recovery (2026-11-16, "origin
+    // request deadline exceeded" here). The generation and restart counts below still fail if the
+    // worker was replaced again in the meantime.
+    await vi.waitFor(() => store.healthTransaction(), { timeout: 10_000, interval: 50 });
     expect(store.health()).toMatchObject({ generation: 4, restarts: 3, consecutiveFailures: 0, downSince: null });
     expect(remaining(stateDir)).toBe(0);
     expect(report).toHaveBeenCalledOnce();

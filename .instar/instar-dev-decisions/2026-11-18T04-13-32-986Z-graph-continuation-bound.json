@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T04:13:32.986Z",
+  "slug": "graph-continuation-bound",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 24,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
