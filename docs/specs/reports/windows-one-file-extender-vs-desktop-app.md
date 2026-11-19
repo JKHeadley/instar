@@ -62,3 +62,10 @@ The cost, said plainly: Windows users wait for the desktop app instead of gettin
 ## What changes if Justin agrees
 
 The spec is revised so the PC side ships as a mode of the Windows desktop app. The server side (the restricted device kind, the approval route and the stores) stays as converged. The changed spec goes back through review, then to Justin for approval. It becomes a row in the Windows app plan, owned by the Windows app lane.
+
+## The ask for Justin (for the Chief of Staff to send)
+
+- **Problem:** You asked why anyone would use Instar Connect instead of the desktop app. It turns out the desktop app cannot do this today. "Create" makes a brand-new agent on the PC, and "Pair" only makes the PC a remote control for an agent that runs elsewhere. Neither lets your existing agent use the PC.
+- **What changes:** The approved safety design stays the same: the PC holds no power over the agent, you let it in only with Face ID on your phone, and there is a look-only choice and a remover. It just ships as a third choice in the Windows desktop app, "Let my agent use this PC", instead of a separate download. The server side is unchanged.
+- **What yes does:** I revise the spec that way and send it back through review, then to you for approval. It becomes a row in the Windows app plan. Nothing is built before you approve that revised spec.
+- **What no or waiting does:** No keeps the separate one-file download as it is, still waiting for your approval. Waiting changes nothing: nothing is built, and work on the Windows app continues as planned.
