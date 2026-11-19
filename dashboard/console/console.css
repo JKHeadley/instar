@@ -1554,6 +1554,7 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-text { display: flex; flex-direction: column; min-width: 0; }
 .needs-title { font-weight: 600; overflow-wrap: anywhere; }
 .needs-why { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.needs-also { display: inline-block; margin: 0 8px 6px 34px; font-size: 13px; }
 .needs-more, .needs-line { padding: 4px 14px; font-size: 13px; color: var(--text-muted); }
 .needs-strip > :last-child { border-bottom: 1px solid var(--strip-line); border-radius: 0 0 var(--r-md, 12px) var(--r-md, 12px); padding-bottom: 10px; }
 .needs-strip > .needs-head:last-child { border-radius: var(--r-md, 12px); border-bottom: 1px solid var(--strip-line); }

@@ -4,11 +4,13 @@
  * the machine that holds the organization key.
  */
 import { describe, it, expect, afterAll } from 'vitest';
+import express from 'express';
+import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OrgMemberSide } from '../../src/core/OrgMemberSide.js';
-import { handleOrgForward, holdsOrgKey, publishedPaths } from '../../src/server/orgPackRoutes.js';
+import { createOrgPackRouter, handleOrgForward, holdsOrgKey, markPublishedElsewhere, publishedPaths } from '../../src/server/orgPackRoutes.js';
 import { OrgMembers, newMemberKeyPair, signPayload } from '../../src/core/OrgMembers.js';
 import { newOrgKeyPair, sha256Hex, signRecord } from '../../src/core/OrgPack.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -44,6 +46,48 @@ describe('member side across machines', () => {
     const other = tmp();
     new OrgMemberSide(other, ORG).onJoin({ afterLeave: false, consent: true });
     expect(new OrgMemberSide(b, ORG).importFromPeer(new OrgMemberSide(other, ORG).exportForPeer()!)).toBe(false);
+  });
+});
+
+describe('draft placement', () => {
+  it('refuses publishing a draft prepared before the publisher marker arrived', async () => {
+    const stateDir = tmp();
+    const app = express();
+    app.use(express.json(), createOrgPackRouter({
+      stateDir, machineId: 'peer', updateOrigin: () => null, ownerName: () => 'Jordan',
+      effects: () => ({}), principalKind: () => 'device',
+    }));
+    const policy = { orgName: 'Org', policyMarkdown: '## Never\n- Share donor details\n' };
+    const draft = await request(app).post('/org/draft').send(policy);
+    expect(draft.status).toBe(200);
+    markPublishedElsewhere(stateDir, ORG, 'first-computer');
+    const publish = await request(app).post('/mobile/org/publish').send({
+      draftId: draft.body.draftId, readBackConfirmed: true,
+    });
+    expect(publish.status).toBe(409);
+    expect(publish.body).toMatchObject({ error: 'org-key-elsewhere', machineId: 'first-computer' });
+    expect(fs.existsSync(publishedPaths(stateDir).current)).toBe(false);
+    // A keeper proposal still has to obtain a real remote base; an admin draft cannot be made this way.
+    const keeper = await request(app).post('/org/draft').send({ ...policy, asKeeper: true });
+    expect(keeper.status).toBe(502);
+    expect(keeper.body.error).toBe('org-unreachable');
+  });
+  it('directs a peer with an older unnamed publisher marker back to the publishing computer', async () => {
+    const stateDir = tmp();
+    markPublishedElsewhere(stateDir, ORG, '');
+    const app = express();
+    app.use(express.json(), createOrgPackRouter({
+      stateDir, machineId: 'peer', updateOrigin: () => null, ownerName: () => 'Jordan',
+      effects: () => ({}), principalKind: () => 'bearer',
+    }));
+    const res = await request(app).post('/org/draft').send({
+      orgName: 'Org', policyMarkdown: '## Never\n- Share donor details outside the organization\n',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('org-key-elsewhere');
+    expect(res.body.detail).toContain('computer');
+    expect(res.body.machineId).toBeUndefined();
+    expect(fs.existsSync(publishedPaths(stateDir).drafts)).toBe(false);
   });
 });
 

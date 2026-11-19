@@ -287,6 +287,61 @@ describe('ForegroundRestartWatcher', () => {
     });
   });
 
+  // ── The exit gap (2026-11-19: a finished 39.6-minute verify was cancelled by a plain planned restart) ──
+
+  describe('a verify whose child has exited but whose marker is still present', () => {
+    // A pid that no process has: the largest pid is far below this on macOS and Linux.
+    const DEAD_PID = 2_000_000_000;
+    const markerPath = () => path.join(stateDir, 'state', 'local-verify', 'inflight.json');
+    const writeMarker = () => {
+      fs.mkdirSync(path.dirname(markerPath()), { recursive: true });
+      fs.writeFileSync(markerPath(), JSON.stringify({ pr: 7, headSha: 'a'.repeat(40), attemptToken: 'tok', startedAt: Date.now() - 39.6 * 60_000, pid: DEAD_PID, pgid: DEAD_PID }));
+    };
+    const run = async (flag: Record<string, unknown>) => {
+      const watcher = new ForegroundRestartWatcher({ stateDir, exitOnRestart: false });
+      const detected = vi.fn();
+      watcher.on('restartDetected', detected);
+      writeFlagFile(flag);
+      const check = () => (watcher as unknown as { check(): Promise<void> }).check();
+      await check();
+      return { detected, check };
+    };
+    const planned = () => ({ requestedAt: new Date().toISOString(), requestedBy: 'update', plannedRestart: true, expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+
+    it('a planned request is not consumed in the gap, on this poll or the next', async () => {
+      writeMarker();
+      const { detected, check } = await run(planned());
+      await check();
+      expect(detected).not.toHaveBeenCalled();
+      expect(flagExists()).toBe(true);
+      expect(readLastRestartRequest(stateDir)).toBeNull(); // nothing was recorded as consumed
+    });
+
+    it('it is consumed on the first poll after the server clears the marker', async () => {
+      writeMarker();
+      const { detected, check } = await run(planned());
+      expect(detected).not.toHaveBeenCalled();
+      SafeFsExecutor.safeUnlinkSync(markerPath(), { operation: 'tests/unit/ForegroundRestartWatcher.test.ts:exit-gap' });
+      await check();
+      expect(detected).toHaveBeenCalledOnce();
+      expect(flagExists()).toBe(false);
+    });
+
+    it('a request that bypasses holds is consumed in the gap, and so is one that is not a planned restart', async () => {
+      writeMarker();
+      const bypass = await run({ ...planned(), bypassHolds: true });
+      expect(bypass.detected).toHaveBeenCalledOnce();
+      writeMarker();
+      const plain = await run({ requestedAt: new Date().toISOString(), requestedBy: 'by-hand' });
+      expect(plain.detected).toHaveBeenCalledOnce();
+    });
+
+    it('without a marker the same planned request is consumed at once', async () => {
+      const { detected } = await run(planned());
+      expect(detected).toHaveBeenCalledOnce();
+    });
+  });
+
   // ── Attribution (2026-11-16: "Restart requested by undefined" on the M5) ──
 
   describe('restart attribution', () => {
@@ -315,6 +370,15 @@ describe('ForegroundRestartWatcher', () => {
       expect(line).toContain('load operatorGhLogin');
       const rec = readLastRestartRequest(stateDir);
       expect(rec).toMatchObject({ consumer: 'foreground-watcher', attributed: false, requestedBy: null, reason: 'load operatorGhLogin' });
+    });
+
+    it('records plannedRestart and bypassHolds as the request wrote them, and null when it wrote neither', async () => {
+      await consume({ requestedAt: new Date().toISOString(), requestedBy: 'operator', plannedRestart: true, bypassHolds: true });
+      expect(readLastRestartRequest(stateDir)).toMatchObject({ requestedBy: 'operator', plannedRestart: true, bypassHolds: true });
+      await consume({ requestedAt: new Date().toISOString(), requestedBy: 'setting-change', plannedRestart: true });
+      expect(readLastRestartRequest(stateDir)).toMatchObject({ requestedBy: 'setting-change', plannedRestart: true, bypassHolds: null });
+      await consume({ requestedAt: new Date().toISOString(), requestedBy: 'by-hand' });
+      expect(readLastRestartRequest(stateDir)).toMatchObject({ requestedBy: 'by-hand', plannedRestart: null, bypassHolds: null });
     });
 
     it('a named writer is logged and recorded by name', async () => {

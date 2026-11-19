@@ -20,9 +20,10 @@
 
 import { createHash } from 'node:crypto';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
-import { compareHlc } from './WorkCardStore.js';
+import { compareHlc, sameValue } from './WorkCardStore.js';
 import { foldBindingState, type BindingState, type ProjectCheckState, type UnionEntry, type CosVerdict } from './ChiefOfStaffStore.js';
 import type { WorkBoardService, WorkPrincipal } from './WorkBoardService.js';
+import type { BriefCheckStatus, CardBrief } from './WorkCardStore.js';
 
 export const WAIT_CARD_ITEM = 'wait-cleared';
 /** The server's own writer: no route can build this principal. */
@@ -144,64 +145,128 @@ function clearingText(kind: 'closed' | 'paused' | 'parked' | 'verdict', rec: Sou
   return `The Chief of Staff's check at ${minuteUtc(rec.at)} no longer marks it waiting on you (it reads ${VERDICT_WORDS[String(rec.verdict)] ?? String(rec.verdict)}).`;
 }
 
-/** Plain text a Markdown renderer shows as typed: link, image, emphasis and HTML syntax escaped. */
+/**
+ * Plain text with no Markdown escapes, safe to show as typed. Whitespace collapses; the few sequences that would make
+ * a Markdown renderer show a link, an image or an HTML tag are broken with a space (`](` and `![`) or a look-alike
+ * angle bracket before a tag, so a note that quotes a link reads as text without any backslash showing.
+ */
 export function inertText(text: string): string {
-  return String(text ?? '').replace(/\s+/g, ' ').trim().replace(/([\\`*_[\]()<>!#|~])/g, '\\$1');
+  return String(text ?? '').replace(/\s+/g, ' ').trim()
+    .replace(/!\[/g, '! [')
+    .replace(/\]\(/g, '] (')
+    .replace(/<(?=[A-Za-z/!?])/g, '\u2039');
 }
 
+/** The close evidence keeps its original wording: a retried close under the same record key writes the same text. */
 function minuteUtc(iso: string): string {
   const t = Date.parse(iso);
   return Number.isFinite(t) ? `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC` : iso;
 }
 
-function secondUtc(iso: string): string {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A time as a person reads it ("Nov 17, 2026, 10:15 PM UTC"). Always UTC and named so: every machine that holds the
+ * lease writes the same words (a card's text is material; a machine-local zone would make holders rewrite each other).
+ * Clients format `brief.waitingSince` in the reader's own zone.
+ */
+export function humanTimeUtc(iso: string): string {
   const t = Date.parse(iso);
-  return Number.isFinite(t) ? `${new Date(t).toISOString().slice(0, 19).replace('T', ' ')} UTC` : iso;
+  if (!Number.isFinite(t)) return 'a recorded time';
+  const d = new Date(t);
+  const h = d.getUTCHours();
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}, ${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? 'AM' : 'PM'} UTC`;
 }
 
-/** A short id of the Chief of Staff record that started a wait: two waits always differ in the card's material. */
+/** A short id of the Chief of Staff record that started a wait (logs and internal metadata only; never card text). */
 export function waitIdOf(ref: string): string { return createHash('sha256').update(ref).digest('hex').slice(0, 8); }
 
 export type WaitKind = 'answer' | 'confirm';
+export type WaitCardBrief = CardBrief;
+
+const ASK_MAX = 300;
+const BRIEF_ITEMS_MAX = 30;
+const BRIEF_GOAL_MAX = 2000;
+
+/**
+ * The one sentence a wait card asks of the owner. When the Chief of Staff's own note names a decision for the owner
+ * ("waiting for the owner to choose whether to …", "needs your decision on …"), that clause becomes the ask; otherwise
+ * a fixed sentence for the kind of wait. Display only: nothing decides on it.
+ */
+export function waitAsk(kind: WaitKind, note: string | null): string {
+  if (kind === 'confirm') return 'Confirm this project is done.';
+  const text = note ? inertText(note) : '';
+  const sentence = (verb: string, rest: string) => {
+    const body = `${verb.charAt(0).toUpperCase()}${verb.slice(1).toLowerCase()} ${rest.trim().replace(/[,;:\s]+$/, '')}`;
+    return body.length + 1 <= ASK_MAX ? `${body}.` : null;
+  };
+  if (text) {
+    const who = '(?:the owner|the operator|the user|the person|you)';
+    const direct = new RegExp(`\\b${who}\\s+(?:to\\s+)?(choose|decide|pick|select|approve|confirm)\\b\\s+([^.?!]{3,})`, 'i').exec(text);
+    if (direct) { const s = sentence(direct[1], direct[2]); if (s) return s; }
+    const decision = new RegExp(`\\b(?:${who}'s|your)\\s+(?:choice|decision|answer)\\s+((?:on|about|of|whether|between)\\b[^.?!]{3,})`, 'i').exec(text);
+    if (decision) { const s = sentence('decide', decision[1]); if (s) return s; }
+  }
+  return 'Answer what the project needs next.';
+}
 
 /** The card's text, a pure function of the wait (no clock time beyond the wait's own start). */
-export function composeWaitCard(p: WaitCardProject, kind: WaitKind, doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null, note: string | null, waitSince: string, waitRef: string, limits: { need: number; title: number } = { need: 4000, title: 300 }): { title: string; need: string; recommendation: string; whyYou: string } {
+export function composeWaitCard(p: WaitCardProject, kind: WaitKind, doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null, note: string | null, waitSince: string, _waitRef: string, limits: { need: number; title: number } = { need: 4000, title: 300 }, opts: { again?: boolean } = {}): { title: string; need: string; recommendation: string; whyYou: string; brief: WaitCardBrief } {
   const fullTitle = kind === 'confirm' ? `${p.title} looks done and needs your OK` : `${p.title} is waiting on you`;
   const title = fullTitle.length <= limits.title ? fullTitle : (kind === 'confirm' ? 'A project looks done and needs your OK' : 'A project is waiting on you').slice(0, limits.title);
-  const state = (id: string) => { const v = doneItems?.[id]; return v === 'pass' ? 'passes' : v === 'fail' ? 'fails' : 'not known'; };
+  const status = (d: { id: string; kind: string }): BriefCheckStatus => {
+    if (d.kind === 'judgment') return 'needs-you';
+    const v = doneItems?.[d.id];
+    return v === 'pass' ? 'passes' : v === 'fail' ? 'fails' : 'unknown';
+  };
+  const STATUS_WORDS: Record<BriefCheckStatus, string> = { passes: 'passes', fails: 'fails', unknown: 'not checked yet', 'needs-you': 'needs your judgment' };
   const items = p.doneDefinition.filter((d) => d && d.id && d.text);
   const ITEM_MAX = 200;
-  const itemLine = (d: { id: string; kind: string; text: string }) => { const raw = String(d.text).replace(/\s+/g, ' ').trim(); const cut = raw.length > ITEM_MAX ? `${raw.slice(0, ITEM_MAX - 1)}…` : raw; return `- ${inertText(cut)}${cut === raw ? '' : ' (shortened; the full item is on the project\'s page)'}: ${d.kind === 'judgment' ? 'needs your judgment' : state(d.id)}`; };
+  const itemText = (d: { text: string }) => { const raw = inertText(String(d.text)); return raw.length > ITEM_MAX ? `${raw.slice(0, ITEM_MAX - 1)}…` : raw; };
+  const itemLine = (d: { id: string; kind: string; text: string }) => `- ${itemText(d)} (${STATUS_WORDS[status(d)]})`;
+  const goal = p.goal.trim() ? inertText(p.goal) : '';
+  const said = note && note.trim() ? inertText(note) : '';
   const lines: string[] = [];
   lines.push(kind === 'confirm'
     ? 'Every automatic check of this project passes. The items below that need your judgment are yours to check.'
     : 'The Chief of Staff marks this project waiting on you.');
-  if (p.goal.trim()) lines.push(`Goal: ${inertText(p.goal)}`);
+  if (goal) lines.push(`Goal: ${goal}`);
   const checklistAt = lines.length;
-  if (items.length) lines.push(['Done when (from the project):', ...items.map(itemLine)].join('\n'));
-  if (note && note.trim()) {
-    const cut = note.length >= STORED_NOTE_MAX;
-    lines.push(`When it started waiting, the Chief of Staff's check said (its own words): "${inertText(note)}"${cut ? ' (the check keeps only its first 500 characters; the project conversation has the rest)' : ''}`);
+  if (items.length) lines.push(['Done when:', ...items.map(itemLine)].join('\n'));
+  if (said) {
+    const cut = note!.length >= STORED_NOTE_MAX;
+    lines.push(`The Chief of Staff's check said: "${said}"${cut ? ' (shortened; the project conversation has the rest)' : ''}`);
   }
-  lines.push(`Waiting on you since ${secondUtc(waitSince)} (wait ${waitIdOf(waitRef)}).`);
+  lines.push(`Waiting on you${opts.again ? ' again' : ''} since ${humanTimeUtc(waitSince)}.`);
   // Within the owner-set need limit (work-board-asks, Fixed limits; a write over it is refused, never cut): drop
   // checklist items from the end, saying how many and where the whole list is, then shorten the goal.
   const fits = () => lines.join('\n\n').length <= limits.need;
   if (!fits() && items.length) {
     for (let keep = items.length - 1; keep >= 0 && !fits(); keep--) {
-      lines[checklistAt] = ['Done when (from the project):', ...items.slice(0, keep).map(itemLine), `- and ${items.length - keep} more item${items.length - keep === 1 ? '' : 's'} on the project's own page`].join('\n');
+      lines[checklistAt] = ['Done when:', ...items.slice(0, keep).map(itemLine), `- and ${items.length - keep} more item${items.length - keep === 1 ? '' : 's'} on the project's own page`].join('\n');
     }
   }
-  if (!fits() && p.goal.trim()) lines[1] = 'Goal: see the project conversation.';
-  if (!fits()) { const i = lines.findIndex((l) => l.startsWith('When it started waiting')); if (i >= 0) lines[i] = 'When it started waiting, the Chief of Staff\'s check left a note too long to show here; the project conversation has it.'; }
+  if (!fits() && goal) lines[1] = 'Goal: see the project conversation.';
+  if (!fits()) { const i = lines.findIndex((l) => l.startsWith('The Chief of Staff\'s check said')); if (i >= 0) lines[i] = 'The Chief of Staff\'s check left a note too long to show here; the project conversation has it.'; }
   const recommendation = kind === 'confirm'
     ? 'Check the items that need your judgment. If they hold, use Confirm done on the Chief of Staff; if something is missing, say what in the project\'s conversation.'
     : 'Reply in the project\'s conversation with your decision on what the check names; its next check picks it up.';
   const whyYou = kind === 'confirm'
     ? 'Finishing a project you judge is your sign-off. The Chief of Staff checks the automatic items but never closes such a project itself.'
     : 'The Chief of Staff marks a project waiting on you only when its next step needs your answer. It does not decide for you.';
-  return { title, need: lines.join('\n\n'), recommendation, whyYou };
+  const since = Date.parse(waitSince);
+  const brief: WaitCardBrief = {
+    ask: waitAsk(kind, note),
+    ...(goal ? { goal: goal.length > BRIEF_GOAL_MAX ? `${goal.slice(0, BRIEF_GOAL_MAX - 1)}…` : goal } : {}),
+    ...(items.length ? { checks: items.slice(0, BRIEF_ITEMS_MAX).map((d) => ({ text: itemText(d), status: status(d) })) } : {}),
+    ...(said ? { chiefSaid: said } : {}),
+    ...(Number.isFinite(since) ? { waitingSince: new Date(since).toISOString() } : {}),
+  };
+  return { title, need: lines.join('\n\n'), recommendation, whyYou, brief };
 }
+
+function sameBrief(a: CardBrief | null | undefined, b: CardBrief): boolean { return sameValue(a ?? null, b); }
 
 export class ChiefOfStaffWaitCards {
   /** Refusals already logged, so a standing refusal is one log line per project and reason (machine-local, logging only). */
@@ -300,12 +365,25 @@ export class ChiefOfStaffWaitCards {
       const clearedBetween = !!card.mirror && sources.some((s) => clears(s, bs.bindingHlc) && compareHlc(s.hlc, card.mirror!.hlc) > 0);
       // A card the person finished while the project still waits stays finished until a genuinely new wait starts.
       const newEpisode = clearedBetween || !card.mirror || card.mirror.cleared === true || (finished && start.rec.ref !== card.mirror.waitRef);
-      if (finished && !newEpisode) return;
+      if (finished && !newEpisode) {
+        // The brief is not material: refreshing it on a finished card voids nothing and reopens nothing. Written only
+        // when it differs, so a card carries the brief from the first newer check after an upgrade, then stays quiet.
+        const keepText = composeWaitCard(project, wait.kind, st?.lastDoneItems ?? null, card.mirror?.note ?? realNote, card.mirror?.waitSince ?? start.rec.at, card.mirror?.waitRef ?? start.rec.ref, svc.limits());
+        if (!sameBrief(card.brief, keepText.brief)) {
+          const b = svc.edit(SERVER, cardId, { brief: keepText.brief });
+          if (!b.ok) this.once(`${ck}:brief:${b.error}`, 'cos-wait-card-edit-refused', { conversationKey: ck, step: 'brief', reason: b.error });
+          else out.edited.push(cardId);
+        }
+        return;
+      }
       const since = newEpisode ? (start.rec.at || newest.at) : (card.mirror?.waitSince ?? start.rec.at);
       const waitRef = newEpisode ? start.rec.ref : (card.mirror?.waitRef ?? start.rec.ref);
       const note = newEpisode ? realNote : (card.mirror?.note ?? realNote);
-      const text = composeWaitCard(project, wait.kind, st?.lastDoneItems ?? null, note, since, waitRef, svc.limits());
-      const changed = text.title !== card.title || text.need !== card.need || text.recommendation !== card.recommendation || text.whyYou !== card.whyYou;
+      let text = composeWaitCard(project, wait.kind, st?.lastDoneItems ?? null, note, since, waitRef, svc.limits());
+      // A new wait on a finished card must change its material, so the earlier finish stops counting. The text no
+      // longer carries a wait id, so when the new wait reads word for word like the old one, say "again".
+      if (newEpisode && finished && text.need === card.need) text = composeWaitCard(project, wait.kind, st?.lastDoneItems ?? null, note, since, waitRef, svc.limits(), { again: !card.need.includes('Waiting on you again since') });
+      const changed = text.title !== card.title || text.need !== card.need || text.recommendation !== card.recommendation || text.whyYou !== card.whyYou || !sameBrief(card.brief, text.brief);
       if (!changed && !newEpisode) return;
       const r = svc.edit(SERVER, cardId, { ...text, mirror: { ...mirrorOf, waitSince: since, waitRef, ...(note ? { note } : {}) } }, { serverOwnedRewrite: finished });
       if (!r.ok) { this.once(`${ck}:edit:${r.error}`, 'cos-wait-card-edit-refused', { conversationKey: ck, reason: r.error }); out.skipped.push({ cardId, reason: r.error }); return; }

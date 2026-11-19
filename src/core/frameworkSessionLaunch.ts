@@ -289,13 +289,17 @@ export interface InteractiveLaunchOptions {
    */
   grokInteractiveOptIn?: boolean;
   /**
-   * Subscription & Auth Standard P1.3 (claude-code only): the per-account config
-   * home for this session. When set, the builder injects
-   * `CLAUDE_CONFIG_DIR=<configHome>` into envOverrides so the launched Claude
-   * session authenticates under THAT account's login instead of inheriting the
-   * parent agent's. This is the swap mechanism — selecting/swapping an account =
-   * launching (or `--resume`-ing) with that account's configHome. No effect on
-   * non-claude frameworks. NEVER a token — just the login location.
+   * Subscription & Auth Standard P1.3: the per-account config home for this
+   * session. When set, the builder injects the framework's home variable —
+   * `CLAUDE_CONFIG_DIR` for claude-code, `CODEX_HOME` for codex-cli — so the
+   * launched session authenticates under THAT account's login instead of
+   * inheriting the parent agent's. This is the swap mechanism — selecting/swapping
+   * an account = launching (or resuming) with that account's home. No effect on
+   * other frameworks. NEVER a token — just the login location.
+   *
+   * codex-cli was missing until 2026-11-18: a swap or pin onto a Codex account
+   * tagged the session with that account while Codex ran on the server's default
+   * login, so the wrong account's quota was spent under the right account's name.
    */
   configHome?: string;
   /**
@@ -584,6 +588,9 @@ const codexCliBuilder: Builder = (options) => {
       // defense-in-depth so a Codex session can't be mis-detected as
       // a Claude one by downstream tooling that grep's env vars.
       CLAUDECODE: '',
+      // The account the session is tagged with is the account it runs on: the
+      // login location only, never a token. Unset = the inherited default login.
+      ...(options.configHome ? { CODEX_HOME: options.configHome } : {}),
     },
     ...(thinking ? { applied: thinking.applied, dropped: thinking.dropped } : {}),
   };

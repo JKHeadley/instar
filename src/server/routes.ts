@@ -97,6 +97,7 @@ import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { cleanMergeHoldReason } from '../localVerify/operatorQueue.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
@@ -134,7 +135,7 @@ import { Router } from 'express';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
-import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
@@ -490,6 +491,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { TopicCreationProvenanceStore, checkCitation, parseOnBehalfOf, crossTopicEligible, safeConversationName, CROSS_TOPIC_FIELDS, type CitationDeps } from '../core/topicCreationProvenance.js';
 import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
 import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -625,7 +627,7 @@ import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
-import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
+import { historySenderLabel, resolveSignedByAgent, aspClassifiedText, labelFromEnvelope, signedInboundSnapshot } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -3105,6 +3107,30 @@ export function findReservedObjectKey(value: unknown, prefix = ''): string | nul
 }
 
 export function createRoutes(ctx: RouteContext): Router {
+  const creationProvenance = new TopicCreationProvenanceStore(ctx.config.stateDir);
+  /** identity-security-creation-provenance v5: one refusal notice per (A, B, reason) per 10 minutes. */
+  const crossTopicNoticeAt = new Map<string, number>();
+  /** identity-security-creation-provenance v5: may a yes in conversation A reach conversation B? */
+  const crossTopicEligibilityFor = (sourceTopicId: number, destKey: string) => {
+    const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
+    const owner = ctx.telegram?.getOwnerUserId();
+    return crossTopicEligible({
+      ownerUid: typeof owner === 'number' && owner > 0 ? String(owner) : null,
+      confirmerUid: ctx.topicOperatorStore?.getOperator(sourceTopicId)?.uid ?? null,
+      destKnown: dest !== null && !!ctx.topicOperatorStore && !!ctx.telegram && ctx.telegram.getTopicName(dest) !== null,
+      destBinding: dest !== null ? ctx.topicOperatorStore?.getBinding(dest) ?? null : null,
+      destVerifiedUid: dest !== null ? ctx.topicOperatorStore?.getOperator(dest)?.uid ?? null : null,
+      destConfined: dest !== null ? new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${dest}`) : null,
+      sourceConfined: new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${sourceTopicId}`),
+    });
+  };
+  /** identity-security-creation-provenance: identity checks for a cited owner message. */
+  const ownerCitationDeps = (): CitationDeps => ({
+    verifiedOperatorUid: (t) => ctx.topicOperatorStore?.getOperator(t)?.uid ?? null,
+    findMessage: (t, m, notBefore) => ctx.telegram ? ctx.telegram.findTopicMessage(t, m, notBefore) : { entry: null, unreadable: true },
+    ownerUid: () => { const o = ctx.telegram?.getOwnerUserId(); return typeof o === 'number' && o > 0 ? String(o) : null; },
+    now: () => Date.now(),
+  });
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
   // (GET /spec/constitution-checks), refreshed in the background at most once a minute
@@ -3248,6 +3274,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const prLinkDeps = {
       enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
       reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      // Echo Bugs 10000002791: request only where the repository's rules may require an approval.
+      requestWhenNotRequired: () => (ctx.config as { prLinkReviewRequest?: { requestWhenNotRequired?: boolean } }).prLinkReviewRequest?.requestWhenNotRequired === true,
       gh: ghFor,
       selfLogin: async () => {
         const gh = ghFor();
@@ -6320,6 +6348,8 @@ export function createRoutes(ctx: RouteContext): Router {
           slack: ledger ? { ...ledger.counters, coversSince: ledger.coversSince === null ? null : new Date(ledger.coversSince).toISOString() } : null,
         };
       }
+      // SEC-106 decision 9: agent-signed label framing per delivery path since boot (counts only).
+      base.signedInboundLabel = signedInboundSnapshot();
       // Origin worker health rides the AUTHED extension: a held-sends outage is
       // visible without a status fan-out, and never inferred from silence.
       if (ctx.telegramOrigin) {
@@ -6451,6 +6481,10 @@ export function createRoutes(ctx: RouteContext): Router {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        // Memory held outside the V8 heap (native addons' C++ objects, Buffers),
+        // so resident size can be split without attaching a profiler.
+        external: Math.round(mem.external / 1024 / 1024),
+        arrayBuffers: Math.round(mem.arrayBuffers / 1024 / 1024),
       };
       if (ctx.autoUpdater) {
         const auto = ctx.autoUpdater.getStatus();
@@ -13697,24 +13731,74 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       patch[field] = value;
     }
+    // identity-security-creation-provenance v5: `confirmIn` — the owner asked for this change in
+    // another conversation; the proposal and the owner's "yes" happen THERE, and the yes applies the
+    // change here. Checked now and again when the yes arrives (crossTopicEligible).
+    let confirmIn: number | null = null;
+    if (body.confirmIn !== undefined) {
+      const raw = body.confirmIn;
+      const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+      if (!Number.isSafeInteger(n) || (n as number) <= 0 || String(n) === gate.key) {
+        res.status(400).json({ error: '"confirmIn" must be the positive id of another Telegram topic' });
+        return;
+      }
+      confirmIn = n as number;
+      // A cross-conversation yes may change only everyday run settings. Framework, escalation
+      // override and origin display keep today's rule (confirm in that conversation itself).
+      const allowedCross = new Set(CROSS_TOPIC_FIELDS);
+      const outside = Object.keys(patch).filter((k) => !allowedCross.has(k));
+      if (outside.length) {
+        res.status(400).json({ error: `confirmIn may change only model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
+        return;
+      }
+      // Ships behind the umbrella's per-piece switch: live on a development agent, dark on the fleet.
+      const switchLive = ctx.liveConfig?.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined)
+        ?? (ctx.config as { security?: { crossTopicConfirm?: { enabled?: boolean } } }).security?.crossTopicConfirm?.enabled;
+      if (!resolveDevAgentGate(switchLive, ctx.config)) {
+        res.status(503).json({ ok: false, reason: 'confirmIn-dark' });
+        return;
+      }
+      const eligible = crossTopicEligibilityFor(confirmIn, gate.key);
+      if (!eligible.ok) {
+        // A refusal stays a refusal: when the owner asked in A and B is what can't be reached, the
+        // owner hears it in A too, not only the agent.
+        const noticeKey = `${confirmIn}\u0000${gate.key}\u0000${eligible.reason}`;
+        const lastNotice = crossTopicNoticeAt.get(noticeKey) ?? 0;
+        if (eligible.reason.startsWith('destination-') && Date.now() - lastNotice > 10 * 60_000) {
+          crossTopicNoticeAt.set(noticeKey, Date.now());
+          const why = eligible.reason === 'destination-bound' ? 'someone else runs it' : eligible.reason === 'destination-confined' ? 'it belongs to a team member' : 'I could not confirm who runs it';
+          try {
+            await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(confirmIn as number,
+              `I can't change the conversation "${safeConversationName(ctx.telegram!.getTopicName(Number(gate.key)), gate.key)}" from here: ${why}. You can ask for it in that conversation instead.`));
+          } catch { /* @silent-fallback-ok: the refusal is also returned to the caller below */ }
+        }
+        res.status(422).json({ ok: false, reason: 'confirmIn-refused', refusal: eligible.reason });
+        return;
+      }
+    }
     const rendered = gate.surface.renderProposalEcho(gate.key, patch);
     if (!rendered.ok) {
       res.status(400).json({ ok: false, message: rendered.reply });
       return;
     }
-    const armed = ctx.topicProfile.confirmSlots.arm(gate.key, 'propose-confirm', rendered.patch, rendered.echo, 'agent-composed');
+    const echoTopic = confirmIn ?? Number(gate.key);
+    let echoText = confirmIn !== null
+      ? rendered.echo.replace('Proposed profile change for this topic:', `Proposed change for the conversation "${safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key)}" (not this one):`)
+      : rendered.echo;
+    const armed = ctx.topicProfile.confirmSlots.arm(String(echoTopic), 'propose-confirm', rendered.patch, echoText, 'agent-composed', confirmIn !== null ? gate.key : undefined);
+    if (armed.ok && armed.superseded) echoText = `${echoText}\n(This replaces the earlier proposal here.)`;
     if (!armed.ok) {
       res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
       return;
     }
     try {
-      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(Number(gate.key), rendered.echo));
-      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, requireTelegramDelivery(sent).messageId);
-      res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
+      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
+      res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
       // Echo undelivered — tear the slot down (an unseen echo must never be
       // confirmable; matchConfirm would refuse on no-echo-id anyway).
-      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
       res.status(502).json({ ok: false, error: `Echo delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
@@ -15429,9 +15513,8 @@ export function createRoutes(ctx: RouteContext): Router {
       if (probe.ready) return { ready: true };
       return { ready: false, unavailableReason: desktopProbeUnavailableReason(probe) };
     } catch {
-      // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
+      return { ready: false, unavailableReason: DESKTOP_CHECK_FAILED_REASON };
     }
-    return { ready: false, unavailableReason: 'Remote desktop is not ready on this machine.' };
   };
   router.get('/desktop/availability', async (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -15592,7 +15675,7 @@ export function createRoutes(ctx: RouteContext): Router {
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch {
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
-          unavailableReason: 'Remote desktop is not ready on this machine.' };
+          unavailableReason: DESKTOP_CHECK_FAILED_REASON };
       }
     }));
     const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
@@ -19527,6 +19610,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : undefined,
     // SEC-113 D2.5: the peer quarantine clear is owner-only (the dashboard operator session).
     ...(ctx.verifyDashboardOperatorSession ? { verifyOperatorSession: (token: string | undefined) => ctx.verifyDashboardOperatorSession!(token) } : {}),
+    // Queue controls: a hold with `blockMerge` also applies the merge-side [HOLD] marker, through
+    // the same function POST /green-pr-automerge/hold calls (read at call time: the watcher is late-bound).
+    ...(ctx.greenPrAutoMerger ? { applyMergeHold: (pr: number, reason: string) => ctx.greenPrAutoMerger!.applyHold(pr, reason) } : {}),
   });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
@@ -19720,7 +19806,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     // bounded-input-reviewed: API input clamped for the auto-merge hold note; display/audit text, never a model's input.
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
+    // One cleaning for both callers: this route and a Local Verify queue hold with `blockMerge`.
+    const reason = cleanMergeHoldReason(req.body?.reason);
     const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
     res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
   });
@@ -21828,6 +21915,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // identity-security-creation-provenance: why a conversation exists (machine-local).
+  router.get('/topic-creation-provenance/:topicId', (req, res) => {
+    const id = Number(req.params.topicId);
+    if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: 'topicId must be a positive integer' }); return; }
+    // Ids and times only, never message text: the owner opens the source message in their own Telegram.
+    res.json({ topicId: id, provenance: creationProvenance.get(id) });
+  });
+
   router.post('/telegram/topics', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -21835,6 +21930,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { name, color, firstMessage, kind } = req.body;
+    // identity-security-creation-provenance: an optional citation of the operator message this
+    // conversation is started from. Checked before anything is created; a refusal creates nothing.
+    const onBehalfOf = parseOnBehalfOf(req.body?.onBehalfOf);
+    if (onBehalfOf === null) {
+      res.status(400).json({ error: '"onBehalfOf" must be { topicId, messageId } with positive integer ids' });
+      return;
+    }
+    const citation = onBehalfOf ? checkCitation(onBehalfOf, ownerCitationDeps()) : null;
+    if (citation && !citation.ok) {
+      res.status(422).json({ error: 'onBehalfOf-refused', reason: citation.reason });
+      return;
+    }
     if (kind !== undefined && kind !== 'issue' && kind !== 'conversation') {
       res.status(400).json({ error: '"kind" must be "issue" or "conversation" when given' });
       return;
@@ -21876,6 +21983,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions
       // spawned in this topic will see the context in their thread history.
+      // identity-security-creation-provenance: record why this conversation exists. A record only:
+      // it grants nothing and is never posted into the conversation.
+      try {
+        creationProvenance.record({
+          topicId: topic.topicId,
+          createdAt: new Date().toISOString(),
+          session: typeof req.get?.('X-Instar-Session') === 'string' ? String(req.get('X-Instar-Session')).slice(0, 120) : null,
+          sessionAsserted: true,
+          source: citation && citation.ok ? { kind: 'linked-message', linked: citation.cited, authorship: 'unverified' } : { kind: 'source-unknown' },
+        });
+      } catch (err) {
+        console.error(`[topic-creation-provenance] could not record topic ${topic.topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       let messageSent = false;
       if (firstMessage && !topic.reused) {
         await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topic.topicId, firstMessage));
@@ -21889,6 +22009,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         reused: topic.reused,
         messageSent,
         group: space,
+        provenance: citation && citation.ok ? 'linked-message' : 'source-unknown',
       });
     } catch (err) {
       res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
@@ -31554,7 +31675,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (the 2026-06-25 lockout mechanism) routes THROUGH (falls past this block to
         // normal routing) instead of consuming the operator's message; a long-form
         // genuine stop is rescued to a kill.
-        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
+        // One verdict per Telegram message: the lifeline re-sends a forward it gave up
+        // on (10s), and a classification can take longer than that. Without the key,
+        // each re-send asked the model again and any one 'emergency-stop' among the
+        // answers killed the session (2026-11-18, topic 144201).
+        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId),
+          messageId ? `telegram:${Number(topicId)}:${messageId}` : undefined);
         if (decision.disposition === 'kill' || decision.disposition === 'pause') {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since
@@ -31698,6 +31824,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // duplicate/in-flight event we return ok+deduped WITHOUT routing — the
     // structural no-duplicate-reply guarantee. FAIL-OPEN: any ledger error
     // falls through to normal routing (the gate must never drop a real message).
+    // SEC-106 decisions 5a and 6: the classifier read for THIS message's classified text (the same
+    // form the log call above logged), and the processing ledger's ingress-time label for a reclaim.
+    const lifelineClassifiedText = aspClassifiedText(
+      typeof text === 'string' ? text : '',
+      fwdMedia.media.length > 0 ? fwdMedia.media : null,
+    );
+    const lifelineMessageIdNum = typeof messageId === 'number' ? messageId : Number(messageId) || null;
+    const readLifelineClassifier = (): string | null => trust ? null : resolveSignedByAgent(
+      ctx.getAspClassifier?.() ?? null,
+      typeof topicId === 'number' ? topicId : null,
+      lifelineMessageIdNum,
+      lifelineClassifiedText,
+      // The ingress read counts a mismatch; these route reads of the same message do not.
+      { count: false },
+    );
+    let ledgerLabel: string | undefined;
     let shouldClaimInbound = true;
     if (ctx.sessionOwnershipRegistry && ctx.meshSelfId) {
       try {
@@ -31726,6 +31868,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             userId: fromUserId,
             username: fromUsername,
             firstName: fromFirstName,
+            // SEC-106 decision 2c: the label is written in the SAME call that creates the row.
+            ...((): { signedByAgent?: string } => { const l = readLifelineClassifier(); return l ? { signedByAgent: l } : {}; })(),
           },
           epoch,
           maxProcessingMs: ctx.config.multiMachine?.maxProcessingMs ?? 5 * 60_000,
@@ -31737,6 +31881,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         // Claimed for processing — remember it so the outbound reply commits it.
         ctx.currentInboundByTopic?.set(String(topicId), dedupeKey);
+        // SEC-106 decision 6: a reclaimed row (restart + re-forward) still holds the label written when
+        // the message was first seen. Copied ONLY when the row's stored input equals this text (a
+        // dedupe key can fall back from update_id to message_id, so two messages could share a row)
+        // and never for an app message.
+        if (!trust) {
+          const row = ctx.messageLedger.get(dedupeKey);
+          if (row && row.inputSnapshot === text) {
+            const carried = labelFromEnvelope(row.senderEnvelope);
+            if (carried) ledgerLabel = carried;
+          }
+        }
       } catch (err) {
         console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
       }
@@ -31793,11 +31948,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // this human's account is not evidence the human is present, so it never
     // binds them. The verdict is the classifier's own, cached when the message
     // was logged above (single-use nonce — never re-verified), read by message id.
-    const lifelineSignedByAgent = resolveSignedByAgent(
-      ctx.getAspClassifier?.() ?? null,
-      typeof topicId === 'number' ? topicId : null,
-      typeof messageId === 'number' ? messageId : Number(messageId) || null,
-    );
+    // SEC-106 decision 6: the classifier's text-bound verdict, else the ledger copy — a reclaim after a
+    // restart sees a used nonce, but the row still says agent-written, so neither site binds.
+    const lifelineSignedByAgent = readLifelineClassifier() ?? ledgerLabel ?? null;
     if (lifelineSignedByAgent) {
       console.log(`[telegram-forward] ${topicRef(topicId)} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
@@ -31869,6 +32022,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // lifeline that omits the field reads as `false` here (it cannot send
           // a real forward through the legacy wire), which is the safe direction.
           forwarded: req.body.forwarded === true,
+          // SEC-106 decision 6: the ledger copy, in process; ingress reconciles it and removes it.
+          ...(ledgerLabel ? { ledgerSignedByAgent: ledgerLabel } : {}),
         },
       };
 

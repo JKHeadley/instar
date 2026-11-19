@@ -436,6 +436,28 @@ describe('the page', () => {
     expect(conv.getAttribute('href')).toBe('#/work/chats?c=app%3A0b0c0d0e-0f10-5111-8213-141516171819');
   });
 
+  it('opens a linked card omitted from capped board lanes using its own reader', async () => {
+    const id='wc_aaaaaaaaaaaaaa01';location.hash='#/work/board?card='+id;
+    reads['/work-board']=ok(board([]));reads['/work-board/cards/'+id]=ok({card:card({id,status:'done',title:'Older finished card'})});
+    const {renderWork}=await import(path.join(CONSOLE,'work.js'));const context=ctx();await renderWork(mainNode(),context);
+    expect(context.get).toHaveBeenCalledWith('/work-board/cards/'+id);expect(document.querySelector('.sheet').textContent).toContain('Older finished card');
+  });
+  it('reopens the same source tile on a new visit, but not on periodic refresh', async () => {
+    const id='wc_aaaaaaaaaaaaaa03';location.hash='#/work/board?card='+id;await tick();reads['/work-board']=ok(board([]));reads['/work-board/cards/'+id]=ok({card:card({id,title:'Return to this card'})});
+    const {renderWork}=await import(path.join(CONSOLE,'work.js'));const {closeSheet}=await import(path.join(CONSOLE,'ui.js'));const main=mainNode();await renderWork(main,ctx());expect(document.querySelector('.sheet')).toBeTruthy();
+    closeSheet();await tick();await renderWork(main,ctx());expect(document.querySelector('.sheet')).toBeNull();
+    location.hash='#/work/conversations?node=source';await tick();location.hash='#/work/board?card='+id;await tick();
+    await renderWork(main,ctx());expect(document.querySelector('.sheet').textContent).toContain('Return to this card');
+  });
+
+  it('does not consume a failed direct-card link and retries explicitly', async () => {
+    const id='wc_aaaaaaaaaaaaaa02';location.hash='#/work/board?card='+id;reads['/work-board']=ok(board([]));
+    reads['/work-board/cards/'+id]={ok:false,status:500};const {renderWork}=await import(path.join(CONSOLE,'work.js'));const main=mainNode();await renderWork(main,ctx());
+    expect(document.querySelector('.sheet')).toBeNull();expect(main.textContent).toContain('could not be loaded');
+    reads['/work-board/cards/'+id]=ok({card:card({id,title:'Recovered card'})});
+    [...main.querySelectorAll('button')].find(b=>b.textContent==='Try again').click();await tick();expect(document.querySelector('.sheet').textContent).toContain('Recovered card');
+  });
+
   it('switched off says so; a shapeless answer cannot tell', async () => {
     const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
     reads['/work-board'] = { ok: false, reason: 'switched off on this agent' };
