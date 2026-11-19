@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "org-never-actions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T01:38:59.672Z",
+  "artifactPath": "upgrades/side-effects/org-never-actions.md",
+  "artifactSha256": "311e538cb5eb243c369d2c59cdd69142aa77d46ccaf530515795b97d6816ee31",
+  "specPath": "docs/specs/org-never-actions.md",
+  "coveredFiles": [
+    "src/core/OrgActionCheck.ts",
+    "src/core/OrgPolicyGateHooks.ts",
+    "tests/unit/org-action-check.test.ts",
+    "upgrades/side-effects/org-never-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Re-audit fixes to evidence, journaling and hook input.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one judgment per tool call or outgoing message"
+  }
+}

@@ -1906,6 +1906,7 @@ export class SlackAdapter implements MessagingAdapter {
             if (textContent) {
               // A shared file's contents are person text too (§3c): typed tags in them are inert.
               const safeContent = escapeTypedPathTags(textContent);
+              // bounded-input-reviewed: already DISCLOSED in-band ("[truncated, full content saved to <path>]") with a pointer to the whole file, which the session can read.
               const truncated = safeContent.length > 10000 ? safeContent.slice(0, 10000) + '\n... [truncated, full content saved to ' + savedPath + ']' : safeContent;
               cleanText = cleanText
                 ? `${cleanText}\n\n[User shared "${title}"]\n\`\`\`\n${truncated}\n\`\`\``

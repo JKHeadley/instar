@@ -237,6 +237,28 @@ export class PostRestartProof {
   }
 }
 
+/**
+ * The server row from one read of this server's own `GET /health`. The server has come back
+ * only when it answers 200 AND says it finished starting (`bootReadiness.state === 'ready'`).
+ * While it is still starting (the boot beacon's 503, or a 200 still saying `starting`) the row
+ * is unknown, so the next attempt reads it again; past the proof's bound an unknown row fails
+ * the proof with this reason. Any other answer, or none, fails.
+ */
+// `isBooting` is BootReadiness.isPeerBooting, handed in by server.ts so this watch-only folder never imports
+// the server (machine-maintenance-watch-only.test.ts holds its imports to an allowlist).
+export function serverHealthFromResponse(
+  res: { status: number; headers?: { get(name: string): string | null } | null; body?: unknown } | null,
+  isBooting: (res: { status: number; headers?: { get(name: string): string | null } | null }) => boolean,
+): CheckResult {
+  if (!res) return { state: 'fail', reason: 'health-unreachable' };
+  if (isBooting(res)) return { state: 'unknown', reason: 'server-still-starting' };
+  if (res.status !== 200) return { state: 'fail', reason: `health-${res.status}` };
+  const boot = (res.body as { bootReadiness?: { state?: unknown } } | null | undefined)?.bootReadiness?.state;
+  if (boot === 'ready') return { state: 'pass', reason: 'health-200-ready' };
+  if (boot === 'starting') return { state: 'unknown', reason: 'server-still-starting' };
+  return { state: 'unknown', reason: 'boot-state-unread' };
+}
+
 /** Each proof row against the baseline. Pure apart from the readers. */
 export async function runChecks(r: ProofReaders, p: RestartProofRecord, before: Baseline | null): Promise<Partial<Record<ProofCheckName, CheckResult>>> {
   const safe = async <T>(fn: () => Promise<T>): Promise<T | null> => { try { return await fn(); } catch { return null; } };

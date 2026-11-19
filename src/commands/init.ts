@@ -59,6 +59,7 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
+import { OrgPolicyGateHooks } from '../core/OrgPolicyGateHooks.js';
 import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
@@ -4657,6 +4658,10 @@ fi
   // External operation gate — intercepts MCP tool calls to external services.
   // Uses shared template from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'external-operation-gate.js'), migrator.getHookContent('external-operation-gate'), { mode: 0o755 });
+  // Organization never rules check (docs/specs/org-never-actions.md §A): a new agent gets the gate too.
+  // It allows everything until the agent joins an organization whose policy says otherwise.
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
 
   // Claim intercept — catches false operational claims against canonical state.
   // PostToolUse hook checks tool output; Stop hook checks direct responses.

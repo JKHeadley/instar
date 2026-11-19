@@ -1,0 +1,9 @@
+# Closing work cards, and the conversation inside a card
+
+A work card is a small agreement between a person and the agent: what is needed, what done looks like, and whose move it is. Until now a person could approve a card, answer its question, hold it or archive it, but could not say "this is finished, here is what happened" or "this does not matter, and here is why". Luna's board, which the operator likes, has exactly those two buttons, and the approved Work Front Doors plan asks for them.
+
+This change adds them on the agent's server. Closing a card as Done needs a short closeout note; closing it as Not important needs a reason. Both are the person's own tap, the same way every other card tap works: the dashboard PIN, or Face ID on the owner's phone, where the note itself is part of what Face ID signs, so nothing can swap the words afterwards. The agent can never close a card for the person. Underneath, a close is the existing "archive" tap with two extra fields, which means a machine still running an older version simply sees an archived card rather than a broken one, and "restore" reopens it as before.
+
+The Not important reasons are kept as lessons. The agent can list them, with who gave each one and which card it came from, and it is handed the newest ten every time it writes a new card, so it can stop raising things the person already said do not matter. A reopened card's reason drops out of the list.
+
+Each card now also says whose turn it is, so screens can colour it the way Luna's board does (light red while it waits on you, light blue while it moves), and whether anyone has started on it yet, so untouched cards are listed first. Finally, each card names its own conversation and the routes the apps already use to read and reply in it, so the card and its chat can be shown on one page without any new storage. The buttons and the combined page on the dashboard and the apps are built by their own sessions on top of this.

@@ -11,6 +11,7 @@
  * dispatched under. Everything else is refused and the entry stays in the coordinator's queue.
  */
 
+import type { MachineSignature } from '../core/AppRecordSignatures.js';
 import { ATTEMPT_ID_RE, MAIN_VERIFY_PR, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
 import type { FailureDetail } from './orchestrator.js';
 
@@ -23,6 +24,8 @@ export interface RemoteMarker {
   state: 'sending' | 'accepted';
   /** Immutable snapshot of what was dispatched: every later check compares against this. */
   dispatched: DispatchedInputs;
+  /** SEC-113 D1: digest of the exact peer-run body sent; the peer's signed answer must carry it. */
+  requestDigest?: string;
 }
 
 export interface DispatchedInputs {
@@ -33,7 +36,8 @@ export interface DispatchedInputs {
   verifierVersion: string;
   policyHash: string;
   /** Present when the dispatched entry is a `main` verify (pr 0, head == base, base ref `main`). */
-  kind?: 'main';
+  /** `main-arbitration` (SEC-113 D2.4): run exactly like `main`, but the coordinator only uses the answer to settle a disagreement. */
+  kind?: 'main' | 'main-arbitration';
 }
 
 /** The body of `POST /local-verify/peer-run`. */
@@ -57,7 +61,7 @@ export type PeerRunAnswer = { ok: true; attemptId: string } | { ok: false; reaso
 export type PeerResult =
   | { state: 'unknown' }
   | { state: 'running' }
-  | { state: 'done'; record: LocalVerifyRecord; run?: PeerMainRun };
+  | { state: 'done'; record: LocalVerifyRecord; run?: PeerMainRun; requestDigest?: string; sig?: MachineSignature; raw?: { record: unknown; run?: unknown; requestDigest?: unknown; sig?: unknown } };
 
 /**
  * Why a peer-run `main` verify went red. A main record carries no failed files, and the
@@ -98,6 +102,8 @@ export interface PeerStatus {
   verifierVersion: string;
   policyHash: string;
   slotBusy: boolean;
+  /** SEC-113 D1: the hash of the key this peer signs with now (a hint the coordinator checks against its own pins). */
+  signerKeyHash?: string;
 }
 
 /** One configured peer. */
@@ -153,7 +159,7 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   const keys = ['attemptId', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'coordinatorMachineId', 'leaseEpoch'];
   const extra = Object.keys(b).filter((k) => !keys.includes(k));
   if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind')) return null;
-  if (b.kind !== undefined && b.kind !== 'main') return null;
+  if (b.kind !== undefined && b.kind !== 'main' && b.kind !== 'main-arbitration') return null;
   if (b.preflightRediscoverable !== undefined && typeof b.preflightRediscoverable !== 'boolean') return null;
   if (b.isolation !== undefined) {
     const iso = b.isolation as { allowed?: unknown; notCleanOnGreenMain?: unknown } | null;
@@ -161,8 +167,8 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
       || iso.notCleanOnGreenMain.length > 200 || !iso.notCleanOnGreenMain.every((f) => typeof f === 'string' && f.length > 0 && f.length <= 300)) return null;
   }
   if (typeof b.attemptId !== 'string' || !ATTEMPT_ID_RE.test(b.attemptId)) return null;
-  if (b.kind === 'main') {
-    // A `main` verify: no PR, the head is its own base, and nothing PR-shaped rides along.
+  if (b.kind === 'main' || b.kind === 'main-arbitration') {
+    // A `main` verify (or a SEC-113 arbitration of one): no PR, the head is its own base, and nothing PR-shaped rides along.
     if (b.pr !== MAIN_VERIFY_PR || b.headSha !== b.baseSha || b.baseRefName !== 'main' || b.preflightRediscoverable !== undefined || b.isolation !== undefined) return null;
   } else if (typeof b.pr !== 'number' || !Number.isSafeInteger(b.pr) || b.pr <= 0) return null;
   if (!SHA_LIKE(b.headSha) || !SHA_LIKE(b.baseSha)) return null;

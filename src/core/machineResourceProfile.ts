@@ -150,11 +150,14 @@ export type HeavyHeadroom = 'headroom' | 'busy' | 'load-unknown';
  * above the floor's limit. `load-unknown` when no fresh per-core load exists —
  * never treated as idle.
  */
-export function heavyHeadroom(m: MachineCapacity, pendingHeavy = 0, nowMs: number = Date.now()): HeavyHeadroom {
+export function heavyHeadroom(m: MachineCapacity, pendingHeavy = 0, nowMs: number = Date.now(), extraLoadPerCore = 0): HeavyHeadroom {
   if (m.loadVerdict === 'saturated' || m.loadVerdict === 'impaired') return 'busy';
   const pc = freshLoadPerCore(m, nowMs);
   if (pc === null) return 'load-unknown';
-  return pc + Math.max(0, pendingHeavy) * PENDING_HEAVY_PER_CORE > HEAVY_WORK_FLOOR.maxLoadPerCore ? 'busy' : 'headroom';
+  // `extraLoadPerCore`: per-core load the caller has already sent this machine and its
+  // report has not caught up with yet (agent-sessions-placed-by-load §1b burst spreading).
+  const extra = Number.isFinite(extraLoadPerCore) && extraLoadPerCore > 0 ? extraLoadPerCore : 0;
+  return pc + Math.max(0, pendingHeavy) * PENDING_HEAVY_PER_CORE + extra > HEAVY_WORK_FLOOR.maxLoadPerCore ? 'busy' : 'headroom';
 }
 
 /** One machine's fit for a heavy item, with the reason in plain tokens. */
@@ -189,9 +192,9 @@ export function peerMemoryReason(m: MachineCapacity): string | null {
 }
 
 /** Fit for a heavy item: heavy-capable AND fresh headroom. Light/standard work is never filtered by size. */
-export function heavyFit(m: MachineCapacity, pendingHeavy = 0, nowMs: number = Date.now()): MachineFit {
+export function heavyFit(m: MachineCapacity, pendingHeavy = 0, nowMs: number = Date.now(), extraLoadPerCore = 0): MachineFit {
   const profile = profileOf(m);
-  const headroom = heavyHeadroom(m, pendingHeavy, nowMs);
+  const headroom = heavyHeadroom(m, pendingHeavy, nowMs, extraLoadPerCore);
   const loadPerCore = freshLoadPerCore(m, nowMs);
   if (!profile.heavyCapable) return { eligible: false, reason: 'machine-too-small', profile, headroom, loadPerCore };
   if (headroom === 'busy') return { eligible: false, reason: 'machine-busy', profile, headroom, loadPerCore };

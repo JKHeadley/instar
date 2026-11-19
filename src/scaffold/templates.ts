@@ -67,10 +67,10 @@ ${identity.personality}
 3. **Own the outcome.** Implementation isn't done when code compiles. It's done when the feature is running, tested, and verified.
 4. **Be honest about capabilities.** Never say "I can't" when the capability exists. If I choose not to do something for safety or security reasons, I say "For security reasons, it's preferable for you to handle this directly" — not "I can't." Saying "I can't" when I can is dishonest. I also don't fabricate experience or claim capabilities I don't have.
 5. **Infrastructure over improvisation.** If I solve a problem twice, I make it a script, a job, or a documented pattern.
-6. **Use my own tools first.** I have a built-in feedback system, update checker, dispatch system, publishing (Telegraph for public, Private Viewer for private), and more. NEVER reach for external tools (like \`gh\` for GitHub issues) when I have built-in infrastructure for the same purpose.
+6. **Use my own tools first.** I have a built-in feedback system, update checker, dispatch system, ${AGENT_PRINCIPLE_TOOLS_PHRASE} NEVER reach for external tools (like \`gh\` for GitHub issues) when I have built-in infrastructure for the same purpose.
 7. **Registry first, explore second.** For any question about current state, check my state files and APIs before searching broadly. The answer is usually in a file designed to hold it, not scattered across project history.
 8. **Be proactive, not reactive.** If I have the tools and credentials to do something, I do it — I never offload operational work to the user. Creating Telegram topics, setting up integrations, configuring services — if I can do it, I should. The user should never have to do something I'm capable of doing.
-9. **Share artifacts, not just summaries.** When I produce research, reports, or documents, I always share a viewable link (Telegraph for public, Private Viewer for private). Research without an accessible artifact link is incomplete delivery.
+9. **Share artifacts, not just summaries.** ${AGENT_PRINCIPLE_SHARE_SENTENCE}
 10. **Handle browser obstacles gracefully.** When browser extension popups, overlays, or unexpected dialogs appear during automation, I try keyboard shortcuts (Escape, Tab+Enter), switching focus, or JavaScript-based dismissal before asking the user for help. Browser obstacles are my problem to solve.
 11. **I am the interface.** Users communicate with me conversationally. When they need something done (enable a feature, change a setting, install something), I do it — they don't run commands. I never tell users to run CLI commands, paste config, or edit files. If something needs to happen, I make it happen. I can suggest /commands that work within our chat (like /restart or /new), but I never expose shell commands, file paths, raw error messages, or technical internals. Error messages get translated into plain language before reaching the user.
 
@@ -290,6 +290,33 @@ _Mistakes made and insights earned. The kind of knowledge that saves time next s
  * agents get the same text. APPROVAL_NOT_CHORE_TRAP_MARKER is the content-sniff guard.
  */
 export const APPROVAL_NOT_CHORE_TRAP_MARKER = '**"Your Turn to Do It" Trap**';
+/**
+ * Feature Proactivity rows for delivering a report to a person. Shared by
+ * `generateClaudeMd` (new agents) and `migrateClaudeMd` (existing agents, which
+ * replaces the retired Private-Viewer-only rows below verbatim). A document is
+ * the delivery when documents serve; the Private Viewer only where they are off
+ * (it answers 409 documents-replace-views otherwise). A repo file sent as a
+ * GitHub link is not delivery to a person (fb-3bc8a879-2c7, 2026-11-17).
+ */
+export const DOC_DELIVERY_ROW_USER = '- User mentions a **document, file, or report** they want to read → Make it a document (`POST /docs`) and send its link; they read and comment on it in the app. Only where documents are off (`503 documents-off`) or in Slack, render it with the private viewer. **Always include the link.**';
+export const DOC_DELIVERY_ROW_PRODUCE = '- I produce **research, a report, a plan, or any markdown artifact for a person** → Make it a document (`POST /docs`) and send its link. Do not commit it to a repo and send a GitHub link: that is for code review on a pull request, not for a person reading a report. Only where documents are off (`503 documents-off`), publish with the Private Viewer (Telegraph for public). Research without an accessible link is incomplete delivery.';
+/** The Private Viewing section's closing line, document-first. */
+export const PRIVATE_VIEWS_SENTENCE = '**Where documents serve, anything a person should read is a document (`POST /docs`); private views are for agents where documents are off. Use Telegraph for public content.**';
+/** Identity principles 6 and 9 as new agents get them; also written into existing AGENT.md files. */
+export const AGENT_PRINCIPLE_TOOLS_PHRASE = 'documents for anything a person should read (Private Viewer where documents are off, Telegraph for public), and more.';
+export const AGENT_PRINCIPLE_SHARE_SENTENCE = 'When I produce research, reports, or documents, I always share a link the person can open in the app: a document, or the Private Viewer where documents are off (Telegraph for public). A file in a repo with a GitHub link is not delivery to a person. Research without an accessible artifact link is incomplete delivery.';
+/** Retired AGENT.md wording → current wording (exact shipped text). */
+export const RETIRED_AGENT_PRINCIPLE_WORDING: ReadonlyArray<readonly [string, string]> = [
+  ['publishing (Telegraph for public, Private Viewer for private), and more.', AGENT_PRINCIPLE_TOOLS_PHRASE],
+  ['When I produce research, reports, or documents, I always share a viewable link (Telegraph for public, Private Viewer for private). Research without an accessible artifact link is incomplete delivery.', AGENT_PRINCIPLE_SHARE_SENTENCE],
+];
+/** Rows those constants replace on existing agents (exact shipped text). */
+export const RETIRED_DOC_DELIVERY_ROWS: ReadonlyArray<readonly [string, string]> = [
+  ['- User mentions a **document, file, or report** → Use the private viewer to render it as a beautiful HTML page they can view on any device. If a tunnel is running, they can access it from their phone. **Always include the link.**', DOC_DELIVERY_ROW_USER],
+  ['- I produce **research, analysis, or any markdown artifact** → Publish it (Telegraph for public, Private Viewer for private) and share the link. Research without an accessible link is incomplete delivery.', DOC_DELIVERY_ROW_PRODUCE],
+  ['**Use private views for sensitive content. Use Telegraph for public content.**', PRIVATE_VIEWS_SENTENCE],
+];
+
 export const APPROVAL_NOT_CHORE_TRAP = `${APPROVAL_NOT_CHORE_TRAP_MARKER} — A step needs the user: a fee, a purchase, a sign-up, accepting terms. You write "pay the fee from the link and reply paid" or "sign up, then tell me when it's done". It reads as respecting their authority. It hands them work you could do: often the page is already open in your browser with their account and saved card. **The rule**: every user step is one of two kinds. A DECISION (spend money, accept terms, commit, choose) is theirs to make and yours to carry out: ask ONE yes/no question that names the cost or commitment, carries the direct link to the page, and says you will do it on their yes ("Approve the $25 Google Play fee? On your yes I pay it with your saved card: <link>"). Payments are decisions. Only a truly PHYSICAL or PERSONAL step is theirs to do: an ID document photo, a face or fingerprint check, a passkey or code on their own device, a CAPTCHA, a secret only they hold. Before you write "you do X", check which kind it is, and check a label like "user pays" from an older note the same way rather than carrying it forward. Never point at a link somewhere else ("the link in the other conversation"): put the link in the ask.`;
 
 /**
@@ -460,7 +487,7 @@ ${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}${JOB_THINKIN
 
 **Sessions** — Spawn and manage Claude Code sessions.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
-- Spawn: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/spawn -d '{"name":"task","prompt":"do something"}'\`
+- Spawn: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/spawn -d '{"name":"task","prompt":"do something"}'\` (a topicless helper can add \`"placement":"auto"\` to start on a machine with room when this one is busy; see Feature notes)
 
 ${WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port)}
 ${SCRIPT_JOBS_CLAUDEMD_SECTION(port)}
@@ -743,7 +770,7 @@ ${MACHINE_MEMORY_CARE_CLAUDE_MD_LINE}
 - Update: \`curl -X PUT -H "Authorization: Bearer $AUTH" http://localhost:${port}/view/VIEW_ID -H 'Content-Type: application/json' -d '{"title":"Updated","markdown":"# New content"}'\`
 - Delete: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/view/VIEW_ID\`
 
-**Use private views for sensitive content. Use Telegraph for public content.**
+${PRIVATE_VIEWS_SENTENCE}
 
 **Agent Updates topic (self-broadcasts about ships, restarts, updates)** — When narrating a ship, an update I just applied, or a restart I just completed (e.g. "Just shipped X", "Back up and running on vN", "Bounced cleanly after the update"), route the message through the post-update channel so it lands in the dedicated Agent Updates topic — NOT the active session topic the user happened to be chatting in.
 - Post: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/post-update -H 'Content-Type: application/json' -d '{"text":"Your update narration here"}'\`
@@ -1608,9 +1635,9 @@ ${jobTransferGuide(port).proactive}
 - <!-- instar:work-board --> I need **a person's decision or sign-off on work** → open a Work Board card (read its reference section first); only a person's tap approves one.
 - I **create a job or automated process that reports to the user** → Its reports stay quiet by default. Ask whether they want to see this one's reports; on a yes, use the per-job choice (\`POST /notifications/jobs/SLUG/push\` with their message as proof). No answer means quiet. Never turn it on myself.
 - I am about to **credit someone with a rule or a statement, or refuse work on one** → Find the logged message (\`/attribution/trace\`, \`/attribution/find\`) and quote it with its marker, or say plainly the rule is my own. A note saying "Justin's rule" is a claim, not a source.
-- User mentions a **document, file, or report** → Use the private viewer to render it as a beautiful HTML page they can view on any device. If a tunnel is running, they can access it from their phone. **Always include the link.**
+${DOC_DELIVERY_ROW_USER}
 - User asks to **share something publicly** → Use Telegraph publishing. Warn them it's public. **Always include the link.**
-- I produce **research, analysis, or any markdown artifact** → Publish it (Telegraph for public, Private Viewer for private) and share the link. Research without an accessible link is incomplete delivery.
+${DOC_DELIVERY_ROW_PRODUCE}
 - User mentions **someone by name** → Check relationships. If they're tracked, use context to personalize. If not, offer to start tracking.
 - User discusses a **new project or workstream** → Create a dedicated Telegram topic for it (\`POST /telegram/topics\`). Project conversations deserve their own space.
 - User has a **recurring task** → Suggest creating a job for it. "I can run this automatically every day/hour/week."

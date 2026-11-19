@@ -47,6 +47,17 @@ Example:
 The user reads this section to understand what convergence changed.
 -->
 
+## Experience fit
+
+<!-- The mandatory lessons-aware review's Q5, including abbreviated reviews.
+Record: the attributable user goal/source; the ordinary journey and contrasting
+cases; evidence and its limits; material findings and their disposition.
+For trust/approval surfaces, assess needless repeat asks and unsupported coverage,
+semantic task scope versus authority floors, and observed versus proposed ask-load
+measurements. A no-conflict table is not proof of the intended outcome.
+If the lens or its trust portion does not apply, give a surface-specific reason.
+No invented approval quota or new constitutional obligation. -->
+
 ## Iteration Summary
 
 | Iteration | Reviewers who flagged design issues | Design findings | Precision findings | Spec sections changed |

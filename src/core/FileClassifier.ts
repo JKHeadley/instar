@@ -17,6 +17,7 @@ import { KEY_MATERIAL_SECRET_PATTERNS } from './keyMaterialPaths.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from './IdentityStore.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { IMPORTED_HISTORY_PROJECT_PATH } from './importedHistoryPaths.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -195,6 +196,10 @@ const DEFAULT_GENERATED_PATTERNS = [
   // and results describe THIS machine's disk (hardware-bound); another machine
   // reading them would watch the wrong disk or recover the wrong process group.
   '.instar/state/disk-steward/',
+  // Quota pacing (docs/specs/quota-pacing-forecast.md §4): each machine's own quota-reading
+  // history. Merged live on read through GET /quota-pacing, so syncing it would only create
+  // conflicts; it is derived telemetry and rebuilds after a restore.
+  '.instar/state/quota-history/',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
@@ -221,6 +226,8 @@ const DEFAULT_SECRET_PATTERNS = [
   // the same folders the file routes and backups refuse.
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
+  // A person's imported Claude/ChatGPT history stays on this machine only.
+  IMPORTED_HISTORY_PROJECT_PATH,
   // Key material as PREFIXES (a2a-single-agent-identity §5.3): the exact
   // `.instar/identity.json` match above left `identity.json.superseded-*`
   // syncable; these cover every sibling and the other key files by the same
