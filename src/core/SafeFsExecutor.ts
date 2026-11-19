@@ -56,6 +56,12 @@ export interface WorktreeTrashScope {
   trashRoot: string;
   /** Rename sources this run's evaluation passed. A source not listed is refused. */
   allowedSources?: readonly string[];
+  /**
+   * The ONE restore direction (spec reaper-node-modules-regenerable §5): the exact
+   * original path recorded in the attempt's `renaming` row. A restore destination
+   * must equal it, be a direct child of `worktreesDir` (not `.trash`) and not exist.
+   */
+  restoreTo?: string;
 }
 
 /** Thrown when a `worktreeTrashScope` call does not qualify. Nothing was touched. */
@@ -67,7 +73,7 @@ export class WorktreeTrashScopeError extends Error {
   }
 }
 
-export type WorktreeTrashRole = 'rename-source' | 'trash';
+export type WorktreeTrashRole = 'rename-source' | 'trash' | 'restore-source' | 'restore-destination';
 
 /**
  * Canonical form of a path that may not exist yet: the realpath of its parent
@@ -112,6 +118,26 @@ export function decideWorktreeTrashScope(
     if (!canonical.startsWith(trashReal + path.sep) || canonical.length <= trashReal.length + 1) {
       return { ok: false, reason: 'target is not strictly inside the trash root' };
     }
+    return { ok: true, canonical };
+  }
+  if (role === 'restore-source') {
+    if (path.dirname(canonical) !== trashReal) return { ok: false, reason: 'restore source is not a direct child of the trash root' };
+    let st: fs.Stats;
+    try { st = fs.lstatSync(canonical); }
+    catch (err) { return { ok: false, reason: `restore source cannot be read: ${(err as Error).message}` }; }
+    if (st.isSymbolicLink() || !st.isDirectory()) return { ok: false, reason: 'restore source is not a real folder' };
+    return { ok: true, canonical };
+  }
+  if (role === 'restore-destination') {
+    if (!scope.restoreTo) return { ok: false, reason: 'no recorded original path to restore to' };
+    let want: string;
+    try { want = canonicalizeLeafPath(scope.restoreTo); }
+    catch (err) { return { ok: false, reason: `recorded original path cannot be canonicalized: ${(err as Error).message}` }; }
+    if (canonical !== want) return { ok: false, reason: 'restore destination is not the recorded original path' };
+    if (path.dirname(canonical) !== worktreesReal) return { ok: false, reason: 'restore destination is not a direct child of the worktrees folder' };
+    if (canonical === trashReal) return { ok: false, reason: 'restore destination is the trash root' };
+    try { fs.lstatSync(canonical); return { ok: false, reason: 'restore destination already exists' }; }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return { ok: false, reason: `restore destination cannot be checked: ${(err as Error).message}` }; }
     return { ok: true, canonical };
   }
   // rename-source
@@ -383,6 +409,38 @@ export class SafeFsExecutor {
       audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'allowed');
     } catch (err) {
       audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'denied', `rename-error: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Rename a checkout back out of the reaper's trash to the exact original path
+   * recorded in its attempt's `renaming` row (spec reaper-node-modules-regenerable §5),
+   * when the post-rename re-check finds the tree changed. Requires
+   * `worktreeTrashScope.restoreTo`. The source must be a real folder directly in the
+   * trash root; the destination must equal `restoreTo`, be a direct child of
+   * `worktreesDir` and not exist. Refuses otherwise, before touching anything.
+   */
+  static safeRestoreDirSync(trashPath: string, originalPath: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope }): void {
+    if (!opts.worktreeTrashScope?.restoreTo) throw new WorktreeTrashScopeError(trashPath, opts.operation, 'safeRestoreDirSync requires worktreeTrashScope.restoreTo');
+    const src = guard(trashPath, opts.operation, 'safeRestoreDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'restore-source' });
+    const dest = guard(originalPath, opts.operation, 'safeRestoreDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'restore-destination' });
+    let srcDev: number;
+    let destDev: number;
+    try { srcDev = fs.lstatSync(src).dev; destDev = fs.statSync(path.dirname(dest)).dev; }
+    catch (err) {
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'denied', `volume check failed: ${(err as Error).message}`);
+      throw new WorktreeTrashScopeError(trashPath, opts.operation, `volume check failed: ${(err as Error).message}`);
+    }
+    if (srcDev !== destDev) {
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'denied', 'different volumes');
+      throw new WorktreeTrashScopeError(trashPath, opts.operation, 'source and destination are on different volumes');
+    }
+    try {
+      fs.renameSync(src, dest);
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'allowed');
+    } catch (err) {
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'denied', `rename-error: ${(err as Error).message}`);
       throw err;
     }
   }

@@ -29,3 +29,4 @@ All the checking runs in the cleanup's background program, never in the agent's 
 ## What needs deciding
 
 Nothing now. The design comes to the Chief of Staff for approval before it is built.
+If a reference build keeps failing for reasons other than a missing download, it is retried after one, two and four days, then once a week.

@@ -79,6 +79,8 @@ import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS }
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktreeReaper.js';
 import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
+import { nextBuildAttemptAt, REFERENCE_BUILD_DEFAULTS } from '../monitoring/agentWorktreeReferenceBuilder.js';
+import type { BuildStatusEntry } from '../monitoring/agentWorktreeNodeModules.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
@@ -3130,6 +3132,64 @@ const worktreeReclaimRunSpawn: SelfActionController = {
   },
 };
 
+// ── reference builds for the root node_modules proof (docs/specs/reaper-node-modules-regenerable.md §1, §3) ──
+// The worst case: every needed key's build fails, forever, and the reaper passes
+// keep coming. Bounded by the shipped rules, read from the real code, not copied:
+//   - at most one build per pass, refused while a build runs (6 min timeout) or a
+//     reclaim run is active (AgentWorktreeReferenceBuilder.afterPass);
+//   - passes follow the reaper's timers: one initialPassDelayMs after boot, then
+//     every reapIntervalMs, so the closest two starts are RECLAIM_RUN_FLOOR_MS apart;
+//   - per key, the real back-off nextBuildAttemptAt (daily for a cache miss; 1, 2,
+//     4 days then weekly otherwise) is driven here.
+// It never stops on its own (a key failing for a missing cache is retried daily
+// until sessions refill the cache), so it is a declared Eternal Sentinel with the
+// pass rate floor.
+const REFERENCE_KEYS = 8;
+const worktreeReferenceBuildSpawn: SelfActionController = {
+  id: 'worktree-reference-build-spawn',
+  actionVerb: 'spawn-worktree-reference-build', // 'spawn' detector token: AgentWorktreeReferenceBuilder.start → spawnChild
+  models: 'src/monitoring/agentWorktreeReferenceBuilder.ts (afterPass: one build per pass, refused while running / during a reclaim run / at the manifest cap / below 3 GB; nextBuildAttemptAt back-off per key)',
+  modelsPath: 'src/monitoring/agentWorktreeReferenceBuilder.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart re-arms the reaper timers (first pass initialPassDelayMs after boot) and forgets the in-memory running build, but the per-key back-off is persisted in status.json, so a failing key is not retried early; a build orphaned by the restart still holds build.lock (corroborated by its build id), so a second concurrent build exits as busy without counting a failure; and the orphan kills itself past its own timeout.' },
+  delegatedGiveUp: 'Per key the back-off (nextBuildAttemptAt, persisted in status.json) spaces retries a day or more apart; a manifest at the 30 cap with every kept one needed starts nothing; dryRun is irrelevant (builds write only manifests in the reaper state folder, never a checkout).',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 400, // 100 h at 15 min
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'a key whose build keeps failing for a missing npm cache entry is retried once a day until sessions refill the cache; at most one build per hourly pass', rateFloorMs: RECLAIM_RUN_FLOOR_MS },
+  makeUnderPressure(f, sink) {
+    const bootAt = f.clock.nowMs();
+    const interval = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs;
+    const initialAt = bootAt + DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.initialPassDelayMs;
+    let initialDone = false;
+    let nextIntervalAt = bootAt + interval;
+    let runningUntil = Number.NEGATIVE_INFINITY;
+    const status = new Map<string, BuildStatusEntry>();
+    const pass = (now: number): void => {
+      if (now < runningUntil) return; // a build is still running: refused
+      for (let i = 0; i < REFERENCE_KEYS; i++) {
+        const key = `key-${i}`;
+        const st = status.get(key);
+        if (st && now < st.nextAt) continue;
+        sink.emit({ verb: 'spawn-worktree-reference-build', target: key });
+        sink.emitTimesMs.push(now);
+        runningUntil = now + REFERENCE_BUILD_DEFAULTS.timeoutMs; // worst case: every build runs to its timeout
+        if (f.targetAlwaysRejects()) status.set(key, nextBuildAttemptAt(st, i % 2 === 0 ? 'npm-cache-missing' : 'build-error', now));
+        else status.delete(key);
+        return; // one build per pass
+      }
+    };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!initialDone && now >= initialAt) { initialDone = true; pass(initialAt); }
+        while (now >= nextIntervalAt) { pass(nextIntervalAt); nextIntervalAt += interval; }
+      },
+    };
+  },
+};
+
 // ── local-verify (spec docs/specs/local-verify-merge-authority.md; ACT-147) ──
 // Every model below drives the SAME exported pure decision functions the real
 // LocalVerifyService / StatusReconciler call (decideVerifyRetry, decideStarved,
@@ -6120,6 +6180,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   diskStewardNotice,
   worktreeReclaimAttempt,
   worktreeReclaimRunSpawn,
+  worktreeReferenceBuildSpawn,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,

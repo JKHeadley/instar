@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-19T08:28:34.248Z",
+  "slug": "reaper-node-modules-regenerable",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeFsExecutor.ts matches SafeFsExecutor (destructive-fs funnel)",
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 2323,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SafeFsExecutor.ts",
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/agentWorktreeEvaluationJob.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/agentWorktreeNodeModules.ts",
+      "src/monitoring/agentWorktreeReclaimMain.ts",
+      "src/monitoring/agentWorktreeReclaimRunner.ts",
+      "src/monitoring/agentWorktreeReferenceBuildMain.ts",
+      "src/monitoring/agentWorktreeReferenceBuilder.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2236,
+    "deletedLines": 87
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Ratchet: worktree-reference-build-spawn starts at most one reference build per reaper pass, with the real backoff (1/2/4 days then weekly; daily for cache misses); converges in the self-action convergence test."
+    }
+  },
+  "verdict": "pass"
+}

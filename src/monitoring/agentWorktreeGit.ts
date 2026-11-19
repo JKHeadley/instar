@@ -18,6 +18,14 @@ import { classifyPorcelain } from '../core/worktreeDirtyCheck.js';
 import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReaper.js';
 import { type WorktreeEnumeration, summarizeEnumerationError } from './worktreeEnumeration.js';
 import { GENERATED_STANDARDS_REGISTRY_OUTPUTS } from '../core/standardsRegistryPath.js';
+import {
+  type NodeModulesMemoLookup,
+  type NodeModulesMemo,
+  type NodeModulesVerdictRecord,
+  type ResidueArchive,
+  archiveNodeModulesResidue,
+  verifyResidueArchive,
+} from './agentWorktreeNodeModules.js';
 
 /**
  * Reaper-specific residue denylist (spec: worktree-reaper-untracked-blindspot).
@@ -67,10 +75,15 @@ export function isGateRecordPath(relPath: string): boolean {
  * `archived-residue` (spec reaper-generated-files-regenerable §2-3): the closed
  * list of the repo's own generated files below, regular files only. Not proven,
  * so their bytes are archived and verified before removal, like gate records.
+ * `node-modules-residue` (spec reaper-node-modules-regenerable §4): a real ROOT
+ * `node_modules` whose content this pass proved equal to a reference rebuilt
+ * offline from the checkout's own lockfile, apart from script residue that is
+ * archived to the content-addressed store before removal. Read from the
+ * per-pass memo only; with no memo (or a stale one) it is `work`, as before.
  * Anything else ignored stays `work`, as before (a hand-made `notes/dist/`
  * or an `audit-data/` folder keeps the checkout).
  */
-export type IgnoredEntryClass = 'gate-record' | 'regenerable' | 'archived-residue' | 'work';
+export type IgnoredEntryClass = 'gate-record' | 'regenerable' | 'archived-residue' | 'node-modules-residue' | 'work';
 
 /**
  * The repo's own generated files (spec docs/specs/reaper-generated-files-regenerable.md §2).
@@ -171,12 +184,21 @@ function distIsBuildOutput(checkout: string): boolean {
   }
 }
 
-export function classifyIgnoredEntry(relPath: string, checkout: string, readGit?: ReadGit): IgnoredEntryClass {
+export function classifyIgnoredEntry(relPath: string, checkout: string, readGit?: ReadGit, nodeModulesMemo?: NodeModulesMemoLookup): IgnoredEntryClass {
   if (isGateRecordPath(relPath)) return 'gate-record';
   const segments = relPath.replace(/\/+$/, '').split('/');
   if (segments.some((s) => s === '' || s === '..' || s === '.')) return 'work';
   const nm = segments.indexOf('node_modules');
-  if (nm >= 0) return isSymlink(path.join(checkout, ...segments.slice(0, nm + 1))) ? 'regenerable' : 'work';
+  if (nm >= 0) {
+    if (isSymlink(path.join(checkout, ...segments.slice(0, nm + 1)))) return 'regenerable';
+    // A real ROOT node_modules: the verdict this pass's evaluator memoized (spec
+    // reaper-node-modules-regenerable §4). No memo, another pass's, or a changed
+    // folder stamp ⇒ work, exactly as before.
+    if (nm === 0 && nodeModulesMemo && isRealDir(path.join(checkout, 'node_modules'))) {
+      return nodeModulesMemo.lookup(checkout)?.verdict === 'node-modules-residue' ? 'node-modules-residue' : 'work';
+    }
+    return 'work';
+  }
   if (segments[0] === 'dist' && distIsBuildOutput(checkout)) return 'regenerable';
   const rel = segments.join('/');
   if (rel === REGISTRY_COPY_PATH) return readGit && registryCopyIsCommitted(checkout, readGit) ? 'regenerable' : 'work';
@@ -248,6 +270,11 @@ function expandResidueDir(checkout: string, relDir: string): string[] | null {
   }
 }
 
+function isRealDir(p: string): boolean {
+  try { return fs.lstatSync(p).isDirectory(); }
+  catch { return false; } // @silent-fallback-ok — unreadable ⇒ not a real folder ⇒ work (KEEP)
+}
+
 /** True only for a symbolic link (lstat; the link is never followed). */
 function isSymlink(p: string): boolean {
   try { return fs.lstatSync(p).isSymbolicLink(); }
@@ -270,7 +297,18 @@ export interface InboundLinkIndex {
   linked: Set<string>;
   /** Unreadable folders owned by another account (skipped; their links cannot be used by this agent's processes). */
   skippedForeign: string[];
+  /**
+   * Every link found under `.worktrees-deps` and `.instar/lanes` (walked fully only
+   * here). The reclaim child re-reads each one at removal time (spec
+   * reaper-node-modules-regenerable §2, "Deep links found after the index").
+   */
+  deepLinks: string[];
+  /** How many `git worktree list` roots outside the walks had their root `node_modules` checked (§2). */
+  extraRootsChecked: number;
 }
+
+/** Why an index could not be built: `link-index-timeout` is reported apart from per-checkout verdicts (§2). */
+export type LinkIndexFailure = 'link-index-timeout' | 'link-index-unreadable';
 
 /**
  * Walk `root` for symlinks without following them. maxDepth counts levels below
@@ -279,11 +317,11 @@ export interface InboundLinkIndex {
  * owned by another account that this account cannot read is skipped and
  * listed: no process running as this account can traverse it to use its links.
  */
-async function walkLinks(root: string, maxDepth: number, pruneName: string | null, out: string[], skipped: string[], deadline: number, skipTopNames: ReadonlySet<string> = new Set()): Promise<boolean> {
+async function walkLinks(root: string, maxDepth: number, pruneName: string | null, out: string[], skipped: string[], deadline: number, skipTopNames: ReadonlySet<string> = new Set()): Promise<'ok' | 'timeout' | 'unreadable'> {
   const uid = typeof process.getuid === 'function' ? process.getuid() : -1;
   const stack: Array<[string, number]> = [[root, 0]];
   while (stack.length) {
-    if (Date.now() > deadline) return false;
+    if (Date.now() > deadline) return 'timeout';
     const [dir, depth] = stack.pop()!;
     let entries: fs.Dirent[];
     try {
@@ -292,14 +330,14 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
       // @silent-fallback-ok — an unreadable folder makes the index unknown (false), which keeps every checkout
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' && dir !== root) continue; // vanished mid-walk
-      if (code === 'ENOENT') return true;
+      if (code === 'ENOENT') return 'ok';
       if (code === 'EACCES' || code === 'EPERM') {
         try {
           const st = await fs.promises.lstat(dir);
           if (uid >= 0 && st.uid !== uid) { skipped.push(dir); continue; }
         } catch { /* @silent-fallback-ok — unknown owner ⇒ unknown index, which keeps every checkout */ }
       }
-      return false;
+      return 'unreadable';
     }
     for (const e of entries) {
       if (depth === 0 && skipTopNames.has(e.name)) continue;
@@ -308,11 +346,43 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
       else if (e.isDirectory() && depth < maxDepth && e.name !== pruneName) stack.push([full, depth + 1]);
     }
   }
-  return true;
+  return 'ok';
 }
 
-export async function buildInboundLinkIndex(agentHome: string, worktreesDir: string, opts?: { timeoutMs?: number }): Promise<InboundLinkIndex | null> {
+/** True when `p` is `dir` or inside it (literal comparison of resolved paths). */
+function pathWithin(p: string, dir: string): boolean {
+  return p === dir || p.startsWith(dir + path.sep);
+}
+
+/**
+ * The `git worktree list --porcelain` roots that no existing walk covers (spec
+ * reaper-node-modules-regenerable §2): not inside `.worktrees/`, `.worktrees-deps/`
+ * or `.instar/lanes/`, and not the agent home itself (its top level is walked).
+ */
+export function extraLinkRoots(porcelain: string, agentHome: string, worktreesDir: string): string[] {
+  const real = (x: string) => { try { return fs.realpathSync(x); } catch { return path.resolve(x); } }; // @silent-fallback-ok — unresolvable ⇒ compare the literal
+  const covered = [worktreesDir, path.join(agentHome, '.worktrees-deps'), path.join(agentHome, '.instar', 'lanes')].flatMap((d) => [path.resolve(d), real(d)]);
+  const home = [path.resolve(agentHome), real(agentHome)];
+  const out: string[] = [];
+  for (const line of porcelain.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const wt = line.slice('worktree '.length).trim();
+    if (!wt) continue;
+    const forms = [path.resolve(wt), real(wt)];
+    if (forms.some((f) => home.includes(f))) continue;
+    if (forms.some((f) => covered.some((c) => pathWithin(f, c)))) continue;
+    out.push(wt);
+  }
+  return out;
+}
+
+export async function buildInboundLinkIndex(
+  agentHome: string,
+  worktreesDir: string,
+  opts?: { timeoutMs?: number; extraRoots?: readonly string[]; onFailure?: (reason: LinkIndexFailure) => void },
+): Promise<InboundLinkIndex | null> {
   const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
+  const fail = (r: 'timeout' | 'unreadable'): null => { opts?.onFailure?.(r === 'timeout' ? 'link-index-timeout' : 'link-index-unreadable'); return null; };
   const worktreesReal = (() => { try { return fs.realpathSync(worktreesDir); } catch { return worktreesDir; } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal path
   const links: string[] = [];
   const skippedForeign: string[] = [];
@@ -324,8 +394,28 @@ export async function buildInboundLinkIndex(agentHome: string, worktreesDir: str
     [path.join(agentHome, '.worktrees-deps'), Number.MAX_SAFE_INTEGER, null, new Set()],
     [path.join(agentHome, '.instar', 'lanes'), Number.MAX_SAFE_INTEGER, null, new Set()],
   ];
+  const deepLinks: string[] = [];
   for (const [root, depth, prune, skipTop] of walks) {
-    if (!(await walkLinks(root, depth, prune, links, skippedForeign, deadline, skipTop))) return null;
+    const deep = depth === Number.MAX_SAFE_INTEGER;
+    const sink = deep ? deepLinks : links;
+    const r = await walkLinks(root, depth, prune, sink, skippedForeign, deadline, skipTop);
+    if (r !== 'ok') return fail(r);
+  }
+  links.push(...deepLinks);
+  // Roots git knows that no walk covers (e.g. `.instar/worktrees/*`): only their root
+  // `node_modules`, one lstat (+ readlink) each, where instar's tools make links (§2).
+  let extraRootsChecked = 0;
+  for (const root of opts?.extraRoots ?? []) {
+    if (Date.now() > deadline) return fail('timeout');
+    const nm = path.join(root, 'node_modules');
+    try {
+      const st = await fs.promises.lstat(nm);
+      if (st.isSymbolicLink()) links.push(nm);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return fail('unreadable'); // @silent-fallback-ok — unknown ⇒ null index ⇒ every checkout kept
+    }
+    extraRootsChecked++;
   }
   const owner = (p: string): string | null => {
     const norm = p === worktreesDir || p.startsWith(worktreesDir + path.sep) ? worktreesReal + p.slice(worktreesDir.length) : p;
@@ -349,7 +439,51 @@ export async function buildInboundLinkIndex(agentHome: string, worktreesDir: str
       if (real && real !== from) linked.add(real);
     } catch { /* dangling link: the lexical target is what matters */ }
   }
-  return { linked, skippedForeign };
+  return { linked, skippedForeign, deepLinks, extraRootsChecked };
+}
+
+/**
+ * The fresh link check immediately before a rename (spec
+ * reaper-node-modules-regenerable §2): the root `node_modules` link of every
+ * worktree in a fresh `git worktree list`, the existing walk roots at depth 1, and
+ * a re-read of every deep link the index found. Returns the first link that now
+ * resolves into `candidate` (lexically or by realpath), or null. Throws when a
+ * read fails (the caller keeps the checkout).
+ */
+export async function freshLinkInto(candidate: string, opts: { agentHome: string; worktreesDir: string; worktreeRoots: readonly string[]; deepLinks: readonly string[] }): Promise<string | null> {
+  const candReal = (() => { try { return fs.realpathSync(candidate); } catch { return path.resolve(candidate); } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal
+  const candLit = path.resolve(candidate);
+  const inside = (p: string) => pathWithin(p, candReal) || pathWithin(p, candLit);
+  const links: string[] = [];
+  for (const root of opts.worktreeRoots) {
+    const nm = path.join(root, 'node_modules');
+    try { if ((await fs.promises.lstat(nm)).isSymbolicLink()) links.push(nm); }
+    catch (err) { const c = (err as NodeJS.ErrnoException).code; if (c !== 'ENOENT' && c !== 'ENOTDIR') throw err; }
+  }
+  const skipped: string[] = [];
+  const deadline = Date.now() + 120_000;
+  const noTrash = new Set([WORKTREE_TRASH_DIRNAME]);
+  for (const [root, prune, skipTop] of [
+    [opts.worktreesDir, 'node_modules', noTrash],
+    [opts.agentHome, 'node_modules', new Set<string>()],
+    [path.join(opts.agentHome, '.worktrees-deps'), null, new Set<string>()],
+    [path.join(opts.agentHome, '.instar', 'lanes'), null, new Set<string>()],
+  ] as Array<[string, string | null, ReadonlySet<string>]>) {
+    const r = await walkLinks(root, 1, prune, links, skipped, deadline, skipTop);
+    if (r !== 'ok') throw new Error(`fresh link check: ${r} walking ${root}`);
+  }
+  links.push(...opts.deepLinks);
+  for (const link of links) {
+    const abs = path.resolve(link);
+    if (inside(abs)) continue; // a link inside the candidate (npm's .bin) is not inbound
+    let target: string;
+    try { target = await fs.promises.readlink(abs); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'EINVAL') continue; throw err; }
+    if (inside(path.resolve(path.dirname(abs), target))) return abs;
+    try { if (inside(await fs.promises.realpath(abs))) return abs; }
+    catch { /* dangling: the lexical target decided above */ }
+  }
+  return null;
 }
 
 /**
@@ -380,6 +514,8 @@ export interface ResidueManifest {
   archived: number;
   /** Untracked gate records the archive step deleted (their folders may now collapse into one ignored entry). */
   removedUntracked: string[];
+  /** A real root `node_modules` proven this pass: its script residue, archived to the content-addressed store (spec reaper-node-modules-regenerable §4). */
+  nodeModules?: ResidueArchive;
 }
 
 interface ArchivableListing {
@@ -389,6 +525,8 @@ interface ArchivableListing {
   ignoredRecords: string[];
   /** Archived residue files (folder entries expanded one level). */
   residue: string[];
+  /** The memoized proof for a real root `node_modules` (`node-modules-residue`), or null. */
+  nodeModules: NodeModulesVerdictRecord | null;
 }
 
 /**
@@ -396,7 +534,7 @@ interface ArchivableListing {
  * archived. Throws on anything that is work (tracked change, untracked non-record,
  * ignored work), so the caller keeps the checkout BEFORE changing anything.
  */
-function listArchivable(p: string, readGit: ReadGit, expandable: ReadonlySet<string> = new Set()): ArchivableListing {
+function listArchivable(p: string, readGit: ReadGit, expandable: ReadonlySet<string> = new Set(), nodeModulesMemo?: NodeModulesMemoLookup): ArchivableListing {
   const untracked: string[] = [];
   for (const line of statusLines(readGit(statusArgs(p), p))) {
     if (!isUntrackedGateRecord(line)) throw new Error(`not gate-records-only: ${line}`);
@@ -404,6 +542,7 @@ function listArchivable(p: string, readGit: ReadGit, expandable: ReadonlySet<str
   }
   const ignoredRecords: string[] = [];
   const residue: string[] = [];
+  let nodeModules: NodeModulesVerdictRecord | null = null;
   const entries = readGit(ignoredArgs(p), p).split('\0').filter(Boolean);
   // git can report a folder AND the files inside it; each path is classified once.
   const seen = new Set<string>();
@@ -411,7 +550,14 @@ function listArchivable(p: string, readGit: ReadGit, expandable: ReadonlySet<str
     const relPath = entries[i];
     if (seen.has(relPath)) continue;
     seen.add(relPath);
-    const kind = classifyIgnoredEntry(relPath, p, readGit);
+    const kind = classifyIgnoredEntry(relPath, p, readGit, nodeModulesMemo);
+    if (kind === 'node-modules-residue') {
+      // Expanded into its residue files from the memo (the comparison already listed them).
+      const rec = nodeModulesMemo?.lookup(p) ?? null;
+      if (!rec) throw new Error(`not gate-records-only: ${relPath}`);
+      nodeModules = rec;
+      continue;
+    }
     if (kind === 'work' && relPath.endsWith('/') && expandable.has(relPath.replace(/\/+$/, ''))) {
       // A folder that only collapsed into one entry because the archive step
       // deleted the untracked records beside its ignored files: list its files
@@ -436,7 +582,7 @@ function listArchivable(p: string, readGit: ReadGit, expandable: ReadonlySet<str
     }
     throw new Error(`not gate-records-only: ${relPath}`);
   }
-  return { untracked, ignoredRecords: [...new Set(ignoredRecords)], residue: [...new Set(residue)] };
+  return { untracked, ignoredRecords: [...new Set(ignoredRecords)], residue: [...new Set(residue)], nodeModules };
 }
 
 const COPY_CHUNK_BYTES = 1024 * 1024;
@@ -536,8 +682,8 @@ function freeBytesAt(dir: string): number | null {
  * does can land in residue after its copy. Returns the manifest the final
  * re-check compares against.
  */
-export function preserveGateRecords(p: string, archiveRoot: string, readGit: ReadGit): ResidueManifest {
-  const { untracked, ignoredRecords, residue } = listArchivable(p, readGit);
+export function preserveGateRecords(p: string, archiveRoot: string, readGit: ReadGit, nodeModulesMemo?: NodeModulesMemoLookup): ResidueManifest {
+  const { untracked, ignoredRecords, residue, nodeModules } = listArchivable(p, readGit, new Set(), nodeModulesMemo);
   const records = [...untracked, ...ignoredRecords];
   const all = [...records, ...residue];
   let totalBytes = 0;
@@ -582,8 +728,13 @@ export function preserveGateRecords(p: string, archiveRoot: string, readGit: Rea
   for (const relPath of ignoredRecords) entries.push({ relPath, ...(recordHashes.get(relPath) ?? hashFile(path.join(p, relPath))) });
   for (const relPath of residue) entries.push({ relPath, ...archiveFile(path.join(p, relPath), path.join(worktreeArchive, relPath)) });
   entries.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
+  // 3) A proven real root node_modules: its script residue into the content-addressed
+  //    store, every blob, the residue manifest and their folders fsynced (spec
+  //    reaper-node-modules-regenerable §4). Throws (keep) when it would not fit above
+  //    the disk floor or any copy fails to verify.
+  const nodeModulesArchive = nodeModules ? archiveNodeModulesResidue(p, nodeModules, archiveRoot) : undefined;
   // Ignored records and residue are archived above; `git worktree remove` takes them with the checkout.
-  return { entries, archived: all.length, removedUntracked: untracked };
+  return { entries, archived: all.length, removedUntracked: untracked, ...(nodeModulesArchive ? { nodeModules: nodeModulesArchive } : {}) };
 }
 
 /**
@@ -593,15 +744,21 @@ export function preserveGateRecords(p: string, archiveRoot: string, readGit: Rea
  * replaced or changed type, or any size or hash change. Untracked gate records
  * were deleted by the archive step, so any untracked entry now is new.
  */
-export function recheckResidueManifest(p: string, archived: ResidueManifest, readGit: ReadGit): void {
+export function recheckResidueManifest(p: string, archived: ResidueManifest, readGit: ReadGit, nodeModulesMemo?: NodeModulesMemoLookup, archiveRoot?: string): void {
   // Folders above the archived files may now be reported whole (see listArchivable).
   const expandable = new Set<string>();
   for (const rel of [...archived.entries.map((e) => e.relPath), ...archived.removedUntracked]) {
     const segs = rel.split('/');
     for (let i = 1; i < segs.length; i++) expandable.add(segs.slice(0, i).join('/'));
   }
-  const now = listArchivable(p, readGit, expandable);
+  const now = listArchivable(p, readGit, expandable, nodeModulesMemo);
   if (now.untracked.length > 0) throw new Error(`residue changed since archive: new untracked ${now.untracked[0]}`);
+  if (!!now.nodeModules !== !!archived.nodeModules) throw new Error('residue changed since archive: the node_modules proof changed');
+  if (archived.nodeModules) {
+    if (!archiveRoot) throw new Error('residue re-check: no archive root for the node_modules residue');
+    // The content-addressed residue is re-verified by hash (spec reaper-node-modules-regenerable §5).
+    verifyResidueArchive(p, archived.nodeModules, archiveRoot);
+  }
   const rels = [...now.ignoredRecords, ...now.residue].sort();
   const want = archived.entries.map((e) => e.relPath);
   if (rels.length !== want.length || rels.some((r, i) => r !== want[i])) {
@@ -645,10 +802,10 @@ export function apparentBytes(root: string, maxEntries = 500_000): number | null
  * archive step would copy (gate records + archived residue) and the apparent
  * bytes removal would reclaim. null when it cannot be measured.
  */
-export function projectReclaim(p: string, readGit: ReadGit): { residueBytes: number; apparentBytes: number } | null {
+export function projectReclaim(p: string, readGit: ReadGit, nodeModulesMemo?: NodeModulesMemoLookup): { residueBytes: number; apparentBytes: number } | null {
   try {
-    const { untracked, ignoredRecords, residue } = listArchivable(p, readGit);
-    let residueBytes = 0;
+    const { untracked, ignoredRecords, residue, nodeModules } = listArchivable(p, readGit, new Set(), nodeModulesMemo);
+    let residueBytes = nodeModules?.residueBytes ?? 0;
     for (const rel of [...untracked, ...ignoredRecords, ...residue]) residueBytes += fs.lstatSync(path.join(p, rel)).size;
     const apparent = apparentBytes(p);
     return apparent === null ? null : { residueBytes, apparentBytes: apparent };
@@ -860,6 +1017,18 @@ export interface AgentWorktreeReclaimOps {
   worktreeLockState: (path: string) => 'locked' | 'unlocked' | 'unknown';
   /** `git -C <projectDir> worktree prune` through SafeGitExecutor. */
   pruneWorktrees: () => void;
+  /** prepareRemoval with its parts: the combined manifest digest and, for a real root node_modules, its residue archive. */
+  prepareRemovalDetailed?: (path: string) => { manifestSha256: string; nodeModules?: ResidueArchive };
+  /** Fresh process scans (cwd + command lines), never the 10 s memo. Throws when the checkout is in use or a scan fails. */
+  freshProcessCheck?: (path: string) => void;
+  /** The fresh link check before a rename (spec reaper-node-modules-regenerable §2). A link path, or null. Throws when unreadable. */
+  freshLinkCheck?: (path: string) => Promise<string | null>;
+  /** How the last link index ended: 'ok', a failure kind, or 'not-built'. */
+  linkIndexStatus?: () => 'ok' | 'not-built' | LinkIndexFailure;
+  /** isClean with exactly one entry skipped: the root `node_modules` when it is a real folder (§4 "The eligibility predicate"). */
+  isCleanExceptRootNodeModules?: (path: string) => boolean;
+  /** The archive root (the residue store lives under it). */
+  gateRecordArchiveDir?: string;
 }
 
 /**
@@ -892,8 +1061,13 @@ export function makeAgentWorktreeReaperDeps(opts: {
   lsRemotePrHead?: LsRemotePrHead;
   /** Where gate records go before a checkout is removed. Default: `<agent home>/.instar/instar-dev-decisions-archive`. */
   gateRecordArchiveDir?: string;
+  /**
+   * The per-pass root `node_modules` verdicts (spec reaper-node-modules-regenerable §4).
+   * Absent ⇒ a real root `node_modules` is `work`, exactly as before.
+   */
+  nodeModulesMemo?: NodeModulesMemo;
   now?: () => number;
-}): AgentWorktreeReaperDeps & AgentWorktreeReclaimOps {
+}): AgentWorktreeReaperDeps & AgentWorktreeReclaimOps & Required<Pick<AgentWorktreeReclaimOps, 'prepareRemovalDetailed' | 'freshProcessCheck' | 'freshLinkCheck' | 'linkIndexStatus' | 'isCleanExceptRootNodeModules' | 'gateRecordArchiveDir'>> {
   const readGit = opts.readGit ?? defaultReadGit;
   const gateRecordArchiveDir = opts.gateRecordArchiveDir
     ?? path.join(path.dirname(opts.worktreesDir), '.instar', 'instar-dev-decisions-archive');
@@ -972,8 +1146,20 @@ export function makeAgentWorktreeReaperDeps(opts: {
   let skippedForeignDirs: string[] = [];
   let prepareSeq = 0;
   let appliedSeq = 0;
+  let lastDeepLinks: string[] = [];
+  let linkIndexState: 'ok' | 'not-built' | LinkIndexFailure = 'not-built';
+  const agentHomeDir = path.dirname(opts.worktreesDir);
   const inboundLinksFn = opts.inboundLinks ?? (async (): Promise<Set<string> | null> => {
-    const idx = await buildInboundLinkIndex(path.dirname(opts.worktreesDir), opts.worktreesDir);
+    // Roots git knows outside every walk (e.g. `.instar/worktrees/*`): their root
+    // node_modules link only (spec reaper-node-modules-regenerable §2). An unreadable
+    // worktree list makes the index unknown, which keeps every checkout.
+    let extraRoots: string[];
+    try { extraRoots = extraLinkRoots(readGit(['-C', repo, 'worktree', 'list', '--porcelain'], repo), agentHomeDir, opts.worktreesDir); }
+    catch { linkIndexState = 'link-index-unreadable'; return null; } // @silent-fallback-ok — unknown roots ⇒ null index ⇒ every checkout kept
+    let failure: LinkIndexFailure | null = null;
+    const idx = await buildInboundLinkIndex(agentHomeDir, opts.worktreesDir, { extraRoots, onFailure: (r) => { failure = r; } });
+    linkIndexState = idx ? 'ok' : (failure ?? 'link-index-unreadable');
+    lastDeepLinks = idx?.deepLinks ?? [];
     skippedForeignDirs = idx?.skippedForeign ?? [];
     if (skippedForeignDirs.length) console.warn(`[agent-worktree-reaper] link scan skipped ${skippedForeignDirs.length} folder(s) owned by another account: ${skippedForeignDirs.slice(0, 3).join(', ')}`);
     return idx ? idx.linked : null;
@@ -1036,16 +1222,10 @@ export function makeAgentWorktreeReaperDeps(opts: {
 
   const realOrSelf = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }; // @silent-fallback-ok — unresolvable ⇒ compare the resolved literal
 
-  /** PR 3480's archive + final re-check, shared by removeWorktree and the reclaim child. */
-  const prepareRemoval = (p: string): string => {
-    // Gate records go to the archive first; if that fails this throws and the
-    // reaper keeps the checkout.
-    const manifest = preserveGateRecords(p, gateRecordArchiveDir, readGit);
-    // FINAL RE-CHECK (spec reaper-generated-files-regenerable §4), right before
-    // the irreversible step: the residue must be exactly what was archived, and
-    // no process may have started in the checkout. The process lists are read
-    // FRESH here (never the 10 s memo isInUse uses). A throw keeps the checkout.
-    recheckResidueManifest(p, manifest, readGit);
+  const nmMemo = opts.nodeModulesMemo;
+
+  /** Fresh process scans (never the 10 s memo isInUse uses). Throws ⇒ keep. */
+  const freshProcessCheck = (p: string): void => {
     const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal path
     const cwds = cwdRootsFn();
     if (cwds === null) throw new Error('final re-check: working-folder scan failed');
@@ -1053,7 +1233,45 @@ export function makeAgentWorktreeReaperDeps(opts: {
     const commands = commandLinesFn();
     if (commands === null) throw new Error('final re-check: process list unreadable');
     if (commandsName(commands, p, real)) throw new Error('final re-check: a running process names the checkout');
-    return crypto.createHash('sha256').update(JSON.stringify(manifest.entries)).digest('hex');
+  };
+
+  /** PR 3480's archive + final re-check, shared by removeWorktree and the reclaim child. */
+  const prepareRemovalDetailed = (p: string): { manifestSha256: string; nodeModules?: ResidueArchive } => {
+    // Gate records go to the archive first; if that fails this throws and the
+    // reaper keeps the checkout.
+    const manifest = preserveGateRecords(p, gateRecordArchiveDir, readGit, nmMemo);
+    // FINAL RE-CHECK (spec reaper-generated-files-regenerable §4), right before
+    // the irreversible step: the residue must be exactly what was archived, and
+    // no process may have started in the checkout. The process lists are read
+    // FRESH here (never the 10 s memo isInUse uses). A throw keeps the checkout.
+    recheckResidueManifest(p, manifest, readGit, nmMemo, gateRecordArchiveDir);
+    freshProcessCheck(p);
+    const body = manifest.nodeModules
+      ? JSON.stringify({ entries: manifest.entries, nodeModulesResidue: manifest.nodeModules.manifestSha256 })
+      : JSON.stringify(manifest.entries);
+    return { manifestSha256: crypto.createHash('sha256').update(body).digest('hex'), ...(manifest.nodeModules ? { nodeModules: manifest.nodeModules } : {}) };
+  };
+  const prepareRemoval = (p: string): string => prepareRemovalDetailed(p).manifestSha256;
+
+  const cleanWith = (p: string, skipRootNodeModules: boolean): boolean => {
+    // ANY change — tracked, untracked, or ignored — is dirty, because even a
+    // marker name may hold unique bytes. The one exception is the commit gate's
+    // own records: removeWorktree archives those before anything is deleted.
+    // FAIL-CLOSED on any error: cannot determine cleanliness → treat as dirty
+    // (KEEP). This is the deletion-safe direction (spec
+    // worktree-reaper-untracked-blindspot, convergence BLOCKER): a transient
+    // `git status` failure must never make a worktree look reapable.
+    try {
+      const work = statusLines(readGit(statusArgs(p), p)).filter((line) => !isUntrackedGateRecord(line));
+      if (classifyPorcelain(work.join('\n'), REAPER_RESIDUE_DENYLIST)) return false;
+      const rootNmReal = skipRootNodeModules && isRealDir(path.join(p, 'node_modules'));
+      // Archived residue is like a gate record: removeWorktree archives it first.
+      return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every((rel) => {
+        if (rootNmReal && (rel === 'node_modules' || rel.startsWith('node_modules/'))) return true; // the one skipped entry
+        return classifyIgnoredEntry(rel, p, readGit, nmMemo) !== 'work';
+      });
+    }
+    catch { return false; }
   };
 
   return {
@@ -1113,22 +1331,8 @@ export function makeAgentWorktreeReaperDeps(opts: {
       return { ok: true, worktrees: out };
     },
 
-    isClean: (p: string): boolean => {
-      // ANY change — tracked, untracked, or ignored — is dirty, because even a
-      // marker name may hold unique bytes. The one exception is the commit gate's
-      // own records: removeWorktree archives those before anything is deleted.
-      // FAIL-CLOSED on any error: cannot determine cleanliness → treat as dirty
-      // (KEEP). This is the deletion-safe direction (spec
-      // worktree-reaper-untracked-blindspot, convergence BLOCKER): a transient
-      // `git status` failure must never make a worktree look reapable.
-      try {
-        const work = statusLines(readGit(statusArgs(p), p)).filter((line) => !isUntrackedGateRecord(line));
-        if (classifyPorcelain(work.join('\n'), REAPER_RESIDUE_DENYLIST)) return false;
-        // Archived residue is like a gate record: removeWorktree archives it first.
-        return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every((rel) => classifyIgnoredEntry(rel, p, readGit) !== 'work');
-      }
-      catch { return false; }
-    },
+    isClean: (p: string): boolean => cleanWith(p, false),
+    isCleanExceptRootNodeModules: (p: string): boolean => cleanWith(p, true),
 
     isMerged: (info: WorktreeInfo): boolean => isMergedWith(info, lsRemoteCached),
 
@@ -1208,6 +1412,15 @@ export function makeAgentWorktreeReaperDeps(opts: {
 
     // Out-of-process reclaim (spec reaper-removal-out-of-process §1-2, §5).
     prepareRemoval,
+    prepareRemovalDetailed,
+    freshProcessCheck,
+    freshLinkCheck: async (p: string): Promise<string | null> => {
+      const porcelain = readGit(['-C', repo, 'worktree', 'list', '--porcelain'], repo);
+      const roots = porcelain.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length).trim()).filter(Boolean);
+      return freshLinkInto(p, { agentHome: agentHomeDir, worktreesDir: opts.worktreesDir, worktreeRoots: roots, deepLinks: lastDeepLinks });
+    },
+    linkIndexStatus: () => (opts.inboundLinks ? (inboundLinks === undefined ? 'not-built' : inboundLinks === null ? 'link-index-unreadable' : 'ok') : linkIndexState),
+    gateRecordArchiveDir,
     isMergedFresh: (info: WorktreeInfo): boolean => isMergedWith(info, lsRemoteFn),
     isOtherRepo: (p: string): boolean => {
       try {
@@ -1250,7 +1463,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
     },
 
     // Report-only measurements (spec reaper-generated-files-regenerable §5).
-    projectReclaim: (p: string) => projectReclaim(p, readGit),
+    projectReclaim: (p: string) => projectReclaim(p, readGit, nmMemo),
     nodeModulesKind: (p: string) => nodeModulesKind(p),
     archiveBytes: () => apparentBytes(gateRecordArchiveDir),
 

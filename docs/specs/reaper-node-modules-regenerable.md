@@ -232,7 +232,7 @@ In live mode, each removal row also records the folder's allocated blocks before
   - `.package-lock.json` is excluded from the comparison but archived, and a one-byte edit to it restores byte for byte from the store.
   - A reference is built only for an otherwise-eligible checkout.
   - A failed or timed-out build writes no manifest and gives `reference-unavailable`.
-  - It retries after 1, 2 and 4 days, then stops until the inputs change.
+  - Non-cache failures back off 1, 2 and 4 days, then weekly (per §3).
   - At most one build runs per pass, never during a reclaim run, and none below the 3 GB floor.
   - The manifest is written atomically and its key includes npm's major version.
   - A manifest unused for 14 days is dropped.

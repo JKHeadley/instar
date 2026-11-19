@@ -84,6 +84,9 @@ export interface ReclaimRunnerConfig {
   /** An uncorroborated surviving group stops holding exclusion this long past the deadline. */
   uncorroboratedReleaseMs?: number;
   gateRecordArchiveDir?: string;
+  /** The root node_modules proof's state folder (spec reaper-node-modules-regenerable); absent ⇒ off. */
+  nodeModulesStateDir?: string;
+  npmPath?: string;
 }
 
 export const RECLAIM_RUN_DEADLINE_MS = 900_000;
@@ -173,6 +176,8 @@ export class AgentWorktreeReclaimRunner implements ReclaimRunnerPort {
       deadlineAt: deadline, maxReaps: this.cfg.maxReaps(), githubMergeCheck: this.cfg.githubMergeCheck(),
       excludedPaths: req.excludedPaths,
       ...(this.cfg.gateRecordArchiveDir ? { gateRecordArchiveDir: this.cfg.gateRecordArchiveDir } : {}),
+      ...(this.cfg.nodeModulesStateDir ? { nodeModulesStateDir: this.cfg.nodeModulesStateDir } : {}),
+      ...(this.cfg.npmPath ? { npmPath: this.cfg.npmPath } : {}),
     };
     let child: { pid: number | undefined };
     try { child = this.seams.spawnChild([this.cfg.mainScript, '--run-id', runId, '--input-json', JSON.stringify(input)], this.cfg.agentHome); }

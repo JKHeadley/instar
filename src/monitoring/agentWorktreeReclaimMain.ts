@@ -18,10 +18,23 @@
  *      → trash delete in a sub-process → outcome row.
  * Every row is appended and fsynced. A kill at any point leaves either the
  * checkout untouched at its path or a folder in `.trash/` only.
+ *
+ * A checkout with a real root `node_modules` (spec
+ * docs/specs/reaper-node-modules-regenerable.md) is proven first by this run's
+ * own evaluation (the reference comparison, memoized per pass). Its removal adds:
+ * the residue archive into the content-addressed store (digest in the `archived`
+ * row), a full-tree re-stat against the hash-time signature, a fresh root-link
+ * check and deep-link re-read, fresh process scans, the signature saved durably
+ * with the attempt, and AFTER the rename a second re-stat of the tree in trash:
+ * a pass writes a fsynced `verified` row before prune and delete; a difference
+ * renames the folder back (`kept … changed-during-removal`) or, when the original
+ * path is taken, holds it (`trash-held`, never deleted automatically). Recovery
+ * deletes such a trash folder only once its attempt has `verified`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +52,18 @@ import {
   WORKTREE_TRASH_DIRNAME,
   type AgentWorktreeReclaimOps,
 } from './agentWorktreeGit.js';
+import {
+  NodeModulesMemo,
+  runNodeModulesPass,
+  restatNodeModules,
+  readNpmMajor,
+  allocatedBytes,
+  volumeOf,
+  writeFileDurable,
+  type HashSeams,
+  type NodeModulesPassSummary,
+  type StatSignature,
+} from './agentWorktreeNodeModules.js';
 
 const execFileAsync = promisify(execFile);
 const OP = 'src/monitoring/agentWorktreeReclaimMain.ts';
@@ -71,11 +96,21 @@ export interface ReclaimChildInput {
   trashMaxFailures?: number;
   /** Back-off before retrying a failed trash delete: this × 2^(failures-1). */
   trashRetryBackoffMs?: number;
+  /** A removal of a checkout with a real root node_modules starts only with this much left (5 × the measured 14 s). */
+  minTimeLeftNodeModulesMs?: number;
   gateRecordArchiveDir?: string;
+  /**
+   * The root node_modules proof's state folder (manifests, memo). Absent ⇒ a real
+   * root node_modules stays `work`, exactly as before (spec reaper-node-modules-regenerable).
+   */
+  nodeModulesStateDir?: string;
+  /** The npm the reference builder uses (its major is part of the key). */
+  npmPath?: string;
 }
 
 export const RECLAIM_DEFAULTS = {
   minTimeLeftMs: 15_000,
+  minTimeLeftNodeModulesMs: 70_000,
   trashBudgetMs: 300_000,
   trashMaxFailures: 3,
   trashRetryBackoffMs: 3_600_000,
@@ -83,8 +118,8 @@ export const RECLAIM_DEFAULTS = {
 
 /** One durable row. `t` names the step; the rest depends on it. */
 export interface ReclaimRow {
-  t: 'intent' | 'lock-busy' | 'lock' | 'trash-start' | 'trash-done' | 'trash-error' | 'trash-stuck'
-    | 'attempt' | 'archived' | 'renaming' | 'renamed' | 'removed' | 'kept' | 'error' | 'stop' | 'done';
+  t: 'intent' | 'lock-busy' | 'lock' | 'trash-start' | 'trash-done' | 'trash-error' | 'trash-stuck' | 'trash-held'
+    | 'attempt' | 'archived' | 'renaming' | 'renamed' | 'verified' | 'restored' | 'removed' | 'kept' | 'error' | 'stop' | 'done';
   at: number;
   runId?: string;
   attemptId?: string;
@@ -104,7 +139,7 @@ export interface ReclaimChildResult {
   removed: string[];
   kept: Array<{ path: string; reason: string }>;
   errors: Array<{ path: string; reason: string }>;
-  trash: { deleted: string[]; errors: Array<{ name: string; reason: string }>; stuck: Array<{ name: string; bytes: number | null; lastError: string }>; deferred: string[] };
+  trash: { deleted: string[]; errors: Array<{ name: string; reason: string }>; stuck: Array<{ name: string; bytes: number | null; lastError: string }>; deferred: string[]; held?: Array<{ name: string; reason: string }> };
   stopReason: string | null;
 }
 
@@ -117,6 +152,13 @@ export interface ReclaimChildSeams {
   commandOf?: (pid: number) => Promise<string | null>;
   /** Called after each row is written (tests use it to simulate a kill at a step). */
   afterRow?: (row: ReclaimRow) => void;
+  /** The per-pass node_modules memo (tests pass the same one to their deps). */
+  nodeModulesMemo?: NodeModulesMemo;
+  /** npm's major version (tests); production reads `npm --version`. */
+  npmMajor?: string | null;
+  hashSeams?: HashSeams;
+  /** Free/total bytes on a volume (tests). */
+  volume?: (d: string) => { free: number; total: number } | null;
 }
 
 // ── Durable rows ────────────────────────────────────────────────────
@@ -298,16 +340,64 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
       }
     };
     const baseScope = (): WorktreeTrashScope => ({ worktreesDir: input.worktreesDir, trashRoot });
+    /**
+     * Rename a changed tree back to its exact recorded path when it is free, else hold
+     * it. Never deletes. Returns 'restored' or 'held'.
+     */
+    const restoreOrHold = (name: string, trashPath: string, original: string, attemptId: string, why: string): 'restored' | 'held' => {
+      if (!fs.existsSync(original) && !isSymlinkAt(original)) {
+        try {
+          SafeFsExecutor.safeRestoreDirSync(trashPath, original, { operation: `${OP}:restore-from-trash`, worktreeTrashScope: { ...baseScope(), restoreTo: original } });
+          row({ t: 'restored', attemptId, path: original, reason: why });
+          return 'restored';
+        } catch (err) {
+          hold(name, `restore failed: ${(err as Error).message.slice(0, 200)}`, attemptId);
+          return 'held';
+        }
+      }
+      hold(name, `${why}; the original path is taken`, attemptId);
+      return 'held';
+    };
+    /** Recovery of a renamed-but-unverified node_modules attempt (§5): re-stat, then verify, restore or hold. */
+    const recoverUnverified = (name: string, full: string, att: AttemptInfo): 'verified' | 'restored' | 'held' => {
+      let sig: StatSignature | null = null;
+      try { sig = att.signatureFile ? (JSON.parse(fs.readFileSync(att.signatureFile, 'utf8')) as { signature: StatSignature }).signature : null; }
+      catch { sig = null; } // @silent-fallback-ok — no saved signature ⇒ cannot verify ⇒ held below
+      if (!sig) { hold(name, 'renamed without verification and no saved signature', name); return 'held'; }
+      const diff = restatNodeModules(full, sig);
+      if (diff === null) { row({ t: 'verified', attemptId: name, recovered: true }); return 'verified'; }
+      return att.path ? restoreOrHold(name, full, att.path, name, `changed-during-removal (${diff.slice(0, 120)})`) : (hold(name, 'changed and no recorded original path', name), 'held');
+    };
 
     // ── 1. Leftover trash first, bounded ───────────────────────────
     const retries = readTrashRetries(retriesPath);
-    const knownAttempts = knownAttemptIds(path.dirname(input.rowsPath));
+    const attemptIndex = readAttemptIndex(path.dirname(input.rowsPath));
+    const knownAttempts = new Set(attemptIndex.keys());
+    const held: Array<{ name: string; reason: string }> = [];
+    result.trash.held = held;
+    const hold = (name: string, reason: string, attemptId?: string): void => {
+      held.push({ name, reason });
+      row({ t: 'trash-held', name, reason, ...(attemptId ? { attemptId } : {}) });
+    };
     let names: string[] = [];
     try { names = fs.readdirSync(trashRoot).sort(); }
     catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; }
     const trashEnd = Math.min(now() + trashBudgetMs, input.deadlineAt - minTimeLeftMs);
     for (const name of names) {
       const full = path.join(trashRoot, name);
+      // A checkout with a real node_modules: its trash is deleted only once its
+      // attempt has `verified` (spec reaper-node-modules-regenerable §5). Held
+      // folders are never deleted automatically.
+      const att = attemptIndex.get(name);
+      if (att?.held) { held.push({ name, reason: att.heldReason ?? 'held' }); continue; }
+      if (att?.realNodeModules && !att.verified) {
+        const outcome = recoverUnverified(name, full, att);
+        if (outcome !== 'verified') continue;
+      } else if (!att && isRealDirAt(path.join(full, 'node_modules'))) {
+        // No rows survive for it: nothing proves its node_modules was verified.
+        hold(name, 'no attempt rows and a real node_modules');
+        continue;
+      }
       const prior = retries[name];
       if (prior && prior.failures >= trashMaxFailures) {
         const bytes = apparentBytes(full);
@@ -345,20 +435,26 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
     }
 
     // ── 2. Fresh evaluation ────────────────────────────────────────
-    const deps = seams.deps ?? makeAgentWorktreeReaperDeps({
+    const nmMemo = seams.nodeModulesMemo ?? (input.nodeModulesStateDir ? new NodeModulesMemo(input.nodeModulesStateDir) : undefined);
+    const madeDeps = seams.deps ? null : makeAgentWorktreeReaperDeps({
       instarRepo: input.projectDir,
       worktreesDir: input.worktreesDir,
       githubMergeCheck: input.githubMergeCheck,
       ...(input.gateRecordArchiveDir ? { gateRecordArchiveDir: input.gateRecordArchiveDir } : {}),
+      ...(nmMemo ? { nodeModulesMemo: nmMemo } : {}),
     });
+    const deps = seams.deps ?? madeDeps!;
     const reaper = new AgentWorktreeReaper(deps, { enabled: true, dryRun: false });
     await reaper.prepare();
     const enumeration = deps.listWorktrees();
+    let nodeModulesSummary: NodeModulesPassSummary | null = null;
     const report = (phase: ReclaimReportFile['phase'], worktrees: WorktreeEvaluation[], ok: boolean, error: string | null): void => {
       const body: ReclaimReportFile = {
         runId: input.runId, at: now(), phase, enumerationOk: ok, enumerationError: error, worktrees,
         archiveBytes: reaper.measureArchive(), removed: [...result.removed], stopReason: result.stopReason,
         trash: result.trash,
+        ...(nodeModulesSummary ? { nodeModules: nodeModulesSummary } : {}),
+        linkIndex: deps.linkIndexStatus ? deps.linkIndexStatus() : 'ok',
       };
       SafeFsExecutor.atomicWriteJsonSync(input.reportPath, body, { operation: `${OP}:report`, mode: 0o600, indent: 0 });
     };
@@ -367,6 +463,17 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
       report('final', [], false, enumeration.error);
       row({ t: 'stop', reason: `enumeration failed: ${enumeration.error}`.slice(0, 300) });
       return result;
+    }
+    // The root node_modules verdicts for this pass (spec reaper-node-modules-regenerable §4):
+    // computed once here, read by classifyIgnoredEntry through the memo.
+    const archiveRoot = deps.gateRecordArchiveDir ?? input.gateRecordArchiveDir ?? path.join(input.agentHome, '.instar', 'instar-dev-decisions-archive');
+    if (nmMemo && input.nodeModulesStateDir && deps.isCleanExceptRootNodeModules) {
+      nodeModulesSummary = runNodeModulesPass({
+        deps: { isInUse: deps.isInUse, isMerged: deps.isMerged, isCleanExceptRootNodeModules: deps.isCleanExceptRootNodeModules },
+        worktrees: enumeration.worktrees, memo: nmMemo, refsDir: input.nodeModulesStateDir, archiveRoot,
+        maxHashes: input.maxReaps, npmMajor: seams.npmMajor !== undefined ? seams.npmMajor : readNpmMajor(input.npmPath ?? 'npm', os.tmpdir()),
+        passId: input.runId, now, ...(seams.volume ? { volume: seams.volume } : {}), ...(seams.hashSeams ? { hashSeams: seams.hashSeams } : {}),
+      });
     }
     const excluded = new Set(input.excludedPaths);
     const evaluations: WorktreeEvaluation[] = [];
@@ -378,6 +485,8 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
       if (evaln.verdict === 'reap-eligible' && excluded.has(info.path)) {
         evaln = { path: info.path, branch: info.branch, verdict: 'keep', reason: 'reclaim-failed' };
       }
+      const nmCheck = nodeModulesSummary?.checks[info.path];
+      if (nmCheck) evaln.nodeModulesCheck = nmCheck;
       evaluations.push(evaln);
       if (evaln.verdict === 'reap-eligible') { evaln.outcome = 'not-attempted'; candidates.push({ info, evaln }); }
     }
@@ -386,9 +495,20 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
     // ── 3. Removals ────────────────────────────────────────────────
     const allowedSources = candidates.map((c) => c.info.path);
     const scope = (): WorktreeTrashScope => ({ ...baseScope(), allowedSources });
+    const minTimeLeftNmMs = input.minTimeLeftNodeModulesMs ?? RECLAIM_DEFAULTS.minTimeLeftNodeModulesMs;
     for (const { info, evaln } of candidates) {
       if (result.removed.length >= input.maxReaps) { result.stopReason = 'cap'; break; }
-      if (input.deadlineAt - now() < minTimeLeftMs) { result.stopReason = 'time-left'; break; }
+      // Time left per kind (spec reaper-node-modules-regenerable §5): 5 × the measured time for this kind.
+      // Decided from the disk too, not only the report field: a real root node_modules
+      // must always go through the proof, re-checks and the `verified` row.
+      const realNm = evaln.nodeModules === 'real' || (() => {
+        try { const st = fs.lstatSync(path.join(info.path, 'node_modules')); return st.isDirectory() && !st.isSymbolicLink(); }
+        catch { return false; } // @silent-fallback-ok — no node_modules ⇒ not the real-install path
+      })();
+      if (input.deadlineAt - now() < (realNm ? minTimeLeftNmMs : minTimeLeftMs)) {
+        if (realNm && input.deadlineAt - now() >= minTimeLeftMs) { evaln.outcome = 'not-attempted'; evaln.outcomeReason = 'time-left'; continue; }
+        result.stopReason = 'time-left'; break;
+      }
       if (!removalStillLive(input.configPath)) { result.stopReason = 'config-no-longer-live'; break; }
       const attemptId = `${input.runId.slice(0, 16)}-${crypto.randomBytes(4).toString('hex')}`;
       if (!ATTEMPT_ID.test(attemptId)) throw new Error('internal: bad attempt id');
@@ -397,7 +517,7 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
         result.kept.push({ path: info.path, reason });
         row({ t: 'kept', attemptId, reason });
       };
-      row({ t: 'attempt', attemptId, path: info.path });
+      row({ t: 'attempt', attemptId, path: info.path, ...(realNm ? { realNodeModules: true } : {}) });
       try {
         // Re-evaluate immediately before acting: marker, branch, in use, clean, merged.
         const raced = reaper.reclaimRaceGuard(info);
@@ -407,36 +527,74 @@ export async function runReclaimChild(input: ReclaimChildInput, seams: ReclaimCh
         // A locked worktree is kept and reported (checked before the archive, and again after it).
         const lockBefore = deps.worktreeLockState(info.path);
         if (lockBefore !== 'unlocked') { keep(lockBefore === 'locked' ? 'locked' : 'lock-unknown'); continue; }
+        // A real root node_modules must carry this pass's proof (memo) and its signature.
+        const nmSig: StatSignature | null = realNm ? (nmMemo?.signatureFor(info.path) ?? null) : null;
+        if (realNm && !nmSig) { keep('node-modules-unproven'); continue; }
         // PR 3480's archive + final re-check (fresh process scans). Throws ⇒ error row.
-        const manifestSha256 = deps.prepareRemoval(info.path);
-        row({ t: 'archived', attemptId, manifestSha256 });
+        // With a real node_modules this also archives its residue into the store, every
+        // blob, manifest and folder fsynced; its digest goes in the archived row.
+        const prep = deps.prepareRemovalDetailed ? deps.prepareRemovalDetailed(info.path) : { manifestSha256: deps.prepareRemoval(info.path) };
+        if (realNm && !prep.nodeModules) { keep('node-modules-unproven'); continue; }
+        row({ t: 'archived', attemptId, manifestSha256: prep.manifestSha256, ...(prep.nodeModules ? { nodeModulesResidueSha256: prep.nodeModules.manifestSha256, nodeModulesResidueManifest: prep.nodeModules.manifestPath, nodeModulesStoredBytes: prep.nodeModules.storedBytes } : {}) });
         // The closed-unmerged rule (§5) re-read with a fresh remote ref.
         if (!deps.isMergedFresh(info)) { keep('raced-now-unmerged'); continue; }
         const lock = deps.worktreeLockState(info.path);
         if (lock !== 'unlocked') { keep(lock === 'locked' ? 'locked' : 'lock-unknown'); continue; }
+        let signatureFile: string | undefined;
+        if (realNm && nmSig) {
+          // §5: re-list and re-lstat every entry against the hash-time signature.
+          const diff = restatNodeModules(info.path, nmSig);
+          if (diff) { keep(`changed-since-hash: ${diff.slice(0, 200)}`); continue; }
+          // §2: a fresh root-link check over every worktree git lists, the walk roots at
+          // depth 1, and a re-read of every deep link the index found.
+          const link = deps.freshLinkCheck ? await deps.freshLinkCheck(info.path) : null;
+          if (link) { keep(`in-use-link: ${link.slice(0, 200)}`); continue; }
+          // Then the fresh in-use scans, then the rename.
+          if (deps.freshProcessCheck) deps.freshProcessCheck(info.path);
+          signatureFile = path.join(input.stateDir, 'attempt-signatures', `${attemptId}.json`);
+          writeFileDurable(signatureFile, JSON.stringify({ attemptId, path: info.path, signature: nmSig }));
+        }
         ensureTrashRoot();
         const trash = path.join(trashRoot, attemptId);
-        row({ t: 'renaming', attemptId, trash });
+        row({ t: 'renaming', attemptId, trash, ...(signatureFile ? { signatureFile } : {}) });
         SafeFsExecutor.safeRenameDirSync(info.path, trash, { operation: `${OP}:rename-to-trash`, worktreeTrashScope: scope() });
         row({ t: 'renamed', attemptId });
+        if (realNm && nmSig) {
+          // §5: once more, after the rename (nothing new can open a file at the old path),
+          // before prune, so git's record is still intact for a rename back.
+          const diff = restatNodeModules(trash, nmSig);
+          if (diff) {
+            const r = restoreOrHold(attemptId, trash, info.path, attemptId, 'changed-during-removal');
+            keep(r === 'restored' ? 'changed-during-removal' : 'trash-held');
+            continue;
+          }
+          row({ t: 'verified', attemptId });
+        }
         let pruneError: string | null = null;
         try { deps.pruneWorktrees(); }
         catch (err) { pruneError = (err as Error).message.slice(0, 300); } // @silent-fallback-ok — recorded in the removed row; the next run's prune drops the entry
         let trashDeleted = false;
+        let measured: { allocatedBytes: number | null; freeDeltaBytes: number | null } | null = null;
         if (removalStillLive(input.configPath)) {
+          const vol = seams.volume ?? volumeOf;
+          const before = vol(trashRoot)?.free ?? null;
+          const allocated = allocatedBytes(trash);
           retries[attemptId] = { failures: 1, lastAt: now(), lastError: 'cut off before it finished' };
           writeTrashRetries(retriesPath, retries);
           let r: SubprocessRmResult;
           try { r = await rmTree(trash, { worktreeTrashScope: baseScope(), timeoutMs: Math.max(1, Math.min(trashBudgetMs, input.deadlineAt - now())) }); }
           catch (err) { r = { ok: false, exitCode: null, signal: null, timedOut: false, error: (err as Error).message }; }
           trashDeleted = r.ok && !fs.existsSync(trash);
+          const after = vol(trashRoot)?.free ?? null;
+          measured = { allocatedBytes: allocated, freeDeltaBytes: before !== null && after !== null ? after - before : null };
           if (trashDeleted) { delete retries[attemptId]; row({ t: 'trash-done', name: attemptId }); }
           else { retries[attemptId] = { ...retries[attemptId], lastError: (r.error ?? 'folder still present after delete').slice(0, 300) }; row({ t: 'trash-error', name: attemptId, reason: retries[attemptId].lastError }); }
           writeTrashRetries(retriesPath, retries);
         }
         result.removed.push(info.path);
         evaln.outcome = 'removed';
-        row({ t: 'removed', attemptId, trashDeleted, ...(pruneError ? { pruneError } : {}) });
+        // The free-space change is an estimate: other activity on the disk moves it too.
+        row({ t: 'removed', attemptId, trashDeleted, ...(pruneError ? { pruneError } : {}), ...(measured ? { allocatedBytes: measured.allocatedBytes, freeDeltaBytes: measured.freeDeltaBytes, freeDeltaIsEstimate: true } : {}) });
       } catch (err) {
         const reason = (err instanceof Error ? err.message : String(err)).slice(0, 300);
         evaln.outcome = 'error'; evaln.outcomeReason = reason;
@@ -457,16 +615,43 @@ function isSymlinkAt(p: string): boolean {
   try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } // @silent-fallback-ok — absent
 }
 
-/** Attempt ids named in any run's rows (to report a trash folder with no rows). Bounded. */
-function knownAttemptIds(runsDir: string): Set<string> {
-  const ids = new Set<string>();
+function isRealDirAt(p: string): boolean {
+  try { return fs.lstatSync(p).isDirectory(); } catch { return false; } // @silent-fallback-ok — absent
+}
+
+/** What the rows say about one attempt, across every run (trash recovery reads it). */
+export interface AttemptInfo {
+  path?: string;
+  realNodeModules: boolean;
+  verified: boolean;
+  held: boolean;
+  heldReason?: string;
+  signatureFile?: string;
+}
+
+/** Attempts named in any run's rows (to recover or report a trash folder). Bounded to the last 200 run files. */
+export function readAttemptIndex(runsDir: string): Map<string, AttemptInfo> {
+  const ids = new Map<string, AttemptInfo>();
   let files: string[] = [];
-  try { files = fs.readdirSync(runsDir).filter((f) => f.endsWith('.jsonl')).slice(-200); }
+  try { files = fs.readdirSync(runsDir).filter((f) => f.endsWith('.jsonl')).sort().slice(-200); }
   catch { return ids; } // @silent-fallback-ok — no rows yet
+  const get = (id: string): AttemptInfo => {
+    let a = ids.get(id);
+    if (!a) { a = { realNodeModules: false, verified: false, held: false }; ids.set(id, a); }
+    return a;
+  };
   for (const f of files) {
     let raw: string;
     try { raw = fs.readFileSync(path.join(runsDir, f), 'utf8'); } catch { continue; } // @silent-fallback-ok — unreadable rows: the folder is still cleaned and reported
-    for (const r of parseRows(raw)) if (r.t === 'attempt' && typeof r.attemptId === 'string') ids.add(r.attemptId);
+    for (const r of parseRows(raw)) {
+      const id = typeof r.attemptId === 'string' ? r.attemptId : (r.t === 'trash-held' && typeof r.name === 'string' ? r.name : null);
+      if (!id) continue;
+      if (r.t === 'attempt') { const a = get(id); if (typeof r.path === 'string') a.path = r.path; if (r.realNodeModules === true) a.realNodeModules = true; }
+      else if (r.t === 'renaming' && typeof r.signatureFile === 'string') get(id).signatureFile = r.signatureFile;
+      else if (r.t === 'verified') get(id).verified = true;
+      else if (r.t === 'trash-held') { const a = get(id); a.held = true; a.heldReason = typeof r.reason === 'string' ? r.reason : 'held'; }
+      else if (r.t === 'restored') { const a = get(id); a.held = false; }
+    }
   }
   return ids;
 }
