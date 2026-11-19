@@ -9,6 +9,7 @@
  * Spec: docs/specs/desktop-locked-screen.md.
  */
 import fs from 'node:fs';
+import type { GuardObservationSnapshot } from './DesktopGuardObservation.js';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -56,6 +57,7 @@ export interface DesktopRelockMarker {
 export interface DesktopLockedHostPort {
   lockedOp(op: Record<string, unknown>): Promise<Record<string, unknown>>;
   startRelockGuard(key: string): Promise<void>;
+  getRelockGuardObservation?(): GuardObservationSnapshot;
   setLockedMode(mode: { root: string; refuse: string[]; chime?: boolean } | null): void;
 }
 
@@ -475,11 +477,18 @@ export class DesktopLockedController {
     await this.deps.host.startRelockGuard(key);
   }
 
+  private guardObservation(): GuardObservationSnapshot | { available: false; complete: false; reason: string } {
+    try {
+      return this.deps.host.getRelockGuardObservation?.()
+        ?? { available: false, complete: false, reason: 'observer-unavailable' };
+    } catch { return { available: false, complete: false, reason: 'observer-unreadable' }; }
+  }
+
   async status(osMajor: number | undefined,
     probe: (DesktopLockSample & { inputGrant?: string; helperSource?: string }) | null = null): Promise<Record<string, unknown>> {
-    const { markers, disabled, attempts } = await this.read();
+    const { markers, disabled, attempts, loginSession } = await this.read();
     const settings = this.deps.settings();
-    return { enabled: settings.enabled, active: this.active(osMajor), disabled,
+    return { guardObservation: this.guardObservation(), observedLoginSession: loginSession ?? null, enabled: settings.enabled, active: this.active(osMajor), disabled,
       browserBox: settings.browserBox, chime: settings.chime,
       refusal: this.enableRefusal(osMajor),
       // The spec's "whether the password path is ready, with its named reason".
