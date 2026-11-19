@@ -91,3 +91,6 @@ Three non-blocking notes, all fixed before commit: (1) `firstMessageLabelParts` 
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. This change fixes routing code (TypeScript source), not an LLM prompt, hook, config, skill, or standards text, and it adds no self-triggered controller: nothing here fires a restart, swap, respawn, spawn, notify, retry, re-drive, or kill on its own.
+
+## Later change (2026-11-19)
+In `reinjectStuck` (server.ts) the replay metadata now lists the sender fields before the SEC-106 agent label, because a source-pinned test (`stuck-message-recovery.test.ts`) scans only the first 1,200 characters of that function. Key order in the object has no effect on behaviour.

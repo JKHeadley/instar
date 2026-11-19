@@ -37301,13 +37301,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             messageThreadId: Number(topicId),
             viaLifeline: true,
             replay: true,
+            ...(sender?.userId != null ? { telegramUserId: Number(sender.userId) } : {}),
+            ...(sender?.firstName ? { firstName: sender.firstName } : {}),
+            ...(sender?.username ? { username: sender.username } : {}),
             // SEC-106 decision 6: the ledger's ingress-time label, in-process only, set ONLY when the
             // ledger holds one (absent stays absent). Ingress honours it only with replay: true.
             ...(sender && typeof sender === 'object' && sender.signedByAgent !== undefined && sender.signedByAgent !== null
               ? { replaySignedByAgent: sender.signedByAgent } : {}),
-            ...(sender?.userId != null ? { telegramUserId: Number(sender.userId) } : {}),
-            ...(sender?.firstName ? { firstName: sender.firstName } : {}),
-            ...(sender?.username ? { username: sender.username } : {}),
           },
         } as Message);
       };
