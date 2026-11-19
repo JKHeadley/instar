@@ -117,3 +117,7 @@ On re-check, the public-cap check used by the email-code route now passes `clear
 - **Changed integration/e2e** (for Local Verify; not hand-run here): dashboard-pin-throttle, dashboard-scoped-session-token, passkeys-revert-method-routes, skill-learning-routes, skill-learning-alive, dynamic-mcp-routes, recommended-services-confirm-wiring.
 - **Guards:** no-silent-fallbacks, feature-ladders, awareness, html-site, the 21 ratchet files, self-action convergence and the state-registry lints all pass.
 - **Throwaway:** agent home `.instar/state/identity-build-144636/p1c-throwaway-proof.md`. It covers the off switch ignored, the cap drained by strangers while the owner's routes work, per-credential limits on a real route, the cap surviving a restart, and the damaged-file pause holding across a restart. A real tunnel was not available.
+
+## Instruction-file size (2026-11-19 06:00Z)
+
+Local Verify on 45006ca32 failed `tests/e2e/claude-md-reference-layout-init-lifecycle.test.ts`. Main's core instruction file sits at its 84,000-character budget, and the new entry's title in the capability list tipped it over (84,049). The new text now replaces the body of the existing entry `dashboard-pin-throttle.md`, under its existing title: it describes the same protection, updated to the single policy. `pin-sign-in-paused.md` is deleted. The core file gains no characters.
