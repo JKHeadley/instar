@@ -52,7 +52,7 @@ describe('zero external configuration owned-machine production default manager',
   const forgotten=await request('/conversation-graph/forget-header',{requestId:'forget-owned-effort',effort:created.body.effort});expect([200,202],JSON.stringify(forgotten.body)).toContain(forgotten.status);
   expect(JSON.stringify((await request('/conversation-graph/roots?view=all')).body)).not.toContain('private-owned-title-canary');
  });
- it('answers an owner read from the open graph while the one-at-a-time owner step is busy; a write still waits for it',async()=>{
+ it('answers an owner read from the open graph while the one-at-a-time owner step is busy; a save waits a short while, then goes through',async()=>{
   // Accept-all round 3: after a restart the owner step stayed busy (peer checks, a full readiness pass) and every
   // Conversations read queued behind it past the page's 20 s limit for half an hour.
   const f=await fixture(),scope=new ScopeVerifier({projectName:'instar',projectDir:f.stateDir,topicProjects:{'42':{projectName:'instar',projectDir:f.stateDir}}});
@@ -71,11 +71,13 @@ describe('zero external configuration owned-machine production default manager',
    const started=Date.now(),read=await request('/conversation-graph/roots');
    expect(read.status,JSON.stringify(read.body)).toBe(200);expect(Date.now()-started).toBeLessThan(5000);
    expect(warn.mock.calls.some(call=>String(call[0])==='[conversation-graph] answered a read without waiting: the owner step is busy with the readiness check')).toBe(true);
-   // A write is not answered from the open graph: it is still waiting for the owner step.
-   let wrote=false;const write=request('/conversation-graph/changes',{requestId:'write-behind-busy-owner',change:{kind:'create-effort',projectScope:['instar']}}).then(result=>{wrote=true;return result;});
+   // Accept-all round 4 part 4: a save waits for the owner step a short while (3 s), then goes through on the open
+   // graph while the step is still busy, instead of queuing behind slow upkeep past the page's limit.
+   let wrote=false;const writeStarted=Date.now();const write=request('/conversation-graph/changes',{requestId:'write-behind-busy-owner',change:{kind:'create-effort',projectScope:['instar']}}).then(result=>{wrote=true;return result;});
    await new Promise(resolve=>setTimeout(resolve,800));expect(wrote).toBe(false);
+   const written=await write;expect(Date.now()-writeStarted).toBeLessThan(10000);expect(written.status,JSON.stringify(written.body)).toBe(200);expect(written.body.state).toBe('committed');
+   expect(warn.mock.calls.some(call=>String(call[0])==='[conversation-graph] answered a save without waiting: the owner step is busy with the readiness check')).toBe(true);
    release();await upkeep;
-   const written=await write;expect(written.status,JSON.stringify(written.body)).toBe(200);expect(written.body.state).toBe('committed');
   }finally{release();}
   // Idle again: the label resets so a later log never names finished work.
   expect(manager.ownerStep).toBe('nothing (idle)');
@@ -89,6 +91,59 @@ describe('zero external configuration owned-machine production default manager',
    await new Promise(resolve=>setTimeout(resolve,800));expect(swappedDone).toBe(false);
   }finally{internals.runtimeValue=realRuntime;releaseSwap();}
   await swapJob;expect((await swappedRead).status).toBe(200);
+ });
+ it('a save reuses a peer sync and readiness refresh under 10 s old instead of repeating it inline; upkeep still refreshes',async()=>{
+  // Accept-all round 4: while the graph was not ready every save re-ran the peer sync and readiness check that the
+  // 10 s upkeep had just run, waiting out a slow peer's timeouts again, so Accept all saves passed the page's limit.
+  const f=await fixture(),owner=(id:string)=>({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard' as const,requestId:id,isCurrent:()=>true});
+  const runtime=await f.manager.ensureOwner(owner('first-visit'));
+  const internals=f.manager as unknown as {serialized<T>(work:()=>Promise<T>):Promise<T>;compose(publication:unknown,forSave?:boolean):Promise<void>;publication():unknown;synchronizeFrontiers(publication:unknown):Promise<void>;refreshedAt:number;custodyAuthorityValue:unknown};
+  vi.spyOn(runtime,'isReady').mockReturnValue(false);const readiness=vi.spyOn(runtime,'refreshReadiness').mockResolvedValue(false as never);
+  const sync=internals.custodyAuthorityValue?vi.spyOn(internals,'synchronizeFrontiers'):null;
+  const counts=()=>[readiness.mock.calls.length,sync?.mock.calls.length??0];
+  // Upkeep (no save) refreshes.
+  await internals.serialized(()=>internals.compose(internals.publication()));const afterUpkeep=counts();expect(afterUpkeep[0]).toBe(1);
+  // A save right after reuses that refresh.
+  expect(await f.manager.ensureOwner(owner('save-after-upkeep'))).toBe(runtime);expect(counts()).toEqual(afterUpkeep);
+  // A save after the refresh has aged past 10 s refreshes again.
+  internals.refreshedAt=Date.now()-11_000;await f.manager.ensureOwner(owner('save-after-stale-refresh'));
+  expect(counts()[0]).toBe(afterUpkeep[0]+1);if(sync)expect(counts()[1]).toBe(afterUpkeep[1]+1);
+  // Upkeep refreshes even when the last refresh is fresh.
+  await internals.serialized(()=>internals.compose(internals.publication()));expect(counts()[0]).toBe(afterUpkeep[0]+2);
+ });
+ it('runs the local history check outside the owner step, one at a time, so a save is not held behind it',async()=>{
+  // Accept-all round 4 part 3: right after a Studio restart the first full history check took 450 s inside the
+  // one-at-a-time owner step, and every Accept all save waited behind it until the page gave up.
+  const f=await fixture(),owner=(id:string)=>({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard' as const,requestId:id,isCurrent:()=>true});
+  const runtime=await f.manager.ensureOwner(owner('first-visit'));
+  const internals=f.manager as unknown as {serialized<T>(work:()=>Promise<T>):Promise<T>;compose(publication:unknown,forSave?:boolean):Promise<void>;publication():unknown;retainedCheck:Promise<void>|null};
+  await internals.retainedCheck;
+  vi.spyOn(runtime,'isReady').mockReturnValue(false);vi.spyOn(runtime,'refreshReadiness').mockResolvedValue(false as never);
+  let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+  const check=vi.spyOn(runtime,'confirmLocalAcknowledgedSource').mockImplementation(async()=>{await held;return undefined as never;});
+  try{
+   const started=Date.now();
+   await internals.serialized(()=>internals.compose(internals.publication()));
+   expect(check).toHaveBeenCalledTimes(1);expect(internals.retainedCheck).not.toBeNull();
+   // A save goes through while the history check is still running, and does not start a second one.
+   expect(await f.manager.ensureOwner(owner('save-during-history-check'))).toBe(runtime);
+   await internals.serialized(()=>internals.compose(internals.publication()));
+   expect(Date.now()-started).toBeLessThan(5000);expect(check).toHaveBeenCalledTimes(1);
+  }finally{release();}
+  await internals.retainedCheck;expect(internals.retainedCheck).toBeNull();
+  // Once it has finished, the next pass does not start another within 5 minutes (each save would restart it)...
+  await internals.serialized(()=>internals.compose(internals.publication()));expect(check).toHaveBeenCalledTimes(1);
+  // ...and does once 5 minutes have passed.
+  (f.manager as unknown as {retainedCheckStartedAt:number}).retainedCheckStartedAt=Date.now()-5*60_000-1;
+  await internals.serialized(()=>internals.compose(internals.publication()));expect(check).toHaveBeenCalledTimes(2);
+  await internals.retainedCheck;
+ });
+ it('names an owner step that held the one-at-a-time lane for more than 2 s, once a minute per step',async()=>{
+  const f=await fixture(),step=f.manager as unknown as {ownerStepValue:string;ownerStepAt:number};const warn=vi.spyOn(console,'warn');
+  const slow=(name:string)=>{step.ownerStepValue=name;step.ownerStepAt=Date.now()-3_000;step.ownerStepValue='nothing (idle)';};
+  slow('the local history check');slow('the local history check');step.ownerStepValue='checking the other machines';step.ownerStepValue='nothing (idle)';
+  const lines=warn.mock.calls.map(call=>String(call[0])).filter(line=>line.startsWith('[conversation-graph] the owner step spent'));
+  expect(lines).toEqual(['[conversation-graph] the owner step spent 3.0 s on the local history check']);
  });
  it('refuses renamed agent roots and missing acknowledged storage instead of creating another genesis',async()=>{
   const f=await fixture();await f.manager.ensureOwner({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard',requestId:'first-visit',isCurrent:()=>true});await f.manager.close();managers.splice(managers.indexOf(f.manager),1);

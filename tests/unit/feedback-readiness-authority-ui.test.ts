@@ -51,6 +51,10 @@ describe('requests', () => {
     expect(body).not.toHaveProperty('agentId');
     expect(body).not.toHaveProperty('provider');
   });
+  it('an approval carries the model it was shown; revoke does not', () => {
+    expect(authorityRequest('create', {}, '1', 'r', 'gpt-6.2-astra')).toMatchObject({ useProposal: true, shownModelFamily: 'gpt-6.2-astra' });
+    expect(authorityRequest('revoke', {}, '1', 'r', 'gpt-6.2-astra')).not.toHaveProperty('shownModelFamily');
+  });
   it('an emptied limit field is omitted (server default), never sent as 0', () => {
     const body = authorityRequest('replace', { maxBatch: '', maxTokens: ' ', maxDailySpendUsd: '3' }, '1', 'r');
     expect(body).not.toHaveProperty('maxBatch');

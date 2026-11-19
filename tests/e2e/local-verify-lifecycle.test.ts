@@ -7,6 +7,7 @@
  * inert (503) when disabled or off a source checkout.
  */
 
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -71,6 +72,21 @@ function serve(c: RouteContext) {
   return a;
 }
 
+/**
+ * SEC-113 D1: give the peer a real machine identity (renamed to the configured peer id) and pin it
+ * on the coordinator, the way pairing does, so the coordinator dispatches to it and verifies its
+ * signed answers through the production wiring.
+ */
+async function pairPeerIdentity(peerStateDir: string, coordStateDir: string, peerId: string): Promise<void> {
+  await new MachineIdentityManager(peerStateDir).generateIdentity({ name: 'lv e2e peer' });
+  const own = path.join(peerStateDir, 'machine', 'identity.json');
+  const identity = { ...JSON.parse(fs.readFileSync(own, 'utf-8')), machineId: peerId };
+  fs.writeFileSync(own, JSON.stringify(identity));
+  const pinned = path.join(coordStateDir, 'machines', peerId, 'identity.json');
+  fs.mkdirSync(path.dirname(pinned), { recursive: true });
+  fs.writeFileSync(pinned, JSON.stringify(identity));
+}
+
 describe('local-verify lifecycle (production wiring)', () => {
   it('loads safe-merge from the installed package, not the working checkout', async () => {
     expect(installedSafeMergePath()).toBe(path.join(ROOT, 'scripts', 'safe-merge.mjs'));
@@ -115,6 +131,34 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
     expect(r.body.diagnosis).toMatchObject({ mode: 'off', storeReady: true, pending: 0, completed: 0 });
     built.service!.shutdown();
+  });
+
+  it('a stored oldestUnverifiedAt is restored after boot (spec local-verify-main-age-survives-restart)', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const GREEN = '9'.repeat(40);
+    const seenAt = Date.now() - 50 * 60_000; // an unverified merge first seen 50 minutes before this boot
+    const file = path.join(stateDir, 'state', 'local-verify', 'main-health.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      v: 1, machineId: 'm_e2e', state: 'healthy', redHead: null, lastGreenHead: GREEN, reason: 'green', updatedAt: new Date().toISOString(),
+      oldestUnverifiedAt: seenAt,
+    }));
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    await svc.boot();
+    // Restored through the production-built service: the age did not start again at this boot,
+    // it is a known age (not "at least"), and boot's own rewrite of the watermark kept it.
+    expect(svc.mainUnverifiedAge()).toEqual({ since: seenAt, atLeast: false });
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toMatchObject({ oldestUnverifiedAt: seenAt, lastGreenHead: GREEN, state: 'healthy' });
+    const log = path.join(stateDir, 'logs', 'local-verify.jsonl');
+    const lines = fs.existsSync(log) ? fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string }) : [];
+    expect(lines.map((l) => l.event)).not.toContain('main-age-unknown');
+    expect((await request(serve(ctx(stateDir, svc))).get('/local-verify')).status).toBe(200);
+    svc.shutdown();
   });
 
   it('production boot keeps an enabled peer diagnosis separate from a red PR record', async () => {
@@ -401,9 +445,16 @@ describe('local-verify lifecycle (production wiring)', () => {
     const coordStarts: string[] = [];
     peerSeams.spawnRun = child('m_peer', 'failure', peerStarts) as never;
     coordSeams.spawnRun = child('m_coord', 'failure', coordStarts) as never;
+    await pairPeerIdentity(peerStateDir, coord.stateDir, 'm_peer');
+    // SEC-113 D2.3: this coordinator has run main itself before (a local anchor and ten measured runs),
+    // so a peer may serve main; a fresh holder would keep main local until it has its own green.
+    fs.mkdirSync(path.join(coord.stateDir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(coord.stateDir, 'state', 'local-verify', 'peer-trust.json'), JSON.stringify({ v: 1, holding: { holder: 'm_coord', epoch: 7 },
+      anchor: { head: 'f'.repeat(40), finishedAt: new Date().toISOString() }, notLocallyVerifiedAt: null, locallyVerified: ['f'.repeat(40)],
+      peerMainGreens: [], quarantine: {}, arbitration: null, durations: Array.from({ length: 10 }, () => 10 * 60_000) }));
     wireLocalVerifyPeers(peer, {
       liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: peerStateDir,
       lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
@@ -414,7 +465,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const values: Record<string, unknown> = { 'monitoring.localVerify.peers': [{ machineId: 'm_peer', url: peerUrl }] };
     wireLocalVerifyPeers(coordinator, {
       liveConfig: { get: <T,>(k: string, fb: T): T => (k in values ? values[k] as T : fb) },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: coord.stateDir,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     await coordinator.boot();
@@ -483,9 +534,10 @@ describe('local-verify lifecycle (production wiring)', () => {
     peerSeams.foreignSuiteHolders = () => [];
     let peerStarts = 0;
     peerSeams.spawnRun = () => { peerStarts++; return { pid: 9100, exited: new Promise(() => {}) }; };
+    await pairPeerIdentity(peerStateDir, coord.stateDir, 'm_peer');
     wireLocalVerifyPeers(peer, {
       liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: peerStateDir,
       lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
@@ -495,7 +547,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const peerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     wireLocalVerifyPeers(coordinator, {
       liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peers' ? [{ machineId: 'm_peer', url: peerUrl }] as T : fb },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: coord.stateDir,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     await coordinator.boot();
@@ -546,6 +598,72 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('enforce');
     values['monitoring.localVerify.preflightMode'] = 'unknown';
     expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('off');
+    svc.shutdown();
+  });
+
+  it('import-related re-run: through the production wiring the live key and a list computed from a real history file reach the run child\'s input, with the key off and on', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    const values: Record<string, unknown> = {};
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    // Wiring integrity: the switch reader is the live config, absent ⇒ off, only a real true turns it on.
+    const sw = svc as unknown as { importRelatedRerunOn(): boolean; seams: LocalVerifyServiceSeams };
+    expect(sw.importRelatedRerunOn()).toBe(false);
+    values['monitoring.localVerify.importRelatedRerun'] = 'yes';
+    expect(sw.importRelatedRerunOn()).toBe(false);
+    delete values['monitoring.localVerify.importRelatedRerun'];
+    // A real history file: this machine's own green main, and one test main saw fail and pass alone.
+    const at = new Date(Date.now() - 60 * 60_000).toISOString();
+    const evidence = { test: 'reaps a plain-mode child that ignores SIGTERM before releasing the call', at, line: 'AssertionError: expected false to be true', setHash: 'ab'.repeat(32), runLog: 'cd'.repeat(16) + '.log' };
+    const lvState = path.join(stateDir, 'state', 'local-verify');
+    fs.mkdirSync(lvState, { recursive: true });
+    fs.writeFileSync(path.join(lvState, 'flaky-history.json'), JSON.stringify({
+      v: 1, greenMain: { headSha: 'f'.repeat(40), finishedAt: at, notClean: [], origin: 'local' },
+      files: { 'tests/unit/CodexCliIntelligenceProvider.test.ts': { seen: [at], escalatedAt: null, mainSeen: [evidence] } },
+    }));
+    // The run child's input, read when the child is spawned (the file is removed when its run ends).
+    const inputs: Array<{ pr: number; isolation: unknown }> = [];
+    const heads: Record<number, string> = { 3: 'a'.repeat(40), 4: 'c'.repeat(40) };
+    sw.seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: heads[pr], baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+    sw.seams.baseHead = async () => 'b'.repeat(40);
+    sw.seams.isPrOpen = async () => true;
+    sw.seams.foreignSuiteHolders = () => [];
+    const ends: Array<(x: { status: number | null; signal: string | null }) => void> = [];
+    sw.seams.spawnRun = (a) => {
+      inputs.push(JSON.parse(fs.readFileSync(a.args[a.args.indexOf('--input') + 1], 'utf-8')) as { pr: number; isolation: unknown });
+      return { pid: 9300 + inputs.length, exited: new Promise((r) => { ends.push(r); }) };
+    };
+    sw.seams.isGroupAlive = () => false;
+    sw.seams.killGroup = () => {};
+    await svc.boot();
+    /** The isolation block of the run child's input for a PR (a run that ended without a result is retried once: the newest input counts). */
+    const isolationOf = (pr: number) => inputs.filter((x) => x.pr === pr).at(-1)?.isolation;
+    const started = async (pr: number) => { for (let i = 0; i < 200 && isolationOf(pr) === undefined; i++) await new Promise((r) => setTimeout(r, 10)); };
+    // Key off (the default): the block says so and carries no list.
+    expect((await svc.request(3)).ok).toBe(true);
+    await started(3);
+    expect(isolationOf(3)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    // End every run of PR 3 (the one retry of an errored run included) so the slot is free.
+    // Wait on what can be observed, bounded at 5 s: every started run has been ended and nothing is in flight or queued.
+    const drained = () => ends.length === 0 && svc.snapshot().inFlight === null && svc.snapshot().queue.length === 0;
+    for (const until = Date.now() + 5000; Date.now() < until;) {
+      for (const end of ends.splice(0)) end({ status: 1, signal: null });
+      await new Promise((r) => setTimeout(r, 10));
+      if (drained()) break;
+    }
+    expect(drained()).toBe(true);
+    // Key on, read when the next run starts (no restart): the list from the history file rides along.
+    values['monitoring.localVerify.importRelatedRerun'] = true;
+    expect((await svc.request(4)).ok).toBe(true);
+    await started(4);
+    expect(isolationOf(4)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: 'tests/unit/CodexCliIntelligenceProvider.test.ts', tests: [evidence] }] });
+    // Alive over HTTP with the feature on.
+    expect((await request(serve(ctx(stateDir, svc))).get('/local-verify')).status).toBe(200);
     svc.shutdown();
   });
 
