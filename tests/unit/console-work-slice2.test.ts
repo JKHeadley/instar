@@ -80,7 +80,10 @@ describe('the pages', () => {
     const sheet = document.querySelector('.sheet').textContent;
     expect(sheet).toContain('The Chief of Staff, which keeps this card up to date itself');
     expect(sheet).toMatch(/Why you.*only when its next step needs your answer/s);
-    expect(sheet.indexOf('The agent recommends')).toBeLessThan(sheet.indexOf('Why you'));
+    // Why you sits by the ask in the hero; the recommendation follows with the main button under it.
+    expect(document.querySelector('.sheet .wc-hero .wc-why')).toBeTruthy();
+    expect(sheet.indexOf('Why you')).toBeLessThan(sheet.indexOf('Recommended'));
+    expect(sheet.indexOf('Recommended')).toBeGreaterThan(-1);
     expect(sheet).not.toContain('cos:waiting');
     expect(sheet).not.toContain('About');
   });
