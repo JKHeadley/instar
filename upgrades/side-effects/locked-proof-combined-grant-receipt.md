@@ -48,3 +48,22 @@ Final review: parent and independent proof_ack_gap concurred on the bounded rece
 ## Combined release-note gate follow-up
 
 The normal first push stopped before tests/publication because the inherited guard-ACK and next-grant fragments were also internal-only beside the combined runtime diff. Their markers are now removed and complete user/capability headings added on this combined branch only, matching the already converted watch fragment. This is documentation-only; no executable source, tests, helper, configuration or artifact bytes change. Existing source PRs remain intact. The local proof package remains exactly from3a3c6b963; the later documentation commit does not claim a new package build. Revert these note edits if separating the combined changes again. No additional tests are warranted for release prose; normal commit/push gates still run.
+
+## Second-pass review
+
+**Reviewer:** independent read-only reviewer subagent (general-purpose), run by the throughput session on 2026-11-19 at 04:05 PST on head b3ccac4c2; it was given the pull request and the question, not a conclusion.
+
+**Verdict:** Concur with the review.
+
+Why this record exists: Local Verify passed this head (unit, integration and e2e, on the M5 at 11:57Z) and the merge was refused because the change adds skipped tests and the pull request carried no concurring second pass.
+
+What the reviewer checked:
+
+- Every added skip, by file and line. All six sites are operating-system checks and nothing else: `tests/e2e/desktop-locked-lifecycle.test.ts:87`, `tests/unit/desktop-guard-observation.test.ts:50`, `tests/unit/desktop-enter-persistence-swift.test.ts:9`, `tests/unit/desktop-native-observer-swift.test.ts:9` and `tests/unit/locked-proof-guard-ack.test.ts:257` skip when the platform is not macOS; `tests/unit/locked-proof-watch-end.test.ts:42` skips on Windows. None depends on a desktop session, an environment variable or an installed tool: a missing Swift compiler fails loudly. All 26 affected tests run on both verify machines. No `.todo`, `.only` or early-return guard was added.
+- The cost stated plainly: on the Linux CI runners the 15 macOS-only tests do not run, so the macOS verify is their only gate. That is accepted for macOS-only code.
+- A narrower skip was possible in two files: the second test in each of the two Swift files only reads source text and could run on any platform. Noted, not blocking.
+- Enter persistence (`src/native/remote-desktop/macos/InstarDesktopHost.swift`): Enter is posted only after the intent write succeeds; a failed inner check and a failed save both suppress it; the marker fields the new check requires are already written on main, so no existing marker is newly refused.
+- Guard observation (`src/core/DesktopGuardObservation.ts`, `src/core/MacDesktopHost.ts`): diagnostic only; a failed or full recorder never blocks the spawn or the native lock call.
+- Tests cover both sides: 24 refusal cases plus accept and retry for Enter; spawned-and-exited, synchronous failure, asynchronous failure, overflow and an unreadable observer for the observation; the route at integration and e2e level.
+
+Limit of this review: the reviewer read five of the side-effects artifacts and the source and test changes; it did not read the `scripts/locked-proof` harness diffs line by line.
