@@ -31674,7 +31674,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (the 2026-06-25 lockout mechanism) routes THROUGH (falls past this block to
         // normal routing) instead of consuming the operator's message; a long-form
         // genuine stop is rescued to a kill.
-        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
+        // One verdict per Telegram message: the lifeline re-sends a forward it gave up
+        // on (10s), and a classification can take longer than that. Without the key,
+        // each re-send asked the model again and any one 'emergency-stop' among the
+        // answers killed the session (2026-11-18, topic 144201).
+        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId),
+          messageId ? `telegram:${Number(topicId)}:${messageId}` : undefined);
         if (decision.disposition === 'kill' || decision.disposition === 'pause') {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since

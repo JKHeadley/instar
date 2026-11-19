@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "sentinel-one-verdict-per-message",
+  "sessionId": "1c90c221-a1d9-4e81-a903-f2dea8869ce5",
+  "timestamp": "2026-11-18T06:32:28.216Z",
+  "artifactPath": "upgrades/side-effects/sentinel-one-verdict-per-message.md",
+  "artifactSha256": "a709fd2b05a3b2736cbf672bb5cb8bf2fec1fb7c3856db897e1fbae7ac9a6a47",
+  "coveredFiles": [
+    "docs/specs/sentinel-one-verdict-per-message.eli16.md",
+    "src/commands/server.ts",
+    "src/core/MessageSentinel.ts",
+    "src/core/appConversationPool.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/telegram-forward-sentinel-intercept.test.ts",
+    "tests/unit/MessageSentinel-one-verdict-per-message.test.ts",
+    "upgrades/next/sentinel-one-verdict-per-message.md",
+    "upgrades/side-effects/sentinel-one-verdict-per-message.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Idempotency layer in front of the unchanged stop decision (a repeated delivery of one message reuses its first verdict); no new authority, no persistent state, a revert fully undoes it. Sentinel path, so an independent second-pass review ran and concurred.",
+  "eli16Path": "docs/specs/sentinel-one-verdict-per-message.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sentinel-one-verdict-per-message.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
