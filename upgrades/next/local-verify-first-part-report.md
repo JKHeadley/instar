@@ -8,7 +8,7 @@ Local Verify no longer runs a second full comparison after a verify. Each run ma
 
 ## What to Tell Your User
 
-Read each machine's report during a trial. The operating session records a finding within three days using `/local-verify/first-part-finding`. Unknown findings remain unresolved. The two cost limits require two daily evaluations with new observations before switching that machine off; a config write failure is reported and retried at the next daily evaluation.
+Nothing changes for you unless you run your own test line with the "likely failures first" trial switched on. If you do: the trial no longer re-runs changes a second time to check itself, so it no longer takes a test machine out of the line. Each test machine now keeps a daily report of anything that looks lopsided between runs with and without the new order. I read that report, and anything it flags gets a written finding within three days; one that is late is shown as overdue. If the feature makes passing runs slower, or makes runs hit their time limit more often, two days in a row, it switches itself off on that machine and I am told.
 
 ## Summary of New Capabilities
 
