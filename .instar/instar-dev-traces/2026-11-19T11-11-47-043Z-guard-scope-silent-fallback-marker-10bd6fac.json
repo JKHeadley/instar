@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "guard-scope-silent-fallback-marker",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T11:11:47.043Z",
+  "artifactPath": "upgrades/side-effects/guard-scope-silent-fallback-marker.md",
+  "artifactSha256": "08033bbd7e177e950c944bc1a452a5a7058c398b18d0d2d47cf2e0602f96779f",
+  "coveredFiles": [
+    "src/core/SourceTreeGuard.ts",
+    "upgrades/side-effects/guard-scope-silent-fallback-marker.eli16.md",
+    "upgrades/side-effects/guard-scope-silent-fallback-marker.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "comment-only marker on a catch that returns its error; no runtime change",
+  "eli16Path": "upgrades/side-effects/guard-scope-silent-fallback-marker.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/guard-scope-silent-fallback-marker.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

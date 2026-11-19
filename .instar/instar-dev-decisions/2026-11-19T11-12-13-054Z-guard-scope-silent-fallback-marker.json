@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-19T11:12:13.054Z",
+  "slug": "guard-scope-silent-fallback-marker",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SourceTreeGuard.ts matches SourceTreeGuard (source-tree mutation guard)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SourceTreeGuard.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only change; adds no loop"
+  },
+  "verdict": "pass"
+}

@@ -457,6 +457,7 @@ function presence(p: string, follow: boolean): boolean | { error: string } {
     if (follow) fs.statSync(p); else fs.lstatSync(p);
     return true;
   } catch (err) {
+    // @silent-fallback-ok — not swallowed: absence is a real answer, and any other error is returned to the caller, which records it as indeterminate evidence
     if (isAbsentCode(err)) return false;
     return { error: errCode(err) };
   }
