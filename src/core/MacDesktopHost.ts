@@ -8,6 +8,7 @@ import { parseDesktopDisplays, validDesktopInput, validDisplayId, type DesktopBu
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 import type { DesktopSealedSecret } from './DesktopHost.js';
 import { DesktopHelperRetention } from './DesktopHelperRetention.js';
+import { macDesktopHelperBudgetMs, macDesktopHelperRunBaseMs } from './MacDesktopHelperBudget.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
@@ -194,7 +195,7 @@ export class MacDesktopHost implements DesktopHost {
   private waitForInputExit(child: ChildProcessWithoutNullStreams): Promise<void> {
     if (this.closedInputStreams.has(child)) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('mac-desktop-host-input-exit-unconfirmed')), 2_000);
+      const timer = setTimeout(() => reject(new Error('mac-desktop-host-input-exit-unconfirmed')), macDesktopHelperBudgetMs(2_000));
       timer.unref?.();
       child.once('close', () => { clearTimeout(timer); resolve(); });
       child.once('error', () => { clearTimeout(timer); reject(new Error('mac-desktop-host-input-exit-unconfirmed')); });
@@ -257,7 +258,7 @@ export class MacDesktopHost implements DesktopHost {
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-indicator-unavailable'));
       };
-      const timer = setTimeout(fail, 3_000);
+      const timer = setTimeout(fail, macDesktopHelperBudgetMs(3_000));
       timer.unref?.();
       child.stderr.resume();
       child.stdout.on('data', (chunk: Buffer) => {
@@ -314,8 +315,7 @@ export class MacDesktopHost implements DesktopHost {
         reject(new Error(reason));
       };
       const timer = setTimeout(() => fail('mac-desktop-host-timeout'),
-        command === 'request-permission' ? 15_000 : command === 'capture' ? 4_000
-          : command === 'state-op' ? 10_000 : 2_000);
+        macDesktopHelperBudgetMs(macDesktopHelperRunBaseMs(command)));
       timer.unref?.();
       child.stdout.on('data', (chunk: Buffer) => {
         size += chunk.length;
@@ -546,7 +546,7 @@ export class MacDesktopHost implements DesktopHost {
         this.displayCheckPending = true;
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-capture-timeout'));
-      }, 4_000);
+      }, macDesktopHelperBudgetMs(4_000));
       timer.unref?.();
       this.pendingCapture = { resolve, reject, timer };
       child.stdin.write(mode === 'h264' && (forceKeyframe || fresh) ? 'k' : 'n', error => {
@@ -712,7 +712,7 @@ export class MacDesktopHost implements DesktopHost {
         this.retireInputStream(child);
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-input-timeout'));
-      }, timeoutMs);
+      }, macDesktopHelperBudgetMs(timeoutMs));
       timer.unref?.();
       this.pendingInput = { resolve, reject, timer };
       child.stdin.write(line + '\n', error => {
