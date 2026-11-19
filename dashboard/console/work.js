@@ -12,10 +12,10 @@ import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, m
 import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
-  LANES, readBoard, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
-  refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
+  LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
+  cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
-  OUTWARD_WORDS,
+  OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf, coversWords, chiefOfStaffCard, CHIEF_OF_STAFF_WORDS,
 } from './work-model.js';
 
 const EYEBROW = 'Work · Work board';
@@ -31,6 +31,22 @@ async function send(path, body) {
     const r = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
     return { status: r.status, data: await r.json().catch(() => ({})) };
   } catch { return { status: 0, data: {} }; }
+}
+
+function clearCardFromHash(visit) {
+  const h = location.hash || '';
+  const i = h.indexOf('?');
+  if (i < 0) return;
+  const params = new URLSearchParams(h.slice(i + 1));
+  if (!params.has('card')) return;
+  params.delete('card');
+  const rest = params.toString();
+  try {
+    history.replaceState(history.state, '', `${location.pathname}${location.search}${h.slice(0, i)}${rest ? `?${rest}` : ''}`);
+    // replaceState fires no hashchange, so the once-per-navigation guard is reset here: a later tap on the same
+    // link is a new navigation and opens the card again.
+    if (visit) visit.opened = null;
+  } catch { /* the address stays; the once-only guard still holds */ }
 }
 
 function queryOf() { const h = location.hash || ''; const i = h.indexOf('?'); return i >= 0 ? h.slice(i + 1) : ''; }
@@ -51,7 +67,9 @@ export async function renderWork(main, ctx) {
   const page = donePageFrom(query);
   // Projects (work-front-doors stage 2a) are read alongside the board; a failed read is named, never empty.
   const [r, pr] = await Promise.all([get(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : get('/work/projects')]);
-  const projects = pr ? projectsSection(pr.ok ? pr.data : null) : null;
+  // "Open project" from the conversation list arrives as ?project=<key>: that project's row opens.
+  const openKey = (() => { try { return new URLSearchParams(query).get('project'); } catch { return null; } })();
+  const projects = pr ? projectsSection(pr.ok ? pr.data : null, { openKey }) : null;
   if (!r.ok) {
     setKids(main, isOff(r)
       ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }), projects)
@@ -62,9 +80,23 @@ export async function renderWork(main, ctx) {
   if (!board.ok) { setKids(main, cantTell('The work board answered, but not in a shape this page can read, so it cannot say what is waiting on you.')); return; }
 
   const waiting = board.lanes['waiting-on-you'];
-  const lead = laneSection(LANES[0], waiting.cards, refresh, { lead: true, count: waiting.cards.length + waiting.more });
-  if (waiting.cards.length) markNeed(lead, 'workBoard');
-  if (waiting.more) lead.append(el('p', { class: 'need-sub', text: `${waiting.more} more waiting` }));
+  // My board (work-board-my-board): the cards that need the reader, each once under its most pressing reason, then
+  // the lanes for every other card. An agent that sends no My board gets the lanes as before.
+  const mine = readMyBoard(r.data, board.lanes);
+  const notMine = (cards) => (mine ? cards.filter((c) => !mine.ids.has(c.id)) : cards);
+  let lead;
+  if (mine && mine.sections.length) {
+    lead = mine.sections.map((s) => myBoardSection(s, refresh));
+    markNeed(lead[0], 'workBoard');
+    // Every card waiting on the reader has a reason, so this lane is normally empty here; a card the agent left
+    // off My board is still shown rather than lost.
+    const rest = notMine(waiting.cards);
+    if (rest.length) lead.push(laneSection(LANES[0], rest, refresh, { lead: true }));
+  } else {
+    lead = laneSection(LANES[0], waiting.cards, refresh, { lead: true, count: waiting.cards.length + waiting.more });
+    if (waiting.cards.length) markNeed(lead, 'workBoard');
+    if (waiting.more) lead.append(el('p', { class: 'need-sub', text: `${waiting.more} more waiting` }));
+  }
 
   // Each waiting card opens on a click and carries its own buttons.
   // warning-path: row
@@ -73,10 +105,11 @@ export async function renderWork(main, ctx) {
 
   const done = board.lanes.done;
   const paging = donePaging(done.total, page);
-  const doneSec = laneSection(LANES[3], done.cards, refresh, { count: done.total });
-  if (paging.line) doneSec.append(el('p', { class: 'need-sub', text: paging.line }));
+  const doneSec = laneSection(LANES[3], done.cards, refresh, { count: done.total, folded: true, open: page > 0 });
+  const doneBody = doneSec.querySelector('.work-lane-body');
+  if (paging.line) doneBody.append(el('p', { class: 'need-sub', text: paging.line }));
   const pager = [paging.prev, paging.next].filter(Boolean).map((p) => el('a', { class: 'link-btn', href: p.href, text: p.text }));
-  if (pager.length) doneSec.append(el('p', { class: 'confirm-row' }, pager));
+  if (pager.length) doneBody.append(el('p', { class: 'confirm-row' }, pager));
 
   setKids(main, el('div', { class: 'work-page' },
     head,
@@ -84,10 +117,10 @@ export async function renderWork(main, ctx) {
     notes,
     // Projects come right after what is waiting on you (a page leads with the need), before the other lanes.
     projects,
-    laneSection(LANES[1], board.lanes['with-agent'].cards, refresh),
-    laneSection(LANES[2], board.lanes['waiting-on-others'].cards, refresh),
+    laneSection(LANES[1], notMine(board.lanes['with-agent'].cards), refresh),
+    laneSection(LANES[2], notMine(board.lanes['waiting-on-others'].cards), refresh),
     doneSec,
-    laneSection(LANES[4], board.lanes.archived.cards, refresh),
+    laneSection(LANES[4], board.lanes.archived.cards, refresh, { count: board.lanes.archived.total, folded: true }),
     board.settings ? settingsPanel(board, refresh) : null,
   ));
 
@@ -101,6 +134,7 @@ export async function renderWork(main, ctx) {
       if (workRenders.get(main) !== run || queryOf() !== query || !main.isConnected) return;
       if (result.ok && result.data?.card?.id === want && typeof result.data.card.title === 'string') c = result.data.card;
       else {
+        // The card stays in the address here, so "Try again" can read it again.
         main.prepend(note(result.status === 404 ? 'This card is no longer available here.' : 'This card could not be loaded. Try again.'));
         main.prepend(el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: refresh }));
         return;
@@ -108,25 +142,50 @@ export async function renderWork(main, ctx) {
     }
     visit.opened = want;
     openCard(c, refresh);
+    // Take the card out of the address once it is open, so the same link (a Needs-you row's card link) opens it
+    // again on a later tap; the page's own refresh still never reopens a card the person closed.
+    clearCardFromHash(visit);
   }
 }
 
-function laneSection(lane, cards, refresh, { lead = false, count } = {}) {
-  const wrap = el('section', { class: 'list-section work-lane', id: `sec-${lane.id}` },
-    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: lane.label }), el('span', { class: 'list-count', text: String(count ?? cards.length) })));
-  if (!cards.length) wrap.append(el('p', { class: 'empty-line', text: lane.empty }));
-  for (const c of cards) wrap.append(cardRowNode(c, refresh, lead));
+function laneSection(lane, cards, refresh, { lead = false, count, folded = false, open = false } = {}) {
+  const bodyId = `work-lane-${lane.id}`;
+  const head = el(folded ? 'button' : 'div', {
+    class: 'list-head', type: folded ? 'button' : null,
+    'aria-expanded': folded ? String(open) : null, 'aria-controls': folded ? bodyId : null,
+  }, el('h2', { class: 'eyebrow', text: lane.label }), el('span', { class: 'list-count', text: String(count ?? cards.length) }),
+  folded ? el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }) : null);
+  const body = el('div', { class: 'work-lane-body', id: bodyId, hidden: folded && !open });
+  if (!cards.length) body.append(el('p', { class: 'empty-line', text: lane.empty }));
+  for (const c of cards) body.append(cardRowNode(c, refresh, lead));
+  if (folded) head.addEventListener('click', () => {
+    body.hidden = !body.hidden;
+    head.setAttribute('aria-expanded', String(!body.hidden));
+  });
+  const wrap = el('section', { class: 'list-section work-lane', id: `sec-${lane.id}` }, head, body);
   return wrap;
 }
 
-function cardRowNode(card, refresh, lead) {
+/** One My board section: its words and count, its cards (untouched first, as the agent ordered them), and "And N more". */
+function myBoardSection(s, refresh) {
+  const body = el('div', { class: 'work-lane-body', id: `work-mine-${s.reason}` });
+  for (const c of s.cards) body.append(cardRowNode(c, refresh, s.lead, { tagNotStarted: true }));
+  if (s.more) body.append(el('p', { class: 'need-sub work-more', text: `And ${s.more} more` }));
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: s.words }), el('span', { class: 'list-count', text: String(s.cards.length + s.more) }));
+  return el('section', { class: 'list-section work-lane work-mine', id: `sec-mine-${s.reason}`, 'data-reason': s.reason }, head, body);
+}
+
+function cardRowNode(card, refresh, lead, { tagNotStarted = false } = {}) {
   const r = cardRow(card);
   const status = el('p', { class: 'need-sub', role: 'status' });
   const title = el('button', { class: 'link-btn need-title work-open', type: 'button', text: r.main, 'aria-label': `Open the card: ${r.main}` });
   title.addEventListener('click', () => openCard(card, refresh));
-  return el('div', { class: lead ? 'need-card work-card' : 'need-card muted-card work-card', 'data-card': card.id },
+  const turn = turnOf(card);
+  return el('div', { class: `${lead ? 'need-card work-card' : 'need-card muted-card work-card'}${turn ? ` turn-${turn}` : ''}`, 'data-card': card.id, ...(turn ? { 'data-turn': turn } : {}) },
     title,
     r.sub ? el('p', { class: 'need-sub', text: r.sub }) : null,
+    tagNotStarted && notStartedTag(card) ? el('p', { class: 'need-sub work-tag work-not-started', text: notStartedTag(card) }) : null,
+    chiefOfStaffCard(card) ? el('p', { class: 'need-sub work-tag', text: CHIEF_OF_STAFF_WORDS }) : null,
     r.outward ? el('p', { class: 'need-sub', text: card.outwardWords || OUTWARD_WORDS }) : null,
     r.notes.map((t) => el('p', { class: 'need-sub work-note', text: t })),
     phoneOnlyLine(card) ? el('p', { class: 'need-sub work-phone-only', text: phoneOnlyLine(card) }) : null,
@@ -141,7 +200,7 @@ function actionsNode(card, actions, status, refresh) {
   for (const a of actions) {
     if (a.action === 'answer') { kids.push(answerControl(card, status, refresh)); continue; }
     const b = el('button', { class: `${a.tone === 'primary' ? 'btn-primary' : a.tone === 'danger' ? 'btn-danger' : 'btn-quiet'} btn-inline`, type: 'button', text: a.label });
-    b.addEventListener('click', () => confirmTap(card, a.action, {}, status, refresh));
+    b.addEventListener('click', () => (CLOSE_WORDS[a.action] ? closeStep(card, a.action, status, refresh) : confirmTap(card, a.action, {}, status, refresh)));
     kids.push(b);
   }
   return el('div', { class: 'confirm-row work-actions' }, kids);
@@ -163,6 +222,31 @@ function answerControl(card, status, refresh) {
   return el('div', { class: 'confirm-row work-answer' }, input, go);
 }
 
+/** Done or Not important: the note comes first (the server refuses a close without one), then the usual confirm step. */
+function closeStep(card, action, status, refresh, { note = '', refused = '' } = {}) {
+  const words = CLOSE_WORDS[action];
+  const id = `close-note-${action}`;
+  const input = el('textarea', { class: 'reason-input work-close-note', id, rows: '3', maxlength: String(CLOSE_NOTE_MAX), 'aria-describedby': `${id}-hint` });
+  input.value = note;
+  // A refused close comes back here with the note kept, so the person can reword it (a credential, a stale card).
+  const problem = el('p', { class: 'need-sub', role: 'status', text: refused });
+  const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel', onclick: () => closeSheet() });
+  const next = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Continue' });
+  input.addEventListener('input', () => { if (input.value.trim()) problem.textContent = ''; });
+  next.addEventListener('click', () => {
+    const built = tapBody(card, action, { note: input.value });
+    if (!built.ok) { problem.textContent = built.reason; input.focus(); return; }
+    const note = input.value;
+    confirmTap(card, action, { note }, status, refresh, (words) => closeStep(card, action, status, refresh, { note, refused: words }));
+  });
+  sheet({ title: `${CLOSE_TITLES[action]}: ${String(card.title || 'Card')}` },
+    el('label', { class: 'need-title', for: id, text: words.label }),
+    el('p', { class: 'need-sub', id: `${id}-hint`, text: words.hint }),
+    input, problem,
+    el('div', { class: 'confirm-row' }, cancel, next));
+  setTimeout(() => input.focus(), 0);
+}
+
 function coversNode(lines) {
   return el('dl', { class: 'story' }, lines.flatMap((l) => [
     el('dt', { text: l.label }),
@@ -171,7 +255,7 @@ function coversNode(lines) {
 }
 
 /** Show exactly what the tap covers, then the PIN, then send it. */
-function confirmTap(card, action, extra, status, refresh) {
+function confirmTap(card, action, extra, status, refresh, onRefused = null) {
   const built = tapBody(card, action, extra);
   if (!built.ok) { status.textContent = built.reason; return; }
   const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel', onclick: () => closeSheet() });
@@ -184,6 +268,7 @@ function confirmTap(card, action, extra, status, refresh) {
     pin.pin = '';
     if (res.status === 200) { status.textContent = 'Done.'; setTimeout(refresh, 600); return; }
     status.textContent = refusalWords(res.status, res.data);
+    if (onRefused) onRefused(status.textContent);
     if (res.data && (res.data.error === 'stale-card' || res.data.error === 'question-replaced')) setTimeout(refresh, 1500);
   });
   sheet({ title: `${tapWordsTitle(action, card)}: what this covers` },
@@ -193,6 +278,8 @@ function confirmTap(card, action, extra, status, refresh) {
 
 function tapWordsTitle(action, card) {
   if (card && card.phoneOnly && action === 'withdraw-approval') return 'Stop this app';
+  if (CLOSE_TITLES[action]) return CLOSE_TITLES[action];
+  if (action === 'unarchive' && card && card.closeout) return 'Reopen';
   return { approve: 'Approve', answer: 'Answer', 'confirm-done': 'Confirm done', reopen: 'Reopen', unhold: 'Release hold', retry: 'Try again', 'withdraw-approval': 'Withdraw approval', archive: 'Archive', unarchive: 'Restore', hold: 'Put on hold', redact: 'Remove for good' }[action] || 'Confirm';
 }
 
@@ -218,6 +305,8 @@ function openCard(card, refresh) {
   const facts = [
     { label: 'Now', text: String(card.needLine || '') },
     { label: 'Carried by', text: principalWords(card.carrier) },
+    chiefOfStaffCard(card) ? { label: 'Written by', text: 'The Chief of Staff, which keeps this card up to date itself' } : null,
+    coversWords(card) ? { label: 'About', text: coversWords(card) } : null,
     card.waitingOn ? { label: 'Waiting on', text: principalWords(card.waitingOn) } : null,
     { label: 'Outside your team', text: card.outward ? (card.outwardWords || OUTWARD_WORDS) : 'Nothing is sent outside your team and nothing is spent' },
     card.due ? { label: 'Due', text: when(card.due) } : null,
@@ -225,8 +314,17 @@ function openCard(card, refresh) {
   ].filter(Boolean);
 
   const body = [...warn, el('dl', { class: 'story' }, facts.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]))];
+  const source = cardSourceLink(card);
+  if (source) body.push(el('p', { class: 'card-line work-source' },
+    el('span', { text: 'From: ' }), source.href
+      ? el('a', { href: source.href, text: source.label, onclick: () => closeSheet() })
+      : el('span', { text: source.label }), source.note ? el('span', { text: ` · ${source.note}` }) : null));
   if (card.need) body.push(block('What is needed', needNode(card.need)));
   if (card.recommendation) body.push(block('The agent recommends', el('p', { class: 'card-line work-pre', text: String(card.recommendation) })));
+  if (card.whyYou) body.push(block('Why you', el('p', { class: 'card-line work-pre', text: String(card.whyYou) })));
+  // A person's close in force: who closed it, when, and the note (work-front-doors §6).
+  const closed = closeoutLine(card);
+  if (closed) body.push(block('Closed', el('p', { class: 'card-line work-pre', text: closed })));
 
   const items = evidenceByItem(card);
   body.push(block('Done when', items.length ? el('ul', { class: 'work-items' }, items.map((it) => el('li', {},

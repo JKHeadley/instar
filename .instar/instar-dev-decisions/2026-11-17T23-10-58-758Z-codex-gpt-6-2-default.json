@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-17T23:10:58.758Z",
+  "slug": "codex-gpt-6-2-default",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 13,
+  "loc": 280,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "scripts/routing-prices.manifest.json",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicProfileResolver.ts",
+      "src/core/codexCapabilities.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/feedback-factory/drain/readinessAuthorityProposal.ts",
+      "src/feedback-factory/triage/triageAuthorityProposal.ts",
+      "src/providers/adapters/openai-codex/transport/agenticSessionHeadless.ts",
+      "src/providers/adapters/openai-codex/transport/oneShotCompletion.ts",
+      "src/providers/adapters/openai-codex/transport/structuredOneShot.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 229,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the only new spawn is the codex --version probe, at most one per binary per cache window (10 min readable, 60 s unreadable), shared by concurrent callers, with a hard 2 s deadline; it never retries or re-drives itself"
+  },
+  "verdict": "pass"
+}

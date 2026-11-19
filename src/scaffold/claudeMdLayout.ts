@@ -40,6 +40,13 @@ export const CLAUDE_MD_LEGACY_BACKUP_REL = '.instar/CLAUDE.md.before-reference-l
  * between 79,280 and 79,375), so the later ones to merge would fail on size alone.
  * 84,000 leaves room for that queue and 66k under the warning. The lasting fix is to
  * keep rows short (detail belongs in the reference section), not to raise this again.
+ *
+ * 2026-11-18: the core reached 83,999 after an update and fourteen open changes failed on
+ * size alone. Not raised. The long "Registry First" and "Feature Proactivity" rows were cut
+ * to a trigger plus a first step, and their full text moved, unchanged, to the "Lookup
+ * details" section of the template (a reference section): core 77,899 after an update.
+ * tests/unit/claude-md-core-headroom.test.ts now fails before the limit is reached (a row
+ * over 400 characters under those two headings, or less than 2,000 characters free).
  */
 export const CLAUDE_MD_CORE_BUDGET_CHARS = 84_000;
 

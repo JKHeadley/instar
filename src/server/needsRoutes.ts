@@ -69,6 +69,7 @@ export const NEED_SOURCE_LABELS: Record<string, string> = {
   'skill-learning-proposals': 'learned skills',
   'learned-pending': 'skills waiting for your OK',
   context: 'conversation summaries',
+  'document-decisions': 'documents waiting for your decision',
 };
 
 /**
@@ -94,6 +95,7 @@ export const NEED_SOURCE_POSTURE: Record<string, { posture: 'replicated' | 'pool
   'skill-learning-proposals': { posture: 'replicated', why: 'git-synced skills and ledgers; each machine builds its own status from them.' },
   'learned-pending': { posture: 'replicated', why: 'as skill-learning-proposals.' },
   context: { posture: 'machine-local', why: 'by design: one watcher per machine, acting on the topics that machine owns.' },
+  'document-decisions': { posture: 'replicated', why: 'document rows replicate to every machine; a machine that is behind on a document shows its own fold (document-decisions §6).' },
 };
 
 export type NeedsViewerRole = 'owner' | 'member' | 'guest' | 'team' | 'msp';
@@ -110,6 +112,11 @@ export interface NeedItem {
   /** href = a console hash (or /dashboard path); topic = a conversation; attention = the attention topic; promise = a promise. */
   action: { kind: 'href'; href: string } | { kind: 'topic'; topicId: number } | { kind: 'attention' } | { kind: 'promise'; id: string; origin: string | null };
   refs: string[];
+  /**
+   * The work-board card that stands in for this item (docs/specs/work-board-cards-appear.md §3): the row keeps its
+   * own words and action; the card is one tap away. Additive and optional: a reader that does not know it shows the row.
+   */
+  card?: { id: string; href: string; label: string };
 }
 
 export interface NeedsAnswer {
@@ -203,6 +210,7 @@ const DEFAULT_WHY: Record<string, string> = {
   attention: 'Raised for you in the attention queue.',
   promises: 'A promise that waits on you and is due soon.',
   workBoard: 'This card is waiting on you.',
+  'document-decisions': 'A document asks for your decision. Decide on your phone.',
 };
 
 function toItem(row: Rec, source: string): NeedItem {
@@ -210,7 +218,7 @@ function toItem(row: Rec, source: string): NeedItem {
   let action: NeedItem['action'];
   if (a.kind === 'topic' && Number.isFinite(Number(a.topicId))) action = { kind: 'topic', topicId: Number(a.topicId) };
   else if (a.kind === 'promise' && typeof a.id === 'string') action = { kind: 'promise', id: a.id, origin: typeof a.origin === 'string' ? a.origin : null };
-  else if (a.kind === 'href' && typeof a.href === 'string' && /^(#\/|\/dashboard\/)/.test(a.href)) action = { kind: 'href', href: a.href };
+  else if (a.kind === 'href' && typeof a.href === 'string' && /^(#\/|\/dashboard\/|\/docs\/[0-9a-f-]{36}$)/.test(a.href)) action = { kind: 'href', href: a.href };
   else action = { kind: 'attention' };
   const sub = clean(row.sub, DETAIL_MAX);
   const detail = clean(row.detail, DETAIL_MAX);
@@ -224,7 +232,15 @@ function toItem(row: Rec, source: string): NeedItem {
     sourceLabel: NEED_SOURCE_LABELS[source] || source,
     action,
     refs: Array.isArray(row.refs) ? row.refs.filter((x): x is string => typeof x === 'string').slice(0, 8).map((x) => clean(x, 80)) : [],
+    ...cardOf(row.card),
   };
+}
+
+function cardOf(c: unknown): { card?: NeedItem['card'] } {
+  if (!c || typeof c !== 'object') return {};
+  const r = c as Rec;
+  if (typeof r.id !== 'string' || !/^wc_[0-9a-f]{16}$/.test(r.id) || typeof r.href !== 'string' || !/^#\/work\/board\?card=/.test(r.href)) return {};
+  return { card: { id: r.id, href: r.href, label: clean(r.label, 80) || 'Has a card on the work board' } };
 }
 
 export interface NeedsComposer {

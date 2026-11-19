@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'agentSessionPlacement',
+    configPath: 'multiMachine.placement.agentSessions.enabled',
+    description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',
+    justification: 'The shadow log only writes an audit line and never changes where a session starts. Live placement is opt-in per request (no caller sends placement:"auto" by default), starts through the peer\'s own /sessions/spawn so its caps and admission apply, never starts a name twice from one origin (durable placement record written before the send, unresolved names read-only, no local start after an ambiguous hand-off), never proxies a kill, and no eligible peer means local exactly as today. enabled:false and a restart restore today\'s behaviour; placed sessions keep running where they are.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
@@ -952,6 +958,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'queuePace.enabled',
     description: 'Queue pace: an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items), with a plain verdict and the reason a queue is behind (GET /queue-pace, the console Pace card).',
     justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
+  },
+  {
+    name: 'quotaPacing',
+    configPath: 'subscriptionPool.pacing.enabled',
+    description: 'Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable, bounded history of every subscription quota reading and a read-only forecast of where each account lands at its reset and whether each provider keeps weekly room (GET /quota-pacing).',
+    justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
   },
   {
     name: 'ecosystemIdeas',

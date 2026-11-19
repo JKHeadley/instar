@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T07:24:08.667Z",
+  "slug": "work-board-cards-appear",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 569,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffWaitCards.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/WorkCardStore.ts",
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/work-board-cards-instead-of-asking.md",
+      "src/server/needsRoutes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 549,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
