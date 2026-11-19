@@ -28,7 +28,7 @@ export interface AgentWorktreeEvaluationInput {
 }
 
 /** The whole off-thread half. Async only for the link index; a test can run it in-process. */
-export async function runAgentWorktreeEvaluation(input: AgentWorktreeEvaluationInput): Promise<WorktreeEnumeration<WorktreeEvaluation>> {
+export async function runAgentWorktreeEvaluation(input: AgentWorktreeEvaluationInput): Promise<WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null }> {
   const deps = {
     ...makeAgentWorktreeReaperDeps({
       instarRepo: input.instarRepo,
@@ -44,10 +44,11 @@ export async function runAgentWorktreeEvaluation(input: AgentWorktreeEvaluationI
   const enumeration = deps.listWorktrees();
   if (!enumeration.ok) return enumeration;
   const worktrees = enumeration.worktrees.map((info): WorktreeEvaluation => {
-    try { return reaper.evaluate(info); }
+    // annotate(): report-only node_modules kind + dry-run projection (spec reaper-generated-files-regenerable §5).
+    try { return reaper.annotate(reaper.evaluate(info), true); }
     catch { return { path: info.path, branch: info.branch, verdict: 'keep', reason: 'eval-error' }; }
   });
-  return { ok: true, worktrees };
+  return { ok: true, worktrees, archiveBytes: reaper.measureArchive() };
 }
 
 export interface AgentWorktreeEvaluationWorkerOptions extends AgentWorktreeEvaluationInput {
@@ -70,7 +71,7 @@ export const DEFAULT_EVALUATION_TIMEOUT_MS = 30 * 60 * 1000;
  * the reaper records exactly like an enumeration failure (reclaimable unknown,
  * keep everything). Never rejects.
  */
-export function evaluateAgentWorktreesInWorker(options: AgentWorktreeEvaluationWorkerOptions): Promise<WorktreeEnumeration<WorktreeEvaluation>> {
+export function evaluateAgentWorktreesInWorker(options: AgentWorktreeEvaluationWorkerOptions): Promise<WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null }> {
   const input: AgentWorktreeEvaluationInput = {
     instarRepo: options.instarRepo,
     worktreesDir: options.worktreesDir,
@@ -89,7 +90,7 @@ export function evaluateAgentWorktreesInWorker(options: AgentWorktreeEvaluationW
       return;
     }
     let settled = false;
-    const settle = (result: WorktreeEnumeration<WorktreeEvaluation>): void => {
+    const settle = (result: WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null }): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -101,7 +102,7 @@ export function evaluateAgentWorktreesInWorker(options: AgentWorktreeEvaluationW
       void worker.terminate();
     }, timeoutMs);
     timer.unref?.();
-    worker.once('message', (message: WorktreeEnumeration<WorktreeEvaluation>) => {
+    worker.once('message', (message: WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null }) => {
       settle(message && typeof message === 'object' && 'ok' in message ? message : { ok: false, error: 'evaluation worker returned no result' });
     });
     worker.once('error', (error) => settle({ ok: false, error: `evaluation worker failed: ${error instanceof Error ? error.message : String(error)}` }));

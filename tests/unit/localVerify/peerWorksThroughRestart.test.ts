@@ -838,3 +838,90 @@ describe('E: the peer judges its own attempt on its own progress files', () => {
     expect(off.h.svc.peerResult(ATT)).toEqual({ state: 'unknown' });
   });
 });
+
+// ── with the operator's queue controls (docs/specs/local-verify-queue-controls.md) ──
+describe('with queue controls: hold and front on the pause path, and a hold on an adopted attempt', () => {
+  const BY = 'echo-increasing-throughput';
+
+  /** Paused for a restart with PR 1 running here and PRs 2 and 3 queued; nothing handed to the peer yet. */
+  async function pausedWithTwoQueued() {
+    const c = coordinator();
+    c.svc.setQueueControlsEnabled(() => true);
+    await c.svc.request(1); // runs here: the pause waits on it
+    c.svc.setUpdatePendingProvider(() => ({ pending: true, pendingSinceMs: c.clock.t, otherBlockers: false }));
+    await c.svc.tick();
+    await c.svc.request(2);
+    await c.svc.request(3);
+    return c;
+  }
+
+  it('without a control the older change goes to the peer during the pause (the baseline the next two differ from)', async () => {
+    const c = await pausedWithTwoQueued();
+    await c.runTimers();
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([2]);
+  });
+
+  it('a held change is not handed to the peer during the pause; the next one is, stamped', async () => {
+    const c = await pausedWithTwoQueued();
+    expect(await c.svc.operatorHold({ pr: 2, by: BY, reason: 'not yet' })).toMatchObject({ ok: true, held: true, running: false, removed: 'queue' });
+    await c.runTimers();
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([3]);
+    expect(reserved(c, 3)?.sentDuringPause).toBe(c.svc.peersInfo().restartEpisode!.id);
+    expect(c.svc.snapshot().queue.map((e) => e.pr)).not.toContain(2);
+    expect(c.spawned).toHaveLength(1); // the local slot started nothing more
+  });
+
+  it('a fronted change is the one handed to the peer during the pause', async () => {
+    const c = await pausedWithTwoQueued();
+    expect(await c.svc.operatorFront({ pr: 3, by: BY, reason: 'unblocks others' })).toMatchObject({ ok: true });
+    await c.runTimers();
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([3]);
+    expect(reserved(c, 3)?.sentDuringPause).toBe(c.svc.peersInfo().restartEpisode!.id);
+  });
+
+  /** PR 2 on the peer, then held (it is running: left alone), then the coordinator restarts at the next epoch. */
+  async function heldThenRestarted() {
+    const { c, req } = await dispatched();
+    c.svc.setQueueControlsEnabled(() => true);
+    expect(await c.svc.operatorHold({ pr: 2, by: BY, reason: 'not yet' })).toMatchObject({ ok: true, held: true, running: true, where: 'peer', removed: null });
+    c.svc.shutdown();
+    const peer = fakePeer();
+    for (const r of c.peer.runs()) peer.prime(r);
+    const c2 = coordinator({ stateDir: c.stateDir, clock: c.clock, lease: leaseCtl({ epoch: 8 }), peer });
+    c2.svc.setQueueControlsEnabled(() => true);
+    await c2.svc.boot();
+    return { c2, req };
+  }
+
+  it('a hold never touches the running attempt: it is adopted after the restart, not cancelled, and its result is imported', async () => {
+    const { c2, req } = await heldThenRestarted();
+    await c2.svc.tick();
+    expect(c2.audits('peer-attempt-adopted')).toEqual([expect.objectContaining({ pr: 2, attemptId: req.attemptId, fromEpoch: 7, toEpoch: 8 })]);
+    expect(reserved(c2)?.adoptedEpoch).toBe(8);
+    expect(c2.peer.cancels()).toEqual([]);
+    expect(c2.audits('operator-held-out')).toEqual([]);
+    c2.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
+    c2.advance(PEER_LIMITS.pollMs);
+    await c2.svc.tick();
+    expect(c2.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ outcome: 'success', machineId: 'peer1' });
+    expect(c2.svc.snapshot().operator?.held.map((x) => x.pr)).toEqual([2]); // the hold stands; nothing is queued for it
+    expect(c2.svc.snapshot().queue.map((e) => e.pr)).not.toContain(2);
+  });
+
+  it('an adopted attempt of a held change that comes back without a result goes to held, not back to the queue', async () => {
+    const { c2 } = await heldThenRestarted();
+    await c2.svc.tick();
+    expect(reserved(c2)?.adoptedEpoch).toBe(8);
+    c2.peer.setResult(() => ({ state: 'unknown' })); // the peer no longer knows the attempt
+    c2.advance(3 * MIN);
+    await c2.svc.tick();
+    await c2.runTimers();
+    expect(c2.audits('peer-attempt-abandoned')).toHaveLength(1);
+    expect(reserved(c2)).toBeUndefined();
+    expect(c2.svc.snapshot().queue.map((e) => e.pr)).not.toContain(2);
+    expect(c2.audits('operator-held-out')).toEqual([expect.objectContaining({ pr: 2, from: 'queue', why: 'found-queued' })]);
+    expect(c2.peer.runs()).toHaveLength(0); // not offered to the peer again
+    expect(c2.audits('operator-held-started')).toEqual([]);
+    expect(c2.svc.snapshot().operator?.held.map((x) => x.pr)).toEqual([2]);
+  });
+});
