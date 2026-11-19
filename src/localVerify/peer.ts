@@ -15,6 +15,8 @@ import type { MachineSignature } from '../core/AppRecordSignatures.js';
 import { ATTEMPT_ID_RE, MAIN_VERIFY_PR, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
 import type { FailureDetail, IsolationInput } from './orchestrator.js';
 import { IMPORT_RELATED_RERUN } from './policy.js';
+import { parseFileCounts, type FileCountsRow } from './mainFileCounts.js';
+import type { HelperEvent } from './borrowedNotices.js';
 
 /** The coordinator's durable reservation of one queue entry for one peer attempt. */
 export interface RemoteMarker {
@@ -74,6 +76,12 @@ export interface PeerRunRequest extends DispatchedInputs {
   isolation?: IsolationInput;
   /** Coordinator attests that its watcher can rediscover this candidate after lease movement. */
   preflightRediscoverable?: boolean;
+  /**
+   * A `main` verify only: the coordinator wants each file's counts and names-and-outcomes digest
+   * back with a green record (the baseline results of borrowed helpers, spec
+   * local-verify-borrowed-slices-count.md "Build decisions"). Absent: none are computed or sent.
+   */
+  fileCounts?: true;
 }
 
 export type PeerRefusal =
@@ -95,6 +103,11 @@ export type PeerResult =
 export interface PeerMainRun {
   reasons: string[];
   failures: FailureDetail[];
+  /**
+   * A green `main` verify the coordinator asked per-file counts of: file → [passed, failed,
+   * skipped, to-do, digest]. Part of the signed answer (`run` is under the peer's signature).
+   */
+  fileCounts?: Record<string, FileCountsRow>;
 }
 
 const PEER_MAIN_RUN_LIMITS = Object.freeze({ reasons: 50, reasonChars: 500, failures: 30, fileChars: 300, messageChars: 2000 });
@@ -118,6 +131,9 @@ export function parsePeerMainRun(v: unknown): PeerMainRun | undefined {
       ...(typeof r.rerunMessage === 'string' ? { rerunMessage: r.rerunMessage.slice(0, L.messageChars) } : {}),
     });
   }
+  // Strict: a malformed map is dropped whole (the coordinator then keeps no baseline from this verify).
+  const fileCounts = (x as { fileCounts?: unknown }).fileCounts === undefined ? null : parseFileCounts((x as { fileCounts?: unknown }).fileCounts);
+  if (fileCounts) return { reasons, failures, fileCounts };
   return reasons.length === 0 && failures.length === 0 ? undefined : { reasons, failures };
 }
 
@@ -129,6 +145,31 @@ export interface PeerStatus {
   slotBusy: boolean;
   /** SEC-113 D1: the hash of the key this peer signs with now (a hint the coordinator checks against its own pins). */
   signerKeyHash?: string;
+  /**
+   * Borrowed helpers (spec local-verify-borrowed-slices-count.md, F "Who is told" and "The
+   * record"), all optional and absent on a peer with no helper: this peer's helper events with
+   * ids (the coordinator sends each notice once), whether it wants the coordinator's baseline
+   * results, and the machine ids of its configured helpers (a returned record's `borrowed.helper`
+   * must be one of them).
+   */
+  helperEvents?: HelperEvent[];
+  wantsBaseline?: true;
+  helpers?: string[];
+}
+
+const PEER_HELPER_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/**
+ * The borrowed-helper extras of a peer status answer, strictly: `wantsBaseline` only as `true`,
+ * `helpers` only as at most two distinct machine ids, `helperEvents` only as an array (its
+ * entries are parsed strictly where they are used). Anything malformed is left out. Pure.
+ */
+export function parsePeerBorrowedExtras(b: Record<string, unknown>): Pick<PeerStatus, 'helperEvents' | 'wantsBaseline' | 'helpers'> {
+  const out: Pick<PeerStatus, 'helperEvents' | 'wantsBaseline' | 'helpers'> = {};
+  if (b.wantsBaseline === true) out.wantsBaseline = true;
+  if (Array.isArray(b.helpers) && b.helpers.length <= 2 && b.helpers.every((h) => typeof h === 'string' && PEER_HELPER_ID.test(h)) && new Set(b.helpers).size === b.helpers.length) out.helpers = [...(b.helpers as string[])];
+  if (Array.isArray(b.helperEvents) && b.helperEvents.length <= 50) out.helperEvents = b.helperEvents as HelperEvent[];
+  return out;
 }
 
 /** One configured peer. */
@@ -212,8 +253,10 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   const b = body as Record<string, unknown>;
   const keys = ['attemptId', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'coordinatorMachineId', 'leaseEpoch'];
   const extra = Object.keys(b).filter((k) => !keys.includes(k));
-  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind')) return null;
+  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind' && k !== 'fileCounts')) return null;
   if (b.kind !== undefined && b.kind !== 'main' && b.kind !== 'main-arbitration') return null;
+  // Per-file counts are asked of a `main` verify only, and only as `true`.
+  if (b.fileCounts !== undefined && (b.fileCounts !== true || b.kind !== 'main')) return null;
   if (b.preflightRediscoverable !== undefined && typeof b.preflightRediscoverable !== 'boolean') return null;
   if (b.isolation !== undefined) {
     const iso = b.isolation as { allowed?: unknown; notCleanOnGreenMain?: unknown } | null;
@@ -241,7 +284,11 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
 export function importRefusal(
   record: unknown,
   marker: RemoteMarker,
-  ctx: { repo: string; verifierVersion: string; policyHash: string; holdsLease: boolean; leaseEpoch: number | null; coordinatorMachineId: string },
+  ctx: {
+    repo: string; verifierVersion: string; policyHash: string; holdsLease: boolean; leaseEpoch: number | null; coordinatorMachineId: string;
+    /** The helpers the peer last reported as its own; a record's `borrowed.helper` must be one. Absent or empty: no borrowed field is accepted. */
+    knownHelpers?: readonly string[];
+  },
 ): string | null {
   const v = validateRecord(record);
   if (!v.ok) return `invalid-record:${v.errors.slice(0, 5).join(',')}`;
@@ -262,6 +309,8 @@ export function importRefusal(
   if (!ctx.holdsLease) return 'not-lease-holder';
   if (ctx.leaseEpoch !== marker.leaseEpoch || r.attempt.leaseEpoch !== marker.leaseEpoch) return 'lease-epoch-changed';
   if (Date.parse(r.startedAt) < marker.sentAt - 5 * 60_000) return 'started-before-dispatch';
+  // The record check validates the helper's id by format; whether it is a known machine is checked here.
+  if (r.borrowed && !(ctx.knownHelpers ?? []).includes(r.borrowed.helper)) return 'borrowed-helper-unknown';
   // A clear on main evidence must be one this coordinator offered for this attempt: the file and
   // every cleared test name. A consistency check between two machines on one build.
   const cleared = (r.flakyRetried ?? []).filter((f) => f.importRelated === true);

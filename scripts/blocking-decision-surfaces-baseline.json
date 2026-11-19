@@ -214,6 +214,26 @@
       "path": "src/templates/scripts/threadline-reply.sh",
       "sha256": "2c24fd497c4e98488e1a120909b4d4330d2aab79672e33077de2f73acfb9ea93",
       "reason": "memory-privacy-agent-places: a reply relay; it refuses only its own empty input, and every send decision (recipient, thread, ownership) is the server route's, in TypeScript"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-checks.sh",
+      "sha256": "c91433a00e4b1c7ee6442c2fd6f34438ed631ea6fb6364e267d7d1ff6d692391",
+      "reason": "local-verify-borrowed-unit-slices B2 and local-verify-borrowed-slices-count (B2 amended, sandbox property test): in-sandbox containment probes run inside the borrowed helper's own Linux sandbox (the walls, the dummy interface and absent default route, the paired network test's sandbox half, and the property probe as tester and as builder); it only prints pass/fail facts, and the refuse decision (helper-containment-unproven) is authored in TypeScript (parseContainmentOutput, pairedRouteChecks, HelperService.ensureSandbox) where the ratchets walk; it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-runner.sh",
+      "sha256": "385fc5011fc5ddd7a9ec591c413eb4ddba2c9bdc7bb7089476fe4bdf83af98b9",
+      "reason": "local-verify-borrowed-unit-slices B2/E and local-verify-borrowed-slices-count B2/C/E: the root runner inside the borrowed helper's sandbox; it refuses only its own malformed arguments (an unknown lane, more than one worker outside unit, no files) or a broken wall (nft hash, surviving processes, a test network that cannot be set up, a package volume or package set that is not as it was locked, a tree that carries node_modules, a progress reporter that is not root's), and every admission decision (signature, merged base, own head, dry run, merge tree, install inputs, which commit packages are installed from, discarding a package set, slice order, budgets, cancels, governor) is authored in TypeScript (admission.ts, acceptance.ts, sliceBudget.ts, HelperService.ts); it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/provision-sandbox.sh",
+      "sha256": "862575cfe43055acd0fb4c63bed61c0abdae1b615ff705c669b0e50cd6c18f0c",
+      "reason": "local-verify-borrowed-unit-slices B2: one-time provisioning inside the borrowed helper's own sandbox (users, pinned node, nft table); it refuses an unpinned node digest and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-progress-reporter.mjs",
+      "sha256": "69b2a1c2c267fd876e0841ff8ced00611ecfc81b7876841b171bda1a6df5c4de",
+      "reason": "local-verify-borrowed-slices-count E (progress): a root-owned vitest reporter inside the borrowed helper's sandbox; it only writes one line per finished test file to the slice's standard error and decides nothing; what a progress line is worth (provisional until the slice's last signed answer repeats it, a contradiction withheld) is authored in TypeScript (helperProtocol.ts, HelperService.ts); it gates no message, session or agent action"
     }
   ]
 }

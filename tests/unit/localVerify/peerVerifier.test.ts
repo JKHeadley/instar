@@ -2063,3 +2063,207 @@ describe('a main verify on whichever host is free', () => {
     });
   });
 });
+
+// ── borrowed helpers through the peer exchange (docs/specs/local-verify-borrowed-slices-count.md, F) ──
+
+import { verifyPeerResult } from '../../../src/localVerify/peerResultSignature.js';
+import { parsePeerBorrowedExtras } from '../../../src/localVerify/peer.js';
+import type { BorrowedRunSeam } from '../../../src/localVerify/mainRunObserver.js';
+
+describe('borrowed helpers through the peer exchange', () => {
+  const HEAD = sha('d');
+  const D64 = 'b'.repeat(64);
+  const COUNTS = { 'tests/unit/a.test.ts': [3, 0, 1, 0, D64], 'tests/integration/b.test.ts': [7, 0, 0, 2, D64] };
+  const BORROWED = { helper: 'm_winpc', assigned: 'counting' as const, lanes: [{ lane: 'integration' as const, files: 240, filesDigest: D64 }] };
+  const ctx = { repo: REPO, verifierVersion: '1.0.0', policyHash: POLICY, holdsLease: true, leaseEpoch: 7, coordinatorMachineId: 'coord' };
+  const attempt = { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 };
+  const mainReq = (over: Partial<PeerRunRequest> = {}): PeerRunRequest => runReq({ pr: 0, headSha: HEAD, baseSha: HEAD, kind: 'main', ...over });
+
+  function seam(over: Partial<BorrowedRunSeam> = {}) {
+    const calls: Array<{ name: string; arg?: unknown }> = [];
+    const s: BorrowedRunSeam = {
+      onVerifyStart: () => {}, onVerifyEnd: () => {}, wantsMainFileCounts: () => true,
+      onGreenMain: (e) => { calls.push({ name: 'green', arg: e }); },
+      peerStatusExtras: () => ({}), onPeerStatus: (p, x) => { calls.push({ name: 'peer-status', arg: { p, x } }); },
+      knownHelper: () => false, tick: () => {}, info: () => null,
+      proxy: async () => ({ status: 200, body: {} }), decide: () => ({ status: 200, body: {} }), dryRun: () => ({ status: 202, body: {} }),
+      helperHere: () => ({ status: 200, body: {} }), acceptPeerBaseline: () => ({ status: 200, body: {} }), ...over,
+    };
+    return { s, calls };
+  }
+
+  describe('pure checks', () => {
+    it('a peer-run request may ask for per-file counts only of a main verify, and only as true', () => {
+      expect(parsePeerRunRequest(mainReq({ fileCounts: true }))).not.toBeNull();
+      expect(parsePeerRunRequest(mainReq())).not.toBeNull();
+      expect(parsePeerRunRequest(runReq({ fileCounts: true }))).toBeNull(); // a PR verify
+      expect(parsePeerRunRequest(mainReq({ kind: 'main-arbitration', fileCounts: true }))).toBeNull();
+      expect(parsePeerRunRequest({ ...mainReq(), fileCounts: false })).toBeNull();
+      expect(parsePeerRunRequest({ ...mainReq(), fileCounts: 'yes' })).toBeNull();
+    });
+
+    it('a peer\'s per-file counts are taken strictly: whole and bounded, or not at all', () => {
+      expect(parsePeerMainRun({ fileCounts: COUNTS })).toEqual({ reasons: [], failures: [], fileCounts: COUNTS });
+      expect(parsePeerMainRun({ fileCounts: { 'tests/unit/a.test.ts': [3, 0, 1, 0, 'short'] } })).toBeUndefined();
+      expect(parsePeerMainRun({ fileCounts: { '../x.test.ts': [1, 0, 0, 0, D64] } })).toBeUndefined();
+      expect(parsePeerMainRun({ fileCounts: [[1, 0, 0, 0, D64]] })).toBeUndefined();
+      // A red run's detail is unchanged, and a malformed map beside it is dropped alone.
+      expect(parsePeerMainRun({ reasons: ['unit lane failed'], failures: [], fileCounts: 'all' })).toEqual({ reasons: ['unit lane failed'], failures: [] });
+      expect(parsePeerMainRun({ reasons: [], failures: [] })).toBeUndefined();
+    });
+
+    it('a peer status\'s borrowed extras are shaped strictly or left out', () => {
+      expect(parsePeerBorrowedExtras({ wantsBaseline: true, helpers: ['m_winpc'], helperEvents: [] })).toEqual({ wantsBaseline: true, helpers: ['m_winpc'], helperEvents: [] });
+      expect(parsePeerBorrowedExtras({})).toEqual({});
+      expect(parsePeerBorrowedExtras({ wantsBaseline: 'true', helpers: 'm_winpc', helperEvents: 'none' })).toEqual({});
+      expect(parsePeerBorrowedExtras({ helpers: ['m_a', 'm_b', 'm_c'] })).toEqual({}); // more than two
+      expect(parsePeerBorrowedExtras({ helpers: ['m_a', 'm_a'] })).toEqual({});
+      expect(parsePeerBorrowedExtras({ helpers: ['bad id with spaces'] })).toEqual({});
+      expect(parsePeerBorrowedExtras({ helperEvents: Array.from({ length: 51 }, () => ({})) })).toEqual({});
+    });
+
+    it('the record field passes a peer import only when the helper is one the peer reported as its own', () => {
+      const rec = record({ attempt, borrowed: BORROWED });
+      expect(importRefusal(rec, marker(), { ...ctx, knownHelpers: ['m_winpc'] })).toBeNull();
+      expect(importRefusal(rec, marker(), { ...ctx, knownHelpers: ['m_laptop'] })).toBe('borrowed-helper-unknown');
+      expect(importRefusal(rec, marker(), { ...ctx, knownHelpers: [] })).toBe('borrowed-helper-unknown');
+      expect(importRefusal(rec, marker(), ctx)).toBe('borrowed-helper-unknown'); // the peer reported no helper at all
+      expect(importRefusal(record({ attempt }), marker(), ctx)).toBeNull(); // no field: nothing to know
+      // The shape is the record check's: a malformed field never reaches the helper check.
+      expect(importRefusal(record({ attempt, borrowed: { ...BORROWED, lanes: [{ lane: 'integration', files: 20_001, filesDigest: D64 }] } as never }), marker(), { ...ctx, knownHelpers: ['m_winpc'] })).toBe('invalid-record:borrowed');
+    });
+
+    it('the peer\'s existing signature covers the field: it verifies unchanged, and any change to it after signing does not', () => {
+      const rec = record({ attempt, borrowed: BORROWED });
+      const digest = requestDigest(runReq());
+      const sig = signPeerResult(peerSigner('peer1'), { record: rec, requestDigest: digest });
+      const expected = { peerMachineId: 'peer1', requestDigest: digest };
+      // As received over the wire.
+      const raw = JSON.parse(JSON.stringify({ record: rec, requestDigest: digest, sig })) as { record: LocalVerifyRecord; requestDigest: string; sig: unknown };
+      expect(verifyPeerResult(raw, expected, pinnedPeerKeys(), Date.now())).toBeNull();
+      expect(raw.record.borrowed).toEqual(BORROWED);
+      for (const changed of [{ ...BORROWED, assigned: 'compare-only' as const }, { ...BORROWED, helper: 'm_laptop' }, { ...BORROWED, lanes: [{ ...BORROWED.lanes[0], files: 241 }] }, undefined]) {
+        expect(verifyPeerResult({ ...raw, record: { ...raw.record, borrowed: changed } }, expected, pinnedPeerKeys(), Date.now())).toBe('signature-bad');
+      }
+    });
+  });
+
+  describe('peer side', () => {
+    const notHolder = { holdsLease: false, holderMachineId: 'coord' };
+    function peerSide() {
+      const h = harness({ peerOnly: true, machineId: 'peer1' });
+      h.svc.setPeerWiring({ peerRoleEnabled: () => true });
+      h.seams.baseHead = async () => HEAD;
+      return h;
+    }
+    const greenMain = (req: PeerRunRequest) => record({ pr: 0, kind: 'main', headSha: req.headSha, baseSha: req.baseSha, machineId: 'peer1', attempt });
+
+    it('a main verify the coordinator asked counts of runs with fileCounts on and returns them with its green record', async () => {
+      const h = peerSide();
+      expect(await h.svc.peerRun(mainReq({ fileCounts: true }), notHolder)).toEqual({ ok: true, attemptId: ATT });
+      expect(JSON.parse(fs.readFileSync(h.spawned[0].inputPath, 'utf-8'))).toMatchObject({ kind: 'main', fileCounts: true });
+      const rec = greenMain(mainReq());
+      await h.finish(0, { ...ok(rec), fileCounts: COUNTS } as unknown as VerifyRunResult);
+      expect(h.svc.peerResult(ATT)).toEqual({ state: 'done', record: rec, run: { reasons: [], failures: [], fileCounts: COUNTS } });
+    });
+
+    it('without the request\'s flag nothing is computed or returned, even if a child reports counts', async () => {
+      const h = peerSide();
+      await h.svc.peerRun(mainReq(), notHolder);
+      expect('fileCounts' in JSON.parse(fs.readFileSync(h.spawned[0].inputPath, 'utf-8'))).toBe(false);
+      const rec = greenMain(mainReq());
+      await h.finish(0, { ...ok(rec), fileCounts: COUNTS } as unknown as VerifyRunResult);
+      expect(h.svc.peerResult(ATT)).toEqual({ state: 'done', record: rec });
+    });
+
+    it('a red main verify returns its failing files as before and no counts; a malformed counts map is dropped', async () => {
+      const red = peerSide();
+      await red.svc.peerRun(mainReq({ fileCounts: true }), notHolder);
+      const rec = { ...greenMain(mainReq()), outcome: 'failure' as const };
+      await red.finish(0, { kind: 'record', record: rec, reasons: ['unit lane failed'], overlaps: [], keptWorktree: null, failures: [{ file: 'tests/unit/x.test.ts', lane: 'unit', failed: 1, message: 'm' }], fileCounts: COUNTS } as unknown as VerifyRunResult);
+      expect(red.svc.peerResult(ATT)).toEqual({ state: 'done', record: rec, run: { reasons: ['unit lane failed'], failures: [{ file: 'tests/unit/x.test.ts', lane: 'unit', failed: 1, message: 'm' }] } });
+      const bad = peerSide();
+      await bad.svc.peerRun(mainReq({ fileCounts: true }), notHolder);
+      await bad.finish(0, { ...ok(greenMain(mainReq())), fileCounts: { 'tests/unit/a.test.ts': 'three' } } as unknown as VerifyRunResult);
+      expect(bad.svc.peerResult(ATT)).toEqual({ state: 'done', record: greenMain(mainReq()) });
+    });
+
+    it('a waiting change\'s record keeps its borrowed field unchanged in the peer\'s answer', async () => {
+      const h = harness({ peerOnly: true, machineId: 'peer1' });
+      h.svc.setPeerWiring({ peerRoleEnabled: () => true });
+      await h.svc.peerRun(runReq(), notHolder);
+      const rec = record({ attempt, borrowed: BORROWED });
+      await h.finish(0, ok(rec));
+      const res = h.svc.peerResult(ATT) as { state: string; record: LocalVerifyRecord };
+      expect(res.record.borrowed).toEqual(BORROWED);
+      expect(res.record).toEqual(rec);
+    });
+  });
+
+  describe('coordinator side', () => {
+    const KNOWN_AGE = { oldestUnverifiedAt: Date.parse('2026-10-21T12:00:00.000Z') };
+    const startedAt = new Date(Date.parse('2026-10-21T12:00:00.000Z') + 60_000).toISOString();
+
+    it('asks a peer for per-file counts only when someone keeps baselines, and hands a peer\'s green counts to the seam', async () => {
+      const plain = coordinator({ mainOnPeers: true, watermark: KNOWN_AGE });
+      plain.setForeignHolders([9001]);
+      plain.svc.noteMainHead(HEAD);
+      await plain.runTimers();
+      expect('fileCounts' in plain.peer.runs()[0]).toBe(false); // no seam wired: the request is what it was
+
+      const c = coordinator({ mainOnPeers: true, watermark: KNOWN_AGE });
+      const { s, calls } = seam();
+      c.svc.setBorrowedRunSeam(s);
+      c.setForeignHolders([9001]);
+      c.svc.noteMainHead(HEAD);
+      await c.runTimers();
+      const req = c.peer.runs()[0];
+      expect(req).toMatchObject({ kind: 'main', fileCounts: true });
+      const rec = record({ pr: 0, kind: 'main', headSha: HEAD, baseSha: HEAD, machineId: 'peer1', startedAt, attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 } });
+      c.peer.setResult(() => ({ state: 'done', record: rec, run: { reasons: [], failures: [], fileCounts: COUNTS as never } }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth()).toMatchObject({ state: 'healthy', lastGreenHead: HEAD });
+      expect(calls.find((x) => x.name === 'green')!.arg).toEqual({ commit: HEAD, finishedAt: rec.finishedAt, machineId: 'peer1', fileCounts: COUNTS });
+    });
+
+    it('what a peer\'s status carries about its helper reaches the seam', async () => {
+      const c = coordinator();
+      const { s, calls } = seam();
+      c.svc.setBorrowedRunSeam(s);
+      c.peer.setStatus({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: false, signerKeyHash: PEER_KEY_HASH, wantsBaseline: true, helpers: ['m_winpc'], helperEvents: [] });
+      await c.svc.request(1);
+      await c.svc.request(2);
+      await c.runTimers();
+      expect(calls.find((x) => x.name === 'peer-status')!.arg).toEqual({ p: { machineId: 'peer1', url: 'http://peer1:4042' }, x: { helperEvents: [], wantsBaseline: true, helpers: ['m_winpc'] } });
+    });
+
+    async function dispatchedWithHelpers(helpers: string[] | undefined) {
+      const c = coordinator();
+      c.peer.setStatus({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: false, signerKeyHash: PEER_KEY_HASH, ...(helpers ? { helpers } : {}) });
+      await c.svc.request(1);
+      await c.svc.request(2);
+      await c.runTimers();
+      const req = c.peer.runs()[0];
+      const rec = record({ pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, machineId: 'peer1', startedAt, attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 }, borrowed: BORROWED });
+      c.peer.setResult(() => ({ state: 'done', record: rec }));
+      await c.svc.tick();
+      return { c, rec };
+    }
+
+    it('a peer record with a borrowed field is imported unchanged when the helper is one the peer reported', async () => {
+      const { c, rec } = await dispatchedWithHelpers(['m_winpc']);
+      expect(c.svc.getRecord(2, sha('c'), 'main')).toEqual(rec);
+      expect(c.svc.getRecord(2, sha('c'), 'main')?.borrowed).toEqual(BORROWED);
+    });
+
+    it('and refused when the peer reported no such helper', async () => {
+      for (const helpers of [['m_laptop'], undefined]) {
+        const { c } = await dispatchedWithHelpers(helpers);
+        expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+        const audit = fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string; reason?: string });
+        expect(audit.find((e) => e.event === 'peer-record-rejected')).toMatchObject({ reason: 'borrowed-helper-unknown' });
+      }
+    });
+  });
+});

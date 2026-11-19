@@ -10,7 +10,7 @@
  * running server's install, never from the PR being verified.
  */
 
-import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { identityKeyLookup, loadMachineSigner, type MachineKeyLookup, type MachineSigner } from '../core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -20,7 +20,7 @@ import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRunti
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
-import { parsePeerMainRun, type PeerClient, type PeerResult, type PeerRunAnswer, type PeerStatus } from './peer.js';
+import { parsePeerBorrowedExtras, parsePeerMainRun, type PeerClient, type PeerResult, type PeerRunAnswer, type PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
@@ -86,6 +86,16 @@ export function localVerifyAttentionItem(key: string, detail: Record<string, unk
       summary: detail.reason === 'interrupted'
         ? `Server restarts killed this PR's check ${n} times before it could finish (waiting ${waited} min). The merge line is stuck behind it.`
         : `This PR has waited ${waited} min for its check without finishing (killed by restarts ${n} times). The merge line is stuck behind it.`,
+    };
+  }
+  if (key.startsWith('local-verify:borrowed-helper-owner:') || key.startsWith('local-verify:borrowed-helper-event:')) {
+    // One item per helper event (the id is in the key), raised once by the coordinator. The owner's
+    // item exists only when a borrowed pass made main red or a helper lapsed for a fault three times in 7 days.
+    const owner = key.startsWith('local-verify:borrowed-helper-owner:');
+    return {
+      id, mode: 'create', priority: owner ? 'HIGH' : 'MEDIUM',
+      title: owner ? 'Local Verify: a borrowed machine needs the owner\'s attention' : 'Local Verify: a borrowed machine\'s result was wrong or its counting ended',
+      summary: String(typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
     };
   }
   return {
@@ -518,7 +528,9 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       if (typeof b.verifierVersion !== 'string' || typeof b.policyHash !== 'string' || typeof b.slotBusy !== 'boolean') return null;
       const hint = (b as { signerKeyHash?: unknown }).signerKeyHash;
       return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy,
-        ...(typeof hint === 'string' && /^[0-9a-f]{64}$/.test(hint) ? { signerKeyHash: hint } : {}) };
+        ...(typeof hint === 'string' && /^[0-9a-f]{64}$/.test(hint) ? { signerKeyHash: hint } : {}),
+        // Borrowed helpers: the peer's helper events, helpers and baseline wish, each strictly shaped or left out.
+        ...parsePeerBorrowedExtras(r.body as Record<string, unknown>) };
     },
     async run(peer, req) {
       const r = await call(`${peer.url}/local-verify/peer-run`, { method: 'POST', body: JSON.stringify(req) });
@@ -608,4 +620,104 @@ export function hasPassingRecord(
   pr: number, head: string, base: string,
 ): boolean {
   return svc.getRecord(pr, head, base)?.outcome === 'success';
+}
+
+// ── Borrowed helpers, run-machine side (docs/specs/local-verify-borrowed-unit-slices.md, F) ──
+
+/** What the borrowed-helper wiring needs beyond the service. */
+export interface BorrowedWiringOpts {
+  liveConfig: { get<T>(key: string, fallback: T): T };
+  stateDir: string;
+  agentHome: string;
+  machineId: string;
+  authToken: string;
+  agentId: string;
+  version: string;
+  fetchImpl?: typeof fetch;
+  /** Test seams; production loads this machine's signer and pinned keys from `stateDir`. */
+  signer?: MachineSigner | null;
+  keyLookup?: () => MachineKeyLookup;
+  /** TEST ONLY (e2e): replace the tree-reading seams; production reads this machine's verify clone. */
+  treeSeams?: Partial<Pick<import('./BorrowedShadow.js').BorrowedShadowDeps, 'unitFiles' | 'treeReader' | 'localUnitReport'>>;
+  /** The serving lease: only the coordinator sends notices and keeps baseline results. Absent: a single machine (always the coordinator). */
+  lease?: { holdsLease(): boolean } | null;
+  /** The existing attention seam (the same hooks the service signals through). */
+  hooks?: Pick<LocalVerifyHooks, 'signal'>;
+  /** One row in the maturation ladder's evidence log; production passes the shared `featureEvidence`. */
+  evidence?: (row: { kind: 'fired' | 'held'; reason: string; subject: string; context: Record<string, string | number | boolean | null> }) => void;
+}
+
+/** The attention keys of helper notices: one item per event, for the line's session and (only in the two stated cases) the owner. */
+export const BORROWED_NOTICE_KEYS = Object.freeze({ line: 'local-verify:borrowed-helper-event', owner: 'local-verify:borrowed-helper-owner' });
+
+/**
+ * Wire the run machine's borrowed-helper side onto a built service (docs/specs/local-verify-borrowed-slices-count.md, F):
+ * the practice record, the asking rate, the loopback proxy, the baseline results and the helper
+ * events (BorrowedRunMachine), and the detached observer of this machine's own `main` verifies
+ * (BorrowedShadow), both on ONE practice record. Inert unless `monitoring.localVerify.borrowed.mode`
+ * is `'practice'` or `'count'` (the first design's `'shadow'` reads as `'practice'`; read live);
+ * never written as a config default. Neither is awaited by a verify.
+ */
+export async function wireBorrowedRunMachine(
+  svc: Pick<LocalVerifyService, 'setMainRunObserver' | 'setBorrowedRunSeam'>,
+  o: BorrowedWiringOpts,
+): Promise<{ shadow: import('./BorrowedShadow.js').BorrowedShadow; machine: import('./BorrowedRunMachine.js').BorrowedRunMachine }> {
+  const [{ BorrowedShadow }, { BorrowedRunMachine }, { makeHelperClient }, seams, { parseBorrowedConfig }, { LOCAL_VERIFY_LIMITS }, { BorrowedPracticeStore }, { MainFileCountsStore }] = await Promise.all([
+    import('./BorrowedShadow.js'), import('./BorrowedRunMachine.js'), import('./borrowedClient.js'), import('./borrowedRunSeams.js'), import('./helper/helperConfig.js'), import('./policy.js'),
+    import('./borrowedState.js'), import('./mainFileCounts.js'),
+  ]);
+  const auditPath = path.join(o.stateDir, 'logs', 'local-verify.jsonl');
+  const audit = (e: Record<string, unknown>) => appendLocalVerifyAudit(auditPath, { src: 'borrowed', ...e }, Date.now());
+  const config = () => parseBorrowedConfig(o.liveConfig.get<unknown>('monitoring.localVerify.borrowed', null), o.machineId);
+  const client = makeHelperClient(o.authToken, o.agentId, o.fetchImpl);
+  const signer = o.signer !== undefined ? o.signer : loadMachineSigner(o.stateDir);
+  const keyLookup = o.keyLookup ?? (() => identityKeyLookup(o.stateDir));
+  const store = new BorrowedPracticeStore(o.stateDir);
+  const fetchImpl = o.fetchImpl ?? fetch;
+  const machine = new BorrowedRunMachine({
+    config, store, client, signer, keyLookup, machineId: o.machineId,
+    // The file's hash goes to the SAME audit log it is later checked against (no `src` tag needed to find it).
+    baseline: new MainFileCountsStore({ stateDir: o.stateDir, audit: (e) => appendLocalVerifyAudit(auditPath, e, Date.now()) }),
+    isCoordinator: () => (o.lease ? o.lease.holdsLease() : true),
+    postPeerBaseline: async (peer, body) => {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 30_000);
+      try {
+        const r = await fetchImpl(`${peer.url}/local-verify/peer-baseline`, { method: 'POST', body: JSON.stringify(body), signal: ac.signal, headers: { Authorization: `Bearer ${o.authToken}`, 'X-Instar-AgentId': o.agentId, 'Content-Type': 'application/json' } });
+        return r.status === 200;
+      } catch { return false; } // @silent-fallback-ok: an unreachable peer is offered the baseline again later
+      finally { clearTimeout(t); }
+    },
+    audit,
+    // The existing attention seam, one item per event id. The owner's item is raised only for the two cases the spec names.
+    notify: (who, event, text, ownerReason) => o.hooks?.signal?.(`${who === 'owner' ? BORROWED_NOTICE_KEYS.owner : BORROWED_NOTICE_KEYS.line}:${event.id}`, {
+      note: who === 'owner' ? `${text} The owner is told because ${ownerReason === 'main-red-after-pass' ? 'a borrowed pass made main red' : 'this helper lapsed for a fault three times in 7 days'}.` : text,
+      helper: event.helper, lane: event.lane, kind: event.kind, runMachineId: event.runMachineId, audience: who,
+    }),
+    ...(o.evidence ? { evidence: o.evidence } : {}),
+  });
+  const shadow = new BorrowedShadow({
+    config, client, signer, keyLookup,
+    machineId: o.machineId,
+    stateDir: o.stateDir,
+    version: o.version,
+    localWorkers: LOCAL_VERIFY_LIMITS.unitWorkersParallel,
+    unitFiles: (head) => seams.unitFilesWithDurations(o.agentHome, head),
+    treeReader: (head) => seams.verifyCloneTreeReader(o.agentHome, head),
+    localUnitReport: (head) => seams.localUnitReport(o.agentHome, head),
+    audit,
+    store, asking: machine.helperAsking(),
+    ...(o.treeSeams ?? {}),
+  });
+  svc.setMainRunObserver(shadow);
+  svc.setBorrowedRunSeam(machine);
+  return { shadow, machine };
+}
+
+/** The main-verify observer of `wireBorrowedRunMachine` (kept for callers that only need it). */
+export async function wireBorrowedShadow(
+  svc: Pick<LocalVerifyService, 'setMainRunObserver' | 'setBorrowedRunSeam'>,
+  o: BorrowedWiringOpts,
+): Promise<import('./BorrowedShadow.js').BorrowedShadow> {
+  return (await wireBorrowedRunMachine(svc, o)).shadow;
 }

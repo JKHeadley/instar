@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "worktree-monitor-report-cap",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T21:59:21.317Z",
+  "artifactPath": "upgrades/side-effects/worktree-monitor-report-cap.md",
+  "artifactSha256": "ec5326c978f7919b76d1b722d16f95cf5021286763f54a1699c66f4ef4783fd7",
+  "coveredFiles": [
+    "docs/specs/worktree-monitor-report-cap.eli16.md",
+    "src/monitoring/WorktreeMonitor.ts",
+    "tests/unit/worktree-monitor.test.ts",
+    "upgrades/next/worktree-monitor-report-cap.md",
+    "upgrades/side-effects/worktree-monitor-report-cap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Caps a stored list in a report-only monitor; a revert fully undoes it",
+  "eli16Path": "docs/specs/worktree-monitor-report-cap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-monitor-report-cap.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

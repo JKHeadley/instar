@@ -358,6 +358,27 @@ export function authMiddleware(
       if (verdict === 'refused') return;
     }
 
+    // Local Verify's loopback proxy to a borrowed helper (docs/specs/local-verify-borrowed-slices-count.md,
+    // "Build decisions: the attempt token"): the verify child holds no Bearer credential, so on this ONE
+    // exact method + path the running verify's attempt token stands in for it. Loopback socket only, and
+    // nothing that came through the tunnel or any forwarder, both checked here before the route (which
+    // checks them again and then the token). Everything else under /local-verify stays behind the bearer gate.
+    if (req.method === 'POST' && req.path === '/local-verify/borrowed-proxy') {
+      const remote = req.socket.remoteAddress;
+      const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!loopback || req.headers['cf-connecting-ip'] !== undefined || req.headers['x-forwarded-for'] !== undefined) {
+        res.status(403).json({ ok: false, reason: 'loopback-only' });
+        return;
+      }
+      const attempt = req.headers['x-instar-attempt-token'];
+      if (typeof attempt !== 'string' || !/^[0-9a-f]{32}$/.test(attempt)) {
+        res.status(401).json({ ok: false, reason: 'attempt-token-required' });
+        return;
+      }
+      next();
+      return;
+    }
+
     // Whether this connection may unlock: a yes/no the console asks before it
     // shows a PIN box. Carries no credential and changes nothing.
     if (req.path === '/dashboard/unlock-check' && req.method === 'GET') {

@@ -16,7 +16,7 @@ import { TRUST_DECAY } from '../identity/types.js';
 
 export type TrustLevel = 'untrusted' | 'verified' | 'trusted';
 
-export type TrustSource = 'user-granted' | 'paired-machine-granted' | 'setup-default' | 'invitation' | 'os-verified';
+export type TrustSource = 'user-granted' | 'paired-machine-granted' | 'setup-default' | 'invitation' | 'os-verified' | 'agent-proposal';
 
 /** MoltBridge IQS band (advisory only) */
 export type IQSBand = 'high' | 'medium' | 'low' | 'unknown';
@@ -105,7 +105,7 @@ export function evaluateTrust(signals: TrustSignals, now?: Date): TrustEvaluatio
 /**
  * Check if a trust upgrade is allowed.
  *
- * Only user-granted and paired-machine-granted sources can upgrade trust.
+ * Only user-granted and paired-machine-granted sources can upgrade trust. (or 'agent-proposal', identity-security-piece1b)
  * No auto-escalation ever.
  */
 export function canUpgradeTrust(
@@ -121,7 +121,7 @@ export function canUpgradeTrust(
     return { allowed: false, reason: 'Target level is not higher than current level' };
   }
 
-  const allowedSources: TrustSource[] = ['user-granted', 'paired-machine-granted', 'invitation', 'os-verified'];
+  const allowedSources: TrustSource[] = ['user-granted', 'paired-machine-granted', 'invitation', 'os-verified', 'agent-proposal'];
   if (!allowedSources.includes(source)) {
     return { allowed: false, reason: `Source "${source}" cannot upgrade trust. Requires user or verified source.` };
   }
