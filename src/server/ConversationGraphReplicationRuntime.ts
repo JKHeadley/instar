@@ -61,6 +61,7 @@ import type {ConflictStore} from '../core/ConflictStore.js';
 import type {HybridLogicalClock} from '../core/HybridLogicalClock.js';
 import type {CoherenceJournal,JournalEntry,JournalKind} from '../core/CoherenceJournal.js';
 import {ConversationGraphCommitCoordinator,type GraphCommitOutcome,type GraphCommitMember} from '../core/ConversationGraphCommitCoordinator.js';
+import {GraphPeerReplayGuard} from './GraphPeerReplayGuard.js';
 import {canonicalHash,canonicalJson,exactFields,signGraphRecord,unsigned,verifyGraphRecord,verifyMembershipEpoch,verifyFencedLeaseBridge,verifyMemberReceipt,witnessActionPayload,graphOperationKey,
  type GraphMembershipEpoch,type GraphWitnessLease,type GraphCancellationCertificate,type GraphCoreType,type GraphErasureIdentity,type GraphOperationPacket,type GraphWitnessErasedControlProof,type GraphMembershipActivationCertificate} from '../core/GraphWitnessTypes.js';
 
@@ -130,7 +131,9 @@ export class ConversationGraphReplicationRuntime {
  private closedNativeTail:string|null=null;
  private closedNativeTailProof:GraphNativeTailClosure[]=[];
  private tailSnapshot:GraphNativeTailClosure|null=null;
- private readonly replays=new Map<string,number>();
+ // One signed request may arrive through several of this machine's addresses (the sender retries the SAME bytes
+ // on its next address after a 5 s timeout). An exact repeat shares the first copy's answer; it never runs twice.
+ private readonly replays=new GraphPeerReplayGuard({windowMs:MAX_SKEW*2,maxEntries:4096,maxRetainedBytes:32*1024*1024,replayCode:'graph-peer-replayed',capacityCode:'graph-peer-replay-window-full',sizeOf:value=>typeof value==='string'?value.length:Number.POSITIVE_INFINITY});
  private readonly appliedErasureHashes=new Set<string>();
  private constructor(private readonly options:ConversationGraphReplicationRuntimeOptions,source:ConversationGraphReplication,machineId:string,private readonly signingKey:string,localErasure:ConversationGraphLocalErasureFence,private readonly nativeTailFloor:ConversationGraphNativeTailFloor,readonly localSourceCapacityLedger:GraphSourceCapacityLedger|null){
   this.localErasure=localErasure;
@@ -162,9 +165,12 @@ export class ConversationGraphReplicationRuntime {
    res.setHeader('Cache-Control','no-store');
    try{const token=req.headers.authorization;const expected=`Bearer ${this.config.peerBearerToken}`;
     if(typeof token!=='string'||Buffer.byteLength(token)!==Buffer.byteLength(expected)||!crypto.timingSafeEqual(Buffer.from(token),Buffer.from(expected)))throw new Error('graph-peer-auth');
-    const request=req.body as PeerRequest;this.authenticate(request);if(['observe','delegate','owner-intent'].includes(request.action))await this.prepareNativeTailClosure();const work=['repair','context','erase-forward','erase-purge','custody','custody-transition','owner-current','tail-close','tail-page','tail-record'].includes(request.action)?this.execute(request.action,request.body,request.sender):this.withMutation(token=>this.execute(request.action,request.body,request.sender,token));this.pending.add(work);let result:unknown;try{result=await work;}finally{this.pending.delete(work);}
-    const value={v:1 as const,agentId:this.config.agentId,sender:this.machineId,target:request.sender,requestHash:canonicalHash(request),body:result};
-    res.json({...value,signature:signGraphRecord(RESPONSE_DOMAIN,value,this.signingKey)});
+    const request=req.body as PeerRequest;this.authenticate(request);
+    const response=await this.replays.run(`${request.sender}:${request.requestId}`,canonicalHash(request),async()=>{if(['observe','delegate','owner-intent'].includes(request.action))await this.prepareNativeTailClosure();const work=['repair','context','erase-forward','erase-purge','custody','custody-transition','owner-current','tail-close','tail-page','tail-record'].includes(request.action)?this.execute(request.action,request.body,request.sender):this.withMutation(token=>this.execute(request.action,request.body,request.sender,token));this.pending.add(work);let result:unknown;try{result=await work;}finally{this.pending.delete(work);}
+     // The signed response text is what a repeat gets back, so it is built once, inside the shared work.
+     const value={v:1 as const,agentId:this.config.agentId,sender:this.machineId,target:request.sender,requestHash:canonicalHash(request),body:result};
+     return JSON.stringify({...value,signature:signGraphRecord(RESPONSE_DOMAIN,value,this.signingKey)});});
+    res.type('application/json').send(response);
    }catch(error){
     // The peer only ever sees "refused"; the reason stays here, logged once per distinct action+code so a held
     // handshake (a tail-close refused after a restart) can be explained from this machine's log.
@@ -689,8 +695,6 @@ export class ConversationGraphReplicationRuntime {
    ||!Number.isFinite(Date.parse(request.issuedAt))||Math.abs(Date.now()-Date.parse(request.issuedAt))>MAX_SKEW
    ||Buffer.byteLength(canonicalJson(request))>MAX_BYTES)throw new Error('graph-peer-invalid');
   const member=this.config.membership.members.find(row=>row.machineId===request.sender);if(!member||!verifyGraphRecord(REQUEST_DOMAIN,unsigned(request),request.signature,member.signingPublicKey))throw new Error('graph-peer-signature');
-  const now=Date.now();for(const [id,at]of this.replays)if(now-at>MAX_SKEW*2)this.replays.delete(id);
-  const replayKey=`${request.sender}:${request.requestId}`;if(this.replays.has(replayKey)||this.replays.size>=4096)throw new Error('graph-peer-replayed');this.replays.set(replayKey,now);
  }
  private async execute(action:Action,raw:unknown,sender?:string,token?:symbol):Promise<unknown>{
   if(action==='owner-intent'){

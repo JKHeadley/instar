@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
+  // B23 attribution version (#2862), before the org-policy 422 branch (org-never-actions).
+  '9f784fc5fef12f407a2a18a89227378383874fb0250aa1c153ab07663a70defb',
   // Before JSON encoding avoided Bash here-string temporary files (owner live proof).
   'f16111eb9d39140c59199608fb040e9638033675e7029abf35cba559a9723dde',
   // Every historical repository-shipped template before the session-bound

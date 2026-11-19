@@ -14,7 +14,7 @@ import {createConversationGraphSurface,createConversationGraphOffRouter,CONVERSA
 import {createConversationGraphViewerResolver} from './conversationGraphViewer.js';
 import {ConversationGraphMemberLossSurface} from './ConversationGraphMemberLossSurface.js';
 import type {ConversationGraphReplicationRuntime} from './ConversationGraphReplicationRuntime.js';
-export function createConversationGraphDefaultSurface(options:Omit<Parameters<typeof createConversationGraphSurface>[0],'agentId'|'runtime'|'identity'> & {manager:ConversationGraphDefault;onRuntime?(runtime:ConversationGraphReplicationRuntime):void;readOwnerWaitMs?:number}):Router{
+export function createConversationGraphDefaultSurface(options:Omit<Parameters<typeof createConversationGraphSurface>[0],'agentId'|'runtime'|'identity'> & {manager:ConversationGraphDefault;onRuntime?(runtime:ConversationGraphReplicationRuntime):void;readOwnerWaitMs?:number;writeOwnerWaitMs?:number}):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();const router=Router();
  const resolveViewer=createConversationGraphViewerResolver({...options,agentId:options.manager.agentId});let mounted:Router|null=null,mountedRuntime:ConversationGraphReplicationRuntime|null=null;
  const grants=options.dashboardPolicy?new ConversationGraphOwnerGrantStore({stateDir:options.stateDir,agentId:options.manager.agentId,secrets:new SecretStore({stateDir:options.stateDir,forceFileKey:options.forceFileKey}),dashboardPolicy:options.dashboardPolicy}):null;
@@ -24,17 +24,21 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
  // readiness pass while not ready). After a restart that queue could hold every Conversations read past the
  // page's 20 s limit for half an hour (accept-all round 3). A read only needs the graph that is already open,
  // so after a short wait it is answered from that graph; the owner step still finishes in the background.
- // Writes keep waiting for it.
- const readOwnerWaitMs=options.readOwnerWaitMs??1500;let lastBusyRead:string|null=null;
+ // A save waits longer (writeOwnerWaitMs) but not without limit: with a slow peer the upkeep pass held the owner step
+ // 25-51 s at a time and every Accept all save queued behind it past the page's limit (accept-all round 4 part 4).
+ // A save on the open graph needs no upkeep result: the router has already checked the owner and grant (the same
+ // checks ensureOwner repeats), and a save while the graph is not ready is recorded and confirmed later.
+ const readOwnerWaitMs=options.readOwnerWaitMs??1500,writeOwnerWaitMs=options.writeOwnerWaitMs??3000;let lastBusyRead:string|null=null;
  const ownerRuntime=async(req:Request,owning:Promise<ConversationGraphReplicationRuntime>):Promise<ConversationGraphReplicationRuntime>=>{
-  const open=mountedRuntime;if(req.method!=='GET'||!mounted||!open||options.manager.runtime!==open)return owning;
-  let timer:ReturnType<typeof setTimeout>|undefined;const waited=new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),readOwnerWaitMs);});
+  const open=mountedRuntime;if(!mounted||!open||options.manager.runtime!==open)return owning;
+  const write=req.method!=='GET',waitMs=write?writeOwnerWaitMs:readOwnerWaitMs;
+  let timer:ReturnType<typeof setTimeout>|undefined;const waited=new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),waitMs);});
   try{const first=await Promise.race([owning,waited]);if(first)return first;}finally{clearTimeout(timer);}
-  // The owner queue may have closed and replaced the runtime while this read waited (activation, member loss):
+  // The owner queue may have closed and replaced the runtime while this request waited (activation, member loss):
   // answer from the open graph only if it is still the current, mounted one; otherwise wait as before.
   if(options.manager.runtime!==open||mountedRuntime!==open)return owning;
-  owning.catch(()=>{/* @silent-fallback-ok: the owner step reports its own failures (open-step and degradation logs); this read was already answered from the open graph. */});
-  const step=options.manager.ownerStep;if(step!==lastBusyRead){lastBusyRead=step;console.warn(`[conversation-graph] answered a read without waiting: the owner step is busy with ${step}`);}
+  owning.catch(()=>{/* @silent-fallback-ok: the owner step reports its own failures (open-step and degradation logs); this request was already answered from the open graph. */});
+  const step=options.manager.ownerStep,key=(write?'save:':'read:')+step;if(key!==lastBusyRead){lastBusyRead=key;console.warn(`[conversation-graph] answered a ${write?'save':'read'} without waiting: the owner step is busy with ${step}`);}
   return open;
  };
  const mount=(runtime:ConversationGraphReplicationRuntime)=>{
