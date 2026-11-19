@@ -81,3 +81,7 @@ Re-check (06:58 PT): "Concur with the review. Both fixes hold."
 ## Fix 2026-11-18 09:15: silent-fallback guard
 
 The no-silent-fallbacks ratchet counted 496 against 494. Two deliberate best-effort catches were marked `@silent-fallback-ok` with their reason: the sender-notice failure handler (the failure is already on the envelope) and the topic-registry read in SessionManager, whose block the guard now reads differently after the added registry cache. Comments only; no behaviour change.
+
+## Follow-up: wiring test expected text (2026-11-18, after the M5 e2e lane)
+
+The e2e wiring test `messages-reach-renamed-sessions-wiring.test.ts` still expected the retry manager's `onDeadLetter` to call the sender notifier directly. Since phase 1, dead letters go through `messageRouter.reportTerminalFailure`. That call sends a remote-origin failure back to its machine as a signed notice, and hands a local one to `onDeliveryFailure`, which is still the sender notifier (asserted in the same test case). The test now expects the router call. Test-only change. There is no runtime surface, so over-block, under-block, interactions, multi-machine posture and rollback are unchanged from the section above.

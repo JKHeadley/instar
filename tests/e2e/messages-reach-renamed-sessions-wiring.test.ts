@@ -26,7 +26,9 @@ describe('messages-reach-renamed-sessions wiring', () => {
   it('both failure paths reach the sender notifier, and stats read its counter', () => {
     expect(routerBlock).toMatch(/onDeliveryFailure: \(envelope, reason\) => \{ void senderNotifier\.onFailure\(envelope, reason\); \}/);
     expect(routerBlock).toMatch(/undeliveredCounts: \(\) => Object\.fromEntries\(senderNotifier\.undelivered\)/);
-    expect(retryBlock).toMatch(/onDeadLetter: \(envelope, reason\) => \{ void senderNotifier\.onFailure\(envelope, reason\); \}/);
+    // Dead letters go through the router, which reports a remote-origin failure back to its
+    // machine and hands a local one to onDeliveryFailure (the sender notifier, asserted above).
+    expect(retryBlock).toMatch(/onDeadLetter: \(envelope, reason\) => \{ messageRouter\.reportTerminalFailure\(envelope, reason\); \}/);
   });
 
   it('the retry manager is scoped to local envelopes and checks the pinned session id', () => {
