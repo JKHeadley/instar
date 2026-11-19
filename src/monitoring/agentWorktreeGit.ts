@@ -54,7 +54,7 @@ export function isGateRecordPath(relPath: string): boolean {
  *     checkouts may link into it.
  *   - root `dist/`: only when every file in it maps back to a source file
  *     the checkout's own tsconfig compiles into it (see distIsBuildOutput).
- *   - `src/data/standards-registry.md`: only when its git blob hash equals
+ *   - the registry copy (`GENERATED_STANDARDS_REGISTRY_OUTPUTS[0]`): only when its git blob hash equals
  *     `HEAD:docs/STANDARDS-REGISTRY.md`, so its exact bytes are in a commit
  *     (spec reaper-generated-files-regenerable §1).
  * `archived-residue` (spec reaper-generated-files-regenerable §2-3): the closed
@@ -73,7 +73,7 @@ export type IgnoredEntryClass = 'gate-record' | 'regenerable' | 'archived-residu
  * named writer and a measurement, never by a judgment at deletion time.
  */
 export const ARCHIVED_RESIDUE_FILES: Readonly<Record<string, string>> = {
-  'src/data/standards-registry.meta.json': 'scripts/generate-standards-registry-asset.mjs',
+  [GENERATED_STANDARDS_REGISTRY_OUTPUTS[1]]: 'scripts/generate-standards-registry-asset.mjs',
   'src/data/standards-guard-index.json': 'scripts/generate-standards-registry-asset.mjs',
   'src/data/standards-guard-index.meta.json': 'scripts/generate-standards-registry-asset.mjs',
   'src/data/builtin-manifest.json': 'scripts/generate-builtin-manifest.cjs',
