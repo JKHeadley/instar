@@ -147,8 +147,8 @@
     },
     {
       "path": "src/templates/scripts/browser/native-drive.ps1",
-      "sha256": "9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e",
-      "reason": "normal-chrome-cross-platform: PP's Windows normal-Chrome driver, shipped byte-identical to the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
+      "sha256": "74f2071c3a53ad92b305ed0d6b4ac5cfc73b6df0671da946adb7c9e1be6aad92",
+      "reason": "normal-chrome-cross-platform + normal-chrome-windows-occlusion: PP's Windows normal-Chrome driver, the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS) plus the occlusion launch flag and the named ERR page-not-rendering read failure (live-run on the Mama PC 2026-11-19); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
