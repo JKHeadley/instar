@@ -19,7 +19,8 @@ import {
 } from './work-model.js';
 
 const EYEBROW = 'Work · Work board';
-let openedFromLink = null; // a ?card= link opens its card once, not on every refresh
+const workLinkVisits = new WeakMap(); // once per navigation, not on every periodic refresh
+const workRenders = new WeakMap();
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -32,7 +33,7 @@ async function send(path, body) {
   } catch { return { status: 0, data: {} }; }
 }
 
-function clearCardFromHash() {
+function clearCardFromHash(visit) {
   const h = location.hash || '';
   const i = h.indexOf('?');
   if (i < 0) return;
@@ -40,13 +41,25 @@ function clearCardFromHash() {
   if (!params.has('card')) return;
   params.delete('card');
   const rest = params.toString();
-  try { history.replaceState(history.state, '', `${location.pathname}${location.search}${h.slice(0, i)}${rest ? `?${rest}` : ''}`); } catch { /* the address stays; the once-only guard still holds */ }
-  openedFromLink = null;
+  try {
+    history.replaceState(history.state, '', `${location.pathname}${location.search}${h.slice(0, i)}${rest ? `?${rest}` : ''}`);
+    // replaceState fires no hashchange, so the once-per-navigation guard is reset here: a later tap on the same
+    // link is a new navigation and opens the card again.
+    if (visit) visit.opened = null;
+  } catch { /* the address stays; the once-only guard still holds */ }
 }
 
 function queryOf() { const h = location.hash || ''; const i = h.indexOf('?'); return i >= 0 ? h.slice(i + 1) : ''; }
 
 export async function renderWork(main, ctx) {
+  let visit = workLinkVisits.get(window);
+  if (!visit) {
+    visit = { opened: null };
+    workLinkVisits.set(window, visit);
+    window.addEventListener('hashchange', () => { visit.opened = null; });
+  }
+  const run = {};
+  workRenders.set(main, run);
   const { get } = ctx;
   const refresh = () => renderWork(main, ctx);
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the work board' })));
@@ -113,14 +126,25 @@ export async function renderWork(main, ctx) {
 
   // A link to one card (Home's row) opens it once.
   const want = cardFromQuery(query);
-  if (want && openedFromLink !== want) {
-    openedFromLink = want;
+  if (want && visit.opened !== want) {
     const all = LANES.flatMap((l) => board.lanes[l.id].cards);
-    const c = all.find((x) => x.id === want);
-    if (c) openCard(c, refresh);
+    let c = all.find((x) => x.id === want);
+    if (!c) {
+      const result = await get(`/work-board/cards/${encodeURIComponent(want)}`);
+      if (workRenders.get(main) !== run || queryOf() !== query || !main.isConnected) return;
+      if (result.ok && result.data?.card?.id === want && typeof result.data.card.title === 'string') c = result.data.card;
+      else {
+        // The card stays in the address here, so "Try again" can read it again.
+        main.prepend(note(result.status === 404 ? 'This card is no longer available here.' : 'This card could not be loaded. Try again.'));
+        main.prepend(el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: refresh }));
+        return;
+      }
+    }
+    visit.opened = want;
+    openCard(c, refresh);
     // Take the card out of the address once it is open, so the same link (a Needs-you row's card link) opens it
     // again on a later tap; the page's own refresh still never reopens a card the person closed.
-    clearCardFromHash();
+    clearCardFromHash(visit);
   }
 }
 

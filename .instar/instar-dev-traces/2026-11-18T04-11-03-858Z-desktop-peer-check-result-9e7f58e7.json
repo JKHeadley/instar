@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "desktop-peer-check-result",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T04:11:03.858Z",
+  "artifactPath": "upgrades/side-effects/desktop-peer-check-result.md",
+  "artifactSha256": "4d79e78d3469e30b5e34ee1cbfddb40af5057467888d07c64c33c65df7a33ef2",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Readiness explanation and selection controls only",
+  "eli16Path": "upgrades/side-effects/desktop-peer-check-result.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-peer-check-result.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/desktop-routes.test.ts",
+      "howCaught": "A failed peer probe and a ready retry are distinguished."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2471
+    ],
+    "notes": "The mesh rollout described a failed check as a measured not-ready state."
+  }
+}

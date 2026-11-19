@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "cos-wait-card-brief",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-19T04:20:03.213Z",
+  "artifactPath": "upgrades/side-effects/cos-wait-card-brief.md",
+  "artifactSha256": "4a6fc88de19dbac639bbb036744236831bf04240abd4c03a5f7cb0604f7d79c8",
+  "coveredFiles": [
+    "docs/specs/work-board-cards-appear.eli16.md",
+    "docs/specs/work-board-cards-appear.md",
+    "src/core/ChiefOfStaffWaitCards.ts",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "tests/unit/chief-of-staff-wait-cards.test.ts",
+    "upgrades/next/cos-wait-card-brief.md",
+    "upgrades/side-effects/cos-wait-card-brief.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only optional card field (non-material, server-writer-only) and cleaner wait-card text; no new authority; a revert fully undoes it",
+  "eli16Path": "docs/specs/work-board-cards-appear.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-wait-card-brief.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-18T21:25:00.000Z",
-      "auditRef": "docs/audits/bounded-input-countdown-met-building-family-2026-11-18.json",
-      "auditSha256": "3cf4df36d0d9d1dcc32b59ffb6f0777a9af5189ba31fbe26dc92bced24d702e4",
-      "areaSha256": "ca80e5f13645eacf1b28c03c50e3b3ac63d7e6deb7827f42c13cf5c8774ec321",
+      "lastAuditedAt": "2026-11-19T03:22:00.000Z",
+      "auditRef": "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
+      "auditSha256": "6cf106db2d14c069d9f7931f98c1105ac33a23dfc0a3dc07ea6b4eb1a01b5e0c",
+      "areaSha256": "52533019f8162a188875bc18bccfbb5252bc573b224711ecb067048609409506",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

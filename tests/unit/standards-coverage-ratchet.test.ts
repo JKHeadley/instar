@@ -1279,8 +1279,9 @@ describe('standards-coverage ratchet script', () => {
     // 2026-11-10: 97 -> 98. Operator approval [source: telegram 141014/141483 2026-11-10]: *An Instar Agent Always Serves a Team*, the counterpart of 2.0 Rule 123.
     // 2026-11-15: 98 -> 99. Operator approval [source: telegram 141385/143443 2026-11-15, "approve"]: *Security Fixes Keep the Experience Whole*, a child of *The User Experience Is the Product* (security program).
     // 2026-11-15: 99 -> 100. Operator approval [source: telegram 142440/4516843644856181 2026-11-16]: *Trust Is Earned by Work and Granted Only by the Person*, the counterpart of 2.0 Rule 104 and the purpose's role and suggestions rules.
-    // 2026-11-18: 100 -> 101. Operator approval [source: telegram 134088/145506 2026-11-19, "yes"]: *Delight the User*, a child of *Operator-Surface Quality* (CMT-1998).
-    expect(report.total).toBe(101);
+    // 2026-11-18: 100 -> 102. Operator approval [source: telegram 145097/145451 2026-11-18, "Yes, to all"]: *A Safeguard Must Leave a Benefit* (Building) and *Documents Stand on Their Own* (Interaction), both judgment-bound root articles.
+    // 2026-11-19: 102 -> 103. Operator approval [source: telegram 134088/145506 2026-11-19, "yes"]: *Delight the User*, a child of *Operator-Surface Quality* (CMT-1998).
+    expect(report.total).toBe(103);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

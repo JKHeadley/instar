@@ -7,6 +7,10 @@ import vercel from '@astrojs/vercel';
 // https://astro.build/config
 export default defineConfig({
   site: 'https://instar.sh',
+  // The old comparison guide was retired (topic 145295); old links land on the introduction.
+  redirects: {
+    '/guides/vs-openclaw': '/introduction/',
+  },
   vite: {
     plugins: [tailwindcss()]
   },
@@ -138,7 +142,6 @@ export default defineConfig({
             { label: 'Agent Communication', slug: 'guides/agent-communication' },
             { label: 'Security Model', slug: 'guides/security' },
             { label: 'Contributor Checks', slug: 'guides/contributor-checks' },
-            { label: 'vs OpenClaw', slug: 'guides/vs-openclaw' },
           ],
         },
       ],

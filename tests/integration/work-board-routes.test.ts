@@ -351,6 +351,27 @@ describe('B25: an agent card asking approval of a spec or design needs its const
   });
 });
 
+describe('source conversation card reads', () => {
+  it('owner phone and bearer get exact paged cards; shared members and scoped sessions learn no association', async () => {
+    const c = setup(); const phone = c.pair(); const member = c.pair({ userId: 'adriana', role: 'team' });
+    const own = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true } as const;
+    for (let i = 0; i < 52; i++) expect(c.svc.createCard(own, { ...CARD, source: { conversationKey: 'telegram:42', messageId: String(i) } }).ok).toBe(true);
+    agentCard(c.svc, { source: { conversationKey: 'telegram:420', messageId: 'other' } });
+    const query = '?sourceConversationKey=telegram%3A42';
+    const first = await send(c.app, phone, 'GET', '/mobile/work-board' + query);
+    expect(first.status).toBe(200); expect(first.body.cards).toHaveLength(50); expect(first.body.total).toBe(52); expect(first.body.nextPage).toBe(1);
+    const second = await request(c.app).get('/work-board' + query + '&sourcePage=1').set(bearer());
+    expect(second.status).toBe(200); expect(second.body.cards).toHaveLength(2); expect(second.body.nextPage).toBeNull(); expect(second.body.newestHlc).toEqual(first.body.newestHlc); expect(second.body.sourceRevision).toEqual(first.body.sourceRevision); expect(first.body.sourceRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect((await send(c.app, member, 'GET', '/mobile/work-board' + query)).status).toBe(403);
+    c.sessions.set('mps_source', { sessionId: 's-source', audience: { kind: 'owner' } as never, placeKey: 'app:any' });
+    expect((await request(c.app).get('/work-board' + query).set('Authorization', 'Bearer mps_source')).status).toBe(403);
+    expect((await request(c.app).get('/work-board?sourcePage=1').set(bearer())).status).toBe(400);
+    expect((await request(c.app).get('/work-board' + query + '&sourcePage=1.5').set(bearer())).status).toBe(400);
+    expect((await request(c.app).get('/work-board' + query + '&sourceConversationKey=other').set(bearer())).status).toBe(400);
+    expect((await request(c.app).get('/work-board').set(bearer())).body.lanes).toBeDefined();
+  });
+});
+
 describe('Work Board routes — cards appear (docs/specs/work-board-cards-appear.md §2, §3)', () => {
   it('an agent card without a recommendation or why-you is refused, naming the field; a person\'s is not', async () => {
     const c = setup();
