@@ -77,6 +77,10 @@ import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
+import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktreeReaper.js';
+import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
+import { nextBuildAttemptAt, REFERENCE_BUILD_DEFAULTS } from '../monitoring/agentWorktreeReferenceBuilder.js';
+import type { BuildStatusEntry } from '../monitoring/agentWorktreeNodeModules.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
@@ -3020,6 +3024,167 @@ const diskStewardNotice: SelfActionController = {
             due = null;
           }
         }
+      },
+    };
+  },
+};
+
+// ── agent worktree reclaim (docs/specs/reaper-removal-out-of-process.md §2-4) ──
+// The worst case: removal is live and every removal and every trash delete fails,
+// forever. Bounded by the reaper's shipped constants, read from the real defaults
+// (DEFAULT_AGENT_WORKTREE_REAPER_CONFIG, RECLAIM_DEFAULTS), not copied:
+//   - per path: the breaker (AgentWorktreeReaper.recordReclaimFailure /
+//     breakerTripped) leaves a path out of the list sent to the child after
+//     maxReclaimFailuresPerPath failures;
+//   - per run: the child attempts at most maxReapsPerPass paths;
+//   - per trash folder: the child counts each delete before it runs and skips the
+//     folder after trashMaxFailures, with the back-off
+//     trashRetryBackoffMs × 2^(failures-1) (agentWorktreeReclaimMain.ts:318).
+const RECLAIM_PATHS = 30;
+const RECLAIM_TRASH = 5;
+const RECLAIM_PASS_MS = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs;
+const worktreeReclaimAttempt: SelfActionController = {
+  id: 'worktree-reclaim-attempt',
+  actionVerb: 'retry-worktree-removal', // 'retry' detector token: one removal or trash-delete attempt by the reclaim child
+  models: 'src/monitoring/AgentWorktreeReaper.ts (reapOutOfProcess: breaker-excluded paths left out of each run) + src/monitoring/agentWorktreeReclaimMain.ts (runReclaimChild: per-run cap; trash retries counted before each delete, back-off, skipped after 3)',
+  modelsPath: 'src/monitoring/agentWorktreeReclaimMain.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The per-path breaker counts are in memory and reset when the server restarts, so a restart allows up to maxReclaimFailuresPerPath more attempts per still-failing path (each run still capped at maxReapsPerPass, one run per hourly pass). Trash retry counts are persisted in trash-retries.json (written before each delete), so a restart does not reset those, and the attempt ids already read are persisted, so no attempt is counted twice.' },
+  boundK: RECLAIM_PATHS * DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.maxReclaimFailuresPerPath + RECLAIM_TRASH * RECLAIM_DEFAULTS.trashMaxFailures,
+  perTargetBoundK: 3,
+  ticks: 100, // 100 h of hourly passes
+  tickMs: RECLAIM_PASS_MS,
+  makeUnderPressure(f, sink) {
+    const cap = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.maxReapsPerPass;
+    const breakerAt = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.maxReclaimFailuresPerPath;
+    const pathFailures = new Map<string, number>();
+    const trash = new Map<string, { failures: number; lastAt: number }>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        // 1. Leftover trash first (the child's order).
+        for (let i = 0; i < RECLAIM_TRASH; i++) {
+          const name = `trash-${i}`;
+          const prior = trash.get(name);
+          if (prior && prior.failures >= RECLAIM_DEFAULTS.trashMaxFailures) continue; // trash-stuck
+          if (prior && now < prior.lastAt + RECLAIM_DEFAULTS.trashRetryBackoffMs * 2 ** Math.max(0, prior.failures - 1)) continue;
+          trash.set(name, { failures: (prior?.failures ?? 0) + 1, lastAt: now }); // counted before the delete
+          sink.emit({ verb: 'retry-worktree-removal', target: name });
+          if (!f.targetAlwaysRejects()) trash.delete(name);
+        }
+        // 2. Removals: breaker-tripped paths are excluded; at most `cap` attempts per run.
+        let attempts = 0;
+        for (let i = 0; i < RECLAIM_PATHS && attempts < cap; i++) {
+          const p = `/wt/path-${i}`;
+          if ((pathFailures.get(p) ?? 0) >= breakerAt) continue;
+          attempts += 1;
+          sink.emit({ verb: 'retry-worktree-removal', target: p });
+          if (f.targetAlwaysRejects()) pathFailures.set(p, (pathFailures.get(p) ?? 0) + 1);
+        }
+      },
+    };
+  },
+};
+
+// The hourly run start itself. While removal is live, every pass starts one
+// reclaim child (unless one is still running or its ownership is unresolved),
+// EVEN WHEN every eligible path is breaker-excluded: the child then evaluates,
+// finds nothing to act on, and exits. It never stops on its own, so it is a
+// declared Eternal Sentinel with a rate floor: the server's own timers are a
+// one-time pass initialPassDelayMs after boot, then setInterval(reapIntervalMs)
+// from boot, so the closest two starts can be is reapIntervalMs - initialPassDelayMs
+// (45 min, right after a boot); every later gap is reapIntervalMs (1 h).
+const RECLAIM_RUN_FLOOR_MS = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs - DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.initialPassDelayMs;
+const worktreeReclaimRunSpawn: SelfActionController = {
+  id: 'worktree-reclaim-run-spawn',
+  actionVerb: 'spawn-worktree-reclaim-run', // 'spawn' detector token: AgentWorktreeReclaimRunner.startRun → spawnChild
+  models: 'src/monitoring/AgentWorktreeReaper.ts (start(): initial pass + setInterval(reapIntervalMs); reapOutOfProcess → runner.startRun once per pass, refused while busy/unresolved)',
+  modelsPath: 'src/monitoring/AgentWorktreeReaper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart re-arms the timers from scratch: the first start is initialPassDelayMs after boot and is refused while the previous run\'s process group is alive or unresolved (adoption by run id), so a restart never starts a second concurrent child. Breaker counts reset on restart; trash retry counts persist in trash-retries.json.' },
+  delegatedGiveUp: 'The per-path breaker leaves tripped paths out of each run; the child removes nothing when nothing is eligible; dryRun:true never spawns a child (the dry-run pass runs in the evaluation worker).',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 400, // 100 h at 15 min
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'while removal is live, each hourly pass starts one reclaim child; a run that finds nothing to do exits after its evaluation', rateFloorMs: RECLAIM_RUN_FLOOR_MS },
+  makeUnderPressure(f, sink) {
+    const bootAt = f.clock.nowMs();
+    const interval = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs;
+    const initialAt = bootAt + DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.initialPassDelayMs;
+    let initialDone = false;
+    let nextIntervalAt = bootAt + interval;
+    let runEndsAt = Number.NEGATIVE_INFINITY;
+    const deadlineMs = 900_000; // RECLAIM_RUN_DEADLINE_MS: the runner kills a run past it
+    const start = (now: number): void => {
+      if (now < runEndsAt) return; // busy: refused
+      sink.emit({ verb: 'spawn-worktree-reclaim-run', target: 'agent-home' });
+      sink.emitTimesMs.push(now);
+      runEndsAt = now + deadlineMs; // worst case: every run lasts to its deadline
+    };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!initialDone && now >= initialAt) { initialDone = true; start(initialAt); }
+        while (now >= nextIntervalAt) { start(nextIntervalAt); nextIntervalAt += interval; }
+      },
+    };
+  },
+};
+
+// ── reference builds for the root node_modules proof (docs/specs/reaper-node-modules-regenerable.md §1, §3) ──
+// The worst case: every needed key's build fails, forever, and the reaper passes
+// keep coming. Bounded by the shipped rules, read from the real code, not copied:
+//   - at most one build per pass, refused while a build runs (6 min timeout) or a
+//     reclaim run is active (AgentWorktreeReferenceBuilder.afterPass);
+//   - passes follow the reaper's timers: one initialPassDelayMs after boot, then
+//     every reapIntervalMs, so the closest two starts are RECLAIM_RUN_FLOOR_MS apart;
+//   - per key, the real back-off nextBuildAttemptAt (daily for a cache miss; 1, 2,
+//     4 days then weekly otherwise) is driven here.
+// It never stops on its own (a key failing for a missing cache is retried daily
+// until sessions refill the cache), so it is a declared Eternal Sentinel with the
+// pass rate floor.
+const REFERENCE_KEYS = 8;
+const worktreeReferenceBuildSpawn: SelfActionController = {
+  id: 'worktree-reference-build-spawn',
+  actionVerb: 'spawn-worktree-reference-build', // 'spawn' detector token: AgentWorktreeReferenceBuilder.start → spawnChild
+  models: 'src/monitoring/agentWorktreeReferenceBuilder.ts (afterPass: one build per pass, refused while running / during a reclaim run / at the manifest cap / below 3 GB; nextBuildAttemptAt back-off per key)',
+  modelsPath: 'src/monitoring/agentWorktreeReferenceBuilder.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart re-arms the reaper timers (first pass initialPassDelayMs after boot) and forgets the in-memory running build, but the per-key back-off is persisted in status.json, so a failing key is not retried early; a build orphaned by the restart still holds build.lock (corroborated by its build id), so a second concurrent build exits as busy without counting a failure; and the orphan kills itself past its own timeout.' },
+  delegatedGiveUp: 'Per key the back-off (nextBuildAttemptAt, persisted in status.json) spaces retries a day or more apart; a manifest at the 30 cap with every kept one needed starts nothing; dryRun is irrelevant (builds write only manifests in the reaper state folder, never a checkout).',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 400, // 100 h at 15 min
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'a key whose build keeps failing for a missing npm cache entry is retried once a day until sessions refill the cache; at most one build per hourly pass', rateFloorMs: RECLAIM_RUN_FLOOR_MS },
+  makeUnderPressure(f, sink) {
+    const bootAt = f.clock.nowMs();
+    const interval = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs;
+    const initialAt = bootAt + DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.initialPassDelayMs;
+    let initialDone = false;
+    let nextIntervalAt = bootAt + interval;
+    let runningUntil = Number.NEGATIVE_INFINITY;
+    const status = new Map<string, BuildStatusEntry>();
+    const pass = (now: number): void => {
+      if (now < runningUntil) return; // a build is still running: refused
+      for (let i = 0; i < REFERENCE_KEYS; i++) {
+        const key = `key-${i}`;
+        const st = status.get(key);
+        if (st && now < st.nextAt) continue;
+        sink.emit({ verb: 'spawn-worktree-reference-build', target: key });
+        sink.emitTimesMs.push(now);
+        runningUntil = now + REFERENCE_BUILD_DEFAULTS.timeoutMs; // worst case: every build runs to its timeout
+        if (f.targetAlwaysRejects()) status.set(key, nextBuildAttemptAt(st, i % 2 === 0 ? 'npm-cache-missing' : 'build-error', now));
+        else status.delete(key);
+        return; // one build per pass
+      }
+    };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!initialDone && now >= initialAt) { initialDone = true; pass(initialAt); }
+        while (now >= nextIntervalAt) { pass(nextIntervalAt); nextIntervalAt += interval; }
       },
     };
   },
@@ -6021,6 +6186,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyStatusPassBackoff,
   systemTopicAdoption,
   diskStewardNotice,
+  worktreeReclaimAttempt,
+  worktreeReclaimRunSpawn,
+  worktreeReferenceBuildSpawn,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,

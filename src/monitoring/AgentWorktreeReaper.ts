@@ -34,6 +34,7 @@ import {
 } from './worktreeEnumeration.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { featureEvidence } from './FeatureEvidenceLog.js';
+import type { NodeModulesCheck, NodeModulesPassSummary } from './agentWorktreeNodeModules.js';
 
 export interface AgentWorktreeReaperConfig {
   enabled: boolean;
@@ -71,7 +72,10 @@ export interface AgentWorktreeReaperConfig {
 export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
   enabled: false,
   dryRun: true,
-  reapIntervalMs: 24 * 3600 * 1000,
+  // Hourly (spec reaper-removal-out-of-process §4): a worktree that becomes
+  // eligible is reclaimed within about an hour, and the measured backlog drains
+  // in about six runs. The dry-run pass is off the main thread (a worker).
+  reapIntervalMs: 3600 * 1000,
   initialPassDelayMs: 15 * 60 * 1000,
   maxReapsPerPass: 20,
   maxReclaimFailuresPerPath: 3,
@@ -92,6 +96,176 @@ export interface WorktreeEvaluation {
   verdict: Verdict;
   /** The gate that forced KEEP, or 'merged-clean-idle' when reap-eligible. */
   reason: string;
+  /** The checkout's root `node_modules` (report counts only; never a gate). */
+  nodeModules?: NodeModulesKind;
+  /** Dry run, eligible only: what removal would archive and reclaim. null = could not be measured. */
+  projection?: ReclaimProjection | null;
+  /** Live reclaim run only: what the child did with this checkout. */
+  outcome?: 'removed' | 'kept' | 'error' | 'not-attempted';
+  /** Live reclaim run only: why it was kept or failed at removal time. */
+  outcomeReason?: string;
+  /**
+   * A checkout held back only by a real root `node_modules` (spec
+   * reaper-node-modules-regenerable §6): its verdict (`node-modules-residue` passes;
+   * `work`, `unchecked`, `reference-unavailable`, `residue-over-floor` keep it), its
+   * residue bytes and its allocated bytes (st_blocks, an upper bound on what removal frees).
+   */
+  nodeModulesCheck?: NodeModulesCheck;
+}
+
+/** One attempt's result, as the breaker reads it (spec reaper-removal-out-of-process §3). */
+export interface ReclaimAttemptOutcome {
+  attemptId: string;
+  path: string;
+  kind: 'removed' | 'failed';
+  reason?: string;
+}
+
+/** The child's report file (spec reaper-removal-out-of-process §4, "The report in live mode"). */
+export interface ReclaimReportFile {
+  runId: string;
+  at: number;
+  phase: 'evaluated' | 'final';
+  enumerationOk: boolean;
+  enumerationError?: string | null;
+  worktrees: WorktreeEvaluation[];
+  archiveBytes: number | null;
+  removed: string[];
+  stopReason?: string | null;
+  /** Leftover-trash cleanup this run: deleted, failed, deferred, and `trash-stuck` folders (skipped after 3 failures). */
+  trash?: ReclaimTrashSummary;
+  /** This run's root node_modules pass (spec reaper-node-modules-regenerable §3, §6). */
+  nodeModules?: NodeModulesPassSummary;
+  /** How the run's inbound-link index ended (`link-index-timeout` keeps every checkout). */
+  linkIndex?: string;
+}
+
+export interface ReclaimTrashSummary {
+  deleted: string[];
+  errors: Array<{ name: string; reason: string }>;
+  stuck: Array<{ name: string; bytes: number | null; lastError: string }>;
+  deferred: string[];
+  /** Trash folders whose post-rename check failed or could not be verified: never deleted automatically. */
+  held?: Array<{ name: string; reason: string }>;
+}
+
+/**
+ * The reference builder (agentWorktreeReferenceBuilder.ts, spec
+ * reaper-node-modules-regenerable §1, §3): given a pass's node_modules summary,
+ * housekeeps manifests and starts at most one niced build child, never while a
+ * reclaim run is active. Asynchronous; no heavy work on the caller's thread.
+ */
+export interface ReferenceBuilderPort {
+  afterPass(pass: NodeModulesPassSummary, ctx: { reclaimRunActive: boolean }): Promise<{ started: boolean; reason: string; key?: string }>;
+  /** Report-only snapshot. */
+  status(): { running: { key: string; startedAt: number } | null; lastOutcome: { key: string; ok: boolean; cause?: string; at: number } | null; scratchHighWaterBytes: number; failures: Record<string, { failures: number; cause: string; nextAt: number }> };
+}
+
+/**
+ * The live reclaim runner (agentWorktreeReclaimRunner.ts). Every method is
+ * asynchronous and does no git, lsof, ps or file walk on the caller's thread.
+ */
+export interface ReclaimRunnerPort {
+  /** Start at most one reclaim child. `started: false` names why (busy, unresolved ownership, intent write failed, spawn failed). */
+  startRun(req: { excludedPaths: string[] }): Promise<{ started: true; runId: string; done: Promise<void> } | { started: false; reason: string }>;
+  /** Attempt outcomes not yet read, each attempt at most once across restarts. */
+  collectOutcomes(): Promise<ReclaimAttemptOutcome[]>;
+  /** The latest report the child wrote, or null. */
+  readReport(): Promise<ReclaimReportFile | null>;
+  /** True while a run's process group is alive (or its ownership is unresolved). */
+  busy(): boolean;
+}
+
+export type NodeModulesKind = 'real' | 'symlink' | 'none' | 'unknown';
+
+/** Spec reaper-generated-files-regenerable §5: the cost and gain of removing one checkout. */
+export interface ReclaimProjection {
+  /** Bytes the archive step would copy (gate records + archived residue). */
+  residueBytes: number;
+  /** Apparent bytes (file sizes, links not followed) removal would reclaim. */
+  apparentBytes: number;
+}
+
+/** The report fields spec reaper-generated-files-regenerable §5 adds. */
+export interface ReclaimReportSummary {
+  /** Total apparent size of the archive (`instar-dev-decisions-archive`); null = unmeasured. */
+  archiveBytes: number | null;
+  /** Dry run only (null when removal is live): projected totals over the eligible checkouts. */
+  projection: { eligible: number; measured: number; residueBytes: number | null; apparentBytes: number | null } | null;
+  /** Checkouts kept as uncommitted-changes that hold a real `node_modules`, and checkouts with a symlinked one. */
+  nodeModules: { keptForRealNodeModules: number; withSymlinkedNodeModules: number };
+  /** Spec reaper-node-modules-regenerable §3, §6: the root node_modules proof's totals. null before any pass carried it. */
+  nodeModulesProof: NodeModulesProofSummary | null;
+}
+
+export interface NodeModulesProofSummary {
+  /** Checkouts held back only by their real root `node_modules`. */
+  heldOnlyByNodeModules: number;
+  /** Per verdict. */
+  verdicts: Record<string, number>;
+  /** Allocated bytes the passing ones would free (upper bound). */
+  wouldFreeBytes: number;
+  residueBytes: number;
+  /** The content-addressed residue store's size. */
+  storeBytes: number | null;
+  /** Kept reference manifests (hard cap 30). */
+  manifests: { count: number; bytes: number };
+  /** The largest scratch reference install seen. */
+  scratchHighWaterBytes: number;
+  /** Keys still waiting for a reference. */
+  referencesNeeded: number;
+  /** The reference builder, when wired. */
+  builder?: ReturnType<ReferenceBuilderPort['status']>;
+  /** How the pass's inbound-link index ended. */
+  linkIndex?: string;
+}
+
+/** Totals for the node_modules proof (report only). */
+export function summarizeNodeModulesProof(worktrees: WorktreeEvaluation[], pass: NodeModulesPassSummary | null, extra: { builder?: ReturnType<ReferenceBuilderPort['status']>; linkIndex?: string } = {}): NodeModulesProofSummary | null {
+  if (!pass) return null;
+  const checks = worktrees.map((w) => w.nodeModulesCheck).filter((c): c is NodeModulesCheck => !!c);
+  const verdicts: Record<string, number> = {};
+  let wouldFreeBytes = 0;
+  let residueBytes = 0;
+  for (const c of checks) {
+    verdicts[c.verdict] = (verdicts[c.verdict] ?? 0) + 1;
+    if (c.verdict === 'node-modules-residue') { wouldFreeBytes += c.allocatedBytes ?? 0; residueBytes += c.residueBytes ?? 0; }
+  }
+  return {
+    heldOnlyByNodeModules: checks.length,
+    verdicts,
+    wouldFreeBytes,
+    residueBytes,
+    storeBytes: pass.storeBytes,
+    manifests: pass.manifests,
+    scratchHighWaterBytes: Math.max(pass.scratchHighWaterBytes, extra.builder?.scratchHighWaterBytes ?? 0),
+    referencesNeeded: pass.needed.length,
+    ...(extra.builder ? { builder: extra.builder } : {}),
+    ...(extra.linkIndex ? { linkIndex: extra.linkIndex } : {}),
+  };
+}
+
+/** Totals for the report, from the per-checkout evaluations. */
+export function summarizeReclaim(worktrees: WorktreeEvaluation[], archiveBytes: number | null, dryRun: boolean, nodeModulesProof: NodeModulesProofSummary | null = null): ReclaimReportSummary {
+  const eligible = worktrees.filter((w) => w.verdict === 'reap-eligible');
+  let residueBytes: number | null = 0;
+  let apparentBytes: number | null = 0;
+  let measured = 0;
+  for (const w of eligible) {
+    if (!w.projection) { residueBytes = null; apparentBytes = null; continue; }
+    measured++;
+    if (residueBytes !== null) residueBytes += w.projection.residueBytes;
+    if (apparentBytes !== null) apparentBytes += w.projection.apparentBytes;
+  }
+  return {
+    archiveBytes,
+    projection: dryRun ? { eligible: eligible.length, measured, residueBytes, apparentBytes } : null,
+    nodeModules: {
+      keptForRealNodeModules: worktrees.filter((w) => w.verdict === 'keep' && w.reason === 'uncommitted-changes' && w.nodeModules === 'real').length,
+      withSymlinkedNodeModules: worktrees.filter((w) => w.nodeModules === 'symlink').length,
+    },
+    nodeModulesProof,
+  };
 }
 
 /**
@@ -135,12 +309,21 @@ export interface AgentWorktreeReaperDeps {
    *  delete — and `isMerged(info)` would still check the STALE (merged) branch.
    *  Production: SafeGitExecutor `rev-parse --abbrev-ref HEAD` on the path. */
   currentBranch: (path: string) => string | null;
+  /** Optional: the worktree's LIVE head commit, read at reclaim time. A new commit on the
+   *  same branch since enumeration makes `isMerged(info)` stale (it checks the old head). */
+  currentHead?: (path: string) => string | null;
   /** Optional belt-and-suspenders: true when a `.instar-build-active` marker file sits
    *  at the worktree root — an in-flight builder's explicit "don't reap me" claim.
    *  Production: fs.existsSync(path/.instar-build-active). */
   hasActiveBuildMarker?: (path: string) => boolean;
   /** Remove the worktree (git worktree remove). Only called when killsEnabled. */
   removeWorktree: (path: string) => void;
+  /** Optional, report only: projected archive + reclaim bytes for an eligible checkout (dry run). */
+  projectReclaim?: (path: string) => ReclaimProjection | null;
+  /** Optional, report only: what the checkout's root node_modules is. */
+  nodeModulesKind?: (path: string) => NodeModulesKind;
+  /** Optional, report only: the archive's total size. */
+  archiveBytes?: () => number | null;
   /** Passive trace for an enumeration failure. Retention follows the deployment log. */
   warn?: (line: string) => void;
   /** Restart-surviving failure count/time. Current blind state is never restored. */
@@ -152,7 +335,16 @@ export interface AgentWorktreeReaperDeps {
    * report route answers from the last pass. Never rejects: a failure resolves
    * `{ ok: false, error }` and is recorded as an enumeration failure.
    */
-  evaluateAllOffThread?: () => Promise<WorktreeEnumeration<WorktreeEvaluation>>;
+  evaluateAllOffThread?: () => Promise<WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null; nodeModules?: NodeModulesPassSummary | null; linkIndex?: string }>;
+  /** The reference builder (spec reaper-node-modules-regenerable §1). Started after a pass, at most one build, never during a reclaim run. */
+  referenceBuilder?: ReferenceBuilderPort;
+  /**
+   * Live removal out of process (spec reaper-removal-out-of-process §1). When
+   * present and removal is live (enabled, dryRun false), a pass does no git,
+   * lsof, ps or file walk on this thread: it reads the last run's results, then
+   * starts at most one reclaim child, which evaluates and removes.
+   */
+  reclaimRunner?: ReclaimRunnerPort;
   now?: () => number;
 }
 
@@ -174,6 +366,8 @@ export class AgentWorktreeReaper extends EventEmitter {
   private lastPassAt = 0;
   /** The last pass's evaluations, for the report route. In memory only. */
   private lastEvaluations: { at: number; worktrees: WorktreeEvaluation[] } | null = null;
+  /** The archive's size as of the last pass (report only). */
+  private lastArchiveBytes: number | null = null;
   private reapedLastPass = 0;
   /**
    * Metric (Observability standard): how many background REAP PASSES have failed
@@ -197,6 +391,15 @@ export class AgentWorktreeReaper extends EventEmitter {
   private reclaimFailures = new Map<string, number>();
   /** Paths whose breaker has tripped + already emitted (emit-once). */
   private reclaimTripped = new Set<string>();
+  /** A live reclaim child is running (out-of-process removal). */
+  private liveRunActive = false;
+  /** The last child report applied (runId@at), so a failed one is not counted twice. */
+  private lastLoadedReportKey: string | null = null;
+  /** The last live run's trash summary (report only; null in dry run or before any run). */
+  private lastTrash: ReclaimTrashSummary | null = null;
+  /** The last pass's node_modules proof summary and link-index state (report only). */
+  private lastNodeModules: NodeModulesPassSummary | null = null;
+  private lastLinkIndex: string | undefined;
 
   constructor(deps: AgentWorktreeReaperDeps, cfg?: Partial<AgentWorktreeReaperConfig>) {
     super();
@@ -219,6 +422,7 @@ export class AgentWorktreeReaper extends EventEmitter {
 
   start(): void {
     if (this.timer || !this.cfg.enabled) return;
+    /* @self-action-controller: worktree-reclaim-run-spawn */
     this.timer = setInterval(() => { void this.reap(); }, this.cfg.reapIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();
     // One-time initial pass shortly after boot. Without it, the first pass is a
@@ -259,9 +463,34 @@ export class AgentWorktreeReaper extends EventEmitter {
     return { path: info.path, branch: info.branch, verdict: 'reap-eligible', reason: 'merged-clean-idle' };
   }
 
+  /**
+   * Report-only annotations (spec reaper-generated-files-regenerable §5): the
+   * node_modules kind for every checkout and, on a pass that removes nothing, the
+   * projected archive and reclaim bytes for each eligible one. Never changes a
+   * verdict; a failed measurement reads as unknown.
+   */
+  annotate(evaln: WorktreeEvaluation, dryRun: boolean = !this.killsEnabled): WorktreeEvaluation {
+    if (this.deps.nodeModulesKind) {
+      try { evaln.nodeModules = this.deps.nodeModulesKind(evaln.path); }
+      catch { evaln.nodeModules = 'unknown'; } // @silent-fallback-ok — report-only field
+    }
+    if (dryRun && evaln.verdict === 'reap-eligible' && this.deps.projectReclaim) {
+      try { evaln.projection = this.deps.projectReclaim(evaln.path); }
+      catch { evaln.projection = null; } // @silent-fallback-ok — report-only field, null = unmeasured
+    }
+    return evaln;
+  }
+
+  /** The archive's size, or null when it cannot be measured. Report only. */
+  measureArchive(): number | null {
+    try { return this.deps.archiveBytes ? this.deps.archiveBytes() : null; }
+    catch { return null; } // @silent-fallback-ok — report-only field, null = unmeasured
+  }
+
   /** One reap pass. Returns the per-worktree evaluations + what was reaped. */
   async reap(): Promise<{ ts: number; evaluations: WorktreeEvaluation[]; reaped: string[]; dryRun: boolean }> {
     if (this.running) return { ts: this.now(), evaluations: [], reaped: [], dryRun: !this.killsEnabled };
+    if (this.deps.reclaimRunner && this.killsEnabled) return this.reapOutOfProcess(this.deps.reclaimRunner);
     this.running = true;
     const reaped: string[] = [];
     const evaluations: WorktreeEvaluation[] = [];
@@ -282,6 +511,10 @@ export class AgentWorktreeReaper extends EventEmitter {
           return { ts: failedAt, evaluations: [], reaped: [], dryRun: true };
         }
         evaluations.push(...result.worktrees);
+        this.lastArchiveBytes = result.archiveBytes ?? null;
+        this.lastNodeModules = result.nodeModules ?? null;
+        this.lastLinkIndex = result.linkIndex;
+        this.startReferenceBuild(result.nodeModules ?? null);
         const at = this.now();
         this.lastPassAt = at;
         this.lastEnumerationOk = true;
@@ -336,7 +569,7 @@ export class AgentWorktreeReaper extends EventEmitter {
           evaluations.push({ path: info.path, branch: info.branch, verdict: 'keep', reason: 'reclaim-failed' });
           continue;
         }
-        evaluations.push(evaln);
+        evaluations.push(this.annotate(evaln));
         if (evaln.verdict !== 'reap-eligible') continue;
         if (reaped.length >= this.cfg.maxReapsPerPass) continue; // blast-radius cap
         if (!this.killsEnabled) { continue; } // dry-run: classify, do not delete
@@ -368,6 +601,7 @@ export class AgentWorktreeReaper extends EventEmitter {
           this.emit('error', err);
         }
       }
+      this.lastArchiveBytes = this.measureArchive();
       this.lastPassAt = this.now();
       this.lastEnumerationOk = true;
       this.lastEnumerationError = null;
@@ -390,6 +624,115 @@ export class AgentWorktreeReaper extends EventEmitter {
       this.running = false;
     }
     return { ts: this.now(), evaluations, reaped, dryRun: !this.killsEnabled };
+  }
+
+  /**
+   * The live pass with an out-of-process runner (spec reaper-removal-out-of-process §1, §3).
+   * Feeds every finished attempt to the breaker, leaves tripped paths out of the
+   * list the child may act on, and starts at most one child. Returns at once;
+   * the run's results arrive through `done`.
+   */
+  private async reapOutOfProcess(runner: ReclaimRunnerPort): Promise<{ ts: number; evaluations: WorktreeEvaluation[]; reaped: string[]; dryRun: boolean }> {
+    this.running = true;
+    try {
+      await this.applyReclaimOutcomes(runner);
+      const excludedPaths = [...this.reclaimFailures.keys()].filter((p) => this.breakerTripped(p));
+      const started = await runner.startRun({ excludedPaths });
+      if (started.started) {
+        this.liveRunActive = true;
+        void started.done.then(() => this.finishLiveRun(runner), () => this.finishLiveRun(runner));
+      } else {
+        this.emit('reclaim-run-skipped', { reason: started.reason });
+        featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'held', reason: `reclaim run not started: ${started.reason}`, context: { dryRun: false, outOfProcess: true } });
+      }
+      return { ts: this.now(), evaluations: this.lastEvaluations?.worktrees ?? [], reaped: [], dryRun: false };
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** A reclaim run ended: read its results into the breaker and its report into the route. */
+  private async finishLiveRun(runner: ReclaimRunnerPort): Promise<void> {
+    try {
+      const outcomes = await this.applyReclaimOutcomes(runner);
+      const loaded = await this.loadReclaimReport(runner);
+      // The run is over: a reference build may start now (never during one).
+      this.liveRunActive = false;
+      this.startReferenceBuild(this.lastNodeModules);
+      const reaped = outcomes.filter((o) => o.kind === 'removed').map((o) => o.path);
+      this.emit('pass', { evaluations: this.lastEvaluations?.worktrees ?? [], reaped });
+      featureEvidence.record('monitoring.agentWorktreeReaper', {
+        kind: reaped.length > 0 ? 'fired' : 'held',
+        reason: reaped.length > 0 ? 'reaped merged idle worktrees' : loaded ? 'pass kept everything' : 'reclaim run left no report',
+        context: { dryRun: false, outOfProcess: true, reaped: reaped.length, failed: outcomes.filter((o) => o.kind === 'failed').length, reapedNames: reaped.map((p) => p.split('/').pop() ?? '').join(',') },
+      });
+    } catch (err) {
+      // @silent-fallback-ok — not silent: surfaced through the warn line; outcomes stay unconsumed and are read next pass.
+      this.warn(`[agent-worktree-reaper] reading a finished reclaim run FAILED: ${summarizeEnumerationError(err)}`);
+    } finally {
+      this.liveRunActive = false;
+    }
+  }
+
+  /**
+   * After a pass: hand its node_modules summary to the reference builder, which
+   * starts at most one build and never while a reclaim run is active (spec
+   * reaper-node-modules-regenerable §1). Fire and forget; never throws.
+   */
+  private startReferenceBuild(pass: NodeModulesPassSummary | null): void {
+    const builder = this.deps.referenceBuilder;
+    if (!builder || !pass) return;
+    const reclaimRunActive = this.liveRunActive || (this.deps.reclaimRunner?.busy() ?? false);
+    void builder.afterPass(pass, { reclaimRunActive }).then((r) => {
+      if (r.started) this.emit('reference-build-started', { key: r.key });
+    }, (err) => {
+      // @silent-fallback-ok — not silent: surfaced on the warn line; the keys stay `unchecked` and the next pass retries.
+      this.warn(`[agent-worktree-reaper] reference build could not start: ${summarizeEnumerationError(err)}`);
+    });
+  }
+
+  /** Feed unread attempt outcomes to the per-path breaker. */
+  private async applyReclaimOutcomes(runner: ReclaimRunnerPort): Promise<ReclaimAttemptOutcome[]> {
+    const outcomes = await runner.collectOutcomes();
+    for (const o of outcomes) {
+      if (o.kind === 'removed') {
+        this.reclaimFailures.delete(o.path);
+        this.reclaimTripped.delete(o.path);
+        this.emit('reaped', { path: o.path });
+      } else {
+        featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'error', reason: 'worktree removal failed', context: { worktree: o.path.split('/').pop() ?? '', failuresBefore: this.reclaimFailures.get(o.path) ?? 0, outOfProcess: true, why: (o.reason ?? '').slice(0, 200) } });
+        this.recordReclaimFailure(o.path);
+      }
+    }
+    return outcomes;
+  }
+
+  /** The child's full evaluation becomes the route's answer. Asynchronous read only. */
+  private async loadReclaimReport(runner: ReclaimRunnerPort): Promise<boolean> {
+    const report = await runner.readReport();
+    if (!report) return false;
+    const key = `${report.runId}@${report.at}`;
+    if (key === this.lastLoadedReportKey) return true; // each report is applied once
+    if (this.lastEvaluations && this.lastEvaluations.at >= report.at) return true;
+    this.lastLoadedReportKey = key;
+    this.lastTrash = report.trash ?? null;
+    this.lastNodeModules = report.nodeModules ?? null;
+    this.lastLinkIndex = report.linkIndex;
+    this.lastPassAt = report.at;
+    this.lastArchiveBytes = report.archiveBytes;
+    this.reapedLastPass = report.removed.length;
+    if (report.enumerationOk) {
+      this.lastEnumerationOk = true;
+      this.lastEnumerationError = null;
+      this.lastEvaluations = { at: report.at, worktrees: report.worktrees };
+    } else {
+      this.lastEnumerationOk = false;
+      this.lastEnumerationError = report.enumerationError ?? 'reclaim run could not enumerate worktrees';
+      this.lastEvaluations = null;
+      this.recordEnumerationFailure(report.at);
+      this.emit('enumeration-failed', { error: this.lastEnumerationError });
+    }
+    return true;
   }
 
   private recordEnumerationFailure(at: number): void {
@@ -434,13 +777,14 @@ export class AgentWorktreeReaper extends EventEmitter {
    * Order mirrors evaluate(): the marker + branch identity first (the load-bearing
    * TOCTOU checks), then the protect-gates re-confirmed against the STILL-CURRENT branch.
    */
-  private reclaimRaceGuard(info: WorktreeInfo): string | null {
+  reclaimRaceGuard(info: WorktreeInfo): string | null {
     try {
       if (this.deps.hasActiveBuildMarker?.(info.path)) return 'raced-build-active-marker';
       // The load-bearing check: has the checked-out branch changed since enumeration?
       // If so, isMerged(info) (which reads info.branch) is stale and must NOT authorize a delete.
       const liveBranch = this.deps.currentBranch(info.path);
       if (liveBranch !== info.branch) return 'raced-changed-since-eval';
+      if (this.deps.currentHead && this.deps.currentHead(info.path) !== info.headSha) return 'raced-changed-since-eval';
       if (this.deps.isInUse(info.path)) return 'raced-now-in-use';
       if (!this.deps.isClean(info.path)) return 'raced-now-dirty';
       // Branch unchanged + clean + idle → info.branch is still current, so re-confirming
@@ -508,7 +852,16 @@ export class AgentWorktreeReaper extends EventEmitter {
    * A live reaper (dryRun false) is never driven from here.
    * Without one it keeps the old shape: prepare, then a synchronous snapshot().
    */
-  async report(): Promise<ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt?: number | null; source?: 'last-pass' | 'live'; passRunning?: boolean }> {
+  async report(): Promise<ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt?: number | null; source?: 'last-pass' | 'live'; passRunning?: boolean; trash?: ReclaimTrashSummary; linkIndexFailure?: string }> {
+    if (this.deps.reclaimRunner && this.killsEnabled) {
+      // Live with an out-of-process runner: the route serves the child's full
+      // evaluation (read from its report file, asynchronously) and never evaluates here.
+      if (this.lastEvaluations === null) {
+        try { await this.loadReclaimReport(this.deps.reclaimRunner); }
+        catch { /* @silent-fallback-ok — no report yet reads as 'no pass has finished yet' below */ }
+      }
+      return this.cachedReport(this.running || this.liveRunActive || this.deps.reclaimRunner.busy());
+    }
     if (!this.deps.evaluateAllOffThread) {
       await this.prepare();
       return { ...this.snapshot(), source: 'live' };
@@ -523,6 +876,10 @@ export class AgentWorktreeReaper extends EventEmitter {
         void this.reap(); // refresh in the background; this answer carries passRunning: true
       }
     }
+    return this.cachedReport(this.running);
+  }
+
+  private cachedReport(passRunning: boolean): ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt: number | null; source: 'last-pass'; passRunning: boolean; trash?: ReclaimTrashSummary; linkIndexFailure?: string } {
     const cached = this.lastEvaluations;
     const enumerationOk = this.lastEnumerationOk !== false && cached !== null;
     return {
@@ -537,9 +894,17 @@ export class AgentWorktreeReaper extends EventEmitter {
       enumerationError: this.lastEnumerationOk === false ? this.lastEnumerationError : cached ? null : 'no pass has finished yet',
       enumerationFailures: this.enumerationFailures,
       lastEnumerationFailureAt: this.lastEnumerationFailureAt,
+      ...summarizeReclaim(cached?.worktrees ?? [], this.lastArchiveBytes, !this.killsEnabled,
+        summarizeNodeModulesProof(cached?.worktrees ?? [], this.lastNodeModules, {
+          ...(this.deps.referenceBuilder ? { builder: this.deps.referenceBuilder.status() } : {}),
+          ...(this.lastLinkIndex ? { linkIndex: this.lastLinkIndex } : {}),
+        })),
       evaluatedAt: cached?.at ?? null,
       source: 'last-pass',
-      passRunning: this.running,
+      passRunning,
+      ...(this.lastTrash && this.killsEnabled ? { trash: this.lastTrash } : {}),
+      // An index that timed out keeps every checkout; reported apart from per-checkout verdicts (§2).
+      ...(this.lastLinkIndex && this.lastLinkIndex !== 'ok' ? { linkIndexFailure: this.lastLinkIndex } : {}),
     };
   }
 
@@ -552,7 +917,7 @@ export class AgentWorktreeReaper extends EventEmitter {
     enumerationError: string | null;
     enumerationFailures: number;
     lastEnumerationFailureAt: number | null;
-  } {
+  } & ReclaimReportSummary {
     let worktrees: WorktreeEvaluation[] = [];
     let enumerationOk = true;
     let enumerationError: string | null = null;
@@ -564,7 +929,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       const enumeration = this.deps.listWorktrees();
       if (enumeration.ok) {
         worktrees = enumeration.worktrees.map((info) => {
-          try { return this.evaluate(info); }
+          try { return this.annotate(this.evaluate(info)); }
           catch { return { path: info.path, branch: info.branch, verdict: 'keep' as Verdict, reason: 'eval-error' }; }
         });
       } else {
@@ -593,6 +958,7 @@ export class AgentWorktreeReaper extends EventEmitter {
       enumerationError,
       enumerationFailures: this.enumerationFailures,
       lastEnumerationFailureAt: this.lastEnumerationFailureAt,
+      ...summarizeReclaim(worktrees, this.measureArchive(), !this.killsEnabled),
     };
   }
 }

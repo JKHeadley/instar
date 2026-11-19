@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   assertNotInstarSourceTree,
   SourceTreeGuardError,
@@ -36,6 +37,122 @@ export interface SafeFsOptions {
    * instar source, which the guard would otherwise refuse. Never widens anything else.
    */
   localVerifyScopeOk?: { verifyRoot: string };
+  /**
+   * Opt-in: the agent worktree reaper's trash (docs/specs/reaper-removal-out-of-process.md §2).
+   * When given it is checked FIRST and decides alone — allowed only if the target
+   * qualifies, refused otherwise, never falling through to a broader rule such as
+   * the `.instar/` runtime-state carve-out. On a delete (and a rename destination)
+   * the target must be strictly inside the realpath of `trashRoot`, which must not
+   * be a symlink. A rename source is checked by `safeRenameDirSync` only.
+   */
+  worktreeTrashScope?: WorktreeTrashScope;
+}
+
+/** The narrow allowance the out-of-process worktree reclaim uses (spec reaper-removal-out-of-process §2). */
+export interface WorktreeTrashScope {
+  /** The agent's `.worktrees/` folder. */
+  worktreesDir: string;
+  /** `<worktreesDir>/.trash`: a real folder directly inside `worktreesDir`. */
+  trashRoot: string;
+  /** Rename sources this run's evaluation passed. A source not listed is refused. */
+  allowedSources?: readonly string[];
+  /**
+   * The ONE restore direction (spec reaper-node-modules-regenerable §5): the exact
+   * original path recorded in the attempt's `renaming` row. A restore destination
+   * must equal it, be a direct child of `worktreesDir` (not `.trash`) and not exist.
+   */
+  restoreTo?: string;
+}
+
+/** Thrown when a `worktreeTrashScope` call does not qualify. Nothing was touched. */
+export class WorktreeTrashScopeError extends Error {
+  readonly code = 'INSTAR_WORKTREE_TRASH_SCOPE';
+  constructor(readonly target: string, readonly operation: string, readonly reason: string) {
+    super(`Refusing ${operation} on ${target}: ${reason}`);
+    this.name = 'WorktreeTrashScopeError';
+  }
+}
+
+export type WorktreeTrashRole = 'rename-source' | 'trash' | 'restore-source' | 'restore-destination';
+
+/**
+ * Canonical form of a path that may not exist yet: the realpath of its parent
+ * folder plus its last name. A last name of `.` or `..` (or none) is refused,
+ * so the result always names a child of a real folder. A symlinked component in
+ * the parent's path resolves rather than refusing. Throws when the parent does
+ * not exist.
+ */
+export function canonicalizeLeafPath(target: string): string {
+  const raw = target.replace(/[\\/]+$/, '');
+  const last = raw.split(/[\\/]/).pop() ?? '';
+  if (last === '' || last === '.' || last === '..') throw new Error(`no usable last name in ${target}`);
+  const resolved = path.resolve(raw);
+  return path.join(fs.realpathSync(path.dirname(resolved)), path.basename(resolved));
+}
+
+/**
+ * The `worktreeTrashScope` decision, exported for tests. Returns the canonical
+ * target when it qualifies for `role`, else the refusal reason.
+ */
+export function decideWorktreeTrashScope(
+  target: string,
+  scope: WorktreeTrashScope,
+  role: WorktreeTrashRole,
+): { ok: true; canonical: string } | { ok: false; reason: string } {
+  let worktreesReal: string;
+  let trashReal: string;
+  try {
+    worktreesReal = fs.realpathSync(path.resolve(scope.worktreesDir));
+    const trashStat = fs.lstatSync(path.resolve(scope.trashRoot));
+    if (trashStat.isSymbolicLink()) return { ok: false, reason: 'the trash root is a symlink' };
+    if (!trashStat.isDirectory()) return { ok: false, reason: 'the trash root is not a folder' };
+    trashReal = fs.realpathSync(path.resolve(scope.trashRoot));
+  } catch (err) {
+    return { ok: false, reason: `the trash root or worktrees folder cannot be resolved: ${(err as Error).message}` };
+  }
+  if (path.dirname(trashReal) !== worktreesReal) return { ok: false, reason: 'the trash root is not directly inside the worktrees folder' };
+  let canonical: string;
+  try { canonical = canonicalizeLeafPath(target); }
+  catch (err) { return { ok: false, reason: `target cannot be canonicalized: ${(err as Error).message}` }; }
+  if (role === 'trash') {
+    if (!canonical.startsWith(trashReal + path.sep) || canonical.length <= trashReal.length + 1) {
+      return { ok: false, reason: 'target is not strictly inside the trash root' };
+    }
+    return { ok: true, canonical };
+  }
+  if (role === 'restore-source') {
+    if (path.dirname(canonical) !== trashReal) return { ok: false, reason: 'restore source is not a direct child of the trash root' };
+    let st: fs.Stats;
+    try { st = fs.lstatSync(canonical); }
+    catch (err) { return { ok: false, reason: `restore source cannot be read: ${(err as Error).message}` }; }
+    if (st.isSymbolicLink() || !st.isDirectory()) return { ok: false, reason: 'restore source is not a real folder' };
+    return { ok: true, canonical };
+  }
+  if (role === 'restore-destination') {
+    if (!scope.restoreTo) return { ok: false, reason: 'no recorded original path to restore to' };
+    let want: string;
+    try { want = canonicalizeLeafPath(scope.restoreTo); }
+    catch (err) { return { ok: false, reason: `recorded original path cannot be canonicalized: ${(err as Error).message}` }; }
+    if (canonical !== want) return { ok: false, reason: 'restore destination is not the recorded original path' };
+    if (path.dirname(canonical) !== worktreesReal) return { ok: false, reason: 'restore destination is not a direct child of the worktrees folder' };
+    if (canonical === trashReal) return { ok: false, reason: 'restore destination is the trash root' };
+    try { fs.lstatSync(canonical); return { ok: false, reason: 'restore destination already exists' }; }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return { ok: false, reason: `restore destination cannot be checked: ${(err as Error).message}` }; }
+    return { ok: true, canonical };
+  }
+  // rename-source
+  if (path.dirname(canonical) !== worktreesReal) return { ok: false, reason: 'rename source is not a direct child of the worktrees folder' };
+  if (canonical === trashReal) return { ok: false, reason: 'rename source is the trash root' };
+  let st: fs.Stats;
+  try { st = fs.lstatSync(canonical); }
+  catch (err) { return { ok: false, reason: `rename source cannot be read: ${(err as Error).message}` }; }
+  if (st.isSymbolicLink() || !st.isDirectory()) return { ok: false, reason: 'rename source is not a real folder' };
+  const allowed = new Set<string>();
+  for (const a of scope.allowedSources ?? []) {
+    try { allowed.add(canonicalizeLeafPath(a)); } catch { /* @silent-fallback-ok — an unresolvable allowed source allows nothing */ }
+  }
+  if (!allowed.has(canonical)) return { ok: false, reason: 'rename source did not pass this run\'s evaluation' };
+  return { ok: true, canonical };
 }
 
 export type SafeRmOptions = fs.RmOptions & SafeFsOptions;
@@ -102,7 +219,25 @@ function isUnderAgentRuntimeState(canonical: string): boolean {
   return canonical.length > idx + marker.length;
 }
 
-function guard(target: string, operation: string, fnName: string, localVerifyScopeOk?: { verifyRoot: string }): string {
+function guard(
+  target: string,
+  operation: string,
+  fnName: string,
+  localVerifyScopeOk?: { verifyRoot: string },
+  trash?: { scope: WorktreeTrashScope; role: WorktreeTrashRole },
+): string {
+  // The worktree trash scope comes FIRST and decides alone: it must never fall
+  // through to the `.instar/` runtime-state carve-out below, which allows any
+  // path containing `/.instar/` (every agent home lives under one).
+  if (trash) {
+    const verdict = decideWorktreeTrashScope(target, trash.scope, trash.role);
+    if (verdict.ok) {
+      audit(fnName, operation, verdict.canonical, 'allowed', `worktree-trash-scope:${trash.role}`);
+      return verdict.canonical;
+    }
+    audit(fnName, operation, path.resolve(target), 'denied', `worktree-trash-scope:${trash.role}: ${verdict.reason}`);
+    throw new WorktreeTrashScopeError(target, operation, verdict.reason);
+  }
   const canonical = canonicalizeTarget(target);
   if (localVerifyScopeOk && isLocalVerifyClonePath(canonical, localVerifyScopeOk.verifyRoot)) {
     audit(fnName, operation, canonical, 'allowed', 'local-verify-scope-carveout');
@@ -125,6 +260,19 @@ function guard(target: string, operation: string, fnName: string, localVerifySco
     throw err;
   }
   return canonical;
+}
+
+function trashOf(scope: WorktreeTrashScope | undefined): { scope: WorktreeTrashScope; role: WorktreeTrashRole } | undefined {
+  return scope ? { scope, role: 'trash' } : undefined;
+}
+
+/** Outcome of `safeRmTreeInSubprocess`. */
+export interface SubprocessRmResult {
+  ok: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  error?: string;
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -192,8 +340,8 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rm wrapper. */
   static async safeRm(target: string, opts: SafeRmOptions): Promise<void> {
-    const { operation, localVerifyScopeOk, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRm', localVerifyScopeOk);
+    const { operation, localVerifyScopeOk, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRm', localVerifyScopeOk, trashOf(worktreeTrashScope));
     try {
       await fsp.rm(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRm', operation, canonical, 'allowed');
@@ -218,7 +366,7 @@ export class SafeFsExecutor {
    */
   static async safeRmTreeSerial(target: string, opts: SafeFsOptions): Promise<void> {
     const { operation } = opts;
-    const canonical = guard(target, operation, 'safeRmTreeSerial');
+    const canonical = guard(target, operation, 'safeRmTreeSerial', undefined, trashOf(opts.worktreeTrashScope));
     try {
       try {
         await removeTreeSerially(target);
@@ -233,10 +381,123 @@ export class SafeFsExecutor {
     }
   }
 
+  /**
+   * Rename a worktree checkout into the reaper's trash (spec reaper-removal-out-of-process §2).
+   * Requires `worktreeTrashScope`: the source must be a real folder directly
+   * under the realpath of `worktreesDir` (not `.trash`) and in `allowedSources`;
+   * the destination must not exist, must be strictly inside the realpath of
+   * `trashRoot`, and must be on the same volume as the source (same `st_dev`), so
+   * `rename(2)` is atomic. Refuses otherwise, before touching anything.
+   */
+  static safeRenameDirSync(source: string, destination: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope }): void {
+    if (!opts.worktreeTrashScope) throw new WorktreeTrashScopeError(source, opts.operation, 'safeRenameDirSync requires worktreeTrashScope');
+    const src = guard(source, opts.operation, 'safeRenameDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'rename-source' });
+    const dest = guard(destination, opts.operation, 'safeRenameDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'trash' });
+    const refuse = (reason: string): never => {
+      audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'denied', reason);
+      throw new WorktreeTrashScopeError(source, opts.operation, reason);
+    };
+    try { fs.lstatSync(dest); refuse('the destination already exists'); }
+    catch (err) { if (err instanceof WorktreeTrashScopeError) throw err; if ((err as NodeJS.ErrnoException).code !== 'ENOENT') refuse(`the destination cannot be checked: ${(err as Error).message}`); }
+    let srcDev: number;
+    let destDev: number;
+    try { srcDev = fs.lstatSync(src).dev; destDev = fs.statSync(path.dirname(dest)).dev; }
+    catch (err) { return refuse(`volume check failed: ${(err as Error).message}`); }
+    if (srcDev !== destDev) refuse('source and destination are on different volumes');
+    try {
+      fs.renameSync(src, dest);
+      audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'allowed');
+    } catch (err) {
+      audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'denied', `rename-error: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Rename a checkout back out of the reaper's trash to the exact original path
+   * recorded in its attempt's `renaming` row (spec reaper-node-modules-regenerable §5),
+   * when the post-rename re-check finds the tree changed. Requires
+   * `worktreeTrashScope.restoreTo`. The source must be a real folder directly in the
+   * trash root; the destination must equal `restoreTo`, be a direct child of
+   * `worktreesDir` and not exist. Refuses otherwise, before touching anything.
+   */
+  static safeRestoreDirSync(trashPath: string, originalPath: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope }): void {
+    if (!opts.worktreeTrashScope?.restoreTo) throw new WorktreeTrashScopeError(trashPath, opts.operation, 'safeRestoreDirSync requires worktreeTrashScope.restoreTo');
+    const src = guard(trashPath, opts.operation, 'safeRestoreDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'restore-source' });
+    const dest = guard(originalPath, opts.operation, 'safeRestoreDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'restore-destination' });
+    let srcDev: number;
+    let destDev: number;
+    try { srcDev = fs.lstatSync(src).dev; destDev = fs.statSync(path.dirname(dest)).dev; }
+    catch (err) {
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'denied', `volume check failed: ${(err as Error).message}`);
+      throw new WorktreeTrashScopeError(trashPath, opts.operation, `volume check failed: ${(err as Error).message}`);
+    }
+    if (srcDev !== destDev) {
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'denied', 'different volumes');
+      throw new WorktreeTrashScopeError(trashPath, opts.operation, 'source and destination are on different volumes');
+    }
+    try {
+      fs.renameSync(src, dest);
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'allowed');
+    } catch (err) {
+      audit('safeRestoreDirSync', opts.operation, `${src} -> ${dest}`, 'denied', `rename-error: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Delete a folder inside the reaper's trash in its own sub-process
+   * (spec reaper-removal-out-of-process §2): `guard()` with `worktreeTrashScope`
+   * (and its audit row), then `rm -rf -- <canonical path>` with no shell. BSD and
+   * GNU `rm -r` remove a symlink as a link and never follow it; `-f` keeps an
+   * unwritable file from stopping it at a prompt. The sub-process is killed at
+   * `timeoutMs`. Records `allowed` or `denied` when it exits. Resolves (never
+   * rejects) once the process has exited; a guard refusal throws before any
+   * process starts.
+   */
+  static safeRmTreeInSubprocess(target: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope; timeoutMs: number }): Promise<SubprocessRmResult> {
+    if (!opts.worktreeTrashScope) throw new WorktreeTrashScopeError(target, opts.operation, 'safeRmTreeInSubprocess requires worktreeTrashScope');
+    const canonical = guard(target, opts.operation, 'safeRmTreeInSubprocess', undefined, { scope: opts.worktreeTrashScope, role: 'trash' });
+    return new Promise((resolve) => {
+      let timedOut = false;
+      let stderr = '';
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (r: SubprocessRmResult): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        audit('safeRmTreeInSubprocess', opts.operation, canonical, r.ok ? 'allowed' : 'denied', r.ok ? undefined : `rm-subprocess: ${r.error ?? 'failed'}`);
+        resolve(r);
+      };
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn('rm', ['-rf', '--', canonical], { stdio: ['ignore', 'ignore', 'pipe'], shell: false });
+      } catch (err) {
+        finish({ ok: false, exitCode: null, signal: null, timedOut: false, error: `spawn failed: ${(err as Error).message}` });
+        return;
+      }
+      timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok — already exited; the exit handler records the outcome */ }
+      }, Math.max(0, opts.timeoutMs));
+      timer.unref?.();
+      child.stderr?.on('data', (d: Buffer) => { if (stderr.length < 2_000) stderr += d.toString('utf8'); });
+      child.once('error', (err) => finish({ ok: false, exitCode: null, signal: null, timedOut, error: `rm failed to run: ${err.message}` }));
+      child.once('close', (code, signal) => {
+        const ok = code === 0 && !timedOut;
+        finish({
+          ok, exitCode: code, signal: signal ?? null, timedOut,
+          ...(ok ? {} : { error: timedOut ? `killed at the ${opts.timeoutMs} ms budget` : `rm exited ${code ?? signal}: ${stderr.trim().slice(0, 300)}` }),
+        });
+      });
+    });
+  }
+
   /** Sync fs.rmSync wrapper. */
   static safeRmSync(target: string, opts: SafeRmOptions): void {
-    const { operation, localVerifyScopeOk, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmSync', localVerifyScopeOk);
+    const { operation, localVerifyScopeOk, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmSync', localVerifyScopeOk, trashOf(worktreeTrashScope));
     try {
       fs.rmSync(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRmSync', operation, canonical, 'allowed');
@@ -248,7 +509,7 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.unlink wrapper. */
   static async safeUnlink(target: string, opts: SafeFsOptions): Promise<void> {
-    const canonical = guard(target, opts.operation, 'safeUnlink', opts.localVerifyScopeOk);
+    const canonical = guard(target, opts.operation, 'safeUnlink', opts.localVerifyScopeOk, trashOf(opts.worktreeTrashScope));
     try {
       await fsp.unlink(target);
       audit('safeUnlink', opts.operation, canonical, 'allowed');
@@ -260,7 +521,7 @@ export class SafeFsExecutor {
 
   /** Sync fs.unlinkSync wrapper. */
   static safeUnlinkSync(target: string, opts: SafeFsOptions): void {
-    const canonical = guard(target, opts.operation, 'safeUnlinkSync', opts.localVerifyScopeOk);
+    const canonical = guard(target, opts.operation, 'safeUnlinkSync', opts.localVerifyScopeOk, trashOf(opts.worktreeTrashScope));
     try {
       fs.unlinkSync(target);
       audit('safeUnlinkSync', opts.operation, canonical, 'allowed');
@@ -272,8 +533,8 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rmdir wrapper. */
   static async safeRmdir(target: string, opts: SafeRmDirOptions): Promise<void> {
-    const { operation, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmdir');
+    const { operation, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmdir', undefined, trashOf(worktreeTrashScope));
     try {
       await fsp.rmdir(target, rmOpts);
       audit('safeRmdir', operation, canonical, 'allowed');
@@ -285,8 +546,8 @@ export class SafeFsExecutor {
 
   /** Sync fs.rmdirSync wrapper. */
   static safeRmdirSync(target: string, opts: SafeRmDirOptions): void {
-    const { operation, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmdirSync');
+    const { operation, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmdirSync', undefined, trashOf(worktreeTrashScope));
     try {
       fs.rmdirSync(target, rmOpts);
       audit('safeRmdirSync', operation, canonical, 'allowed');

@@ -25919,9 +25919,35 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { evaluateAgentWorktreesInWorker } = await import('../monitoring/agentWorktreeEvaluationJob.js');
     const { WorktreeEnumerationFailureStore } = await import('../monitoring/WorktreeEnumerationFailureStore.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
+    const _agentWorktreeNodeModulesDir = path.join(config.stateDir, 'state', 'agent-worktree-node-modules');
     const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
       path.join(config.stateDir, 'state', 'worktree-enumeration-failures.json'),
     );
+    const { AgentWorktreeReclaimRunner } = await import('../monitoring/agentWorktreeReclaimRunner.js');
+    const _agentWorktreeReclaimRunner = new AgentWorktreeReclaimRunner({
+      stateDir: path.join(config.stateDir, 'state', 'agent-worktree-reclaim'),
+      processName: 'agentWorktreeReclaimMain',
+      mainScript: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'monitoring', 'agentWorktreeReclaimMain.js'),
+      nodePath: process.execPath,
+      agentHome: path.dirname(config.stateDir),
+      projectDir: config.projectDir,
+      worktreesDir: _agentWorktreesDir,
+      configPath: path.join(config.stateDir, 'config.json'),
+      githubMergeCheck: () => config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+      maxReaps: () => config.monitoring?.agentWorktreeReaper?.maxReapsPerPass ?? 20,
+      nodeModulesStateDir: _agentWorktreeNodeModulesDir,
+    });
+    // Reference builds for the root node_modules proof (docs/specs/reaper-node-modules-regenerable.md):
+    // one niced child per pass at most, never during a reclaim run; manifests capped at 30.
+    const { AgentWorktreeReferenceBuilder } = await import('../monitoring/agentWorktreeReferenceBuilder.js');
+    const _agentWorktreeReferenceBuilder = new AgentWorktreeReferenceBuilder({
+      refsDir: _agentWorktreeNodeModulesDir,
+      agentHome: path.dirname(config.stateDir),
+      mainScript: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'monitoring', 'agentWorktreeReferenceBuildMain.js'),
+      nodePath: process.execPath,
+    });
+    // Adopt a run that survived a restart (asynchronous; never blocks boot).
+    void _agentWorktreeReclaimRunner.recover().catch(() => undefined); // @silent-fallback-ok — an unresolved recovery is retried by the next startRun, which refuses to start while ownership is unknown
     const agentWorktreeReaper = new AgentWorktreeReaper(
       {
         ...makeAgentWorktreeReaperDeps({
@@ -25938,7 +25964,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           instarRepo: config.projectDir,
           worktreesDir: _agentWorktreesDir,
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+          nodeModulesStateDir: _agentWorktreeNodeModulesDir,
+          maxHashesPerPass: config.monitoring?.agentWorktreeReaper?.maxReapsPerPass ?? 20,
         }),
+        referenceBuilder: _agentWorktreeReferenceBuilder,
+        // Live removal runs in its own child process (docs/specs/reaper-removal-out-of-process.md):
+        // with dryRun false a pass does no git, lsof or ps here and starts at most one child.
+        reclaimRunner: _agentWorktreeReclaimRunner,
       },
       config.monitoring?.agentWorktreeReaper,
     );

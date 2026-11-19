@@ -733,7 +733,8 @@ export function acquireWorktreeCreateLock(agentHome: string): { release: () => v
 /** Keep full checkout growth bounded before git creates another source tree. */
 export function assertWorktreeCapacity(worktreesDir: string, limit = 500): void {
   const directories = fs.readdirSync(worktreesDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    // `.trash` holds the reaper's renamed-away checkouts, never a live worktree.
+    .filter((entry) => entry.isDirectory() && entry.name !== '.trash')
     .map((entry) => entry.name);
   if (directories.length >= limit) {
     throw new Error(
