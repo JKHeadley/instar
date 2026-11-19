@@ -11134,7 +11134,7 @@
           const response = await fetch('/feedback-factory/readiness-authorities', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
-            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef())),
+            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef(), proposal.proposal && proposal.proposal.modelFamily)),
           });
           const data = await response.json().catch(() => ({}));
           const note = M.resultNote(response.ok, data);
@@ -11169,7 +11169,7 @@
       };
       M.renderTriageSection(document, root, { summary, queue, proposal, execute }, {
         submitAuthority: async (action, pin) => {
-          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef()));
+          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef(), proposal && proposal.proposal && proposal.proposal.modelFamily));
           const note = M.triageResultNote(r.ok, r.data);
           if (r.ok) await loadFeedbackTriage(note);
           return note;

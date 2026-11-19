@@ -11,9 +11,12 @@ import path from 'node:path';
 import { INSTALL_DOOR_LABELS, type InstallDoor, type WizardAnswers } from '../commands/setup-wizard/state-machine.js';
 import { DOOR_NPM_PACKAGE, doorSignInArgs, redetectDoorPath, type SignedInVerdict } from './doors.js';
 
+/** One account card the app shows at the account choice (create-agent-accounts-and-always-on §A.2). Identity only. */
+export interface AccountCard { id: string; label: string; plan: string | null; borrowedFrom: string | null; isDefault: boolean }
+
 export type StepResult =
   | { kind: 'done'; updates?: Partial<WizardAnswers>; note?: string }
-  | { kind: 'awaiting-person'; instruction: string; loginPid?: number; loginStamp?: string }
+  | { kind: 'awaiting-person'; instruction: string; loginPid?: number; loginStamp?: string; accounts?: AccountCard[] }
   | { kind: 'failed'; message: string; nextStep: string };
 
 const PACKAGE_INSTALL_TIMEOUT_MS = 10 * 60_000;

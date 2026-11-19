@@ -118,7 +118,7 @@ describe('native console Conversations', () => {
     // Held on project 2: the button is disabled, and the line beside it says what is running.
     expect(all.disabled).toBe(true);
     expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
-    expect(progressLine(f.main)).toContain('Creating the effort');
+    expect(progressLine(f.main)).toContain('Creating the group');
     release();
     for (let i = 0; i < 40; i++) await flush();
     expect(server.accepted).toEqual([1, 3]); // project 3 was not held up by project 2
@@ -139,9 +139,15 @@ describe('native console Conversations', () => {
       all.click();
       await vi.advanceTimersByTimeAsync(11000);
       expect(all.disabled).toBe(true);
-      expect(progressLine(f.main)).toMatch(/^Accepting 1 of 3: Project 1\. Creating the effort… Saved here\. Waiting for Laptop to confirm\. \(\d+ s\)$/);
+      expect(progressLine(f.main)).toMatch(/^Accepting 1 of 3: Project 1\. Creating the group… Saved here\. Waiting for Laptop to confirm\. \(\d+ s\)$/);
+      // Each change waits 150 s for the other machines (ACCEPT_CHANGE_CONFIRM_WAIT_MS), so at 151 s the first
+      // project counts as still waiting and the second is running; Accept all has not stopped.
       await vi.advanceTimersByTimeAsync(140000);
-      expect(progressLine(f.main)).toBe('Stopped at 2 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
+      expect(all.disabled).toBe(true);
+      expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
+      // It stops only after three projects in a row are still waiting (ACCEPT_ALL_STOP_AFTER_WAITING).
+      await vi.advanceTimersByTimeAsync(320000);
+      expect(progressLine(f.main)).toBe('Stopped at 3 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
       expect(all.disabled).toBe(false);
       expect(all.textContent).toBe('Continue accepting projects');
       expect(server.accepted).toEqual([]);
@@ -311,9 +317,27 @@ describe('native console Conversations', () => {
     allButton(f.main).click();
     for (let i = 0; i < 60; i++) await flush();
     expect(server.accepted).toEqual([1]);
-    expect(progressLine(f.main)).toBe('Stopped at 3 of 3: your agent is not answering right now. 1 of 3 accepted. Tap Continue to try again; nothing is lost.');
+    // Two projects in a row without an answer no longer stop the run early (the stop needs three:
+    // ACCEPT_ALL_STOP_AFTER_WAITING); the run ends and says how many did not finish.
+    expect(progressLine(f.main)).toBe('1 of 3 projects accepted. 2 did not finish; their cards say why. Tap Continue to try again.');
     expect(f.main.textContent).not.toContain('no longer available');
     expect(f.main.textContent).toContain('The agent did not answer. Tap Continue to try again; nothing is lost.');
+    expect(allButton(f.main).disabled).toBe(false);
+  });
+
+  it('three projects in a row without an answer stop Accept all with plain words', async () => {
+    const silentFor = (url: string) => {
+      if (/sg-0123456789abcdef012[234]\/start$/.test(url)) return true;
+      if (!url.includes('/conversation-graph/nodes/')) return false;
+      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
+      return ref.kind === 'conversation' && ref.topicId >= 2 && ref.topicId <= 4;
+    };
+    const server = acceptServer([1, 2, 3, 4, 5], (url) => silentFor(url) ? { status: 408, body: {} } : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    allButton(f.main).click();
+    for (let i = 0; i < 80; i++) await flush();
+    expect(server.accepted).toEqual([1]); // project 5 is not tried after three in a row did not answer
+    expect(progressLine(f.main)).toBe('Stopped at 4 of 5: your agent is not answering right now. 1 of 5 accepted. Tap Continue to try again; nothing is lost.');
     expect(allButton(f.main).disabled).toBe(false);
   });
 
@@ -326,7 +350,7 @@ describe('native console Conversations', () => {
   it('clears private DOM on PIN-proof expiry without waiting for page refresh or sheet dismissal', async()=>{
     const f=await boot('#/work/conversations',url=>({body:url.includes('/pending')?{items:[]}:{...page([{...row(0),title:'PRIVATE-EXPIRY-CANARY'}]),capabilities:{ownerCorrections:true}}}));
     expect(f.main.textContent).toContain('PRIVATE-EXPIRY-CANARY');
-    const create=[...f.main.querySelectorAll('button')].find(button=>button.textContent==='Create effort')!;
+    const create=[...f.main.querySelectorAll('button')].find(button=>button.textContent==='Create group')!;
     create.click();for(let i=0;i<4;i++)await flush();
     expect(document.querySelector('[role=dialog]')).not.toBeNull();
     const before=f.requests.length,actualNow=Date.now();vi.spyOn(Date,'now').mockReturnValue(actualNow+901000);
@@ -337,23 +361,23 @@ describe('native console Conversations', () => {
 
   it.each([false,true,'true'])('keeps privacy erasure separate from unavailable ordinary correction capability (%s)',async ownerErasure=>{
     const {main,requests}=await boot('#/work/conversations?node=retained-effort',()=>({body:{partial:true,replicationState:'pending',node:row(1),children:{items:[],nextCursor:null},capabilities:{ownerCorrections:false,ownerErasure},erasure:{headerForgotten:false}}}));
-    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Forget name')).toBe(ownerErasure===true);expect([...main.querySelectorAll('button')].some(b=>['Move','Rename effort','Choose front door'].includes(b.textContent||''))).toBe(false);
+    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Forget name')).toBe(ownerErasure===true);expect([...main.querySelectorAll('button')].some(b=>['Move','Rename group','Choose front door'].includes(b.textContent||''))).toBe(false);
     if(ownerErasure===true){([...main.querySelectorAll('button')].find(b=>b.textContent==='Forget name') as HTMLButtonElement).click();expect(document.querySelector('[role=dialog]')?.textContent).toContain('Original messages stay');expect(requests.some(r=>r.method==='POST'&&r.url==='/conversation-graph/forget-header')).toBe(false);}
   });
 
   it.each([false,true])('mounts root effort creation only with actual server capability (%s)',async enabled=>{
     const {main}=await boot('#/work/conversations',()=>({body:{...page([]),capabilities:{ownerCorrections:enabled}}}));
-    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Create effort')).toBe(enabled);
+    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Create group')).toBe(enabled);
   });
   it.each(['effort','conversation'])('mounts effort controls only on an effort node (%s)',async kind=>{
     const node=kind==='effort'?row(1):{ref:{kind:'conversation',platform:'telegram',chatId:'-100123',topicId:42},title:'Worker'};
     const {main}=await boot('#/work/conversations?node=opaque-node',url=>url.endsWith('/pending')?{body:{items:[]}}:{body:{partial:false,node,children:{items:[],nextCursor:null},correction:{moveEligible:true,replacesPlacementEventIds:[],replacesFrontDoorEventIds:[],headerVersion:0}}});
-    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Rename effort')).toBe(kind==='effort');
+    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Rename group')).toBe(kind==='effort');
     expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Choose front door')).toBe(kind==='effort');
   });
   it('synchronously clears an actual mounted naming sheet when owner proof is forgotten',async()=>{
     await boot('#/work/conversations?node=opaque-node',url=>url.endsWith('/pending')?{body:{items:[]}}:{body:{partial:false,node:row(1),children:{items:[],nextCursor:null},correction:{moveEligible:true,replacesPlacementEventIds:[],replacesFrontDoorEventIds:[],headerVersion:0}}});
-    ([...document.querySelectorAll('button')].find(b=>b.textContent==='Rename effort') as HTMLButtonElement).click();for(let i=0;i<5;i++)await flush();
+    ([...document.querySelectorAll('button')].find(b=>b.textContent==='Rename group') as HTMLButtonElement).click();for(let i=0;i<5;i++)await flush();
     const input=document.querySelector('[role=dialog] input') as HTMLInputElement;input.value='private mounted draft';
     const {forgetOperatorSession}=await import('../../dashboard/console/ui.js');forgetOperatorSession();
     expect(input.value).toBe('');expect(document.querySelector('[role=dialog]')).toBeNull();expect(document.querySelector('main')?.textContent).toContain('Unlock');
@@ -487,7 +511,7 @@ describe('native console Conversations', () => {
   it('a dark or missing route is an honest unavailable state', async () => {
     const { main } = await boot('#/work/conversations', () => ({ status: 503, body: { code: 'conversation-graph-off' } }));
     expect(main.textContent).toContain('not switched on');
-    expect(main.textContent).not.toContain('No efforts');
+    expect(main.textContent).not.toContain('No groups');
   });
   it.each([200,404])('resolves a worker front door only from an authorized ancestor effort read (%s)',async(status)=>{
     const worker={kind:'conversation',platform:'telegram',chatId:'-100123',topicId:456};

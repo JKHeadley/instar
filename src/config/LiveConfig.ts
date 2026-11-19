@@ -56,6 +56,12 @@ export interface LiveConfigOptions {
 /** Path segments that name JavaScript's object machinery; never config settings (SEC-071). */
 const RESERVED_CONFIG_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 
+function hasReservedKeyDeep(value: unknown, depth = 0): boolean {
+  if (!value || typeof value !== 'object' || depth > 64) return false;
+  if (Array.isArray(value)) return value.some((v) => hasReservedKeyDeep(v, depth + 1));
+  return Object.keys(value).some((k) => RESERVED_CONFIG_SEGMENTS.has(k) || hasReservedKeyDeep((value as Record<string, unknown>)[k], depth + 1));
+}
+
 export class LiveConfig extends EventEmitter {
   private stateDir: string;
   private configPath: string;
@@ -150,6 +156,7 @@ export class LiveConfig extends EventEmitter {
     // A path through JavaScript's object machinery is never a setting (SEC-071): following it
     // writes onto every object in the process.
     if (dotPath.split('.').some((p) => RESERVED_CONFIG_SEGMENTS.has(p))) throw new Error('config-path-reserved-segment');
+    if (hasReservedKeyDeep(value)) throw new Error('config-value-reserved-key');
 
     if (dotPath === 'dashboardPinGeneration' || dotPath.startsWith('dashboardPinGeneration.')) {
       throw new Error('dashboard-pin-generation-is-managed');

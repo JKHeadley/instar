@@ -2602,6 +2602,8 @@ export interface MachineCapacity {
    *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
   seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
+    /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
+    documentsDecisionRows?: boolean;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
@@ -5289,6 +5291,13 @@ export interface InstarConfig {
      *  failure falls back to the rollout-tail reader, so `false` only forces
      *  the old rollout-only behaviour. */
     codexLiveQuota?: boolean;
+    /**
+     * Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable history of every
+     * quota reading and a read-only forecast (GET /quota-pacing). `enabled` is OMITTED from the
+     * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
+     * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
+     */
+    pacing?: { enabled?: boolean };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
@@ -6213,6 +6222,9 @@ export interface FileViewerConfig {
 
   /** Maximum file size for editing (bytes). Default: 204800 (200KB) */
   maxEditableFileSize: number;
+
+  /** Maximum file size to download (bytes), separate from the preview cap. Default: 1073741824 (1GB) */
+  maxDownloadSize?: number;
 
   /** File patterns that are NEVER served, even within allowed directories. */
   blockedFilenames: string[];

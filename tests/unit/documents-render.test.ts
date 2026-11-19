@@ -35,4 +35,19 @@ describe('render tree', () => {
     const b = renderTree('A **b** [c](https://x.y)')[0];
     expect(b.runs).toEqual([{ text: 'A ' }, { text: 'b', marks: ['strong'] }, { text: ' ' }, { text: 'c', marks: ['link'], href: 'https://x.y' }]);
   });
+  it('tags table runs with their column and the joiner, and carries the column alignment', () => {
+    const md = '| A | B |\n|:--|--:|\n| x **y** | 2 |\n|  | z |';
+    const rows = renderTree(md);
+    expect(rows.map((r) => r.kind)).toEqual(['row', 'row', 'row']);
+    expect(rows[0]).toMatchObject({ header: true, align: ['left', 'right'], runs: [{ text: 'A', cell: 0 }, { text: ' | ', sep: true }, { text: 'B', cell: 1 }] });
+    expect(rows[1].runs).toEqual([{ text: 'x ', cell: 0 }, { text: 'y', marks: ['strong'], cell: 0 }, { text: ' | ', sep: true }, { text: '2', cell: 1 }]);
+    // An empty first cell: the joiner survives whitespace collapse as its own run, and the text
+    // lands in column 1, so the page keeps the columns lined up.
+    expect(rows[2].runs).toEqual([{ text: '| ', sep: true }, { text: 'z', cell: 1 }]);
+    // Only table rows carry these fields.
+    for (const b of renderTree('# H\n\npara **b**\n\n- item')) {
+      expect(b.align).toBeUndefined();
+      for (const r of b.runs) { expect(r.cell).toBeUndefined(); expect(r.sep).toBeUndefined(); }
+    }
+  });
 });

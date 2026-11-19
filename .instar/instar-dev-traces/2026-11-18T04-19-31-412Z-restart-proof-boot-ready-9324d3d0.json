@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "restart-proof-boot-ready",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-18T04:19:31.412Z",
+  "artifactPath": "upgrades/side-effects/restart-proof-boot-ready.md",
+  "artifactSha256": "22f5acc41e26c8103108eefc3d97d38530afc8100a68006f3c26e2c902d470bd",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/machineMaintenance/PostRestartProof.ts",
+    "tests/e2e/machine-maintenance-lifecycle.test.ts",
+    "tests/e2e/machine-wedge-lifecycle.test.ts",
+    "tests/unit/machine-restart-proof.test.ts",
+    "upgrades/side-effects/restart-proof-boot-ready.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "wedge alive test asserts dry-run never resumes, independent of host state"
+    }
+  }
+}

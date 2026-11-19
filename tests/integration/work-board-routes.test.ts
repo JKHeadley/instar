@@ -39,7 +39,9 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/work-board-routes.test.ts' });
 });
 
-const CARD = { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false };
+// An agent card through the route carries a recommendation and why it needs the person (work-board-cards-appear §2).
+const ASK = { recommendation: 'Venue A: closest to everyone.', whyYou: 'Only you know who is coming.' };
+const CARD = { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false, ...ASK };
 
 function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | null; specApprovalJudge?: WorkBoardRouteDeps['specApprovalJudge'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-board-int-'));
@@ -185,6 +187,9 @@ describe('phone taps (Face ID over the exact action line)', () => {
     expect(o.status, JSON.stringify(o.body)).toBe(200);
     expect(o.body.lanes[0].cards.map((x: { id: string }) => x.id)).toEqual([card.id]);
     expect(o.body.viewer.canTap).toBe(true);
+    // My board (work-board-my-board.md): the agent's new card waits for the owner's approval, listed once.
+    expect(o.body.myBoard.sections.find((s: { reason: string }) => s.reason === 'approval').cardIds).toEqual([card.id]);
+    expect(o.body.myBoard.sections.flatMap((s: { cardIds: string[] }) => s.cardIds)).toEqual([card.id]);
     // A phone of a person who is not the owner goes through the same shared conversation check per
     // card (both sides of that check are covered below with a controlled answer).
     const m = await send(c.app, helper, 'GET', '/mobile/work-board');
@@ -193,6 +198,9 @@ describe('phone taps (Face ID over the exact action line)', () => {
     expect(m.body.pickups).toBeUndefined();
     expect(m.body.settings).toBeUndefined();
     for (const x of m.body.lanes.flatMap((l: { cards: Array<Record<string, unknown>> }) => l.cards)) { expect(x.source).toBeUndefined(); expect(x.projectKey).toBeUndefined(); }
+    // Their My board names only cards their own lanes carry: what they may not see is not counted or named.
+    const seen = new Set(m.body.lanes.flatMap((l: { cards: Array<{ id: string }> }) => l.cards.map((x) => x.id)));
+    for (const sec of m.body.myBoard.sections) { for (const id of sec.cardIds) expect(seen.has(id)).toBe(true); expect(sec.more).toBeUndefined(); }
   });
 });
 
@@ -293,7 +301,7 @@ describe('visibility follows the card\'s conversation', () => {
 });
 
 describe('B25: an agent card asking approval of a spec or design needs its constitution check (Echo Bugs topic 10000002750)', () => {
-  const SPEC_CARD = { title: 'Approve the Work Board phase 2 design', need: 'The design spec is ready; approve it so I can build it.', doneWhen: [{ id: 'd1', text: 'Approved' }], outward: false };
+  const SPEC_CARD = { title: 'Approve the Work Board phase 2 design', need: 'The design spec is ready; approve it so I can build it.', doneWhen: [{ id: 'd1', text: 'Approved' }], outward: false, ...ASK };
   const fireOn = (needle: string) => async (text: string) => (text.includes(needle)
     ? { hold: true, issue: 'asks approval of a design with no constitution check result', suggestion: 'run the check and add one line with its result' }
     : { hold: false });
@@ -340,5 +348,46 @@ describe('B25: an agent card asking approval of a spec or design needs its const
   it('an agent with no LLM provider at all is not refused every card write', async () => {
     const c = setup({ specApprovalJudge: async () => ({ hold: false, noProvider: true }) });
     expect((await request(c.app).post('/work-board/cards').set(bearer()).send(SPEC_CARD)).status).toBe(201);
+  });
+});
+
+describe('Work Board routes — cards appear (docs/specs/work-board-cards-appear.md §2, §3)', () => {
+  it('an agent card without a recommendation or why-you is refused, naming the field; a person\'s is not', async () => {
+    const c = setup();
+    const noRec = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...CARD, recommendation: undefined });
+    expect(noRec.status).toBe(400); expect(noRec.body.error).toBe('recommendation-required');
+    const noWhy = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...CARD, whyYou: '' });
+    expect(noWhy.status).toBe(400); expect(noWhy.body.error).toBe('why-you-required');
+    const person = await request(c.app).post('/work-board/cards').set(bearer()).send({ title: 'Mine', need: 'x', doneWhen: [{ id: 'd1', text: 'y' }], outward: false, pin: PIN });
+    expect(person.status).toBe(201);
+  });
+  it('the card read carries whyYou and covers; a card may cover a plan or a pull request, never a password or a health row', async () => {
+    const c = setup();
+    const ok = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...CARD, covers: ['pr:3361'] });
+    expect(ok.status).toBe(201);
+    expect(ok.body.card.whyYou).toBe(ASK.whyYou);
+    expect(ok.body.card.covers).toEqual(['pr:3361']);
+    for (const k of ['secret:0', 'health:x', 'cos:waiting:telegram:1']) {
+      const bad = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...CARD, covers: [k] });
+      expect(bad.status, k).toBe(400); expect(bad.body.error).toBe('covers-not-allowed');
+    }
+  });
+  it('an owner-carried, inward agent card needs no Approve and sits in Waiting on you', async () => {
+    const c = setup();
+    const r = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...CARD, carrier: 'owner' });
+    expect(r.status).toBe(201);
+    expect(r.body.card.approvalRequired).toBe(false);
+    expect(r.body.card.lane).toBe('waiting-on-you');
+  });
+  it('a route write to a Chief of Staff wait card is refused; the owner\'s tap still works', async () => {
+    const c = setup();
+    const made = c.svc.createCard({ kind: 'agent', server: true }, { title: 'P is waiting on you', need: 'n', doneWhen: [{ id: 'wait-cleared', text: 'cleared', certify: 'agent-may-certify' }], carrier: 'owner', outward: false, covers: ['cos:waiting:telegram:1'], recommendation: 'r', whyYou: 'w' }, { cardId: 'wc_00000000000000cc' });
+    expect(made.ok).toBe(true);
+    const edit = await request(c.app).post('/work-board/cards/wc_00000000000000cc/records').set(bearer()).send({ kind: 'edited', need: 'changed' });
+    expect(edit.status).toBe(409); expect(edit.body.error).toBe('server-owned-card');
+    const claim = await request(c.app).post('/work-board/cards/wc_00000000000000cc/records').set(bearer()).send({ kind: 'claimed-done' });
+    expect(claim.status).toBe(409);
+    const hold = await request(c.app).post('/work-board/cards/wc_00000000000000cc/tap').set(bearer()).send({ action: 'hold', pin: PIN });
+    expect(hold.status).toBe(200);
   });
 });

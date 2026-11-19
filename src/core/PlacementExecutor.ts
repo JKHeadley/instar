@@ -10,7 +10,7 @@
 import type { MachineCapacity } from './types.js';
 import { LOAD_REPORT_MAX_AGE_MS } from './machineLoadReport.js';
 import { machineServesChannel } from './machineServesChannel.js';
-import { effectivePending, heavyFit, placementLoad, type WorkWeight } from './machineResourceProfile.js';
+import { effectivePending, heavyFit, placementLoad, PENDING_HEAVY_PER_CORE, type WorkWeight } from './machineResourceProfile.js';
 
 /** Per-topic placement metadata (persisted with the topic; §L4). */
 export interface TopicPlacement {
@@ -149,6 +149,14 @@ export interface PlacementExecutorSeams {
    * report catches up). Absent ⇒ 0.
    */
   pendingHeavy?: (machineId: string) => number;
+  /**
+   * agent-sessions-placed-by-load §1b: extra per-core load this process has already
+   * sent a machine through the agent-session route (standard/light helpers), read ONLY
+   * by score() so successive placements spread instead of filling one peer. Never
+   * folded into pending(), so heavy fit and conversation placement do not see it.
+   * Absent ⇒ 0.
+   */
+  extraLoadPerCore?: (machineId: string) => number;
 }
 
 /**
@@ -195,7 +203,12 @@ export class PlacementExecutor {
     // Resource-aware placement §2: per-core load at an 8-core reference scale where
     // measurable; unmeasured machines are ranked after measured ones (measuredFirst),
     // so the 0 here only orders a pool where nothing is measured.
-    const load = placementLoad(m, this.pending(m)) ?? 0;
+    let extra = 0;
+    try {
+      const n = this.seams.extraLoadPerCore?.(m.machineId) ?? 0;
+      extra = typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+    } catch { extra = 0; /* @silent-fallback-ok — a broken seam reads as no extra load; fresh load still ranks */ }
+    const load = placementLoad(m, this.pending(m) + extra / PENDING_HEAVY_PER_CORE) ?? 0;
     const ratio = m.maxSessions && m.maxSessions > 0 ? (m.activeSessionCount ?? 0) / m.maxSessions : 0;
     const mem = MEM_PRESSURE_NUM[m.memPressure ?? 'low'] ?? 0;
     return w.loadAvg * load + w.activeSessionRatio * ratio + w.memPressure * mem;

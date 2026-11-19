@@ -37,6 +37,7 @@ describe('CommitmentTracker — config-watch conflicts', () => {
       const liveConfig = new LiveConfig(stateDir);
       const onViolation = vi.fn();
       const tracker = new CommitmentTracker({ stateDir, liveConfig, onViolation });
+      tracker.setConfigWriteGuard(() => null); // correction mechanics under test (authority: SEC-075 tests)
 
       const a = tracker.record({
         type: 'config-change', topicId: 95267, source: 'sentinel',
@@ -76,6 +77,7 @@ describe('CommitmentTracker — config-watch conflicts', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);
       const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      tracker.setConfigWriteGuard(() => null); // correction mechanics under test (authority: SEC-075 tests)
       const c = tracker.record({
         type: 'config-change', userRequest: 'Turn off auto-updates', agentResponse: 'Done',
         configPath: 'updates.autoApply', configExpectedValue: false,
@@ -91,6 +93,7 @@ describe('CommitmentTracker — config-watch conflicts', () => {
       const liveConfig = new LiveConfig(stateDir);
       const onViolation = vi.fn();
       const tracker = new CommitmentTracker({ stateDir, liveConfig, onViolation });
+      tracker.setConfigWriteGuard(() => null); // correction mechanics under test (authority: SEC-075 tests)
       const withdrawn = vi.fn();
       tracker.on('withdrawn', withdrawn);
 
@@ -119,6 +122,7 @@ describe('CommitmentTracker — config-watch conflicts', () => {
     it('a second watch expecting the SAME value leaves the first alone', () => {
       const liveConfig = new LiveConfig(stateDir);
       const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      tracker.setConfigWriteGuard(() => null); // correction mechanics under test (authority: SEC-075 tests)
       const first = tracker.record({
         type: 'config-change', userRequest: 'Turn off auto-updates', agentResponse: 'Done',
         configPath: 'updates.autoApply', configExpectedValue: false,
@@ -140,6 +144,7 @@ describe('CommitmentTracker — config-watch conflicts', () => {
       const tracker = new CommitmentTracker({
         stateDir, liveConfig, onViolation, onEscalation, escalationThreshold: 3,
       });
+      tracker.setConfigWriteGuard(() => null); // correction mechanics under test (authority: SEC-075 tests)
       const c = tracker.record({
         type: 'config-change', userRequest: 'Turn off auto-updates', agentResponse: 'Done',
         configPath: 'updates.autoApply', configExpectedValue: false,

@@ -86,6 +86,27 @@ describe('buildMachineCarePage', () => {
   });
 });
 
+describe('older servers: offer only what the server can do', () => {
+  // The watch-only server (before Part F, e.g. caf469876) sends no controls, enrolment or restartNow
+  // and has none of those routes. Absent controls must not read as "not skipped".
+  const { controls: _c, restartNow: _r, ...watchOnly } = base;
+
+  it('a watch-only answer offers no button at all', () => {
+    const r = buildMachineCarePage({ ok: true, data: { enabled: true } }, { now: NOW });
+    expect(r.ok && r.rows[0].controls).toEqual({ signUp: false, skip: false, unskip: false, window: false, restartNow: false, off: false });
+    expect(careRow(watchOnly, { self: true, now: NOW }).controls).toEqual({ signUp: false, skip: false, unskip: false, window: false, restartNow: false, off: false });
+  });
+
+  it('an enrolment-era answer offers sign-up and Off, but not skip, hours or Restart now', () => {
+    expect(careRow({ ...watchOnly, enrolment: notEnrolled }, { self: true, now: NOW }).controls).toMatchObject({ signUp: true, skip: false, window: false, restartNow: false });
+    expect(careRow({ ...watchOnly, enrolment: enrolled }, { self: true, now: NOW }).controls).toMatchObject({ off: true, skip: false, window: false, restartNow: false });
+  });
+
+  it('a route the server does not have answers in plain words', () => {
+    expect(controlAnswer('off', { ok: false, status: 404, data: {} }).message).toMatch(/older version/);
+  });
+});
+
 describe('controlAnswer', () => {
   it('turns every server answer into plain words', () => {
     expect(controlAnswer('skip', { ok: false, status: 401, data: {} }).message).toContain('PIN');
