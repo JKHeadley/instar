@@ -16,7 +16,7 @@ Every change to Instar is tested on our own computers before it can be merged. T
 
 ## What this adds
 
-One rule at the door. When a change asks for a place, and another change has been waiting more than 90 minutes and has waited longer than it, the newcomer waits, with or without the label. The free place stays for the older one, which takes it the next time it asks (within about 10 minutes). Among changes that have waited more than 90 minutes, it is simply first come, first served.
+One rule at the door. When a change asks for a place, and another change has been waiting more than 90 minutes and has waited longer than it, the newcomer waits, with or without the label. The free place stays for the older one, which takes it the next time it asks (normally within about 10 minutes). If there are more free places than old waiters, the newcomer can have one of the spare ones. Among changes that have waited more than 90 minutes, it is simply first come, first served.
 
 The label still helps: it puts a change ahead of ordinary changes that have waited less than 90 minutes, and it opens the 5 extra places. It no longer lets a change jump ahead of one that has waited longer.
 
@@ -24,7 +24,7 @@ A second, small thing for the person running the line: when several changes are 
 
 ## The safeguards
 
-**No machine waits for a kept place.** A place in the line is not a test machine: while one place is kept for up to 10 minutes, the machines go on with the changes already in line.
+**No machine waits for a kept place.** A place in the line is not a test machine: while a place is kept, the machines go on with the changes already in line, and if a machine would have nothing to do, nothing is kept and the newcomer is let in.
 
 **A change nobody is asking about any more keeps nothing.** After 30 minutes without asking, its place is free for others.
 
@@ -38,4 +38,4 @@ Labelled changes wait longer while there is a backlog of old waiters. That is th
 
 ## What ships when
 
-One small change, after review. Then seven days of counting: how old the oldest waiting change gets (26 hours when measured; the aim is under 6), and whether as many changes are merged per day as before.
+One small change, after review. Before it is switched on, the line records for each change let in whether an older one was passed over, so the picture above is checked first. Then seven days of counting with it on: no change let in ahead of an older waiter, as many changes merged per day as before, and how old the oldest waiting change gets (26 hours when measured).
