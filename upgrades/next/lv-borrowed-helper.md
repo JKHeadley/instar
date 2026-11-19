@@ -23,7 +23,7 @@ New state files: `state/local-verify/borrowed-helpers.json` (run machine: breake
 ## What to Tell Your User
 
 - **Borrowed machines, practice only**: "There is now a way for a machine you lend, like your laptop or the old Windows PC, to practise running the quick tests for the test line. It is off unless you say yes on that machine, it only ever runs code that is already merged, it runs inside a sealed-off little Linux system that cannot see your files, and it backs off whenever you are busy, short of memory or on battery. Nothing it reports counts toward any change yet; after about 20 practice runs I can show you how fast and how reliable it was."
-- **Your controls**: "You can pause it any time from the dashboard or with `instar helper pause`, and `instar helper uninstall --yes` removes it completely."
+- **Your controls**: "You can pause it any time from the dashboard, or just ask me to pause it, and I can remove it completely whenever you want."
 
 ## Summary of New Capabilities
 
