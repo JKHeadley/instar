@@ -7,6 +7,7 @@
  * description puts the state label first and is cut to GitHub's 140-char limit.
  */
 
+import { validFirstPartEvidence, type FirstPartEvidence } from './firstPartReport.js';
 import type { LaneTotals } from './laneReport.js';
 import { isBoundedFailedFileSet } from './failedFileDiagnosis.js';
 import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
@@ -91,6 +92,7 @@ export interface LocalVerifyRecord {
   attempt?: PeerAttemptRef;
   /** Diagnostic or early-red preflight evidence, validated before journal/peer import. */
   preflight?: PreflightEvidence;
+  firstPart?: FirstPartEvidence;
 }
 
 export interface PeerAttemptRef {
@@ -248,6 +250,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   if (!isIso(x.finishedAt)) errors.push('finishedAt');
   if (isIso(x.startedAt) && isIso(x.finishedAt) && Date.parse(x.finishedAt) < Date.parse(x.startedAt)) errors.push('finishedAt<startedAt');
   if (x.outcome !== 'success' && x.outcome !== 'failure' && x.outcome !== 'error') errors.push('outcome');
+  if (x.firstPart !== undefined && (x.kind === 'main' || !validFirstPartEvidence(x.firstPart))) errors.push('firstPart');
   if (x.errorStep !== undefined && typeof x.errorStep !== 'string') errors.push('errorStep');
   for (const k of ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'] as const) {
     if (typeof x[k] !== 'boolean') errors.push(k);

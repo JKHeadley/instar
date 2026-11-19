@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "origin-omitted-reenroll",
+  "sessionId": "c7112b10-9f6c-4be5-9d69-4bf21b1f430c",
+  "timestamp": "2026-11-18T13:27:19.192Z",
+  "artifactPath": "upgrades/side-effects/origin-omitted-reenroll.md",
+  "artifactSha256": "8ef8a7fd11636f71296587824ac89a9b5bd151d9b612f58f20ae639922e29501",
+  "coveredFiles": [
+    "docs/specs/origin-omitted-reenroll.eli16.md",
+    "src/core/SessionManager.ts",
+    "tests/unit/telegram-origin/session-manager-origin-lifecycle.test.ts",
+    "upgrades/next/origin-omitted-reenroll.md",
+    "upgrades/side-effects/origin-omitted-reenroll.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Restart re-enrollment skips credential-stripped sessions (marker plus blank agent token) and revokes any held origin token; one decision point, fails closed on tmux errors, reversible by revert, no stored data; independently reviewed.",
+  "eli16Path": "docs/specs/origin-omitted-reenroll.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-omitted-reenroll.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

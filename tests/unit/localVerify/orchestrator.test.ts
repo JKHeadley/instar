@@ -13,7 +13,7 @@ import os from 'node:os';
 
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   runVerify, verifyPaths, splitScript, parseNameStatus, bareConfigTemplate,
@@ -1677,7 +1677,7 @@ describe('runVerify — first parts on the shared fake (spec local-verify-likely
       const r = await runVerify(input(v), f.seams);
       expect(vitestArgs(f)).toEqual(vitestArgs(plain));
       if (r.kind !== 'record' || base.kind !== 'record') throw new Error('expected records');
-      expect(r.record).toEqual(base.record);
+      expect(r.record).toEqual({ ...base.record, firstPart: { setting: 'alternate', group: 'without', ran: false } });
       expect(r.reasons).toEqual(base.reasons);
     }
     const mainPlain = fake({ laneFiles: { unit: UNIT } });
@@ -1703,4 +1703,44 @@ describe('runVerify — first parts on the shared fake (spec local-verify-likely
     const steps = f.logs.filter((l) => l.event === 'step').map((l) => l.step);
     expect(steps).toEqual(expect.arrayContaining(['unit-first', 'unit']));
   });
+});
+
+
+it.each(['collection', 'assembly', 'invalid field', 'inconsistent field', 'throwing field', 'logging'])('evidence failure during %s cannot change completion', async (fault) => {
+  const opts = { laneFiles: { unit: { 'tests/unit/a.test.ts': ['failed'] } } };
+  const baseline = await runVerify(input(), fake(opts).seams);
+  const f = fake(opts); const inp = input();
+  let restore = () => {};
+  if (fault === 'collection' || fault === 'logging') {
+    if (fault === 'logging') {
+      const log = f.seams.log;
+      f.seams.log = (e) => { if (e.event === 'first-part-evidence-incomplete') throw new Error('audit unavailable'); log(e); };
+    }
+    const set = Map.prototype.set;
+    const spy = vi.spyOn(Map.prototype, 'set').mockImplementation(function(this: Map<any, any>, key, value) {
+      if (value?.result === 'failed') throw new Error('collection unavailable');
+      return set.call(this, key, value);
+    }); restore = () => spy.mockRestore();
+  } else if (fault === 'assembly') {
+    const values = Map.prototype.values;
+    const spy = vi.spyOn(Map.prototype, 'values').mockImplementation(function(this: Map<any, any>) {
+      if ([...values.call(this)].some((v) => v?.result === 'failed')) throw new Error('assembly unavailable');
+      return values.call(this);
+    }); restore = () => spy.mockRestore();
+  } else if (fault === 'invalid field') inp.firstPartEvidence = { setting: 'bad', group: 'with', ran: false } as any;
+  else if (fault === 'inconsistent field') {
+    inp.firstPartEvidence = { setting: 'off', group: 'with', ran: false };
+    inp.likelyFailingFirst = { setting: 'on', list: ['tests/unit/a.test.ts'], previous: [] };
+  }
+  else Object.defineProperty(inp, 'firstPartEvidence', { get: () => { throw new Error('unreadable evidence'); } });
+  try {
+    const result = await runVerify(inp, f.seams);
+    expect(result.kind).toBe('record'); expect(baseline.kind).toBe('record');
+    if (result.kind !== 'record' || baseline.kind !== 'record') return;
+    expect(result.record.outcome).toBe(baseline.record.outcome);
+    expect(result.record.lanes).toEqual(baseline.record.lanes);
+    expect(result.observation?.incomplete).toBe(true);
+    if (fault !== 'logging') expect(f.logs.some((e) => e.event === 'first-part-evidence-incomplete')).toBe(true);
+    if (fault.includes('field')) expect(result.record.firstPart).toBeUndefined();
+  } finally { restore(); }
 });

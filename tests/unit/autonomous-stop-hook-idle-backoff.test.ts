@@ -205,11 +205,13 @@ describe('IDLE_BACKOFF — tiered sleep engages', () => {
   it('MAX_SLEEP clamps the tier', () => {
     const now = Math.floor(Date.now() / 1000);
     writeSidecar({ lastResumedAt: now, quickStops: 10 }); // T3 territory (4s)
-    const r = runHook({ INSTAR_HOOK_BACKOFF_MAX_SLEEP: '1' });
+    const r = runHookWithSleepProbe({ INSTAR_HOOK_BACKOFF_MAX_SLEEP: '1' });
     expect(r.decision).toBe('block');
-    // Clamped to 1s, not the 4s tier. The bound separates the two, with room for a loaded machine:
-    // 2500 failed at 2501 ms under a full verify run on a host at load 35 (2026-11-18, PR 3316).
-    expect(r.elapsedMs).toBeLessThan(3500);
+    // Clamped to 1s, not the 4s tier: the hook asked for exactly one 1-second sleep. This reads
+    // the sleep the hook requested instead of the wall time of the whole hook run, which includes
+    // bash, jq and python start-up and reached 4.4-5.1 s on a loaded host with the clamp working
+    // (2026-11-14..17: "expected 4419/4669/5059 to be less than 2500").
+    expect(r.sleepCalls).toEqual(['1']);
     expect(readSidecar().lastSleepSecs).toBe(1);
   });
 
@@ -228,13 +230,30 @@ describe('IDLE_BACKOFF — early breaks (responsiveness + safety)', () => {
   it('a new inbound message for the topic breaks the sleep early', async () => {
     fs.mkdirSync(path.join(tmp, '.instar', 'telegram-inbound'), { recursive: true });
     const now = Math.floor(Date.now() / 1000);
-    writeSidecar({ lastResumedAt: now, quickStops: 12 }); // T3 = 4s
-    const pending = runHookAsync();
-    await new Promise((res) => setTimeout(res, 1200));
+    writeSidecar({ lastResumedAt: now, quickStops: 12 }); // T3
+    // Wait for the actual sleep, as the two cases below do, then count the 1-second sleeps the
+    // hook asked for. The old form wrote the message after a fixed 1.2 s and bounded the wall time
+    // of the whole hook run at 3.8 s; on a loaded host the hook's own start-up took longer than
+    // that (2026-11-16..18: "expected 5689/5797/8304 to be less than 3800") with the early break
+    // working. T3 is 8 one-second polls here, so "broke early" is "fewer than 8 sleeps".
+    const bin = path.join(tmp, 'bin');
+    const marker = path.join(tmp, 'backoff-sleep-started');
+    const calls = path.join(tmp, 'sleep-calls');
+    fs.mkdirSync(bin);
+    const sleep = path.join(bin, 'sleep');
+    fs.writeFileSync(sleep, `#!/bin/sh\nprintf "%s\\n" "$*" >> "$INSTAR_TEST_SLEEP_CALLS"\n: > "$INSTAR_BACKOFF_SLEEP_MARKER"\nexec /bin/sleep "$@"\n`, { mode: 0o755 });
+    const pending = runHookAsync({ INSTAR_HOOK_BACKOFF_T3: '8', INSTAR_BACKOFF_SLEEP_MARKER: marker, INSTAR_TEST_SLEEP_CALLS: calls, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` });
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    expect(fs.existsSync(marker)).toBe(true);
     fs.writeFileSync(path.join(tmp, '.instar', 'telegram-inbound', `msg-${TOPIC}-999-test.txt`), 'hi');
     const r = await pending;
     expect(r.exitCode).toBe(0);
-    expect(r.elapsedMs).toBeLessThan(3800); // broke before the full 4s sleep
+    const sleepCalls = fs.readFileSync(calls, 'utf8').trim().split('\n');
+    expect(sleepCalls.every((c) => c === '1')).toBe(true); // 1-second polls
+    expect(sleepCalls.length).toBeLessThan(8); // broke before the full 8s sleep
   });
 
   it('the emergency-stop flag appearing mid-sleep exits 0 and clears state', async () => {
