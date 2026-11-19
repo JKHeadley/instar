@@ -2176,6 +2176,26 @@
       }
     },
     {
+      "category": "local-verify-likely-failing",
+      "description": "local-verify first parts (docs/specs/local-verify-likely-failing-first.md): the likely-failing list (per test file, the pull request number and time of each verify that failed finally on it in the last 7 days; built by the coordinator from every verify of a change it records, its own or a peer's, and sent to a peer with each hand-off), the coordinator's one-time assignment of each pull request to the trial's with or without group, this run machine's count of comparison runs (and whether a difference switched the setting off here), and the marker naming a running comparison's process group. Ordering only: the list decides which files run first, never whether a file runs or what a verify's verdict is; lost or unreadable means an empty list. Machine-local by the approved Local Verify capacity spec's ratified lease-holder-local queue and run-machine state (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17): a new coordinator starts with its own list and rebuilds it.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/likely-failing.json",
+        "state/local-verify/first-part-groups.json",
+        "state/local-verify/first-part-trial.json",
+        "state/local-verify/first-part-compare-inflight.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 5502,
+        "note": "At most 500 listed files with at most 40 entries each (one per pull request, its latest failure) inside a 7-day window (the file is read only when at most 1 MB), at most 5000 pull request assignments (oldest dropped), one counts record and one comparison marker; each rewritten whole and replaced."
+      }
+    },
+    {
       "category": "local-verify-peer-trust",
       "description": "local-verify peer trust (SEC-113, docs/specs/local-verify-peer-result-trust.md): the lease-holder's local anchor (its own last main green), the clock peers cannot move, heads it verified itself, which peer called which head green, the peers kept off main after a same-head disagreement, at most one arbitration marker, its last ten main durations, and the holding record that binds all of it to unbroken holding by this machine. Machine-local by the parent Local Verify capacity spec's ratified lease-holder-local queue and peer state (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17); reset on any break in holding.",
       "scope": "machine-local",

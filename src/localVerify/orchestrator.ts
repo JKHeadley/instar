@@ -16,6 +16,7 @@
  * waiting in place before lane 2/3, returns `requeue` — never an attempt.
  */
 
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
 import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
@@ -37,6 +38,8 @@ import { IMPORT_RELATED_RERUN, LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LO
 export type { FlakyOnMainFile, FlakyOnMainTest, ImportRelatedRefusal } from './laneReport.js';
 import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
 import type { LeftoverPrefix, ReapOptions, ReapResult } from './leftoverReaper.js';
+import { firstPartActive, selectFirstPart, type FirstPartInput, type FirstPartLaneSummary, type FirstPartSelection, type FirstPartSummary } from './firstPart.js';
+import type { FileOutcome } from './firstPartTrial.js';
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
@@ -211,6 +214,20 @@ export interface VerifyRunInput {
    */
   laneShards?: { integration?: number; e2e?: number; unitWorkers?: number };
   extraHarnessGlobs?: readonly string[];
+  /**
+   * PR verifies only (spec local-verify-likely-failing-first.md): this machine's setting is `on`
+   * or `alternate`, with the coordinator's assignment of the pull request, the change's previous
+   * failures and the likely-failing list in use. Absent ⇒ the setting is off here and the verify
+   * runs exactly as it did before first parts existed. `main` verifies ignore it.
+   */
+  likelyFailingFirst?: FirstPartInput;
+  /** Return what every reported file did (`fileOutcomes`): asked for only around the verdict check. */
+  collectFileOutcomes?: boolean;
+  /**
+   * `compare`: the verdict check's comparison run. It gets its own fresh checkout and report
+   * folder (so the verify it follows keeps its kept worktree), and never keeps a failed worktree.
+   */
+  variant?: 'compare';
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
   deadlines?: LocalVerifyDeadlines;
@@ -273,6 +290,10 @@ export type VerifyRunResult = (
      * the record names (the same names, nothing more). The service stores it with the evidence.
      */
     flakyTestLines?: Record<string, Array<{ test: string; line: string; lineCut?: true }>>;
+    /** Present when the run input carried `likelyFailingFirst`: the assignment, the setting, and each lane's first part as numbers. */
+    firstPart?: FirstPartSummary;
+    /** Present when asked for (`collectFileOutcomes`) and the lanes were evaluated: what every reported file did. */
+    fileOutcomes?: Record<string, FileOutcome>;
   }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] }
@@ -292,9 +313,11 @@ export interface VerifyPaths {
   durationsPath: string;
 }
 
-export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
+export function verifyPaths(agentHome: string, headSha: string, variant?: 'compare'): VerifyPaths {
   const verifyRoot = path.join(agentHome, '.worktrees', '.verify');
-  const sha12 = headSha.slice(0, 12);
+  // The comparison run's folders have their own 12-hex name, so the orphan sweep still knows them
+  // and they never collide with the verify they follow (same head, same merge commit).
+  const sha12 = variant === 'compare' ? crypto.createHash('sha256').update(`compare:${headSha}`).digest('hex').slice(0, 12) : headSha.slice(0, 12);
   return {
     verifyRoot,
     bare: path.join(verifyRoot, 'repo.git'),
@@ -375,8 +398,17 @@ class Requeue extends Error {
 
 export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams): Promise<VerifyRunResult> {
   const d = input.deadlines ?? LOCAL_VERIFY_DEADLINES;
-  const p = verifyPaths(input.agentHome, input.headSha);
+  const p = verifyPaths(input.agentHome, input.headSha, input.variant);
   const startedAtMs = seams.now();
+  // Written at the start, so a set-up failure and a verify with empty first parts stay in their group.
+  const firstPartInput = input.kind === 'main' ? undefined : input.likelyFailingFirst;
+  const firstPartOn = firstPartActive(firstPartInput, input.kind);
+  const firstParts = new Map<LaneName, FirstPartSelection>();
+  const firstPartNotes = new Map<LaneName, FirstPartLaneSummary>();
+  if (firstPartInput) seams.log({ event: 'first-part-setting', pr: input.pr, setting: firstPartInput.setting, group: firstPartInput.group ?? null, active: firstPartOn });
+  /** Failed files whose re-run alone was cut off by another lane's failure (never shown to fail again). */
+  const rerunCutOff = new Set<string>();
+  let fileOutcomes: Record<string, FileOutcome> | null = null;
   const overlaps: Overlap[] = [];
   const ourPids = new Set<number>();
   const laneRuns: LaneRunInput[] = [];
@@ -612,6 +644,20 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       else if (size !== null) seams.log({ event: 'durations-ignored', bytes: size });
     } catch { durations = {}; }
     const observed: FileDurations = {};
+    // The first parts (PR verifies with the setting on for this pull request): chosen once, before
+    // any lane starts, from the changed paths, the change's previous failures and the list.
+    if (firstPartOn && firstPartInput) {
+      for (const lane of LANES) {
+        const sel = selectFirstPart({
+          lane: lane.name, laneFiles: inventory.byLane[lane.name] ?? [], changed: changedForIsolation,
+          previous: firstPartInput.previous, list: firstPartInput.list, durations,
+        });
+        firstPartNotes.set(lane.name, { lane: lane.name, files: sel.files.length, fromChange: sel.fromChange, fromPrevious: sel.fromPrevious, fromList: sel.fromList, partners: sel.partners, ms: null, endedHere: false });
+        // An empty first part is skipped: the lane starts as it does without this feature.
+        if (sel.files.length > 0) firstParts.set(lane.name, sel);
+        seams.log({ event: 'first-part-plan', lane: lane.name, files: sel.files, fromChange: sel.fromChange, fromPrevious: sel.fromPrevious, fromList: sel.fromList, partners: sel.partners, recordedMs: sel.ms });
+      }
+    }
     try {
       const settled = await Promise.allSettled(LANES.map((lane) => runLane(lane)));
       const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
@@ -628,7 +674,22 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     async function runLane(lane: (typeof LANES)[number]): Promise<LaneRunInput> {
       const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
         : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
-      const plan = shards > 1 ? planShards(inventory.byLane[lane.name] ?? [], shards, durations) : null;
+      const laneFiles = inventory.byLane[lane.name] ?? [];
+      // The rest of the lane (spec local-verify-likely-failing-first.md D): every file that is not
+      // in the first part. Without a first part it is the whole lane, planned exactly as before.
+      const first = firstParts.get(lane.name) ?? null;
+      const firstSet = first ? new Set(first.files) : null;
+      const restFiles = firstSet ? laneFiles.filter((f) => !firstSet.has(f)) : laneFiles;
+      // A sharded lane with a plan from recorded times: the first part's files are left out before
+      // the plan is made, so the shards are balanced on what remains.
+      let plan = shards > 1 ? planShards(restFiles, shards, durations) : null;
+      // Fewer files left than processes: one process runs them by name (a first part is closed
+      // under path overlap, so a named rest file can never match a first-part file).
+      if (first && shards > 1 && plan === null && restFiles.length > 0 && restFiles.length < shards) plan = [[...restFiles].sort()];
+      const procs = plan ? plan.length : shards;
+      // The unit lane (one process, no file list) and a sharded lane without a plan: the first
+      // part's files are excluded by name.
+      const excludes = first ? first.files.map((f) => `--exclude=${f}`) : [];
       if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
       if (lane.name === 'unit') {
@@ -649,10 +710,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;
       }
       const t = seams.now();
-      // allSettled: every shard's process has exited before the lane settles, even when one
-      // shard hits its deadline (nothing is left running outside the slot or the cleanup).
-      const settledParts = await Promise.allSettled(Array.from({ length: shards }, async (_, k) => {
-        const key = shards > 1 ? `${lane.name}-${k + 1}` : lane.name;
+      const laneDeadlineAt = t + d.lanes[lane.name];
+      type Part = { report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean };
+      /**
+       * One vitest process of this lane. `afterFirst`: it runs the rest of a lane whose first part
+       * already ran, so it gets what is left of the lane's deadline (the deadline covers both parts).
+       */
+      const runPart = async (key: string, fileArgs: readonly string[], afterFirst: boolean): Promise<Part> => {
         const reportPath = path.join(p.reportsDir, `${key}.json`);
         const errorsPath = path.join(p.reportsDir, `${key}.errors.json`);
         const pTmp = seams.fs.mkdtemp('lv-tmp-');
@@ -664,6 +728,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
           env.LOCAL_VERIFY_PROGRESS_FILE = progressPath;
         }
+        const stepBudget = () => {
+          if (!afterFirst) return budget(d.lanes[lane.name]);
+          const left = laneDeadlineAt - seams.now();
+          if (left <= 0) throw new RunError(`deadline:${key}`, 'the lane deadline was spent before the rest of the lane started');
+          return budget(left);
+        };
         let r: Awaited<ReturnType<typeof exec>>;
         try {
           // The signal is always passed: a deadline anywhere ends the run as an error, so the
@@ -672,8 +742,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           r = await exec(
             path.join(binDir, 'vitest'),
             ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
-              ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
-            key, budget(d.lanes[lane.name]), env, stopLanes.signal,
+              ...fileArgs],
+            key, stepBudget(), env, stopLanes.signal,
           );
         } catch (e) {
           if (e instanceof RunError && e.step.startsWith('deadline:')) {
@@ -701,65 +771,159 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         }
         const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
         return { report, status: r.status, unhandled, aborted: false };
-      }));
-      const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
-      if (shardError) throw shardError.reason;
-      const parts = settledParts.map((x) => (x as PromiseFulfilledResult<{ report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean }>).value);
-      if (parts.some((x) => x.aborted)) {
-        seams.log({ event: 'lane-stopped-early', lane: lane.name });
-        return { lane: lane.name, report: null, seconds: Math.round((seams.now() - t) / 1000), exitCode: null, stoppedEarly: true };
-      }
+      };
+      /** The lane's usual processes, side by side. allSettled: every process has exited before the lane settles, even when one hits its deadline (nothing is left running outside the slot or the cleanup). */
+      const runProcs = async (afterFirst: boolean): Promise<Part[]> => {
+        const settledParts = await Promise.allSettled(Array.from({ length: procs }, (_, k) => runPart(
+          shards > 1 ? `${lane.name}-${k + 1}` : lane.name,
+          [...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : []), ...(plan ? [] : excludes)],
+          afterFirst,
+        )));
+        const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
+        if (shardError) throw shardError.reason;
+        return settledParts.map((x) => (x as PromiseFulfilledResult<Part>).value);
+      };
       // A lane's report is the union of its shards' reports; a missing shard report is a
       // missing lane report (the inventory rule then fails the run).
       // A file reported by two shards makes the lane report untrusted (missing): the verdict
       // must not depend on which shard's entry was kept.
-      let report: ParsedLaneReport | null = { files: new Map() };
-      for (const part of parts) {
-        if (!part.report || !report) { report = null; continue; }
-        for (const [f, c] of part.report.files) {
-          if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
+      const mergeParts = (parts: readonly Part[]): ParsedLaneReport | null => {
+        let report: ParsedLaneReport | null = { files: new Map() };
+        for (const part of parts) {
+          if (!part.report || !report) { report = null; continue; }
+          for (const [f, c] of part.report.files) {
+            if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
+            if (report.files.has(f)) {
+              seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
+              report = null;
+              break;
+            }
+            report.files.set(f, c);
+          }
+        }
+        return report;
+      };
+      // A numeric non-zero exit of any shard wins over a signal exit (null), so a shard killed
+      // after writing its report can never hide its sibling's failed exit.
+      const combineExit = (codes: ReadonlyArray<number | null>): number | null => {
+        const nonZero = codes.find((x) => typeof x === 'number' && x !== 0);
+        return nonZero !== undefined ? nonZero : codes.some((x) => x === null) ? null : 0;
+      };
+      const combineUnhandled = (counts: ReadonlyArray<number | null>): number | null => (counts.some((x) => x === null) ? null : counts.reduce<number>((n, x) => n + (x as number), 0));
+      /**
+       * Isolation re-run: a lane (or one part of it) whose only problem is 1..3 failed files re-runs
+       * exactly those files, one at a time, under what is left of the lane budget: once, or three
+       * times for an import-related file whose failed tests main has all shown flaky. `files` are
+       * the files the report must cover; `priorFailed` counts the lane's earlier failures (its
+       * first part). Returns the exit code after the re-runs.
+       */
+      const rerunPhase = async (report: ParsedLaneReport | null, files: readonly string[], unhandled: number | null, exit: number | null, priorFailed: number, part?: 'first'): Promise<number | null> => {
+        let exitCode = exit;
+        const failedHere = report ? [...report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f) : [];
+        const classed = failedHere.length > 0 && report ? await ineligibleFor(failedHere, report) : { ineligible: new Set<string>(), importRelated: new Map<string, FlakyOnMainTest[]>() };
+        // Read and spend the shared re-run budget with no await in between: lanes finish concurrently.
+        const decision = decideIsolationRerun({
+          report, laneFiles: files,
+          maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: rerunBudget,
+          unhandledErrors: unhandled,
+          ineligible: classed.ineligible,
+          importRelated: new Set(classed.importRelated.keys()),
+          ...(priorFailed > 0 ? { priorFailed } : {}),
+        });
+        if (decision.reason === 'eligible' && decision.rerun.length > 0 && report) {
+          rerunBudget -= decision.rerun.length; // an import-related file counts as one file, whatever its number of runs
+          const threePass = new Map(decision.threePass.map((f) => [f, classed.importRelated.get(f)!]));
+          const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal, threePass, part ? `${lane.name}-${part}` : lane.name);
+          // The exit code is cleared only when the failed files explain it: they all passed alone
+          // AND the lane reported zero unhandled errors (checked before the re-run).
+          if (allPassed && unhandled === 0) exitCode = 0;
+        } else if (decision.reason !== 'no-failures') {
+          seams.log({ event: 'isolation-rerun-skipped', lane: lane.name, reason: decision.reason, ...(part ? { part } : {}) });
+        }
+        return exitCode;
+      };
+      const seconds = () => Math.round((seams.now() - t) / 1000);
+
+      if (!first) {
+        const parts = await runProcs(false);
+        if (parts.some((x) => x.aborted)) {
+          seams.log({ event: 'lane-stopped-early', lane: lane.name });
+          return { lane: lane.name, report: null, seconds: seconds(), exitCode: null, stoppedEarly: true };
+        }
+        const report = mergeParts(parts);
+        const unhandled = combineUnhandled(parts.map((x) => x.unhandled));
+        const exitCode = await rerunPhase(report, laneFiles, unhandled, combineExit(parts.map((x) => x.status)), 0);
+        if (failFast && !stopLanes.signal.aborted && laneFailedFinally(report, exitCode)) {
+          seams.log({ event: 'lanes-stop', after: lane.name });
+          stopLanes.abort();
+        }
+        return { lane: lane.name, report, seconds: seconds(), exitCode };
+      }
+
+      // ── A lane in two parts (spec local-verify-likely-failing-first.md A, C, D) ──
+      // The first part runs to its end before its lane decides anything. The existing rules are
+      // then applied to it: the re-run alone on the first part's own files, and, if the lane has
+      // failed finally, fail-fast. A clean first part only lets the rest start: it is never a pass.
+      const note = firstPartNotes.get(lane.name)!;
+      const t1 = seams.now();
+      const fp = await runPart(`${lane.name}-first`, first.files, false);
+      note.ms = seams.now() - t1;
+      if (fp.aborted) {
+        seams.log({ event: 'lane-stopped-early', lane: lane.name, part: 'first' });
+        return { lane: lane.name, report: null, seconds: seconds(), exitCode: null, stoppedEarly: true };
+      }
+      const firstReport = mergeParts([fp]);
+      const firstFailed = firstReport ? [...firstReport.files.values()].filter((c) => c.failed > 0).length : 0;
+      const firstExit = await rerunPhase(firstReport, first.files, fp.unhandled, combineExit([fp.status]), 0, 'first');
+      /** The lane as it stands when it is cut short after its first part: only the first part's report. */
+      const cutShort = (): LaneRunInput => ({ lane: lane.name, report: firstReport, seconds: seconds(), exitCode: firstExit, ...(firstReport ? { cutShort: true } : { stoppedEarly: true }) });
+      const firstFinal = laneFailedFinally(firstReport, firstExit);
+      if (firstFinal && failFast) {
+        // The lane has failed finally: the rest does not start, and fail-fast stops the other lanes.
+        note.endedHere = true;
+        seams.log({ event: 'first-part', lane: lane.name, files: first.files.length, ms: note.ms, failedFinally: true, endedHere: true });
+        if (!stopLanes.signal.aborted) {
+          seams.log({ event: 'lanes-stop', after: `${lane.name}-first` });
+          stopLanes.abort();
+        }
+        // A first part with no readable report is a missing lane report, as for any lane.
+        return firstReport ? cutShort() : { lane: lane.name, report: null, seconds: seconds(), exitCode: firstExit };
+      }
+      seams.log({ event: 'first-part', lane: lane.name, files: first.files.length, ms: note.ms, failedFinally: firstFinal, endedHere: false });
+      // The whole lane fitted in its first part: the lane is completed from that one report.
+      if (restFiles.length === 0) return { lane: lane.name, report: firstReport, seconds: seconds(), exitCode: firstExit };
+      if (stopLanes.signal.aborted) {
+        seams.log({ event: 'lane-stopped-early', lane: lane.name, part: 'rest' });
+        return cutShort();
+      }
+      const rest = await runProcs(true);
+      if (rest.some((x) => x.aborted)) {
+        seams.log({ event: 'lane-stopped-early', lane: lane.name, part: 'rest' });
+        return cutShort();
+      }
+      const restReport = mergeParts(rest);
+      // Unhandled errors and exit codes are combined across the two parts as they are across shards.
+      const laneUnhandled = combineUnhandled([fp.unhandled, ...rest.map((x) => x.unhandled)]);
+      const restExit = await rerunPhase(restReport, restFiles, laneUnhandled, combineExit(rest.map((x) => x.status)), firstFailed);
+      let report: ParsedLaneReport | null = null;
+      if (firstReport && restReport) {
+        report = { files: new Map(firstReport.files) };
+        for (const [f, c] of restReport.files) {
           if (report.files.has(f)) {
-            seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
+            // A file the first part ran was run again by the rest: the lane report is untrusted (missing).
+            seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f, part: 'first' });
             report = null;
             break;
           }
           report.files.set(f, c);
         }
       }
-      // A numeric non-zero exit of any shard wins over a signal exit (null), so a shard killed
-      // after writing its report can never hide its sibling's failed exit.
-      const nonZero = parts.find((x) => typeof x.status === 'number' && x.status !== 0);
-      let exitCode: number | null = nonZero ? nonZero.status : parts.some((x) => x.status === null) ? null : 0;
-      const unhandled = parts.some((x) => x.unhandled === null) ? null : parts.reduce((n, x) => n + (x.unhandled as number), 0);
-      // Isolation re-run: a lane whose only problem is 1..3 failed files re-runs exactly
-      // those files, one at a time, under what is left of the lane budget: once, or three
-      // times for an import-related file whose failed tests main has all shown flaky.
-      const failedHere = report ? [...report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f) : [];
-      const classed = failedHere.length > 0 && report ? await ineligibleFor(failedHere, report) : { ineligible: new Set<string>(), importRelated: new Map<string, FlakyOnMainTest[]>() };
-      // Read and spend the shared re-run budget with no await in between: lanes finish concurrently.
-      const decision = decideIsolationRerun({
-        report, laneFiles: inventory.byLane[lane.name] ?? [],
-        maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: rerunBudget,
-        unhandledErrors: unhandled,
-        ineligible: classed.ineligible,
-        importRelated: new Set(classed.importRelated.keys()),
-      });
-      if (decision.reason === 'eligible' && decision.rerun.length > 0 && report) {
-        rerunBudget -= decision.rerun.length; // an import-related file counts as one file, whatever its number of runs
-        const laneDeadlineAt = t + d.lanes[lane.name];
-        const threePass = new Map(decision.threePass.map((f) => [f, classed.importRelated.get(f)!]));
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal, threePass);
-        // The exit code is cleared only when the failed files explain it: they all passed alone
-        // AND the lane reported zero unhandled errors (checked before the re-run).
-        if (allPassed && unhandled === 0) exitCode = 0;
-      } else if (decision.reason !== 'no-failures') {
-        seams.log({ event: 'isolation-rerun-skipped', lane: lane.name, reason: decision.reason });
-      }
+      const exitCode = combineExit([firstExit, restExit]);
       if (failFast && !stopLanes.signal.aborted && laneFailedFinally(report, exitCode)) {
         seams.log({ event: 'lanes-stop', after: lane.name });
         stopLanes.abort();
       }
-      return { lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode };
+      return { lane: lane.name, report, seconds: seconds(), exitCode };
     }
 
     /** A shard count from the run input, clamped to 1..MAX_LANE_SHARDS; anything else is the default. */
@@ -798,6 +962,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     if (!dirty && onlyAssertionFailureReasons && allFailedFiles.length >= 1 && allFailedFiles.length <= 3
       && allFailedFiles.every((file) => isInventoried(file)
         && (ev.perFile[file]?.assertionFailures ?? 0) > 0 && !ev.perFile[file]?.nonAssertionFailure)) boundedFailedFiles = allFailedFiles;
+    if (input.collectFileOutcomes === true) {
+      const flaky = new Set(flakyRetried.map((x) => x.file));
+      fileOutcomes = {};
+      for (const [file, c] of Object.entries(ev.perFile)) fileOutcomes[file] = c.failed > 0 ? 'failed' : flaky.has(file) ? 'flaky' : 'passed';
+    }
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];
     if (evaluationReasons.length > 0) {
       outcome = 'failure';
@@ -837,8 +1006,19 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   if (input.attempt) record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
   if (preflight) record.preflight = preflight;
-  if (outcome === 'failure' && input.kind !== 'main' && boundedFailedFiles) record.failedFiles = boundedFailedFiles;
-  const kept = await cleanup(outcome !== 'success');
+  if (outcome === 'failure' && input.kind !== 'main' && boundedFailedFiles) {
+    record.failedFiles = boundedFailedFiles;
+    const cut = boundedFailedFiles.filter((f) => rerunCutOff.has(f));
+    if (cut.length > 0) record.rerunCutOff = cut;
+  }
+  const firstPartSummary: FirstPartSummary | null = firstPartInput ? {
+    setting: firstPartInput.setting, ...(firstPartInput.group ? { group: firstPartInput.group } : {}), active: firstPartOn,
+    lanes: LANES.map((l) => firstPartNotes.get(l.name)).filter((x): x is FirstPartLaneSummary => !!x),
+    endedInFirstPart: outcome === 'failure' && [...firstPartNotes.values()].some((x) => x.endedHere),
+  } : null;
+  if (firstPartSummary) seams.log({ event: 'first-part-summary', pr: input.pr, ...firstPartSummary, outcome });
+  // The comparison run never keeps a worktree: the verify it follows already kept its own.
+  const kept = await cleanup(outcome !== 'success' && input.variant !== 'compare');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };
   seams.log({ event: 'run-finished', pr: input.pr, headSha: input.headSha, outcome, errorStep, failureReason, reasons: evaluationReasons.slice(0, 20) });
@@ -854,6 +1034,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures, ...(flakyRetried.length ? { flakyRetried } : {}),
     ...(isolationRefusals ? { isolationRefusals } : {}),
     ...(input.kind === 'main' && Object.keys(flakyTestLines).length > 0 ? { flakyTestLines } : {}),
+    ...(firstPartSummary ? { firstPart: firstPartSummary } : {}),
+    ...(fileOutcomes ? { fileOutcomes } : {}),
   };
 
   // ── helpers (closures over the run) ──
@@ -927,6 +1109,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   async function isolationRerun(
     lane: LaneName, config: string, files: readonly string[], report: ParsedLaneReport, env: NodeJS.ProcessEnv, laneDeadlineAt: number,
     signal?: AbortSignal, threePass: ReadonlyMap<string, readonly FlakyOnMainTest[]> = new Map(),
+    /** Report-file prefix: the lane, or `<lane>-first` for a first part's re-runs (so the two never share a file). */
+    namePrefix: string = lane,
   ): Promise<boolean> {
     let all = true;
     const L = IMPORT_RELATED_RERUN;
@@ -955,8 +1139,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           cleared = false;
           break;
         }
-        const out = path.join(p.reportsDir, `${lane}-rerun-${k}-${n}.json`);
-        const errs = path.join(p.reportsDir, `${lane}-rerun-${k}-${n}.errors.json`);
+        const out = path.join(p.reportsDir, `${namePrefix}-rerun-${k}-${n}.json`);
+        const errs = path.join(p.reportsDir, `${namePrefix}-rerun-${k}-${n}.errors.json`);
         // A fresh TMPDIR and TMUX_TMPDIR for each re-run (nothing from the lane run, or an earlier solo run, leaks in).
         const rTmp = seams.fs.mkdtemp('lv-tmp-');
         const rTmux = seams.fs.mkdtemp('lv-tmux-');
@@ -971,6 +1155,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         if (r.aborted) {
           // The run already failed in another lane: the re-run's answer no longer matters.
           rerunMessages.set(file, 'isolation re-run stopped: another lane had already failed');
+          rerunCutOff.add(file);
           seams.log({ event: 'isolation-rerun', lane, file, outcome: 'stopped', ...irLog });
           cleared = false;
           break;

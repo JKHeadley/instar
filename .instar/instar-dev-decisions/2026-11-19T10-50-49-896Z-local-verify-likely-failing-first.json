@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-19T10:50:49.896Z",
+  "slug": "local-verify-likely-failing-first",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 1594,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/local-verify-likely-failing-first.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/firstPart.ts",
+      "src/localVerify/firstPartTrial.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/likelyFailingList.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/record.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1523,
+    "deletedLines": 71
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the comparison run is registered as local-verify-first-part-compare in src/testing/selfActionRegistry.ts: one at a time, its start counted durably before the spawn, at most 5 finished and 10 started per kind per machine, dropped after 30 minutes pending, killed at the total deadline; the automatic switch to off is latched once in the trial file; the list is updated once per recorded verify; the group assignment is written once per pull request"
+    }
+  },
+  "verdict": "pass"
+}
