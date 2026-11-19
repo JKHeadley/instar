@@ -1,7 +1,7 @@
 /** Disk Steward cleanup categories (spec docs/specs/disk-steward.md §3.6). */
 import { describe, it, expect } from 'vitest';
 import type fs from 'node:fs';
-import { pruneNpmCache, pruneDerivedData, npmBusy, xcodeBusy, parseElapsed, GiB, type PruneSeams, type ProcessRow } from '../../src/monitoring/diskSteward/pruneCategories.js';
+import { pruneNpmCache, pruneDerivedData, npmBusy, npmCacheWriting, xcodeBusy, parseElapsed, GiB, type PruneSeams, type ProcessRow } from '../../src/monitoring/diskSteward/pruneCategories.js';
 
 const HOME = '/Users/x';
 const DD = `${HOME}/Library/Developer/Xcode/DerivedData`;
@@ -62,6 +62,34 @@ describe('process predicates', () => {
     expect(xcodeBusy([{ elapsedSec: 1, command: '/Applications/Xcode-26.6.0.app/Contents/MacOS/Xcode' }])).toBe(true);
     expect(xcodeBusy([{ elapsedSec: 1, command: '/usr/bin/xcodebuild -scheme X' }])).toBe(true);
     expect(xcodeBusy([{ elapsedSec: 1, command: '/bin/zsh' }])).toBe(false);
+  });
+  it('an npm exec counts only while it starts; installs count for 30 min (fb-eb8372d8-043)', () => {
+    // The Studio case: every session starts a Playwright MCP through npm exec.
+    expect(npmBusy([{ elapsedSec: 300, command: 'npm exec @playwright/mcp@latest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 90, command: 'npm exec @playwright/mcp@latest' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 600, command: 'node /opt/npm/bin/npx-cli.js vitest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 1500, command: 'npm install' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 1900, command: 'npm install' }])).toBe(false);
+  });
+  it('an idle SourceKit service is not an Xcode build (fb-eb8372d8-043)', () => {
+    const sk = '/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/sourcekitd.framework/Versions/A/XPCServices/SourceKitService.xpc/Contents/MacOS/SourceKitService';
+    expect(xcodeBusy([{ elapsedSec: 72000, command: sk }])).toBe(false);
+    expect(xcodeBusy([{ elapsedSec: 5, command: '/Applications/Xcode-26.6.0.app/Contents/SharedFrameworks/XCBuild.framework/PlugIns/XCBBuildService.bundle/Contents/MacOS/XCBBuildService' }])).toBe(true);
+  });
+  it('a recently changed _cacache/tmp entry means the cache is being written', () => {
+    const now = 1_000_000_000;
+    const files: Record<string, number> = {};
+    const seams = {
+      now: () => now,
+      readdir: (p: string) => (p.endsWith('/tmp') ? Object.keys(files) : null),
+      lstat: (p: string) => (p.endsWith('/tmp') ? ({ mtimeMs: now } as never) : (files[p.split('/').pop()!] !== undefined ? ({ mtimeMs: files[p.split('/').pop()!] } as never) : null)),
+    };
+    files['old'] = now - 3 * 86_400_000; // leftover from an interrupted fetch
+    expect(npmCacheWriting(seams, '/c/_cacache')).toBe(false);
+    files['live'] = now - 5_000;
+    expect(npmCacheWriting(seams, '/c/_cacache')).toBe(true);
+    expect(npmCacheWriting({ ...seams, readdir: () => null }, '/c/_cacache')).toBe(true); // unreadable => busy
+    expect(npmCacheWriting({ ...seams, lstat: () => null }, '/c/_cacache')).toBe(false); // no tmp folder
   });
 });
 

@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "locked-enter-persistence",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T03:15:01.558Z",
+  "artifactPath": "upgrades/side-effects/locked-enter-persistence.md",
+  "artifactSha256": "7bb8011e0350a40789795482b682848b610585c09ca976c3c337cbe726057887",
+  "specPath": "docs/specs/desktop-locked-screen.md",
+  "coveredFiles": [
+    "docs/specs/locked-enter-persistence.eli16.md",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "tests/unit/DirectDesktopAccess.locked.test.ts",
+    "tests/unit/desktop-enter-persistence-swift.test.ts",
+    "upgrades/next/locked-enter-persistence.md",
+    "upgrades/side-effects/locked-enter-persistence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Native password dispatch safety invariant: require owned duty validation and successful persistence before Enter; approved P15, independent review, no new authority source or lifecycle loop.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-originated secretType Enter boundary, not a self-triggered loop. Adds no producer, restart, kill, retry, notification or re-drive edge; existing guard convergence bounds and immediate field-abandonment behavior are unchanged."
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The existing pre-Enter transaction ignored missing ownership and failed persistence, permitting dispatch without successfully saved relock state. This fix enforces that existing safety prerequisite; no prior-PR causal attribution."
+  }
+}

@@ -6,6 +6,8 @@
 
 Local Verify already kept a per-file duration history (`.worktrees/.verify/file-durations.json`) for the integration and e2e lanes, which it uses to balance their shards. It now records unit-lane files as well. Shard planning reads only a lane's own files, so unit entries never change an integration or e2e plan. Each run also logs one `unit-wall-factor` row: the unit lane's wall time divided by its file time spread across the workers (1.22 measured on the Studio on 2026-11-18). Later sharding and borrowed-machine slice planning need both numbers (spec `docs/specs/local-verify-borrowed-unit-slices.md`, part A).
 
+A `unit-wall-factor` row carries two marks that say it is not a clean sample, so a reader leaves it out: `firstPart: true` when the lane used a first part ("likely-failing files first"; the first part's own run is inside the wall time) and `reran: true` when files were re-run alone (the wall time holds the re-runs, and the report holds a re-run file's solo time). A unit first part is sized by file count alone, so recorded unit times do not change which files it holds.
+
 The history file grows from about 94 KB to about 315 KB, well under its 2 MB and 20,000-entry caps. The change touches the verifier, so the verifier version changes once with this release; run machines and peers must be on the same release to share work, as with any verifier change.
 
 ## What to Tell Your User

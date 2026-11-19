@@ -278,7 +278,10 @@ function fake(o: FakeOpts = {}) {
         files.set(out, namedReport(namedLane));
         return r(Object.values(namedLane).some((v) => (Array.isArray(v) ? v : v.tests).some((x) => x.status === 'failed') || (!Array.isArray(v) && !!v.message)) ? 1 : 0);
       }
-      const many = o.laneFiles?.[lane];
+      // `--exclude=<path>` removes exactly that path from what the process runs (a lane's rest after its first part).
+      const excluded = new Set(args.filter((a) => a.startsWith('--exclude=')).map((a) => a.slice('--exclude='.length)));
+      const all = o.laneFiles?.[lane];
+      const many = all && excluded.size > 0 ? Object.fromEntries(Object.entries(all).filter(([f]) => !excluded.has(f))) : all;
       if (many) {
         files.set(out, vitestReportMany(many));
         return r(Object.values(many).some((x) => x.includes('failed')) ? 1 : 0);
@@ -1676,5 +1679,49 @@ describe('runVerify — balanced shards: overlapping paths and a hostile history
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(f.logs.some((l) => l.event === 'durations-ignored')).toBe(true);
     expect(f.shardLists).toHaveLength(0);
+  });
+});
+
+describe('runVerify — first parts on the shared fake (spec local-verify-likely-failing-first.md)', () => {
+  const UNIT = { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/b.test.ts': ['passed'], 'tests/unit/c.test.ts': ['passed'] };
+  const vitestArgs = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.args.includes('--config')).map((c) => c.args);
+
+  it('the setting off, an unassigned or `without` pull request, and a main verify all run exactly the commands of a verify without the block', async () => {
+    const plain = fake({ laneFiles: { unit: UNIT } });
+    const base = await runVerify(input(), plain.seams);
+    const variants: Array<Partial<VerifyRunInput>> = [
+      { likelyFailingFirst: { setting: 'alternate', group: 'without', previous: [], list: ['tests/unit/b.test.ts'] } },
+      { likelyFailingFirst: { setting: 'alternate', previous: [], list: ['tests/unit/b.test.ts'] } },
+    ];
+    for (const v of variants) {
+      const f = fake({ laneFiles: { unit: UNIT } });
+      const r = await runVerify(input(v), f.seams);
+      expect(vitestArgs(f)).toEqual(vitestArgs(plain));
+      if (r.kind !== 'record' || base.kind !== 'record') throw new Error('expected records');
+      expect(r.record).toEqual(base.record);
+      expect(r.reasons).toEqual(base.reasons);
+    }
+    const mainPlain = fake({ laneFiles: { unit: UNIT } });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD }), mainPlain.seams);
+    const mainWith = fake({ laneFiles: { unit: UNIT } });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } }), mainWith.seams);
+    expect(vitestArgs(mainWith)).toEqual(vitestArgs(mainPlain));
+  });
+
+  it('with the setting on: `<lane>-first` runs the named files, the rest excludes them, and every file is reported once', async () => {
+    const f = fake({ laneFiles: { unit: UNIT }, diff: 'M\tsrc/index.ts\n' });
+    const r = await runVerify(input({ likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } }), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.record.outcome).toBe('success');
+    const unitCalls = vitestArgs(f).filter((a) => a.includes('vitest.config.ts'));
+    expect(unitCalls).toHaveLength(2);
+    expect(unitCalls[0].some((a) => a.endsWith('/unit-first.json'))).toBe(true);
+    expect(unitCalls[0].at(-1)).toBe('tests/unit/b.test.ts');
+    expect(unitCalls[1].some((a) => a.endsWith('/unit.json'))).toBe(true);
+    expect(unitCalls[1]).toContain('--exclude=tests/unit/b.test.ts');
+    expect(r.record.lanes.find((l) => l.name === 'unit')).toMatchObject({ files: 3, failed: 0 });
+    const steps = f.logs.filter((l) => l.event === 'step').map((l) => l.step);
+    expect(steps).toEqual(expect.arrayContaining(['unit-first', 'unit']));
   });
 });

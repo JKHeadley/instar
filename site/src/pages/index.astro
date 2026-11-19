@@ -11,9 +11,9 @@ import Layout from '../layouts/Layout.astro';
         instar
       </a>
       <div class="flex items-center gap-4 sm:gap-6">
+        <a href="#download" class="text-sm font-medium text-teal-400 hover:text-teal-300 transition-colors">Download</a>
         <a href="#how-it-works" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">How It Works</a>
         <a href="#features" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Features</a>
-        <a href="#comparison" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">vs&nbsp;OpenClaw</a>
         <a href="#quickstart" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Quick Start</a>
         <a href="https://github.com/JKHeadley/instar" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1.5">
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
@@ -54,6 +54,7 @@ import Layout from '../layouts/Layout.astro';
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           </button>
         </div>
+        <p class="text-sm text-slate-400 mt-4">Or <a href="#download" class="text-teal-400 hover:text-teal-300 underline underline-offset-2">get the app</a> for iPhone or Mac.</p>
       </div>
 
       <!-- Demo video -->
@@ -75,6 +76,58 @@ import Layout from '../layouts/Layout.astro';
           Architecture distilled from <a href="https://dawn.bot-me.ai" class="text-teal-400 hover:text-teal-300 underline underline-offset-2" target="_blank" rel="noopener">Dawn</a> &mdash; an AI running continuously since early 2026, holding ~700 tracked relationships and hundreds of learned lessons across thousands of restarts. Packaged so every agent you build can start from the same foundation.
         </p>
       </div>
+    </div>
+  </section>
+
+  <!-- Downloads (topic 145295). Every link here must work; an app that is not public says so plainly. -->
+  <section id="download" class="py-16 sm:py-20 border-t border-slate-800/50 scroll-mt-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="text-center mb-10">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Get the apps</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">
+          Talk to your agent, follow its work and answer what it needs from you, on your phone or your computer.
+        </p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- iPhone -->
+        <div class="rounded-xl border border-teal-500/30 bg-teal-500/5 p-5 flex flex-col">
+          <p class="text-xs font-semibold uppercase tracking-wider text-teal-400 mb-2">Available</p>
+          <h3 class="text-lg font-semibold text-slate-100">iPhone</h3>
+          <p class="text-sm text-slate-400 mt-1 mb-5 flex-1">&ldquo;Instar Agents&rdquo; on the App Store.</p>
+          <a href="https://apps.apple.com/app/id6829320724" target="_blank" rel="noopener" class="block text-center rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold text-sm px-4 py-2.5 transition-colors">Get it on the App Store</a>
+          <a href="https://testflight.apple.com/join/Z5921URm" target="_blank" rel="noopener" class="block text-center text-xs text-slate-400 hover:text-teal-300 mt-3 underline underline-offset-2">Or try the newest beta on TestFlight</a>
+        </div>
+
+        <!-- Mac -->
+        <div class="rounded-xl border border-teal-500/30 bg-teal-500/5 p-5 flex flex-col">
+          <p class="text-xs font-semibold uppercase tracking-wider text-teal-400 mb-2">Available</p>
+          <h3 class="text-lg font-semibold text-slate-100">Mac</h3>
+          <p class="text-sm text-slate-400 mt-1 mb-5 flex-1">Signed and notarized by Apple. Needs macOS 14 or later. Updates itself.</p>
+          <a href="/download/mac" class="block text-center rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold text-sm px-4 py-2.5 transition-colors">Download for Mac</a>
+          <p class="text-center text-xs text-slate-500 mt-3">Always the newest build. Unzip, then move Instar to Applications.</p>
+        </div>
+
+        <!-- Android -->
+        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5 flex flex-col">
+          <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Coming soon</p>
+          <h3 class="text-lg font-semibold text-slate-100">Android</h3>
+          <p class="text-sm text-slate-400 mt-1 mb-5 flex-1">In testing now. It will be on Google Play when it is ready for everyone.</p>
+          <span class="block text-center rounded-lg border border-slate-700 text-slate-500 text-sm px-4 py-2.5">Not yet on Google Play</span>
+        </div>
+
+        <!-- Windows -->
+        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-5 flex flex-col">
+          <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Coming soon</p>
+          <h3 class="text-lg font-semibold text-slate-100">Windows</h3>
+          <p class="text-sm text-slate-400 mt-1 mb-5 flex-1">Being built now. This page will have the download as soon as it is ready.</p>
+          <span class="block text-center rounded-lg border border-slate-700 text-slate-500 text-sm px-4 py-2.5">Not yet available</span>
+        </div>
+      </div>
+
+      <p class="text-center text-sm text-slate-500 mt-8">
+        The apps connect to an Instar agent. To run your own agent on a computer, see <a href="#quickstart" class="text-teal-400 hover:text-teal-300 underline underline-offset-2">Quick Start</a>.
+      </p>
     </div>
   </section>
 
@@ -333,7 +386,7 @@ import Layout from '../layouts/Layout.astro';
 
       <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
         <!-- Job Scheduler -->
-        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
+        <div class="group min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
           <div class="w-9 h-9 rounded-lg bg-teal-500/10 flex items-center justify-center mb-4">
             <svg class="w-4.5 h-4.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           </div>
@@ -360,7 +413,7 @@ import Layout from '../layouts/Layout.astro';
         </div>
 
         <!-- Telegram Integration -->
-        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
+        <div class="group min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
           <div class="w-9 h-9 rounded-lg bg-teal-500/10 flex items-center justify-center mb-4">
             <svg class="w-4.5 h-4.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
           </div>
@@ -391,7 +444,7 @@ import Layout from '../layouts/Layout.astro';
         </div>
 
         <!-- Identity & Memory -->
-        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
+        <div class="group min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
           <div class="w-9 h-9 rounded-lg bg-teal-500/10 flex items-center justify-center mb-4">
             <svg class="w-4.5 h-4.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 2a5 5 0 015 5v3a5 5 0 01-10 0V7a5 5 0 015-5z"/><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/></svg>
           </div>
@@ -415,7 +468,7 @@ import Layout from '../layouts/Layout.astro';
         </div>
 
         <!-- Evolution System -->
-        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
+        <div class="group min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
           <div class="w-9 h-9 rounded-lg bg-teal-500/10 flex items-center justify-center mb-4">
             <svg class="w-4.5 h-4.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
           </div>
@@ -444,7 +497,7 @@ import Layout from '../layouts/Layout.astro';
         </div>
 
         <!-- Safety Gates -->
-        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
+        <div class="group min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
           <div class="w-9 h-9 rounded-lg bg-teal-500/10 flex items-center justify-center mb-4">
             <svg class="w-4.5 h-4.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
           </div>
@@ -465,7 +518,7 @@ import Layout from '../layouts/Layout.astro';
         </div>
 
         <!-- Lifeline & Self-Healing -->
-        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
+        <div class="group min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/20 transition-colors">
           <div class="w-9 h-9 rounded-lg bg-teal-500/10 flex items-center justify-center mb-4">
             <svg class="w-4.5 h-4.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
           </div>
@@ -528,81 +581,6 @@ import Layout from '../layouts/Layout.astro';
       <p class="text-center text-sm text-slate-500 max-w-lg mx-auto">
         GitHub issues and PRs still work. But your agent understands context a form never could.
         <a href="https://github.com/JKHeadley/instar/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-teal-400 hover:text-teal-300 underline underline-offset-2 ml-1">Read CONTRIBUTING.md &rarr;</a>
-      </p>
-    </div>
-  </section>
-
-  <!-- Comparison -->
-  <section id="comparison" class="py-16 sm:py-20 border-t border-slate-800/50">
-    <div class="max-w-4xl mx-auto px-6">
-      <div class="text-center mb-10">
-        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Honest Comparison</h2>
-        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">
-          Different tools solve different problems.
-          The difference isn&rsquo;t just which model runs underneath &mdash;
-          it&rsquo;s <span class="text-teal-400 font-medium">what the framework treats as fundamental.</span>
-        </p>
-      </div>
-
-      <!-- Core difference cards -->
-      <div class="grid md:grid-cols-2 gap-5 mb-10">
-        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
-          <div class="flex items-center gap-2 mb-3">
-            <div class="w-2 h-2 rounded-full bg-slate-600"></div>
-            <span class="text-sm font-medium text-slate-500 uppercase tracking-wider">OpenClaw</span>
-          </div>
-          <p class="text-slate-300 text-sm leading-relaxed mb-3">
-            Infrastructure for <strong class="text-slate-200">capability</strong>. 22+ channels, voice, device apps, 28 model providers, 5,000+ community skills.
-            Identity loaded at startup, memory as files to search.
-          </p>
-          <p class="text-slate-500 text-xs">Best for: AI everywhere, multi-model, maximum reach.</p>
-        </div>
-
-        <div class="rounded-xl border border-teal-500/20 bg-teal-500/5 p-6 glow-teal">
-          <div class="flex items-center gap-2 mb-3">
-            <div class="w-2 h-2 rounded-full bg-teal-400 animate-pulse"></div>
-            <span class="text-sm font-medium text-teal-400 uppercase tracking-wider">Instar</span>
-          </div>
-          <p class="text-slate-200 text-sm leading-relaxed mb-3">
-            Infrastructure for <strong class="text-teal-300">coherence</strong>. Real Claude Code sessions with
-            extended thinking. Identity enforced through hooks. Values that evolve. Consistency tracked across sessions.
-          </p>
-          <p class="text-teal-400/70 text-xs">Best for: a trusted partner that knows who it is and who you are.</p>
-        </div>
-      </div>
-
-      <!-- Trade-offs grid -->
-      <div class="grid sm:grid-cols-2 gap-3 mb-8">
-        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <p class="text-sm font-medium text-teal-300 mb-1">Identity that survives</p>
-          <p class="text-xs text-slate-400">OpenClaw loads identity at startup but drifts after long sessions. Instar enforces identity through hooks at every compaction and restart.</p>
-        </div>
-        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <p class="text-sm font-medium text-teal-300 mb-1">Memory with meaning</p>
-          <p class="text-xs text-slate-400">Beyond file search &mdash; structured consolidation, rolling summaries, episodic memory, and unanswered message detection.</p>
-        </div>
-        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <p class="text-sm font-medium text-teal-300 mb-1">Values, not just personality</p>
-          <p class="text-xs text-slate-400">Three-tier value hierarchy &mdash; personal, shared, organizational &mdash; with decision journaling and drift detection.</p>
-        </div>
-        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <p class="text-sm font-medium text-teal-300 mb-1">Full Claude Code power</p>
-          <p class="text-xs text-slate-400">Every session is a real Claude Code process. Every feature Anthropic ships, your agent gets automatically.</p>
-        </div>
-      </div>
-
-      <!-- Where OpenClaw leads -->
-      <div class="rounded-lg border border-slate-700/50 bg-slate-800/30 p-5 mb-4">
-        <p class="text-slate-400 text-sm leading-relaxed text-center">
-          <span class="text-slate-300 font-medium">Where OpenClaw leads:</span>
-          22+ messaging channels, voice &amp; phone calls, device apps, 28+ AI model providers, Docker sandboxing, 5,000+ community skills,
-          and a massive open-source community backed by a foundation. If breadth and ecosystem scale matter most, OpenClaw is remarkable.
-        </p>
-      </div>
-
-      <p class="text-center text-slate-400 text-sm max-w-lg mx-auto leading-relaxed">
-        OpenClaw gives agents amazing hands. Instar gives agents <span class="text-teal-400">a mind</span> &mdash;
-        identity that persists, values that evolve, and coherence you can trust.
       </p>
     </div>
   </section>

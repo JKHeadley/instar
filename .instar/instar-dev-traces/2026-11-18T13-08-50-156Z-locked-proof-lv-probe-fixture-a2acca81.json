@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "locked-proof-lv-probe-fixture",
+  "sessionId": "b67a1524-fae2-44b6-9878-3a340f51abfd",
+  "timestamp": "2026-11-18T13:08:50.156Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-lv-probe-fixture.md",
+  "artifactSha256": "ee18ad167dcef04680913a8cfe659eef5743dd15a4d518a6d9543f1639c2976e",
+  "coveredFiles": [
+    "docs/specs/locked-proof-lv-probe-fixture.eli16.md",
+    "tests/fixtures/native-observation/isolation.ts",
+    "tests/unit/native-observation-isolation.test.ts",
+    "upgrades/side-effects/locked-proof-lv-probe-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only fixture fix; no product source, helper or configuration change.",
+  "eli16Path": "docs/specs/locked-proof-lv-probe-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-lv-probe-fixture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
