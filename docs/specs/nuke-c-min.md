@@ -3,6 +3,13 @@ title: "instar nuke keeps project files and backs up only existing commits"
 slug: nuke-c-min
 author: echo
 eli16-overview: docs/specs/nuke-c-min.eli16.md
+tier: 2
+review-convergence: "operator-approved after 1 round (Codex cross-model + Standards-Conformance Gate; all 3 + 5 findings fixed in r1; Chief of Staff msg 0d86e88d, 2026-11-19 10:55 PT)"
+review-iterations: 1
+review-report: "docs/specs/reports/nuke-c-min-convergence.md"
+approved: true
+approved-by: "Chief of Staff, msg 0d86e88d, 2026-11-19 10:55 PT"
+split-from: "docs/specs/nuke-hardening.md (6 rounds, not converged; split approved by the Chief of Staff, msg 0552571a)"
 ---
 
 # instar nuke keeps project files and backs up only existing commits
