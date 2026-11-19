@@ -13,6 +13,7 @@ import {
   UNPROVEN_BODY_LIMIT_BYTES,
   type BodyBudgetDeps,
   boundedBody,
+  closeUnreadBodyOnError,
 } from '../../src/server/bodyBudget.js';
 import { authMiddleware, errorHandler } from '../../src/server/middleware.js';
 
@@ -198,6 +199,46 @@ describe('SEC-118: the general budget parser cuts an endless chunked stranger up
     });
     expect(r.status).toBe(413);
     expect(r.closed).toBe(true);
+  });
+});
+
+describe('SEC-118-R1: an error answer to an unread body closes the connection', () => {
+  async function streamTo(app: express.Express, path: string, headers: Record<string, string>) {
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const port = (srv.address() as AddressInfo).port;
+    const r = await new Promise<{ status: number; closed: boolean }>((resolve) => {
+      let status = 0; let finished = false;
+      const req = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'transfer-encoding': 'chunked', ...headers } }, (res) => { status = res.statusCode ?? 0; res.resume(); });
+      const finish = (closed: boolean) => { if (finished) return; finished = true; clearTimeout(guard); resolve({ status, closed }); };
+      req.on('error', () => finish(status > 0));
+      req.on('close', () => finish(status > 0));
+      const guard = setTimeout(() => { req.destroy(); finish(false); }, 3000);
+      const tick = () => { if (finished) return; req.write('z'.repeat(8 * 1024)); setTimeout(tick, 2); };
+      tick();
+    });
+    await new Promise((res) => srv.close(res));
+    return r;
+  }
+  it('a body no parser reads, refused by the auth gate, is not drained: the server closes', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.use(authMiddleware(() => TOKEN));
+    app.post('/echo', (_req, res) => { res.json({ ok: true }); });
+    const r = await streamTo(app, '/echo', { 'content-type': 'application/x-unknown' });
+    expect(r.status).toBe(401);
+    expect(r.closed).toBe(true);
+  });
+  it('a successful answer is untouched (the guard acts on error statuses only)', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.post('/ok', express.text({ type: '*/*', limit: '1mb' }), (_req, res) => { res.json({ ok: true }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const ok = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/ok`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'hello' });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('connection')).not.toBe('close');
+    await new Promise((r) => srv.close(r));
   });
 });
 

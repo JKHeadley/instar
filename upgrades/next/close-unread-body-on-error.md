@@ -1,0 +1,21 @@
+# A refused request with an unread body closes its connection
+
+<!-- bump: patch -->
+
+## What Changed
+
+SEC-118-R1. When the server answered an error to a request whose body no parser had read (for example a 401 from the auth gate on a body of an unexpected type), Node kept reading and discarding the rest of the body until the request timeout, to keep the connection alive. A middleware mounted first now closes the socket when an error answer finishes with unread body bytes. Successful answers are unchanged.
+
+## What to Tell Your User
+
+- **Refused requests cost less**: "When my server refuses a request, it now hangs up instead of reading whatever the sender keeps sending."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Error answers close an unread body | Automatic |
+
+## Evidence
+
+- `tests/unit/body-budget-before-auth.test.ts`: a chunked body of an unknown type, refused by the auth gate, is answered 401 and the server closes while the client is still sending. This fails with the guard disabled. A successful answer keeps its connection.

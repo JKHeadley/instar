@@ -292,7 +292,7 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
-import { boundedBody, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
+import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -2002,6 +2002,9 @@ export class AgentServer {
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
     this.app = express();
+    // SEC-118-R1: an error answer to a request whose body was never read closes the connection
+    // instead of draining the rest (mounted first so every refusal is covered).
+    this.app.use(closeUnreadBodyOnError());
 
     // Middleware
     // Claim observation has a much smaller privacy/cost boundary than the
