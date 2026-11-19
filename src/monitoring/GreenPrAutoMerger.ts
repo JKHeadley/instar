@@ -445,7 +445,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     let cancel = () => {};
     try {
       return await Promise.race([
-        Promise.resolve().then(() => this.deps.refetchPr(pr)).catch(() => null), // A failed read ends the re-check.
+        Promise.resolve().then(() => this.deps.refetchPr(pr)).catch(() => null), // @silent-fallback-ok: a failed read ends the re-check with today's answer and is written in the handoff-recheck row; it never leads to a merge attempt.
         new Promise<null>((resolve) => { cancel = this.timer(() => resolve(null), 10_000); }),
       ]);
     } finally { cancel(); }
