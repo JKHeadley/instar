@@ -563,6 +563,11 @@ export function chooseTmuxName(
   const p = `${projectBase}-`;
   const strip = (n: string) => (n.startsWith(p) ? n.slice(p.length) : n);
   const sameRole = (r: Pick<Session, 'name' | 'telegramTopicId' | 'jobSlug'>) => {
+    // A record with no topic and no job is not a competing role. When its stored name is
+    // this name, it is the same session line (e.g. started without a topic, respawned for one).
+    // The record stores the raw name; compare it in the same sanitized form the spawn paths use.
+    const norm = (n: string) => strip(String(n ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40));
+    if (r.telegramTopicId === undefined && !r.jobSlug && norm(r.name) === norm(sanitized)) return true;
     if (role.topicId !== undefined) return r.telegramTopicId === role.topicId;
     if (role.jobSlug) return r.jobSlug === role.jobSlug;
     return r.telegramTopicId === undefined && !r.jobSlug && strip(r.name) === strip(sanitized);

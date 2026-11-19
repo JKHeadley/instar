@@ -243,6 +243,13 @@ describe('chooseTmuxName (§E)', () => {
     expect(chooseTmuxName('bugs', 'echo', [rec('echo-bugs', { name: 'echo-bugs', telegramTopicId: 5, status: 'running' })], { jobSlug: 'bugs' })).toBe('echo-bugs-2');
     expect(chooseTmuxName('bugs', 'echo', [rec('echo-bugs', { name: 'bugs', jobSlug: 'bugs' })], { jobSlug: 'bugs' })).toBe('echo-bugs');
   });
+  it('a session started with no topic keeps its name when respawned for a topic (e2e respawn build-context)', () => {
+    // First spawn had no topic/job; the respawn passes telegramTopicId. A role-less record of the
+    // same stored name is the same session line, not a competing role: no numbered name.
+    expect(chooseTmuxName('t-build-ctx', 'proj', [rec('proj-t-build-ctx', { name: 't-build-ctx' })], { topicId: 1052 })).toBe('proj-t-build-ctx');
+    // A role-less record with a DIFFERENT stored name still holds the name against a topic role.
+    expect(chooseTmuxName('t-build-ctx', 'proj', [rec('proj-t-build-ctx', { name: 'other' })], { topicId: 1052 })).toBe('proj-t-build-ctx-2');
+  });
   it('uses the plain form when the same role held it', () => {
     expect(chooseTmuxName('echo-t', 'echo', [rec('echo-t', { telegramTopicId: 9 })], { topicId: 9 })).toBe('echo-t');
     expect(chooseTmuxName('echo-x', 'echo', [rec('echo-x', { name: 'x' })], {})).toBe('echo-x');
