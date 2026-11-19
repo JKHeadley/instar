@@ -13,7 +13,8 @@
 
 import type { MachineSignature } from '../core/AppRecordSignatures.js';
 import { ATTEMPT_ID_RE, MAIN_VERIFY_PR, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
-import type { FailureDetail } from './orchestrator.js';
+import type { FailureDetail, IsolationInput } from './orchestrator.js';
+import { IMPORT_RELATED_RERUN } from './policy.js';
 
 /** The coordinator's durable reservation of one queue entry for one peer attempt. */
 export interface RemoteMarker {
@@ -26,6 +27,26 @@ export interface RemoteMarker {
   dispatched: DispatchedInputs;
   /** SEC-113 D1: digest of the exact peer-run body sent; the peer's signed answer must carry it. */
   requestDigest?: string;
+  /**
+   * The main-flaky list this attempt was offered: file paths and test names only (no failure
+   * lines). Beside `dispatched`, never inside it (that is spread into the request body). A
+   * missing or malformed list reads as empty (`offeredFlakyOnMain()`), so a restored marker
+   * without one accepts no import-related clear (spec local-verify-import-related-rerun.md).
+   */
+  offeredFlakyOnMain?: Array<{ file: string; tests: string[] }>;
+}
+
+/** The offered list of a marker as file → names; anything missing or malformed is an EMPTY list. Pure. */
+export function offeredFlakyOnMain(marker: { offeredFlakyOnMain?: unknown }): Map<string, Set<string>> {
+  const v = marker.offeredFlakyOnMain;
+  const out = new Map<string, Set<string>>();
+  if (!Array.isArray(v)) return out;
+  for (const e of v) {
+    const x = e as { file?: unknown; tests?: unknown } | null;
+    if (!x || typeof x !== 'object' || typeof x.file !== 'string' || !Array.isArray(x.tests) || !x.tests.every((t) => typeof t === 'string')) return new Map();
+    out.set(x.file, new Set(x.tests as string[]));
+  }
+  return out;
 }
 
 export interface DispatchedInputs {
@@ -45,8 +66,12 @@ export interface PeerRunRequest extends DispatchedInputs {
   attemptId: string;
   coordinatorMachineId: string;
   leaseEpoch: number | null;
-  /** The coordinator's isolation input (its last green `main`), so a peer run re-runs flakes exactly as a local run would. */
-  isolation?: { allowed: boolean; notCleanOnGreenMain: string[] };
+  /**
+   * The coordinator's isolation input (its last green `main`), so a peer run re-runs flakes exactly
+   * as a local run would; with `importRelatedRerun` and `flakyOnMain` it also carries the
+   * coordinator's switch and its list of main-flaky tests (the peer never computes a list).
+   */
+  isolation?: IsolationInput;
   /** Coordinator attests that its watcher can rediscover this candidate after lease movement. */
   preflightRediscoverable?: boolean;
 }
@@ -152,6 +177,35 @@ export const PEER_LIMITS = Object.freeze({
 
 const SHA_LIKE = (v: unknown): v is string => typeof v === 'string' && isValidSha(v);
 
+const onlyKeys = (o: Record<string, unknown>, keys: readonly string[]) => Object.keys(o).every((k) => keys.includes(k));
+const isIsoTime = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) && !Number.isNaN(Date.parse(v));
+
+/**
+ * The import-related part of an isolation block (spec local-verify-import-related-rerun.md):
+ * `importRelatedRerun` a boolean, `flakyOnMain` at most 200 files of at most 40 tests, every
+ * string bounded. Exactly these keys, at every level. Pure.
+ */
+function importRelatedIsolationOk(iso: Record<string, unknown>): boolean {
+  const L = IMPORT_RELATED_RERUN;
+  if (!onlyKeys(iso, ['allowed', 'notCleanOnGreenMain', 'importRelatedRerun', 'flakyOnMain'])) return false;
+  if (typeof iso.importRelatedRerun !== 'boolean' || !Array.isArray(iso.flakyOnMain) || iso.flakyOnMain.length > L.wireFiles) return false;
+  return iso.flakyOnMain.every((e) => {
+    const f = e as Record<string, unknown> | null;
+    if (!f || typeof f !== 'object' || Array.isArray(f) || !onlyKeys(f, ['file', 'tests', 'namesCut'])) return false;
+    if (typeof f.file !== 'string' || f.file.length < 1 || f.file.length > 300) return false;
+    if (f.namesCut !== undefined && f.namesCut !== true) return false;
+    return Array.isArray(f.tests) && f.tests.length <= L.namesPerFile && f.tests.every((x) => {
+      const t = x as Record<string, unknown> | null;
+      return !!t && typeof t === 'object' && !Array.isArray(t) && onlyKeys(t, ['test', 'at', 'line', 'lineCut', 'setHash', 'runLog'])
+        && typeof t.test === 'string' && t.test.length >= 1 && t.test.length <= L.nameChars
+        && isIsoTime(t.at) && typeof t.line === 'string' && t.line.length <= L.lineChars
+        && (t.lineCut === undefined || t.lineCut === true)
+        && typeof t.setHash === 'string' && /^[0-9a-f]{64}$/.test(t.setHash)
+        && typeof t.runLog === 'string' && /^[0-9a-f]{0,64}(\.log)?$/.test(t.runLog);
+    });
+  });
+}
+
 /** Parse and validate a peer-run body. Exactly the fields of PeerRunRequest; nothing else. */
 export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
@@ -165,6 +219,9 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
     const iso = b.isolation as { allowed?: unknown; notCleanOnGreenMain?: unknown } | null;
     if (!iso || typeof iso !== 'object' || typeof iso.allowed !== 'boolean' || !Array.isArray(iso.notCleanOnGreenMain)
       || iso.notCleanOnGreenMain.length > 200 || !iso.notCleanOnGreenMain.every((f) => typeof f === 'string' && f.length > 0 && f.length <= 300)) return null;
+    // Strict keys and the new fields' shape apply only when the switch field is present: a block
+    // without it parses as before, so a staggered install needs no flag day.
+    if ('importRelatedRerun' in (iso as object) && !importRelatedIsolationOk(iso as Record<string, unknown>)) return null;
   }
   if (typeof b.attemptId !== 'string' || !ATTEMPT_ID_RE.test(b.attemptId)) return null;
   if (b.kind === 'main' || b.kind === 'main-arbitration') {
@@ -205,6 +262,16 @@ export function importRefusal(
   if (!ctx.holdsLease) return 'not-lease-holder';
   if (ctx.leaseEpoch !== marker.leaseEpoch || r.attempt.leaseEpoch !== marker.leaseEpoch) return 'lease-epoch-changed';
   if (Date.parse(r.startedAt) < marker.sentAt - 5 * 60_000) return 'started-before-dispatch';
+  // A clear on main evidence must be one this coordinator offered for this attempt: the file and
+  // every cleared test name. A consistency check between two machines on one build.
+  const cleared = (r.flakyRetried ?? []).filter((f) => f.importRelated === true);
+  if (cleared.length > 0) {
+    const offered = offeredFlakyOnMain(marker);
+    for (const f of cleared) {
+      const names = offered.get(f.file);
+      if (!names || !(f.failedTests ?? []).every((t) => names.has(t))) return 'import-related-not-offered';
+    }
+  }
   return null;
 }
 

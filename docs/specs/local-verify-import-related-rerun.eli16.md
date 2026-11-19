@@ -18,6 +18,6 @@ If the main branch has never shown that test to be flaky, nothing changes: no se
 
 **What we accept.** A change that makes an already-flaky test a little worse can still get through. We cannot tell that apart at the moment of testing.
 
-**How we watch it.** Every test let through this way is recorded with the change it belonged to. After seven days we compare, for each such test, how often it misbehaved on the main line in the week before the change went in and in the week after. If that at least doubles, a person reads the failures and the change the same day and switches the rule off unless the cause is clearly something else.
+**How we watch it.** Every test let through this way is recorded with the change it belonged to. After seven days we compare, for each such test, how often it misbehaved on the main line in the week before the change went in and in the week after. If that at least doubles, a person reads the failures and the change the same day and switches the rule off unless the cause is clearly something else. A small script that only reads the test line's own log prints these numbers on each machine; it changes nothing.
 
 **Rollout.** It is off by default. We try it first on a throwaway setup, then on our own development machines. For this project that second step is already the full effect, because those machines check every change we merge.

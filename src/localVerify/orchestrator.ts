@@ -22,14 +22,19 @@ import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js'
 
 /** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
 const PROGRESS_MAX_BYTES = 64 * 1024;
-import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
+import {
+  decideIsolationRerun, evaluateRun, importRelatedEligibility, parseVitestJson, passedByName, withoutNames,
+  type FileCounts, type FlakyOnMainFile, type FlakyOnMainTest, type ImportRelatedRefusal, type LaneRunInput, type LaneTotals, type ParsedLaneReport,
+} from './laneReport.js';
+import { boundedTail } from '../core/boundedInput.js';
 import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord, type PreflightEvidence } from './record.js';
 import { effectivePreflightMode, PREFLIGHT_LIMITS } from './preflight.js';
 import { PreflightCleanupError, runFocusedPreflight } from './runFocusedPreflight.js';
-import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
+import { IMPORT_RELATED_RERUN, LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
+export type { FlakyOnMainFile, FlakyOnMainTest, ImportRelatedRefusal } from './laneReport.js';
 import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
 import type { LeftoverPrefix, ReapOptions, ReapResult } from './leftoverReaper.js';
 
@@ -182,8 +187,12 @@ export interface VerifyRunInput {
    * `allowed` is false when this machine has no green `main` record; `notCleanOnGreenMain`
    * lists files that did not pass cleanly there (they were themselves re-run-passed). Absent
    * on a PR verify ⇒ no re-run. `main` verifies ignore it (the plain rule).
+   * `importRelatedRerun` (the coordinator's switch, absent ⇒ off) and `flakyOnMain` (its list
+   * of tests a `main` verify saw fail and pass alone) let a failed file that imports a changed
+   * file be re-run three times when every one of its failed tests is on that list (spec
+   * local-verify-import-related-rerun.md). This child reads neither config nor the history.
    */
-  isolation?: { allowed: boolean; notCleanOnGreenMain: readonly string[] };
+  isolation?: IsolationInput;
   /** A peer verify (spec local-verify-capacity.md Part D): copied onto the record as `attempt`. */
   attempt?: { id: string; coordinatorMachineId: string; leaseEpoch: number | null };
   /**
@@ -207,13 +216,38 @@ export interface VerifyRunInput {
   deadlines?: LocalVerifyDeadlines;
 }
 
+/** The isolation block of a run input (built by the service; sent whole to a peer). */
+export interface IsolationInput {
+  allowed: boolean;
+  notCleanOnGreenMain: readonly string[];
+  importRelatedRerun?: boolean;
+  flakyOnMain?: readonly FlakyOnMainFile[];
+}
+
+/**
+ * Import-related failed files that got no re-run, by kind, each list bounded with its true
+ * count beside it (the PR `run-detail` audit line carries them: the review reads the audit log).
+ */
+export interface IsolationRefusals {
+  noMainEvidence: ImportRelatedRefusal[];
+  noMainEvidenceCount: number;
+  noMainEvidenceForTest: ImportRelatedRefusal[];
+  noMainEvidenceForTestCount: number;
+  importRelatedRefused: ImportRelatedRefusal[];
+  importRelatedRefusedCount: number;
+}
+
 /** The first failing test of a failed file, bounded (spec §2: the full detail lives in the audit, not the status). */
 export interface FailureDetail {
   file: string;
   lane: string;
   failed: number;
   message: string;
-  /** Set when the file was re-run alone and failed again: the re-run's message. */
+  /**
+   * Set when the file was re-run alone and failed again: the re-run's message. For an
+   * import-related file it starts `solo run n of 3: ` (or names a detail-only run) and the text
+   * after it keeps the END of the failure, with a cut disclosed.
+   */
   rerunMessage?: string;
 }
 
@@ -230,7 +264,16 @@ export interface Overlap {
 export interface RunDegradation { feature: string; primary: string; fallback: string; reason: string; impact: string }
 
 export type VerifyRunResult = (
-  | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[]; flakyRetried?: FlakyRetry[] }
+  | {
+    kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[]; flakyRetried?: FlakyRetry[];
+    /** PR verifies with the import-related rule on: the import-related files that got no re-run. */
+    isolationRefusals?: IsolationRefusals;
+    /**
+     * `main` verifies: for each `flakyRetried` file, the distinguishing failure line of each test
+     * the record names (the same names, nothing more). The service stores it with the evidence.
+     */
+    flakyTestLines?: Record<string, Array<{ test: string; line: string; lineCut?: true }>>;
+  }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] }
 ) & {
@@ -404,6 +447,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let failures: FailureDetail[] = [];
   let boundedFailedFiles: string[] | null = null;
   const flakyRetried: FlakyRetry[] = [];
+  const importRelatedRefusals: ImportRelatedRefusal[] = [];
+  const flakyTestLines: Record<string, Array<{ test: string; line: string; lineCut?: true }>> = {};
   const firstMessages = new Map<string, string>();
   const rerunMessages = new Map<string, string>();
   let rerunBudget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
@@ -687,20 +732,23 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       let exitCode: number | null = nonZero ? nonZero.status : parts.some((x) => x.status === null) ? null : 0;
       const unhandled = parts.some((x) => x.unhandled === null) ? null : parts.reduce((n, x) => n + (x.unhandled as number), 0);
       // Isolation re-run: a lane whose only problem is 1..3 failed files re-runs exactly
-      // those files once, one at a time, under what is left of the lane budget.
+      // those files, one at a time, under what is left of the lane budget: once, or three
+      // times for an import-related file whose failed tests main has all shown flaky.
       const failedHere = report ? [...report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f) : [];
-      const ineligible = failedHere.length > 0 ? await ineligibleFor(failedHere) : new Set<string>();
+      const classed = failedHere.length > 0 && report ? await ineligibleFor(failedHere, report) : { ineligible: new Set<string>(), importRelated: new Map<string, FlakyOnMainTest[]>() };
       // Read and spend the shared re-run budget with no await in between: lanes finish concurrently.
       const decision = decideIsolationRerun({
         report, laneFiles: inventory.byLane[lane.name] ?? [],
         maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: rerunBudget,
         unhandledErrors: unhandled,
-        ineligible,
+        ineligible: classed.ineligible,
+        importRelated: new Set(classed.importRelated.keys()),
       });
-      if (decision.rerun.length > 0 && report) {
-        rerunBudget -= decision.rerun.length;
+      if (decision.reason === 'eligible' && decision.rerun.length > 0 && report) {
+        rerunBudget -= decision.rerun.length; // an import-related file counts as one file, whatever its number of runs
         const laneDeadlineAt = t + d.lanes[lane.name];
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal);
+        const threePass = new Map(decision.threePass.map((f) => [f, classed.importRelated.get(f)!]));
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal, threePass);
         // The exit code is cleared only when the failed files explain it: they all passed alone
         // AND the lane reported zero unhandled errors (checked before the re-run).
         if (allPassed && unhandled === 0) exitCode = 0;
@@ -794,24 +842,44 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };
   seams.log({ event: 'run-finished', pr: input.pr, headSha: input.headSha, outcome, errorStep, failureReason, reasons: evaluationReasons.slice(0, 20) });
-  return { kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures, ...(flakyRetried.length ? { flakyRetried } : {}) };
+  const cap = IMPORT_RELATED_RERUN.auditRefusals;
+  const of = (...reasons: string[]) => importRelatedRefusals.filter((x) => reasons.includes(x.reason));
+  const others = importRelatedRefusals.filter((x) => x.reason !== 'noMainEvidence' && x.reason !== 'noMainEvidenceForTest');
+  const isolationRefusals: IsolationRefusals | null = importRelatedRefusals.length === 0 ? null : {
+    noMainEvidence: of('noMainEvidence').slice(0, cap), noMainEvidenceCount: of('noMainEvidence').length,
+    noMainEvidenceForTest: of('noMainEvidenceForTest').slice(0, cap), noMainEvidenceForTestCount: of('noMainEvidenceForTest').length,
+    importRelatedRefused: others.slice(0, cap), importRelatedRefusedCount: others.length,
+  };
+  return {
+    kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures, ...(flakyRetried.length ? { flakyRetried } : {}),
+    ...(isolationRefusals ? { isolationRefusals } : {}),
+    ...(input.kind === 'main' && Object.keys(flakyTestLines).length > 0 ? { flakyTestLines } : {}),
+  };
 
   // ── helpers (closures over the run) ──
 
   /**
-   * Failed files that must NOT be treated as possibly flaky (PR verifies): every one when the
-   * PR rule cannot be applied (no green `main` record, no isolation input, unreadable diff);
-   * otherwise files the PR changed and files importing a changed file (static relative-import
-   * scan). A file that was itself re-run-passed on the last green `main` stays eligible: it is
-   * flaky on `main` already, so refusing its re-run failed every PR that hit the flake. A `main`
-   * verify uses the plain rule (nothing is ineligible).
+   * Class each failed file of a PR verify (spec local-verify-import-related-rerun.md "Rule
+   * proposed"), in this order: unavailable (no green `main` record, no isolation input,
+   * unreadable diff, no import scan) and edited (the PR changed the test file) are ineligible, as
+   * before; a file whose import graph reaches a changed file is ineligible too, UNLESS the
+   * import-related rule is on and every one of its failed tests is on main's list
+   * (`importRelatedEligibility`): then it is returned in `importRelated` with its evidence and
+   * needs three passes. Everything else is plain (one solo run). A file re-run-passed on the last
+   * green `main` gets no exemption from the import check. With the switch off, or no list, the
+   * second set is empty and the first is the old result exactly. A `main` verify uses the plain
+   * rule (nothing is ineligible).
    */
-  async function ineligibleFor(failed: readonly string[]): Promise<Set<string>> {
-    if (input.kind === 'main') return new Set();
+  async function ineligibleFor(failed: readonly string[], report: ParsedLaneReport): Promise<{ ineligible: Set<string>; importRelated: Map<string, FlakyOnMainTest[]> }> {
+    const importRelated = new Map<string, FlakyOnMainTest[]>();
+    if (input.kind === 'main') return { ineligible: new Set(), importRelated };
     const iso = input.isolation;
-    if (!iso || !iso.allowed || changedForIsolation === null) return new Set(failed);
+    if (!iso || !iso.allowed || changedForIsolation === null) return { ineligible: new Set(failed), importRelated };
     const out = new Set<string>();
     const notClean = new Set(iso.notCleanOnGreenMain);
+    const ruleOn = iso.importRelatedRerun === true;
+    const listed = new Map((ruleOn && Array.isArray(iso.flakyOnMain) ? iso.flakyOnMain : []).filter((e) => e && typeof e.file === 'string').map((e) => [e.file, e]));
+    const refused: ImportRelatedRefusal[] = [];
     for (const f of failed) {
       if (changedForIsolation.has(f)) { out.add(f); continue; }
       if (notClean.has(f)) seams.log({ event: 'isolation-rerun-flaky-on-main', file: f });
@@ -819,69 +887,157 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       try { graph = seams.importGraph ? seams.importGraph([path.join(p.runDir, f)]) : []; } catch { graph = []; }
       if (!seams.importGraph) { out.add(f); continue; } // no import scan available ⇒ cannot rule a change out
       const rel = graph.map((g) => path.relative(p.runDir, g).split(path.sep).join('/'));
-      if (rel.some((g) => changedForIsolation!.has(g))) out.add(f);
+      if (!rel.some((g) => changedForIsolation!.has(g))) continue; // plain
+      if (!ruleOn) { out.add(f); continue; }
+      const verdict = importRelatedEligibility(report.files.get(f), listed.get(f));
+      if (verdict.eligible) { importRelated.set(f, verdict.evidence); continue; }
+      out.add(f);
+      refused.push({ file: f, reason: verdict.reason, ...(verdict.test !== undefined ? { test: verdict.test } : {}), ...(verdict.namesCut ? { namesCut: true as const } : {}) });
     }
-    if (out.size) seams.log({ event: 'isolation-rerun-ineligible', files: [...out].slice(0, 10) });
-    return out;
+    if (out.size) {
+      const kind = (r: string) => refused.filter((x) => x.reason === r).slice(0, 10);
+      seams.log({
+        event: 'isolation-rerun-ineligible', files: [...out].slice(0, 10),
+        ...(ruleOn ? {
+          noMainEvidence: kind('noMainEvidence'), noMainEvidenceForTest: kind('noMainEvidenceForTest'),
+          refused: refused.filter((x) => x.reason !== 'noMainEvidence' && x.reason !== 'noMainEvidenceForTest').slice(0, 10),
+        } : {}),
+      });
+    }
+    importRelatedRefusals.push(...refused);
+    return { ineligible: out, importRelated };
   }
 
   /* @self-action-controller: local-verify-flake-rerun */
   /**
-   * Re-run each failed file alone, once, with the lane's own config, env and flags. A file
-   * that passes replaces its counts in the lane report and is recorded as flaky; one that
-   * fails again keeps the first run's counts and both messages. A re-run that would start
-   * past the lane deadline, or hits it, counts as failing again (never an infrastructure
-   * error: the lane itself finished in time). Returns true when every re-run passed.
+   * Re-run each failed file alone with the lane's own config, env and flags: once, or three
+   * times in a row for a file in `threePass` (import-related, every failed test shown flaky on
+   * `main`). A file that passes replaces its counts in the lane report and is recorded as flaky;
+   * one that fails keeps the lane run's counts and both messages. A three-pass file is cleared
+   * only when all three runs pass AND each reports every lane-failed test `passed` by full name;
+   * its first run that does not pass ends the sequence. Once a file in this lane has failed
+   * finally the lane cannot clear: a three-pass file after it gets ONE detail-only run, whose
+   * pass is written into the failure detail and nowhere else. Each run computes its own
+   * deadline (what is left of the lane's, or of the total), gets a fresh TMPDIR and TMUX_TMPDIR
+   * and writes its own report files. A run that would start past the lane deadline, or hits it,
+   * counts as failing (never an infrastructure error: the lane itself finished in time).
+   * Returns true when every file was cleared.
    */
   async function isolationRerun(
     lane: LaneName, config: string, files: readonly string[], report: ParsedLaneReport, env: NodeJS.ProcessEnv, laneDeadlineAt: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal, threePass: ReadonlyMap<string, readonly FlakyOnMainTest[]> = new Map(),
   ): Promise<boolean> {
     let all = true;
+    const L = IMPORT_RELATED_RERUN;
     for (let k = 0; k < files.length; k++) {
       const file = files[k];
       const first = report.files.get(file)!;
       firstMessages.set(file, first.message ?? '');
-      const ms = Math.min(laneDeadlineAt - seams.now(), remaining());
-      if (ms <= 0) {
-        rerunMessages.set(file, 'isolation re-run not started: lane budget spent');
-        seams.log({ event: 'isolation-rerun', lane, file, outcome: 'no-budget' });
-        all = false;
+      const evidence = threePass.get(file);
+      const ir = evidence !== undefined;
+      // The lane already holds a final failure: this file cannot clear it. One run, for the detail only.
+      const detailOnly = ir && !all;
+      const runs = ir && !detailOnly ? LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses : 1;
+      const named = first.failedTests ?? [];
+      const failedNames = named.map((x) => x.name);
+      const label = (n: number) => (detailOnly ? 'solo run 1 of 1 (detail only, the lane had already failed): ' : `solo run ${n} of ${runs}: `);
+      let cleared = true;
+      let last: FileCounts | undefined;
+      let stillPassed: string[] = failedNames;
+      const soloSeconds: number[] = [];
+      for (let n = 1; n <= runs; n++) {
+        const irLog = ir ? { importRelated: true, run: n, of: runs, detailOnly } : {};
+        const ms = Math.min(laneDeadlineAt - seams.now(), remaining());
+        if (ms <= 0) {
+          rerunMessages.set(file, ir ? `${label(n)}not finished inside the lane deadline` : 'isolation re-run not started: lane budget spent');
+          seams.log({ event: 'isolation-rerun', lane, file, outcome: ir ? 'deadline' : 'no-budget', ...irLog, ...(ir ? { seconds: 0 } : {}) });
+          cleared = false;
+          break;
+        }
+        const out = path.join(p.reportsDir, `${lane}-rerun-${k}-${n}.json`);
+        const errs = path.join(p.reportsDir, `${lane}-rerun-${k}-${n}.errors.json`);
+        // A fresh TMPDIR and TMUX_TMPDIR for each re-run (nothing from the lane run, or an earlier solo run, leaks in).
+        const rTmp = seams.fs.mkdtemp('lv-tmp-');
+        const rTmux = seams.fs.mkdtemp('lv-tmux-');
+        tempDirs.push(rTmp, rTmux);
+        const rEnv: NodeJS.ProcessEnv = { ...env, TMPDIR: rTmp, TMUX_TMPDIR: rTmux, ...(reporter ? { LOCAL_VERIFY_UNHANDLED_ERRORS_FILE: errs } : {}) };
+        const t0 = seams.now();
+        const r = await seams.exec(
+          path.join(binDir, 'vitest'),
+          ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
+          { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); }, ...(signal ? { signal } : {}) },
+        );
+        if (r.aborted) {
+          // The run already failed in another lane: the re-run's answer no longer matters.
+          rerunMessages.set(file, 'isolation re-run stopped: another lane had already failed');
+          seams.log({ event: 'isolation-rerun', lane, file, outcome: 'stopped', ...irLog });
+          cleared = false;
+          break;
+        }
+        let again: ParsedLaneReport | null = null;
+        const text = r.deadlineKilled ? null : seams.fs.readFile(out);
+        if (text != null) { try { again = parseVitestJson(text, p.runDir, { solo: true }); } catch { again = null; } }
+        const c = again?.files.get(file);
+        const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(seams.fs.readFile(errs));
+        // The pass rule every solo run has always had: nothing failed, something passed, exit 0, no unhandled error.
+        const ranClean = !!c && c.failed === 0 && c.passed > 0 && r.status === 0 && rerunUnhandled === 0;
+        // By name: which of the lane-failed tests this run reported `passed`. A three-pass run needs all of them.
+        const byName = passedByName(failedNames, c?.passedTests ?? []);
+        const passed = ranClean && (!ir || byName.notPassed.length === 0);
+        const seconds = Math.round((seams.now() - t0) / 1000);
+        const outcome = passed ? 'passed' : r.deadlineKilled ? 'deadline' : ranClean ? 'failed-test-not-passed' : 'failed';
+        seams.log({ event: 'isolation-rerun', lane, file, outcome, ...irLog, ...(ir ? { seconds } : {}) });
+        if (!passed) {
+          cleared = false;
+          if (!ir) {
+            rerunMessages.set(file, r.deadlineKilled ? 'isolation re-run hit the lane deadline' : (c?.message || `isolation re-run exit ${r.status ?? r.signal}`));
+          } else if (r.deadlineKilled) {
+            rerunMessages.set(file, `${label(n)}not finished inside the lane deadline`);
+          } else if (ranClean) {
+            const miss = byName.notPassed[0];
+            const was = c!.notPassedTests?.find((x) => x.name === miss)?.status ?? ((c!.passedTests ?? []).includes(miss) ? 'passed fewer times than it failed' : 'missing');
+            rerunMessages.set(file, `${label(n)}failed-test-not-passed: "${miss}" was ${was} in the solo run`);
+          } else {
+            // The END of the failure is where the assertion is: bounded keeping it, the cut disclosed, the prefix added after.
+            const f0 = c?.failedTests?.[0];
+            const whole = f0 ? `${f0.name}: ${f0.full}` : (c?.message || `isolation re-run exit ${r.status ?? r.signal}`);
+            rerunMessages.set(file, `${label(n)}${boundedTail(whole, L.rerunMessageChars)}`);
+          }
+          break;
+        }
+        last = c;
+        soloSeconds.push(seconds);
+        stillPassed = stillPassed.filter((x) => byName.passed.includes(x));
+      }
+      if (!cleared) { all = false; continue; }
+      if (detailOnly) {
+        // Never a flaky record, never a clear: the file stays failed and only its detail says it passed alone.
+        rerunMessages.set(file, `${label(1)}passed`);
         continue;
       }
-      const out = path.join(p.reportsDir, `${lane}-rerun-${k}.json`);
-      const errs = path.join(p.reportsDir, `${lane}-rerun-${k}.errors.json`);
-      // A fresh TMPDIR and TMUX_TMPDIR for each re-run (nothing from the lane run leaks in).
-      const rTmp = seams.fs.mkdtemp('lv-tmp-');
-      const rTmux = seams.fs.mkdtemp('lv-tmux-');
-      tempDirs.push(rTmp, rTmux);
-      const rEnv: NodeJS.ProcessEnv = { ...env, TMPDIR: rTmp, TMUX_TMPDIR: rTmux, ...(reporter ? { LOCAL_VERIFY_UNHANDLED_ERRORS_FILE: errs } : {}) };
-      const r = await seams.exec(
-        path.join(binDir, 'vitest'),
-        ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
-        { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); }, ...(signal ? { signal } : {}) },
-      );
-      if (r.aborted) {
-        // The run already failed in another lane: the re-run's answer no longer matters.
-        rerunMessages.set(file, 'isolation re-run stopped: another lane had already failed');
-        seams.log({ event: 'isolation-rerun', lane, file, outcome: 'stopped' });
-        all = false;
-        continue;
-      }
-      let again: ParsedLaneReport | null = null;
-      const text = r.deadlineKilled ? null : seams.fs.readFile(out);
-      if (text != null) { try { again = parseVitestJson(text, p.runDir); } catch { again = null; } }
-      const c = again?.files.get(file);
-      const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(seams.fs.readFile(errs));
-      const passed = !!c && c.failed === 0 && c.passed > 0 && r.status === 0 && rerunUnhandled === 0;
-      seams.log({ event: 'isolation-rerun', lane, file, outcome: passed ? 'passed' : r.deadlineKilled ? 'deadline' : 'failed' });
-      if (passed) {
-        report.files.set(file, { ...c!, message: '' });
-        flakyRetried.push({ file, lane, firstMessage: (first.message ?? '').slice(0, 400) });
-      } else {
-        all = false;
-        rerunMessages.set(file, r.deadlineKilled ? 'isolation re-run hit the lane deadline' : (c?.message || `isolation re-run exit ${r.status ?? r.signal}`));
-      }
+      report.files.set(file, { ...withoutNames(last!), message: '' });
+      const recordNames = failedNames.slice(0, L.recordNames);
+      const entry: FlakyRetry = {
+        file, lane, firstMessage: (first.message ?? '').slice(0, 400),
+        // Shared name fields, written whatever the switch says (they are what `main` evidence is made of).
+        ...(first.failedTests !== undefined ? {
+          failedTests: recordNames, failedTestsTotal: first.failed,
+          soloPassedByName: stillPassed.filter((x) => recordNames.includes(x)).slice(0, recordNames.length),
+        } : {}),
+        ...(typeof first.testSetHash === 'string' ? { testSetHash: first.testSetHash } : {}),
+        ...(ir ? {
+          importRelated: true as const, soloPasses: 3 as const, soloSeconds,
+          evidence: named.map((x, i) => ({
+            test: x.name, mainAt: evidence![i].at, mainLine: evidence![i].line, prLine: x.line,
+            ...(evidence![i].lineCut ? { mainLineCut: true as const } : {}), ...(x.lineCut ? { prLineCut: true as const } : {}),
+            mainRunLog: evidence![i].runLog,
+          })),
+        } : {}),
+      };
+      flakyRetried.push(entry);
+      // The pointer to the full output: one event per named failed test of the entry, whole (bounded keeping the end).
+      for (const x of named.slice(0, L.recordNames)) seams.log({ event: 'failure-full', lane, file, test: x.name, message: x.full });
+      if (input.kind === 'main') flakyTestLines[file] = named.slice(0, L.recordNames).map((x) => ({ test: x.name, line: x.line, ...(x.lineCut ? { lineCut: true as const } : {}) }));
     }
     return all;
   }

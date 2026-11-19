@@ -573,6 +573,65 @@ describe('local-verify lifecycle (production wiring)', () => {
     svc.shutdown();
   });
 
+  it('import-related re-run: through the production wiring the live key and a list computed from a real history file reach the run child\'s input, with the key off and on', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    const values: Record<string, unknown> = {};
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    // Wiring integrity: the switch reader is the live config, absent ⇒ off, only a real true turns it on.
+    const sw = svc as unknown as { importRelatedRerunOn(): boolean; seams: LocalVerifyServiceSeams };
+    expect(sw.importRelatedRerunOn()).toBe(false);
+    values['monitoring.localVerify.importRelatedRerun'] = 'yes';
+    expect(sw.importRelatedRerunOn()).toBe(false);
+    delete values['monitoring.localVerify.importRelatedRerun'];
+    // A real history file: this machine's own green main, and one test main saw fail and pass alone.
+    const at = new Date(Date.now() - 60 * 60_000).toISOString();
+    const evidence = { test: 'reaps a plain-mode child that ignores SIGTERM before releasing the call', at, line: 'AssertionError: expected false to be true', setHash: 'ab'.repeat(32), runLog: 'cd'.repeat(16) + '.log' };
+    const lvState = path.join(stateDir, 'state', 'local-verify');
+    fs.mkdirSync(lvState, { recursive: true });
+    fs.writeFileSync(path.join(lvState, 'flaky-history.json'), JSON.stringify({
+      v: 1, greenMain: { headSha: 'f'.repeat(40), finishedAt: at, notClean: [], origin: 'local' },
+      files: { 'tests/unit/CodexCliIntelligenceProvider.test.ts': { seen: [at], escalatedAt: null, mainSeen: [evidence] } },
+    }));
+    // The run child's input, read when the child is spawned (the file is removed when its run ends).
+    const inputs: Array<{ pr: number; isolation: unknown }> = [];
+    const heads: Record<number, string> = { 3: 'a'.repeat(40), 4: 'c'.repeat(40) };
+    sw.seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: heads[pr], baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+    sw.seams.baseHead = async () => 'b'.repeat(40);
+    sw.seams.isPrOpen = async () => true;
+    sw.seams.foreignSuiteHolders = () => [];
+    const ends: Array<(x: { status: number | null; signal: string | null }) => void> = [];
+    sw.seams.spawnRun = (a) => {
+      inputs.push(JSON.parse(fs.readFileSync(a.args[a.args.indexOf('--input') + 1], 'utf-8')) as { pr: number; isolation: unknown });
+      return { pid: 9300 + inputs.length, exited: new Promise((r) => { ends.push(r); }) };
+    };
+    sw.seams.isGroupAlive = () => false;
+    sw.seams.killGroup = () => {};
+    await svc.boot();
+    /** The isolation block of the run child's input for a PR (a run that ended without a result is retried once: the newest input counts). */
+    const isolationOf = (pr: number) => inputs.filter((x) => x.pr === pr).at(-1)?.isolation;
+    const started = async (pr: number) => { for (let i = 0; i < 200 && isolationOf(pr) === undefined; i++) await new Promise((r) => setTimeout(r, 10)); };
+    // Key off (the default): the block says so and carries no list.
+    expect((await svc.request(3)).ok).toBe(true);
+    await started(3);
+    expect(isolationOf(3)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    // End every run of PR 3 (the one retry of an errored run included) so the slot is free.
+    for (let k = 0; k < 3; k++) { for (const end of ends.splice(0)) end({ status: 1, signal: null }); await new Promise((r) => setTimeout(r, 30)); }
+    // Key on, read when the next run starts (no restart): the list from the history file rides along.
+    values['monitoring.localVerify.importRelatedRerun'] = true;
+    expect((await svc.request(4)).ok).toBe(true);
+    await started(4);
+    expect(isolationOf(4)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: 'tests/unit/CodexCliIntelligenceProvider.test.ts', tests: [evidence] }] });
+    // Alive over HTTP with the feature on.
+    expect((await request(serve(ctx(stateDir, svc))).get('/local-verify')).status).toBe(200);
+    svc.shutdown();
+  });
+
   it('disabled, off a source checkout, or with no GitHub login: not built, routes 503', async () => {
     const { home, stateDir } = sourceCheckout();
     const base = { expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm', mainEntry: DIST_ENTRY };
