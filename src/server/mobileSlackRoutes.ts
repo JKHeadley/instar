@@ -135,7 +135,7 @@ export interface MobileSlackRouteDeps {
   service: AppConversationService | null;
   /** Null when Slack is not configured on this agent. */
   slack: (() => MobileSlackBridge | null) | null;
-  sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
+  sentinel?: { decideInboundDisposition(message: string, topicId?: number, messageKey?: string): Promise<{ disposition: string }> } | null;
   /** This machine's id: the `machine` the list puts on Slack rows, which every Slack request must name. */
   machineId: () => string;
   /** The agent's current origin display bits (message-origin-all-platforms §5). Absent ⇒ all on. */
@@ -506,7 +506,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const classifiedText = [delivered, ...stored.map((a) => a.transcript ?? '')].filter(Boolean).join('\n');
     if (deps.sentinel && classifiedText) {
       try {
-        const d = await deps.sentinel.decideInboundDisposition(classifiedText, id);
+        const d = await deps.sentinel.decideInboundDisposition(classifiedText, id, `app-slack:${id}:${messageId}`);
         if (d.disposition === 'kill' || d.disposition === 'pause') {
           const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: bridge.emergencyStop().stopped } : { outcome: 'sentinel-pause', paused: bridge.pause(conv) };
           delivery('intercepted');

@@ -21218,12 +21218,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Wire sentinel into Telegram message flow — intercepts BEFORE session routing.
     // Must be wired AFTER sentinel is created but BEFORE server starts.
     if (sentinel && telegram) {
-      telegram.onSentinelIntercept = async (text: string, topicId: number) => {
+      telegram.onSentinelIntercept = async (text: string, topicId: number, messageKey?: string) => {
         // Operator-channel-sacred: route the decision through the single disposition
         // helper so a 'pause' consumes ONLY on a deterministic match — a bare-LLM or
         // capacity-shed 'pause' routes THROUGH (returns null), never consuming the
         // operator's message. A long-form genuine stop is rescued to a kill.
-        const decision = await sentinel.decideInboundDisposition(text, topicId);
+        const decision = await sentinel.decideInboundDisposition(text, topicId, messageKey);
         if (decision.disposition === 'kill') {
           return { category: 'emergency-stop', action: { type: 'kill-session' }, reason: decision.reason };
         }
@@ -29580,8 +29580,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const appOwnerReceiver = createAppOwnerReceiver({
           service: () => _appConversationService,
           storedEpoch: (rk) => ownReg.read(rk)?.ownershipEpoch ?? null,
-          classify: sentinel ? async (text, alias) => {
-            const d = await sentinel.decideInboundDisposition(text, alias);
+          classify: sentinel ? async (text, alias, messageKey) => {
+            const d = await sentinel.decideInboundDisposition(text, alias, messageKey);
             return d.disposition === 'kill' || d.disposition === 'pause' ? d.disposition : 'deliver';
           } : undefined,
           markInjected: (session, messageId) => _inboundQueue?.markRemoteInjected(session, messageId),

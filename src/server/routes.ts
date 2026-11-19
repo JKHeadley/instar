@@ -135,7 +135,7 @@ import { Router } from 'express';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
-import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
@@ -15511,9 +15511,8 @@ export function createRoutes(ctx: RouteContext): Router {
       if (probe.ready) return { ready: true };
       return { ready: false, unavailableReason: desktopProbeUnavailableReason(probe) };
     } catch {
-      // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
+      return { ready: false, unavailableReason: DESKTOP_CHECK_FAILED_REASON };
     }
-    return { ready: false, unavailableReason: 'Remote desktop is not ready on this machine.' };
   };
   router.get('/desktop/availability', async (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -15674,7 +15673,7 @@ export function createRoutes(ctx: RouteContext): Router {
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch {
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
-          unavailableReason: 'Remote desktop is not ready on this machine.' };
+          unavailableReason: DESKTOP_CHECK_FAILED_REASON };
       }
     }));
     const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
@@ -31674,7 +31673,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (the 2026-06-25 lockout mechanism) routes THROUGH (falls past this block to
         // normal routing) instead of consuming the operator's message; a long-form
         // genuine stop is rescued to a kill.
-        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
+        // One verdict per Telegram message: the lifeline re-sends a forward it gave up
+        // on (10s), and a classification can take longer than that. Without the key,
+        // each re-send asked the model again and any one 'emergency-stop' among the
+        // answers killed the session (2026-11-18, topic 144201).
+        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId),
+          messageId ? `telegram:${Number(topicId)}:${messageId}` : undefined);
         if (decision.disposition === 'kill' || decision.disposition === 'pause') {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since

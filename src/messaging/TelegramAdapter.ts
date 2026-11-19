@@ -1053,7 +1053,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
   // the adapter will handle the session action and skip the normal handler.
-  public onSentinelIntercept: ((message: string, topicId: number) => Promise<{
+  /** `messageKey` identifies this platform message, so a redelivery reuses its first verdict. */
+  public onSentinelIntercept: ((message: string, topicId: number, messageKey?: string) => Promise<{
     category: 'emergency-stop' | 'pause' | 'redirect' | 'normal';
     action: { type: string; message?: string };
     reason?: string;
@@ -6663,7 +6664,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // kill/pause the session even when the session is mid-tool-call.
     if (this.onSentinelIntercept) {
       try {
-        const classification = await this.onSentinelIntercept(text, numericTopicId);
+        const classification = await this.onSentinelIntercept(text, numericTopicId, `telegram:${numericTopicId}:${msg.message_id}`);
         if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause')) {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {

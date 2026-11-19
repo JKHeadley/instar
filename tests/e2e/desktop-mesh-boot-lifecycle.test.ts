@@ -70,16 +70,25 @@ describe('desktop mesh production boot', () => {
       });
       await targetServer.start();
       targetUrl = boundAgentServerBase(targetServer);
+      let peerDiscovered = false;
       frontServer = new AgentServer({ config: config(front), state: frontState,
         sessionManager: sessions, telegram: null, coordinator: frontCoordinator,
         meshSelfId: frontIdentity.machineId, localSigningKeyPem: frontSigningKey,
         listPoolMachines: () => pool as never,
-        resolvePeerUrls: () => [{ machineId: targetIdentity.machineId, url: targetUrl, kind: 'lan' }],
+        resolvePeerUrls: () => peerDiscovered ? [{ machineId: targetIdentity.machineId, url: targetUrl, kind: 'lan' }] : [],
       });
       await frontServer.start();
       const frontApp = frontServer.getApp();
       const unlock = await request(frontApp).post('/dashboard/unlock').send({ pin: '123456' });
       expect(unlock.status).toBe(200);
+      const beforeDiscovery = await request(frontApp).get('/desktop/targets')
+        .set('Authorization', 'Bearer desktop-mesh-front')
+        .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
+      expect(beforeDiscovery.status).toBe(200);
+      expect(beforeDiscovery.body.machines).toContainEqual(expect.objectContaining({
+        machineId: targetIdentity.machineId, ready: false, unavailableReason: expect.stringContaining('Could not check'),
+      }));
+      peerDiscovered = true;
       const listed = await request(frontApp).get('/desktop/targets')
         .set('Authorization', 'Bearer desktop-mesh-front')
         .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
