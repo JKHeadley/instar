@@ -64,7 +64,6 @@ import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/lane
 import { selectLeftovers, type ProcRow } from '../localVerify/leftoverReaper.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
-import { COMPARE_KINDS, mayStartCompare, type TrialCounts } from '../localVerify/firstPartTrial.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
 import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
@@ -3212,45 +3211,6 @@ const localVerifyErrorRerun: SelfActionController = {
 };
 
 /**
- * local-verify-first-part-compare — the verdict check of first parts (spec
- * docs/specs/local-verify-likely-failing-first.md, measure 6): in `alternate`, a verify that used
- * first parts is followed by one comparison run of the same merge commit. Pinned worst case
- * (targetAlwaysRejects): every verify qualifies, of every kind, and every comparison is killed
- * before it finishes, so none is ever counted as done. The start is counted durably BEFORE it
- * starts (mayStartCompare: under 5 finished AND under 10 started per kind), so at most 10 per
- * kind and 30 in all ever start on a machine, across restarts.
- */
-const localVerifyFirstPartCompare: SelfActionController = {
-  id: 'local-verify-first-part-compare',
-  actionVerb: 'spawn-first-part-compare',
-  models: 'src/localVerify/LocalVerifyService.ts (startCompareIfDue → FirstPartTrialState.mayStart / noteStarted → mayStartCompare)',
-  modelsPath: 'src/localVerify/LocalVerifyService.ts',
-  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) {
-    return localVerifyFirstPartCompare.makeUnderPressure(f, sink);
-  } },
-  boundK: 30,
-  perTargetBoundK: 10,
-  ticks: 200,
-  tickMs: 30 * 60_000, // one verify (and one comparison) every half hour
-  makeUnderPressure(f, sink) {
-    const key = 'first-part-trial';
-    const counts = (): TrialCounts => (f.durableState.get(key) as TrialCounts | undefined)
-      ?? { done: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, started: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, switchedOff: null };
-    let n = 0;
-    return { tick() {
-      sink.considered += 1;
-      const kind = COMPARE_KINDS[n++ % COMPARE_KINDS.length];
-      const c = counts();
-      if (!mayStartCompare(c, kind)) return;
-      c.started[kind] += 1; // durable before the start
-      f.durableState.set(key, c);
-      sink.emit({ verb: 'spawn-first-part-compare', target: kind });
-      if (!f.targetAlwaysRejects()) { c.done[kind] += 1; f.durableState.set(key, c); }
-    } };
-  },
-};
-
-/**
  * local-verify-capacity-requeue — a run that finds a foreign full suite holding
  * the slot waits in place 30 minutes, then re-queues at the front WITHOUT
  * counting an attempt. Pinned worst case (everySessionBusy): the foreign suite
@@ -6159,7 +6119,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyMergeHandoff,
   localVerifyMainFairShare,
   localVerifyErrorRerun,
-  localVerifyFirstPartCompare,
   localVerifyCapacityRequeue,
   localVerifyMainSchedule,
   localVerifyMainDebounce,

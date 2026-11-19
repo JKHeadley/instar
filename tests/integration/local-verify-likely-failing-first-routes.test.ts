@@ -1,6 +1,6 @@
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 /**
- * Tier-2 integration tests for first parts over the real HTTP pipeline (supertest +
+ * Tier-2 integration tests for first parts over the real HTTP pipeline (in-process HTTP +
  * createRoutes + a real LocalVerifyService on a temp state dir; only the child process and gh
  * are fakes). Spec docs/specs/local-verify-likely-failing-first.md, section F:
  * `GET /local-verify` shows the setting, the list's size, age and top files; a recorded failure
@@ -11,7 +11,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import request from 'supertest';
+import { inProcessHttp } from '../helpers/localVerifyInProcessHttp.js';
+const request = (app: express.Express) => ({ get: (url: string) => inProcessHttp(app, 'GET', url) });
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -122,7 +123,7 @@ describe('first parts over HTTP (integration)', () => {
     expect(r.body.likelyFailingFirst).toEqual({
       setting: 'off',
       list: { files: 0, updatedAt: null, oldestFailureAt: null, stale: false, problem: null, top: [] },
-      trial: { done: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, started: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, switchedOff: null, comparing: null },
+      open: 0, overdue: 0,
     });
     s.svc.shutdown();
   });

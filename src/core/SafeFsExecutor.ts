@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
@@ -46,7 +47,51 @@ export interface SafeFsOptions {
    * be a symlink. A rename source is checked by `safeRenameDirSync` only.
    */
   worktreeTrashScope?: WorktreeTrashScope;
+  /**
+   * Opt-in for `instar nuke <name>` (docs/specs/nuke-teardown-narrowing.md §4). Allows exactly a
+   * recursive, forced removal of `realpath(<instarHome>/agents/<agentName>)`, a path the guard
+   * builds itself from the instar home it resolves and the validated name. When supplied it is an
+   * exclusive decision, checked first: anything else is refused and no other allowance is consulted.
+   */
+  nukeAgentHomeScope?: { agentName: string };
 }
+
+/** Flags and allowances `checkScope` decides on — the same ones the delete would carry. */
+export interface ScopeCheckOptions {
+  operation?: string;
+  recursive?: boolean;
+  force?: boolean;
+  localVerifyScopeOk?: { verifyRoot: string };
+  nukeAgentHomeScope?: { agentName: string };
+  /** Worktree reaper trash allowance (reaper-removal-out-of-process §2). Checked by guard() first; decides alone. */
+  worktreeTrash?: { scope: WorktreeTrashScope; role: WorktreeTrashRole };
+}
+
+export type ScopeDecision =
+  | { allowed: true; canonical: string; reason?: string }
+  | { allowed: false; canonical: string; reason: string; error: Error };
+
+/** Refusal by an exclusive allowance (e.g. `nukeAgentHomeScope`). */
+export class ScopeRefusedError extends Error {
+  readonly code = 'INSTAR_SCOPE_REFUSED';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScopeRefusedError';
+  }
+}
+
+/**
+ * One non-empty path component: not empty, no `/` (or the platform separator), no NUL, not `.`
+ * or `..`. Shared by `instar nuke` and the `nukeAgentHomeScope` guard, which repeats the check
+ * itself so an empty name can never make the target the agents directory.
+ */
+export function isSingleComponentName(name: unknown): name is string {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  if (name === '.' || name === '..') return false;
+  if (name.includes('/') || name.includes(path.sep) || name.includes('\0')) return false;
+  return true;
+}
+
 
 /** The narrow allowance the out-of-process worktree reclaim uses (spec reaper-removal-out-of-process §2). */
 export interface WorktreeTrashScope {
@@ -193,16 +238,87 @@ function isUnderAgentRuntimeState(canonical: string): boolean {
   return canonical.length > idx + marker.length;
 }
 
-function guard(
-  target: string,
-  operation: string,
-  fnName: string,
-  localVerifyScopeOk?: { verifyRoot: string },
-  trash?: { scope: WorktreeTrashScope; role: WorktreeTrashRole },
-): string {
+/**
+ * The `nukeAgentHomeScope` decision (docs/specs/nuke-teardown-narrowing.md §4). Allows only when
+ * the canonical target is the guard-built `realpath(<instarHome>/agents/<agentName>)`, that path
+ * is a real directory (not a symlink), both `recursive` and `force` are set, and the canonical path
+ * has an interior `/.instar/` segment (today's carve-out condition — so a `~/.instar` symlinked to
+ * a differently named folder is refused rather than bypassing the source-tree check).
+ */
+function decideNukeAgentHome(
+  canonical: string,
+  agentName: string,
+  flags: { recursive?: boolean; force?: boolean },
+): { ok: true } | { ok: false; reason: string } {
+  if (!isSingleComponentName(agentName)) {
+    return { ok: false, reason: `nuke-agent-home-scope: ${JSON.stringify(agentName)} is not a single non-empty path component` };
+  }
+  if (!flags.recursive || !flags.force) {
+    return { ok: false, reason: 'nuke-agent-home-scope: allows only a recursive, forced removal' };
+  }
+  const built = path.join(os.homedir(), '.instar', 'agents', agentName);
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(built);
+  } catch (err) {
+    return { ok: false, reason: `nuke-agent-home-scope: ${built} cannot be checked (${(err as Error).message})` };
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    return { ok: false, reason: `nuke-agent-home-scope: ${built} is not a real directory` };
+  }
+  let expected: string;
+  try {
+    expected = fs.realpathSync(built);
+  } catch (err) {
+    return { ok: false, reason: `nuke-agent-home-scope: ${built} cannot be resolved (${(err as Error).message})` };
+  }
+  if (canonical !== expected) {
+    return { ok: false, reason: `nuke-agent-home-scope: target ${canonical} is not the agent home ${expected}` };
+  }
+  if (!isUnderAgentRuntimeState(expected)) {
+    return { ok: false, reason: `nuke-agent-home-scope: ${expected} has no interior /.instar/ segment` };
+  }
+  return { ok: true };
+}
+
+/**
+ * The decision half of the guard: side-effect-free (no audit entry, no fs writes). `guard()`
+ * below wraps it with the audit trail; `SafeFsExecutor.checkScope` exposes it for pre-checks.
+ */
+function decide(target: string, operation: string, opts: ScopeCheckOptions): ScopeDecision {
+  const canonical = canonicalizeTarget(target);
+  // Exclusive allowance, checked first: before the runtime-state carve-out and the source-tree
+  // assert. When supplied it decides alone — refused means refused.
+  if (opts.nukeAgentHomeScope) {
+    const d = decideNukeAgentHome(canonical, opts.nukeAgentHomeScope.agentName, opts);
+    if (d.ok) return { allowed: true, canonical, reason: 'nuke-agent-home-scope' };
+    return { allowed: false, canonical, reason: d.reason, error: new ScopeRefusedError(`Refusing ${operation}: ${d.reason}`) };
+  }
+  const localVerifyScopeOk = opts.localVerifyScopeOk;
+  if (localVerifyScopeOk && isLocalVerifyClonePath(canonical, localVerifyScopeOk.verifyRoot)) {
+    return { allowed: true, canonical, reason: 'local-verify-scope-carveout' };
+  }
+  // Carve-out: runtime state under `.instar/` is gitignored, not source code.
+  // The guard's brittle-block is a false positive for these paths in
+  // agent-mode deployments where the agent dir IS a checkout of the source.
+  // See isUnderAgentRuntimeState() above for the precise predicate.
+  if (isUnderAgentRuntimeState(canonical)) {
+    return { allowed: true, canonical, reason: 'agent-runtime-state-carveout' };
+  }
+  try {
+    assertNotInstarSourceTree(canonical, operation);
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    return { allowed: false, canonical, reason: e.message, error: e };
+  }
+  return { allowed: true, canonical };
+}
+
+function guard(target: string, operation: string, fnName: string, opts: ScopeCheckOptions = {}): string {
   // The worktree trash scope comes FIRST and decides alone: it must never fall
-  // through to the `.instar/` runtime-state carve-out below, which allows any
-  // path containing `/.instar/` (every agent home lives under one).
+  // through to the `.instar/` runtime-state carve-out, which allows any path
+  // containing `/.instar/` (every agent home lives under one).
+  const trash = opts.worktreeTrash;
   if (trash) {
     const verdict = decideWorktreeTrashScope(target, trash.scope, trash.role);
     if (verdict.ok) {
@@ -212,28 +328,15 @@ function guard(
     audit(fnName, operation, path.resolve(target), 'denied', `worktree-trash-scope:${trash.role}: ${verdict.reason}`);
     throw new WorktreeTrashScopeError(target, operation, verdict.reason);
   }
-  const canonical = canonicalizeTarget(target);
-  if (localVerifyScopeOk && isLocalVerifyClonePath(canonical, localVerifyScopeOk.verifyRoot)) {
-    audit(fnName, operation, canonical, 'allowed', 'local-verify-scope-carveout');
-    return canonical;
+  const d = decide(target, operation, opts);
+  if (d.allowed) {
+    if (d.reason) audit(fnName, operation, d.canonical, 'allowed', d.reason);
+    return d.canonical;
   }
-  // Carve-out: runtime state under `.instar/` is gitignored, not source code.
-  // The guard's brittle-block is a false positive for these paths in
-  // agent-mode deployments where the agent dir IS a checkout of the source.
-  // See isUnderAgentRuntimeState() above for the precise predicate.
-  if (isUnderAgentRuntimeState(canonical)) {
-    audit(fnName, operation, canonical, 'allowed', 'agent-runtime-state-carveout');
-    return canonical;
+  if (d.error instanceof SourceTreeGuardError || d.error instanceof ScopeRefusedError) {
+    audit(fnName, operation, d.canonical, 'denied', d.error.message);
   }
-  try {
-    assertNotInstarSourceTree(canonical, operation);
-  } catch (err) {
-    if (err instanceof SourceTreeGuardError) {
-      audit(fnName, operation, canonical, 'denied', err.message);
-    }
-    throw err;
-  }
-  return canonical;
+  throw d.error;
 }
 
 function trashOf(scope: WorktreeTrashScope | undefined): { scope: WorktreeTrashScope; role: WorktreeTrashRole } | undefined {
@@ -276,6 +379,15 @@ async function removeTreeSerially(target: string): Promise<void> {
 
 export class SafeFsExecutor {
   /**
+   * The guard's decision for a planned delete, with no side effects: no audit entry and no
+   * filesystem writes. Pass the same flags and allowances the delete will carry. The real delete
+   * still runs the full guard again (docs/specs/nuke-teardown-narrowing.md §4).
+   */
+  static checkScope(target: string, opts: ScopeCheckOptions = {}): ScopeDecision {
+    return decide(target, opts.operation ?? 'checkScope', opts);
+  }
+
+  /**
    * Recursive force-deletes default to fs.rm's native transient-error retry
    * (ENOTEMPTY/EBUSY/EPERM). A recursive tree delete racing a concurrent
    * writer (git finishing an object write, an mtime scanner walking the
@@ -314,8 +426,10 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rm wrapper. */
   static async safeRm(target: string, opts: SafeRmOptions): Promise<void> {
-    const { operation, localVerifyScopeOk, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRm', localVerifyScopeOk, trashOf(worktreeTrashScope));
+    const { operation, localVerifyScopeOk, nukeAgentHomeScope, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRm', {
+      localVerifyScopeOk, nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope), recursive: rmOpts.recursive, force: rmOpts.force,
+    });
     try {
       await fsp.rm(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRm', operation, canonical, 'allowed');
@@ -339,8 +453,9 @@ export class SafeFsExecutor {
    * removed with `fs.promises.rm` and its retry defaults. Missing targets are a no-op.
    */
   static async safeRmTreeSerial(target: string, opts: SafeFsOptions): Promise<void> {
-    const { operation } = opts;
-    const canonical = guard(target, operation, 'safeRmTreeSerial', undefined, trashOf(opts.worktreeTrashScope));
+    const { operation, nukeAgentHomeScope, worktreeTrashScope } = opts;
+    // A whole-tree recursive, forced removal.
+    const canonical = guard(target, operation, 'safeRmTreeSerial', { nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope), recursive: true, force: true });
     try {
       try {
         await removeTreeSerially(target);
@@ -365,8 +480,8 @@ export class SafeFsExecutor {
    */
   static safeRenameDirSync(source: string, destination: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope }): void {
     if (!opts.worktreeTrashScope) throw new WorktreeTrashScopeError(source, opts.operation, 'safeRenameDirSync requires worktreeTrashScope');
-    const src = guard(source, opts.operation, 'safeRenameDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'rename-source' });
-    const dest = guard(destination, opts.operation, 'safeRenameDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'trash' });
+    const src = guard(source, opts.operation, 'safeRenameDirSync', { worktreeTrash: { scope: opts.worktreeTrashScope, role: 'rename-source' } });
+    const dest = guard(destination, opts.operation, 'safeRenameDirSync', { worktreeTrash: { scope: opts.worktreeTrashScope, role: 'trash' } });
     const refuse = (reason: string): never => {
       audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'denied', reason);
       throw new WorktreeTrashScopeError(source, opts.operation, reason);
@@ -399,7 +514,7 @@ export class SafeFsExecutor {
    */
   static safeRmTreeInSubprocess(target: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope; timeoutMs: number }): Promise<SubprocessRmResult> {
     if (!opts.worktreeTrashScope) throw new WorktreeTrashScopeError(target, opts.operation, 'safeRmTreeInSubprocess requires worktreeTrashScope');
-    const canonical = guard(target, opts.operation, 'safeRmTreeInSubprocess', undefined, { scope: opts.worktreeTrashScope, role: 'trash' });
+    const canonical = guard(target, opts.operation, 'safeRmTreeInSubprocess', { worktreeTrash: { scope: opts.worktreeTrashScope, role: 'trash' } });
     return new Promise((resolve) => {
       let timedOut = false;
       let stderr = '';
@@ -438,8 +553,10 @@ export class SafeFsExecutor {
 
   /** Sync fs.rmSync wrapper. */
   static safeRmSync(target: string, opts: SafeRmOptions): void {
-    const { operation, localVerifyScopeOk, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmSync', localVerifyScopeOk, trashOf(worktreeTrashScope));
+    const { operation, localVerifyScopeOk, nukeAgentHomeScope, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmSync', {
+      localVerifyScopeOk, nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope), recursive: rmOpts.recursive, force: rmOpts.force,
+    });
     try {
       fs.rmSync(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRmSync', operation, canonical, 'allowed');
@@ -451,7 +568,7 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.unlink wrapper. */
   static async safeUnlink(target: string, opts: SafeFsOptions): Promise<void> {
-    const canonical = guard(target, opts.operation, 'safeUnlink', opts.localVerifyScopeOk, trashOf(opts.worktreeTrashScope));
+    const canonical = guard(target, opts.operation, 'safeUnlink', { localVerifyScopeOk: opts.localVerifyScopeOk, nukeAgentHomeScope: opts.nukeAgentHomeScope, worktreeTrash: trashOf(opts.worktreeTrashScope) });
     try {
       await fsp.unlink(target);
       audit('safeUnlink', opts.operation, canonical, 'allowed');
@@ -463,7 +580,7 @@ export class SafeFsExecutor {
 
   /** Sync fs.unlinkSync wrapper. */
   static safeUnlinkSync(target: string, opts: SafeFsOptions): void {
-    const canonical = guard(target, opts.operation, 'safeUnlinkSync', opts.localVerifyScopeOk, trashOf(opts.worktreeTrashScope));
+    const canonical = guard(target, opts.operation, 'safeUnlinkSync', { localVerifyScopeOk: opts.localVerifyScopeOk, nukeAgentHomeScope: opts.nukeAgentHomeScope, worktreeTrash: trashOf(opts.worktreeTrashScope) });
     try {
       fs.unlinkSync(target);
       audit('safeUnlinkSync', opts.operation, canonical, 'allowed');
@@ -475,8 +592,8 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rmdir wrapper. */
   static async safeRmdir(target: string, opts: SafeRmDirOptions): Promise<void> {
-    const { operation, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmdir', undefined, trashOf(worktreeTrashScope));
+    const { operation, nukeAgentHomeScope, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmdir', { nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope) });
     try {
       await fsp.rmdir(target, rmOpts);
       audit('safeRmdir', operation, canonical, 'allowed');
@@ -488,8 +605,8 @@ export class SafeFsExecutor {
 
   /** Sync fs.rmdirSync wrapper. */
   static safeRmdirSync(target: string, opts: SafeRmDirOptions): void {
-    const { operation, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmdirSync', undefined, trashOf(worktreeTrashScope));
+    const { operation, nukeAgentHomeScope, worktreeTrashScope, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmdirSync', { nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope) });
     try {
       fs.rmdirSync(target, rmOpts);
       audit('safeRmdirSync', operation, canonical, 'allowed');
