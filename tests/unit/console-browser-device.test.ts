@@ -140,3 +140,15 @@ describe('where the key may be used', () => {
     expect(bd.secureContextOk({ protocol: 'http:', hostname: '192.168.1.5' }, false)).toBe(false);
   });
 });
+
+describe('checking this browser on a weak or missing connection (app-weak-network)', () => {
+  it('answers "unreachable" when the connection is down, instead of leaving the page on "Checking this browser…"', async () => {
+    const d = bd.createBrowserDevice({ bearer: () => 't', fetchFn: async () => { throw new TypeError('Failed to fetch'); }, locks: null as unknown as undefined });
+    await expect(d.status(null)).resolves.toEqual({ error: 'unreachable', networkError: true });
+  });
+  it('still reads the status when the agent answers', async () => {
+    const d = bd.createBrowserDevice({ bearer: () => 't', fetchFn: async () => new Response(JSON.stringify({ serverTime: Date.now(), machineId: 'm1' }), { status: 200 }), locks: null as unknown as undefined });
+    const st = await d.status(null);
+    expect(st.ok).toBe(true);
+  });
+});

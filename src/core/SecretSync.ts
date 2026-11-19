@@ -76,11 +76,26 @@ export function isLegacyPasskeyPath(keyPath: string): boolean {
   return first.startsWith(LEGACY_PASSKEY_KEY_PREFIX);
 }
 
+/**
+ * Secret Drop values (`secretDrops.<token>` at the vault ROOT) are a one-time hand-off to the
+ * machine that asked for them. They are never sent to peers, and a peer's push never writes
+ * them (an older sender's drops are stripped on receive, counted, never named: a drop token is
+ * a bearer handle). Unlike the namespaces above, a drop in a received batch does NOT refuse
+ * the batch, so a mixed-version fleet keeps syncing every other secret.
+ */
+export const MACHINE_LOCAL_DROP_KEY = 'secretDrops';
+
+/** True for the root drop namespace, or a top-level dotted key inside it. Root only. */
+export function isMachineLocalDropKey(topLevelKey: string): boolean {
+  return topLevelKey === MACHINE_LOCAL_DROP_KEY || topLevelKey.startsWith(`${MACHINE_LOCAL_DROP_KEY}.`);
+}
+
 /** Return a deep, non-mutating copy with every machine-local namespace removed. */
 export function filterSecretsForSync(secrets: Secrets, prefix = ''): Secrets {
   const filtered: Secrets = {};
   for (const [key, value] of Object.entries(secrets)) {
     const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (!prefix && isMachineLocalDropKey(key)) continue;
     if (isLocalOnlySecretPath(keyPath)) continue;
     if (isLegacyPasskeyPath(keyPath)) continue;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -200,6 +215,8 @@ export class SecretProvisioner {
  * confidentiality is enforced here (decryption fails for a payload not sealed to our key).
  */
 export class SecretShareHandler {
+  /** Secret Drop entries stripped from the last batch (a count only). */
+  lastDroppedLocalDrops = 0;
   constructor(
     private readonly deps: {
       /** This machine's X25519 private key (KeyObject) for decryption. */
@@ -212,13 +229,14 @@ export class SecretShareHandler {
 
   /**
    * Decrypt + store. Returns the keyPaths stored and any prototype passkey keys dropped.
-   * Throws only on a malformed/foreign payload or a machine-local recovery namespace.
+   * Secret Drop values in the batch are stripped and counted (never stored, never named).
+   * Throws only on a malformed/foreign payload or a machine-local recovery/graph namespace.
    */
   handle(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
     try {
       const result = this.handleInner(command, sender);
-      // Counts only: never a secret name or value.
-      featureEvidence.record('multiMachine.secretSync', { kind: 'fired', reason: 'secret sync received and applied', context: { sender, stored: result.stored.length, dropped: result.dropped.length } });
+      // Counts only: never a secret name or value (and never a drop token).
+      featureEvidence.record('multiMachine.secretSync', { kind: 'fired', reason: 'secret sync received and applied', context: { sender, stored: result.stored.length, dropped: result.dropped.length, droppedLocalDrops: this.lastDroppedLocalDrops } });
       return result;
     } catch (err) {
       // A classified code, never err.message: the refusal message names a secret path.
@@ -238,10 +256,22 @@ export class SecretShareHandler {
     }
     const payload = JSON.parse(command.encrypted) as EncryptedSecretPayload;
     const secrets = decryptFromSync(payload, this.deps.ownEncryptionPrivateKey());
+    // Checked on the ORIGINAL payload, so a refused namespace hidden inside a drop subtree
+    // still refuses the whole batch (stripping drops must never hide it).
     const forbidden = firstLocalOnlySecretPath(secrets);
     if (forbidden) {
       throw new Error(`SecretShareHandler refuses machine-local secret namespace: ${forbidden}`);
     }
+    // Then strip Secret Drop values an older sender may still include. A push never writes
+    // this machine's drops; nothing is written for a stripped key (no emptied parent either).
+    let droppedLocalDrops = 0;
+    for (const key of Object.keys(secrets)) {
+      if (!isMachineLocalDropKey(key)) continue;
+      const v = secrets[key];
+      droppedLocalDrops += key === MACHINE_LOCAL_DROP_KEY && v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v as object).length : 1;
+      delete secrets[key];
+    }
+    this.lastDroppedLocalDrops = droppedLocalDrops;
     const stored: string[] = [];
     // Prototype passkey keys from an older-build sender are dropped and audited, never
     // stored — and the rest of the batch is still stored (spec §6 Increment 1: a
@@ -260,6 +290,9 @@ export class SecretShareHandler {
       this.deps.log?.(`[secret-sync] dropped ${dropped.length} prototype passkey key(s) from ${sender} (machine-local; names: ${dropped.join(', ')})`);
     }
     this.deps.log?.(`[secret-sync] stored ${stored.length} secret(s) from ${sender}`);
+    if (droppedLocalDrops > 0) {
+      this.deps.log?.(`[secret-sync] ignored ${droppedLocalDrops} Secret Drop value(s) from ${sender} (machine-local; an older sender)`);
+    }
     return { stored, dropped };
   }
 }

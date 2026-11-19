@@ -140,15 +140,17 @@ export type LocalMcpAdmission =
   | { ok: false; status: 401 | 403; error: string };
 
 /**
- * The route's admission rule. Deterministic; the local secret is the boundary,
- * the rest is defence in depth: loopback peer only, no `Origin`, no
- * `Cf-Connecting-Ip` / `X-Forwarded-For`, then a constant-time compare of
- * `Authorization: Bearer <secret>`. The agent token is NOT accepted here.
+ * The loopback/Origin/forwarding portion of the admission rule, WITHOUT the secret
+ * compare — extracted so a route authenticated by the agent token (e.g. the SEC-018
+ * `/threadline/approved-delete` companion) can reuse the same tunnel-rejection as the
+ * local-MCP route: loopback peer only, no `Origin`, no `Cf-Connecting-Ip` /
+ * `X-Forwarded-For`. This is NOT itself a boundary — it refuses non-loopback callers,
+ * but a hostile LOCAL caller still passes it. (SEC-018 safety rests on redeem-only +
+ * the off-machine device signature, not on this guard.)
  */
-export function evaluateLocalMcpAdmission(
+export function evaluateLoopbackGuard(
   req: { socket?: { remoteAddress?: string | undefined } | null; headers: Record<string, unknown> },
-  secret: string | null | undefined,
-): LocalMcpAdmission {
+): { ok: true } | { ok: false; status: 403; error: string } {
   if (!isLoopbackAddress(req.socket?.remoteAddress)) {
     return { ok: false, status: 403, error: 'threadline-mcp-loopback-only' };
   }
@@ -158,6 +160,21 @@ export function evaluateLocalMcpAdmission(
   if (req.headers['cf-connecting-ip'] !== undefined || req.headers['x-forwarded-for'] !== undefined) {
     return { ok: false, status: 403, error: 'threadline-mcp-forwarded-refused' };
   }
+  return { ok: true };
+}
+
+/**
+ * The route's admission rule. Deterministic; the local secret is the boundary,
+ * the rest is defence in depth: loopback peer only, no `Origin`, no
+ * `Cf-Connecting-Ip` / `X-Forwarded-For`, then a constant-time compare of
+ * `Authorization: Bearer <secret>`. The agent token is NOT accepted here.
+ */
+export function evaluateLocalMcpAdmission(
+  req: { socket?: { remoteAddress?: string | undefined } | null; headers: Record<string, unknown> },
+  secret: string | null | undefined,
+): LocalMcpAdmission {
+  const loopback = evaluateLoopbackGuard(req);
+  if (!loopback.ok) return loopback;
   const header = req.headers.authorization;
   if (!secret || typeof header !== 'string' || !header.startsWith('Bearer ')) {
     return { ok: false, status: 401, error: 'threadline-mcp-local-secret-required' };
@@ -454,7 +471,7 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
         // a2a-required-acknowledgment D4/D6: the same route the stdio helper calls.
         acknowledge: (params) => track(acknowledgeViaHttp(params, port, token())),
         getThreadReceipts: (threadId) => track(getThreadReceiptsViaHttp(threadId, port, token())),
-        requestSecret: (params) => track(requestSecretViaHttp(params, port)),
+        requestSecret: (params) => track(requestSecretViaHttp(params, port, token())),
         startPairing: (peerFp) => track(startPairingViaHttp(peerFp, port, token())),
         createInvite: (o) => track(createPairingInviteViaHttp(o, port, token())),
         // Shared live trust manager: never reload from disk (a reload could drop debounced writes).

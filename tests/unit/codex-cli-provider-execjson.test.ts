@@ -390,6 +390,8 @@ describe('codex 0.144 shutdown-linger — early terminal settle', () => {
     fs.writeFileSync(
       p,
       `#!/bin/sh
+# A real codex answers --version at once (the older-CLI model check reads it).
+if [ "$1" = "--version" ]; then echo "codex-cli 0.169.0"; exit 0; fi
 cat > /dev/null
 printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"${resultText}"}}'
 printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":8,"total_tokens":128}}'

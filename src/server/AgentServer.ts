@@ -1,6 +1,8 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { orgDecisionJournal } from '../core/OrgActionCheck.js';
+import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -129,6 +131,8 @@ import { ConversationGraphOwnerGrantStore } from './ConversationGraphOwnerGrant.
 import {readConversationGraphOwnerCredential,readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../core/ConversationGraphOwnerPolicy.js';
 import {LiveConfig} from '../config/LiveConfig.js';
 import crypto from 'node:crypto';
+import { payloadHash } from '../core/MobileChatRequests.js';
+import { chatRecordDelivered } from '../documents/decisions.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
@@ -233,11 +237,15 @@ import { DocumentService } from '../documents/service.js';
 import { standingCheck, teamStateAt, teamView, type TeamDeps } from '../documents/teamAdapter.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createQuotaPacingRoutes } from './quotaPacingRoutes.js';
+import { QuotaHistoryLedger, buildLocalSummaries, isQuotaPacingEnabled } from '../monitoring/QuotaHistoryLedger.js';
+import { mergeLogins as mergeQuotaLogins, assembleProviders as assembleQuotaProviders } from '../monitoring/quotaPacing.js';
 import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { ConversationListPinStore } from '../core/ConversationListPins.js';
@@ -283,6 +291,8 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
+import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -525,6 +535,8 @@ export interface LiveTestRunnerWiring {
 export class AgentServer {
   private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
+  /** Project apps part 2: the known-address inputs for the frame/wrapper origin (project-apps-sandbox §3.6). */
+  private projectAppOriginDeps: ProjectAppOriginDeps = { knownHttpsHosts: () => [] };
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
@@ -919,6 +931,8 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
+  private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
   private deliverA2aToMachine?: (input: {
     machineId: string;
     targetAgent: string;
@@ -943,6 +957,12 @@ export class AgentServer {
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     windowLifecycleTick?: (() => void) | null;
     passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1016,6 +1036,9 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Quota pacing (docs/specs/quota-pacing-forecast.md): the reading history, attached to the poller. */
+  private quotaPacingLedger: QuotaHistoryLedger | null = null;
+  private quotaPacingPoller: import('../core/QuotaPoller.js').QuotaPoller | null = null;
   /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
   private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
@@ -1374,6 +1397,7 @@ export class AgentServer {
     operationGate?: import('../core/ExternalOperationGate.js').ExternalOperationGate;
     sentinel?: import('../core/MessageSentinel.js').MessageSentinel;
     adaptiveTrust?: import('../core/AdaptiveTrust.js').AdaptiveTrust;
+    trustAccountPath?: import('../core/trustJourney/TrustJourneyRuntime.js').TrustAccountPathRuntime;
     memoryMonitor?: import('../monitoring/MemoryPressureMonitor.js').MemoryPressureMonitor;
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
@@ -1779,7 +1803,7 @@ export class AgentServer {
      *  shared forward context — boot secret, standby fact, forwarder, counters.
      *  Absent ⇒ relay-send behaves exactly as before. */
     a2aRelayForward?: NonNullable<import('./routes.js').RouteContext['a2aRelayForward']>;
-    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>;
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
@@ -1917,6 +1941,12 @@ export class AgentServer {
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -1966,6 +1996,7 @@ export class AgentServer {
     this.poolLink = options.poolLink ?? undefined;
     this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
+    this.docPoolRegistry = options.machinePoolRegistry ?? null;
     this.deliverA2aToMachine = options.deliverA2aToMachine;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
@@ -1977,13 +2008,25 @@ export class AgentServer {
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
     const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
+    // SEC-103: one credential check (before any body is read) for every parser above 64 KB.
+    const bodyBudgetDeps: BodyBudgetDeps = {
+      authToken: () => this.config.authToken,
+      dashboardSessionValid: (token) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && this.dashboardSessionStore.verify(token),
+      memorySessionValid: options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) !== null : undefined,
+      activeDevice: (id) => this.mobilePairing?.enabled() === true && this.mobilePairing.devices.get(id)?.status === 'active',
+      activeMachine: (id) => this.machineRouteContext?.authDeps.identityManager.loadRegistry().machines[id]?.status === 'active',
+      selfMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
+      verify: keepRawBody,
+    };
     this.app.use('/completion-claim/observe', express.json({ limit: '96kb', verify: keepRawBody }));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
     // PostCompact record route (context-budget-layered-summaries §14 body cap):
     // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
-    this.app.use('/hooks/post-compact', express.json({ limit: '2mb' }));
+    this.app.use('/hooks/post-compact', credentialAwareJsonParser({ ...bodyBudgetDeps, verify: undefined }, 2 * 1024 * 1024));
     // Native hook events: admission (loopback, no forwarding headers, bearer,
     // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
     // 4 MB parser — both ahead of the global parser, which runs before
@@ -1993,6 +2036,13 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
+    this.app.use('/mobile/local-owner-device', express.json({ limit: '4kb' }));
+    // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
+    this.app.use('/org/checkin', express.json({ limit: '4kb' }));
+    this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
+    // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
+    this.app.use('/mobile/org/recover', credentialAwareJsonParser(bodyBudgetDeps, 32 * 1024 * 1024));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
@@ -2009,11 +2059,21 @@ export class AgentServer {
         runtime.admissionGuard()(req,res,()=>express.json({limit:'4mb'})(req,res,()=>runtime.router(req,res,next)));
       });
     }
-    this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
+    // SEC-103: the general parser reads 12 MB only for a caller with a credential it can check
+    // before the body; a public peer route gets 2 MB, anyone else 64 KB (src/server/bodyBudget.ts).
+    this.app.use(credentialAwareJsonParser(bodyBudgetDeps));
     this.app.locals.stateDir = options.config.stateDir;
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
+    // Project app wrapper + frame (project-apps-sandbox §3.6): the request's own origin, only when it is
+    // one of this agent's known addresses (its own port locally, the tunnel, the named tunnel host,
+    // own Tailscale/Cloudflare names). dashboardSecurityHeaders reads it from app.locals.
+    this.projectAppOriginDeps = {
+      knownHttpsHosts: () => [projectAppHostOf(options.tunnel?.url ?? null), options.config.tunnel?.hostname ?? null],
+      acceptsOwnName: (host: string) => this.mobilePairing?.ownNames?.accepts(host) === true,
+    };
+    this.app.locals.projectAppOrigin = (req: Request) => resolveProjectAppOrigin(req, this.projectAppOriginDeps);
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
     this.app.use(dashboardSecurityHeaders);
 
@@ -2127,6 +2187,25 @@ export class AgentServer {
       });
     });
 
+    // SEC-070 local-guess budget: durable when the attempt store is available, else in memory.
+    const LOCAL_PIN_KEY = 'local-direct-unmarked';
+    const LOCAL_PIN_MAX_FAILURES = 10;
+    const LOCAL_PIN_WINDOW_MS = 5 * 60 * 1000;
+    let localPinMem = { count: 0, resetAt: 0 };
+    const localPinBlocked = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.blocked(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES);
+      return now <= localPinMem.resetAt && localPinMem.count >= LOCAL_PIN_MAX_FAILURES;
+    };
+    /** Records one local failure; true when this failure reached the cap (alert once). */
+    const recordLocalPinFailure = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.recordFailure(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES) <= 0;
+      if (now > localPinMem.resetAt) localPinMem = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS };
+      localPinMem.count++;
+      return localPinMem.count === LOCAL_PIN_MAX_FAILURES;
+    };
+    const LOCAL_PIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+    let lastLocalPinAlertAt = -Infinity;
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
       if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
@@ -2152,6 +2231,30 @@ export class AgentServer {
         : (req.ip || req.socket.remoteAddress || 'unknown');
       const markerId = readPinMarker(req);
       let entry: { count: number; resetAt: number } | undefined;
+
+      // SEC-070: a local caller without a prior-unlock marker gets its OWN small budget. Other
+      // processes on this machine (including confined sessions, which share the loopback) are
+      // local too, so local must not mean unlimited. A browser that unlocked before (signed
+      // marker) is never capped, and this budget is separate from the remote one, so a stranger
+      // elsewhere can never lock the owner out at the machine.
+      const localUnmarked = isLocalDirect && !markerId;
+      if (pinThrottle && localUnmarked && localPinBlocked(now)) {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
+        });
+        return;
+      }
+      // A local browser that unlocked before is judged on its own marker, exactly like a known
+      // remote browser: its gentle backoff and the marked abuse cap apply, so a copied marker
+      // cookie is not an unlimited pass from this machine.
+      if (pinThrottle && isLocalDirect && markerId) {
+        const decision = pinThrottle.consult(ip, markerId, now);
+        if (!decision.allow) {
+          res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
+          return;
+        }
+      }
 
       if (pinThrottle) {
         if (!isLocalDirect) {
@@ -2202,11 +2305,22 @@ export class AgentServer {
               DegradationReporter.getInstance().report({
                 feature: 'DashboardPin.bruteForce',
                 primary: 'An attack on the dashboard PIN is under way',
-                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the machine still works',
+                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
                 reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
-                impact: 'To unlock, use a browser you have unlocked before, or the machine itself (the local dashboard or the paired phone app).',
+                impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
               });
             }
+          }
+          if (isLocalDirect && markerId) pinThrottle.recordFailure(ip, markerId, now);
+          if (localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+            lastLocalPinAlertAt = now;
+            DegradationReporter.getInstance().report({
+              feature: 'DashboardPin.localGuessing',
+              primary: 'Repeated wrong PINs are being entered from this machine itself',
+              fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
+              reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
+              impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
+            });
           }
           res.status(403).json({ error: 'Incorrect PIN' });
           return;
@@ -2235,6 +2349,8 @@ export class AgentServer {
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
       if (pinThrottle) {
+        // The local count is NOT reset by a success: an owner's unlock must not hand a guessing
+        // program a fresh budget (the same choice as the remote global budget).
         pinThrottle.recordSuccess(ip, markerId);
         this.pinAttemptStore?.recordSuccess(ip);
         // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
@@ -2436,6 +2552,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
+    mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
     mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken,
       // SEC-046: when the dashboard scoped-session feature is on, the console redeem mints a scoped
@@ -2463,6 +2581,7 @@ export class AgentServer {
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
         mayNotifyDocument: (deviceId, docId, commentKey) => this.documentPushAllowed(deviceId, docId, commentKey),
+        mayDecideDocument: (deviceId, docId) => this.documentDecidePushAllowed(deviceId, docId),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
         // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
         badgeFor: (deviceId, conversationKey, messageId) => {
@@ -2896,12 +3015,14 @@ export class AgentServer {
           const list = Array.isArray(reg) ? reg : reg.agents ?? [];
           otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
         } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const subscriptionPool = options.subscriptionPool;
         const ledger = new UsageLedger({
           dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
           machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
           agentId: options.config.projectName ?? path.basename(projectDir),
           agentHomes: homes,
           otherAgentHomes: otherHomes,
+          poolHomes: subscriptionPool ? () => subscriptionPool.transcriptHomes() : undefined,
         });
         if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
         ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
@@ -2922,7 +3043,8 @@ export class AgentServer {
           });
         });
         // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
-        ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
+        if (process.env.CODEX_HOME) ledger.addCodexRoot(process.env.CODEX_HOME, 'server-env');
+        ledger.addCodexRoot(path.join(os.homedir(), '.codex'), 'default');
         setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
         this.usageLedger = ledger;
         // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
@@ -6315,6 +6437,7 @@ export class AgentServer {
       operationGate: options.operationGate ?? null,
       sentinel: options.sentinel ?? null,
       adaptiveTrust: options.adaptiveTrust ?? null,
+      trustAccountPath: options.trustAccountPath ?? null,
       memoryMonitor: options.memoryMonitor ?? null,
       orphanReaper: options.orphanReaper ?? null,
       coherenceMonitor: options.coherenceMonitor ?? null,
@@ -6693,6 +6816,10 @@ export class AgentServer {
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      projectAppsRuntime: options.projectAppsRuntime,
+      projectAppSandbox: options.projectAppSandbox,
+      projectAppCustom: options.projectAppCustom,
+      projectAppOrigin: this.projectAppOriginDeps,
       chiefOfStaffProtocol: options.chiefOfStaffProtocol ?? null,
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
@@ -7075,6 +7202,20 @@ export class AgentServer {
     routeCtx.desktopSetupTarget = this.desktopSetupTarget;
     this.attribution = this.createAttribution(options, routeCtx);
     routeCtx.attribution = this.attribution;
+    // Chief of Staff owner pause asks (spec cos-owner-pause-record §3.2): the source floor reads the attribution
+    // resolver and the same verified-owner principal the `cos:` button check uses. Bound here because the loop
+    // is built before attribution exists; unbound, asks answer `attribution-unavailable`.
+    {
+      const attribution = this.attribution;
+      const cosLoop = options.chiefOfStaffLoop;
+      // A stand-in loop (tests) may lack the binder; unbound, pause asks refuse 503 attribution-unavailable.
+      if (cosLoop && attribution?.enabled && typeof cosLoop.bindPauseSourceCheck === 'function') {
+        cosLoop.bindPauseSourceCheck(async (marker) => {
+          const { checkOwnerPauseSource } = await import('../core/cosOwnerPauseSource.js');
+          return checkOwnerPauseSource({ resolve: (ref) => attribution.resolve(ref), ownerUid: () => options.telegram?.getVerifiedOwner() ?? null, identity: attribution.identity.map }, marker);
+        });
+      }
+    }
     const routes = createRoutes(routeCtx);
     this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
@@ -7539,6 +7680,10 @@ export class AgentServer {
     // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
     // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
     this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
+    // Quota pacing (docs/specs/quota-pacing-forecast.md): reading history + read-only forecast
+    // (dev-gated through subscriptionPool.pacing.enabled; 503 quota-pacing-off when it resolves off).
+    this.startQuotaPacing(options);
+    this.app.use(createQuotaPacingRoutes({ ...routeCtx, quotaPacing: () => this.quotaPacingLedger }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -7844,6 +7989,30 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      // Organization pack (docs/specs/org-pack-and-join.md): bearer preparation, owner-device acts.
+      {
+        const pairing = this.mobilePairing;
+        const autonomy = options.autonomyManager ?? null;
+        this.app.use(createOrgPackRouter({
+          stateDir: options.config.stateDir,
+          machineId: this.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'single-machine',
+          updateOrigin: () => pairing.origin(),
+          ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
+          agentName: () => String(options.config.projectName ?? ''),
+          principalKind: (req) => principalOf(req).kind,
+          intelligence: () => options.intelligence ?? null,
+          config: () => options.config,
+          journal: orgDecisionJournal(options.config.stateDir),
+          effects: () => ({
+            currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
+            currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,
+            lowerProfile: autonomy ? (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName) : undefined,
+            restoreProfile: autonomy ? (prev, cap) => { autonomy.restoreAfterOrgPolicy(prev, cap); } : undefined,
+            clampSettings: autonomy ? (cap) => autonomy.clampForOrgPolicy(cap) : undefined,
+            restoreSettings: autonomy ? (prev, cap) => autonomy.restoreClampedSettings(prev, cap) : undefined,
+          }),
+        }));
+      }
       const pairingSvc = this.mobilePairing;
       const appStore = this.appConversations?.store ?? null;
       const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
@@ -9401,6 +9570,8 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
+        bootReadiness().markReady();
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {
@@ -10141,6 +10312,11 @@ export class AgentServer {
     }
     for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
     this.queuePaceTimers = [];
+    if (this.quotaPacingLedger) {
+      try { this.quotaPacingPoller?.setHistoryLedger(null); } catch { /* @silent-fallback-ok: detaching a sink at shutdown */ }
+      try { await this.quotaPacingLedger.stop(); } catch { /* @silent-fallback-ok: shutdown flush of observational history; a lost tail row is one 5-minute reading */ }
+      this.quotaPacingLedger = null;
+    }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
@@ -10464,6 +10640,8 @@ export class AgentServer {
         if (!b) return null;
         try { const v = JSON.parse(b.text) as unknown; return Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null; } catch { return null; } // @silent-fallback-ok — an unreadable list keeps the row hidden
       }),
+      // Document decisions (§3.5): whichever machine runs the conversation's session tells it.
+      onApplied: (row) => { if (row.eventKind === 'decision') this.documentDecisionApplied(row); },
     });
     this.documents = { store, service: new DocumentService(store, teamView(deps)) };
     // Rows waiting for a device binding or a team row are re-checked on a timer, so this works on a
@@ -10628,7 +10806,8 @@ export class AgentServer {
     if (!publicKey) return { status: 'unknown' };
     if (local && local.status === 'revoked') return { status: 'revoked' };
     const client: 'phone' | 'browser' = (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
-    const approvedVia = local?.approvedVia ?? act?.approvedVia ?? null;
+    // A local record with no approvedVia predates the field: it was approved in Telegram (MobileDeviceKeys).
+    const approvedVia = local ? (local.approvedVia ?? (isBrowserDevice(local) ? null : 'telegram-dm')) : act?.approvedVia ?? null;
     // Whose device: this machine's own record, else the replicated team binding (owner phones are
     // bound to 'owner' there too). Never inferred from a missing binding: unknown waits for it.
     const person = local ? svc.personOfDevice(local) : null;
@@ -10653,7 +10832,10 @@ export class AgentServer {
     // no machine can widen a guest's computer by rewriting its scope.
     const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
     const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
-    return { status: 'ok', publicKey, role, personKey, client, mayWrite };
+    // SEC-088 interim: only this machine's own, matching, active owner-phone enrollment yields the
+    // Face ID key a decision row is re-checked with; replicated activation never does.
+    const localPresenceKey = local && localKey && deviceKeyHashOf(localKey) === keyHash && local.presenceKey && activeOwnerPhone(svc, deviceId) ? local.presenceKey : undefined;
+    return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia, ...(localPresenceKey ? { localPresenceKey } : {}) };
   }
 
 
@@ -10700,7 +10882,11 @@ export class AgentServer {
         const id = options.telegram?.getLifelineTopicId?.();
         return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
       },
-      deviceApprovedVia: (deviceId: string) => this.mobilePairing?.devices.get(deviceId)?.approvedVia ?? null,
+      // A phone record with no approvedVia predates the field and was approved in Telegram (MobileDeviceKeys);
+      // a browser with none stays unknown, which the caller treats as PIN-approved (fail closed).
+      deviceApprovedVia: (deviceId: string) => { const d = this.mobilePairing?.devices.get(deviceId); return d ? d.approvedVia ?? (isBrowserDevice(d) ? null : 'telegram-dm') : null; },
+      decisionWritesBlockedBy: () => this.documentDecisionWritesBlockedBy(),
+      notifyDecisionAsk: (docId: string, askId: string, versionId?: string) => { void this.documentDecisionPush(docId, `doc-decide:${docId}:${askId}:${versionId ?? ''}`); },
       linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin
         ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel)
         // Test-only (documents.loopbackOrigin): a development agent with no tunnel links to its own loopback address.
@@ -10734,6 +10920,121 @@ export class AgentServer {
     return text ? text.split('\n') : null;
   }
 
+  // ── Document decisions (docs/specs/document-decisions.md) ───────────────────────────────
+
+  /**
+   * The approval root an owner device decides on (§3.2): follow `approvedBy` through this machine's
+   * own device records to the first device not approved by another phone. Refused (null) when any
+   * device on the way is a computer, a browser or missing, or the root is an agent-introduced or
+   * local-install approval, or a PIN approval on an agent that has a Telegram owner.
+   */
+  documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
+    const svc = this.mobilePairing;
+    if (!svc) return null;
+    let d = svc.devices.get(deviceId);
+    if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
+    for (let depth = 0; depth < 8 && d; depth++) {
+      if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;
+      const via = d.approvedVia ?? 'telegram-dm';
+      if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
+      if (via === 'telegram-dm') return 'telegram';
+      if (via === 'dashboard-pin') return this.documentAgentHasTelegramOwner() ? null : 'pin';
+      return null;
+    }
+    return null;
+  }
+
+  private documentAgentHasTelegramOwner(): boolean {
+    const tg = this.telegramAdapter as unknown as { getOwnerUserId?: () => unknown; getVerifiedOwner?: () => unknown } | null | undefined;
+    return !!(tg?.getVerifiedOwner?.() ?? tg?.getOwnerUserId?.());
+  }
+
+  /** A peer heard from in the last 7 days that does not read decision rows yet, by name (§6). */
+  documentDecisionWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    // An unreadable pool is treated as "not sure every machine has the update": refuse with a reason.
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: decision writes refuse until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.documentsDecisionRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** Ask the owner's deciding phones (§3.7). The push service's own answer, in words for the page. */
+  async documentDecisionPush(docId: string, dedupeKey: string, verdict?: 'approve' | 'decline'): Promise<'sent' | 'deduped' | 'unavailable' | 'no-phone'> {
+    const push = this.mobilePairing?.push;
+    if (!push) return 'unavailable';
+    // No owner phone here that may decide: say so (the page shows how to pair one), never a silent "sent".
+    const svc = this.mobilePairing;
+    if (svc && ![...svc.devices.list()].some((d) => this.documentDecisionRoot(d.id) !== null)) return 'no-phone';
+    try {
+      const r = await push.receive({ kind: 'document', itemId: docId, decide: verdict ?? true, dedupeKey, sourceMachine: this.meshSelfId ?? 'self' }, false);
+      return r === 'accepted' ? 'sent' : r === 'deduped' ? 'deduped' : 'unavailable';
+    } catch { return 'unavailable'; } // @silent-fallback-ok — the page offers opening the document in the app
+  }
+
+  /** May this phone be asked to decide on this document? Owner phones that may decide and can read it. */
+  private documentDecidePushAllowed(deviceId: string, docId: string): boolean {
+    const docs = this.documents;
+    if (!docs || !this.documentDecisionRoot(deviceId)) return false;
+    return !!docs.service.facts(docId);
+  }
+
+  /** Did this device's chat message finish delivered on this machine (§3.4)? From the chat request record. */
+  documentChatDelivered(deviceId: string, requestId: string, sendPath: string, text: string): boolean {
+    const store = this.mobilePairing?.chatRequests();
+    if (!store) return false;
+    const t = text.trim();
+    const topic = /^\/mobile\/chat\/(\d+)$/.exec(sendPath);
+    const app = /^\/mobile\/chat\/app\/([0-9a-f-]{36})$/.exec(sendPath);
+    const hash = topic ? payloadHash(Number(topic[1]), t) : app ? crypto.createHash('sha256').update(['app-send', app[1], t].join('\n')).digest('hex') : null;
+    if (!hash) return false;
+    const l = store.lookup(deviceId, requestId, hash);
+    return l.kind === 'done' && chatRecordDelivered(l.status, l.body);
+  }
+
+  private documentDecisionNoticed = new Set<string>();
+  /**
+   * A verified decision row became readable here (written here or synced in, §3.5): if this machine
+   * runs a live session for the document's conversation, give it one fixed line, once per row.
+   */
+  private documentDecisionApplied(row: import('../documents/rows.js').DocRow): void {
+    if (row.eventKind !== 'decision') return;
+    const key = `${row.origin}/${row.incarnation}#${row.seq}`;
+    if (this.documentDecisionNoticed.has(key)) return;
+    // Only fresh decisions: a restart or a late catch-up never replays old notices.
+    const at = Date.parse(row.receivedAt);
+    if (!Number.isFinite(at) || Date.now() - at > 30 * 60_000) return;
+    this.documentDecisionNoticed.add(key);
+    if (this.documentDecisionNoticed.size > 2000) this.documentDecisionNoticed.clear();
+    setImmediate(() => {
+      try {
+        const docs = this.documents;
+        const f = docs?.service.facts(row.docId);
+        if (!docs || !f) return;
+        const d = docs.service.decision(row.docId, { principal: { kind: 'bearer' }, actor: { type: 'machine' }, access: {}, reader: { kind: 'owner' } });
+        if (!d.current || d.current.rowKey !== key) return;
+        const words = row.verdict === 'approve' ? 'Approved' : 'Declined';
+        this.documentNotifySession(f.primary, `[document decision] ${words} version ${d.current.versionLabel ?? '?'} of doc ${row.docId} by the owner's phone; confirm with GET /docs/${row.docId}/decision`, this.sessionManager as never);
+      } catch { /* @silent-fallback-ok — the owner's message and the documents block also carry it */ }
+    });
+  }
+
+  /** One fixed system line to a live Telegram-topic session for this conversation on this machine (§3.5). */
+  documentNotifySession(primary: string, line: string, sm: { isSessionAlive(n: string): boolean; injectMessage(n: string, t: string, o?: { firstParty?: { source: string } }): unknown } | null): boolean {
+    if (!sm || !primary.startsWith('telegram:')) return false;
+    const topicId = Number(primary.slice(9));
+    const name = (this.telegramAdapter as unknown as { getSessionForTopic?: (id: number) => string | null } | null)?.getSessionForTopic?.(topicId) ?? null;
+    if (!name || !sm.isSessionAlive(name)) return false;
+    return sm.injectMessage(name, `[system:document-decision telegram:${topicId}] ${line}`, { firstParty: { source: 'document-decision' } }) !== false;
+  }
+
   /** May this phone get a push about an answer to this comment? Only its author's phones that can read the document. */
   private documentPushAllowed(deviceId: string, docId: string, commentKey: string): boolean {
     const svc = this.mobilePairing;
@@ -10758,6 +11059,12 @@ export class AgentServer {
   private documentPageDeps(options: { config: InstarConfig; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
     return {
       ...this.documentRouteDeps(options),
+      // Document decisions (docs/specs/document-decisions.md).
+      decisionRoot: (deviceId: string) => this.documentDecisionRoot(deviceId),
+      chatDelivered: (deviceId: string, requestId: string, sendPath: string, text: string) => this.documentChatDelivered(deviceId, requestId, sendPath, text),
+      notifyDecisionPhone: (docId: string, dedupeKey: string, verdict?: 'approve' | 'decline') => this.documentDecisionPush(docId, dedupeKey, verdict),
+      notifySession: (primary: string, line: string) => this.documentNotifySession(primary, line, this.sessionManager as never),
+      machineCaller: () => ({ principal: { kind: 'bearer' as const }, actor: { type: 'machine' as const }, access: this.mobilePairing?.teamLog()?.vector() ?? {}, reader: { kind: 'owner' as const } }),
       device: (deviceId: string) => {
         const svc = this.mobilePairing;
         if (!svc) return null;
@@ -10914,9 +11221,48 @@ export class AgentServer {
       });
       // A pass can be up to six hours away; the numbers should not read empty until then.
       setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: logged; the ladder stays null and its route reports it unavailable
       console.warn('[maturation-ladder] init failed (non-fatal):', err);
       this.maturationLadder = null;
+    }
+  }
+
+  /**
+   * Build the quota-history ledger (docs/specs/quota-pacing-forecast.md) when the switch resolves
+   * on and this machine has a subscription pool, attach it to the quota poller, and start its
+   * unref'd maintenance timer (bucket flush, hourly compaction + tick row, daily retire sweep).
+   */
+  private startQuotaPacing(options: { config: InstarConfig; subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool; quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller }): void {
+    const config = options.config;
+    if (!config.stateDir || !options.subscriptionPool || !isQuotaPacingEnabled(config)) return;
+    try {
+      const pool = options.subscriptionPool;
+      const machineId = this.meshSelfId ?? 'local';
+      const ledger = new QuotaHistoryLedger({
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        machineId,
+        pool,
+        enabled: () => isQuotaPacingEnabled(config),
+      });
+      ledger.setTickSource(async () => {
+        const now = Date.now();
+        const { summaries } = await buildLocalSummaries(ledger, pool, { machineId, pollIntervalMs: 15 * 60_000, now });
+        const stale: Record<string, number> = {};
+        const verdicts: Record<string, number> = {};
+        for (const s of summaries) if (!s.fresh && s.staleReason) stale[s.staleReason] = (stale[s.staleReason] ?? 0) + 1;
+        for (const p of assembleQuotaProviders(mergeQuotaLogins(summaries, now).logins, now, { localOnly: false })) {
+          for (const a of p.accounts) if (a.weekly) verdicts[a.weekly.verdict] = (verdicts[a.weekly.verdict] ?? 0) + 1;
+        }
+        return { accounts: summaries.length, withHistory: summaries.filter((s) => s.newestPolledAt !== null).length, stale, verdicts };
+      });
+      options.quotaPoller?.setHistoryLedger(ledger);
+      ledger.start();
+      this.quotaPacingLedger = ledger;
+      this.quotaPacingPoller = options.quotaPoller ?? null;
+    } catch (error) { // @silent-fallback-ok: logged; the ledger stays null so GET /quota-pacing answers 503 and the poller is untouched
+      console.warn('[quota-pacing] init failed (non-fatal):', error instanceof Error ? error.message : error);
+      this.quotaPacingLedger = null;
     }
   }
 

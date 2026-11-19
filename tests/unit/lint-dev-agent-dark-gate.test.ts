@@ -724,14 +724,15 @@ describe('lint-dev-agent-dark-gate', () => {
     }
   });
 
-  it('the 4 audited-safe migrants ARE in DEV_GATED_FEATURES and NOT in DARK_GATE_EXCLUSIONS', () => {
+  it('the audited-safe migrants still dev-gated ARE in DEV_GATED_FEATURES and NOT in DARK_GATE_EXCLUSIONS', () => {
     const gatedPaths = new Set(DEV_GATED_FEATURES.map((f) => f.configPath));
     const excludedPaths = new Set(DARK_GATE_EXCLUSIONS.map((e) => e.configPath));
     for (const p of [
       'monitoring.parallelWorkSentinel.enabled',
       'monitoring.failureLearning.enabled',
       'monitoring.releaseReadiness.enabled',
-      'monitoring.bootHealthBeacon.enabled',
+      // monitoring.bootHealthBeacon.enabled left this list on 2026-11-16: it graduated to
+      // on-for-every-agent (listen early during boot), so it is no longer dev-gated.
     ]) {
       expect(gatedPaths.has(p), `${p} must be dev-gated`).toBe(true);
       expect(excludedPaths.has(p), `${p} must NOT be an exclusion`).toBe(false);

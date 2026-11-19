@@ -1,3 +1,5 @@
+import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
+
 // Work board page: pure view-model (docs/specs/work-board-asks.md §4, §5, §7).
 // No DOM, no fetch, no timers. work.js renders these; tests/unit/console-work-model.test.ts
 // checks them. The server's card JSON (src/core/workBoardViews.ts cardJson/boardJson) is the
@@ -52,6 +54,48 @@ export function readBoard(body) {
     settings: isObj(body.settings) ? body.settings : null,
   };
 }
+
+// ── My board (docs/specs/work-board-my-board.md): the cards that need the reader, each once under its most pressing reason ──
+export const MY_BOARD_WORDS = {
+  approval: 'Waiting for your approval',
+  reply: 'Waiting for your reply',
+  own: 'Your cards',
+  added: 'Cards you were added to',
+  held: 'Held for later',
+};
+/** The sections that ask something of the reader lead the page; added and held cards are shown quieter. */
+export const MY_BOARD_LEAD = new Set(['approval', 'reply', 'own']);
+export const NOT_STARTED_WORDS = 'Not started';
+
+/**
+ * The read's `myBoard`, with each section's cards drawn from the same read's lanes (a card id the read does not
+ * carry is skipped, a card named twice is shown once). Empty sections are left out. Null when the agent sends no
+ * `myBoard` (an older agent) or one this page cannot read: the page then draws the lanes as before.
+ * `ids` names every card shown on My board, so the lanes below can leave them out.
+ */
+export function readMyBoard(body, lanes) {
+  if (!isObj(body) || !isObj(body.myBoard) || !Array.isArray(body.myBoard.sections) || !isObj(lanes)) return null;
+  const byId = new Map();
+  for (const l of LANES) for (const c of (lanes[l.id]?.cards || [])) byId.set(c.id, c);
+  const ids = new Set();
+  const sections = [];
+  for (const s of body.myBoard.sections) {
+    if (!isObj(s) || !Object.hasOwn(MY_BOARD_WORDS, s.reason) || !Array.isArray(s.cardIds)) return null;
+    const cards = [];
+    for (const id of s.cardIds) {
+      const c = typeof id === 'string' ? byId.get(id) : undefined;
+      if (c && !ids.has(id)) { ids.add(id); cards.push(c); }
+    }
+    const more = Number.isInteger(s.more) && s.more > 0 ? s.more : 0;
+    if (!cards.length && !more) continue;
+    const words = typeof s.words === 'string' && s.words.trim() ? s.words.trim() : MY_BOARD_WORDS[s.reason];
+    sections.push({ reason: s.reason, words, cards, more, lead: MY_BOARD_LEAD.has(s.reason) });
+  }
+  return { sections, ids };
+}
+
+/** "Not started" beside a card nobody has touched yet; nothing when the agent does not say. */
+export function notStartedTag(card) { return isObj(card) && card.started === false ? NOT_STARTED_WORDS : null; }
 
 export function headline(board) {
   const n = board.waitingOnYou;
@@ -121,9 +165,40 @@ export function capacityWords(cap, now = Date.now()) {
 const ACTION_LABEL = {
   approve: 'Approve', answer: 'Answer', 'confirm-done': 'Confirm done', reopen: 'Reopen', unhold: 'Release hold',
   retry: 'Try again', 'withdraw-approval': 'Withdraw approval', archive: 'Archive', unarchive: 'Restore',
-  hold: 'Put on hold', redact: 'Remove for good',
+  hold: 'Put on hold', redact: 'Remove for good', 'close-done': 'Done', 'close-not-important': 'Not important',
 };
 export function actionLabel(a) { return ACTION_LABEL[a] || a; }
+
+// ── closing a card (work-front-doors §6): Done with a note, Not important with a reason ──
+/** A server that can record a close names whose turn it is on every card; an older one cannot keep the note. */
+export function canClose(card) { return Boolean(card) && typeof card.turn === 'string'; }
+export const CLOSE_NOTE_MAX = 2000;
+export const CLOSE_WORDS = {
+  'close-done': { as: 'done', label: 'What was done', hint: 'A line on what was done. It stays on the card.', missing: 'Say in a line what was done before closing this card.' },
+  'close-not-important': { as: 'not-important', label: 'Why this is not important', hint: 'The agent reads these reasons before it raises a new card.', missing: 'Say why this is not important. The agent reads these reasons before it raises a new card.' },
+};
+/** The person's close in force, in words, or null. */
+export function closeoutLine(card) {
+  const c = card && card.closeout;
+  if (!c || typeof c.note !== 'string') return null;
+  return `${c.as === 'done' ? 'Closed as done' : 'Closed as not important'} by ${byWords(c.by)}${c.at ? `, ${whenWords(c.at)}` : ''}: ${c.note}`;
+}
+// ── slice 2 (docs/specs/work-board-cards-appear.md §2–3): why you, what a card is about, server-owned cards ──
+/** What a card is about, in words: pull requests by number and plans by kind; never an internal id, never the Chief of Staff's own key. */
+export function coversWords(card) {
+  const keys = Array.isArray(card && card.covers) ? card.covers.filter((k) => typeof k === 'string') : [];
+  // One line per pull request and per plan, however the key was written (pr:3404, pr:#3404, pr:03404).
+  const prs = [...new Set(keys.map((k) => /^pr:#?(\d{1,7})$/.exec(k)).filter(Boolean).map((m) => Number(m[1])))].map((n) => `pull request #${n}`);
+  const plans = new Set(keys.filter((k) => k.startsWith('plan:'))).size;
+  const parts = [...prs, ...(plans ? [plans === 1 ? 'a plan in Needs you' : `${plans} plans in Needs you`] : [])];
+  return parts.length ? parts.join(', ') : null;
+}
+/** A card the Chief of Staff writes and updates itself (a server-owned wait card). */
+export function chiefOfStaffCard(card) { return !!card && card.serverOwned === true; }
+export const CHIEF_OF_STAFF_WORDS = 'From the Chief of Staff';
+
+/** Whose turn it is, for the card's colour: you (light red), agent or others (light blue), nobody. */
+export function turnOf(card) { return card && ['you', 'agent', 'others', 'nobody'].includes(card.turn) ? card.turn : null; }
 
 /**
  * The buttons that apply to a card, in order. `inSheet` adds the ones kept for the opened card
@@ -131,6 +206,10 @@ export function actionLabel(a) { return ACTION_LABEL[a] || a; }
  */
 export function cardActions(card, { inSheet = false } = {}) {
   if (!card || card.removed || card.status === 'removed') return [];
+  // A phone-only card (a project app's version card, project-apps-sandbox §3.4): the server refuses
+  // every console tap on it except withdraw-approval, which only stops the app. So no Approve here
+  // (phoneOnlyLine says where to approve) and, once approved, one "Stop this app".
+  if (card.phoneOnly) return card.approved && !card.appStopped && card.status !== 'archived' ? [{ action: 'withdraw-approval', label: 'Stop this app', tone: 'quiet' }] : [];
   const out = [];
   const add = (action, tone = 'quiet') => { if (!out.some((x) => x.action === action)) out.push({ action, label: actionLabel(action), tone }); };
   const approved = Boolean(card.approved);
@@ -143,17 +222,36 @@ export function cardActions(card, { inSheet = false } = {}) {
     case 'parked': if (card.retryOf) add('retry', 'primary'); if (approved) add('withdraw-approval'); break;
     case 'quiet': if (card.retryOf) add('retry', 'primary'); if (approved) add('withdraw-approval'); break;
     case 'with-agent': if (card.retryOf) add('retry'); if (approved) add('withdraw-approval'); break;
-    case 'archived': if ((card.archives || []).length) add('unarchive', 'primary'); break;
+    case 'archived': if ((card.closeout && card.closeout.tapId) || (card.archives || []).length) add('unarchive', 'primary'); break;
     default: break;
   }
+  // A close in force is closed whatever the status reads (an unreadable record makes it 'unknown'): reopening it names the close itself.
+  const closed = card.status === 'archived' || Boolean(card.closeout);
+  if (card.closeout && card.closeout.tapId) add('unarchive', 'primary');
   // An answer can be given while the card is in another state too (a question on a held card).
-  if (card.question && card.status !== 'waiting-on-person' && card.status !== 'archived') add('answer');
-  if (card.status !== 'archived') add('archive');
+  if (card.question && card.status !== 'waiting-on-person' && !closed) add('answer');
+  if (!closed) {
+    // A card still waiting for approval has nothing done yet: it can only be dismissed as Not important.
+    if (canClose(card)) { if (card.status !== 'needs-approval') add('close-done'); add('close-not-important'); } else add('archive');
+  }
   if (inSheet) {
-    if (card.status !== 'held' && card.status !== 'archived' && card.status !== 'done') add('hold');
+    if (card.status !== 'held' && !closed && card.status !== 'done') add('hold');
     add('redact', 'danger');
   }
+  if (card.closeout) {
+    // One way back from a close: reopening the close itself (the claim's own Reopen would leave it closed).
+    for (const x of out) if (x.action === 'unarchive') x.label = 'Reopen';
+    return out.filter((x) => x.action !== 'reopen');
+  }
   return out;
+}
+
+/** What a phone-only card says in place of an Approve button, or null for any other card. */
+export function phoneOnlyLine(card) {
+  if (!card || !card.phoneOnly || card.removed || card.status === 'removed') return null;
+  // A stopped app's card has nothing to approve (its need line says it was stopped).
+  if (card.appStopped) return null;
+  return card.approved ? null : 'Approve this on your phone';
 }
 
 /**
@@ -187,11 +285,18 @@ export function tapBody(card, action, extra = {}) {
       miss = need(names, 'There is no hold to release.'); body.names = names; break;
     }
     case 'unarchive': {
-      const names = extra.names || (card.archives || [])[0];
+      const names = extra.names || (card.closeout && card.closeout.tapId) || (card.archives || [])[0];
       miss = need(names, 'This card is not archived.'); body.names = names; break;
     }
     case 'retry': miss = need(card.retryOf, 'There is nothing to try again.'); body.retryOf = card.retryOf; break;
     case 'hold': case 'withdraw-approval': case 'archive': case 'redact': break;
+    case 'close-done': case 'close-not-important': {
+      const words = CLOSE_WORDS[action];
+      const note = typeof extra.note === 'string' ? extra.note.trim() : '';
+      miss = need(note, words.missing) || (note.length > CLOSE_NOTE_MAX ? { ok: false, reason: `Keep it under ${CLOSE_NOTE_MAX} characters.` } : null);
+      body.action = 'archive'; body.closeAs = words.as; body.note = note;
+      break;
+    }
     default: return { ok: false, reason: 'That is not something a card can do.' };
   }
   return miss || { ok: true, body };
@@ -252,20 +357,33 @@ export function tapCovers(card, action, extra = {}) {
       break;
     case 'retry': full(); lines.push({ label: 'Trying again', text: 'The agent gets one more try at this card.' }); break;
     case 'unhold': full(); lines.push({ label: 'Releasing the hold', text: (card.holds || []).length > 1 ? `Releases one of ${card.holds.length} holds; the card stays held until every hold is released.` : 'The agent may carry on.' }); break;
-    case 'unarchive': full(); lines.push({ label: 'Restoring', text: 'The card comes back to the board.' }); break;
+    case 'unarchive': {
+      full();
+      // Reopening releases one archive; an older one keeps the card archived until it is restored too.
+      const more = (card.archives || []).length > 1;
+      lines.push(card.closeout
+        ? { label: 'Reopening', text: `${more ? 'This undoes the close. The card was also archived earlier, so it stays archived until you restore it too.' : 'The card comes back to the board.'} Your close note stays in its history: ${card.closeout.note}` }
+        : { label: 'Restoring', text: more ? 'This releases one of its archives. The card stays archived until every archive is released.' : 'The card comes back to the board.' });
+      break;
+    }
     case 'reopen': lines.push({ label: 'Reopening', text: 'The card is not finished. From now on every finish of this card needs your sign-off.' }); break;
     case 'hold': lines.push({ label: 'Putting on hold', text: 'The agent stops work on this card until you release it. This always goes through.' }); break;
-    case 'withdraw-approval': lines.push({ label: 'Withdrawing approval', text: 'The agent stops and waits for your approval again. This always goes through.' }); break;
+    case 'withdraw-approval': lines.push(card.phoneOnly
+      ? { label: 'Stopping this app', text: 'The app stops running. Turning it back on comes in a later update. This always goes through.' }
+      : { label: 'Withdrawing approval', text: 'The agent stops and waits for your approval again. This always goes through.' }); break;
     case 'archive': lines.push({ label: 'Archiving', text: 'The card leaves the board. You can restore it later.' }); break;
+    case 'close-done': lines.push({ label: 'Your note', text: String(extra.note || '').trim() }, { label: 'Closing as done', text: 'The card moves to Done with your note. You can reopen it later.' }); break;
+    case 'close-not-important': lines.push({ label: 'Your reason', text: String(extra.note || '').trim() }, { label: 'Closing as not important', text: 'The card is archived. The agent reads your reason before it raises a new card. You can reopen it later.' }); break;
     case 'redact': lines.push({ label: 'Removing for good', text: 'The card’s text is hidden from every read and its conversation is deleted. This cannot be undone.' }); break;
     default: break;
   }
   return lines;
 }
 
+export const CLOSE_TITLES = { 'close-done': 'Close as done', 'close-not-important': 'Close as not important' };
 /** The one line the PIN prompt says. */
 export function pinExplain(card, action) {
-  return `${actionLabel(action)}: “${String(card.title || '').slice(0, 80)}”. Your PIN confirms exactly what you were just shown.`;
+  return `${card && card.phoneOnly && action === 'withdraw-approval' ? 'Stop this app' : CLOSE_TITLES[action] || actionLabel(action)}: “${String(card.title || '').slice(0, 80)}”. Your PIN confirms exactly what you were just shown.`;
 }
 
 // ── refusals, in words ────────────────────────────────────────────────────
@@ -286,6 +404,11 @@ const REFUSAL_WORDS = {
   'settings-not-saved': 'The settings could not be saved.',
   'unknown-policy': 'That approval choice is not one the board knows.',
   'over-limit': 'That is longer than a card allows.',
+  'phone-only-card': 'Approve this on your phone.',
+  'server-owned-card': 'Instar writes this card itself; it cannot be changed here.',
+  'note-required': CLOSE_WORDS['close-done'].missing,
+  'reason-required': CLOSE_WORDS['close-not-important'].missing,
+  'unknown-close': 'That is not a way to close a card.',
 };
 export function refusalWords(status, data) {
   const code = data && typeof data.error === 'string' ? data.error : '';
@@ -293,6 +416,7 @@ export function refusalWords(status, data) {
   if (status === 401 || status === 403) return /pin/i.test(code) ? 'That PIN did not work.' : 'This needs your PIN.';
   if (status === 429) return 'Too many PIN tries. Wait a little and try again.';
   if (status === 0) return 'The server could not be reached.';
+  if (code === 'credential-refused' && data && typeof data.message === 'string') return data.message;
   if (code && !/^[a-z0-9-]+$/.test(code)) return code; // already a sentence (the PIN check writes one)
   return 'That did not go through.';
 }
@@ -397,7 +521,25 @@ export function workBoardNeedRows(wb) {
     main: String(c.title || 'A work card').slice(0, 80),
     sub: String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
+    // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
+    // person to act (no Approve, no Confirm done, no open question, nothing outward) may stand in for its rows.
+    covers: Array.isArray(c.covers) ? c.covers.filter((k) => typeof k === 'string') : [],
+    linkable: c.status === 'with-person' && !c.outward && !c.question,
+    // Only the Chief of Staff's own wait card stands in for its row; an agent session's card keeps its own row too.
+    serverOwned: c.serverOwned === true,
+    createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
+    cardId: c.id,
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
   return rows;
+}
+
+/** Source is already viewer-filtered by the board read. Never infer it from placement. */
+export function cardSourceLink(card) {
+  if (!card || card.removed || !card.source) return null;
+  const ref = parseConversationRef(card.source.conversationKey);
+  const target = messageTarget(card.source.messageId);
+  if (!ref) return { href: null, label: 'The original message cannot be opened here.' };
+  if (!target) return { href: hashFor(ref), label: 'Original conversation', note: 'The exact message is unavailable.' };
+  return { href: `${hashFor(ref)}&m=${encodeURIComponent(target)}`, label: 'Original message' };
 }

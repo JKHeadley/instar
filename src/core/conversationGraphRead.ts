@@ -23,6 +23,10 @@ import {
 export interface GraphReadSource {
   /** From the increment-A proof runtime. Anything but ready answers 503. */
   readiness(): { ready: true } | { ready: false; reason: string };
+  /** Runs one synchronous read against a single verified view: every lookup inside
+   * `fn` (readiness, projection, effort titles) sees the view built once at its start.
+   * Optional: a source without it builds per lookup. */
+  scoped?<T>(fn: () => T): T;
   /** Actual owned local intake may remain usable while canonical authority is
    * held. This supplies neither a snapshot nor a positive graph-write grant. */
   localRecordingReady?(): boolean;
@@ -89,6 +93,9 @@ export class ConversationGraphReadModel {
 
   private readonly rootConversation: () => ConversationRef | null;
 
+  /** One verified view per read: a page during busy writes rebuilt the whole view once per effort title. */
+  private scoped<T>(fn: () => T): T { return this.source.scoped ? this.source.scoped(fn) : fn(); }
+
   constructor(private readonly source: GraphReadSource, opts: {
     pageSize?: number; snapshotTtlMs?: number;
     /**
@@ -124,6 +131,10 @@ export class ConversationGraphReadModel {
    * The root conversation is never offered. Null while the graph is not ready.
    */
   unassignedConversations(viewer: GraphViewer): ProjectionItem[] | null {
+    return this.scoped(() => this.unassignedConversationsUnscoped(viewer));
+  }
+
+  private unassignedConversationsUnscoped(viewer: GraphViewer): ProjectionItem[] | null {
     if (!this.source.readiness().ready) return null;
     const { projection } = this.project(viewer);
     return projection.list('all', null)
@@ -133,6 +144,10 @@ export class ConversationGraphReadModel {
   }
 
   roots(viewer: GraphViewer, q: { view: 'overview' | 'all'; q?: string | null; cursor?: string | null }): ReadResult {
+    return this.scoped(() => this.rootsUnscoped(viewer, q));
+  }
+
+  private rootsUnscoped(viewer: GraphViewer, q: { view: 'overview' | 'all'; q?: string | null; cursor?: string | null }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const { projection, revision, partialReasons } = this.project(viewer);
@@ -150,6 +165,10 @@ export class ConversationGraphReadModel {
   }
 
   node(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
+    return this.scoped(() => this.nodeUnscoped(viewer, ref, q));
+  }
+
+  private nodeUnscoped(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const valid = validateNodeRef(ref);
@@ -216,6 +235,10 @@ export class ConversationGraphReadModel {
   /** Authorized candidate destinations, not a promise that a future move will
    * apply. Preview and write ingress run the real reducer with current heads. */
   destinations(viewer: GraphViewer, subject: NodeRef, q: { q?: string | null; cursor?: string | null }): ReadResult {
+    return this.scoped(() => this.destinationsUnscoped(viewer, subject, q));
+  }
+
+  private destinationsUnscoped(viewer: GraphViewer, subject: NodeRef, q: { q?: string | null; cursor?: string | null }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const valid = validateNodeRef(subject);

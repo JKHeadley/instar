@@ -6,6 +6,7 @@
  *     GET  /work-board/cards/:id
  *     POST /work-board/cards                create (agent)
  *     POST /work-board/cards/:id/records    edited | waiting-on | evidence | claimed-done
+ *     GET  /work-board/lessons              "Not important" reasons, read before raising a card (bearer only)
  *   Team owner from the console (dashboard PIN):
  *     POST /work-board/cards                create (person-written)
  *     POST /work-board/cards/:id/records    edited (person-written)
@@ -77,6 +78,12 @@ export interface WorkBoardRouteDeps {
    * result? A hold refuses the write with 422 and the way through. Absent ⇒ no judge.
    */
   specApprovalJudge?: (text: string) => Promise<{ hold: boolean; issue?: string; suggestion?: string; unavailable?: boolean; noProvider?: boolean }>;
+  /**
+   * Project apps part 2 (docs/specs/project-apps-sandbox.md §3.4): a server-owned, phone-only card (a
+   * custom app's version card). Its fields are the server's, so no caller's record lands on it, and a
+   * console (PIN) tap is refused except withdraw-approval, which only stops an app. Absent ⇒ none.
+   */
+  phoneOnlyCard?: (cardId: string) => boolean;
 }
 
 /** The card text an approval ask lives in: the fields a person reads to decide. */
@@ -153,6 +160,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     behind: deps.behind(), lastWrittenOn: deps.lastWrittenOn(v), repliedAfterQuestion: deps.repliedAfterQuestion(v),
     capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
     brokenAttachments: deps.brokenAttachments(v),
+    phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
   });
 
   /** Visible to this viewer? The owner and the agent see every card; others need read access to its conversation. */
@@ -235,6 +243,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const svc = gate(res); if (!svc) return;
     const p = writerOf(req, res, 'Enter your dashboard PIN to add this card'); if (!p) return;
     const { pin: _pin, ...body } = (req.body ?? {}) as Record<string, unknown>;
+    const ask = svc.askFieldsRefusal(p, body, null); if (ask) { send(res, ask); return; }
     if (!(await specApprovalAllows(p, body, res))) return;
     const r = svc.createCard(p, body);
     if (!r.ok) { send(res, r); return; }
@@ -242,7 +251,9 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     catch (err) { /* @silent-fallback-ok: logged; the card exists and its chat is created at the next write or boot (the key is derived) */ deps.log?.('work-board-conversation-create-failed', { cardId: r.cardId, error: (err as Error)?.message }); }
     const v = svc.view(r.cardId)!;
     deps.controller()?.poke();
-    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}) });
+    // The agent sees the owner's recent "Not important" reasons at the moment it raises a card (work-front-doors §6).
+    const lessons = p.kind === 'agent' ? { lessons: lessonsJson(svc, deps.displayName, 10) } : {};
+    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}), ...lessons });
   });
 
   router.post('/work-board/cards/:id/records', async (req, res) => {
@@ -251,6 +262,10 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const kind = body.kind ?? body.recordType;
     if (kind === 'dispatching' || kind === 'dispatched' || kind === 'policy' || kind === 'tap' || kind === 'created') {
       res.status(400).json({ error: 'record-kind-not-allowed', message: 'Pickup records are written only by the pickup controller, the policy only by the settings route, and taps only by the tap route.' });
+      return;
+    }
+    if (deps.phoneOnlyCard?.(String(req.params.id))) {
+      res.status(403).json({ error: 'server-owned-card', message: 'This card is written by Instar itself (an app version waiting for your phone); it cannot be changed here.' });
       return;
     }
     const p = writerOf(req, res, 'Enter your dashboard PIN to change this card'); if (!p) return;
@@ -263,6 +278,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const wasApproved = !!before?.card.approvalValid;
     switch (kind) {
       case 'edited': {
+        const ask = svc.askFieldsRefusal(p, fields, id); if (ask) { send(res, ask); return; }
         const r = svc.edit(p, id, fields);
         if (r.ok && r.recordId) {
           const after = svc.view(id)!;
@@ -294,11 +310,25 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const c = deps.caller(req);
     // A scoped session or a phone has no console PIN path; a bearer request must prove the PIN.
     if (c.kind !== 'bearer') { res.status(403).json({ error: 'person-required' }); return; }
+    // A phone-only card (project-apps-sandbox §3.4): a PIN tap could make it read approved while nothing
+    // runs, and the PIN is available to the agent. Only withdraw-approval (it only stops an app) is taken here.
+    if (deps.phoneOnlyCard?.(String(req.params.id)) && (req.body as { action?: unknown } | undefined)?.action !== 'withdraw-approval') {
+      res.status(403).json({ error: 'phone-only-card', message: 'Approve this on your phone' });
+      return;
+    }
     if ((req.body as { pin?: unknown } | undefined)?.pin === undefined) { res.status(403).json({ error: 'person-required', message: 'A tap is a person\'s: it needs the dashboard PIN (console) or Face ID (phone). The agent cannot tap.' }); return; }
     if (!deps.requirePin(req, res, 'Enter your dashboard PIN to confirm')) return;
     const owner = deps.ownerPersonKey();
     if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return; }
     await applyTap(svc, req, res, { kind: 'person', personKey: owner, proof: 'pin', isOwner: true });
+  });
+
+  // ── dismissal lessons (work-front-doors §6): the agent's own read; a phone or a scoped session gets none ──
+  router.get('/work-board/lessons', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    if (deps.caller(req).kind !== 'bearer') { res.status(403).json({ error: 'not-available-to-this-caller' }); return; }
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(req.query?.limit ?? '50'), 10) || 50));
+    res.json({ lessons: lessonsJson(svc, deps.displayName, limit) });
   });
 
   // ── graduation (Maturation plan): the pilot's own measurement, written by the scheduled job ──
@@ -359,16 +389,30 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
   });
 }
 
+/** The dismissal lessons as the agent reads them: the reason, who gave it, and where it came from. */
+export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => string, limit: number): Array<Record<string, unknown>> {
+  return svc.dismissalLessons(limit).map((l) => ({
+    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, tapId: l.tapId, conversationKey: l.conversationKey,
+    by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
+  }));
+}
+
 /**
  * Apply one person-proven tap: the record, its transcript line (or the conversation's removal for a
  * redact), a poke to the pickup controller. Shared by the console route (PIN) and the phone route
  * (presence signature, mounted in mobilePermissionsRoutes behind the write gate).
  */
-export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log' | 'phoneOnlyCard'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
   // A tap that PERMITS something must name the title the person saw (its hash): the title is what
   // they read on screen, and an answer, a release or a Try again is bound to nothing else that shows it.
   if (!isRestrictingTap(String(body.action)) && !(typeof body.titleHash === 'string' && /^[0-9a-f]{64}$/.test(body.titleHash))) {
     return { status: 400, body: { error: 'title-hash-required', message: 'Send titleHash (the card\'s titleHash as shown) with this tap.' } };
+  }
+  // A stopped project app's serve card (project-apps-sandbox §3.4): an approve here would read as
+  // "running" while the app stays off, because turning it back on is a separate card not built yet
+  // (stage 2, CMT-1882). The phone and the console both arrive here.
+  if (body.action === 'approve' && deps.phoneOnlyCard?.(cardId) && svc.isStoppedAppCard(cardId)) {
+    return { status: 409, body: { error: 'app-stopped', message: 'You stopped this app. Approving this card does not turn it back on; turning it back on comes in a later update.' } };
   }
   const r = svc.tap(p, cardId, body);
   if (!r.ok) return { status: r.status, body: { error: r.error, ...(r.detail ?? {}) } };
@@ -386,5 +430,5 @@ export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayNam
   }
   deps.controller()?.poke();
   const v = svc.view(cardId)!;
-  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, { personKey: deps.ownerPersonKey(), isOwner: true, isAgent: false }, deps.displayName) } };
+  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, { personKey: deps.ownerPersonKey(), isOwner: true, isAgent: false }, deps.displayName, { phoneOnly: deps.phoneOnlyCard?.(cardId) === true }) } };
 }

@@ -72,6 +72,33 @@ describe('acceptSuggestion',()=>{
   expect(creates).toHaveLength(1);
  });
 
+ // Topic 141385, 2026-11-16: a step waited a minute on another machine and the page said nothing new.
+ it('a slow step says what it is waiting for and for how long, and each stop carries its kind',async()=>{
+  const m=await boot();
+  const s={id:'sg-0123456789abcdef0129',title:'Slow',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};
+  let mode:'pending'|'offline'|'refused'='pending';
+  const send=async(path:string,body?:any)=>{
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0009'});
+   if(path==='/conversation-graph/changes'||path.startsWith('/conversation-graph/changes/')){
+    if(mode==='offline')return{ok:false,status:0};
+    if(mode==='refused')return ok({state:'refused-local',reason:'not-allowed'},409);
+    return ok({state:'saved-pending',waitingMachines:[{name:'Laptop'}]},202);}
+   return ok({ok:true});};
+  const steps:string[]=[];
+  const waiting=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
+  expect(waiting).toMatchObject({done:false,kind:'waiting'});expect(waiting.text).toContain('Waiting for Laptop');
+  expect(steps[0]).toBe('Creating the group…');
+  expect(steps).toContain('Creating the group… Saved here. Waiting for Laptop to confirm. (5 s)');
+  expect(steps.some(t=>/\(0 s\)|\(3 s\)/.test(t))).toBe(false); // nothing extra for a step that is only a moment old
+  mode='offline';steps.length=0;
+  const offline=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
+  expect(offline).toMatchObject({done:false,kind:'waiting'});expect(offline.text).toContain('The agent did not answer');
+  expect(steps).toContain('Creating the group… The agent is not answering yet. (8 s)');
+  mode='refused';
+  expect(await m.acceptSuggestion(s,{send,onStep:()=>{},wait:10000,sleep:async()=>{}})).toMatchObject({done:false,kind:'refused'});
+  expect(await m.acceptSuggestion(s,{send:async()=>({ok:false,status:403,needsUnlock:true}),onStep:()=>{},sleep:async()=>{}})).toMatchObject({done:false,kind:'locked'});
+ });
+
  it('a refused step stops the accept and changes nothing after it',async()=>{
   const m=await boot();
   const s={id:'sg-0123456789abcdef0125',title:'X',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};

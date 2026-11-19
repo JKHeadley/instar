@@ -17,12 +17,17 @@ import type { TrustLevel } from './ExternalOperationGate.js';
 
 // ── The proof ─────────────────────────────────────────────────────────
 
-/** Evidence that a person approved one exact change through the account path. */
+/**
+ * Evidence that a person approved one exact change: through the account path (`accepted-account`,
+ * a reply from their own chat) or from a paired device under a recorded device acceptance
+ * (`accepted-device`, a presence signature; docs/specs/app-trust-approval.md).
+ */
+export type OperatorProofKind = 'accepted-account' | 'accepted-device';
 export interface OperatorProof {
-  readonly kind: 'accepted-account';
+  readonly kind: OperatorProofKind;
   /** The proposal hash of the exact change approved. */
   readonly proposalHash: string;
-  /** The consumed receipt record id. */
+  /** The consumption record id (a chat receipt's, or a device approval's). */
   readonly receiptRef: string;
   /** The acceptance record in force when the receipt was consumed. */
   readonly acceptanceRef: string;
@@ -36,9 +41,24 @@ export interface OperatorProof {
  */
 const issuedProofs = new WeakSet<object>();
 
-// Stage 0 PR A installs no issuer: nothing can register a proof, so every raise is refused.
-// The account-path approval check (trust-journey PR B, CMT-1837) adds the only issuer, in the
-// module that consumes receipts.
+/**
+ * The only production issuer. Called by the account-path service (trustJourney/AccountPathService)
+ * after it has durably recorded the consumption of a verified approval for this exact proposal hash
+ * under a current acceptance: a platform receipt from the adapter's own inbound path
+ * (`accepted-account`, the default), or a presence-verified device approval under a current device
+ * acceptance (`accepted-device`). Never reachable from a request body: routes only ever hand the
+ * service a receipt or a verified device authorization, never a proof.
+ * @internal
+ */
+export function issueOperatorProofFromConsumedReceipt(p: {
+  proposalHash: string; receiptRef: string; acceptanceRef: string; principal: string; kind?: OperatorProofKind;
+}): OperatorProof {
+  const { kind = 'accepted-account', ...rest } = p;
+  if (kind !== 'accepted-account' && kind !== 'accepted-device') throw new Error('unknown proof kind');
+  const proof: OperatorProof = Object.freeze({ kind, ...rest });
+  issuedProofs.add(proof);
+  return proof;
+}
 
 /**
  * Test-only issuer, so unit tests can exercise the proven-raise branch before the account-path
@@ -75,12 +95,13 @@ export function proposalHashOf(change: unknown): string {
 
 /** True only for a proof the approval check issued, for exactly this proposal. */
 export function proofCovers(proof: OperatorProof | null | undefined, proposalHash: string): boolean {
-  return !!proof && typeof proof === 'object' && issuedProofs.has(proof) && proof.proposalHash === proposalHash;
+  return !!proof && typeof proof === 'object' && issuedProofs.has(proof)
+    && (proof.kind === 'accepted-account' || proof.kind === 'accepted-device') && proof.proposalHash === proposalHash;
 }
 
 /** The person-facing refusal: what was refused and the approval it needs. */
 export interface RaiseRefusal {
-  error: 'operator-approval-required';
+  error: 'operator-approval-required' | 'org-policy-cap';
   message: string;
   /** The approval this change needs. */
   needs: string;
@@ -95,9 +116,20 @@ export function raiseRefusal(raises: string[]): RaiseRefusal {
   return {
     error: 'operator-approval-required',
     message: `This would widen what the agent may do (${raises.join('; ')}). Widening needs ${RAISE_NEEDS}. `
-      + 'Narrowing never needs it. That approval path is not installed on this version yet, so the setting stays as it is.',
+      + 'Narrowing never needs it. The agent can open the request (POST /trust/requests); until the person approves it, the setting stays as it is.',
     needs: RAISE_NEEDS,
     raises,
+  };
+}
+
+/** An organization's independence cap refused a raise (org-pack-and-join §D). */
+export function orgCapRefusal(cap: { level: AutonomyProfileLevel; orgName: string }): RaiseRefusal {
+  const words: Record<AutonomyProfileLevel, string> = { cautious: 'Careful', supervised: 'Balanced', collaborative: 'Trusting', autonomous: 'Independent' };
+  return {
+    error: 'org-policy-cap',
+    message: `${cap.orgName}'s policy allows at most ${words[cap.level]}, so the setting stays as it is.`,
+    needs: `a change to ${cap.orgName}'s policy`,
+    raises: [],
   };
 }
 

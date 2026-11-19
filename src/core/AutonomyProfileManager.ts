@@ -23,7 +23,7 @@ import type {
 } from './types.js';
 import type { AdaptiveTrust, TrustElevationSuggestion } from './AdaptiveTrust.js';
 import type { EvolutionManager } from './EvolutionManager.js';
-import { profileRaises, proofCovers, proposalHashOf, raiseRefusal, TrustRaiseRefusedError, type OperatorProof } from './TrustRaiseGuard.js';
+import { orgCapRefusal, profileRaises, proofCovers, proposalHashOf, raiseRefusal, TrustRaiseRefusedError, type OperatorProof } from './TrustRaiseGuard.js';
 
 // ── Profile Defaults ─────────────────────────────────────────────────
 
@@ -85,7 +85,7 @@ export const PROFILE_DEFAULTS: Record<AutonomyProfileLevel, ProfileDefaults> = {
 interface AutonomyStateFile {
   profile: AutonomyProfileLevel;
   setAt: string;
-  setBy: 'user' | 'system' | 'earned';
+  setBy: 'user' | 'system' | 'earned' | 'org-policy';
   notifications: NotificationPreferences;
   /** Track profile change history for trust recovery */
   history: Array<{
@@ -106,12 +106,17 @@ export class AutonomyProfileManager {
   private adaptiveTrust: AdaptiveTrust | null;
   private evolution: EvolutionManager | null;
 
+  /** The organization's independence cap, read live from the applied pack (docs/specs/org-pack-and-join.md §D). */
+  private orgCap: (() => { level: AutonomyProfileLevel; orgName: string } | null) | null;
+
   constructor(opts: {
     stateDir: string;
     config: InstarConfig;
     adaptiveTrust?: AdaptiveTrust | null;
     evolution?: EvolutionManager | null;
+    orgCap?: () => { level: AutonomyProfileLevel; orgName: string } | null;
   }) {
+    this.orgCap = opts.orgCap ?? null;
     this.stateDir = opts.stateDir;
     this.statePath = path.join(opts.stateDir, 'state', 'autonomy-profile.json');
     this.config = opts.config;
@@ -158,8 +163,17 @@ export class AutonomyProfileManager {
    * Set the autonomy profile. Returns the new resolved state.
    * This is the main entry point for conversational autonomy changes.
    */
+  /** Durable change-log hook (trust-journey 6a): told of every switch, with the proof for a raise. */
+  private changeObserver: ((from: AutonomyProfileLevel, to: AutonomyProfileLevel, proof: OperatorProof | null) => void) | null = null;
+  setChangeObserver(fn: ((from: AutonomyProfileLevel, to: AutonomyProfileLevel, proof: OperatorProof | null) => void) | null): void { this.changeObserver = fn; }
+
   setProfile(level: AutonomyProfileLevel, reason: string, proof?: OperatorProof | null): ResolvedAutonomyState {
     const oldProfile = this.state.profile;
+    // An organization's cap holds even against a valid proof (org-pack-and-join §D).
+    const cap = this.orgCap?.() ?? null;
+    if (cap && profileRaises(cap.level, level).length > 0) {
+      throw new TrustRaiseRefusedError(orgCapRefusal(cap));
+    }
     // A profile whose permissions are wider than the current one is a raise (trust-journey
     // decision 4): it needs the person's proof for this exact switch.
     const raises = profileRaises(oldProfile, level);
@@ -186,8 +200,101 @@ export class AutonomyProfileManager {
 
     // Apply profile defaults to config file
     this.applyProfileToConfig(level);
+    try { this.changeObserver?.(oldProfile, level, proof ?? null); } catch { /* @silent-fallback-ok: the writer reports its own failures */ }
 
     return this.getResolvedState();
+  }
+
+  /**
+   * Lower the profile to an organization's cap (org-pack-and-join §D). A narrowing, so no proof.
+   * Returns the previous profile when it lowered, or null when already at or below the cap.
+   */
+  lowerForOrgPolicy(cap: AutonomyProfileLevel, orgName: string): AutonomyProfileLevel | null {
+    const from = this.state.profile;
+    if (profileRaises(cap, from).length === 0) return null;
+    this.state.history.push({ from, to: cap, at: new Date().toISOString(), reason: `Lowered by ${orgName}'s policy` });
+    if (this.state.history.length > 50) this.state.history = this.state.history.slice(-50);
+    this.state.profile = cap;
+    this.state.setAt = new Date().toISOString();
+    this.state.setBy = 'org-policy';
+    this.save();
+    this.applyProfileToConfig(cap);
+    return from;
+  }
+
+  /**
+   * Clamp the three authority settings to an organization's cap (org-pack-and-join §D): any of
+   * `safety.level`, `agentAutonomy.level` and `evolution.approvalMode` set looser than the cap
+   * profile's value, explicitly or not, is rewritten in config.json. Returns the previous values of
+   * the ones it changed (for restore on leave), or null when nothing changed.
+   */
+  /** The three authority settings as config.json holds them now (staged before an org apply). */
+  authoritySettings(): Record<string, unknown> {
+    const configPath = path.join(this.stateDir, 'config.json');
+    try {
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, Record<string, unknown> | undefined>;
+      const out: Record<string, unknown> = {};
+      if (raw.safety?.level !== undefined) out['safety.level'] = raw.safety.level;
+      if (raw.agentAutonomy?.level !== undefined) out['agentAutonomy.level'] = raw.agentAutonomy.level;
+      if (raw.evolution?.approvalMode !== undefined) out['evolution.approvalMode'] = raw.evolution.approvalMode;
+      return out;
+    } catch { return {}; } // @silent-fallback-ok — no config means nothing to restore
+  }
+
+  clampForOrgPolicy(cap: AutonomyProfileLevel): Record<string, unknown> | null {
+    const configPath = path.join(this.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) return null;
+    const d = PROFILE_DEFAULTS[cap];
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, Record<string, unknown> | undefined>;
+    const order = ['supervised', 'collaborative', 'autonomous'];
+    const prev: Record<string, unknown> = {};
+    const safety = (raw.safety ??= {});
+    if (typeof safety.level === 'number' && safety.level > d.safetyLevel) { prev['safety.level'] = safety.level; safety.level = d.safetyLevel; }
+    const aa = (raw.agentAutonomy ??= {});
+    if (typeof aa.level === 'string' && order.indexOf(aa.level) > order.indexOf(d.agentAutonomyLevel)) { prev['agentAutonomy.level'] = aa.level; aa.level = d.agentAutonomyLevel; }
+    const evo = (raw.evolution ??= {});
+    if (evo.approvalMode === 'autonomous' && d.evolutionApprovalMode !== 'autonomous') { prev['evolution.approvalMode'] = evo.approvalMode; evo.approvalMode = d.evolutionApprovalMode; }
+    if (Object.keys(prev).length === 0) return null;
+    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
+    // The running server reads these from memory too: apply the clamp there now, not at the next restart.
+    const live = this.config as unknown as Record<string, Record<string, unknown> | undefined>;
+    if ('safety.level' in prev) (live.safety ??= {}).level = d.safetyLevel;
+    if ('agentAutonomy.level' in prev) (live.agentAutonomy ??= {}).level = d.agentAutonomyLevel;
+    if ('evolution.approvalMode' in prev) (live.evolution ??= {}).approvalMode = d.evolutionApprovalMode;
+    return prev;
+  }
+
+  /** Put back clamped settings on leave, each only if it still holds the cap's value (unchanged since). */
+  restoreClampedSettings(prev: Record<string, unknown>, cap: AutonomyProfileLevel): void {
+    const configPath = path.join(this.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) return;
+    const d = PROFILE_DEFAULTS[cap];
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, Record<string, unknown> | undefined>;
+    if ('safety.level' in prev && raw.safety?.level === d.safetyLevel) raw.safety.level = prev['safety.level'];
+    if ('agentAutonomy.level' in prev && raw.agentAutonomy?.level === d.agentAutonomyLevel) raw.agentAutonomy.level = prev['agentAutonomy.level'];
+    if ('evolution.approvalMode' in prev && raw.evolution?.approvalMode === d.evolutionApprovalMode) raw.evolution.approvalMode = prev['evolution.approvalMode'];
+    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
+    const live = this.config as unknown as Record<string, Record<string, unknown> | undefined>;
+    if (raw.safety && live.safety) live.safety.level = raw.safety.level;
+    if (raw.agentAutonomy && live.agentAutonomy) live.agentAutonomy.level = raw.agentAutonomy.level;
+    if (raw.evolution && live.evolution) live.evolution.approvalMode = raw.evolution.approvalMode;
+  }
+
+  /**
+   * Undo an organization's lowering when the agent leaves (org-pack-and-join §D, "On leave"): puts
+   * back the saved profile only if the profile is still exactly where the policy left it (`setBy`
+   * 'org-policy' at the cap). It restores what the person already had; it is never a new raise.
+   */
+  restoreAfterOrgPolicy(previous: AutonomyProfileLevel, cap: AutonomyProfileLevel): boolean {
+    if (this.state.setBy !== 'org-policy' || this.state.profile !== cap) return false;
+    this.state.history.push({ from: cap, to: previous, at: new Date().toISOString(), reason: 'Organization left: restored' });
+    if (this.state.history.length > 50) this.state.history = this.state.history.slice(-50);
+    this.state.profile = previous;
+    this.state.setAt = new Date().toISOString();
+    this.state.setBy = 'user';
+    this.save();
+    this.applyProfileToConfig(previous);
+    return true;
   }
 
   /**

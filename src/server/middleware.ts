@@ -7,6 +7,8 @@ import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import { answerBodyParseError } from './bodyBudget.js';
+import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
@@ -61,6 +63,19 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   // cross-origin (spec skill-driven-signin-repair §5). A preflight gets a bare refusal.
   if (RELOGIN_HELPER_CODE_PATH.test(req.path)) {
     if (req.method === 'OPTIONS') { res.sendStatus(403); return; }
+    next();
+    return;
+  }
+  // Project app api paths (docs/specs/project-apps-sandbox.md §3.6): the sandboxed frame has an
+  // opaque origin, so its fetches carry `Origin: null`. Exactly these paths, ahead of the generic
+  // branch; no credentials, and the narrow key header is the only extra header allowed.
+  if (PROJECT_APP_API_PATH.test(req.path)) {
+    if (req.headers.origin === 'null') res.header('Access-Control-Allow-Origin', 'null');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'X-Project-App-Key, Content-Type');
+    res.header('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
     next();
     return;
   }
@@ -186,7 +201,7 @@ export function isThreadlinePublicRoute(method: string, reqPath: string): boolea
  * follow-up SEC-002c (a blocklist cannot be proven complete against indirect reach). The master
  * token (API/CLI callers) is unaffected — it never takes this branch.
  */
-const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/sync-status', '/identity-recovery/rotate'];
+const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/retrieve', '/secrets/sync-status', '/identity-recovery/rotate'];
 const DST_CREDENTIAL_EXACT = new Set<string>([
   '/identity-recovery/rotate',
   // SEC-045: "sign out all dashboard sessions on this agent" needs a fresh-PIN step-up. The route is
@@ -397,6 +412,15 @@ export function authMiddleware(
       return;
     }
 
+    // Project apps (docs/specs/project-apps-sandbox.md §3.6): the sealed frame (single-use ticket,
+    // checked in the handler) and the app's own api (the narrow X-Project-App-Key, checked in the
+    // handler, the ONLY gate there). Exact method + path shapes, never a prefix; the ticket and key
+    // mint routes stay behind this gate.
+    if (isProjectAppPublicRoute(req.method, req.path)) {
+      next();
+      return;
+    }
+
     // Internal endpoints: enforce localhost AND bearer token.
     //
     // Per context-death-pitfall-prevention spec § P0.5 (PR3 fix):
@@ -470,6 +494,11 @@ export function authMiddleware(
 
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+    // A project app's narrow key is never a Bearer (project-apps-sandbox §3.7): a plain 401.
+    if (header.startsWith('Bearer pak_')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
       return;
     }
@@ -988,6 +1017,21 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
           ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
           : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
+    // The project app wrapper (project-apps-sandbox §3.6): its own policy, whose frame-src names the
+    // one frame path for this app on this request's own origin, so the frame cannot navigate itself
+    // anywhere else. The origin must be one of the agent's known addresses (the resolver AgentServer
+    // puts on app.locals); without one the page is refused rather than served with a looser policy.
+    if (isWrapperPagePath(p)) {
+      const appId = typeof req.query?.app === 'string' ? req.query.app : '';
+      const resolve = req.app?.locals?.projectAppOrigin as ((r: Request) => string | null) | undefined;
+      const origin = resolve ? resolve(req) : null;
+      if (!APP_ID_RE.test(appId) || !origin) {
+        res.status(400).type('text/plain').set('Cache-Control', 'no-store')
+          .send(!APP_ID_RE.test(appId) ? 'No such app.' : 'This address is not one of this agent\'s addresses.');
+        return;
+      }
+      res.header('Content-Security-Policy', wrapperCsp(origin, appId));
+    }
   }
   next();
 }
@@ -1035,6 +1079,8 @@ export const DASHBOARD_STATIC_OPTIONS = {
 } as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
+  // SEC-103: a body the caller sent malformed or too large is a plain 400/413, never a 500.
+  if (answerBodyParseError(err, req, res)) return;
   const message = operatorError(err, res.app?.locals?.stateDir);
   const stack = err instanceof Error ? err.stack : undefined;
   if (responseAlreadyCommitted(res)) {
@@ -1054,7 +1100,8 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
 
 const DOC_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const DOC_PAGE_GET = new RegExp(`^/docs/(?:_assets/[a-z0-9-]+\\.(?:js|css)|${DOC_UUID}(?:/page-data|/page-compare)?)$`);
-const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+)$`);
+// Page write ops are lower-case words joined by hyphens (`decide-on-phone`, document-decisions §3.3).
+const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+(?:-[a-z]+){0,3})$`);
 /** The document page's self-authenticating routes (documentPageRoutes.ts). */
 export function DOC_PAGE_PATH(method: string, p: string): boolean {
   // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).

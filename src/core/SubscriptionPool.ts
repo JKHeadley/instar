@@ -112,6 +112,18 @@ export interface AccountQuotaSnapshot {
    * feeds placement, shedding or swap decisions.
    */
   noQuotaWindow?: boolean;
+  /**
+   * quota-pacing (additive): a Codex rollout reading carried no captured time, so `measuredAt`
+   * is the read time and the reading's real age is unknown. Display/telemetry only; stripped
+   * from the replicated account projection.
+   */
+  measuredAtSynthesized?: boolean;
+  /**
+   * quota-pacing (additive): the provider sent `percent: null` for the Fable window. The
+   * `fable.utilizationPct` value is unchanged (0) for existing readers; the history stores null.
+   * Stripped from the replicated account projection.
+   */
+  fableUnknown?: boolean;
 }
 
 export interface SubscriptionAccount {
@@ -702,6 +714,14 @@ export class SubscriptionPool {
     return this.store.accounts
       .filter((a): a is SubscriptionAccount => typeof a.email === 'string' && a.email.trim().length > 0)
       .map((a) => ({ ...a }));
+  }
+
+  /** This machine's transcript directories, including disabled or legacy slots with usage history. */
+  transcriptHomes(): Array<{ framework: SubscriptionFramework; configHome: string }> {
+    this.assertReadable();
+    return this.store.accounts
+      .filter(a => typeof a.configHome === 'string' && a.configHome.length > 0)
+      .map(({ framework, configHome }) => ({ framework, configHome }));
   }
 
   /** Legacy rows are visible for repair, but never enter normal selectors. */

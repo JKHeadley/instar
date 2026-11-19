@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mac-app-creates-agent",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T01:28:44.857Z",
+  "artifactPath": "upgrades/side-effects/mac-app-creates-agent.md",
+  "artifactSha256": "8b040fc806a9dad586ae086f655a196349f0ef4bff31db61f6dc8670641a95e1",
+  "specPath": "docs/specs/mac-app-creates-agent.md",
+  "coveredFiles": [
+    "src/core/localOwnerTicket.ts",
+    "src/server/mobileLocalOwnerDevice.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fix for local verify: device keys read through deviceKeyOf; intended ENOENT fallbacks annotated.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

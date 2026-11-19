@@ -28,8 +28,10 @@ export function stripModel(res, { expanded = false } = {}) {
   if (!items || count === null) return { show: true, state: 'unknown', badge: '?', incomplete: true, title: 'Could not check what needs you', rows: [], more: 0, line: 'The list answered in a shape this page cannot read.' };
   const missed = Array.isArray(d.couldNotCheck) ? d.couldNotCheck.filter((x) => typeof x === 'string') : [];
   const complete = d.complete === true && missed.length === 0;
-  if (count === 0 && complete) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
-  // "N more" opens the rest in place (every count needs a path to act); the read carries up to 100 items.
+  const truncated = d.truncated === true || count > items.length;
+  const omitted = Math.max(0, count - items.length);
+  if (count === 0 && complete && !truncated) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
+  // Expand only rows actually received. The server bounds each answer; name any omitted rows.
   const rows = expanded ? items : items.slice(0, STRIP_ROWS);
   return {
     show: true,
@@ -39,9 +41,20 @@ export function stripModel(res, { expanded = false } = {}) {
     incomplete: !complete,
     title: count > 0 ? `Needs you · ${count}` : 'Nothing found so far',
     rows,
-    more: Math.max(0, count - rows.length),
-    line: missed.length ? `Could not check ${list(missed)}.` : '',
+    more: Math.max(0, items.length - rows.length),
+    truncated,
+    line: [
+      missed.length ? `Could not check ${list(missed)}.` : '',
+      truncated ? `This list has ${items.length} of ${count} needs.${omitted > 0 ? ` ${omitted} more ${omitted === 1 ? 'is' : 'are'} not shown.` : ' Some needs may not be shown.'}` : '',
+    ].filter(Boolean).join(' '),
   };
+}
+
+/** A row's card link, only when it points at a Work page card (never another place); the label is the server's fixed words. */
+export function cardLinkOf(row) {
+  const c = row && row.card;
+  if (!c || typeof c.href !== 'string' || !/^#\/work\/board\?card=[A-Za-z0-9_%.-]{1,200}$/.test(c.href)) return null;
+  return { href: c.href, label: typeof c.label === 'string' && c.label ? c.label : 'Has a card on the work board' };
 }
 
 // One strip at a time: a new mount (another door) stops the previous refresh.
@@ -65,7 +78,10 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
-      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body));
+      // A row the server linked to its card (work-board-cards-appear §3): a second, small link beside it (links cannot nest).
+      const card = cardLinkOf(r);
+      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
+        card ? el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label }) : null);
     }));
     host.replaceChildren(
       el('div', { class: 'needs-head' },
@@ -79,7 +95,7 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
   // "N more things need you." opens the rest in place; "Show fewer" closes it.
   const moreButton = (m) => {
     const b = el('button', { class: 'needs-more link-btn', type: 'button', 'aria-expanded': expanded ? 'true' : 'false',
-      text: expanded ? 'Show fewer' : (m.more === 1 ? 'One more thing needs you. Show it' : `${m.more} more things need you. Show all`) });
+      text: expanded ? 'Show fewer' : m.truncated ? `Show ${m.more} more available ${m.more === 1 ? 'item' : 'items'}` : (m.more === 1 ? 'One more thing needs you. Show it' : `${m.more} more things need you. Show all`) });
     b.addEventListener('click', () => { expanded = !expanded; paint(last); });
     return b;
   };

@@ -37,6 +37,7 @@ import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTI
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
 import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
+import { checkBrakes, type EpisodeRow, type LedgerRow } from '../monitoring/machineMaintenance/HostMaintenanceStore.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
@@ -3356,21 +3357,25 @@ const localVerifyStatusPassBackoff: SelfActionController = {
 
 /**
  * local-verify-flake-rerun — the isolation re-run inside one verify: a lane whose only
- * problem is 1..3 failed files re-runs exactly those files once each, and the cap (3)
- * covers the whole verify. Pinned worst case (targetAlwaysRejects): every lane of every
- * verify has 2 failing files and every re-run fails again. Per verify: lane 1 re-runs 2,
- * lane 2 re-runs none (only 1 left of the cap), lane 3 none ⇒ ≤ 3 re-runs, each file
- * once. The model drives ONE verify (verifies themselves are bounded by the queue's own
- * controllers), so the bound is horizon-independent.
+ * problem is 1..3 failed files re-runs exactly those files, and the cap (3) covers the whole
+ * verify and counts FILES. A plain file is re-run once. A file that imports a changed file and
+ * whose failed tests `main` has all shown flaky is re-run up to three times in a row (spec
+ * local-verify-import-related-rerun.md); its first run that does not pass ends its sequence.
+ * Pinned worst case (targetAlwaysRejects): every lane of every verify has 3 failing files, all
+ * of them import-related with main evidence, and every solo run passes, so each file gets all
+ * three runs. Per verify: lane 1 re-runs its 3 files three times each, lanes 2 and 3 none (the
+ * cap is spent) ⇒ ≤ 3 × 3 = 9 solo runs, each file at most 3. The model drives ONE verify
+ * (verifies themselves are bounded by the queue's own controllers), so the bound is
+ * horizon-independent.
  */
 const localVerifyFlakeRerun: SelfActionController = {
   id: 'local-verify-flake-rerun',
   actionVerb: 'retry-failed-test-file',
-  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles per verify)',
+  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles files per verify, LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses runs per import-related file)',
   modelsPath: 'src/localVerify/orchestrator.ts',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'The re-run budget lives inside one verify run (the child process); a restart ends that run, and the next run is a new verify bounded by the queue controllers.' },
-  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles,
-  perTargetBoundK: 1,
+  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles * LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
+  perTargetBoundK: LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
   ticks: 3, // one tick per lane of a single verify
   tickMs: 10 * 60_000,
   makeUnderPressure(f, sink) {
@@ -3379,12 +3384,16 @@ const localVerifyFlakeRerun: SelfActionController = {
     return {
       tick() {
         sink.considered += 1;
-        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`];
+        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`, `tests/l${lane}/c.test.ts`];
         const report: ParsedLaneReport = { files: new Map(files.map((x) => [x, { passed: 1, failed: f.targetAlwaysRejects() ? 1 : 0, skipped: 0, todo: 0 }])) };
         lane += 1;
-        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget });
+        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget, importRelated: new Set(files) });
         budget -= d.rerun.length;
-        for (const file of d.rerun) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        if (d.reason !== 'eligible') return;
+        for (const file of d.rerun) {
+          const runs = d.threePass.includes(file) ? LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses : 1;
+          for (let n = 0; n < runs; n++) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        }
       },
     };
   },
@@ -4274,6 +4283,57 @@ function recommendedServiceSetupRestartModel(f: PressureFixture, sink: ActionSin
  * (a flapping machine, not this fixture) it is also capped at one ordinary and one
  * breaker notice per 24 hours.
  */
+/**
+ * machine-restart — the machine restart class (machine-self-maintenance Part E brakes;
+ * HostMaintenanceStore.reserveEpisode -> checkBrakes, RestartActuator). The pressure: two
+ * wedge evidence families positive forever, so the wedge path asks for a restart at every
+ * 10-minute sample, and every restart "lands" (a new boot) but the wedge returns at once.
+ * Convergence shape: an Eternal Sentinel bounded by the REAL brake function on a durable
+ * ledger (fixture state survives reconstruction): never within 6 h of a boot, at most 2 per
+ * 24 h and 3 per 7 days. The rate floor is the 6-hour rule.
+ */
+const machineRestart: SelfActionController = {
+  id: 'machine-restart',
+  actionVerb: 'machine-restart',
+  models: 'src/monitoring/machineMaintenance/HostMaintenanceStore.ts (reserveEpisode + checkBrakes) -> RestartActuator.dispatch',
+  modelsPath: 'src/monitoring/machineMaintenance/RestartActuator.ts',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 7 * 24 * 6,
+  tickMs: 10 * 60_000,
+  eternalSentinel: {
+    reason: 'A machine that keeps wedging keeps being offered a restart at a bounded rate: never within 6 h of a boot, at most 2 per 24 h and 3 per 7 days, all enforced by the durable ledger brakes.',
+    rateFloorMs: 6 * 60 * 60_000,
+  },
+  delegatedGiveUp: 'The ledger brakes (6 h since boot, 2 per 24 h, 3 per 7 days) and, past them, the operator attention item',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMachineRestart(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineRestart(f, sink);
+  },
+};
+
+function makeMachineRestart(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const ledger = (f.durableState.get('machine-restart:ledger') as LedgerRow[] | undefined) ?? [];
+      const bootAt = (f.durableState.get('machine-restart:bootAt') as number | undefined) ?? now - 7 * 24 * 60 * 60_000;
+      if (!f.targetAlwaysRejects()) return; // the wedge cleared (never under this fixture)
+      if (checkBrakes(ledger, { kind: 'wedge', now, bootAt }) !== null) return;
+      const n = ((f.durableState.get('machine-restart:seq') as number | undefined) ?? 0) + 1;
+      const row = (state: EpisodeRow['state']): EpisodeRow => ({ type: 'episode', episodeId: `ep${n}`, generation: 1, kind: 'wedge', state, bootAt, expiresAt: now + 30 * 60_000, at: now, by: 'model', ...(state === 'dispatched' ? { rung: 1 as const, dispatch: 'accepted' as const } : {}) });
+      f.durableState.set('machine-restart:seq', n);
+      f.durableState.set('machine-restart:ledger', [...ledger, row('reserved'), row('dispatched'), row('restarted')]);
+      f.durableState.set('machine-restart:bootAt', now); // the restart lands: a new boot now
+      sink.emit({ verb: 'machine-restart', target: 'machine:self' });
+    },
+  };
+}
+
 const machineWedgeNotice: SelfActionController = {
   id: 'machine-wedge-notice',
   actionVerb: 'wedge-notify',
@@ -4291,6 +4351,104 @@ const machineWedgeNotice: SelfActionController = {
     return makeMachineWedgeNotice(f, sink);
   },
 };
+
+/**
+ * machine-wedge-canary-reap — the F1 canary cleanup (machine-self-maintenance Part E;
+ * WedgeMonitor.endLeftoverCanaries + endCanaries, fb-92ed1f8b-3a2). Each sample launches
+ * one canary; on a wedged GUI path it is left stopped and the sampler ends it. The pressure:
+ * a wedge that never clears, sampled every 2 minutes forever. Convergence shape: an Eternal
+ * Sentinel. It ends only what its own sample launched (one canary per sample, each pid once),
+ * so its rate is the sampler's single-flight cadence and nothing accumulates: without it the
+ * stopped canaries pile up instead (11 in 20 h on the Studio).
+ */
+const machineWedgeCanaryReap: SelfActionController = {
+  id: 'machine-wedge-canary-reap',
+  actionVerb: 'canary-reap',
+  models: 'src/monitoring/machineMaintenance/WedgeMonitor.ts (sample: endLeftoverCanaries before the launch, endCanaries of a stopped canary after it)',
+  modelsPath: 'src/monitoring/machineMaintenance/WedgeMonitor.ts',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: 1,
+  ticks: 720,
+  tickMs: 2 * 60_000,
+  eternalSentinel: {
+    reason: 'Cleanup of its own probe: one stuck canary ended per wedge sample, each pid once, at the sampler cadence; a new boot or a cleared wedge stops it.',
+    rateFloorMs: 2 * 60_000,
+  },
+  delegatedGiveUp: 'The wedge sampler cadence (single-flight, 2-minute floor while positive) and the boot that ends the wedge',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMachineWedgeCanaryReap(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineWedgeCanaryReap(f, sink);
+  },
+};
+
+const machineWedgeGentleResume: SelfActionController = {
+  id: 'machine-wedge-gentle-resume',
+  actionVerb: 'stopped-launch-nudge',
+  models: 'src/monitoring/machineMaintenance/WedgeMonitor.ts (gentleRung: SIGCONT to stopped app launches while the canary itself is left stopped; GENTLE_MAX_PER_PROCESS per pid, GENTLE_MAX_PER_SAMPLE per sample)',
+  modelsPath: 'src/monitoring/machineMaintenance/WedgeMonitor.ts',
+  // Three launches that LaunchServices stops again after every resume (the wedge never clears).
+  boundK: 3 * 2,
+  perTargetBoundK: 2,
+  ticks: 720,
+  tickMs: 2 * 60_000,
+  delegatedGiveUp: 'Rungs 1-7 and the operator notice: a launch stopped again after two resumes is left to them',
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason: 'The per-pid count is in memory: a server restart allows at most two more resumes per stuck launch, and SIGCONT only continues a process, so a reset can neither end one nor lose work.',
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineWedgeGentleResume(f, sink);
+  },
+};
+
+function makeMachineWedgeGentleResume(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const CADENCE_MS = 2 * 60_000;
+  const MAX_PER_PID = 2;
+  const stuck = [405, 406, 407];
+  const resumes = new Map<number, number>();
+  let last: number | undefined;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      if (last !== undefined && now - last < CADENCE_MS) return;
+      last = now;
+      // The pressure: the canary is left stopped every sample, and every launch is stopped again.
+      if (!f.targetAlwaysRejects()) return;
+      for (const pid of stuck) {
+        const n = resumes.get(pid) ?? 0;
+        if (n >= MAX_PER_PID) continue;
+        resumes.set(pid, n + 1);
+        sink.emit({ verb: 'stopped-launch-nudge', target: `pid:${pid}` });
+      }
+    },
+  };
+}
+
+function makeMachineWedgeCanaryReap(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const CADENCE_MS = 2 * 60_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // The sampler is single-flight with its next sample scheduled from the last one, held
+      // in the host store's wedge state, so a reconstruction does not sample early.
+      const last = f.durableState.get('machine-wedge:last-sample') as number | undefined;
+      if (last !== undefined && now - last < CADENCE_MS) return;
+      f.durableState.set('machine-wedge:last-sample', now);
+      // Before the launch: leftovers were already ended last sample, so none remain.
+      // The launch: on a wedged path the new canary is left stopped. After: end it, once.
+      if (f.targetAlwaysRejects()) {
+        const n = ((f.durableState.get('machine-wedge:canary-seq') as number | undefined) ?? 0) + 1;
+        f.durableState.set('machine-wedge:canary-seq', n);
+        sink.emit({ verb: 'canary-reap', target: `canary:${n}` });
+      }
+    },
+  };
+}
 
 function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
   const WINDOW_MS = 20 * 60_000;
@@ -5934,6 +6092,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  machineWedgeCanaryReap,
+  machineRestart,
+  machineWedgeGentleResume,
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
   appPoolEnforcer,

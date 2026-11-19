@@ -10,6 +10,7 @@
  * running server's install, never from the PR being verified.
  */
 
+import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,7 +20,7 @@ import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRunti
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
-import type { PeerClient, PeerResult, PeerRunAnswer, PeerStatus } from './peer.js';
+import { parsePeerMainRun, type PeerClient, type PeerResult, type PeerRunAnswer, type PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
@@ -43,6 +44,14 @@ export interface LocalVerifyConfigBlock {
   postStatuses?: boolean;
   /** This machine may run verifies a coordinator hands it (spec local-verify-capacity.md Part D). Default off. */
   peer?: { enabled?: boolean };
+  /** Coordinator: hand `main` verifies to peers while main is healthy (default false; docs/specs/local-verify-main-on-peer.md). Read live. */
+  mainOnPeers?: boolean;
+  /**
+   * A failed test file that only imports a changed file may be re-run alone, three times, when
+   * every one of its failed tests has failed and passed alone on a `main` verify in the last 7
+   * days (default false; docs/specs/local-verify-import-related-rerun.md). Read live at each run start.
+   */
+  importRelatedRerun?: boolean;
   /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
   peers?: Array<{ machineId: string; url: string }>;
   /** macOS: run each verify as an Interactive launchd job so it uses the performance cores (default true). */
@@ -100,6 +109,8 @@ export interface LocalVerifyWiringOpts {
   config: LocalVerifyConfigBlock | undefined;
   /** The green-PR block's `expectedGhLogin` (the agent's own GitHub login). */
   expectedGhLogin: string | undefined;
+  /** `monitoring.localVerify.operatorGhLogin`, read live (no restart to apply a change). */
+  liveOperatorGhLogin?: () => string | null;
   repo: string;
   /** The server's working directory (the instar source checkout). */
   repoPath: string;
@@ -173,6 +184,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       agentHome: opts.agentHome,
       expectedGhLogin: expected,
       operatorGhLogin: opts.config.operatorGhLogin?.trim() || null,
+      ...(opts.liveOperatorGhLogin ? { liveOperatorGhLogin: opts.liveOperatorGhLogin } : {}),
       // A content hash of the installed verifier code, not the package version: a release
       // that leaves the verifier untouched keeps every green record.
       verifierVersion: computeVerifierVersion(path.dirname(mainEntry), undefined, { protectedList: PROTECTED_PATH_PREFIXES }),
@@ -414,6 +426,8 @@ export interface StatusReconcilerWiringOpts {
   /** The agent's own GitHub login (green-PR `expectedGhLogin`). */
   expectedGhLogin: string | undefined;
   operatorGhLogin: string | null;
+  /** `monitoring.localVerify.operatorGhLogin`, read live (no restart to apply a change). */
+  liveOperatorGhLogin?: () => string | null;
   service: LocalVerifyService | null;
   /** Live config readers. */
   localVerifyEnabled(): boolean;
@@ -465,7 +479,7 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
     audit,
   };
   const reconciler = new StatusReconciler({
-    repo: opts.repo, agentLogin: login, operatorGhLogin: opts.operatorGhLogin, machineId: opts.machineId,
+    repo: opts.repo, agentLogin: login, operatorGhLogin: opts.operatorGhLogin, ...(opts.liveOperatorGhLogin ? { liveOperatorGhLogin: opts.liveOperatorGhLogin } : {}), machineId: opts.machineId,
     postStatuses: opts.postStatuses, localVerifyEnabled: opts.localVerifyEnabled,
     actionsFloor: floor.actionsFloor, evaluate: floor.evaluate,
   }, seams, floorGate, opts.service);
@@ -502,7 +516,9 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       const b = r.body as PeerStatus & { enabled?: boolean };
       if (b.enabled === false) return null;
       if (typeof b.verifierVersion !== 'string' || typeof b.policyHash !== 'string' || typeof b.slotBusy !== 'boolean') return null;
-      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy };
+      const hint = (b as { signerKeyHash?: unknown }).signerKeyHash;
+      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy,
+        ...(typeof hint === 'string' && /^[0-9a-f]{64}$/.test(hint) ? { signerKeyHash: hint } : {}) };
     },
     async run(peer, req) {
       const r = await call(`${peer.url}/local-verify/peer-run`, { method: 'POST', body: JSON.stringify(req) });
@@ -517,7 +533,15 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       if (!r || r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
       const b = r.body as PeerResult;
       if (b.state === 'unknown' || b.state === 'running') return { state: b.state };
-      if (b.state === 'done' && 'record' in b && b.record) return { state: 'done', record: b.record };
+      if (b.state === 'done' && 'record' in b && b.record) {
+        const rawBody = r.body as { record: unknown; run?: unknown; requestDigest?: unknown; sig?: unknown };
+        const run = parsePeerMainRun(rawBody.run);
+        // SEC-113 D1: the raw body as received rides along, so the signature is checked before any reshaping.
+        return {
+          state: 'done', record: b.record, ...(run ? { run } : {}),
+          raw: { record: rawBody.record, run: rawBody.run, requestDigest: rawBody.requestDigest, sig: rawBody.sig },
+        };
+      }
       return null;
     },
     async cancel(peer, attemptId) {
@@ -537,12 +561,19 @@ export function wireLocalVerifyPeers(
     fetchImpl?: typeof fetch;
     /** Resource-aware placement §4: a peer's fit for a full verify; absent ⇒ no filter. */
     peerFit?: (machineId: string) => import('./LocalVerifyService.js').PeerFit;
+    /** SEC-113 D1: the agent state dir, for this machine's signer and the pinned peer keys. Absent ⇒ unsigned answers and no peer dispatch. */
+    stateDir?: string;
   },
 ): void {
+  const signer = o.stateDir ? loadMachineSigner(o.stateDir) : null;
   svc.setPeerWiring({
+    signer,
+    keyLookupFactory: o.stateDir ? () => identityKeyLookup(o.stateDir!) : null,
     ...(o.peerFit ? { peerFit: o.peerFit } : {}),
     peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
     peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),
+    // Off unless set: a `main` verify stays on the coordinator (docs/specs/local-verify-main-on-peer.md).
+    mainOnPeers: () => o.liveConfig.get<boolean>('monitoring.localVerify.mainOnPeers', false) === true,
     client: makePeerClient(o.authToken, o.agentId, o.fetchImpl),
     lease: o.lease,
   });
@@ -551,9 +582,10 @@ export function wireLocalVerifyPeers(
  * The live switches the server reads at each decision (absent ⇒ on):
  * `monitoring.localVerify.mainRedHold` (CMT-1033), `monitoring.localVerify.failFast` and
  * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
+ * `monitoring.localVerify.importRelatedRerun` is the exception: absent ⇒ OFF, on only by a real `true`.
  */
 export function wireLocalVerifySwitches(
-  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode'>,
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled'>,
   liveConfig: { get<T>(key: string, fallback: T): T },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
@@ -561,6 +593,8 @@ export function wireLocalVerifySwitches(
   // Processes per slow lane, e.g. { "integration": 1, "e2e": 2 } to return to the pre-2026-10-27 split.
   svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
+  // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
+  svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
 }
 
 /**

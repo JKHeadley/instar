@@ -89,13 +89,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'workBoard',
     prefixes: ['/work-board'],
-    description: 'The Work Board (docs/specs/work-board-asks.md): a card for each decision, answer or sign-off the agent needs from a person on a piece of work. Each card says what is needed, what done means, who carries it and who acts next, and its chat is a real app conversation. Read it before answering "what is waiting on my person?" or "what cards are open?". The agent proposes cards, asks questions, adds evidence and claims done; only a person approves, answers, confirms done, holds, reopens or archives (a tap needs the dashboard PIN or the owner phone\'s Face ID). Text in a card\'s chat is never an approval.',
+    description: 'The Work Board (docs/specs/work-board-asks.md): a card for each decision, answer or sign-off the agent needs from a person on a piece of work. Each card says what is needed, what done means, who carries it and who acts next, and its chat is a real app conversation. Read it before answering "what is waiting on my person?" or "what cards are open?". The agent proposes cards, asks questions, adds evidence and claims done; only a person approves, answers, confirms done, holds, reopens or archives (a tap needs the dashboard PIN or the owner phone\'s Face ID). Text in a card\'s chat is never an approval. Each board read also carries `myBoard.sections` (docs/specs/work-board-my-board.md): the cards that need the reader, each once under its most pressing reason (Waiting for your approval, Waiting for your reply, Your cards, Cards you were added to, Held for later), untouched first; answer "what needs me?" from it.',
     build: ({ ctx }) => {
       const rt = (ctx as { workBoard?: (() => { svc: { cardIds: () => string[]; policy: () => string; waitingOnOwnerCount: () => number }; controller: { status: () => unknown } } | null) | null }).workBoard?.() ?? null;
       if (!rt) return { enabled: false };
       return {
         enabled: true, cards: rt.svc.cardIds().length, waitingOnOwner: rt.svc.waitingOnOwnerCount(), policy: rt.svc.policy(), pickups: rt.controller.status(),
-        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /mobile/work-board', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
+        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /work-board/lessons', 'GET /mobile/work-board', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
       };
     },
   },
@@ -108,8 +108,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'workProjects',
     prefixes: ['/work'],
-    description: 'Projects on the Work door (docs/specs/work-front-doors.md stage 2a): every project the Chief of Staff tracks, where it stands in plain words (Waiting on you, Moving, Stalled, Drifting, "I stopped retrying: needs a look", Says it\'s done, Done, Not known yet), its done list with each item\'s state, and the work-board cards that belong to it (a card\'s projectKey is the project\'s conversation key); cards in no project are listed apart. Read GET /work/projects before answering "what projects are we working on?" or "what is finished?". `complete: false` with `couldNotCheck` means part of it could not be read: say so. A phone reads GET /mobile/work/projects; only the owner gets project names.',
-    build: () => ({ enabled: true, endpoints: ['GET /work/projects', 'GET /mobile/work/projects (device; owner gets names)'] }),
+    description: 'Projects on the Work door (docs/specs/work-front-doors.md stage 2a): every project the Chief of Staff tracks, where it stands in plain words (Waiting on you, Moving, Stalled, Drifting, "I stopped retrying: needs a look", Says it\'s done, Done, Not known yet), its done list with each item\'s state, and the work-board cards that belong to it (a card\'s projectKey is the project\'s conversation key); cards in no project are listed apart. Read GET /work/projects before answering "what projects are we working on?" or "what is finished?". `complete: false` with `couldNotCheck` means part of it could not be read: say so. A phone reads GET /mobile/work/projects; only the owner gets project names. Each row also carries (docs/specs/work-door-project-rows.md) latestReport, waitingOnYou, checks {last, next, here}, stopped, bindingRef, per-item kind/stateWords/checkedByYou/checkRef, and actions {checkNow, pause, finish}. "Ask for an update": POST /work/projects/check {key} (bearer) or POST /mobile/work/projects/check (owner phone) — runs one check now on the machine that runs checks, else 202 queued for its next round. The owner\'s Face ID taps (owner phone only, challenge actions project-pause / project-item-check / project-finish): POST /mobile/work/projects/pause {key, value, note?}, /done-item {key, itemId, checkRef, value}, /finish {key, bindingRef}; never done for the owner.',
+    build: () => ({ enabled: true, endpoints: ['GET /work/projects', 'GET /mobile/work/projects (device; owner gets names)', 'POST /work/projects/check', 'POST /mobile/work/projects/check (owner phone)', 'POST /mobile/work/projects/pause (owner phone, Face ID)', 'POST /mobile/work/projects/done-item (owner phone, Face ID)', 'POST /mobile/work/projects/finish (owner phone, Face ID)'] }),
+  },
+  {
+    key: 'projectApps',
+    // '/work' is workProjects' prefix; the part-1 routes sit under it and are listed here by endpoint.
+    prefixes: ['/project-apps'],
+    description: 'Project apps (docs/specs/project-apps.md): a project\'s own app one tap from its Work row and from a strip at the top of its conversation, with a pinned link in Telegram/Slack. Built-in apps are Instar\'s own pages (builtin:maturation-board first). The agent may offer an app once per project with POST /work/projects/:key/app-offers {appRef, why} (lease holder only; refused already-offered / owner-declined / already-attached / app-unavailable); only the owner\'s tap attaches, declines or removes it (POST /work/projects/:key/apps/:appRef/answer with the dashboard operator session; a plain Bearer may only withdraw its own open offer). Each GET /work/projects row then carries apps (title, Open link, summary with its as-of time, pin state), offers, answers and addable. POST .../pin-retry {action: retry | update-link | post-again} asks for one pin step; GET /work/projects/apps/stats gives the maturation measures. Dev-gated (projectApps.enabled), needs the Chief of Staff; 503 project-apps-off when dark. Part 2, custom project apps (docs/specs/project-apps-sandbox.md): an app the agent writes for one project, run in a sealed frame with a narrow per-app key, never the owner\'s keys. Create one with POST /project-apps {conversationKey, title, specPath} (Bearer; the spec must be converged; refused unknown-project / app-spec-not-converged / too-many-apps); write its page with PUT /project-apps/:appId/source {html, note} (lease holder only; each write opens ONE server-written Work Board version card the owner approves on their phone; a console PIN tap on that card is refused 403 phone-only-card, except withdraw-approval, which stops the app). GET /project-apps lists the apps and what each serves (served / none / copying / disabled). The console opens an app at /dashboard/project-app/?app=<appId>: the wrapper gets a single-use ticket (POST /project-apps/:appId/ticket) and the narrow key (POST /project-apps/:appId/key), then the frame (GET /project-apps/:appId/frame?t=) talks only to GET|PUT /project-apps/:appId/api/data and /api/summary with the X-Project-App-Key header. Until stage 2 (CMT-1882) app keys never leave the lease holder, so another machine shows the app as still copying. Dev-gated (projectApps.custom.enabled, needs projectApps.enabled); 503 custom-apps-off when dark.',
+    build: ({ ctx }) => ({ enabled: true, customApps: !!(ctx as { projectAppCustom?: (() => unknown) | null }).projectAppCustom?.(), endpoints: ['POST /work/projects/:key/app-offers', 'POST /work/projects/:key/apps/:appRef/answer', 'POST /work/projects/:key/apps/:appRef/pin-retry', 'POST /work/projects/:key/apps/:appRef/opened', 'GET /work/projects/apps/stats', 'POST /project-apps', 'GET /project-apps', 'PUT /project-apps/:appId/source', 'POST /project-apps/:appId/ticket', 'POST /project-apps/:appId/key', 'GET /project-apps/:appId/frame', 'GET /project-apps/:appId/api/data', 'PUT /project-apps/:appId/api/data', 'GET /project-apps/:appId/api/summary', 'PUT /project-apps/:appId/api/summary'] }),
   },
   {
     key: 'contextBudget',
@@ -317,10 +324,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'documents',
     prefixes: ['/docs'],
-    description: 'Instar Documents (docs/specs/instar-document-viewer.md) — commentable documents that live in a conversation: create (POST /docs), read (GET /docs/:id/data), list a conversation\'s documents (GET /docs?conversation=…), read the comments with their quotes (GET /docs/:id/comments), reply under one (POST /docs/:id/comments/:key/replies), revise (POST /docs/:id/versions), compare versions, links between documents and conversations (GET|POST /docs/:id/links) and the link graph (GET /docs/graph?from=<ref>&depth=1|2), the session-start list (GET /docs/session-context), and the document page people comment on (GET /docs/:id, writes signed by their own device; the owner moves a document with Face ID). A document is visible to exactly its conversation\'s audience. Dev-gated (documents.enabled); 503 documents-off when dark.',
+    description: 'Instar Documents (docs/specs/instar-document-viewer.md) — commentable documents that live in a conversation: create (POST /docs), read (GET /docs/:id/data), list a conversation\'s documents (GET /docs?conversation=…), read the comments with their quotes (GET /docs/:id/comments), reply under one (POST /docs/:id/comments/:key/replies), revise (POST /docs/:id/versions), compare versions, links between documents and conversations (GET|POST /docs/:id/links) and the link graph (GET /docs/graph?from=<ref>&depth=1|2), the session-start list (GET /docs/session-context), and the document page people comment on (GET /docs/:id, writes signed by their own device; the owner moves a document with Face ID), and decisions (docs/specs/document-decisions.md): ask the owner with POST /docs/:id/decision-ask (or decision:{question} on create/revise), withdraw with POST /docs/:id/decision-ask/close, read the owner-signed answer with GET /docs/:id/decision, list what waits on the owner with GET /docs/decisions/waiting; the owner answers on their phone with Face ID. A document is visible to exactly its conversation\'s audience. Dev-gated (documents.enabled); 503 documents-off when dark.',
     build: () => ({
       configured: true,
-      endpoints: ['POST /docs', 'GET /docs', 'GET /docs/:id/data', 'GET /docs/:id/versions', 'POST /docs/:id/versions', 'GET /docs/:id/compare', 'GET /docs/:id/comments', 'POST /docs/:id/comments/:key/replies', 'GET /docs/:id/links', 'POST /docs/:id/links', 'GET /docs/session-context', 'GET /docs/health', 'GET /mobile/docs', 'GET /mobile/docs/:id/summary'],
+      endpoints: ['POST /docs', 'GET /docs', 'GET /docs/:id/data', 'GET /docs/:id/versions', 'POST /docs/:id/versions', 'GET /docs/:id/compare', 'GET /docs/:id/comments', 'POST /docs/:id/comments/:key/replies', 'GET /docs/:id/links', 'POST /docs/:id/links', 'GET /docs/session-context', 'GET /docs/health', 'GET /mobile/docs', 'GET /mobile/docs/:id/summary', 'POST /docs/:id/decision-ask', 'POST /docs/:id/decision-ask/close', 'GET /docs/:id/decision', 'GET /docs/decisions/waiting', 'GET /mobile/docs/:id/decision', 'POST /mobile/docs/:id/decision/challenge', 'POST /mobile/docs/:id/decision', 'POST /mobile/docs/:id/decision/delivered'],
     }),
   },
   {
@@ -348,6 +355,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /queue-pace'],
+    }),
+  },
+  {
+    key: 'quotaPacing',
+    prefixes: ['/quota-pacing'],
+    description: 'Quota pacing (docs/specs/quota-pacing-forecast.md) — a forecast, not an instruction: where each subscription account\'s weekly (and Claude Fable) window lands at its reset (central forecast plus a range from the slowest to the fastest recent pace) and whether each provider\'s group of accounts keeps weekly room for the next 7 days (runs-dry / tight / sustainable / cannot-tell, with account verdicts used-up / will-hit-limit / will-leave-unused / on-track / unknown). GET /quota-pacing merges every machine (?scope=local is this machine only; ?account=ID&history=1 returns this machine\'s rows). Lead with the pool ("9 of 14 accounts have room"), never one account\'s number; never hold, shed or add work because of it. Dev-gated (subscriptionPool.pacing.enabled); 503 quota-pacing-off when off. When asked "will an account\'s quota expire unused?" or "will Claude or Codex run out this week?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /quota-pacing'],
     }),
   },
   {
@@ -624,6 +640,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /mobile/permissions/slips', 'GET /mobile/permissions/features', 'POST /mobile/permissions/challenge', 'POST /mobile/permissions/requests/:id/approve', 'POST /mobile/permissions/requests/:id/decline', 'POST /mobile/permissions/features/:id'],
+    }),
+  },
+  {
+    key: 'mobileTrustApproval',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Approving a trust raise from the Instar app (docs/specs/app-trust-approval.md), for a person with no Telegram or Slack owner chat. A paired device records a withdrawable acceptance once (the first one only for the device the Mac app paired on the agent\'s computer; a later one needs an approval from an accepted device; the Mac app replaces its own key locally). Then POST /trust/requests with no chat sends the request to the accepted devices (status sent, via device) instead of no-approver, and the person approves it on the device with a presence signature (Face ID / Touch ID) over a single-use challenge. Each approval counts once, for the exact proposal hash, and is refused after withdrawal or a key change. GET /trust/requests shows result applied / not-applied / unknown and how it was approved; POST /trust/acceptance/withdraw {adapter:"device"} turns device approvals off. The bearer token and the dashboard PIN can never approve or record an acceptance.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/trust/requests', 'POST /mobile/trust/requests/:id/approve', 'POST /mobile/trust/device-acceptance', 'POST /mobile/trust/device-acceptance/withdraw'],
     }),
   },
   {
@@ -1752,6 +1778,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'GET /trust — full trust profile',
             'GET /trust/summary — compact trust summary',
             'POST /trust/grant — set a trust level (a stricter level applies; a wider one is refused with 403 naming the approval it needs)',
+            'POST /trust/requests { change } — open the person\'s approval request for a raise (card to their direct chat; they reply approve <code>; with no chat, sent to the Instar app devices that accepted approvals)',
+            'GET /trust/requests — open and past approval requests',
             'GET /trust/elevations — pending elevation suggestions',
             'GET /trust/changelog — recent trust changes',
           ]
@@ -1847,9 +1875,9 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
   { context: 'Unsure what project this is or what files exist', action: 'Check project map (GET /project-map?format=compact) for spatial awareness — project type, key files, deployment targets.' },
   { context: 'About to call an external service API (email, calendar, messaging)', action: 'Evaluate through operation gate FIRST (POST /operations/evaluate). The gate classifies risk and decides proceed/show-plan/suggest-alternative/block.' },
   { context: 'User says to stop, cancel, or abort', action: 'MessageSentinel intercepts these automatically. For manual classification: POST /sentinel/classify.' },
-  { context: 'User says "you don\'t need to ask me about X"', action: 'Widening trust needs the person\'s own approval from their direct chat, not your token: POST /trust/grant answers 403 operator-approval-required and names the approval. Tell them plainly the setting stays as it is for now; never retry or route around it. Narrowing ("ask me first", "never do X") applies at once through the same route.' },
+  { context: 'User says "you don\'t need to ask me about X"', action: 'Widening trust needs the person\'s own approval from their direct chat, not your token: POST /trust/grant answers 403 operator-approval-required. Open the exact request (POST /trust/requests { change }); the server sends the card to their direct chat and the setting changes only when they reply approve <code> to it. Never approve, retry or route around it yourself. Narrowing ("ask me first", "never do X") applies at once through the same route.' },
   { context: 'User asks about autonomy, trust level, approval settings, or how much freedom the agent has', action: 'Show autonomy summary (GET /autonomy/summary). Present in natural language — never show CLI commands.' },
-  { context: 'User says "go autonomous", "handle everything yourself", "I trust you", or wants less friction', action: 'A wider autonomy profile is a raise and needs the person\'s own approval from their direct chat: POST /autonomy/profile answers 403 operator-approval-required. Say so plainly and keep the current profile; never retry or route around it.' },
+  { context: 'User says "go autonomous", "handle everything yourself", "I trust you", or wants less friction', action: 'A wider autonomy profile is a raise and needs the person\'s own approval from their direct chat: POST /autonomy/profile answers 403 operator-approval-required. Open the request (POST /trust/requests { change: { kind: "autonomy-profile", from, to } }) and tell them to answer the card in their direct chat.' },
   { context: 'User says "supervise everything", "ask me first", "I want to approve", or wants more control', action: 'Set autonomy profile (POST /autonomy/profile { profile: "cautious" or "supervised", reason: "..." }).' },
   { context: 'User wants to undo an evolution change or revert agent self-modification', action: 'Check evolution proposals (GET /evolution/proposals?status=implemented), then PATCH the proposal status back. Explain what happened and what was reverted.' },
   { context: 'User asks to adjust memory warning thresholds or stop memory alerts', action: 'Update thresholds (PATCH /monitoring/memory/thresholds with {warning, elevated, critical}). Check current state (GET /monitoring/memory).' },
@@ -1872,6 +1900,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  * here — never both, never neither.
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'server', reason: 'POST /server/restart (listen-early-boot-readiness spec) — an attributed request for this server\'s own supervised restart (requestedBy + reason); operator/session plumbing, not a user capability. The agent learns it via the CLAUDE.md awareness card (server-restart-and-boot-readiness), not /capabilities' },
   { prefix: 'transcript-copies', reason: 'Transcript copies on every machine (native-conversation-any-machine-access §3f) — owner-only GET /transcript-copies reports per-session copy coverage (no text) for a dark, dev-gated feature; the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'memory-picker', reason: 'Jev memory picker (jev-memory-picker spec) — POST /memory-picker/session-context is the session-start hook\'s call (and its compaction twin); dev-gated, shadow by default (503 when off); the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'jev-correction', reason: 'Jev correction-detector shadow (jev-correction-shadow spec) — GET /jev-correction/summary reads a dark, log-only research instrument comparing Jev with the correction sentinel\'s Layer-0 detector; the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether Jev should feed the sentinel' },

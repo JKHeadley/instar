@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "project-apps-custom",
+  "sessionId": "9fedf354-db71-4764-adc2-99986abaf297",
+  "timestamp": "2026-11-17T15:31:04.847Z",
+  "artifactPath": "upgrades/side-effects/project-apps-custom.md",
+  "artifactSha256": "f2f1fd7e7c168b5d593a90c5d79f827b98215ee008f82c18e16a1eb2a4d4e76d",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "tests/unit/html-site-ratchet.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Registry conformance only: the ladder entry and the HTML-site classification; no behavior change.",
+  "eli16Path": "docs/specs/project-apps-sandbox.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/project-apps-custom.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: a registry entry and a test classification."
+  }
+}

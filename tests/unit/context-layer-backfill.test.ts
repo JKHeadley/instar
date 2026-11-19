@@ -149,7 +149,8 @@ describe('ledger backfill (switch on)', () => {
     expect(s.briefing()).not.toContain(BLOCK);
     expect(s.intent.read(T).pending.outstanding).toBeNull();
     // Still awaiting the operator's word (the card and Home count it), entries still labelled.
-    expect(backfillView(s.store, String(T))).toMatchObject({ confirmation: 'asked', backfilledUnconfirmed: 2 });
+    // The view reads the rig's clock: with the real clock this turned 'expired' once the wall date passed T0 + 7 days.
+    expect(backfillView(s.store, String(T), undefined, { now: () => s.clock.now })).toMatchObject({ confirmation: 'asked', backfilledUnconfirmed: 2 });
     // A ref confirmation is not held behind it.
     expect(s.pending.create({ topicId: T, arcId: `arc-${T}`, refId: 'd2', propositionText: 'p', questionText: 'q', currentUserTurn: 5 }).status).toBe('outstanding');
   });

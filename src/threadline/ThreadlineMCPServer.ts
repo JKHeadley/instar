@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentDiscovery, ThreadlineAgentInfo } from './AgentDiscovery.js';
 import type { ThreadResumeMap, ThreadResumeEntry } from './ThreadResumeMap.js';
+import { performApprovedDelete, type ApprovedDeleteResult } from './performApprovedDelete.js';
 import type { AgentTrustManager, AgentTrustLevel } from './AgentTrustManager.js';
 import type { MCPAuth, MCPTokenInfo, MCPTokenScope } from './MCPAuth.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
@@ -107,6 +108,12 @@ export interface ThreadlineMCPDeps {
   threadResumeMap: ThreadResumeMap;
   /** SEC-018: owner-approval gate for sensitive handlers (thread delete). Absent = today's behaviour. */
   ownerApproval?: OwnerApprovalGate;
+  /** SEC-018 companion: the one server-side gated-delete op the delete handler invokes.
+   *  HTTP transport: the in-process `performApprovedDelete` (left unset → the handler falls
+   *  back to it with `threadResumeMap` + `ownerApproval`). stdio transport: `approvedDeleteViaHttp`,
+   *  which calls the loopback `POST /threadline/approved-delete` route so the mutation + consume
+   *  happen at the authority. */
+  approvedDelete?: (threadId: string) => Promise<ApprovedDeleteResult>;
   /** Agent trust manager for trust levels */
   trustManager: AgentTrustManager;
   /** MCP auth for network transports (null for stdio) */
@@ -264,6 +271,8 @@ export interface RequestSecretResult {
   tunnelUrl?: string | null;
   /** Milliseconds until the request expires. */
   expiresIn?: number;
+  /** A plain line from the server the agent must see (e.g. no receipt message will come). */
+  notice?: string;
   error?: string;
 }
 
@@ -888,6 +897,7 @@ export class ThreadlineMCPServer {
           note: 'Send the submit URL to the secret holder. The secret is submitted ' +
             'off-relay and is never stored on disk or shown in chat. The link is ' +
             'one-time and expires.',
+          ...(result.notice ? { notice: result.notice } : {}),
         });
       },
     );
@@ -1102,51 +1112,40 @@ export class ThreadlineMCPServer {
           );
         }
 
-        // Verify thread exists
-        const threadEntry = this.deps.threadResumeMap.get(args.threadId);
-        if (!threadEntry) {
-          return errorResult(`Thread "${args.threadId}" not found or already deleted`);
-        }
-
-        // SEC-018: thread deletion is IRREVERSIBLE, and `isLocal` is NOT owner authorization — a
-        // peer-driven local session is local. When owner-approval is enabled, require a
-        // device-signed owner approval (recorded by the owner's phone via /mobile/action-approval)
-        // for THIS exact thread. Absent/disabled → the handler is byte-identical to today.
-        const ownerApproval = this.deps.ownerApproval;
-        if (ownerApproval && ownerApproval.enabled()) {
-          if (!ownerApproval.consume({ purpose: 'thread-delete', actionKey: args.threadId })) {
-            const subject = threadEntry.subject || threadEntry.remoteAgent || 'this conversation';
-            ownerApproval.registerPending({
-              purpose: 'thread-delete',
-              actionKey: args.threadId,
-              title: `Delete the conversation "${subject}"?`,
-              why: 'A session asked to permanently delete this thread. Approve on your phone with Face ID; expires in 5 minutes.',
-              machine: ownerApproval.machineName(),
-            });
-            return errorResult('owner-approval-required: permanently deleting a thread needs the owner to approve it on their phone with Face ID. I have put the request on your phone — approve it there, then retry.');
-          }
-          ownerApproval.clearPending('thread-delete', args.threadId);
-        }
-
+        // SEC-018 (docs/specs/owner-approved-action-stdio-transport.md): the ENTIRE gated
+        // delete — existence check, enabled check, device-signed-approval consume, and the
+        // irreversible mutation — is ONE server-side operation (performApprovedDelete). It is
+        // invoked IN-PROCESS for the HTTP MCP transport, and over the loopback
+        // `POST /threadline/approved-delete` route for the separate-process stdio helper
+        // (`deps.approvedDelete`). The handler holds NO gate logic and performs NO local
+        // `threadResumeMap.remove` — the mutation + the consume happen together at the authority,
+        // so there is no async-gate fail-open and no enforcement gap on the default (stdio)
+        // transport. Absent gate → dark: the op just deletes (byte-identical to today).
+        let result: ApprovedDeleteResult;
         try {
-          // Capture info before deletion
-          const info = {
-            threadId: args.threadId,
-            remoteAgent: threadEntry.remoteAgent,
-            subject: threadEntry.subject,
-            messageCount: threadEntry.messageCount,
-            state: threadEntry.state,
-          };
-
-          this.deps.threadResumeMap.remove(args.threadId);
-
-          return jsonResult({
-            deleted: true,
-            ...info,
-          });
-        } catch (err) {
-          return errorResult(`Deletion failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          result = this.deps.approvedDelete
+            ? await this.deps.approvedDelete(args.threadId)
+            : performApprovedDelete(args.threadId, {
+                threadResumeMap: this.deps.threadResumeMap,
+                ownerApproval: this.deps.ownerApproval,
+              });
+        } catch {
+          // stdio transport failure (timeout / lost response / server unreachable): the server
+          // MAY have consumed-and-deleted before the response was lost. Report OUTCOME-UNKNOWN —
+          // never assert failure, never fall back to a local delete.
+          return errorResult(
+            'outcome-unknown: the agent server was unreachable, so I could not confirm the delete — it may already have happened. Check the conversation; I did not delete anything locally.',
+          );
         }
+        if (!result.ok) {
+          if (result.reason === 'not-found') {
+            return errorResult(`Thread "${args.threadId}" not found or already deleted`);
+          }
+          return errorResult(
+            'owner-approval-required: permanently deleting a thread needs the owner to approve it on their phone with Face ID. I have put the request on your phone — approve it there, then retry.',
+          );
+        }
+        return jsonResult({ deleted: true, ...result.info });
       },
     );
   }

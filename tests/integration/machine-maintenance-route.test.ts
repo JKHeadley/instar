@@ -18,6 +18,9 @@ import { DEFAULT_MACHINE_MAINTENANCE } from '../../src/monitoring/machineMainten
 import { BrowserCareSweep, normalizeBrowserCare, setActiveBrowserCare } from '../../src/monitoring/machineMaintenance/BrowserCare.js';
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
 import { PostRestartProof, setActivePostRestartProof } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
+import { EnrolmentStatusReader, setActiveEnrolmentStatusReader } from '../../src/monitoring/machineMaintenance/enrolmentReadiness.js';
+import { EnrolmentController, setActiveEnrolmentController } from '../../src/monitoring/machineMaintenance/EnrolmentController.js';
+import { RestartNowController, setActiveRestartNowController } from '../../src/monitoring/machineMaintenance/RestartNowController.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -107,6 +110,82 @@ describe('GET /machine-maintenance (integration)', () => {
     }
   });
 
+  it('carries enrolment: null when not wired, then readiness, refusal and offerable from the reader', async () => {
+    setActiveDrainRehearsal(new DrainRehearsal({
+      agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
+      store: new HostMaintenanceStore({ dir: path.join(dir, 'host') }), enabled: () => true, settings: () => DEFAULT_MACHINE_MAINTENANCE,
+      readSignals: async () => { throw new Error('no read'); }, census: async () => { throw new Error('no read'); },
+      resumeQueue: () => null, coResidentAgents: () => [], holdsLease: () => null, ownUser: 'me',
+    }));
+    try {
+      let res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.body.enrolment).toBeNull();
+      setActiveEnrolmentStatusReader(new EnrolmentStatusReader({
+        platform: 'wsl', user: 'me', agents: () => ['echo'], read: async () => null, readRecord: () => null,
+        refusalInputs: async () => ({ throwaway: false, testProcess: false, doNotMaintainMarker: true, ownership: undefined, inContainer: false, otherUsers: [] }),
+      }));
+      res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.enrolment).toMatchObject({ enrolled: false, refusal: 'not-owned', offerable: false, readiness: { mode: 'attended', platform: 'wsl' } });
+    } finally {
+      setActiveEnrolmentStatusReader(null);
+    }
+  });
+
+  it('POST /machine-maintenance/enrol/offer: 401 without a bearer, 503 dark, and the offer outcome when wired', async () => {
+    expect((await request(app()).post('/machine-maintenance/enrol/offer')).status).toBe(401);
+    expect((await request(app()).post('/machine-maintenance/enrol/offer').set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+    let sent = 0;
+    setActiveEnrolmentController(new EnrolmentController({
+      hostDir: path.join(dir, 'host'), agent: 'echo', user: 'me', platform: 'darwin', machineId: () => 'm1', machineLabel: () => 'Mac',
+      status: async () => ({ enrolled: false, record: null, refusal: null, offerable: true, readiness: { platform: 'darwin', mode: 'unattended', checks: [], ownerStep: null, readAt: 0 } }),
+      ingressArmed: () => true, sendOffer: async () => { sent += 1; return 1; }, openApps: async () => null, run: async () => ({ code: 1, stdout: '' }),
+    }));
+    try {
+      const a = await request(app()).post('/machine-maintenance/enrol/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(a.body).toEqual({ outcome: 'offered' });
+      const b = await request(app()).post('/machine-maintenance/enrol/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(b.body).toEqual({ outcome: 'already-offered' });
+      expect(sent).toBe(1);
+    } finally {
+      setActiveEnrolmentController(null);
+    }
+  });
+
+  it('POST /machine-maintenance/restart-now/offer: 401 without a bearer, 503 dark, a card when clear, 409 with the plain reason when held; nothing restarts from the route', async () => {
+    expect((await request(app()).post('/machine-maintenance/restart-now/offer')).status).toBe(401);
+    expect((await request(app()).post('/machine-maintenance/restart-now/offer').set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+    const sent: string[] = [];
+    let dispatched = 0;
+    let s1 = false;
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    setActiveRestartNowController(new RestartNowController({
+      hostDir: path.join(dir, 'host'), agent: 'echo', machineLabel: () => 'Mac Studio', store,
+      dispatch: async () => { dispatched += 1; return { dispatched: false, reason: 'test-process' }; },
+      enrolled: async () => true, enabled: () => true, ingressArmed: () => true,
+      readHolds: async () => [{ id: 'S1', active: s1, label: 'OS update installing', evidence: s1 ? 'softwareupdated' : null, provenLive: false }],
+      readBootAt: async () => Date.now() - 3 * 24 * 3_600_000,
+      sendOwner: async (text) => { sent.push(text); return 1; }, noticeSessions: async () => 0,
+      setTimer: () => () => {},
+    }));
+    try {
+      const a = await request(app()).post('/machine-maintenance/restart-now/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(a.status).toBe(200);
+      expect(a.body).toMatchObject({ result: 'offered', named: [], recentBoot: false });
+      expect(sent[0]).toMatch(/Restart Mac Studio now\?/);
+      s1 = true;
+      const b = await request(app()).post('/machine-maintenance/restart-now/offer').set('Authorization', `Bearer ${AUTH}`);
+      expect(b.status).toBe(409);
+      expect(b.body.reason).toMatch(/OS update installing/);
+      const status = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+      expect(status.status).toBe(503);
+      expect(dispatched).toBe(0);
+      expect(store.readLedger()).toEqual([]);
+    } finally {
+      setActiveRestartNowController(null);
+    }
+  });
+
   it('carries browserCare beside the drain status: watch-only, with the sweep\'s verdicts', async () => {
     setActiveDrainRehearsal(new DrainRehearsal({
       agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
@@ -145,5 +224,96 @@ describe('GET /machine-maintenance (integration)', () => {
     // The 2026-11-01 case: the flag says locked, but no password is required and a keypress wakes it.
     expect(res.body).toMatchObject({ lockState: 'screensaver-or-display-sleep', screenLocked: true, row: 3 });
     expect(res.body.inputs).toMatchObject({ flagLocked: true, passwordRequired: 'off', screensaverRunning: true, lockShieldSeen: false });
+  });
+});
+
+describe('POST /machine-maintenance/skip, /unskip, /window (integration, Part F)', () => {
+  let dir: string;
+  const SESSION = 'operator-session-ok';
+  const appWith = (verify: boolean): express.Express => {
+    const a = express();
+    a.use(express.json());
+    a.use(authMiddleware(() => AUTH, 'test'));
+    a.use('/', createRoutes({ ...ctx(), verifyDashboardOperatorSession: verify ? (s?: string) => s === SESSION : undefined } as unknown as RouteContext));
+    return a;
+  };
+  const wire = () => {
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    setActiveDrainRehearsal(new DrainRehearsal({
+      agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
+      store, controls: () => store.readControls(), enabled: () => true, settings: () => DEFAULT_MACHINE_MAINTENANCE,
+      readSignals: async () => { throw new Error('no read'); }, census: async () => { throw new Error('no read'); },
+      resumeQueue: () => null, coResidentAgents: () => [], holdsLease: () => null, ownUser: 'me',
+    }));
+    return store;
+  };
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-controls-route-')); setActiveDrainRehearsal(null); });
+  afterEach(() => { setActiveDrainRehearsal(null); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/machine-maintenance-route.test.ts' }); });
+
+  it('refuses without a bearer, and without a recent PIN unlock, and changes nothing', async () => {
+    const store = wire();
+    expect((await request(appWith(true)).post('/machine-maintenance/skip')).status).toBe(401);
+    const noPin = await request(appWith(true)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`);
+    expect(noPin.status).toBe(401);
+    expect(noPin.body.error).toMatch(/PIN unlock/);
+    const wrong = await request(appWith(true)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', 'nope');
+    expect(wrong.status).toBe(401);
+    expect((await request(appWith(false)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', SESSION)).status).toBe(401);
+    expect(store.readControls()).toBeNull();
+  });
+
+  it('503 when dark', async () => {
+    const res = await request(appWith(true)).post('/machine-maintenance/skip').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', SESSION);
+    expect(res.status).toBe(503);
+  });
+
+  it('skip, unskip and window through the real route, shown in GET /machine-maintenance', async () => {
+    wire();
+    const op = (p: string) => request(appWith(true)).post(p).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Operator-Session', SESSION);
+    const skip = await op('/machine-maintenance/skip');
+    expect(skip.status).toBe(200);
+    expect(skip.body).toMatchObject({ ok: true, controls: { skipUntil: expect.any(Number) } });
+    let status = await request(appWith(true)).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(status.body.controls).toMatchObject({ skipped: true });
+    expect((await op('/machine-maintenance/unskip')).body).toMatchObject({ ok: true, controls: { skipUntil: null } });
+    const bad = await op('/machine-maintenance/window').send({ window: { start: '01:00', end: '02:00' } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('window-invalid');
+    const good = await op('/machine-maintenance/window').send({ window: { start: '01:00', end: '04:00' } });
+    expect(good.body).toMatchObject({ ok: true, effectiveWindow: { start: '01:00', end: '04:00' } });
+    status = await request(appWith(true)).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(status.body).toMatchObject({ controls: { skipped: false, window: { start: '01:00', end: '04:00' } }, settings: { window: { start: '01:00', end: '04:00' } } });
+    expect((await op('/machine-maintenance/window').send({ reset: true })).body).toMatchObject({ ok: true, effectiveWindow: DEFAULT_MACHINE_MAINTENANCE.window });
+  });
+
+  it('POST /machine-maintenance/remove (Off): 401 without the PIN unlock, 503 dark, then the record is set aside and the rule taken out', async () => {
+    const off = (session?: string) => { const r = request(appWith(true)).post('/machine-maintenance/remove').set('Authorization', `Bearer ${AUTH}`); return session ? r.set('X-Instar-Operator-Session', session) : r; };
+    expect((await request(appWith(true)).post('/machine-maintenance/remove')).status).toBe(401);
+    const noPin = await off();
+    expect(noPin.status).toBe(401);
+    expect(noPin.body.error).toMatch(/PIN unlock/);
+    expect((await off(SESSION)).status).toBe(503);
+    const host = path.join(dir, 'host');
+    fs.mkdirSync(host, { recursive: true });
+    fs.writeFileSync(path.join(host, 'enrolment.json'), JSON.stringify({ machineId: 'm1', principal: 'telegram:7' }));
+    const ran: string[][] = [];
+    setActiveEnrolmentController(new EnrolmentController({
+      hostDir: host, agent: 'echo', user: 'me', platform: 'darwin', machineId: () => 'm1', machineLabel: () => 'Mac',
+      status: async () => { throw new Error('not read by remove'); },
+      ingressArmed: () => true, sendOffer: async () => 1, openApps: async () => null,
+      run: async (command, args) => { ran.push([command, ...args]); return { code: 0, stdout: '' }; },
+    }));
+    try {
+      expect((await off('nope')).status).toBe(401);
+      expect(fs.existsSync(path.join(host, 'enrolment.json'))).toBe(true);
+      const res = await off(SESSION);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, wasEnrolled: true, ruleRemoved: true });
+      expect(fs.existsSync(path.join(host, 'enrolment.json'))).toBe(false);
+      expect(JSON.parse(fs.readFileSync(path.join(host, 'enrolment.removed.json'), 'utf-8'))).toMatchObject({ by: 'dashboard', record: { principal: 'telegram:7' } });
+      expect(ran.map((r) => r.join(' '))).toEqual(['sudo -n true', 'sudo -n rm -f /etc/sudoers.d/instar-reboot', 'sudo -k']);
+    } finally {
+      setActiveEnrolmentController(null);
+    }
   });
 });

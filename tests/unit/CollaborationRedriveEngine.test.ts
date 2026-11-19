@@ -195,6 +195,17 @@ describe('CollaborationRedriveEngine — reply-independent durable cap (the roun
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
   });
 
+  it('quotes a long ask with an in-band disclosure the peer can read, and a short ask whole (bounded-input review)', () => {
+    const build = (userRequest: string) =>
+      (engine as unknown as { buildNudge: (c: unknown, n: number) => string }).buildNudge({ relatedAgent: 'dawn', userRequest }, 1);
+    expect(build('Please review the spec.')).toContain('Please review the spec.');
+    const long = `Please review ${'section and its notes, '.repeat(30)}and SIGN OFF ON PART 3.`;
+    const nudge = build(long);
+    expect(nudge).toContain(long.slice(0, 240));
+    expect(nudge).not.toContain('SIGN OFF ON PART 3.');
+    expect(nudge).toContain('LATER content was omitted');
+  });
+
   it('a counterpart reply RESETS lastReplyAt but does NOT reset redriveCount (mutual-drive termination)', async () => {
     const c = recordThreadlineReplyCommitment(tracker, { lastReplyAt: '2026-05-28T18:00:00Z' });
 

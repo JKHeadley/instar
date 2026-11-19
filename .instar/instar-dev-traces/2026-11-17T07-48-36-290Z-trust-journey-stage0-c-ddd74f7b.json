@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "trust-journey-stage0-c",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T07:48:36.290Z",
+  "artifactPath": "upgrades/side-effects/trust-journey-stage0-c.md",
+  "artifactSha256": "9912095c736010127d955026b22b77ff93d8d2c079069292f72c57ca0d1199fc",
+  "coveredFiles": [
+    "upgrades/side-effects/trust-journey-stage0-c-rebase.eli16.md",
+    "upgrades/side-effects/trust-journey-stage0-c.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the independent second-pass review of the whole PR.",
+  "eli16Path": "upgrades/side-effects/trust-journey-stage0-c-rebase.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-journey-stage0-c.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "review record only"
+  }
+}

@@ -79,7 +79,7 @@ function unlock(main, retry) {
   setKids(main, el('div', { class: 'conversations-page' },
     pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
     el('div', { class: 'need-card' },
-      el('p', { class: 'need-sub', text: 'Unlock to see your efforts and conversation history.' }),
+      el('p', { class: 'need-sub', text: 'Unlock to see your groups and conversation history.' }),
       el('button', { type: 'button', class: 'btn-primary btn-inline', text: 'Unlock', onclick: async () => {
         const result = await askPin({ title: 'Your conversations', explain: 'Unlock your private conversations.', adapter: 'session' });
         if (result) retry();
@@ -162,14 +162,14 @@ function restoreScroll(key) {
   if (typeof position === 'number') arrivalScrollPosition(position, { key: `conversations:${key}` });
 }
 
-export async function renderConversations(main) {
+export async function renderConversations(main, ctx) {
   runs.get(main)?.abort();
   const controller = new AbortController();
   runs.set(main, controller);
   const key = location.hash;
   const state = routeState();
   const current = () => !controller.signal.aborted && main.isConnected && location.hash === key;
-  const retry = () => renderConversations(main);
+  const retry = () => renderConversations(main, ctx);
   if (!operatorSession()) { unlock(main, retry); return; }
   // A local PIN-proof expiry must clear private DOM even while a sheet holds
   // the ordinary page refresh. Tie this observer to the current render only.
@@ -188,10 +188,13 @@ export async function renderConversations(main) {
   setKids(main, el('div', { class: 'conversations-page', 'aria-busy': 'true' },
     pageHead({ eyebrow: 'Conversations', headline: 'Loading conversations…' })));
   if (state.view === 'suggestions' && !state.ref) {
+    // The list has its own Refresh button, and an Accept runs for minutes: the console's 30 s page
+    // re-run would reload the list under the owner and cancel an Accept mid-way. This view refreshes itself.
+    ctx?.selfRefreshing?.();
     await renderSuggestions({ main, send: (path, body) => read(path, controller.signal, body), current,
       unlock: () => unlock(main, retry),
-      header: pageHead({ eyebrow: 'Conversations', headline: 'Suggested efforts' }),
-      back: nav('Back to your efforts', href()),
+      header: pageHead({ eyebrow: 'Conversations', headline: 'Suggested groups' }),
+      back: nav('Back to your groups', href()),
       openEffort: (effort) => href({ ref: encodeNodeRef(effort) }) });
     return;
   }
@@ -274,7 +277,7 @@ export async function renderConversations(main) {
         }))));
     }
     const details = el('details', { class: 'conversation-details' }, el('summary', { text: 'More' }));
-    const role = new Map([['effort', 'Effort'], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
+    const role = new Map([['effort', 'Group'], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
     if (role) details.append(el('p', { class: 'need-sub', text: role }));
     if (node.openUrl) {
       const label = node.platform === 'telegram' ? 'Open in Telegram' : node.platform === 'slack' ? 'Open in Slack' : 'Open conversation';
@@ -334,7 +337,7 @@ export async function renderConversations(main) {
   if(localOnlyEnvelope(result)){
     const localWords=localOnlyWords(result),syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:localWords});
     const body=el('div',{class:'conversations-page'},pageHead({eyebrow:'Conversations',headline:'Your conversations'}),syncLine,
-      note('Create an effort here while shared conversations are unavailable. These changes stay separate from the agreed view.'));
+      note('Create a group here while shared conversations are unavailable. These changes stay separate from the agreed view.'));
     const controls=effortActionControls({canCorrect:true,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});if(controls)body.append(controls);
     setKids(main,body);
     // A stopped removal is the very thing that takes the agreed view away, so its way to finish has to stay on this page.
@@ -375,7 +378,7 @@ export async function renderConversations(main) {
   const status = el('p', { class: 'need-sub', role: 'status' });
   const syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:model.sync});
   const body = el('div', { class: 'conversations-page' },
-    pageHead({ eyebrow: 'Conversations', headline: state.view === 'overview' ? 'Your efforts' : 'All conversations' }),
+    pageHead({ eyebrow: 'Conversations', headline: state.view === 'overview' ? 'Your groups' : 'All conversations' }),
     tabs, form, syncLine, ...(rootRow ? [el('div', { class: 'rows conversation-rows' }, rootRow)] : []), rows, status);
   if (state.view === 'overview' && model.canCorrect) body.insertBefore(nav('Review suggestions', href({ view: 'suggestions' }), 'btn-quiet btn-inline'), status);
   const effortActions = effortActionControls({ canCorrect: model.canCorrect,
@@ -386,7 +389,7 @@ export async function renderConversations(main) {
   if (state.view === 'overview') void machineControls({ send: (path, sent) => read(path, controller.signal, sent), current,
     unlock: () => unlock(main, retry), refresh: () => { remember(); retry(); } }).then(controls => { if (controls && current()) body.append(controls); }).catch(() => {});
   if (!model.items.length) rows.append(el('p', { class: 'empty-line', text: state.q ? 'No conversations match this search.'
-    : state.view === 'overview' ? 'No efforts are organized yet. Your conversations are in All.' : 'No conversations are available.' }));
+    : state.view === 'overview' ? 'No groups yet. Your conversations are in All.' : 'No conversations are available.' }));
   if (state.view === 'overview' && (!model.items.length || model.hasMore)) body.append(nav('All conversations', href({ view: 'all' })));
   if (state.view === 'all' && cursor) {
     const cursors = new Set();
@@ -424,6 +427,6 @@ export function conversationsTile() {
   return el('div', { class: 'tiles' }, el('a', { class: 'tile', href: PAGE },
     el('span', { class: 't-icon', icon: 'chat' }),
     // Named for what it holds, so it is not a second "Conversations" next to the chats tile.
-    el('span', {}, el('span', { class: 't-name', text: 'Efforts' }),
+    el('span', {}, el('span', { class: 't-name', text: 'Groups' }),
       el('span', { class: 't-desc', text: 'Each piece of work you started, and the conversations behind it.' }))));
 }

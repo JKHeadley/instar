@@ -1229,6 +1229,10 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Preview address: say plainly that this is work in progress. */
 .preview-banner { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 16px; background: #3a2f0b; color: #f6d77a; font-size: 14px; line-height: 1.4; }
 .preview-banner a { color: inherit; text-decoration: underline; margin-left: auto; }
+/* A weak or missing connection (net-state.js): one plain line saying what is shown and how old it is. */
+.net-line { grid-column: 1 / -1; position: sticky; top: 0; z-index: 30; padding: 8px 16px; font-size: 14px; line-height: 1.4;
+  background: color-mix(in srgb, var(--surface-solid) 88%, var(--attn)); color: var(--attn); border-bottom: 1px solid var(--attn-line); }
+.net-line[hidden] { display: none; }
 
 /* Home headline as a link to the first thing that needs the operator. */
 .hero-link { all: unset; cursor: pointer; color: inherit; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.15em; }
@@ -1336,6 +1340,27 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-row.chat-depth-1 { padding-left: calc(var(--s-2) + var(--s-5)); }
 .chat-row.chat-depth-2 { padding-left: calc(var(--s-2) + var(--s-5) * 2); }
 .chat-row.chat-depth-3 { padding-left: calc(var(--s-2) + var(--s-5) * 3); }
+/* The list grouped by the conversation hierarchy (console-chats-grouped): Grouped | All, one row per effort. */
+.chat-view-toggle { display: flex; gap: var(--s-2); margin: 0 0 var(--s-2); }
+.chat-view-toggle[hidden] { display: none; }
+.chat-view-toggle .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
+.chat-effort-row { display: flex; gap: var(--s-3); align-items: center; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0; padding: var(--s-3) var(--s-2); border-radius: var(--r-md); cursor: pointer; }
+.chat-effort-row:hover, .chat-effort-row:focus-visible { background: var(--surface); }
+.chat-effort-chev { flex: none; width: 16px; font-size: 20px; line-height: 1; text-align: center; color: var(--text-faint); transition: transform var(--dur) var(--ease); }
+.chat-effort-row.expanded .chat-effort-chev { transform: rotate(90deg); }
+/* Tracked projects (Chief of Staff) vs plain groups: a flag and a status chip, or a folder. Tones as the Work page's projects. */
+.chat-group-icon { flex: none; width: 18px; height: 18px; color: var(--text-faint); display: inline-flex; }
+.chat-group-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.chat-group-icon-project { color: var(--accent); }
+.chat-project-row .chat-row-title { color: var(--text-strong); }
+.chat-project-status { flex: none; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline-strong); color: var(--text-muted); }
+.chat-project-status.tone-ok { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
+.chat-project-status.tone-attn { border-color: var(--attn-line); color: var(--attn); background: var(--attn-wash); }
+.chat-project-status.tone-bad { border-color: var(--bad-line); color: var(--bad); background: var(--bad-wash); }
+.chat-project-status.tone-quiet { color: var(--text-muted); }
+.chat-open-project { display: inline-block; margin: 0 0 var(--s-1) calc(var(--s-2) + var(--s-5)); font-size: 13px; }
+.chat-ungrouped-label { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-2); }
+.chat-review-suggestions { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--accent); }
 .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chat-row-top { display: flex; gap: var(--s-2); align-items: center; min-width: 0; }
 .chat-row-title { font-weight: 600; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1360,6 +1385,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-bubble.chat-right { align-self: flex-end; background: var(--accent-wash); border-color: rgb(75 168 170 / 0.35); }
 .chat-who { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 2px; }
 .chat-text { white-space: pre-wrap; color: var(--text); }
+.chat-text code.chat-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; padding: 0 0.25em; border-radius: 4px; background: color-mix(in srgb, var(--text) 10%, transparent); }
+.chat-text a { color: inherit; text-decoration: underline; }
 .chat-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 11.5px; color: var(--text-faint); }
 .chat-meta .tone-bad { color: var(--bad); }
 .chat-meta .tone-attn { color: var(--attn); }
@@ -1581,6 +1608,39 @@ a.needs-row:hover { background: var(--surface-raised); }
 .projects-section .project-chat { margin-left: var(--s-2); }
 .projects-section .projects-finished, .projects-section .projects-loose { margin-top: var(--s-3); }
 .projects-section .projects-finished > summary, .projects-section .projects-loose > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+/* Project apps (project-apps.md §3.5): Open buttons and the summary line on the collapsed row; offers, Add app, pins in the details. */
+.projects-section .project-app-line { font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.projects-section .project-app-line.app-pending { color: var(--text-muted); }
+.projects-section .project-app-line.app-unreadable, .projects-section .project-app-summary.app-unreadable { color: var(--attn); }
+.projects-section .project-app-action { margin-left: var(--s-2); min-height: 32px; }
+.projects-section .project-app-hint { font-size: 12.5px; font-weight: 600; color: var(--accent-strong, var(--accent)); }
+.projects-section .project-app-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; min-width: 0; }
+.projects-section .project-open { height: auto; min-height: 36px; padding: 4px 12px; max-width: 100%; overflow-wrap: anywhere; text-align: left; font-size: 13.5px; }
+.projects-section .project-app-buttons .btn-inline { height: auto; min-height: 36px; padding: 4px 12px; max-width: 100%; }
+.projects-section .project-apps-detail { margin: 0 0 var(--s-3); padding: var(--s-2) 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
+.projects-section .project-offer { padding: 8px 10px; border: 1px solid var(--hairline); border-left: 3px solid var(--accent); border-radius: var(--r-sm, 8px); background: var(--surface-raised, var(--surface)); min-width: 0; }
+.projects-section .project-offer p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.projects-section .project-offer-title { font-weight: 600; color: var(--text-strong); }
+.projects-section .project-offer-more > summary { cursor: pointer; list-style: none; min-height: 32px; display: inline-flex; align-items: center; }
+.projects-section .project-apps-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.projects-section .project-app { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.projects-section .project-app-name { font-weight: 600; color: var(--text-strong); }
+.projects-section .project-app-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; overflow-wrap: anywhere; }
+.projects-section .project-app-pin.tone-bad { color: var(--bad); }
+.projects-section .project-app-pin.tone-attn { color: var(--attn); }
+.projects-section .project-app-pin.tone-quiet { color: var(--text-muted); }
+.projects-section .project-add-app > summary, .projects-section .project-app-answers > summary { cursor: pointer; list-style: none; min-height: 36px; display: inline-flex; align-items: center; }
+.projects-section .project-apps-status:empty { display: none; }
+@media (max-width: 480px) { .projects-section .project-body { padding-left: 12px; } }
+/* The project's app strip in an open conversation: fixed above the messages (which scroll on their own). */
+.chat-appstrip { display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 6px 6px 6px 12px; border: 1px solid var(--hairline); border-left: 3px solid var(--accent); border-radius: var(--r-md); background: var(--surface-raised); }
+.chat-appstrip[hidden] { display: none; }
+.chat-appstrip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.chat-appstrip-title { font-size: 12px; font-weight: 600; color: var(--accent-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-appstrip-line { font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-appstrip-line.app-pending { color: var(--text-muted); }
+.chat-appstrip-line.app-unreadable { color: var(--attn); }
+.chat-appstrip-open { flex: none; height: auto; min-height: 40px; padding: 0 14px; }
 
 .dot.quiet { background: var(--text-muted); opacity: 0.6; }
 /* "N more things need you. Show all": a full-width button that keeps the strip's frame (2026-11-16). */
@@ -1588,3 +1648,13 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-strip > button.needs-more:hover { text-decoration: underline; }
 /* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
 .conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
+/* Whose turn (work-front-doors §6, Luna's board): light red while a card waits on you, light blue while it moves. */
+.need-card.work-card.turn-you { border: 1px solid var(--bad-line); border-style: solid; background: linear-gradient(180deg, var(--bad-wash), transparent 80%), var(--surface); }
+.need-card.work-card.turn-agent, .need-card.work-card.turn-others { border: 1px solid rgb(96 165 250 / .35); border-style: solid; background: linear-gradient(180deg, rgb(96 165 250 / .08), transparent 80%), var(--surface); }
+.work-close-note { width: 100%; min-height: 72px; resize: vertical; font: inherit; }
+/* Project rows that say something (work-door-project-rows §3.1): the folded line is two lines at most; the opened row has it all. */
+.projects-section .project-report { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.projects-section .project-checks { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: var(--s-2) 0; }
+.projects-section .project-check-status:empty { display: none; }
+.projects-section .project-done .done-waiting .done-mark { color: var(--attn); }
+.projects-section .project-row[open] .project-report { display: block; -webkit-line-clamp: unset; overflow: visible; }

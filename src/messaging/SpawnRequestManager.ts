@@ -1723,6 +1723,7 @@ export class SpawnRequestManager {
       // Select drainees: highest deficit first, stable by insertion order.
       // At most one drain per agent per tick, capped at maxDrainsPerTick.
       const max = this.#config.maxDrainsPerTick ?? DRAIN_MAX_PER_TICK_DEFAULT;
+      // bounded-input-reviewed: caps an ARRAY of agents drained per tick (scheduling), not text a judgment reads.
       const selected = [...readyAgents]
         .sort((a, b) => (this.#drrDeficit.get(b) ?? 0) - (this.#drrDeficit.get(a) ?? 0))
         .slice(0, max)
