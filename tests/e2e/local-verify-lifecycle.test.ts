@@ -7,6 +7,7 @@
  * inert (503) when disabled or off a source checkout.
  */
 
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -69,6 +70,21 @@ function serve(c: RouteContext) {
   a.use(express.json());
   a.use(createRoutes(c));
   return a;
+}
+
+/**
+ * SEC-113 D1: give the peer a real machine identity (renamed to the configured peer id) and pin it
+ * on the coordinator, the way pairing does, so the coordinator dispatches to it and verifies its
+ * signed answers through the production wiring.
+ */
+async function pairPeerIdentity(peerStateDir: string, coordStateDir: string, peerId: string): Promise<void> {
+  await new MachineIdentityManager(peerStateDir).generateIdentity({ name: 'lv e2e peer' });
+  const own = path.join(peerStateDir, 'machine', 'identity.json');
+  const identity = { ...JSON.parse(fs.readFileSync(own, 'utf-8')), machineId: peerId };
+  fs.writeFileSync(own, JSON.stringify(identity));
+  const pinned = path.join(coordStateDir, 'machines', peerId, 'identity.json');
+  fs.mkdirSync(path.dirname(pinned), { recursive: true });
+  fs.writeFileSync(pinned, JSON.stringify(identity));
 }
 
 describe('local-verify lifecycle (production wiring)', () => {
@@ -401,9 +417,16 @@ describe('local-verify lifecycle (production wiring)', () => {
     const coordStarts: string[] = [];
     peerSeams.spawnRun = child('m_peer', 'failure', peerStarts) as never;
     coordSeams.spawnRun = child('m_coord', 'failure', coordStarts) as never;
+    await pairPeerIdentity(peerStateDir, coord.stateDir, 'm_peer');
+    // SEC-113 D2.3: this coordinator has run main itself before (a local anchor and ten measured runs),
+    // so a peer may serve main; a fresh holder would keep main local until it has its own green.
+    fs.mkdirSync(path.join(coord.stateDir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(coord.stateDir, 'state', 'local-verify', 'peer-trust.json'), JSON.stringify({ v: 1, holding: { holder: 'm_coord', epoch: 7 },
+      anchor: { head: 'f'.repeat(40), finishedAt: new Date().toISOString() }, notLocallyVerifiedAt: null, locallyVerified: ['f'.repeat(40)],
+      peerMainGreens: [], quarantine: {}, arbitration: null, durations: Array.from({ length: 10 }, () => 10 * 60_000) }));
     wireLocalVerifyPeers(peer, {
       liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: peerStateDir,
       lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
@@ -414,7 +437,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const values: Record<string, unknown> = { 'monitoring.localVerify.peers': [{ machineId: 'm_peer', url: peerUrl }] };
     wireLocalVerifyPeers(coordinator, {
       liveConfig: { get: <T,>(k: string, fb: T): T => (k in values ? values[k] as T : fb) },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: coord.stateDir,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     await coordinator.boot();
@@ -483,9 +506,10 @@ describe('local-verify lifecycle (production wiring)', () => {
     peerSeams.foreignSuiteHolders = () => [];
     let peerStarts = 0;
     peerSeams.spawnRun = () => { peerStarts++; return { pid: 9100, exited: new Promise(() => {}) }; };
+    await pairPeerIdentity(peerStateDir, coord.stateDir, 'm_peer');
     wireLocalVerifyPeers(peer, {
       liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: peerStateDir,
       lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
@@ -495,7 +519,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const peerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     wireLocalVerifyPeers(coordinator, {
       liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peers' ? [{ machineId: 'm_peer', url: peerUrl }] as T : fb },
-      authToken: 'test-token', agentId: 'echo',
+      authToken: 'test-token', agentId: 'echo', stateDir: coord.stateDir,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
     });
     await coordinator.boot();

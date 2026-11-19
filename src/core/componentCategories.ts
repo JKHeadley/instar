@@ -64,6 +64,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   PromptGate: 'gate',
   AutoApprover: 'gate',
   IntegrationGate: 'gate',
+  OrgPolicyJudge: 'gate', // an organization's never rules checked against a joined agent's action (docs/specs/org-never-actions.md)
   ExternalOperationGate: 'gate',
   WarrantsReplyGate: 'gate',
   UnjustifiedStopGate: 'gate',
