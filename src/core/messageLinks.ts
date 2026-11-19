@@ -141,10 +141,13 @@ export function classifyAskLinks(text: string, opts: { telegramChatId?: string |
   const cardRefs: AskLinkScan['cardRefs'] = [];
   const seenRefs = new Set<string>();
   // bounded-input-reviewed: an outbound message is far below this; the counts are a hint the judge reads beside the full text, never the decision input on their own.
-  const links = String(text ?? '').slice(0, 20_000).match(/\bhttps?:\/\/[^\s)>\]"'`]+/gi) ?? [];
+  const links = String(text ?? '').slice(0, 20_000).match(/\bhttps?:\/\/[^\s)>\]"'`|<]+/gi) ?? [];
   const main = supergroupInternalId(opts.telegramChatId);
   const issues = supergroupInternalId(opts.telegramIssuesChatId);
-  for (const raw of links) {
+  for (const found of links) {
+    // A link written mid-sentence or inside emphasis drags its punctuation along
+    // ("…/138/146." or "**…/146**"); that is not part of the address.
+    const raw = found.replace(/[.,;:!?*_~]+$/, '');
     let u: URL;
     try { u = new URL(raw); } catch { counts.other++; continue; } // @silent-fallback-ok — an unparseable link is counted as "other"
     const host = u.hostname.toLowerCase();

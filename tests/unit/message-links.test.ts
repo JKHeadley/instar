@@ -124,4 +124,21 @@ describe('classifyAskLinks', () => {
     expect(classifyAskLinks('https://t.me/c/999/5/6', { telegramChatId: chat }).counts).toEqual({ ...none, other: 1 });
     expect(classifyAskLinks('https://t.me/c/1234567890/5/6').counts).toEqual({ ...none, other: 1 });
   });
+
+  it('a link followed by sentence punctuation, emphasis or the Slack link form is still read as its kind', () => {
+    const id = chat.replace(/^-100/, '');
+    for (const text of [
+      `I asked here: https://t.me/c/${id}/138/146. Reply "five" or "fifteen".`,
+      `Asked at https://t.me/c/${id}/138/146, reply five.`,
+      `**https://t.me/c/${id}/138/146**`,
+      `Where I asked: https://t.me/c/${id}/138/146!`,
+    ]) {
+      const r = classifyAskLinks(text, { telegramChatId: chat });
+      expect(r.counts).toEqual({ ...none, message: 1 });
+      expect(r.telegramRefs).toEqual([{ topicId: 138, messageId: 146 }]);
+    }
+    expect(classifyAskLinks('<https://acme.slack.com/archives/C0123ABCD/p1795000000000100|here>').counts).toEqual({ ...none, message: 1 });
+    const card = classifyAskLinks('The card: https://echo.example.dev/console/#/work/board?card=wb_0123456789abcdef.');
+    expect(card.counts).toEqual({ ...none, card: 1 });
+  });
 });

@@ -37,6 +37,8 @@ Nothing is blocked: B26 is advisory, and a reasoned override always sends. The o
 
 Each costs the agent one extra round (comply or override with a reason). The override reason is recorded and is the evidence that tunes the rule. No message is lost.
 
+- **Fixed after the second pass:** a link followed by a full stop, comma or emphasis marks was counted as no message link, so a reminder that complied could be nudged again. A link in underscore emphasis, or two links joined by a comma with no space, are still misread (second-pass finding 2).
+
 ## 2. Under-block
 
 - A reminder worded so obliquely the model does not read it as waiting on the person passes. On the smaller Claude model three bare paraphrases each passed once in three trials; on the production model none did.
@@ -44,6 +46,8 @@ Each costs the agent one extra round (comply or override with a reason). The ove
 - A link to the WRONG message that happens to read like an ask passes; the judge sees the linked text but cannot know which ask the agent meant when two are similar.
 - Slack, card-on-another-host and conversation links are judged on shape and the message text only.
 - An agent on the fleet gets no check until graduation; it has the awareness entry.
+
+- **A dead link of the right shape passes** (second-pass finding 5). A Work Board link on a foreign or stale address, or any `*.slack.com/archives/…` link, counts as the link; the reviewer is shown it as unconfirmed, and unconfirmed still counts. The rule checks that a link is present and what it holds when that can be read, never that it opens on the phone.
 
 ## 3. Level-of-abstraction fit
 
@@ -96,7 +100,26 @@ The change is an advisory rule in the existing authority plus additive link plum
 
 ## Second-pass review (if required)
 
-Required (outbound messaging decision; "gate"). See the appended reviewer response at the end of this file.
+**Reviewer:** independent reviewer subagent (a separate general-purpose reviewer session started by the author session standard-waiting-on-you-links on 2026-11-19 UTC; read-only; it read the code before this write-up and was not given the author's conclusions)
+
+Required (outbound messaging decision; "gate"). Two independent passes were run. The first (before the pull request opened) is in "Second-pass reviewer response" at the end of this file. The second, below, was run on the tree after main was merged in on 2026-11-19 UTC, and is the review of record for the head that carries this text.
+
+**Verdict of the second pass: Concur with the review**, after one blocking finding was fixed and re-checked by the same reviewer.
+
+What it confirmed from the code: B26 and the new deterministic code can never hold or drop a message (advisory baseline; the "override could not be recorded" block skips it; every failure in the fact gathering only drops facts; a reasonless override is a hand-back). `GET /messages/link` validates ids as digits, builds links only from validated ids and the adapter's own workspace address, and sits behind the server's normal bearer check. Linked text is quoted inside a per-call random boundary. Every parser of the send scripts' output matches a prefix, so the appended link breaks none. The prior script hashes match main's scripts. The registry clause and the audit do not overclaim enforcement.
+
+Its findings and what was done:
+
+1. **Blocking, fixed.** A link followed by sentence punctuation or wrapped in emphasis ("…/138/146." or "**…/146**"), and Slack's own `<address|label>` form, was counted as "other", so the judge was told "message-links=0" for a reminder that did carry the link, and a compliant resend would be nudged again. Fixed in `src/core/messageLinks.ts` (the address stops at `|` and `<`; trailing `.,;:!?*_~` is not part of it) with a new test case. The reviewer re-ran 25 inputs against the fix and found no address it shortens wrongly.
+2. **Recorded, not changed: two rarer misreads remain.** A link wrapped in underscore emphasis (`__address__`) is counted as no link at all, and two links joined by a comma with no space are read as one "other" link. Both make the code-supplied counts wrong for that message; the rule is advisory and the judge still reads the full text.
+3. **Recorded, not changed: the ladder's error-rate metric cannot rise above zero.** The only error row is written in a catch the inner code never reaches (the fact gathering catches everything itself); lookup timeouts are not recorded, and an override (the real false-nudge signal) is written as a fired row. The numeric bar on the ladder is therefore met by ten citations of any quality. What decides the fleet rollout is the hand-grading in the spec's maturation plan, not that number.
+4. **Recorded, not changed: citation counts read high.** A bare reminder that is handed back and then overridden writes two fired rows (one per review), so "one row per citation" is one per review, not one per message.
+5. **Recorded, not changed: a link of the right shape on any host satisfies the rule.** A Work Board link on a foreign or dead address (a stale tunnel) or any `*.slack.com/archives/…` link counts as "the link"; the reviewer sees it as UNCONFIRMED, and UNCONFIRMED still counts. A dead link passes. This under-block is added to the list in section 2.
+6. **Recorded, not changed: where the rule is rendered.** The origin send-policy re-review never sets "no reaction possible" (the first pass's note 7), and the post-update route also qualifies, so B26 is rendered for ship and restart narration written by a session; it is overridable there.
+7. **Recorded, not changed: multi-machine.** A send relayed from a standby machine may come back without a link, and the script then prints none without saying why; the switch is read on the reviewing machine; "can link a message here" is computed against the main chat, not the topic's own group.
+8. **Recorded, unsure.** Whether a narrower principal than the agent's own token (a team or phone principal) could reach `matched.text` on `GET /messages/link` was not traced; the neighbouring search route already returns message text under the same check. The added prompt size (about 4 KB of rule text and up to 16 KB of evidence) was not measured against the gate's timeout rate.
+
+What the reviewer did not check: it did not run the model, the other test files or the route-level test, and did not read the site docs or the convergence report.
 
 ## Evidence pointers
 
