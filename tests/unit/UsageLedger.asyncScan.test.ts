@@ -163,7 +163,7 @@ describe('UsageLedger.scanTickAsync', () => {
     expect((await third).filesRead).toBe(0);
   });
 
-  it('a ledger closed at any point while a scan is listing ends the scan without throwing or ingesting', async () => {
+  it('closing during listing or a backfill stops the scan at its last committed file', async () => {
     for (let index = 0; index < 40; index++) transcript(claudeA, home, `bulk-${index}.jsonl`, line(`bulk-${index}`, home));
     // Close after 0, 1, 2, ... turns of the loop, so the close lands at every stage of
     // the listing: the project walk, the membership lookup, the changed-file filter, the Codex walk.
@@ -174,9 +174,10 @@ describe('UsageLedger.scanTickAsync', () => {
       const pending = ledger.scanTickAsync().finally(() => { settled = true; });
       for (let turn = 0; turn < turns && !settled; turn++) await new Promise((resolve) => setImmediate(resolve));
       if (settled) { await pending; break; }
-      sawCloseMidScan++;
+      const rowsAtClose = ledger.rawRowCount;
+      if (rowsAtClose === 0) sawCloseMidScan++;
       ledger.close();
-      await expect(pending, `closed after ${turns} turns`).resolves.toMatchObject({ filesRead: 0, rowsInserted: 0 });
+      await expect(pending, `closed after ${turns} turns`).resolves.toMatchObject({ rowsInserted: rowsAtClose });
     }
     expect(sawCloseMidScan).toBeGreaterThan(5);
   });

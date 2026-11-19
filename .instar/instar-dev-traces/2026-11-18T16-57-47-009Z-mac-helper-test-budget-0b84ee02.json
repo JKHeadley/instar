@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "mac-helper-test-budget",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-18T16:57:47.009Z",
+  "artifactPath": "upgrades/side-effects/mac-helper-test-budget.md",
+  "artifactSha256": "ee5868d75f2a47ce0de1a4104b52144d7153ebf0629b9112655e439e086d5894",
+  "coveredFiles": [
+    "src/core/MacDesktopHelperBudget.ts",
+    "src/core/MacDesktopHost.ts",
+    "tests/unit/MacDesktopHostCapture.test.ts",
+    "tests/unit/mac-desktop-helper-budget.test.ts",
+    "tests/vitest-setup.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small and fully reversible: one process-wide scale on the Mac desktop helper wait budgets, default 1 so production timers are unchanged; only the test setup file raises it. No gate, no stored state, no config; a revert undoes it.",
+  "eli16Path": "docs/eli16/mac-helper-test-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-helper-test-budget.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}

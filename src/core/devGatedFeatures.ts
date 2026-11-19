@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'agentSessionPlacement',
+    configPath: 'multiMachine.placement.agentSessions.enabled',
+    description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',
+    justification: 'The shadow log only writes an audit line and never changes where a session starts. Live placement is opt-in per request (no caller sends placement:"auto" by default), starts through the peer\'s own /sessions/spawn so its caps and admission apply, never starts a name twice from one origin (durable placement record written before the send, unresolved names read-only, no local start after an ambiguous hand-off), never proxies a kill, and no eligible peer means local exactly as today. enabled:false and a restart restore today\'s behaviour; placed sessions keep running where they are.',
+  },
+  {
     name: 'crossTopicConfirm',
     configPath: 'security.crossTopicConfirm.enabled',
     description: 'A change to one conversation confirmed by the owner in another (identity-security-creation-provenance v5: the topic-profile propose lane\'s confirmIn); omitted ⇒ live on a development agent, dark on the fleet.',

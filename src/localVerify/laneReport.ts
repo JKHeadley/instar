@@ -11,8 +11,23 @@
  * lane. Only gating lanes count toward success.
  */
 
+import crypto from 'node:crypto';
+import { boundedHead, boundedTail } from '../core/boundedInput.js';
 import { normalizePath } from './glob.js';
 import { LANES, type Inventory, type LaneDefinition, type LaneName } from './inventory.js';
+import { IMPORT_RELATED_RERUN } from './policy.js';
+
+/** One named failed test of a failed file (spec local-verify-import-related-rerun.md). Stays in the run child. */
+export interface FailedTest {
+  /** The full test name, whole (a name over the length bound is never listed). */
+  name: string;
+  /** The first line of the failure message that names an error, bounded with its disclosure. */
+  line: string;
+  /** Set when `line` was shortened: the reader opens the full output. */
+  lineCut?: true;
+  /** The whole first failure message, bounded keeping its end (for the run log's `failure-full` event). */
+  full: string;
+}
 
 export interface FileCounts {
   passed: number;
@@ -27,6 +42,22 @@ export interface FileCounts {
   message?: string;
   /** Wall time of the file in ms (vitest's start/end), when the report carried both. */
   ms?: number;
+  /**
+   * Failed files only: each failed test with a usable name (1..300 characters), in report order.
+   * A failed test with a longer or empty name is NOT here, so `failedTests.length < failed`
+   * discloses it. Never written outside the run child except as the bounded record fields.
+   */
+  failedTests?: FailedTest[];
+  /** Failed files only: sha256 of the file's full test names in report (definition) order. */
+  testSetHash?: string;
+  /** Failed files only: a failed test's full name occurs more than once in the file. */
+  duplicateFailedName?: boolean;
+  /** Failed files only: an import/hook error or a file-level message, alone or beside named failures. */
+  fileLevelFailure?: boolean;
+  /** Solo-run reports only: the full names of the tests reported `passed`. */
+  passedTests?: string[];
+  /** Solo-run reports only: every test that was not `passed`, with its status (for the failure text). */
+  notPassedTests?: Array<{ name: string; status: string }>;
 }
 
 export interface ParsedLaneReport {
@@ -37,6 +68,40 @@ export interface ParsedLaneReport {
 export const FAILURE_MESSAGE_MAX = 400;
 
 export class LaneReportParseError extends Error {}
+
+/** A test's full name: `fullName` when it is a non-empty string, else the ancestor titles joined with the title. */
+export function fullTestName(a: unknown): string {
+  if (!a || typeof a !== 'object') return '';
+  const x = a as { fullName?: unknown; ancestorTitles?: unknown; title?: unknown };
+  if (typeof x.fullName === 'string' && x.fullName) return x.fullName;
+  const parts = [...(Array.isArray(x.ancestorTitles) ? x.ancestorTitles : []), x.title].filter((t): t is string => typeof t === 'string' && t.length > 0);
+  return parts.join(' ');
+}
+
+/**
+ * The distinguishing error line of a failure message: its first line that names an error
+ * (`AssertionError: …`, `Error: mac-desktop-host-timeout`), else its first non-empty line.
+ * Bounded with the disclosing helper; `lineCut` says the stored line is not the whole line.
+ */
+export function errorLine(message: string): { line: string; lineCut?: true } {
+  const lines = message.split('\n').map((l) => l.trim()).filter(Boolean);
+  const raw = lines.find((l) => /^(?:[A-Za-z_$][\w$.]*)?(Error|Exception)\b/.test(l)) ?? lines[0] ?? '';
+  const line = boundedHead(raw, IMPORT_RELATED_RERUN.lineChars);
+  return line === raw ? { line } : { line, lineCut: true };
+}
+
+/**
+ * Which of the lane-failed test names a solo run reported `passed`, by full name. A name that
+ * failed N times needs N passes: fewer and none of its occurrences counts. Pure.
+ */
+export function passedByName(failed: readonly string[], passed: readonly string[]): { passed: string[]; notPassed: string[] } {
+  const count = (list: readonly string[]) => { const m = new Map<string, number>(); for (const n of list) m.set(n, (m.get(n) ?? 0) + 1); return m; };
+  const need = count(failed);
+  const have = count(passed);
+  const out = { passed: [] as string[], notPassed: [] as string[] };
+  for (const n of failed) ((have.get(n) ?? 0) >= need.get(n)! ? out.passed : out.notPassed).push(n);
+  return out;
+}
 
 function relativize(name: string, rootDir: string): string {
   const n = normalizePath(name);
@@ -53,8 +118,15 @@ function relativize(name: string, rootDir: string): string {
  * todo; `failed` → failed; `pending` (still running, or an `.only` left in
  * place) and any unknown status → failed. A file whose own status is `failed`
  * with no failed assertion (an import or hook error) counts one failure.
+ *
+ * Test names (spec local-verify-import-related-rerun.md): a failed file also gets its named
+ * failed tests, the hash of all its test names in report order, whether a failed name is not
+ * unique, and whether it had a file-level failure (reported alone AND beside named failures).
+ * All of a file's names are held only while these are computed; they are summed per path, so
+ * two entries for one path in a report count as one file. `opts.solo` (a report of one file run
+ * alone) adds the passed names. No count changes.
  */
-export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport {
+export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean } = {}): ParsedLaneReport {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -65,6 +137,8 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
     throw new LaneReportParseError('report has no testResults array');
   }
   const files = new Map<string, FileCounts>();
+  /** Per path, only while parsing: the running name hash, how often each name occurs, the failed names, a file-level failure. */
+  const names = new Map<string, { hash: crypto.Hash; seen: Map<string, number>; failedNames: string[]; failed: FailedTest[]; fileLevel: boolean; passed: string[]; notPassed: Array<{ name: string; status: string }> }>();
   for (const tr of (doc as { testResults: unknown[] }).testResults) {
     if (!tr || typeof tr !== 'object') throw new LaneReportParseError('testResults entry is not an object');
     const r = tr as { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown; startTime?: unknown; endTime?: unknown };
@@ -74,14 +148,29 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
     const path = relativize(r.name, rootDir);
     const c: FileCounts = files.get(path) ?? { passed: 0, failed: 0, skipped: 0, todo: 0, message: '', assertionFailures: 0, nonAssertionFailure: false };
     let assertionFailures = 0;
+    const n = names.get(path) ?? { hash: crypto.createHash('sha256'), seen: new Map<string, number>(), failedNames: [], failed: [], fileLevel: false, passed: [], notPassed: [] };
+    names.set(path, n);
     for (const a of r.assertionResults) {
       const s = a && typeof a === 'object' ? (a as { status?: unknown }).status : undefined;
+      const name = fullTestName(a);
+      n.hash.update(JSON.stringify(name) + '\n');
+      n.seen.set(name, (n.seen.get(name) ?? 0) + 1);
+      if (opts.solo) {
+        if (s === 'passed') n.passed.push(name);
+        else n.notPassed.push({ name, status: typeof s === 'string' ? s.slice(0, 40) : 'unknown' });
+      }
       if (s === 'passed') c.passed++;
       else if (s === 'skipped' || s === 'disabled') c.skipped++;
       else if (s === 'todo') c.todo++;
       else {
         c.failed++;
         assertionFailures++;
+        n.failedNames.push(name);
+        if (name.length >= 1 && name.length <= IMPORT_RELATED_RERUN.nameChars) {
+          const fm0 = (a as { failureMessages?: unknown }).failureMessages;
+          const whole = Array.isArray(fm0) && typeof fm0[0] === 'string' ? fm0[0] : '';
+          n.failed.push({ name, ...errorLine(whole), full: boundedTail(whole, IMPORT_RELATED_RERUN.failureFullChars) });
+        }
         if (s === 'failed') c.assertionFailures = (c.assertionFailures ?? 0) + 1;
         else c.nonAssertionFailure = true;
         // Keep the first failing test's title and message (bounded) so a red record says why.
@@ -96,14 +185,37 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
     if (r.status !== 'passed' && assertionFailures === 0) {
       c.failed++;
       c.nonAssertionFailure = true;
+      n.fileLevel = true;
     }
+    // A file-level message is a file-level failure also when a named test failed beside it (S3).
+    if (typeof r.message === 'string' && r.message) n.fileLevel = true;
     if (typeof r.message === 'string' && r.message && !c.message) c.message = r.message.slice(0, FAILURE_MESSAGE_MAX);
     if (typeof r.startTime === 'number' && typeof r.endTime === 'number' && r.endTime >= r.startTime) {
       c.ms = (c.ms ?? 0) + Math.round(r.endTime - r.startTime);
     }
     files.set(path, c);
   }
+  for (const [path, c] of files) {
+    const n = names.get(path)!;
+    if (c.failed > 0) {
+      c.failedTests = n.failed;
+      c.testSetHash = n.hash.digest('hex');
+      c.duplicateFailedName = n.failedNames.some((x) => (n.seen.get(x) ?? 0) > 1);
+      c.fileLevelFailure = n.fileLevel;
+    }
+    if (opts.solo) {
+      c.passedTests = n.passed;
+      c.notPassedTests = n.notPassed;
+    }
+  }
   return { files };
+}
+
+/** The counts of a file without its test names (what may stay in a lane report after a re-run). */
+export function withoutNames(c: FileCounts): FileCounts {
+  const { failedTests: _f, testSetHash: _h, duplicateFailedName: _d, fileLevelFailure: _l, passedTests: _p, notPassedTests: _n, ...counts } = c;
+  void _f; void _h; void _d; void _l; void _p; void _n;
+  return counts;
 }
 
 export interface LaneRunInput {
@@ -234,18 +346,84 @@ export function evaluateRun(
 
 // ── Isolation re-run of failed files (the evidence-per-run "known-flaky") ──
 
+/** One main-flaky test the coordinator offers for a file: a `main` verify saw it fail in its lane and pass alone by name. */
+export interface FlakyOnMainTest {
+  test: string;
+  /** When that `main` verify finished. */
+  at: string;
+  /** The distinguishing error line on `main`, bounded with its disclosure. */
+  line: string;
+  lineCut?: true;
+  /** The file's `testSetHash` in that `main` run. */
+  setHash: string;
+  /** That `main` run's log (a file name on the machine that ran it). */
+  runLog: string;
+}
+
+export interface FlakyOnMainFile {
+  file: string;
+  tests: FlakyOnMainTest[];
+  /** A name of this file was dropped by a cap or a bound: a missing test may be cut, not absent. */
+  namesCut?: true;
+}
+
+/** Why an import-related failed file gets no re-run under the import-related rule. */
+export type ImportRelatedRefusalReason =
+  | 'noMainEvidence' | 'noMainEvidenceForTest' | 'testSetChanged' | 'duplicateTestName'
+  | 'fileLevelFailure' | 'namedCountMismatch' | 'tooManyFailedTests';
+
+export interface ImportRelatedRefusal { file: string; reason: ImportRelatedRefusalReason; test?: string; namesCut?: true }
+
+/**
+ * May an import-related failed file be re-run on main evidence (spec
+ * local-verify-import-related-rerun.md "Rule proposed")? Only when the file is on main's list,
+ * it had no file-level failure, its named failed tests are the whole truth (1..20 of them, equal
+ * to the failed count), no failed name occurs twice in the file, EVERY failed test is on the
+ * list by full name, and the file's name-sequence hash equals the hash stored with each piece of
+ * evidence used. Anything missing or malformed is a refusal: nothing here can pass vacuously.
+ * Pure: the same input gives the same class on the coordinator and on a peer.
+ */
+export function importRelatedEligibility(c: FileCounts | undefined, entry: FlakyOnMainFile | undefined):
+  | { eligible: true; evidence: FlakyOnMainTest[] }
+  | { eligible: false; reason: ImportRelatedRefusalReason; test?: string; namesCut?: true } {
+  if (!entry || !Array.isArray(entry.tests)) return { eligible: false, reason: 'noMainEvidence' };
+  const cut = entry.namesCut === true ? { namesCut: true as const } : {};
+  const no = (reason: ImportRelatedRefusalReason, test?: string) => ({ eligible: false as const, reason, ...(test !== undefined ? { test } : {}), ...cut });
+  if (!c || c.fileLevelFailure !== false) return no('fileLevelFailure');
+  const named = c.failedTests ?? [];
+  if (c.failed > IMPORT_RELATED_RERUN.recordNames) return no('tooManyFailedTests');
+  if (named.length < 1 || named.length !== c.failed) return no('namedCountMismatch');
+  if (c.duplicateFailedName !== false) return no('duplicateTestName');
+  const usable = (t: FlakyOnMainTest | undefined): t is FlakyOnMainTest => !!t && typeof t.at === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(t.at) && !Number.isNaN(Date.parse(t.at))
+    && typeof t.line === 'string' && t.line.length <= IMPORT_RELATED_RERUN.lineChars && typeof t.setHash === 'string' && typeof t.runLog === 'string' && t.runLog.length <= 200;
+  const byName = new Map(entry.tests.filter((t) => t && typeof t.test === 'string').map((t) => [t.test, t]));
+  const evidence: FlakyOnMainTest[] = [];
+  for (const t of named) {
+    const e = byName.get(t.name);
+    if (!usable(e)) return no('noMainEvidenceForTest', t.name);
+    evidence.push(e);
+  }
+  if (typeof c.testSetHash !== 'string') return no('testSetChanged', named[0].name);
+  for (const e of evidence) if (e.setHash !== c.testSetHash) return no('testSetChanged', e.test);
+  return { eligible: true, evidence };
+}
+
 export type IsolationRerunDecision =
-  | { rerun: string[]; reason: 'eligible' }
+  | { rerun: string[]; reason: 'eligible'; /** The re-run files that need three consecutive by-name passes (import-related, with main evidence). */ threePass: string[] }
   | { rerun: []; reason: 'no-report' | 'no-failures' | 'too-many-failures' | 'other-failure' | 'rerun-budget-spent' | 'unhandled-errors' | 'related-to-change' };
 
 /**
- * Should a lane's failed files be re-run alone, once? Only when the lane's ONLY problem is
+ * Should a lane's failed files be re-run alone (once, or three times for the files in
+ * `importRelated`)? Only when the lane's ONLY problem is
  * 1..maxFiles failed files: a missing report, an inventoried file the lane never ran, a file
  * that collected nothing, or an unhandled error (or an unknown unhandled-error count) is a
  * different failure, and more than maxFiles failed files is a real break. A failed file in
- * `ineligible` (a PR verify: the PR changed it, it imports a file the PR changed, or it did
- * not pass cleanly in the last green `main` verify) is a real, possibly order-dependent
- * failure: nothing re-runs. `budgetLeft` is what is left of the per-verify cap. Pure: the
+ * `ineligible` (a PR verify: the PR changed it, or it imports a file the PR changed and not
+ * every one of its failed tests has been shown flaky on `main`) is a real, possibly
+ * order-dependent failure: nothing re-runs. `importRelated` names the failed files that import a
+ * changed file AND whose failed tests are all on main's list: they are eligible and need three
+ * passes; each still counts as one file. `budgetLeft` is what is left of the per-verify cap
+ * (files). The reasons and their order are what they were. Pure: the
  * orchestrator calls it and the self-action registry drives it (local-verify-flake-rerun).
  */
 export function decideIsolationRerun(i: {
@@ -258,6 +436,8 @@ export function decideIsolationRerun(i: {
   unhandledErrors?: number | null;
   /** Failed files that must not be treated as possibly flaky. */
   ineligible?: ReadonlySet<string>;
+  /** Eligible failed files that need three passes instead of one. Absent ⇒ none. */
+  importRelated?: ReadonlySet<string>;
 }): IsolationRerunDecision {
   if (!i.report) return { rerun: [], reason: 'no-report' };
   const failed = [...i.report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f).sort();
@@ -271,5 +451,5 @@ export function decideIsolationRerun(i: {
   }
   if (i.ineligible && failed.some((f) => i.ineligible!.has(f))) return { rerun: [], reason: 'related-to-change' };
   if (failed.length > i.budgetLeft) return { rerun: [], reason: 'rerun-budget-spent' };
-  return { rerun: failed, reason: 'eligible' };
+  return { rerun: failed, reason: 'eligible', threePass: i.importRelated ? failed.filter((f) => i.importRelated!.has(f)) : [] };
 }

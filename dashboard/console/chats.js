@@ -22,7 +22,7 @@ import {
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
   LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
-  effortMembers, trackedProjects, projectsForGroups,
+  effortMembers, trackedProjects, projectsForGroups, groupSections,
 } from './chats-model.js';
 
 /**
@@ -522,18 +522,20 @@ class ChatsPage {
       if (grouped) {
         const { lead, groups, ungrouped } = groupRows(rest, this.hierarchy, this.pinnedKey);
         if (lead) kids.push(rowEl(lead, false));
-        if (groups.length) kids.push(el('div', { class: 'chat-group-label chat-groups-label', text: 'Groups' }));
-        for (const g of groups) {
+        // Two sections, as on the iPhone: "Projects" (groups linked to a tracked project) and "Groups" (plain groups).
+        // A group with no conversations is never shown; an empty section has no header.
+        const sections = groupSections(groups, this.groupProjects);
+        const groupEl = (g) => {
           // The group holding the open conversation stays open, so the row on screen is never hidden.
           const expanded = this.openGroups.has(g.key) || g.rows.some((r) => r.key === open);
           // A tracked project (Chief of Staff) gets the project mark and its status chip; a plain group keeps the folder and count.
-          const project = this.groupProjects.get(g.key) || null;
-          const label = [project ? `Project ${g.title}` : `Group ${g.title}`, project && project.status ? project.status.label : null, groupCountWords(g.count), g.unread > 0 ? `${g.unread} unread` : null].filter(Boolean).join(', ');
+          const project = g.project;
+          const label = [project ? `Project ${g.displayTitle}` : `Group ${g.displayTitle}`, project && project.status ? project.status.label : null, groupCountWords(g.count), g.unread > 0 ? `${g.unread} unread` : null].filter(Boolean).join(', ');
           const head = el('button', { class: `chat-effort-row${project ? ' chat-project-row' : ''}${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false', 'aria-label': label },
             el('span', { class: `chat-group-icon${project ? ' chat-group-icon-project' : ''}`, icon: project ? 'flag' : 'folder' }),
             el('span', { class: 'chat-row-main' },
               el('span', { class: 'chat-row-top' },
-                el('span', { class: 'chat-row-title', text: g.title }),
+                el('span', { class: 'chat-row-title', text: g.displayTitle }),
                 project && project.status ? el('span', { class: `chat-project-status tone-${project.status.tone}`, text: project.status.label }) : null),
               el('span', { class: 'chat-row-preview', text: groupCountWords(g.count) })),
             el('span', { class: 'chat-row-side' },
@@ -546,7 +548,11 @@ class ChatsPage {
             if (project) kids.push(el('a', { class: 'link-btn chat-open-project', href: project.href, text: 'Open project' }));
             for (const r of g.rows) kids.push(rowEl(r, false));
           }
-        }
+        };
+        if (sections.projects.length) kids.push(el('div', { class: 'chat-group-label chat-projects-label', text: 'Projects' }));
+        for (const g of sections.projects) groupEl(g);
+        if (sections.groups.length) kids.push(el('div', { class: 'chat-group-label chat-groups-label', text: 'Groups' }));
+        for (const g of sections.groups) groupEl(g);
         if (ungrouped.length) {
           kids.push(el('div', { class: 'chat-group-label chat-ungrouped-label' },
             el('span', { text: 'Not in a group yet' }),

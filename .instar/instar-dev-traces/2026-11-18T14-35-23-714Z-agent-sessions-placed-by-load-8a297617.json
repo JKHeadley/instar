@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "agent-sessions-placed-by-load",
+  "sessionId": "8a37436b-b318-47a9-8e43-4a900b4c18cb",
+  "timestamp": "2026-11-18T14:35:23.714Z",
+  "artifactPath": "upgrades/side-effects/agent-sessions-placed-by-load.md",
+  "artifactSha256": "b5f536bd61575e15cc69a999c0b5c8c8f16b255583707df24100096be9704c31",
+  "specPath": "docs/specs/agent-sessions-placed-by-load.md",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/agent-sessions-placed-by-load.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "ladder registry entry for an approved Tier-2 spec's switch; data only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "duplicateBuildCheck": {
+    "verdict": "verify",
+    "cause": "main-only",
+    "causes": [
+      "main-only"
+    ],
+    "decision": "proceed",
+    "reason": "Evidence hits are generic shared lines (Bearer auth headers in cli.ts, awareness registry comment); no existing code places /sessions/spawn by load — the converged spec agent-sessions-placed-by-load documents that gap",
+    "acknowledgedEvidenceIds": [],
+    "checkedAt": "2026-11-18T04:52:26.971Z",
+    "specSlug": "agent-sessions-placed-by-load"
+  }
+}
