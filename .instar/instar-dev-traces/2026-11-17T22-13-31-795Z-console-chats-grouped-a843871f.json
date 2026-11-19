@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "console-chats-grouped",
+  "sessionId": "8d848839-63d1-417d-ad1d-769adac726e8",
+  "timestamp": "2026-11-17T22:13:31.795Z",
+  "artifactPath": "upgrades/side-effects/console-chats-grouped.md",
+  "artifactSha256": "e98941118f5fa34c5181f22c95a1fbe6b0bf84a0fabdb4d7b9c1c9395499a30f",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "docs/specs/console-chats-grouped.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/console-chats-grouped.md",
+    "upgrades/side-effects/console-chats-grouped.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only grouping of rows the console list already shows, with today's flat list as fallback and toggle; no server, route, config or stored-data change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-chats-grouped.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-chats-grouped.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

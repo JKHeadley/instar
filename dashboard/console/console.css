@@ -1340,6 +1340,27 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-row.chat-depth-1 { padding-left: calc(var(--s-2) + var(--s-5)); }
 .chat-row.chat-depth-2 { padding-left: calc(var(--s-2) + var(--s-5) * 2); }
 .chat-row.chat-depth-3 { padding-left: calc(var(--s-2) + var(--s-5) * 3); }
+/* The list grouped by the conversation hierarchy (console-chats-grouped): Grouped | All, one row per effort. */
+.chat-view-toggle { display: flex; gap: var(--s-2); margin: 0 0 var(--s-2); }
+.chat-view-toggle[hidden] { display: none; }
+.chat-view-toggle .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
+.chat-effort-row { display: flex; gap: var(--s-3); align-items: center; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0; padding: var(--s-3) var(--s-2); border-radius: var(--r-md); cursor: pointer; }
+.chat-effort-row:hover, .chat-effort-row:focus-visible { background: var(--surface); }
+.chat-effort-chev { flex: none; width: 16px; font-size: 20px; line-height: 1; text-align: center; color: var(--text-faint); transition: transform var(--dur) var(--ease); }
+.chat-effort-row.expanded .chat-effort-chev { transform: rotate(90deg); }
+/* Tracked projects (Chief of Staff) vs plain groups: a flag and a status chip, or a folder. Tones as the Work page's projects. */
+.chat-group-icon { flex: none; width: 18px; height: 18px; color: var(--text-faint); display: inline-flex; }
+.chat-group-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.chat-group-icon-project { color: var(--accent); }
+.chat-project-row .chat-row-title { color: var(--text-strong); }
+.chat-project-status { flex: none; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline-strong); color: var(--text-muted); }
+.chat-project-status.tone-ok { border-color: var(--accent); color: var(--text-strong); background: var(--accent-wash); }
+.chat-project-status.tone-attn { border-color: var(--attn-line); color: var(--attn); background: var(--attn-wash); }
+.chat-project-status.tone-bad { border-color: var(--bad-line); color: var(--bad); background: var(--bad-wash); }
+.chat-project-status.tone-quiet { color: var(--text-muted); }
+.chat-open-project { display: inline-block; margin: 0 0 var(--s-1) calc(var(--s-2) + var(--s-5)); font-size: 13px; }
+.chat-ungrouped-label { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-2); }
+.chat-review-suggestions { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--accent); }
 .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chat-row-top { display: flex; gap: var(--s-2); align-items: center; min-width: 0; }
 .chat-row-title { font-weight: 600; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1533,6 +1554,7 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-text { display: flex; flex-direction: column; min-width: 0; }
 .needs-title { font-weight: 600; overflow-wrap: anywhere; }
 .needs-why { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.needs-also { display: inline-block; margin: 0 8px 6px 34px; font-size: 13px; }
 .needs-more, .needs-line { padding: 4px 14px; font-size: 13px; color: var(--text-muted); }
 .needs-strip > :last-child { border-bottom: 1px solid var(--strip-line); border-radius: 0 0 var(--r-md, 12px) var(--r-md, 12px); padding-bottom: 10px; }
 .needs-strip > .needs-head:last-child { border-radius: var(--r-md, 12px); border-bottom: 1px solid var(--strip-line); }
@@ -1627,3 +1649,13 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-strip > button.needs-more:hover { text-decoration: underline; }
 /* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
 .conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
+/* Whose turn (work-front-doors §6, Luna's board): light red while a card waits on you, light blue while it moves. */
+.need-card.work-card.turn-you { border: 1px solid var(--bad-line); border-style: solid; background: linear-gradient(180deg, var(--bad-wash), transparent 80%), var(--surface); }
+.need-card.work-card.turn-agent, .need-card.work-card.turn-others { border: 1px solid rgb(96 165 250 / .35); border-style: solid; background: linear-gradient(180deg, rgb(96 165 250 / .08), transparent 80%), var(--surface); }
+.work-close-note { width: 100%; min-height: 72px; resize: vertical; font: inherit; }
+/* Project rows that say something (work-door-project-rows §3.1): the folded line is two lines at most; the opened row has it all. */
+.projects-section .project-report { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.projects-section .project-checks { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: var(--s-2) 0; }
+.projects-section .project-check-status:empty { display: none; }
+.projects-section .project-done .done-waiting .done-mark { color: var(--attn); }
+.projects-section .project-row[open] .project-report { display: block; -webkit-line-clamp: unset; overflow: visible; }

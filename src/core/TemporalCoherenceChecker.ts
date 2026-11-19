@@ -28,6 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from './types.js';
+import { boundedEnds, BOUNDED_ENDS_MIN_CHARS } from './boundedInput.js';
 import type { PlatformActivityRegistry } from './PlatformActivityRegistry.js';
 import type { CanonicalState } from './CanonicalState.js';
 
@@ -226,7 +227,15 @@ export class TemporalCoherenceChecker {
           const content = fs.readFileSync(fullPath, 'utf-8');
           if (content.trim()) {
             const basename = path.basename(fullPath);
-            const truncated = content.slice(0, maxChars);
+            // The prompt calls these the agent's CURRENT understanding and BLOCKs
+            // on contradictions with them, so a cut must be visible to the model.
+            // Both ENDS are kept: identity files lead with who the agent is and end
+            // with their newest history, and a reflection log (no instar code
+            // writes reflections.md, so its order is the agent's) usually puts
+            // its newest entries last. A head-only cut dropped exactly the newest
+            // understanding. The configured bound is honoured, floored at the
+            // helper's minimum so a small setting cannot throw.
+            const truncated = boundedEnds(content, Math.max(maxChars, BOUNDED_ENDS_MIN_CHARS));
             sections.push(`[${basename}]:\n${truncated}`);
           }
         }
@@ -277,6 +286,7 @@ export class TemporalCoherenceChecker {
       const lines = actions.map(a => {
         const date = a.timestamp.slice(0, 10);
         const platform = a.platform;
+        // bounded-input-reviewed: a timeline of up to 50 one-line entries; the cut is disclosed once in the section header in buildPrompt ("cut to 120 characters, marked '...'"), since fifty in-line markers would outweigh the entries.
         const summary = a.summary.length > 120
           ? a.summary.slice(0, 117) + '...'
           : a.summary;
@@ -311,7 +321,7 @@ ${currentState}`);
     }
 
     if (timeline) {
-      sections.push(`PUBLISHED CONTENT TIMELINE (most recent first):
+      sections.push(`PUBLISHED CONTENT TIMELINE (most recent first; each summary is cut to 120 characters, and a cut one ends in '...'):
 ${timeline}`);
     }
 
@@ -370,6 +380,7 @@ If the draft is temporally coherent, return: {"issues": [], "assessment": "COHER
 
       // Validate basic structure
       const assessment = this.validateAssessment(parsed.assessment);
+      // bounded-input-reviewed: model OUTPUT clamped for the stored result, not input to a judgment.
       const summary = typeof parsed.summary === 'string'
         ? parsed.summary.slice(0, 500)
         : 'Assessment complete.';

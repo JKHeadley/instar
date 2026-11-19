@@ -26,6 +26,7 @@ export interface RestartRequestFlag {
   targetVersion?: unknown;
   previousVersion?: unknown;
   plannedRestart?: unknown;
+  bypassHolds?: unknown;
   pid?: unknown;
 }
 
@@ -64,6 +65,14 @@ export interface RestartRequestRecord {
   requestedAt: string | null;
   /** The pid the writer stamped, when it stamped one. */
   writerPid: number | null;
+  /**
+   * `plannedRestart` and `bypassHolds` exactly as the request carried them: true or false when
+   * it wrote a boolean, null when it wrote none. A planned request without `bypassHolds: true`
+   * waits for a running verify; one with it does not, so these two say whether a restart was
+   * forced past work in progress. Optional on read: records written before these fields have none.
+   */
+  plannedRestart?: boolean | null;
+  bypassHolds?: boolean | null;
 }
 
 export function restartRequestsLogPath(stateDir: string): string {
@@ -89,6 +98,8 @@ export function buildRestartRequestRecord(
     targetVersion: cleanString(flag?.targetVersion),
     requestedAt: cleanString(flag?.requestedAt),
     writerPid: typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null,
+    plannedRestart: typeof flag?.plannedRestart === 'boolean' ? flag.plannedRestart : null,
+    bypassHolds: typeof flag?.bypassHolds === 'boolean' ? flag.bypassHolds : null,
   };
 }
 

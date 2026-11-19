@@ -12,6 +12,7 @@ import os from 'node:os';
  */
 
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
@@ -57,7 +58,27 @@ function vitestReportMany(byFile: Record<string, string[]>, msg = 'boom'): strin
   });
 }
 
+/** A named test in a fake report (spec local-verify-import-related-rerun.md). */
+interface NamedTest { name: string; status: string; msg?: string }
+function namedReport(byFile: Record<string, NamedTest[] | { tests: NamedTest[]; message?: string; status?: 'passed' | 'failed' }>): string {
+  return JSON.stringify({
+    testResults: Object.entries(byFile).map(([rel, v]) => {
+      const tests = Array.isArray(v) ? v : v.tests;
+      const message = Array.isArray(v) ? '' : v.message ?? '';
+      const status = (!Array.isArray(v) && v.status) || (tests.some((t) => t.status === 'failed') || message ? 'failed' : 'passed');
+      return {
+        name: path.join(P.runDir, rel), status, message, startTime: 0, endTime: 1,
+        assertionResults: tests.map((t) => ({ status: t.status, title: t.name, fullName: t.name, ancestorTitles: [], failureMessages: t.status === 'failed' ? [t.msg ?? 'boom'] : [], meta: {} })),
+      };
+    }),
+  });
+}
+
 interface FakeOpts {
+  /** A lane whose files report NAMED tests (replaces the lane's single file, like `laneFiles`). */
+  laneNamed?: Partial<Record<'unit' | 'integration' | 'e2e', Record<string, NamedTest[] | { tests: NamedTest[]; message?: string; status?: 'passed' | 'failed' }>>>;
+  /** Named solo-run reports per file: one list per run, the last one repeated. */
+  rerunNamed?: Record<string, NamedTest[][]>;
   /** Extra test files in the merge tree (reported by a test's own exec override). */
   extraTree?: string[];
   /** Per-step durations (ms) for exec steps, by step key: npm-ci, build, lint, unit, integration, e2e. */
@@ -113,6 +134,7 @@ function fake(o: FakeOpts = {}) {
   let holderCall = 0;
   let pid = 1000;
   let preflightRun = 0;
+  const soloRuns = new Map<string, number>();
   const shardLists: Array<{ lane: string; files: string[] }> = [];
 
   files.set(path.join(P.runDir, 'package.json'), PKG);
@@ -137,7 +159,7 @@ function fake(o: FakeOpts = {}) {
       }
       case 'status': return ok(o.porcelain ?? '');
       case 'ls-tree': {
-        const extra = Object.values(o.laneFiles ?? {}).flatMap((m) => Object.keys(m ?? {}));
+        const extra = [...Object.values(o.laneFiles ?? {}), ...Object.values(o.laneNamed ?? {})].flatMap((m) => Object.keys(m ?? {}));
         return ok(['package.json', 'src/index.ts', ...TEST_FILES, ...extra, ...(o.extraTree ?? []), 'tests/fixtures/x.test.ts'].join('\n') + '\n');
       }
       case 'merge-base': return ok(`${MB}\n`);
@@ -235,6 +257,14 @@ function fake(o: FakeOpts = {}) {
         const rd = o.rerunMs ?? 1000;
         if (outcome === 'deadline' || rd > opts.deadlineMs) { t += opts.deadlineMs; return { ...r(null), signal: 'SIGTERM', deadlineKilled: true }; }
         t += rd - dur; // (dur was already added)
+        const namedRuns = o.rerunNamed?.[file];
+        if (namedRuns) {
+          const n = soloRuns.get(file) ?? 0;
+          soloRuns.set(file, n + 1);
+          const tests = namedRuns[Math.min(n, namedRuns.length - 1)];
+          files.set(out, namedReport({ [file]: tests }));
+          return r(tests.some((x) => x.status === 'failed') ? 1 : 0);
+        }
         files.set(out, vitestReport(file, outcome, 'boom again'));
         return r(outcome.includes('failed') ? 1 : 0);
       }
@@ -243,7 +273,15 @@ function fake(o: FakeOpts = {}) {
         files.set(out, JSON.stringify({ testResults: [] }));
         return r(0);
       }
-      const many = o.laneFiles?.[lane];
+      const namedLane = o.laneNamed?.[lane];
+      if (namedLane) {
+        files.set(out, namedReport(namedLane));
+        return r(Object.values(namedLane).some((v) => (Array.isArray(v) ? v : v.tests).some((x) => x.status === 'failed') || (!Array.isArray(v) && !!v.message)) ? 1 : 0);
+      }
+      // `--exclude=<path>` removes exactly that path from what the process runs (a lane's rest after its first part).
+      const excluded = new Set(args.filter((a) => a.startsWith('--exclude=')).map((a) => a.slice('--exclude='.length)));
+      const all = o.laneFiles?.[lane];
+      const many = all && excluded.size > 0 ? Object.fromEntries(Object.entries(all).filter(([f]) => !excluded.has(f))) : all;
       if (many) {
         files.set(out, vitestReportMany(many));
         return r(Object.values(many).some((x) => x.includes('failed')) ? 1 : 0);
@@ -919,7 +957,11 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     const f = fake({ laneStatuses: { integration: ['passed', 'failed'] } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
-    expect(r.kind === 'record' && r.record.flakyRetried).toEqual([{ file: 'tests/integration/b.test.ts', lane: 'integration', firstMessage: expect.stringContaining('boom') }]);
+    // The shared name fields ride on every entry, whatever the import-related switch says (they are what main evidence is made of).
+    expect(r.kind === 'record' && r.record.flakyRetried).toEqual([{
+      file: 'tests/integration/b.test.ts', lane: 'integration', firstMessage: expect.stringContaining('boom'),
+      failedTests: ['t1'], failedTestsTotal: 1, soloPassedByName: [], testSetHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }]);
     const calls = vitestCalls(f);
     expect(calls).toHaveLength(LANE_PROCS + 1);
     // The lane processes start together; the re-run comes after its lane.
@@ -1046,6 +1088,406 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     expect(rerun.env.TMUX_TMPDIR).not.toBe(lane.env.TMUX_TMPDIR);
     expect(f.removed).toContain(rerun.env.TMPDIR);
     expect(rerun.args).toContain('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js');
+  });
+});
+
+describe('runVerify — a failed file that imports a changed file, on named main evidence (spec local-verify-import-related-rerun.md)', () => {
+  const vitestCalls = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.command.endsWith('vitest'));
+  const X = 'tests/unit/x.test.ts';
+  const Y = 'tests/unit/y.test.ts';
+  const A = 'tests/unit/a.test.ts';
+  const hashOf = (names: string[]) => { const h = crypto.createHash('sha256'); for (const n of names) h.update(JSON.stringify(n) + '\n'); return h.digest('hex'); };
+  const LANE: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'AssertionError: lane boom\n    at x.ts:1:1' }];
+  const SOLO_OK: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'passed' }];
+  const HASH = hashOf(['s ok', 's flaky']);
+  const RUNLOG = 'ab'.repeat(16) + '.log';
+  const ev = (test: string, over: Record<string, unknown> = {}) => ({ test, at: '2026-11-16T10:00:00.000Z', line: 'Error: main boom', setHash: HASH, runLog: RUNLOG, ...over });
+  const iso = (on: boolean, list: Array<{ file: string; tests: ReturnType<typeof ev>[]; namesCut?: true }> = [{ file: X, tests: [ev('s flaky')] }]) =>
+    ({ allowed: true, notCleanOnGreenMain: [] as string[], importRelatedRerun: on, flakyOnMain: list });
+  /** x.test.ts imports src/core/thing.ts, which the PR changed. */
+  const related = (over: FakeOpts = {}): FakeOpts => ({
+    diff: 'M\tsrc/core/thing.ts\n', imports: { [X]: ['src/core/thing.ts'], [Y]: ['src/core/thing.ts'] },
+    laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: LANE } }, rerunNamed: { [X]: [SOLO_OK] }, ...over,
+  });
+  const rec = (r: Awaited<ReturnType<typeof runVerify>>) => { if (r.kind !== 'record') throw new Error(r.kind); return r; };
+  const ineligibleLog = (f: ReturnType<typeof fake>) => f.logs.find((l) => l.event === 'isolation-rerun-ineligible') as Record<string, unknown> | undefined;
+
+  it('switch off: no re-run and the same log events as before, also when the file is listed', async () => {
+    for (const isolation of [iso(false), { allowed: true, notCleanOnGreenMain: [] as string[] }]) {
+      const f = fake(related());
+      const r = rec(await runVerify(input({ isolation }), f.seams));
+      expect(r.record.outcome).toBe('failure');
+      expect(vitestCalls(f)).toHaveLength(LANE_PROCS);
+      expect(ineligibleLog(f)).toEqual({ event: 'isolation-rerun-ineligible', files: [X] });
+      expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'related-to-change')).toBe(true);
+      expect(r.isolationRefusals).toBeUndefined();
+      expect(r.record.flakyRetried).toBeUndefined();
+    }
+  });
+
+  it('every failed test on the list, three by-name passes: success, with the shared and clearance fields and exactly three extra runs', async () => {
+    const f = fake(related());
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('success');
+    expect(r.record.flakyRetried).toEqual([{
+      file: X, lane: 'unit', firstMessage: expect.stringContaining('lane boom'),
+      failedTests: ['s flaky'], failedTestsTotal: 1, soloPassedByName: ['s flaky'], testSetHash: HASH,
+      importRelated: true, soloPasses: 3, soloSeconds: [1, 1, 1],
+      evidence: [{ test: 's flaky', mainAt: '2026-11-16T10:00:00.000Z', mainLine: 'Error: main boom', prLine: 'AssertionError: lane boom', mainRunLog: RUNLOG }],
+    }]);
+    const solo = vitestCalls(f).slice(LANE_PROCS);
+    expect(solo).toHaveLength(3);
+    const outs = solo.map((c) => c.args.find((a) => a.startsWith('--outputFile='))!);
+    expect(outs.map((o) => path.basename(o))).toEqual(['unit-rerun-0-1.json', 'unit-rerun-0-2.json', 'unit-rerun-0-3.json']);
+    expect(new Set(solo.map((c) => c.env.TMPDIR)).size).toBe(3);
+    expect(new Set(solo.map((c) => c.env.TMUX_TMPDIR)).size).toBe(3);
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun')).toEqual([1, 2, 3].map((run) => ({ event: 'isolation-rerun', lane: 'unit', file: X, outcome: 'passed', importRelated: true, run, of: 3, detailOnly: false, seconds: 1 })));
+    expect(f.logs.filter((l) => l.event === 'failure-full')).toEqual([{ event: 'failure-full', lane: 'unit', file: X, test: 's flaky', message: 'AssertionError: lane boom\n    at x.ts:1:1' }]);
+    expect(r.isolationRefusals).toBeUndefined();
+    expect(r.flakyTestLines).toBeUndefined(); // a PR run hands no lines to the service
+  });
+
+  it('a failed test that is not on the list: no re-run, named in the log and in the result with its count', async () => {
+    const f = fake(related());
+    const r = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s other')] }]) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS);
+    expect(ineligibleLog(f)).toEqual({ event: 'isolation-rerun-ineligible', files: [X], noMainEvidence: [], noMainEvidenceForTest: [{ file: X, reason: 'noMainEvidenceForTest', test: 's flaky' }], refused: [] });
+    expect(r.isolationRefusals).toEqual({
+      noMainEvidence: [], noMainEvidenceCount: 0,
+      noMainEvidenceForTest: [{ file: X, reason: 'noMainEvidenceForTest', test: 's flaky' }], noMainEvidenceForTestCount: 1,
+      importRelatedRefused: [], importRelatedRefusedCount: 0,
+    });
+  });
+
+  it('two failed tests, one on the list: no re-run; a file that is not listed at all: noMainEvidence; a cut list is marked', async () => {
+    const two: NamedTest[] = [{ name: 's flaky', status: 'failed' }, { name: 's new', status: 'failed' }];
+    const f1 = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: two } } }));
+    const r1 = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s flaky', { setHash: hashOf(['s flaky', 's new']) })] }]) }), f1.seams));
+    expect(r1.record.outcome).toBe('failure');
+    expect(vitestCalls(f1)).toHaveLength(LANE_PROCS);
+    expect(r1.isolationRefusals?.noMainEvidenceForTest).toEqual([{ file: X, reason: 'noMainEvidenceForTest', test: 's new' }]);
+
+    const f2 = fake(related());
+    const r2 = rec(await runVerify(input({ isolation: iso(true, [{ file: 'tests/unit/elsewhere.test.ts', tests: [ev('s flaky')] }]) }), f2.seams));
+    expect(vitestCalls(f2)).toHaveLength(LANE_PROCS);
+    expect(r2.isolationRefusals).toMatchObject({ noMainEvidence: [{ file: X, reason: 'noMainEvidence' }], noMainEvidenceCount: 1, noMainEvidenceForTestCount: 0 });
+
+    const f3 = fake(related());
+    const r3 = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [], namesCut: true }]) }), f3.seams));
+    expect(vitestCalls(f3)).toHaveLength(LANE_PROCS);
+    expect(r3.isolationRefusals?.noMainEvidenceForTest).toEqual([{ file: X, reason: 'noMainEvidenceForTest', test: 's flaky', namesCut: true }]);
+  });
+
+  it('a file-level PR failure is never re-run, also when the file is listed; nor is a file with more than 20 failed tests', async () => {
+    const f1 = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: { tests: [], message: 'Cannot find module ./thing', status: 'failed' } } } }));
+    const r1 = rec(await runVerify(input({ isolation: iso(true) }), f1.seams));
+    expect(r1.record.outcome).toBe('failure');
+    expect(vitestCalls(f1)).toHaveLength(LANE_PROCS);
+    expect(r1.isolationRefusals?.importRelatedRefused).toEqual([{ file: X, reason: 'fileLevelFailure' }]);
+
+    const many: NamedTest[] = Array.from({ length: 21 }, (_, i) => ({ name: `t${i}`, status: 'failed' }));
+    const f2 = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: many } } }));
+    const r2 = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: many.map((t) => ev(t.name, { setHash: hashOf(many.map((m) => m.name)) })) }]) }), f2.seams));
+    expect(vitestCalls(f2)).toHaveLength(LANE_PROCS);
+    expect(r2.isolationRefusals?.importRelatedRefused).toEqual([{ file: X, reason: 'tooManyFailedTests' }]);
+  });
+
+  it('S1: a failed name that occurs twice in the file is refused (duplicateTestName); across two shards the lane report is not trusted at all', async () => {
+    const dup: NamedTest[] = [{ name: 's flaky', status: 'failed' }, { name: 's flaky', status: 'passed' }];
+    const f1 = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: dup } } }));
+    const r1 = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s flaky', { setHash: hashOf(['s flaky', 's flaky']) })] }]) }), f1.seams));
+    expect(r1.record.outcome).toBe('failure');
+    expect(vitestCalls(f1)).toHaveLength(LANE_PROCS);
+    expect(r1.isolationRefusals?.importRelatedRefused).toEqual([{ file: X, reason: 'duplicateTestName' }]);
+
+    // The same file reported by two integration shards: no name can be borrowed across them, because nothing in that lane re-runs.
+    const B = 'tests/integration/b.test.ts';
+    const f2 = fake({ diff: 'M\tsrc/core/thing.ts\n', imports: { [B]: ['src/core/thing.ts'] } });
+    const exec = f2.seams.exec;
+    f2.seams.exec = async (c, a, o) => {
+      const res = await exec(c, a, o);
+      const out = a.find((x) => x.startsWith('--outputFile='))?.slice('--outputFile='.length);
+      if (!out || !a.includes('vitest.integration.config.ts')) return res;
+      f2.files.set(out, namedReport({ [B]: a.includes('--shard=1/2') ? [{ name: 's flaky', status: 'failed' }] : [{ name: 's flaky', status: 'passed' }] }));
+      return { ...res, status: a.includes('--shard=1/2') ? 1 : 0 };
+    };
+    const r2 = rec(await runVerify(input({ isolation: iso(true, [{ file: B, tests: [ev('s flaky', { setHash: hashOf(['s flaky']) })] }]) }), f2.seams));
+    expect(r2.record.outcome).toBe('failure');
+    expect(f2.logs.some((l) => l.event === 'file-in-multiple-shards' && l.file === B)).toBe(true);
+    expect(vitestCalls(f2)).toHaveLength(LANE_PROCS);
+    expect(r2.record.flakyRetried).toBeUndefined();
+  });
+
+  it('S1: a file whose sequence of test names differs from the evidence is refused (testSetChanged): a new name, or two names swapped', async () => {
+    for (const mainNames of [['s ok', 's flaky', 's gone'], ['s flaky', 's ok']]) {
+      const f = fake(related());
+      const r = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s flaky', { setHash: hashOf(mainNames) })] }]) }), f.seams));
+      expect(r.record.outcome).toBe('failure');
+      expect(vitestCalls(f)).toHaveLength(LANE_PROCS);
+      expect(r.isolationRefusals?.importRelatedRefused).toEqual([{ file: X, reason: 'testSetChanged', test: 's flaky' }]);
+    }
+  });
+
+  it('S3: a named failure beside a file-level error is refused (fileLevelFailure)', async () => {
+    const f = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: { tests: LANE, message: 'afterAll hook threw' } } } }));
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS);
+    expect(r.isolationRefusals?.importRelatedRefused).toEqual([{ file: X, reason: 'fileLevelFailure' }]);
+  });
+
+  it('S4: a failed name over 300 characters, or an empty named set, is refused (namedCountMismatch): no vacuous pass', async () => {
+    const long = 'n'.repeat(301);
+    const cases: NamedTest[][] = [
+      [{ name: 's flaky', status: 'failed' }, { name: long, status: 'failed' }], // the failed count is above the named failures
+      [{ name: long, status: 'failed' }],
+      [{ name: '', status: 'failed' }],
+    ];
+    for (const tests of cases) {
+      const f = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: tests } } }));
+      const r = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s flaky', { setHash: hashOf(tests.map((t) => t.name)) })] }]) }), f.seams));
+      expect(r.record.outcome).toBe('failure');
+      expect(vitestCalls(f)).toHaveLength(LANE_PROCS);
+      expect(r.isolationRefusals?.importRelatedRefused).toEqual([{ file: X, reason: 'namedCountMismatch' }]);
+    }
+  });
+
+  it('pass then fail: a failure after two extra runs, the detail names the run, and a long message keeps its end with the cut disclosed', async () => {
+    const tail = 'expected 1 to be 2 // THE END';
+    const f = fake(related({ rerunNamed: { [X]: [SOLO_OK, [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'AssertionError: ' + 'y'.repeat(5000) + tail }]] } }));
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 2);
+    const d = r.failures!.find((x) => x.file === X)!;
+    expect(d.message).toContain('lane boom'); // the lane run's message is kept
+    expect(d.rerunMessage!.startsWith('solo run 2 of 3: ')).toBe(true);
+    expect(d.rerunMessage).toContain('BOUNDED INPUT');
+    expect(d.rerunMessage!.endsWith(tail)).toBe(true);
+    expect(d.rerunMessage!.length).toBeLessThanOrEqual('solo run 2 of 3: '.length + 1000);
+    expect(r.record.flakyRetried).toBeUndefined();
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun').map((l) => [l.run, l.outcome])).toEqual([[1, 'passed'], [2, 'failed']]);
+  });
+
+  it('a green solo run that did not pass the failed test by name is not a pass: skipped, missing, or replaced by another passing test', async () => {
+    const cases: Array<[NamedTest[], RegExp]> = [
+      [[{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'skipped' }], /"s flaky" was skipped/],
+      [[{ name: 's ok', status: 'passed' }], /"s flaky" was missing/],
+      [[{ name: 's ok', status: 'passed' }, { name: 's flaky v2', status: 'passed' }], /"s flaky" was missing/],
+      [[{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'todo' }], /"s flaky" was todo/],
+    ];
+    for (const [solo, want] of cases) {
+      const f = fake(related({ rerunNamed: { [X]: [solo] } }));
+      const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+      expect(r.record.outcome).toBe('failure');
+      expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 1); // the first run that does not pass ends the sequence
+      expect(f.logs.find((l) => l.event === 'isolation-rerun')).toMatchObject({ outcome: 'failed-test-not-passed', run: 1, of: 3 });
+      expect(r.failures!.find((x) => x.file === X)!.rerunMessage).toMatch(/^solo run 1 of 3: failed-test-not-passed: /);
+      expect(r.failures!.find((x) => x.file === X)!.rerunMessage).toMatch(want);
+    }
+  });
+
+  it('three runs that do not fit the lane deadline: failed with its own outcome, not read as a test failure', async () => {
+    const MINUTE = 60_000;
+    // Each solo run takes 15 of the unit lane's 40 minutes: the third is killed at the deadline.
+    const f = fake(related({ rerunMs: 15 * MINUTE }));
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun').map((l) => [l.run, l.outcome])).toEqual([[1, 'passed'], [2, 'passed'], [3, 'deadline']]);
+    expect(r.failures!.find((x) => x.file === X)!.rerunMessage).toBe('solo run 3 of 3: not finished inside the lane deadline');
+    expect(r.record.flakyRetried).toBeUndefined();
+    // Each run computed its own deadline from what was left of the lane.
+    const solo = vitestCalls(f).slice(LANE_PROCS);
+    expect(solo).toHaveLength(3);
+    expect(solo[0].deadlineMs).toBeGreaterThan(solo[1].deadlineMs);
+    expect(solo[1].deadlineMs).toBeGreaterThan(solo[2].deadlineMs);
+    expect(solo[2].deadlineMs).toBeLessThan(15 * MINUTE);
+
+    // The lane deadline passes after the first run: the second cannot start, and that is a deadline too.
+    const g = fake(related());
+    const exec = g.seams.exec;
+    g.seams.exec = async (c, a, o) => {
+      const res = await exec(c, a, o);
+      if (a.some((x) => x.includes('-rerun-0-1.json'))) await g.seams.sleep(LOCAL_VERIFY_DEADLINES.lanes.unit);
+      return res;
+    };
+    const r2 = rec(await runVerify(input({ isolation: iso(true) }), g.seams));
+    expect(g.logs.filter((l) => l.event === 'isolation-rerun').map((l) => [l.run, l.outcome])).toEqual([[1, 'passed'], [2, 'deadline']]);
+    expect(vitestCalls(g)).toHaveLength(LANE_PROCS + 1);
+    expect(r2.failures!.find((x) => x.file === X)!.rerunMessage).toBe('solo run 2 of 3: not finished inside the lane deadline');
+  });
+
+  it('an unhandled error in a solo run, or a stop from another lane, is a failure', async () => {
+    const f = fake(related({ rerunUnhandled: 1 }));
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 1);
+    expect(f.logs.find((l) => l.event === 'isolation-rerun')).toMatchObject({ outcome: 'failed', run: 1 });
+
+    const g = fake(related({ rerunHang: [X], laneStatuses: { integration: ['failed'] }, rerun: { 'tests/integration/b.test.ts': ['failed'] } }));
+    const r2 = rec(await runVerify(input({ isolation: iso(true), failFast: true }), g.seams));
+    expect(r2.record.outcome).toBe('failure');
+    expect(r2.record.flakyRetried?.some((x) => x.file === X) ?? false).toBe(false);
+    // The stop is what ended it: one solo run of x was started, it was recorded as stopped (not failed, not passed),
+    // and runs 2 and 3 never started. Without the stop the hanging run would never return.
+    expect(vitestCalls(g).filter((c) => c.args.at(-1) === X)).toHaveLength(1);
+    expect(g.logs.filter((l) => l.event === 'isolation-rerun' && l.file === X)).toEqual([{ event: 'isolation-rerun', lane: 'unit', file: X, outcome: 'stopped', importRelated: true, run: 1, of: 3, detailOnly: false }]);
+    expect(r2.failures!.find((x) => x.file === X)!.rerunMessage).toBe('isolation re-run stopped: another lane had already failed');
+    expect(g.logs.some((l) => l.event === 'lanes-stop' && l.after === 'integration')).toBe(true);
+  });
+
+  it('a solo pass also needs the same skipped count as the lane run: tests skipped behind a nested hook that failed under load, and run alone, are not a pass (skipped-count-changed)', async () => {
+    // Lane run: the listed flake failed, and a nested beforeAll failed too, which vitest reports as its tests SKIPPED.
+    const lane: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'AssertionError: lane boom' }, { name: 'inner one', status: 'skipped' }, { name: 'inner two', status: 'skipped' }];
+    const names = lane.map((t) => t.name);
+    const listed = [{ file: X, tests: [ev('s flaky', { setHash: hashOf(names) })] }];
+    // Alone, the hook passes: its tests run and pass, nothing is skipped.
+    const allRan: NamedTest[] = names.map((name) => ({ name, status: 'passed' }));
+    const f = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [allRan] } }));
+    const r = rec(await runVerify(input({ isolation: iso(true, listed) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 1); // the first run that is not a pass ends the sequence
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun')).toEqual([{ event: 'isolation-rerun', lane: 'unit', file: X, outcome: 'skipped-count-changed', importRelated: true, run: 1, of: 3, detailOnly: false, seconds: 1 }]);
+    expect(r.failures!.find((x) => x.file === X)!.rerunMessage).toBe('solo run 1 of 3: skipped-count-changed: 2 skipped in the lane run, 0 in the solo run');
+    expect(r.record.flakyRetried).toBeUndefined();
+
+    // The same skipped count in every solo run, and the failed test passed by name: cleared as before.
+    const same: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'passed' }, { name: 'inner one', status: 'skipped' }, { name: 'inner two', status: 'skipped' }];
+    const g = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [same] } }));
+    const r2 = rec(await runVerify(input({ isolation: iso(true, listed) }), g.seams));
+    expect(r2.record.outcome).toBe('success');
+    expect(vitestCalls(g)).toHaveLength(LANE_PROCS + 3);
+    expect(r2.record.flakyRetried![0]).toMatchObject({ file: X, importRelated: true, soloPasses: 3, soloPassedByName: ['s flaky'] });
+
+    // A count that changes on a later run ends the sequence there; more skipped alone than in the lane is a change too.
+    const more: NamedTest[] = [{ name: 's ok', status: 'skipped' }, { name: 's flaky', status: 'passed' }, { name: 'inner one', status: 'skipped' }, { name: 'inner two', status: 'skipped' }];
+    const h = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [same, more] } }));
+    const r3 = rec(await runVerify(input({ isolation: iso(true, listed) }), h.seams));
+    expect(r3.record.outcome).toBe('failure');
+    expect(h.logs.filter((l) => l.event === 'isolation-rerun').map((l) => [l.run, l.outcome])).toEqual([[1, 'passed'], [2, 'skipped-count-changed']]);
+    expect(r3.failures!.find((x) => x.file === X)!.rerunMessage).toBe('solo run 2 of 3: skipped-count-changed: 2 skipped in the lane run, 3 in the solo run');
+  });
+
+  it('the skipped-count rule is for import-related files only: a plain file and a main verify keep the one-pass rule whatever was skipped', async () => {
+    const lane: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed' }, { name: 'inner one', status: 'skipped' }];
+    const allRan: NamedTest[] = lane.map((t) => ({ name: t.name, status: 'passed' }));
+    const plain = fake(related({ imports: {}, laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [allRan] } }));
+    expect(rec(await runVerify(input({ isolation: iso(true) }), plain.seams)).record.outcome).toBe('success');
+    const main = fake({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [allRan] } });
+    expect(rec(await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), main.seams)).record.outcome).toBe('success');
+  });
+
+  it('the whole failure message goes to the run log per named test, bounded with its disclosure', async () => {
+    const f = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'Error: head\n' + 'z'.repeat(20_000) + '\nTHE END' }] } } }));
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('success');
+    const full = f.logs.filter((l) => l.event === 'failure-full');
+    expect(full).toHaveLength(1);
+    expect((full[0].message as string).length).toBeLessThanOrEqual(8000);
+    expect(full[0].message).toContain('BOUNDED INPUT');
+    expect((full[0].message as string).endsWith('THE END')).toBe(true);
+    expect(r.record.flakyRetried![0].evidence![0].prLine).toBe('Error: head');
+  });
+
+  it('detail-only pin: after a final failure in the lane, the next eligible file gets exactly one solo run, clears nothing and is never recorded', async () => {
+    const f = fake(related({
+      laneNamed: {
+        unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: LANE, [Y]: LANE },
+        integration: { 'tests/integration/b.test.ts': [{ name: 'b', status: 'passed' }], 'tests/integration/m.test.ts': [{ name: 'm', status: 'failed' }], 'tests/integration/n.test.ts': [{ name: 'n', status: 'failed' }] },
+      },
+      rerunNamed: { [X]: [[{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'AssertionError: again' }]], [Y]: [SOLO_OK] },
+    }));
+    const r = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s flaky')] }, { file: Y, tests: [ev('s flaky')] }]) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    const solo = vitestCalls(f).slice(LANE_PROCS);
+    expect(solo.map((c) => c.args.at(-1))).toEqual([X, Y]); // one run each: x failed its first, y is detail only
+    expect(r.record.flakyRetried).toBeUndefined();
+    const y = r.failures!.find((x) => x.file === Y)!;
+    expect(y.rerunMessage).toBe('solo run 1 of 1 (detail only, the lane had already failed): passed');
+    expect(y.failed).toBe(1); // still failed, with the lane run's counts
+    expect(r.reasons).toContain(`file-failed:${Y}:1`);
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun' && l.file === Y)).toEqual([{ event: 'isolation-rerun', lane: 'unit', file: Y, outcome: 'passed', importRelated: true, run: 1, of: 1, detailOnly: true, seconds: 1 }]);
+    expect(f.logs.some((l) => l.event === 'failure-full')).toBe(false);
+    // It counted against the cap of 3 files: the other lane's two failed files no longer fit.
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.lane === 'integration' && l.reason === 'rerun-budget-spent')).toBe(true);
+  });
+
+  it('a detail-only run that fails says so, bounded', async () => {
+    const bad: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'AssertionError: again' }];
+    const f = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: LANE, [Y]: LANE } }, rerunNamed: { [X]: [bad], [Y]: [bad] } }));
+    const r = rec(await runVerify(input({ isolation: iso(true, [{ file: X, tests: [ev('s flaky')] }, { file: Y, tests: [ev('s flaky')] }]) }), f.seams));
+    expect(r.failures!.find((x) => x.file === Y)!.rerunMessage).toBe('solo run 1 of 1 (detail only, the lane had already failed): s flaky: AssertionError: again');
+  });
+
+  it('a plain file after a final failure is still re-run and recorded as flaky (unchanged)', async () => {
+    const f = fake(related({
+      imports: { [X]: ['src/core/thing.ts'] }, // y imports nothing the PR changed
+      laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: LANE, [Y]: LANE } },
+      rerunNamed: { [X]: [[{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed' }]], [Y]: [SOLO_OK] },
+    }));
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(r.record.flakyRetried).toEqual([{ file: Y, lane: 'unit', firstMessage: expect.any(String), failedTests: ['s flaky'], failedTestsTotal: 1, soloPassedByName: ['s flaky'], testSetHash: HASH }]);
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun' && l.file === Y)).toEqual([{ event: 'isolation-rerun', lane: 'unit', file: Y, outcome: 'passed' }]);
+  });
+
+  it('an edited file, no green main, and a flaky-on-main file that imports a changed file without named evidence get no re-run with either switch value', async () => {
+    for (const on of [false, true]) {
+      const edited = fake(related({ diff: `M\t${X}\n` }));
+      expect(rec(await runVerify(input({ isolation: iso(on) }), edited.seams)).record.outcome).toBe('failure');
+      expect(vitestCalls(edited)).toHaveLength(LANE_PROCS);
+
+      const noGreen = fake(related());
+      expect(rec(await runVerify(input({ isolation: { ...iso(on), allowed: false } }), noGreen.seams)).record.outcome).toBe('failure');
+      expect(vitestCalls(noGreen)).toHaveLength(LANE_PROCS);
+
+      const notClean = fake(related());
+      expect(rec(await runVerify(input({ isolation: { ...iso(on, []), notCleanOnGreenMain: [X] } }), notClean.seams)).record.outcome).toBe('failure');
+      expect(vitestCalls(notClean)).toHaveLength(LANE_PROCS); // notCleanOnGreenMain is not evidence for an import-related file
+      expect(notClean.logs.some((l) => l.event === 'isolation-rerun-flaky-on-main')).toBe(true);
+
+      // No import relation: the plain rule, one pass.
+      const plain = fake(related({ imports: {} }));
+      const r = rec(await runVerify(input({ isolation: { ...iso(on, []), notCleanOnGreenMain: [X] } }), plain.seams));
+      expect(r.record.outcome).toBe('success');
+      expect(vitestCalls(plain)).toHaveLength(LANE_PROCS + 1);
+      expect(r.record.flakyRetried![0].importRelated).toBeUndefined();
+    }
+  });
+
+  it('an import scan that throws leaves the file plain (unchanged)', async () => {
+    const f = fake(related());
+    f.seams.importGraph = () => { throw new Error('scan failed'); };
+    const r = rec(await runVerify(input({ isolation: iso(true) }), f.seams));
+    expect(r.record.outcome).toBe('success');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 1);
+  });
+
+  it('collection: a main solo pass records only the names that failed in the lane and passed by name, with their lines for the service', async () => {
+    const lane: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'Error: mac-desktop-host-timeout\n  at y' }, { name: 's other', status: 'failed', msg: 'AssertionError: nope' }];
+    const f = fake({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [[{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'passed' }, { name: 's other', status: 'skipped' }]] } });
+    const r = rec(await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), f.seams));
+    expect(r.record.outcome).toBe('success'); // what main accepts is unchanged: the file passed alone, once
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 1);
+    expect(r.record.flakyRetried).toEqual([{
+      file: X, lane: 'unit', firstMessage: expect.any(String),
+      failedTests: ['s flaky', 's other'], failedTestsTotal: 2, soloPassedByName: ['s flaky'], testSetHash: hashOf(['s ok', 's flaky', 's other']),
+    }]);
+    expect(r.flakyTestLines).toEqual({ [X]: [{ test: 's flaky', line: 'Error: mac-desktop-host-timeout' }, { test: 's other', line: 'AssertionError: nope' }] });
+    expect(f.logs.filter((l) => l.event === 'failure-full').map((l) => l.test)).toEqual(['s flaky', 's other']);
+  });
+
+  it('collection: a main solo pass with the failed test skipped still clears main and records no name; a duplicated name needs as many passes as failures', async () => {
+    const f = fake({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: LANE } }, rerunNamed: { [X]: [[{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'skipped' }]] } });
+    const r = rec(await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), f.seams));
+    expect(r.record.outcome).toBe('success');
+    expect(r.record.flakyRetried![0]).toMatchObject({ failedTests: ['s flaky'], soloPassedByName: [] });
+
+    const twice: NamedTest[] = [{ name: 'd', status: 'failed' }, { name: 'd', status: 'failed' }];
+    const once = fake({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: twice } }, rerunNamed: { [X]: [[{ name: 'd', status: 'passed' }, { name: 'e', status: 'passed' }]] } });
+    expect(rec(await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), once.seams)).record.flakyRetried![0]).toMatchObject({ failedTests: ['d', 'd'], failedTestsTotal: 2, soloPassedByName: [] });
+    const both = fake({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: twice } }, rerunNamed: { [X]: [[{ name: 'd', status: 'passed' }, { name: 'd', status: 'passed' }]] } });
+    expect(rec(await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), both.seams)).record.flakyRetried![0]).toMatchObject({ soloPassedByName: ['d', 'd'] });
   });
 });
 
@@ -1216,5 +1658,49 @@ describe('runVerify — balanced shards: overlapping paths and a hostile history
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(f.logs.some((l) => l.event === 'durations-ignored')).toBe(true);
     expect(f.shardLists).toHaveLength(0);
+  });
+});
+
+describe('runVerify — first parts on the shared fake (spec local-verify-likely-failing-first.md)', () => {
+  const UNIT = { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/b.test.ts': ['passed'], 'tests/unit/c.test.ts': ['passed'] };
+  const vitestArgs = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.args.includes('--config')).map((c) => c.args);
+
+  it('the setting off, an unassigned or `without` pull request, and a main verify all run exactly the commands of a verify without the block', async () => {
+    const plain = fake({ laneFiles: { unit: UNIT } });
+    const base = await runVerify(input(), plain.seams);
+    const variants: Array<Partial<VerifyRunInput>> = [
+      { likelyFailingFirst: { setting: 'alternate', group: 'without', previous: [], list: ['tests/unit/b.test.ts'] } },
+      { likelyFailingFirst: { setting: 'alternate', previous: [], list: ['tests/unit/b.test.ts'] } },
+    ];
+    for (const v of variants) {
+      const f = fake({ laneFiles: { unit: UNIT } });
+      const r = await runVerify(input(v), f.seams);
+      expect(vitestArgs(f)).toEqual(vitestArgs(plain));
+      if (r.kind !== 'record' || base.kind !== 'record') throw new Error('expected records');
+      expect(r.record).toEqual(base.record);
+      expect(r.reasons).toEqual(base.reasons);
+    }
+    const mainPlain = fake({ laneFiles: { unit: UNIT } });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD }), mainPlain.seams);
+    const mainWith = fake({ laneFiles: { unit: UNIT } });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } }), mainWith.seams);
+    expect(vitestArgs(mainWith)).toEqual(vitestArgs(mainPlain));
+  });
+
+  it('with the setting on: `<lane>-first` runs the named files, the rest excludes them, and every file is reported once', async () => {
+    const f = fake({ laneFiles: { unit: UNIT }, diff: 'M\tsrc/index.ts\n' });
+    const r = await runVerify(input({ likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } }), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.record.outcome).toBe('success');
+    const unitCalls = vitestArgs(f).filter((a) => a.includes('vitest.config.ts'));
+    expect(unitCalls).toHaveLength(2);
+    expect(unitCalls[0].some((a) => a.endsWith('/unit-first.json'))).toBe(true);
+    expect(unitCalls[0].at(-1)).toBe('tests/unit/b.test.ts');
+    expect(unitCalls[1].some((a) => a.endsWith('/unit.json'))).toBe(true);
+    expect(unitCalls[1]).toContain('--exclude=tests/unit/b.test.ts');
+    expect(r.record.lanes.find((l) => l.name === 'unit')).toMatchObject({ files: 3, failed: 0 });
+    const steps = f.logs.filter((l) => l.event === 'step').map((l) => l.step);
+    expect(steps).toEqual(expect.arrayContaining(['unit-first', 'unit']));
   });
 });

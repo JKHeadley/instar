@@ -7,6 +7,7 @@ import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import { answerBodyParseError } from './bodyBudget.js';
 import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -1077,6 +1078,8 @@ export const DASHBOARD_STATIC_OPTIONS = {
 } as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
+  // SEC-103: a body the caller sent malformed or too large is a plain 400/413, never a 500.
+  if (answerBodyParseError(err, req, res)) return;
   const message = operatorError(err, res.app?.locals?.stateDir);
   const stack = err instanceof Error ? err.stack : undefined;
   if (responseAlreadyCommitted(res)) {

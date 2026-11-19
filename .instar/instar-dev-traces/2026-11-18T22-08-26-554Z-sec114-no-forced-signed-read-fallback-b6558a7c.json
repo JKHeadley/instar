@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "sec114-no-forced-signed-read-fallback",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T22:08:26.554Z",
+  "artifactPath": "upgrades/side-effects/sec114-no-forced-signed-read-fallback.md",
+  "artifactSha256": "8acc96fb2010fb163892f499e83142cbc65eca7bbc69f57758dc414189524479",
+  "coveredFiles": [
+    "docs/specs/sec114-no-forced-signed-read-fallback.eli16.md",
+    "src/core/poolSignedReads.ts",
+    "src/server/routes.ts",
+    "tests/integration/pool-reads-signed.test.ts",
+    "tests/unit/sec114-signed-read-forced-fallback.test.ts",
+    "tests/unit/signedPoolReads-awareness-migration.test.ts",
+    "upgrades/side-effects/sec114-no-forced-signed-read-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Interim SEC-114 mitigation authorized by the Chief of Staff security program (handoff aa684371): one added precondition in the signed-read fallback rule plus a persisted version ratchet; fails closed only toward not sending the token.",
+  "eli16Path": "docs/specs/sec114-no-forced-signed-read-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec114-no-forced-signed-read-fallback.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

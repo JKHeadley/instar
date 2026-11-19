@@ -216,6 +216,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'E2E test message',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       });
 
       // Message was received and forwarded to handler
@@ -253,6 +254,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'Should be rejected',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       });
 
       expect(receivedMessages).toHaveLength(0);
@@ -265,6 +267,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'Should be accepted',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       });
 
       expect(receivedMessages).toHaveLength(1);
@@ -283,6 +286,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'Email-based sender',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       });
 
       expect(receivedMessages).toHaveLength(1);
@@ -306,6 +310,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'Duplicate test',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       };
 
       // Send same message 5 times
@@ -368,6 +373,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'EventBus test',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       });
 
       expect(events).toHaveLength(1);
@@ -415,6 +421,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'Logging test',
         timestamp: 1711584000,
         isFromMe: false,
+        service: 'iMessage',
       });
 
       const logPath = path.join(tmpDir, 'imessage-messages.jsonl');
@@ -443,6 +450,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
         text: 'Callback test',
         timestamp: Math.floor(Date.now() / 1000),
         isFromMe: false,
+        service: 'iMessage',
       });
 
       expect(loggedEntries).toHaveLength(1);

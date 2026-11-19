@@ -64,6 +64,7 @@ import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/lane
 import { selectLeftovers, type ProcRow } from '../localVerify/leftoverReaper.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { COMPARE_KINDS, mayStartCompare, type TrialCounts } from '../localVerify/firstPartTrial.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
 import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
@@ -3106,6 +3107,45 @@ const localVerifyErrorRerun: SelfActionController = {
 };
 
 /**
+ * local-verify-first-part-compare — the verdict check of first parts (spec
+ * docs/specs/local-verify-likely-failing-first.md, measure 6): in `alternate`, a verify that used
+ * first parts is followed by one comparison run of the same merge commit. Pinned worst case
+ * (targetAlwaysRejects): every verify qualifies, of every kind, and every comparison is killed
+ * before it finishes, so none is ever counted as done. The start is counted durably BEFORE it
+ * starts (mayStartCompare: under 5 finished AND under 10 started per kind), so at most 10 per
+ * kind and 30 in all ever start on a machine, across restarts.
+ */
+const localVerifyFirstPartCompare: SelfActionController = {
+  id: 'local-verify-first-part-compare',
+  actionVerb: 'spawn-first-part-compare',
+  models: 'src/localVerify/LocalVerifyService.ts (startCompareIfDue → FirstPartTrialState.mayStart / noteStarted → mayStartCompare)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) {
+    return localVerifyFirstPartCompare.makeUnderPressure(f, sink);
+  } },
+  boundK: 30,
+  perTargetBoundK: 10,
+  ticks: 200,
+  tickMs: 30 * 60_000, // one verify (and one comparison) every half hour
+  makeUnderPressure(f, sink) {
+    const key = 'first-part-trial';
+    const counts = (): TrialCounts => (f.durableState.get(key) as TrialCounts | undefined)
+      ?? { done: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, started: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, switchedOff: null };
+    let n = 0;
+    return { tick() {
+      sink.considered += 1;
+      const kind = COMPARE_KINDS[n++ % COMPARE_KINDS.length];
+      const c = counts();
+      if (!mayStartCompare(c, kind)) return;
+      c.started[kind] += 1; // durable before the start
+      f.durableState.set(key, c);
+      sink.emit({ verb: 'spawn-first-part-compare', target: kind });
+      if (!f.targetAlwaysRejects()) { c.done[kind] += 1; f.durableState.set(key, c); }
+    } };
+  },
+};
+
+/**
  * local-verify-capacity-requeue — a run that finds a foreign full suite holding
  * the slot waits in place 30 minutes, then re-queues at the front WITHOUT
  * counting an attempt. Pinned worst case (everySessionBusy): the foreign suite
@@ -3357,21 +3397,25 @@ const localVerifyStatusPassBackoff: SelfActionController = {
 
 /**
  * local-verify-flake-rerun — the isolation re-run inside one verify: a lane whose only
- * problem is 1..3 failed files re-runs exactly those files once each, and the cap (3)
- * covers the whole verify. Pinned worst case (targetAlwaysRejects): every lane of every
- * verify has 2 failing files and every re-run fails again. Per verify: lane 1 re-runs 2,
- * lane 2 re-runs none (only 1 left of the cap), lane 3 none ⇒ ≤ 3 re-runs, each file
- * once. The model drives ONE verify (verifies themselves are bounded by the queue's own
- * controllers), so the bound is horizon-independent.
+ * problem is 1..3 failed files re-runs exactly those files, and the cap (3) covers the whole
+ * verify and counts FILES. A plain file is re-run once. A file that imports a changed file and
+ * whose failed tests `main` has all shown flaky is re-run up to three times in a row (spec
+ * local-verify-import-related-rerun.md); its first run that does not pass ends its sequence.
+ * Pinned worst case (targetAlwaysRejects): every lane of every verify has 3 failing files, all
+ * of them import-related with main evidence, and every solo run passes, so each file gets all
+ * three runs. Per verify: lane 1 re-runs its 3 files three times each, lanes 2 and 3 none (the
+ * cap is spent) ⇒ ≤ 3 × 3 = 9 solo runs, each file at most 3. The model drives ONE verify
+ * (verifies themselves are bounded by the queue's own controllers), so the bound is
+ * horizon-independent.
  */
 const localVerifyFlakeRerun: SelfActionController = {
   id: 'local-verify-flake-rerun',
   actionVerb: 'retry-failed-test-file',
-  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles per verify)',
+  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles files per verify, LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses runs per import-related file)',
   modelsPath: 'src/localVerify/orchestrator.ts',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'The re-run budget lives inside one verify run (the child process); a restart ends that run, and the next run is a new verify bounded by the queue controllers.' },
-  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles,
-  perTargetBoundK: 1,
+  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles * LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
+  perTargetBoundK: LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
   ticks: 3, // one tick per lane of a single verify
   tickMs: 10 * 60_000,
   makeUnderPressure(f, sink) {
@@ -3380,12 +3424,16 @@ const localVerifyFlakeRerun: SelfActionController = {
     return {
       tick() {
         sink.considered += 1;
-        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`];
+        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`, `tests/l${lane}/c.test.ts`];
         const report: ParsedLaneReport = { files: new Map(files.map((x) => [x, { passed: 1, failed: f.targetAlwaysRejects() ? 1 : 0, skipped: 0, todo: 0 }])) };
         lane += 1;
-        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget });
+        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget, importRelated: new Set(files) });
         budget -= d.rerun.length;
-        for (const file of d.rerun) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        if (d.reason !== 'eligible') return;
+        for (const file of d.rerun) {
+          const runs = d.threePass.includes(file) ? LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses : 1;
+          for (let n = 0; n < runs; n++) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        }
       },
     };
   },
@@ -6006,6 +6054,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyMergeHandoff,
   localVerifyMainFairShare,
   localVerifyErrorRerun,
+  localVerifyFirstPartCompare,
   localVerifyCapacityRequeue,
   localVerifyMainSchedule,
   localVerifyMainDebounce,

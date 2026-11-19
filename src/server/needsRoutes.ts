@@ -112,6 +112,17 @@ export interface NeedItem {
   /** href = a console hash (or /dashboard path); topic = a conversation; attention = the attention topic; promise = a promise. */
   action: { kind: 'href'; href: string } | { kind: 'topic'; topicId: number } | { kind: 'attention' } | { kind: 'promise'; id: string; origin: string | null };
   refs: string[];
+  /**
+   * The work-board card that stands in for this item (docs/specs/work-board-cards-appear.md §3): the row keeps its
+   * own words and action; the card is one tap away. Additive and optional: a reader that does not know it shows the row.
+   */
+  card?: { id: string; href: string; label: string };
+  /**
+   * When the item IS its card (the Chief of Staff's wait card, needs-one-list), `action` opens the card and this is the
+   * source's own page (the project conversation), one tap away. Additive and optional: a reader that does not know it
+   * opens the card, which links on to the project.
+   */
+  alsoOpens?: { href: string; label: string };
 }
 
 export interface NeedsAnswer {
@@ -227,7 +238,24 @@ function toItem(row: Rec, source: string): NeedItem {
     sourceLabel: NEED_SOURCE_LABELS[source] || source,
     action,
     refs: Array.isArray(row.refs) ? row.refs.filter((x): x is string => typeof x === 'string').slice(0, 8).map((x) => clean(x, 80)) : [],
+    ...cardOf(row.card),
+    ...alsoOpensOf(row.alsoOpens),
   };
+}
+
+/** The same href rule as an item's own action (a console hash or a dashboard path), so it can never point outside. */
+function alsoOpensOf(a: unknown): { alsoOpens?: NeedItem['alsoOpens'] } {
+  if (!a || typeof a !== 'object') return {};
+  const r = a as Rec;
+  if (typeof r.href !== 'string' || !/^(#\/|\/dashboard\/)/.test(r.href)) return {};
+  return { alsoOpens: { href: r.href, label: clean(r.label, 80) || 'Open the project conversation' } };
+}
+
+function cardOf(c: unknown): { card?: NeedItem['card'] } {
+  if (!c || typeof c !== 'object') return {};
+  const r = c as Rec;
+  if (typeof r.id !== 'string' || !/^wc_[0-9a-f]{16}$/.test(r.id) || typeof r.href !== 'string' || !/^#\/work\/board\?card=/.test(r.href)) return {};
+  return { card: { id: r.id, href: r.href, label: clean(r.label, 80) || 'Has a card on the work board' } };
 }
 
 export interface NeedsComposer {

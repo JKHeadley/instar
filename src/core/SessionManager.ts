@@ -123,7 +123,7 @@ import {
 import { createCliVersionReader, defaultCliVersionReaderDeps, CLI_VERSION_UNKNOWN, type CliVersionReader } from './cliVersionReader.js';
 import { boundLaunchRecord, type JobRunLaunch } from '../scheduler/JobRunHistory.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
-import { codexSupportsGpt61Sol } from './codexCapabilities.js';
+import { CODEX_OLDER_CLI_FALLBACKS, codexModelForCliAsync } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -138,6 +138,8 @@ import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
+import { placeCodexResumeRollout, type CodexRolloutPlacement } from './codexResumeRollout.js';
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 import {
   InboundDeliveryStore,
   InboundDeliveryStoreUnavailableError,
@@ -1214,6 +1216,9 @@ export class SessionManager extends EventEmitter {
    * is at its wall, or null for the default login as before. Unset → today.
    */
   private codexSpawnAccountResolver?: () => { configHome: string; accountId: string } | { refused: string } | null;
+  /** Every Codex account home the pool knows. A Codex conversation relaunched under one
+   *  account's home is looked for in these (and the default home) first. Unset → default home only. */
+  private codexAccountHomesResolver?: () => string[];
   /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
   private memoryPrivacyWiring?: {
     privacy: MemoryPrivacy;
@@ -2254,6 +2259,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
     this.codexSpawnAccountResolver = resolver;
+  }
+
+  setCodexAccountHomesResolver(resolver: () => string[]): void {
+    this.codexAccountHomesResolver = resolver;
   }
 
   /**
@@ -4893,7 +4902,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // internal judges) wins; otherwise honor the saved default for the actual
     // launch framework, after any closed-lane fallback.
     const requestedModel = options.model ?? this.config.frameworkDefaultModels?.[headlessFramework];
-    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel);
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel, options.codexLocalProvider);
 
 
 
@@ -8036,6 +8045,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   private async resolveCodexLaunchModel(
     framework: IntelligenceFramework,
     requestedModel: string | undefined,
+    localProvider?: string,
   ): Promise<string | undefined> {
     const swapCfg = (this.config as { codex?: { rateLimitModelSwap?: CodexModelSwapConfig } })
       .codex?.rateLimitModelSwap;
@@ -8048,16 +8058,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.log(`[SessionManager] ${decision.reason}`);
     }
     const selected = decision.swapped ? decision.model : requestedModel;
-    if (framework === 'codex-cli' && selected === 'gpt-6.1-sol') {
-      const binary = resolveFrameworkBinaryPath({
-        framework,
-        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
-        claudePath: this.config.claudePath,
-        configuredFramework: this.config.framework,
-      });
-      if (!binary || !codexSupportsGpt61Sol(binary)) {
-        console.warn('[SessionManager] This machine has an older Codex CLI; using gpt-6-sol for this session.');
-        return 'gpt-6-sol';
+    // Older-CLI safety: the newer GPT-6.x ids (gpt-6.1-sol, gpt-6.2-sol,
+    // gpt-6.2-astra) need Codex CLI >= 0.166.0. A tier or an unset model is
+    // resolved to the id the builder would launch, so the tier default
+    // (balanced → gpt-6.2-sol) is covered too. A local-provider launch passes
+    // its model verbatim and is never touched.
+    if (framework === 'codex-cli' && !localProvider) {
+      const concrete = resolveModelForFramework(framework, selected ?? 'balanced') ?? selected;
+      if (concrete && CODEX_OLDER_CLI_FALLBACKS[concrete]) {
+        const binary = resolveFrameworkBinaryPath({
+          framework,
+          frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+          claudePath: this.config.claudePath,
+          configuredFramework: this.config.framework,
+        });
+        const launched = await codexModelForCliAsync(concrete, binary ?? '', 'fallback');
+        if (launched !== concrete) {
+          console.warn(`[SessionManager] This machine has an older Codex CLI that cannot run ${concrete}; using ${launched} for this session.`);
+          return launched;
+        }
       }
     }
     return selected;
@@ -8414,7 +8433,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const defaultModel = options?.defaultModel ?? this.config.frameworkDefaultModels?.[framework];
     // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
     // interactive (user-facing) codex session too, not just headless spawns.
-    const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel);
+    const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel, options?.codexLocalProvider);
     // Subscription-pool pinning for the INTERACTIVE (user-facing) lane (B1).
     // Mirrors the headless lane (spawnSession): when pinSessionsToPool wired the
     // spawn-account resolver, launch this claude-code session under the
@@ -8490,6 +8509,50 @@ rm()  { "${shimRunner}" rm  "$@"; }
         });
       }
     }
+    // The Codex half of Resume Follows the Account. `codex resume <thread>` reads the
+    // conversation only from the CODEX_HOME it runs under, so before relaunching a
+    // Codex conversation under an account's home, place the freshest copy there.
+    // Without it the launch below (which now honours the home) would stop at
+    // "no rollout found"; the earlier code avoided that only by ignoring the home
+    // and running on the default login under another account's name (2026-11-18).
+    // A relaunch WITHOUT an account home runs on the default login, and is placed
+    // too: after a swap the conversation continued in the account's home, and the
+    // default home holds only the older copy, so resuming there would silently drop
+    // every turn taken on the account. There, a conversation found nowhere keeps
+    // today's behaviour (the default home is where it was always looked for).
+    const defaultCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const codexPlacementHome = explicitConfigHome ?? defaultCodexHome;
+    // The thread id names a file copied between homes, so it is checked here too. This is
+    // a file-copy guard, not a launch flag: the --resume flag keeps its own guard in the builder.
+    const codexThreadToPlace = options?.resumeSessionId;
+    if (
+      codexThreadToPlace &&
+      framework === CODEX_CLI_FRAMEWORK &&
+      (explicitConfigHome || this.codexAccountHomesResolver) &&
+      isSafeSessionRef(codexThreadToPlace)
+    ) {
+      let outcome: CodexRolloutPlacement | 'error';
+      try {
+        const sources = [defaultCodexHome, ...(this.codexAccountHomesResolver?.() ?? [])];
+        outcome = (await placeCodexResumeRollout(codexThreadToPlace, codexPlacementHome, sources)).outcome;
+      } catch (err) {
+        // @silent-fallback-ok — reported below; the session launches fresh instead of failing.
+        console.warn(`[SessionManager] Codex resume placement failed for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+        outcome = 'error';
+      }
+      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${codexThreadToPlace}, home=${codexPlacementHome})`);
+      if (explicitConfigHome && (outcome === 'not-found' || outcome === 'error')) {
+        resumeReopenFailed = true;
+        options = { ...options, resumeSessionId: undefined };
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.codexResumePlacement',
+          primary: 'Place the Codex conversation in the account home the session launches under',
+          fallback: 'The session launched without its earlier conversation',
+          reason: `Why: Codex resume placement outcome ${outcome}`,
+          impact: 'The session starts from recent topic messages instead of the full conversation',
+        });
+      }
+    }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
@@ -8504,8 +8567,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // when resuming) so eviction mid-thread falls back to --resume losslessly.
       ...(options?.sessionId && !options?.resumeSessionId ? { sessionId: options.sessionId } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
-      // Subscription & Auth Standard P1.3: per-account config home (claude-only,
-      // ignored by other builders) → CLAUDE_CONFIG_DIR for the launched session.
+      // Subscription & Auth Standard P1.3: per-account config home → CLAUDE_CONFIG_DIR
+      // (claude-code) or CODEX_HOME (codex-cli) for the launched session.
       // effectiveConfigHome = explicit caller home, else the resolver-pinned one.
       ...(effectiveConfigHome ? { configHome: effectiveConfigHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).

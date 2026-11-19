@@ -465,9 +465,27 @@ describe('geminiReviewer registry entry', () => {
         return 'Verdict: CLEAN';
       } },
     });
-    expect(invokedModel).toBe('balanced');
+    expect(invokedModel).toBe('gpt-6.2-sol');
     expect(strictPin).toBe(true);
-    expect(r.model).toBe('gpt-6-sol');
+    expect(r.model).toBe('gpt-6.2-sol');
     expect(r.status).toBe('ok');
+  });
+
+  it.each([['sol', 'gpt-6-sol'], ['astra', 'gpt-6-astra']] as const)(
+    'on a Codex CLI below 0.166.0 the %s feedback read runs and is recorded on %s', async (override, older) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'old-codex-review-'));
+    const bin = path.join(dir, 'codex');
+    fs.writeFileSync(bin, '#!/bin/sh\necho "codex-cli 0.165.0"\n', { mode: 0o755 });
+    const codexEntry = SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === 'codex-cli')!;
+    let invokedModel: unknown;
+    const r = await codexEntry.review({
+      promptText: 'PROMPT', timeoutMs: 1000,
+      detectionOverride: { available: true, framework: 'codex-cli', model: 'gpt-6-astra', binaryPath: bin },
+      codexModelOverride: override,
+      providerOverride: { evaluate: async (_prompt, options) => { invokedModel = options?.model; return 'Verdict: CLEAN'; } },
+    });
+    expect(invokedModel).toBe(older);
+    expect(r).toMatchObject({ status: 'ok', model: older });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/crossModelReviewer-piece3.test.ts:old-cli-cleanup' });
   });
 });

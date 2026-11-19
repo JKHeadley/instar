@@ -1,5 +1,8 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
+import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
+import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
 import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
 import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
@@ -234,7 +237,7 @@ import { TunnelManager } from '../tunnel/TunnelManager.js';
 import { PostUpdateMigrator, SLACK_MENTIONS_SESSION_LINE } from '../core/PostUpdateMigrator.js';
 import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
-import { TopicMemory } from '../memory/TopicMemory.js';
+import { TopicMemory, SESSION_HISTORY_MESSAGE_CHARS } from '../memory/TopicMemory.js';
 import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../memory/topicRowWriter.js';
 import { TopicRowCarrier, TopicRowPullCoordinator, rowCarrierEnabled, slackSyntheticTopicId, ROW_PULL_TIMEOUT_MS } from '../memory/topicRowCarrier.js';
 import { TopicRowWatermarkStore } from '../memory/topicRowWatermark.js';
@@ -443,6 +446,9 @@ import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
 import { isConfigureOnlyMandate } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+
+/** Helper-death alert: the tail of the helper's last message (see the helper-failed wiring). */
+export const HELPER_DEATH_SNIPPET_CHARS = 160 + BOUNDED_INPUT_MIN_CHARS;
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -1204,6 +1210,12 @@ let _topicProfileWriteSurface: import('../core/topicProfileWriteSurface.js').Top
  *  propose-confirm / switch-now / re-apply-cooldown all share ONE slot per
  *  topic. */
 let _topicProfileConfirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots | null = null;
+/**
+ * identity-security-creation-provenance v5: may the owner's yes in conversation A apply a confirmed
+ * change to conversation B (the propose lane's confirmIn)? Re-checked when the yes arrives. Set where
+ * config and the stores are wired; null means "never", so a cross-conversation confirm is refused.
+ */
+let _crossTopicEligibility: ((telegram: TelegramAdapter, confirmerUid: string, destKey: string, sourceKey: string) => { ok: true } | { ok: false; reason: string }) | null = null;
 /** §5.2(d) legacy respawn hook — bound in wireTelegramCallbacks (it needs the
  *  telegram adapter + session manager in scope). Today's exact /route
  *  behavior: drop the resume UUID, kill, CONTINUATION respawn. */
@@ -1702,7 +1714,8 @@ export async function spawnSessionForTopic(
             ? (m.senderName || 'User')
             : 'Agent';
           const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-          const text = (m.text || '').slice(0, 2000);
+          // Same bound as the primary path (TopicMemory.formatContextForSession).
+          const text = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
           lines.push(`[${ts}] ${sender}: ${text}`);
         }
         lines.push(``);
@@ -2176,6 +2189,10 @@ function wireTelegramCallbacks(
   claudePath?: string,
   topicMemory?: TopicMemory,
 ): void {
+  // identity-security-creation-provenance v5: a later message into a topic disarms a cross-topic
+  // proposal waiting there (late-bound: the slots are created with the topic-profile surface).
+  telegram.onTopicMessageSent = (topicId, messageId) => { _topicProfileConfirmSlots?.noteOutbound(String(topicId), messageId); };
+
   // /interrupt — send Escape key to a tmux session
   telegram.onInterruptSession = async (sessionName: string): Promise<boolean> => {
     try {
@@ -2837,6 +2854,8 @@ async function handleProfileConfirm(
     // re-issue it and record the fresh ordering anchor (§10.1(c)).
     const slot = slots.peek(topicKey);
     if (slot) {
+      // identity-security-creation-provenance v5: the re-sent echo must not disarm its own slot.
+      slots.clearEchoMessageId(topicKey);
       try {
         const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Please confirm this version:\n${slot.echoText}`));
         if (!sent.recorded) slots.recordEchoMessageId(topicKey, sent.messageId);
@@ -2850,6 +2869,21 @@ async function handleProfileConfirm(
       topicKey, principal, origin: 'propose-confirm', confirmed: true, discloseInReply: true,
     });
     await send(result.reply);
+    return true;
+  }
+  if (armed.kind === 'propose-confirm' && armed.targetTopicKey && armed.targetTopicKey !== topicKey) {
+    // identity-security-creation-provenance v5: the owner confirmed here a change to ANOTHER
+    // conversation. Re-checked now (owner, this conversation unshared, the target, the live switch).
+    const out = await applyCrossTopicConfirm({
+      sourceTopicKey: topicKey,
+      targetTopicKey: armed.targetTopicKey,
+      patch: armed.patch as Record<string, unknown>,
+      agentComposed: armed.origin === 'agent-composed',
+      principal,
+      eligibility: (uid, dest, src) => (_crossTopicEligibility ? _crossTopicEligibility(telegram, uid, dest, src) : { ok: false, reason: 'switch-off' }),
+      applyWrite: (req) => surface.applyWrite(req as Parameters<typeof surface.applyWrite>[0]),
+    });
+    await send(out.reply);
     return true;
   }
   if (armed.kind === 'propose-confirm') {
@@ -8198,6 +8232,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         // bypass BOTH knobs inside the surface itself.
         const { TopicProfileWriteSurface } = await import('../core/topicProfileWriteSurface.js');
         const { ProfileConfirmSlots } = await import('../core/topicProfileIngress.js');
+        // identity-security-creation-provenance v5: the confirm-time re-check for a cross-conversation yes.
+        _crossTopicEligibility = (tg, confirmerUid, destKey, sourceKey) => {
+          // The switch is re-read LIVE at the yes, so turning it off between proposal and yes stops the write.
+          const switchLive = liveConfig.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined);
+          if (!resolveDevAgentGate(switchLive, config as { developmentAgent?: boolean })) return { ok: false, reason: 'switch-off' };
+          const store = _agentServerRef?.getTopicOperatorStore() ?? null;
+          const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
+          const owner = tg?.getOwnerUserId();
+          return crossTopicEligible({
+            ownerUid: typeof owner === 'number' && owner > 0 ? String(owner) : null,
+            confirmerUid,
+            destKnown: dest !== null && !!store && !!tg && tg.getTopicName(dest) !== null,
+            destBinding: dest !== null ? store?.getBinding(dest) ?? null : null,
+            destVerifiedUid: dest !== null ? store?.getOperator(dest)?.uid ?? null : null,
+            destConfined: dest !== null ? new TeamConfinement(config.stateDir).isConfined(`telegram:${dest}`) : null,
+            sourceConfined: new TeamConfinement(config.stateDir).isConfined(`telegram:${sourceKey}`),
+          });
+        };
         _topicProfileConfirmSlots = new ProfileConfirmSlots({
           ttlMs: () => topicProfilesCfg?.switchNowConfirmTtlMs ?? 300_000,
           audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
@@ -12141,6 +12193,21 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         // Wire session routing (following Telegram/WhatsApp pattern)
         wireIMessageRouting(imessageAdapter, sessionManager);
+
+        // identity-security-piece1eb: the owner's daily count of texts set aside because SMS can't prove
+        // its sender. One updating item (never the text); without Telegram, the notice path instead.
+        imessageAdapter.onUnprovenText = (n) => {
+          if (telegram) {
+            // upsert: the item grows (createAttentionItem would keep the first count).
+            void telegram.upsertAttentionItem({ id: 'agent:imessage-unproven-sms',
+              title: n.title, summary: n.body, description: n.body, category: 'security', priority: 'NORMAL', sourceContext: 'imessage-sms',
+              // The owner may need to resend: the hub posts it at the default filter (attentionHubPolicy).
+              needsUser: true })
+              .catch(() => { /* @silent-fallback-ok: refreshed on the next set-aside text */ });
+          } else {
+            notify('SUMMARY', 'sender-rejection', `${n.title}: ${n.body}`);
+          }
+        };
 
         // Set agent name for mention-based triggering
         const imAgentName = (imessageConfig.config as any)?.agentName || config.projectName;
@@ -16983,7 +17050,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         record: { agentId: string; agentType: string; sessionId: string; lastMessage: string | null };
         reason: string;
       }) => {
-        const snippet = (e.record.lastMessage ?? '').slice(0, 160);
+        // The parent session decides whether to retry from this alert, and a
+        // dying helper's last message usually ENDS with the error, so keep the
+        // tail. Derived: the 160 characters it always showed plus disclosure
+        // room, so a cut says it is a cut.
+        const snippet = boundedTail(e.record.lastMessage ?? '', HELPER_DEATH_SNIPPET_CHARS);
         deliverHelperAlert(
           findTmuxForClaudeSession(e.record.sessionId),
           `[helper-watchdog] Your ${e.record.agentType} helper (agent ${e.record.agentId}) died with reason=${e.reason}. Last message: ${snippet}`,
@@ -19886,7 +19957,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const cutoff = Date.now() - escIdemWindowMs;
                   for (const [k, v] of escRecentAttempts) if (v < cutoff) escRecentAttempts.delete(k);
                 }
-                const cap = (s: string) => (s || '').slice(0, 2000).replace(/`/g, "'");
+                // Promise fields for the revived session. Stored userRequest has no
+                // upstream bound, so this cut can fire. Derived: the revived session is
+                // told (step 1 below) to re-establish the promise from the conversation
+                // history, so these fields only IDENTIFY it; the 2000 characters of
+                // content each always carried does that, and the disclosure room on
+                // top tells the session when it holds a fragment.
+                // Backticks are swapped first so the count covers what is shown.
+                const PROMISE_REVIVAL_FIELD_CHARS = 2000 + BOUNDED_INPUT_MIN_CHARS;
+                const cap = (s: string) => boundedHead((s || '').replace(/`/g, "'"), PROMISE_REVIVAL_FIELD_CHARS);
                 const dataBlock = JSON.stringify({
                   commitmentId: req.commitmentId,
                   userRequest: cap(req.userRequest),
@@ -21142,12 +21221,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Wire sentinel into Telegram message flow — intercepts BEFORE session routing.
     // Must be wired AFTER sentinel is created but BEFORE server starts.
     if (sentinel && telegram) {
-      telegram.onSentinelIntercept = async (text: string, topicId: number) => {
+      telegram.onSentinelIntercept = async (text: string, topicId: number, messageKey?: string) => {
         // Operator-channel-sacred: route the decision through the single disposition
         // helper so a 'pause' consumes ONLY on a deterministic match — a bare-LLM or
         // capacity-shed 'pause' routes THROUGH (returns null), never consuming the
         // operator's message. A long-form genuine stop is rescued to a kill.
-        const decision = await sentinel.decideInboundDisposition(text, topicId);
+        const decision = await sentinel.decideInboundDisposition(text, topicId, messageKey);
         if (decision.disposition === 'kill') {
           return { category: 'emergency-stop', action: { type: 'kill-session' }, reason: decision.reason };
         }
@@ -25010,6 +25089,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (resumeInfo) slackRef.removeChannelResume(routingKey);
               // routingKey = `<channelId>[:<thread_ts>]`.
               const sep = routingKey.indexOf(':');
+              // bounded-input-reviewed: a routing-key PARSE (`<channelId>[:<thread_ts>]`), not a bound; the thread part is kept on the next line.
               const slackChannelId = sep === -1 ? routingKey : routingKey.slice(0, sep);
               const slackThreadTs = sep === -1 ? undefined : routingKey.slice(sep + 1);
               // durable-conversation-identity §7 (slack-respawn-bind-token fix): a
@@ -25254,6 +25334,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       // session with one that has room, or refuse when none does. Same switch
       // and walled predicate as the rescue; no Codex accounts → unchanged.
       sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
+      // A Codex conversation moved onto an account's home is looked for in every
+      // Codex account home, so its resume finds the conversation there.
+      sessionManager.setCodexAccountHomesResolver(() => subscriptionPool.list()
+          .filter((a) => a.framework === CODEX_CLI_FRAMEWORK && typeof a.configHome === 'string' && a.configHome.length > 0)
+        .map((a) => a.configHome));
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
@@ -25962,6 +26047,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // disabled. Observability at GET /worktrees/agent-reaper.
     const { AgentWorktreeReaper } = await import('../monitoring/AgentWorktreeReaper.js');
     const { makeAgentWorktreeReaperDeps } = await import('../monitoring/agentWorktreeGit.js');
+    const { evaluateAgentWorktreesInWorker } = await import('../monitoring/agentWorktreeEvaluationJob.js');
     const { WorktreeEnumerationFailureStore } = await import('../monitoring/WorktreeEnumerationFailureStore.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
     const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
@@ -25977,6 +26063,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
         }),
         failureHistory: _worktreeEnumerationFailureStore.forGuard('agent-worktree-reaper'),
+        // A pass that removes nothing runs in a worker thread: evaluating every checkout
+        // here blocked the event loop about 45 s per pass on the Studio (fb-91e824f4-920).
+        evaluateAllOffThread: () => evaluateAgentWorktreesInWorker({
+          instarRepo: config.projectDir,
+          worktreesDir: _agentWorktreesDir,
+          githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+        }),
       },
       config.monitoring?.agentWorktreeReaper,
     );
@@ -26885,6 +26978,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Both the coordinator and a peer read the same live lane switches.
           // A peer can run PR verifies without a source checkout.
           wiring.wireLocalVerifySwitches(localVerifyService, liveConfig);
+          // Queue controls: a lease move that leaves holds behind is announced to the session that
+          // operates the line (monitoring.localVerify.operatorSession), through the agent-message sender.
+          wiring.wireLocalVerifyOperatorNotice(localVerifyService, {
+            liveConfig,
+            send: (session, subject, body) => messageRouter.send(
+              { agent: config.projectName, session: 'server', machine: lvMachineId },
+              { agent: config.projectName, session, machine: 'local' },
+              'alert', 'high', subject, body,
+            ),
+          });
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
@@ -26892,6 +26995,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             // client uses the agent's own token; the lease decides coordinator vs peer role.
             wiring.wireLocalVerifyPeers(svc, {
               liveConfig,
+              // SEC-113 D1: peer answers are signed with this machine's key and checked against pinned peer keys.
+              stateDir: config.stateDir,
               // Resource-aware placement §4: a full verify is heavy work — skip a peer the
               // pool cannot size, or that is below the floor, busy or unmeasured.
               peerFit: (machineId) => {
@@ -27440,7 +27545,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           readinessMod.setActivePoolReadiness(poolReadinessDeps);
           const poolReadinessLog = new readinessMod.PoolReadinessLog(poolReadinessDeps, path.join(config.stateDir, '..', 'logs', 'pool-readiness.jsonl'));
-          const poolBeat = (): void => { refreshPool(); poolReadinessLog.tick(); };
+          const agentSessionPlacementMod = await import('../core/agentSessionPlacement.js');
+          const poolBeat = (): void => {
+            refreshPool();
+            poolReadinessLog.tick();
+            // agent-sessions-placed-by-load §1b: reconcile helpers placed on peers (no-op when off).
+            void agentSessionPlacementMod.getActiveAgentSessionPlacement()?.tick().catch(() => { /* @silent-fallback-ok — a failed pass changes no entry; the next tick retries */ });
+          };
           const poolTimer = setInterval(poolBeat, 30_000);
           if (typeof poolTimer.unref === 'function') poolTimer.unref();
 
@@ -27653,13 +27764,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // written once to the host ledger, attributed or `unattributed`, and each agent proves its
         // own parts came back against a baseline taken before the restart. Restarts nothing.
         {
-          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
+          const { PostRestartProof, setActivePostRestartProof, lifelineProofAt, serverHealthFromResponse } = await import('../monitoring/machineMaintenance/PostRestartProof.js');
           const self = `http://127.0.0.1:${config.port}`;
           const authed = { Authorization: `Bearer ${config.authToken ?? ''}` };
-          const getJson = async (p: string, auth = true): Promise<{ status: number; body: any } | null> => {
+          const getJson = async (p: string, auth = true): Promise<{ status: number; headers: Headers; body: any } | null> => {
             try {
               const r = await fetch(`${self}${p}`, { headers: auth ? authed : {}, signal: AbortSignal.timeout(8_000) });
-              return { status: r.status, body: await r.json().catch(() => null) };
+              return { status: r.status, headers: r.headers, body: await r.json().catch(() => null) };
             } catch { return null; } // @silent-fallback-ok — an unreachable read is unknown in the proof, never a pass
           };
           const proofDir = path.join(config.stateDir, 'state', 'machine-maintenance');
@@ -27678,10 +27789,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             logPath: path.join(config.stateDir, '..', 'logs', 'machine-maintenance.jsonl'),
             log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
             readers: {
-              serverHealth: async () => {
-                const r = await getJson('/health', false);
-                return r && r.status === 200 ? { state: 'pass', reason: 'health-200' } : { state: 'fail', reason: r ? `health-${r.status}` : 'health-unreachable' };
-              },
+              // Back only when /health answers 200 and says it finished starting; still starting reads again next attempt.
+              serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),
               lifelineProofAt,
               relay: async () => {
                 const r = await getJson('/threadline/health');
@@ -29555,8 +29664,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const appOwnerReceiver = createAppOwnerReceiver({
           service: () => _appConversationService,
           storedEpoch: (rk) => ownReg.read(rk)?.ownershipEpoch ?? null,
-          classify: sentinel ? async (text, alias) => {
-            const d = await sentinel.decideInboundDisposition(text, alias);
+          classify: sentinel ? async (text, alias, messageKey) => {
+            const d = await sentinel.decideInboundDisposition(text, alias, messageKey);
             return d.disposition === 'kill' || d.disposition === 'pause' ? d.disposition : 'deliver';
           } : undefined,
           markInjected: (session, messageId) => _inboundQueue?.markRemoteInjected(session, messageId),
@@ -31192,6 +31301,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
                 rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
+                // The Chief of Staff's own Work Board cards (docs/specs/work-board-cards-appear.md §1). Dev-gated like the board:
+                // `workBoard.chiefOfStaffCards` omitted ⇒ on for a development agent, off on the fleet. The board is built earlier in boot.
+                waitCards: new (await import('../core/ChiefOfStaffWaitCards.js')).ChiefOfStaffWaitCards({
+                  enabled: () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('workBoard.chiefOfStaffCards', undefined), config),
+                  board: () => _workBoardRuntime?.svc ?? null,
+                  ensureConversation: (cardId) => _workBoardRuntime?.ensureConversation(cardId),
+                  log: (event, detail) => console.log(pc.dim(`  [chief-of-staff] ${event} ${JSON.stringify(detail)}`)),
+                }),
                 // Owner pause / resume asks (spec cos-owner-pause-record §3.2): only where the owner's button presses arrive.
                 ...(telegram ? { pauseAsk: {
                   receivesCallbacks: () => coordinator.isAwake,
@@ -33337,6 +33454,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               probeLiveCopy: async (machineId, key) => {
                 try {
                   const sep = key.indexOf(':');
+                  // bounded-input-reviewed: a key PARSE (`<platform>:<id>` split at the colon), not a bound; nothing is dropped.
                   const platform = key.slice(0, sep);
                   const pid = key.slice(sep + 1);
                   const onSelf = machineId === _meshSelfId;
