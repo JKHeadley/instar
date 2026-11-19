@@ -54,7 +54,7 @@ This is the share of the replayed verifies whose failing file was included in a 
 
 ## Proposed design
 
-**In one sentence:** each lane runs a small first part before the rest, made of the test files the change touches and the files that failed most often lately, so that most failures show within a couple of minutes; everything else about the verify, including its verdict, is unchanged.
+**In one sentence:** each lane runs a small first part before the rest, made of the test files the change touches and the files that failed most often lately, so that a failure in one of those files shows within a couple of minutes of the lanes starting; the rules that decide the verdict are unchanged. How many failing verifies that covers is what the trial measures.
 
 It is ordering only. Every test file still runs in its own lane, with its own lane's settings, unless the verify has already failed. No file is chosen out of the run, so there is nothing to get wrong by choosing badly: a poor list only means the old timing.
 
@@ -66,7 +66,7 @@ For each lane, before its usual processes start, one process runs that lane's **
 2. **The files this same change failed on in its previous verify,** from the coordinator's record of that verify (at most 3).
 3. **The lane's files from the likely-failing list** (B), in the list's order.
 
-**Limits per lane.** Unit: 80 files. Integration: 20 files and end-to-end: 12 files, and for these two lanes also at most 60 seconds of recorded file time in total, because their files run one at a time and the first part's files lose the lane's side-by-side processes. A file with no recorded time counts as 10 seconds. A lane whose first part would be empty skips it and starts as it does today.
+**Limits per lane.** Unit: 80 files. Integration: 20 files and end-to-end: 12 files, and for these two lanes also at most 60 seconds of recorded file time in total, because their files run one at a time and the first part's files lose the lane's side-by-side processes. A file with no recorded time counts as 10 seconds. A lane whose first part would be empty skips it and starts as it does today. A lane whose files all fit in its first part runs only the first part, and the lane is completed from that one report.
 
 **Path filters.** A first part names its files to the test runner, which matches names by substring, ignoring case. The existing shard planning already groups files whose paths overlap in either direction (one path contained in another). Such a group is never divided: it goes into the first part whole, counting toward the limit, or stays in the rest whole. A group that would exceed the limit, or that contains a path with a wildcard character, stays in the rest.
 
@@ -98,6 +98,8 @@ When a lane's first part has ended, the existing rules are applied to it, earlie
 
 **All of a first part's failures are reported together** for its own lane: it runs to its end before its lane decides. Another lane's first part that fails finally stops it through fail-fast, as lanes stop each other today.
 
+**A failure that ends the verify takes precedence over what the rest would have done.** If the rest of that lane would have run past its deadline, that is never reached: the verify is recorded as failed, not as an error, and so gets no automatic retry for a deadline. Fail-fast between lanes has the same effect today.
+
 **With fail-fast switched off** (`monitoring.localVerify.failFast`), nothing ends early: every lane runs both parts, and the failures of both are kept. The first part then only changes the order.
 
 ### D. The rest of the lane
@@ -111,11 +113,11 @@ The lane's usual processes then run every file that was not in the first part. T
 ### E. Where it applies
 
 - **Verifies of changes only.** A main verify always runs everything and never stops early, so a first part would only add a process start. Main verifies are unchanged.
-- **Off by default, set per machine.** `monitoring.localVerify.likelyFailingFirst` is `off`, `on` or `alternate`; absent means `off`. `alternate` is the trial setting: for each consecutive pair of verifies of changes that a machine runs, it decides at random which of the two runs with first parts and which without. Each run machine reads its own value at the start of each verify it runs, as it does for fail-fast, so the trial can turn it on for one machine first. With it off, a verify runs exactly as today. The coordinator keeps the list up to date and sends it whether or not either switch is on, so it is ready when one is turned on.
+- **Off by default, set per machine.** `monitoring.localVerify.likelyFailingFirst` is `off`, `on` or `alternate`; absent means `off`. `alternate` is the trial setting: a machine set to it uses first parts for half of the pull requests. The coordinator assigns each pull request to "with" or "without" once, at random, when it first queues it, keeps the assignment for every later verify of that pull request, and sends it with each verify, including to the peer. So a change's retries are measured under the same rule as its first attempt. Each run machine reads its own value at the start of each verify it runs, as it does for fail-fast, so the trial can turn it on for one machine first. With it off, a verify runs exactly as today. The coordinator keeps the list up to date and sends it whether or not either switch is on, so it is ready when one is turned on.
 
 ### F. What is recorded
 
-- In the verify's log on the machine that runs it, written at the start of the verify so that set-up failures and verifies with empty first parts stay in their group: `drawn: with | without` and the setting. Then the first part's files per lane, how many came from the change, from its previous failures and from the list, the first part's time, and whether the verify ended there.
+- In the verify's log on the machine that runs it, written at the start of the verify so that set-up failures and verifies with empty first parts stay in their group: the pull request's assignment (`with` or `without`) and the machine's setting. Then the first part's files per lane, how many came from the change, from its previous failures and from the list, the first part's time, and whether the verify ended there.
 - `GET /local-verify` shows the setting, the list's size, age and top files.
 - The awareness entry `src/data/awareness/local-verify-likely-failing-first.md` (short title) tells the agent the feature exists, how to read a verify that ended in a first part, and where the list is shown.
 - Audit rows: `likely-failing-updated` (when the list changes), `likely-failing-unreadable`, and on each verify `first-part` with the numbers above.
@@ -134,13 +136,13 @@ This is a projection from one week of history, not a measurement.
 
 **The cost on verifies that pass.** One more process start per lane, and, on the two slower lanes, up to 60 seconds of files run one at a time that the lane's side-by-side processes would otherwise have shared. Neither is measured in this codebase yet. A passing verify that was already close to a lane's deadline could be pushed over it, which would change its outcome from pass to error; this is the one way the design can change an outcome other than through a test that depends on its neighbours, and deadline errors are counted below.
 
-**The measures.** Each run machine is set to `alternate` for two weeks, so its verifies fall into two groups of equal size that cover the same days and the same suite. From the verify logs:
+**The measures.** Each run machine is set to `alternate` for two weeks, so pull requests fall into two groups of about equal size that cover the same days and the same suite. From the verify logs:
 
 1. Machine-minutes per verify across all outcomes, with and without. This is the main measure.
 2. Median minutes from the start of a verify to its failed verdict, for verifies that fail in a lane (now: unit 24.9, end-to-end 31.9, integration 39.6 on the Studio).
 3. Median total minutes of verifies that pass (now 37.6 on the Studio, 19.3 on the M5), and the number of lane-deadline errors, in each group. Stop and switch off if the passing median is more than one minute higher with first parts than without, or if deadline errors are more frequent.
 4. The share of failed verifies that ended in a first part.
-5. **Machine-minutes per change, from its first verify to its first passing verify,** grouped by how the change's first verify was drawn, with the number of changes that never passed reported beside it. This is the measure that catches the real risk of ending early: a change with two separate faults needs two verifies, so minutes per verify can fall while minutes per change rise. Also reported: how often the next verify of the same change failed on a file that had not run (between lanes today: 3 of 19 follow-up verifies on the Studio).
+5. **Machine-minutes per change, from its first verify to its first passing verify,** grouped by the pull request's assignment, counting every verify of it on either machine, with the minutes spent on changes still failing at the end of the window included and their number reported. This is the measure that catches the real risk of ending early: a change with two separate faults needs two verifies, so minutes per verify can fall while minutes per change rise. Also reported: how often the next verify of the same change failed on a file that had not run (between lanes today: 3 of 19 follow-up verifies on the Studio).
 6. **The verdict check, done by the verify itself.** In `alternate`, on each machine, the first 5 verifies that end in a first part and the first 5 that pass with first parts are followed by a comparison:
    - The verify is finished first: its checks, its verdict and its end time are final and are what is recorded, acted on and measured.
    - Then, in a fresh checkout of the same merge commit (so exactly the same code, in a clean state), the lanes are run once exactly as today's verifier runs them: no first part, and fail-fast as the machine has it set. So the only thing that differs between the two runs is the first parts. It has its own timing and deadlines.
@@ -198,7 +200,8 @@ This is a projection from one week of history, not a measurement.
   - the equal-outcome test over every combination of passing, failing and fail-then-pass files;
   - two real test files where the second fails only if the first ran before it in the same process: the result with and without a first part is recorded, as documentation of the accepted risk;
   - main verifies unchanged; the switch off giving today's commands exactly;
-  - `alternate`: each pair has one of each, the draw is logged at the start, a set-up failure stays in its group; the verdict check runs after the verify is final, in a fresh checkout, for the first 5 of each kind, never changes the recorded verdict or end time, and a difference switches the setting off; a change with one fault in each part (the full run sees both; that is not a difference);
+  - a failing first part in a lane whose rest would have passed its deadline (recorded as failed, no error retry); a lane whose files all fit in its first part (completed from the one report, every file reported once);
+  - `alternate`: a pull request keeps one assignment across retries, head moves and both machines; it is logged at the start; a set-up failure stays in its group; the verdict check runs after the verify is final, in a fresh checkout, for the first 5 of each kind, never changes the recorded verdict or end time, and a difference switches the setting off; a change with one fault in each part (the full run sees both; that is not a difference);
   - the comparison run uses the machine's own fail-fast setting; minutes per change to first pass are computed by the first verify's draw; eviction at 501 files drops the oldest most-recent failure; an overlength path writes an audit row;
   - the list for a verify excludes that pull request's own failures; a path over 300 characters is left out of the request and still runs in its lane;
   - an overlap group selected from its longer path, and one from its shorter path: the group is not divided.
@@ -223,7 +226,7 @@ This is a projection from one week of history, not a measurement.
 4. A first-part failure goes through the existing re-run alone before anything is stopped.
 5. Main verifies are unchanged.
 6. Off by default; each run machine reads its own setting, like fail-fast. With fail-fast off, nothing ends early.
-8. The trial setting is `alternate`: each machine randomises the order of every consecutive pair of verifies, logs the draw at the start, and runs the verdict check itself, after the verify is final and in a fresh checkout, on the first 5 of each kind.
+8. The trial setting is `alternate`: the coordinator assigns each pull request once to with or without and carries that through every verify of it; the machine logs the assignment at the start, and runs the verdict check itself, after the verify is final and in a fresh checkout, on the first 5 of each kind.
 7. The focused preflight is left as it is, switched off. Its code is not reused or removed here.
 
 ## Open questions
