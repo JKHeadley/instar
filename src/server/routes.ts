@@ -875,6 +875,8 @@ import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
+import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 
 /**
  * Build the /whoami request handler.
@@ -17832,6 +17834,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Server-computed readiness authority proposal for the dashboard card. Read-only
   // (Bearer): it derives every binding the runtime later compares, so the operator
   // only chooses the envelope. Registering still requires the PIN route below.
+  // This machine's Codex binary, so an authority proposal names a model its CLI runs.
+  const codexBinaryForProposal = (): string | undefined => resolveFrameworkBinaryPath({
+    framework: CODEX_CLI_FRAMEWORK,
+    frameworkBinaryPaths: ctx.config.sessions?.frameworkBinaryPaths,
+    claudePath: ctx.config.sessions?.claudePath,
+    configuredFramework: ctx.config.sessions?.framework,
+  }) ?? undefined;
+  // The proposal builders read the version cache synchronously; warm it at
+  // boot and before each proposal read so the first one names the right model.
+  const warmCodexVersion = async (): Promise<void> => {
+    const binary = codexBinaryForProposal();
+    if (binary && codexCliVersionCached(binary) === undefined) await refreshCodexCliVersion(binary);
+  };
+  void warmCodexVersion();
+  // An approval that names the model it was shown must bind exactly that model.
+  const assertShownModel = (body: Record<string, unknown>, rebuilt: string): void => {
+    if (typeof body.shownModelFamily === 'string' && body.shownModelFamily !== rebuilt) {
+      throw new Error(`authority proposal changed since it was shown: it now names ${rebuilt}, not ${body.shownModelFamily}; review it again`);
+    }
+  };
   const readinessAuthorityProposal = (envelope?: Partial<ReadinessEnvelope>) => {
     const drain = ctx.feedbackDrain!;
     const intel = ctx.intelligence;
@@ -17845,6 +17867,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       agentId: ctx.config.projectName ?? '',
       binding,
       route,
+      codexBinaryPath: codexBinaryForProposal(),
       piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'],
       current,
       currentMode: current ? drain.store.authorityPosture(current.authorityId, current.generation).mode : undefined,
@@ -17854,8 +17877,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   };
 
-  router.get('/feedback-factory/readiness-authorities/proposal', (req, res) => {
+  router.get('/feedback-factory/readiness-authorities/proposal', async (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    await warmCodexVersion();
     const q = req.query;
     res.json(readinessAuthorityProposal({
       maxBatch: typeof q.maxBatch === 'string' && q.maxBatch.trim() !== '' ? Number(q.maxBatch) : undefined,
@@ -17868,10 +17892,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // with Bearer alone, so “registered” is a real security boundary.
   // `useProposal: true` (create/replace) makes the SERVER derive every binding
   // field from the live proposal; only the operator's envelope comes from the body.
-  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+  router.post('/feedback-factory/readiness-authorities', async (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
+    await warmCodexVersion();
     try {
       const body = req.body ?? {};
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
@@ -17881,6 +17906,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (body.useProposal === true && (action === 'create' || action === 'replace')) {
         const built = readinessAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
         if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+        assertShownModel(body, built.proposal.modelFamily);
         proposed = { ...built.proposal };
       }
       const source = proposed ?? ((action === 'revoke' || action === 'restore') && existing ? existing : body);
@@ -18049,24 +18075,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
     const posture = current ? drain.store.authorityPosture(current.authorityId, current.generation) : null;
     return buildTriageAuthorityProposal({
-      agentId: ctx.config.projectName ?? '', binding, route, piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
+      agentId: ctx.config.projectName ?? '', binding, route, codexBinaryPath: codexBinaryForProposal(), piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
       currentMode: posture?.mode, currentModeReason: posture?.reason,
       currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
       envelope, maxCallsPerDay: ctx.feedbackTriage!.service.summary().maxCallsPerDay as number,
     });
   };
 
-  router.get('/feedback-factory/triage/authority/proposal', (req, res) => {
+  router.get('/feedback-factory/triage/authority/proposal', async (req, res) => {
     if (triageUnavailable(res)) return;
+    await warmCodexVersion();
     const q = req.query;
     const num = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? Number(v) : undefined);
     res.json(triageAuthorityProposal({ maxBatch: num(q.maxBatch), maxTokens: num(q.maxTokens), maxDailySpendUsd: num(q.maxDailySpendUsd) }));
   });
 
-  router.post('/feedback-factory/triage/authority', (req, res) => {
+  router.post('/feedback-factory/triage/authority', async (req, res) => {
     if (triageUnavailable(res)) return;
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
+    await warmCodexVersion();
     try {
       const body = req.body ?? {};
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
@@ -18077,6 +18105,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (body.useProposal === true) {
           const built = triageAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
           if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+          assertShownModel(body, built.proposal.modelFamily);
           source = { ...built.proposal };
         } else {
           // Explicit fields: the prompt, schema and decision point are always the deployed ones.

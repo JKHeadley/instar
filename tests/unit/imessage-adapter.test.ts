@@ -191,6 +191,7 @@ describe('IMessageAdapter', () => {
         text: 'unauthorized message',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage', // real chat.db rows always carry their service (identity-security-piece1eb)
       });
 
       expect(messages).toHaveLength(0);
@@ -212,6 +213,7 @@ describe('IMessageAdapter', () => {
         text: 'Hello Roland',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage', // real chat.db rows always carry their service (identity-security-piece1eb)
       });
 
       expect(messages).toHaveLength(1);
@@ -256,6 +258,7 @@ describe('IMessageAdapter', () => {
         text: 'duplicate test',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage',
       };
 
       await (adapter as any)._handleIncomingMessage(msg);
@@ -282,6 +285,7 @@ describe('IMessageAdapter', () => {
         text: 'crash test',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage', // real chat.db rows always carry their service (identity-security-piece1eb)
       });
     });
   });

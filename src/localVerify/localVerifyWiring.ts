@@ -46,6 +46,12 @@ export interface LocalVerifyConfigBlock {
   peer?: { enabled?: boolean };
   /** Coordinator: hand `main` verifies to peers while main is healthy (default false; docs/specs/local-verify-main-on-peer.md). Read live. */
   mainOnPeers?: boolean;
+  /**
+   * A failed test file that only imports a changed file may be re-run alone, three times, when
+   * every one of its failed tests has failed and passed alone on a `main` verify in the last 7
+   * days (default false; docs/specs/local-verify-import-related-rerun.md). Read live at each run start.
+   */
+  importRelatedRerun?: boolean;
   /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
   peers?: Array<{ machineId: string; url: string }>;
   /** macOS: run each verify as an Interactive launchd job so it uses the performance cores (default true). */
@@ -576,9 +582,10 @@ export function wireLocalVerifyPeers(
  * The live switches the server reads at each decision (absent ⇒ on):
  * `monitoring.localVerify.mainRedHold` (CMT-1033), `monitoring.localVerify.failFast` and
  * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
+ * `monitoring.localVerify.importRelatedRerun` is the exception: absent ⇒ OFF, on only by a real `true`.
  */
 export function wireLocalVerifySwitches(
-  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode'>,
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled'>,
   liveConfig: { get<T>(key: string, fallback: T): T },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
@@ -586,6 +593,8 @@ export function wireLocalVerifySwitches(
   // Processes per slow lane, e.g. { "integration": 1, "e2e": 2 } to return to the pre-2026-10-27 split.
   svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
+  // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
+  svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
 }
 
 /**

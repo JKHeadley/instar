@@ -12144,6 +12144,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Wire session routing (following Telegram/WhatsApp pattern)
         wireIMessageRouting(imessageAdapter, sessionManager);
 
+        // identity-security-piece1eb: the owner's daily count of texts set aside because SMS can't prove
+        // its sender. One updating item (never the text); without Telegram, the notice path instead.
+        imessageAdapter.onUnprovenText = (n) => {
+          if (telegram) {
+            // upsert: the item grows (createAttentionItem would keep the first count).
+            void telegram.upsertAttentionItem({ id: 'agent:imessage-unproven-sms',
+              title: n.title, summary: n.body, description: n.body, category: 'security', priority: 'NORMAL', sourceContext: 'imessage-sms',
+              // The owner may need to resend: the hub posts it at the default filter (attentionHubPolicy).
+              needsUser: true })
+              .catch(() => { /* @silent-fallback-ok: refreshed on the next set-aside text */ });
+          } else {
+            notify('SUMMARY', 'sender-rejection', `${n.title}: ${n.body}`);
+          }
+        };
+
         // Set agent name for mention-based triggering
         const imAgentName = (imessageConfig.config as any)?.agentName || config.projectName;
         if (imAgentName) imessageAdapter.setAgentName(imAgentName);

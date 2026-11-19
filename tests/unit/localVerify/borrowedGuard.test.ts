@@ -110,7 +110,14 @@ async function runMainVerify(observer: MainRunObserver | null) {
   await svc.settle();
   await new Promise((r) => setImmediate(r));
   const audit = fs.readFileSync(path.join(stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
-  const strip = (rows: Array<Record<string, unknown>>) => rows.filter((r) => r.src !== 'borrowed' && !String(r.event).startsWith('borrowed'));
+  // `runLog` names the run's own log file after its random per-run token (PR 3455), so it differs
+  // between any two runs, with or without an observer. Its shape is checked, then the name is fixed
+  // so that every other field is still compared exactly.
+  const strip = (rows: Array<Record<string, unknown>>) => rows.filter((r) => r.src !== 'borrowed' && !String(r.event).startsWith('borrowed')).map((r) => {
+    if (!('runLog' in r)) return r;
+    expect(r.runLog).toMatch(/^[0-9a-f]{32}\.log$/);
+    return { ...r, runLog: '<run-token>.log' };
+  });
   const health = svc.mainHealth();
   return { audit: strip(audit), health: { state: health.state, lastGreenHead: (health as { lastGreenHead?: unknown }).lastGreenHead ?? null }, snapshot: { ...svc.snapshot(), records: svc.snapshot().records } };
 }
