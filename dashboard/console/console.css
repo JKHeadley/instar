@@ -1412,6 +1412,9 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-pin-by { font-size: 12px; color: var(--text-muted); }
 .chat-pin-unpin { flex: none; min-height: 44px; }
 .chat-composer { display: flex; flex-direction: column; gap: var(--s-2); }
+/* A drag carrying files over the open conversation: the composer says where they will go. */
+.chat-composer.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--r-md); }
+.chat-composer.dropping::before { content: 'Drop to attach'; align-self: center; padding: 4px 14px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); font-size: 13px; font-weight: 600; }
 .chat-compose-row { display: flex; gap: var(--s-2); align-items: flex-end; }
 .chat-compose { flex: 1; min-width: 0; min-height: 44px; max-height: 40dvh; resize: vertical; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
 /* The shared .btn-primary is full width with a top margin; in the composer row the buttons size to their label. */
