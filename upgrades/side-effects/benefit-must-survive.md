@@ -63,3 +63,11 @@ Documentation-level change carrying out an explicit operator request; clear to s
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect fixed and no self-triggered controller — not applicable.
+
+## Addendum (2026-11-18 18:10 PST): proposed constitution articles
+
+Justin, 18:05 PST in topic 145097: *"This is critical and should be fundamental/required and possibly part of the constitution."* So `docs/STANDARDS-REGISTRY.md` gains two articles, both marked *proposed, pending operator ratification*, and lists them under "Proposed 2.0 amendments":
+- **A Safeguard Must Leave a Benefit** (Building);
+- **Documents Stand on Their Own** (Interaction).
+
+The registry's own rules make a pending article advisory and never build-failing until ratified. Ratification is Justin's: his yes on the exact text, plus his code-owner approval on this PR. The hierarchy block was regenerated. Clean: tree-parentage, single-governing-obligation, insertion-placement, code-backreference, standards hierarchy `--check`. The PR body carries the required `Constitution counterpart:` line. An instar-2 counterpart follows only if he ratifies.

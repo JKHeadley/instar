@@ -17,10 +17,14 @@ Before any change to Instar is built, its written design goes through a review i
 - **The lessons reviewer** gains a sixth question that checks both on every design, in every review round. A design with no surviving benefit, or a practice-only phase with no end, sends the design back for another round. The reviewer templates are refreshed in every agent on each update.
 - **The template for plain-language overviews** opens with the "stands on its own" rule.
 
+## Proposed for the constitution
+
+At 18:05 the same day Justin asked for both rules to be fundamental, and possibly part of the constitution. So this change also proposes two articles in Instar's constitution, *A Safeguard Must Leave a Benefit* and *Documents Stand on Their Own*. They are marked pending until he approves the exact wording, and until then they guide but cannot fail a build.
+
 ## What does not change
 
 The constitution's hard floors stay exactly as they are: protecting security, data and the owner's machine. The new rule is about safeguards beyond those floors. No code changes.
 
 ## What the reader needs to decide
 
-Nothing. This carries out Justin's direct request in topic 145097 (18 November 2026, 17:44 PST).
+Justin decides whether the two proposed constitution articles become binding, on their exact wording. The principles and the reviewer question carry out his direct request (topic 145097, 18 November 2026, 17:44 PST) and need no decision.
