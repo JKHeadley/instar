@@ -422,6 +422,19 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     return false;
   };
 
+  // The peer learns its publisher from signed same-agent replication. A recovered local key wins.
+  const requirePublisherMachine = (res: Response): boolean => {
+    if (!publishesElsewhere(deps.stateDir) && !fs.existsSync(paths.current)) return true;
+    if (holdsOrgKey(deps.stateDir)) return true;
+    const marker = readJson<{ machineId?: unknown }>(elsewherePath(deps.stateDir));
+    const machineId = typeof marker?.machineId === 'string' && marker.machineId ? marker.machineId : undefined;
+    const detail = machineId
+      ? `Open this policy on the computer that publishes it (${machineId}).`
+      : 'Open this policy on the computer that publishes it.';
+    res.status(409).json({ error: 'org-key-elsewhere', machineId, detail });
+    return false;
+  };
+
   // On a multi-machine admin agent, the admin's member and keeper routes run on the key machine
   // (members-and-keepers §Multi-machine). The principal is checked here first, on the machine that got the request.
   router.use((req: Request, res: Response, next) => {
@@ -466,10 +479,12 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     // organization's agent; for a keeper, the organization's current version read from its address.
     let base: DraftBase | null = null;
     const pub = readPublished(deps.stateDir);
+    // A keeper reads the remote base on their own agent. Drafts based on the local publisher need its key.
+    if ((pub || b.asKeeper !== true) && !requirePublisherMachine(res)) return;
     if (pub) {
       const r = pub.bundle.record;
       base = { orgId: r.orgId, version: r.version, policySha256: r.policySha256, maxIndependence: r.maxIndependence };
-    } else if ((req.body as { asKeeper?: unknown })?.asKeeper === true) {
+    } else if (b.asKeeper === true) {
       const m = store().membership();
       const keeperMeta = m ? readJson<{ origin: string }>(path.join(deps.stateDir, 'org', 'keys', m.orgId, 'keeper-key.json')) : null;
       const origin = keeperMeta?.origin ?? m?.updateOrigin ?? null;
@@ -820,6 +835,7 @@ export function createOrgPackRouter(deps: OrgPackRouteDeps): Router {
     withPublishLock(deps.stateDir, () => publish(req, res)).catch((err) => failed(res, 'org publish', err));
   });
   const publish = (req: Request, res: Response): void => {
+    if (!requirePublisherMachine(res)) return;
     const b = (req.body ?? {}) as Record<string, unknown>;
     const draft = typeof b.draftId === 'string' && /^[0-9a-f-]{36}$/.test(b.draftId) ? readJson<Draft>(path.join(paths.drafts, `${b.draftId}.json`)) : null;
     if (!draft || now() - draft.createdAt > ORG_DRAFT_TTL_MS) { res.status(404).json({ error: 'draft-not-found', detail: 'Make the draft again; drafts last 24 hours.' }); return; }

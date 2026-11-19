@@ -1,3 +1,5 @@
+import { KNOWN_CODEX_MODEL_IDS } from '../../core/ModelTierEscalation.js';
+import { CODEX_CLI_FRAMEWORK } from '../../core/frameworkFacts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { IntelligenceProvider } from '../../core/types.js';
 import type { AuthorityRecord } from './FeedbackDrainStore.js';
@@ -165,7 +167,14 @@ export class FeedbackReadinessArbiter {
       'Never emit held, commands, routes, artifact ids, or new cluster ids.',
       `Candidates: ${JSON.stringify(packet)}`,
     ].join('\n'), {
-      model: 'capable',
+      // A codex authority runs on the exact id the operator approved. Asking for
+      // the 'capable' tier would follow the tier map (gpt-6-astra moved to
+      // gpt-6.2-astra on 2026-11-17) and fail the resolved-model check below
+      // until the operator re-approved. Other providers keep the tier request:
+      // their approved family is matched by substring (e.g. a pi pattern).
+      ...(authority.provider === CODEX_CLI_FRAMEWORK && KNOWN_CODEX_MODEL_IDS.includes(authority.modelFamily as typeof KNOWN_CODEX_MODEL_IDS[number])
+        ? { model: authority.modelFamily as 'capable', strictModelPin: true }
+        : { model: 'capable' as const }),
       maxTokens: Math.min(1200, Math.max(128, authority.maxTokens)),
       temperature: 0,
       timeoutMs: FEEDBACK_READINESS_MODEL_TIMEOUT_MS,
