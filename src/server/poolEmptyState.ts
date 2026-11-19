@@ -36,6 +36,8 @@ export type MachineEmptyStateKind = 'online' | 'offline' | 'unreachable' | 'stal
 
 /** Per-machine inputs the classifier needs — all from REAL registry/fan-out state. */
 export interface MachineStateInput {
+  /** A signed machine-away announcement, in plain words (restart-lock-continuity B.3). Positive evidence for `offline`. */
+  awayText?: string;
   /** Registry liveness: (now − routerReceivedAt) < failoverThreshold. */
   online: boolean;
   /**
@@ -114,6 +116,13 @@ export function formatLastSeen(lastSeen: string | null, now: number): string {
  * (a busy machine is already self-evident from its sessions).
  */
 export function classifyMachineEmptyState(input: MachineStateInput, now: number): MachineEmptyState {
+  const base = classifyMachineEmptyStateInner(input, now);
+  // A machine that announced it was leaving and is not online reads `offline` with its own reason.
+  if (input.awayText && base.kind !== 'online') return { kind: 'offline', text: `offline: ${input.awayText}`, lastSeen: base.lastSeen };
+  return base;
+}
+
+function classifyMachineEmptyStateInner(input: MachineStateInput, now: number): MachineEmptyState {
   const lastSeen = input.routerReceivedAt ?? input.selfReportedLastSeen ?? null;
 
   // Honest-evidence path (A5): one template everywhere —

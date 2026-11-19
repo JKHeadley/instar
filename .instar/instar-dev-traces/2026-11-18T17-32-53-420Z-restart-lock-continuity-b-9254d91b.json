@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "restart-lock-continuity-b",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T17:32:53.420Z",
+  "artifactPath": "upgrades/side-effects/restart-lock-continuity-b.md",
+  "artifactSha256": "a868288b347e60aa7a1fbcfc3b559194ec09655c50b201e0d8155f6e7ddd881f",
+  "specPath": "docs/specs/restart-lock-continuity.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MachineAway.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/PeerPresencePuller.ts",
+    "src/data/awareness/machine-away.md",
+    "src/server/poolEmptyState.ts",
+    "src/server/routes.ts",
+    "tests/e2e/machine-away-wiring.test.ts",
+    "tests/unit/machine-away.test.ts",
+    "upgrades/next/restart-lock-continuity-b.md",
+    "upgrades/side-effects/restart-lock-continuity-b.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "new signed mesh command and shutdown-path change; converged spec part B",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
