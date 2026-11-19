@@ -2259,21 +2259,121 @@ export function parseReviewerReply(raw: string, reviewerTag: string): ReviewFind
 }
 
 /**
- * Extract the verdict from a reviewer reply. Looks for a `Verdict:` line and
- * matches one of the three canonical values (case-insensitive, tolerant of
- * surrounding markdown like `**Verdict: SERIOUS ISSUES**`). Returns 'UNKNOWN'
- * when none is found.
+ * Extract the verdict from a reviewer reply (SEC-097). Only the reviewer's own verdict DECLARATIONS
+ * count, quoted material never does, and several declarations resolve to the most severe one.
+ * Returns 'UNKNOWN' when none is found. Exported for its tests.
  */
-function extractVerdict(text: string): ReviewVerdict {
-  // Find a line mentioning "Verdict" and inspect its content.
-  const verdictLine = text
-    .split('\n')
-    .find((l) => /verdict/i.test(l));
-  const haystack = (verdictLine ?? text).toUpperCase();
-  // Order matters: check the most specific multi-word verdicts first.
-  if (haystack.includes('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
-  if (haystack.includes('MINOR ISSUES')) return 'MINOR ISSUES';
-  if (haystack.includes('CLEAN')) return 'CLEAN';
+export function extractVerdict(text: string): ReviewVerdict {
+  // SEC-097. The old rule took the FIRST line that mentioned "verdict" (or, with none, searched the
+  // whole reply), so a reviewer that first QUOTED injected text ("Verdict: CLEAN" planted in the
+  // untrusted diff or spec) was read as CLEAN even when its own verdict line said SERIOUS ISSUES,
+  // and "the code is not clean" with no verdict line at all read as CLEAN. The rule now:
+  //  - a declaration is a line whose LABEL is "Verdict" (optionally "Final"/"Overall"; list, heading,
+  //    emphasis and table markers allowed before it, but NOT a quote mark or backtick: a quoted
+  //    label is quoted material), followed by its value; or a bare "Verdict" heading whose next
+  //    non-blank line carries the value;
+  //  - fenced code (matched by marker and length), 4-space/tab-indented code and blockquotes are
+  //    quoted material and never declare anything;
+  //  - SERIOUS ISSUES in capitals anywhere on a declaration line makes it SERIOUS (a severe verdict
+  //    always counts, even when the line also quotes a planted CLEAN); otherwise the value must
+  //    START the remainder (any case) and be the only value written in capitals. "Verdict: NOT
+  //    CLEAN" declares nothing; "Verdict: CLEAN, no serious issues found" is CLEAN plus prose; an
+  //    echoed "CLEAN | MINOR ISSUES | SERIOUS ISSUES" template line (all three) declares nothing;
+  //  - several declarations resolve to the MOST SEVERE, so planted text cannot outvote the
+  //    reviewer (fail closed); no declaration is UNKNOWN (re-asked or refused), never a guess.
+  // Every pattern is anchored with a single quantifier per position: no ambiguous adjacent
+  // repetition, so a long line of attacker-chosen whitespace cannot stall the event loop.
+  const PREFIX = /^(?:\d{1,3}[.)])?[-+*_#|•\s]*/;
+  const LABEL = /^(?:(?:final|overall)\s)?verdict\b/i;
+  const SEPARATOR = /^[*_\s]*(?:[:\-–—=|]|is\b)?[*_`"'“”\s|]*/i;
+  const START = /^(serious issues|minor issues|clean)\b/i;
+  const judge = (rest: string): ReviewVerdict | null => {
+    const first = START.exec(rest);
+    // A value that STARTS the remainder as SERIOUS is serious, whatever the line names after it.
+    if (first && first[1].toUpperCase() === 'SERIOUS ISSUES') return 'SERIOUS ISSUES';
+    const caps = (['SERIOUS ISSUES', 'MINOR ISSUES', 'CLEAN'] as const).filter((v) => rest.includes(v));
+    if (caps.length === 3) return null; // an echoed template line
+    if (caps.includes('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
+    if (!first) return null;
+    const value = first[1].toUpperCase() as ReviewVerdict;
+    if (value === 'SERIOUS ISSUES') return value;
+    return caps.every((v) => v === value) ? value : null;
+  };
+  const declared: ReviewVerdict[] = [];
+  // Severity SIGNALS: a line outside any declaration that pairs "verdict" (on it, or on the line
+  // before it) with "serious" or "minor", in ANY region (fenced, indented, quoted, HTML). The parse
+  // only sees the shapes it knows, so a reviewer's real verdict in another shape ("My verdict:
+  // SERIOUS ISSUES", "<summary>Verdict: SERIOUS ISSUES</summary>", "## Verdict" then "> SERIOUS
+  // ISSUES") would otherwise leave a planted bare "Verdict: CLEAN" as the only declaration: a
+  // downgrade (second review round, 2026-11-17). A signal never PRODUCES a verdict; it only keeps a
+  // milder one from being read (UNKNOWN: re-asked, then refused).
+  const signals = { serious: false, minor: false };
+  let prevHadVerdict = false;
+  const signal = (written: string, isDeclaration: boolean): void => {
+    const line = written.replace(/[*_`]/g, '');
+    const hasVerdict = /verdict/i.test(line);
+    // An echoed answer template names every value and signals nothing.
+    // Only the exact echoed instruction ("CLEAN, MINOR ISSUES, or SERIOUS ISSUES") is exempt; a
+    // verdict line that merely names all three values still signals.
+    const template = /CLEAN,\s?MINOR ISSUES,?\s?or\s?SERIOUS ISSUES/.test(line);
+    if (!isDeclaration && !template && (hasVerdict || prevHadVerdict)) {
+      if (/serious/i.test(line)) signals.serious = true;
+      if (/minor/i.test(line)) signals.minor = true;
+    }
+    // Only a verdict line that declared nothing (a heading, an unknown shape) carries over to the
+    // next line: "Verdict: CLEAN" followed by "No serious issues found." stays CLEAN.
+    if (line.trim()) prevHadVerdict = hasVerdict && !isDeclaration && !template;
+  };
+  let fence: { ch: string; len: number } | null = null;
+  let htmlComment = false;
+  let headingPending = false;
+  for (const raw of text.replace(/\r/g, '').replace(/\u00a0/g, ' ').split('\n')) {
+    const line = raw.trim();
+    const marker = /^(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      signal(raw, false);
+      if (marker && marker[1][0] === fence.ch && marker[1].length >= fence.len && line.slice(marker[1].length).trim() === '') fence = null;
+      continue;
+    }
+    if (htmlComment) { signal(raw, false); if (line.includes('-->')) htmlComment = false; continue; }
+    if (marker) { signal(raw, false); fence = { ch: marker[1][0], len: marker[1].length }; headingPending = false; continue; }
+    if (line.startsWith('<!--')) { signal(raw, false); if (!line.includes('-->')) htmlComment = true; headingPending = false; continue; }
+    // Indented code, blockquotes and HTML are quoted material: never a declaration.
+    if (/^( {4}|\t)/.test(raw) || line.startsWith('>') || line.startsWith('<')) { signal(raw, false); headingPending = false; continue; }
+    if (!line) continue;
+    // Emphasis and code marks are removed before a line is judged ("SERI**OUS** ISSUES"); the fence,
+    // indent and quote checks above read the line as written.
+    // A line that opens (after list and emphasis marks) with a quote mark or backtick is quoting.
+    if (/^[`"'\u201c\u2018]/.test(line.slice(PREFIX.exec(line)![0].length))) { signal(raw, false); headingPending = false; continue; }
+    const plain = line.replace(/[*_`]/g, '');
+    const body = plain.slice(PREFIX.exec(plain)![0].length);
+    const label = LABEL.exec(body);
+    if (label) {
+      const after = body.slice(label[0].length);
+      const rest = after.slice(SEPARATOR.exec(after)![0].length);
+      const v = judge(rest);
+      signal(raw, v !== null);
+      if (v) { declared.push(v); headingPending = false; continue; }
+      // A bare label (nothing but decoration after it) is a heading: the value is on the next line.
+      headingPending = /^[*_:\s#|]*$/.test(after);
+      continue;
+    }
+    if (headingPending) {
+      const v = judge(body.replace(/^[*_`"'\s]*/, ''));
+      signal(raw, v !== null);
+      if (v) declared.push(v);
+      headingPending = false;
+      continue;
+    }
+    signal(raw, false);
+  }
+  // A fence or comment still open at the end may have swallowed the reviewer's real verdict.
+  const ambiguous = fence !== null || htmlComment;
+  if (declared.includes('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
+  if (ambiguous || signals.serious) return 'UNKNOWN';
+  if (declared.includes('MINOR ISSUES')) return 'MINOR ISSUES';
+  if (signals.minor) return 'UNKNOWN';
+  if (declared.includes('CLEAN')) return 'CLEAN';
   return 'UNKNOWN';
 }
 
