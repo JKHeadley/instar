@@ -119,6 +119,7 @@ export async function runInstallFlow(options: RunInstallFlowOptions): Promise<In
         state: state.id,
         instruction: result.instruction,
         ...(result.loginPid !== undefined ? { loginPid: result.loginPid, loginStamp: result.loginStamp } : {}),
+        ...(result.accounts ? { accounts: result.accounts } : {}),
       };
       io.print(`  ${result.instruction}`);
       return stop('awaiting-person');
