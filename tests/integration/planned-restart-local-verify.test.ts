@@ -96,6 +96,110 @@ describe('planned restart during a live local verification', () => {
     }
   }, 15_000);
 
+  it('holds the request across the gap between the child exiting and the service handling that exit, so a finished green run is recorded (2026-11-19: 39.6 minutes lost)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-verify-gap-integration-'));
+    const stateDir = path.join(dir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: null,
+      reason: 'green', updatedAt: new Date().toISOString(),
+    }));
+    let child: ChildProcess | null = null;
+    let resultPath = '';
+    // The child really exits; the service hears of it only when `deliverExit` is called.
+    let childGone: Promise<void> = Promise.resolve();
+    let deliverExit: () => void = () => {};
+    const seams: LocalVerifyServiceSeams = {
+      prView: async (pr) => pr === 1 ? view('a') : null,
+      isPrOpen: async () => true,
+      spawnRun: (a) => {
+        resultPath = a.args[a.args.indexOf('--result') + 1];
+        const spawned = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+        child = spawned;
+        let exit: { status: number | null; signal: string | null } = { status: null, signal: null };
+        childGone = new Promise((resolve) => spawned.once('exit', (status, signal) => { exit = { status, signal }; resolve(); }));
+        return { pid: spawned.pid!, exited: new Promise((resolve) => { deliverExit = () => resolve(exit); }) };
+      },
+      isGroupAlive: (pid) => child !== null && child.pid === pid && child.exitCode === null && child.signalCode === null,
+      killGroup: (_pid, signal) => { child?.kill(signal); },
+      readProcessArgs: async () => null,
+      foreignSuiteHolders: () => [],
+      suiteCapacity: () => 1,
+      setSuitePriority: () => {},
+      setTimer: () => {},
+    };
+    const service = new LocalVerifyService({
+      repo: 'JKHeadley/instar', stateDir, agentHome: dir, expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
+      verifierVersion: '1.0.0', nodePath: process.execPath, mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
+      remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'm1', nodeVersion: process.version,
+      protectedList: ['.github/'], baseEnv: { PATH: process.env.PATH ?? '' },
+    }, seams);
+    const supervisor = new ServerSupervisor({ projectDir: dir, projectName: 'test', port: 9876, stateDir });
+    const restart = vi.spyOn(supervisor, 'performGracefulRestart').mockResolvedValue(true);
+    const checkRestart = () => (supervisor as unknown as { checkRestartRequest(): void }).checkRestartRequest();
+    const flagPath = path.join(stateDir, 'state', 'restart-requested.json');
+    const markerPath = path.join(stateDir, 'state', 'local-verify', 'inflight.json');
+    const exitSeen = path.join(stateDir, 'state', 'local-verify', 'inflight-exit-seen.json');
+    const auditEvents = () => fs.readFileSync(path.join(stateDir, 'logs', 'local-verify.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => (JSON.parse(l) as { event: string }).event);
+    try {
+      await service.request(1);
+      expect(child).not.toBeNull();
+      const pid = child!.pid!;
+      fs.writeFileSync(flagPath, JSON.stringify({
+        requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        requestedBy: 'update', plannedRestart: true,
+      }));
+      checkRestart();
+      expect(restart).not.toHaveBeenCalled();
+
+      // The run finishes green: its result is on disk and its child exits. The service has not handled the exit.
+      const at = new Date().toISOString();
+      fs.writeFileSync(resultPath, JSON.stringify({
+        kind: 'record', reasons: [], overlaps: [], keptWorktree: null,
+        record: {
+          repo: 'JKHeadley/instar', pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', mergeTree: sha('d'),
+          lanes: [{ name: 'unit', gating: true, files: 1, tests: 3, passed: 3, failed: 0, skipped: 0, todo: 0, seconds: 1 }],
+          nodeVersion: 'v24', machineId: 'm1', startedAt: at, finishedAt: at, outcome: 'success',
+          harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false,
+          verifierVersion: '1.0.0', policyHash: computePolicyHash(),
+        },
+      }));
+      child!.kill('SIGTERM');
+      await childGone;
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(fs.existsSync(markerPath)).toBe(true);
+
+      // The supervisor polls inside the gap (twice): the request stays, nothing restarts.
+      checkRestart();
+      checkRestart();
+      expect(restart).not.toHaveBeenCalled();
+      expect(fs.existsSync(flagPath)).toBe(true);
+      expect(fs.existsSync(exitSeen)).toBe(true);
+      expect(service.getRecord(1, sha('a'), 'main')).toBeNull();
+
+      // The exit is handled: the green result becomes a record through the ordinary exit path.
+      deliverExit();
+      for (let i = 0; i < 40 && fs.existsSync(markerPath); i++) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(fs.existsSync(markerPath)).toBe(false);
+      expect(fs.existsSync(exitSeen)).toBe(false);
+      expect(service.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'success' });
+      expect(auditEvents()).not.toContain('interrupted');
+      expect(auditEvents()).not.toContain('cancel');
+
+      // With the marker gone the supervisor takes the restart.
+      checkRestart();
+      expect(restart).toHaveBeenCalledOnce();
+      expect(fs.existsSync(flagPath)).toBe(false);
+    } finally {
+      deliverExit();
+      service.shutdown();
+      const leftover = child as ChildProcess | null;
+      if (leftover && leftover.exitCode === null && leftover.signalCode === null) leftover.kill('SIGKILL');
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'planned-restart-local-verify.test.ts' });
+      vi.restoreAllMocks();
+    }
+  }, 15_000);
+
   it('keeps the request pending for an accepted peer attempt and consumes it once the record imports', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-peer-integration-'));
     const stateDir = path.join(dir, '.instar');

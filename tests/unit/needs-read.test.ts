@@ -2,10 +2,12 @@
  * The Needs-you read (docs/specs/work-front-doors.md decision 2, §7 stage 1): one server answer built
  * from exactly what Home counts, filtered per viewer, honest about what it could not check.
  */
+import express from 'express';
+import request from 'supertest';
 import path from 'node:path';
 import { summarizeHealth } from '../../src/monitoring/healthIssues.js';
 import { describe, it, expect } from 'vitest';
-import { needsViewer, teamMayReadBoard, NeedsCanary, NEEDS_CANARY_MISSES_TO_NOTICE, createNeedsComposer, consoleResult, NEED_SOURCE_LABELS, NEED_SOURCE_POSTURE, resolveConsoleDir, NEEDS_MAX_ITEMS, type NeedsSelfRead } from '../../src/server/needsRoutes.js';
+import { mountNeedsRoutes, needsViewer, teamMayReadBoard, NeedsCanary, NEEDS_CANARY_MISSES_TO_NOTICE, createNeedsComposer, consoleResult, NEED_SOURCE_LABELS, NEED_SOURCE_POSTURE, resolveConsoleDir, NEEDS_MAX_ITEMS, type NeedsSelfRead } from '../../src/server/needsRoutes.js';
 
 const CONSOLE = path.resolve(__dirname, '../../dashboard/console');
 const NOW = Date.parse('2026-11-15T05:00:00Z');
@@ -82,6 +84,30 @@ describe('needs read: the owner', () => {
     const a = await composer({ '/attention?scope=pool&status=OPEN': { status: 0, body: null } }).owner();
     expect(a.complete).toBe(false);
     expect(a.couldNotCheck).toContain('the attention queue');
+  });
+
+  it('a Chief of Staff wait and its wait card are one item that opens the card, counted once (needs-one-list)', async () => {
+    const cos = { status: 200, body: { lease: { live: true, expiresAt: iso(60 * 24 * 5) }, projects: [
+      { conversationKey: 'telegram:134088', title: 'Instar App', lastVerdict: 'waiting-on-user' },
+      { conversationKey: 'telegram:555', title: 'No card yet', lastVerdict: 'waiting-on-user' },
+    ] } };
+    const wb = board([]);
+    wb.lanes[0].cards = [{ id: 'wc_a02a192893e38e60', title: 'Instar App looks done and needs your OK', needLine: 'Yours to do', lane: 'waiting-on-you', status: 'with-person', covers: ['cos:waiting:telegram:134088'], serverOwned: true, createdAt: iso(-30) } as never];
+    const a = await composer({
+      '/attention?scope=pool&status=OPEN': attention([]), '/commitments?scope=mesh': { status: 200, body: { commitments: [] } },
+      '/chief-of-staff': cos, '/work-board': { status: 200, body: wb },
+    }).owner();
+    expect(a.count).toBe(2);
+    const app = a.items.find((i) => i.id === 'need:cos:waiting:telegram:134088')!;
+    expect(app).toMatchObject({ source: 'chief-of-staff', title: 'Instar App looks done and needs your OK',
+      action: { kind: 'href', href: '#/work/board?card=wc_a02a192893e38e60' },
+      card: { id: 'wc_a02a192893e38e60', href: '#/work/board?card=wc_a02a192893e38e60' },
+      alsoOpens: { href: '#/work/chats?c=telegram%3A134088' } });
+    expect(a.items.find((i) => i.source === 'workBoard')).toBeUndefined();
+    const plain = a.items.find((i) => i.id === 'need:cos:waiting:telegram:555')!;
+    expect(plain).toMatchObject({ title: 'No card yet is waiting on you', action: { kind: 'href', href: '#/work/chats?c=telegram%3A555' } });
+    expect(plain.card).toBeUndefined();
+    expect(plain.alsoOpens).toBeUndefined();
   });
 
   it('carries queue items, work cards and promises, each once, with an action and a reason', async () => {
@@ -167,6 +193,56 @@ describe('needs read: the owner', () => {
     expect(a.items).toHaveLength(NEEDS_MAX_ITEMS);
     expect(a.count).toBe(NEEDS_MAX_ITEMS + 5);
     expect(a.truncated).toBe(true);
+  });
+});
+
+describe('owner page navigation', () => {
+  it('shares the first page build and rechecks the ordered list for each continuation', async () => {
+    const many = Array.from({ length: 205 }, (_, i) => ({ id: `x${i}`, topicId: 1000 + i, status: 'OPEN', priority: 'HIGH', category: 'decision', title: `Decide ${i}`, updatedAt: iso(-i) }));
+    const source = '/attention?scope=pool&status=OPEN';
+    const seen: string[] = [];
+    const app = express();
+    const now = { value: NOW };
+    const canary = new NeedsCanary({ read: async (url) => {
+      const response = await request(app).get(url);
+      expect(response.body.items).toHaveLength(100);
+      expect(response.body.count).toBe(206);
+      return { status: response.status, body: response.body };
+    }, notice: () => {} });
+    mountNeedsRoutes(app, { read: reader({ [source]: attention(many) }, seen), bearerOk: () => true,
+      boardFor: () => { throw new Error('unexpected team read'); }, agentName: () => 'Echo', machineId: () => 'm1', now: () => now.value, canary });
+    const get = async (cursor?: string) => request(app).get('/needs').query(cursor === undefined ? {} : { cursor });
+    const [a, b] = await Promise.all([get(), get()]);
+    expect(a.body).toEqual(b.body);
+    expect(a.body).toMatchObject({ count: 205, continuation: { start: 0, previousCursor: null } });
+    expect(seen.filter((p) => p === source)).toHaveLength(1);
+    const malformed = await get('invalid');
+    expect(malformed.status).toBe(400);
+    expect(seen.filter((p) => p === source)).toHaveLength(1);
+    const second = await get(a.body.continuation.nextCursor);
+    const third = await get(second.body.continuation.nextCursor);
+    expect(third.body).toMatchObject({ count: 205, continuation: { start: 200, nextCursor: null } });
+    expect(third.body.items).toHaveLength(5);
+    expect(new Set([...a.body.items, ...second.body.items, ...third.body.items].map((item) => item.id)).size).toBe(205);
+    expect((await get(third.body.continuation.previousCursor)).body.items).toEqual(second.body.items);
+    expect((await get(second.body.continuation.previousCursor)).body.items).toEqual(a.body.items);
+    expect(seen.filter((p) => p === source)).toHaveLength(5);
+    expect(await canary.tick()).toBe(true);
+    expect((await get()).body.items).toEqual(a.body.items);
+    const original = a.body.items[0];
+    expect(original.action).toEqual({ kind: 'topic', topicId: 1000 });
+    many[0].topicId = 9001;
+    const stale = await get(a.body.continuation.nextCursor);
+    expect(stale.status).toBe(409);
+    const refreshed = await get();
+    expect(refreshed.body.count).toBe(205);
+    expect(refreshed.body.items[0]).toMatchObject({ id: original.id, action: { kind: 'topic', topicId: 9001 } });
+    expect(stale.body).toEqual({ error: 'needs-cursor-stale' });
+    many.splice(5);
+    now.value += 10_000;
+    const small = await get();
+    expect(small.body).toMatchObject({ count: 5, truncated: false });
+    expect(small.body).not.toHaveProperty('continuation');
   });
 });
 

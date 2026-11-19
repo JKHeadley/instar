@@ -62,7 +62,9 @@ export function isStorable(path, init, input) {
   if (headerOf(init, 'X-Instar-Operator-Session', input)) return false;
   // Saved copies belong to the sign-in that read them: no bearer, nothing saved.
   if (!bearerOf(init, input)) return false;
-  const bare = path.split('?')[0];
+  const [bare, query] = path.split('?');
+  // A continuation must check the viewer and the current list every time it opens.
+  if (bare === '/needs' && new URLSearchParams(query).has('cursor')) return false;
   return STORED.some((re) => re.test(bare));
 }
 

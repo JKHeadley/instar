@@ -141,6 +141,30 @@ describe('restart request attribution', () => {
     expect(readLastRestartRequest(stateDir)).toEqual(rec);
   });
 
+  it('records plannedRestart and bypassHolds exactly as the request wrote them; anything but a boolean is null', () => {
+    const at = new Date('2026-11-19T01:18:00Z');
+    expect(recordRestartRequest(stateDir, { requestedBy: 'update', plannedRestart: true }, 'supervisor', at)).toMatchObject({ plannedRestart: true, bypassHolds: null });
+    expect(recordRestartRequest(stateDir, { requestedBy: 'operator', plannedRestart: true, bypassHolds: true }, 'foreground-watcher', at)).toMatchObject({ plannedRestart: true, bypassHolds: true });
+    expect(readLastRestartRequest(stateDir)).toMatchObject({ requestedBy: 'operator', plannedRestart: true, bypassHolds: true });
+    expect(recordRestartRequest(stateDir, { requestedBy: 'x', plannedRestart: false, bypassHolds: false }, 'supervisor', at)).toMatchObject({ plannedRestart: false, bypassHolds: false });
+    expect(recordRestartRequest(stateDir, { requestedBy: 'by-hand' }, 'supervisor', at)).toMatchObject({ plannedRestart: null, bypassHolds: null });
+    for (const junk of ['true', 1, {}, null]) {
+      expect(recordRestartRequest(stateDir, { requestedBy: 'x', plannedRestart: junk, bypassHolds: junk }, 'supervisor', at)).toMatchObject({ plannedRestart: null, bypassHolds: null });
+    }
+    expect(recordRestartRequest(stateDir, null, 'supervisor', at)).toMatchObject({ plannedRestart: null, bypassHolds: null });
+  });
+
+  it('a record written before these fields existed still reads back, without them', () => {
+    fs.mkdirSync(path.dirname(restartRequestsLogPath(stateDir)), { recursive: true });
+    fs.appendFileSync(restartRequestsLogPath(stateDir), JSON.stringify({
+      at: '2026-11-16T19:42:12.000Z', consumer: 'supervisor', requestedBy: 'old', attributed: true, reason: null, targetVersion: null, requestedAt: null, writerPid: null,
+    }) + '\n');
+    const rec = readLastRestartRequest(stateDir);
+    expect(rec).toMatchObject({ requestedBy: 'old' });
+    expect(rec?.plannedRestart).toBeUndefined();
+    expect(rec?.bypassHolds).toBeUndefined();
+  });
+
   it('reads the latest of several records and skips a torn line', () => {
     recordRestartRequest(stateDir, { requestedBy: 'first' }, 'supervisor');
     fs.appendFileSync(restartRequestsLogPath(stateDir), '{"torn":\n');

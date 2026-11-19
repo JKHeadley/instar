@@ -1,4 +1,6 @@
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
+import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
+import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
@@ -1205,6 +1207,12 @@ let _topicProfileWriteSurface: import('../core/topicProfileWriteSurface.js').Top
  *  propose-confirm / switch-now / re-apply-cooldown all share ONE slot per
  *  topic. */
 let _topicProfileConfirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots | null = null;
+/**
+ * identity-security-creation-provenance v5: may the owner's yes in conversation A apply a confirmed
+ * change to conversation B (the propose lane's confirmIn)? Re-checked when the yes arrives. Set where
+ * config and the stores are wired; null means "never", so a cross-conversation confirm is refused.
+ */
+let _crossTopicEligibility: ((telegram: TelegramAdapter, confirmerUid: string, destKey: string, sourceKey: string) => { ok: true } | { ok: false; reason: string }) | null = null;
 /** §5.2(d) legacy respawn hook — bound in wireTelegramCallbacks (it needs the
  *  telegram adapter + session manager in scope). Today's exact /route
  *  behavior: drop the resume UUID, kill, CONTINUATION respawn. */
@@ -2178,6 +2186,10 @@ function wireTelegramCallbacks(
   claudePath?: string,
   topicMemory?: TopicMemory,
 ): void {
+  // identity-security-creation-provenance v5: a later message into a topic disarms a cross-topic
+  // proposal waiting there (late-bound: the slots are created with the topic-profile surface).
+  telegram.onTopicMessageSent = (topicId, messageId) => { _topicProfileConfirmSlots?.noteOutbound(String(topicId), messageId); };
+
   // /interrupt — send Escape key to a tmux session
   telegram.onInterruptSession = async (sessionName: string): Promise<boolean> => {
     try {
@@ -2839,6 +2851,8 @@ async function handleProfileConfirm(
     // re-issue it and record the fresh ordering anchor (§10.1(c)).
     const slot = slots.peek(topicKey);
     if (slot) {
+      // identity-security-creation-provenance v5: the re-sent echo must not disarm its own slot.
+      slots.clearEchoMessageId(topicKey);
       try {
         const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Please confirm this version:\n${slot.echoText}`));
         if (!sent.recorded) slots.recordEchoMessageId(topicKey, sent.messageId);
@@ -2852,6 +2866,21 @@ async function handleProfileConfirm(
       topicKey, principal, origin: 'propose-confirm', confirmed: true, discloseInReply: true,
     });
     await send(result.reply);
+    return true;
+  }
+  if (armed.kind === 'propose-confirm' && armed.targetTopicKey && armed.targetTopicKey !== topicKey) {
+    // identity-security-creation-provenance v5: the owner confirmed here a change to ANOTHER
+    // conversation. Re-checked now (owner, this conversation unshared, the target, the live switch).
+    const out = await applyCrossTopicConfirm({
+      sourceTopicKey: topicKey,
+      targetTopicKey: armed.targetTopicKey,
+      patch: armed.patch as Record<string, unknown>,
+      agentComposed: armed.origin === 'agent-composed',
+      principal,
+      eligibility: (uid, dest, src) => (_crossTopicEligibility ? _crossTopicEligibility(telegram, uid, dest, src) : { ok: false, reason: 'switch-off' }),
+      applyWrite: (req) => surface.applyWrite(req as Parameters<typeof surface.applyWrite>[0]),
+    });
+    await send(out.reply);
     return true;
   }
   if (armed.kind === 'propose-confirm') {
@@ -8200,6 +8229,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         // bypass BOTH knobs inside the surface itself.
         const { TopicProfileWriteSurface } = await import('../core/topicProfileWriteSurface.js');
         const { ProfileConfirmSlots } = await import('../core/topicProfileIngress.js');
+        // identity-security-creation-provenance v5: the confirm-time re-check for a cross-conversation yes.
+        _crossTopicEligibility = (tg, confirmerUid, destKey, sourceKey) => {
+          // The switch is re-read LIVE at the yes, so turning it off between proposal and yes stops the write.
+          const switchLive = liveConfig.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined);
+          if (!resolveDevAgentGate(switchLive, config as { developmentAgent?: boolean })) return { ok: false, reason: 'switch-off' };
+          const store = _agentServerRef?.getTopicOperatorStore() ?? null;
+          const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
+          const owner = tg?.getOwnerUserId();
+          return crossTopicEligible({
+            ownerUid: typeof owner === 'number' && owner > 0 ? String(owner) : null,
+            confirmerUid,
+            destKnown: dest !== null && !!store && !!tg && tg.getTopicName(dest) !== null,
+            destBinding: dest !== null ? store?.getBinding(dest) ?? null : null,
+            destVerifiedUid: dest !== null ? store?.getOperator(dest)?.uid ?? null : null,
+            destConfined: dest !== null ? new TeamConfinement(config.stateDir).isConfined(`telegram:${dest}`) : null,
+            sourceConfined: new TeamConfinement(config.stateDir).isConfined(`telegram:${sourceKey}`),
+          });
+        };
         _topicProfileConfirmSlots = new ProfileConfirmSlots({
           ttlMs: () => topicProfilesCfg?.switchNowConfirmTtlMs ?? 300_000,
           audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
@@ -21171,12 +21218,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Wire sentinel into Telegram message flow — intercepts BEFORE session routing.
     // Must be wired AFTER sentinel is created but BEFORE server starts.
     if (sentinel && telegram) {
-      telegram.onSentinelIntercept = async (text: string, topicId: number) => {
+      telegram.onSentinelIntercept = async (text: string, topicId: number, messageKey?: string) => {
         // Operator-channel-sacred: route the decision through the single disposition
         // helper so a 'pause' consumes ONLY on a deterministic match — a bare-LLM or
         // capacity-shed 'pause' routes THROUGH (returns null), never consuming the
         // operator's message. A long-form genuine stop is rescued to a kill.
-        const decision = await sentinel.decideInboundDisposition(text, topicId);
+        const decision = await sentinel.decideInboundDisposition(text, topicId, messageKey);
         if (decision.disposition === 'kill') {
           return { category: 'emergency-stop', action: { type: 'kill-session' }, reason: decision.reason };
         }
@@ -25208,6 +25255,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       // session with one that has room, or refuse when none does. Same switch
       // and walled predicate as the rescue; no Codex accounts → unchanged.
       sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
+      // A Codex conversation moved onto an account's home is looked for in every
+      // Codex account home, so its resume finds the conversation there.
+      sessionManager.setCodexAccountHomesResolver(() => subscriptionPool.list()
+          .filter((a) => a.framework === CODEX_CLI_FRAMEWORK && typeof a.configHome === 'string' && a.configHome.length > 0)
+        .map((a) => a.configHome));
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
@@ -26847,6 +26899,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Both the coordinator and a peer read the same live lane switches.
           // A peer can run PR verifies without a source checkout.
           wiring.wireLocalVerifySwitches(localVerifyService, liveConfig);
+          // Queue controls: a lease move that leaves holds behind is announced to the session that
+          // operates the line (monitoring.localVerify.operatorSession), through the agent-message sender.
+          wiring.wireLocalVerifyOperatorNotice(localVerifyService, {
+            liveConfig,
+            send: (session, subject, body) => messageRouter.send(
+              { agent: config.projectName, session: 'server', machine: lvMachineId },
+              { agent: config.projectName, session, machine: 'local' },
+              'alert', 'high', subject, body,
+            ),
+          });
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
@@ -29523,8 +29585,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const appOwnerReceiver = createAppOwnerReceiver({
           service: () => _appConversationService,
           storedEpoch: (rk) => ownReg.read(rk)?.ownershipEpoch ?? null,
-          classify: sentinel ? async (text, alias) => {
-            const d = await sentinel.decideInboundDisposition(text, alias);
+          classify: sentinel ? async (text, alias, messageKey) => {
+            const d = await sentinel.decideInboundDisposition(text, alias, messageKey);
             return d.disposition === 'kill' || d.disposition === 'pause' ? d.disposition : 'deliver';
           } : undefined,
           markInjected: (session, messageId) => _inboundQueue?.markRemoteInjected(session, messageId),

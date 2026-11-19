@@ -132,8 +132,8 @@ export function lineIdFor(recordId: string): string {
 
 export function newCardId(): string { return `wc_${randomBytes(8).toString('hex')}`; }
 
-const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror'] as const;
-const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror'] as const;
+const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror', 'brief'] as const;
+const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
 
 /**
  * The Needs-you item keys a card may say it is about (work-board-cards-appear §3): sources whose keys are
@@ -362,6 +362,11 @@ export class WorkBoardService {
     const src = fields.source as Record<string, unknown> | undefined;
     if (src) { push('source.conversationKey', src.conversationKey); push('source.messageId', src.messageId); }
     push('projectKey', fields.projectKey);
+    const brief = fields.brief as Record<string, unknown> | null | undefined;
+    if (brief && typeof brief === 'object') {
+      push('brief.ask', brief.ask); push('brief.goal', brief.goal); push('brief.chiefSaid', brief.chiefSaid);
+      if (Array.isArray(brief.checks)) (brief.checks as Array<Record<string, unknown>>).forEach((c, i) => push(`brief.checks[${i}].text`, c?.text));
+    }
     if (Array.isArray(fields.attachmentIds)) (fields.attachmentIds as unknown[]).forEach((a, i) => push(`attachmentIds[${i}]`, a));
     return out;
   }
@@ -491,6 +496,7 @@ export class WorkBoardService {
     const server = p.kind === 'agent' && p.server === true;
     if (card && isServerOwnedCard(card) && !server) return refuse(409, 'server-owned-card', { message: 'The Chief of Staff writes this card itself. Act on the project in its own conversation; the card follows.' });
     if (fields.mirror !== undefined && !server) return refuse(400, 'mirror-not-allowed');
+    if (fields.brief !== undefined && !server) return refuse(400, 'brief-not-allowed');
     if (fields.covers !== undefined) {
       if (!Array.isArray(fields.covers)) return refuse(400, 'covers-not-allowed');
       const allowed = server ? [...COVERABLE_PREFIXES, ...SERVER_COVERABLE_PREFIXES] : COVERABLE_PREFIXES;

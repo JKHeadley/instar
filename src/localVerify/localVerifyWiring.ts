@@ -52,8 +52,26 @@ export interface LocalVerifyConfigBlock {
    * days (default false; docs/specs/local-verify-import-related-rerun.md). Read live at each run start.
    */
   importRelatedRerun?: boolean;
+  /**
+   * `off` (default), `on` or `alternate`: on this machine, each lane of a pull request's verify
+   * runs a small first part before the rest (the change's own test files, the files it failed on
+   * last time, and the coordinator's likely-failing list), so a failure in one of them ends the
+   * verify within a couple of minutes. `alternate` is the trial setting: half of the pull
+   * requests (docs/specs/local-verify-likely-failing-first.md). Read live at each run start.
+   */
+  likelyFailingFirst?: 'off' | 'on' | 'alternate';
   /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
   peers?: Array<{ machineId: string; url: string }>;
+  /**
+   * Operator controls on the queue: hold a change, and move a change to the front, without a
+   * restart (default false; docs/specs/local-verify-queue-controls.md). Read live.
+   */
+  queueControls?: boolean;
+  /**
+   * The session that operates the line (a session name). A lease move that leaves holds behind is
+   * announced to it as an agent message; absent ⇒ an attention item instead. Read live.
+   */
+  operatorSession?: string;
   /** macOS: run each verify as an Interactive launchd job so it uses the performance cores (default true). */
   performanceCores?: boolean;
 }
@@ -86,6 +104,17 @@ export function localVerifyAttentionItem(key: string, detail: Record<string, unk
       summary: detail.reason === 'interrupted'
         ? `Server restarts killed this PR's check ${n} times before it could finish (waiting ${waited} min). The merge line is stuck behind it.`
         : `This PR has waited ${waited} min for its check without finishing (killed by restarts ${n} times). The merge line is stuck behind it.`,
+    };
+  }
+  // Queue controls (docs/specs/local-verify-queue-controls.md): each id carries its time, so each event is one item.
+  const operatorTitle = key.startsWith('local-verify:operator-hold-due:') ? 'Local Verify: a held change is past its expected release'
+    : key.startsWith('local-verify:operator-file-unreadable:') ? 'Local Verify: the list of held changes could not be read'
+      : key.startsWith('local-verify:operator-lease-moved:') ? 'Local Verify: held changes stayed on a machine that no longer runs the line' : null;
+  if (operatorTitle) {
+    return {
+      id, mode: 'create', title: operatorTitle,
+      summary: String(typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
+      priority: key.startsWith('local-verify:operator-file-unreadable:') ? 'HIGH' : 'MEDIUM',
     };
   }
   return {
@@ -582,11 +611,13 @@ export function wireLocalVerifyPeers(
  * The live switches the server reads at each decision (absent ⇒ on):
  * `monitoring.localVerify.mainRedHold` (CMT-1033), `monitoring.localVerify.failFast` and
  * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
- * `monitoring.localVerify.importRelatedRerun` is the exception: absent ⇒ OFF, on only by a real `true`.
+ * `monitoring.localVerify.importRelatedRerun` and `monitoring.localVerify.queueControls` are the
+ * exceptions: absent ⇒ OFF, on only by a real `true`.
  */
 export function wireLocalVerifySwitches(
-  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled'>,
-  liveConfig: { get<T>(key: string, fallback: T): T },
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled' | 'setQueueControlsEnabled'>
+    & Partial<Pick<LocalVerifyService, 'setLikelyFailingFirst' | 'setLikelyFailingFirstOff'>>,
+  liveConfig: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
   svc.setFailFastEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.failFast', true) !== false);
@@ -595,6 +626,40 @@ export function wireLocalVerifySwitches(
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
   // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
   svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
+  // Off unless set: no hold or front route answers and stored choices are not applied (docs/specs/local-verify-queue-controls.md).
+  svc.setQueueControlsEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.queueControls', false) === true);
+  // Off unless set to `on` or `alternate` on THIS machine: each lane then runs a small first part
+  // before the rest (docs/specs/local-verify-likely-failing-first.md). Read at the start of each verify.
+  svc.setLikelyFailingFirst?.(() => liveConfig.get<unknown>('monitoring.localVerify.likelyFailingFirst', 'off'));
+  // The verdict check's brake: a difference between a verify and its comparison run writes `off` here.
+  const set = liveConfig.set?.bind(liveConfig);
+  svc.setLikelyFailingFirstOff?.(set ? () => set('monitoring.localVerify.likelyFailingFirst', 'off') : null);
+}
+
+/**
+ * Queue controls: how a lease-loss notice reaches the session that operates the line (spec
+ * docs/specs/local-verify-queue-controls.md, Multi-machine posture). The session's name is
+ * `monitoring.localVerify.operatorSession`, read live; absent or empty means not set, and the
+ * service then raises an attention item instead. `send` is the server's agent-message sender
+ * (the one POST /messages/send uses); only a `delivered` (or `read`) phase counts as sent.
+ */
+export function wireLocalVerifyOperatorNotice(
+  svc: Pick<LocalVerifyService, 'setOperatorNotifier'>,
+  o: {
+    liveConfig: { get<T>(key: string, fallback: T): T };
+    send: (session: string, subject: string, body: string) => Promise<{ phase?: string } | null | undefined>;
+  },
+): void {
+  svc.setOperatorNotifier(async ({ subject, body }) => {
+    const raw = o.liveConfig.get<unknown>('monitoring.localVerify.operatorSession', null);
+    const session = typeof raw === 'string' ? raw.trim() : '';
+    if (!session || session.length > 200) return { sent: false, phase: 'no-session-set' };
+    const r = await o.send(session, subject, body);
+    const phase = r && typeof r.phase === 'string' ? r.phase : null;
+    // Sent = the router injected it into the session (`delivered`, or the later `read`). A message
+    // only `queued` for a session that is not running may never be read, so it does not count.
+    return { sent: phase === 'delivered' || phase === 'read', phase };
+  });
 }
 
 /**
