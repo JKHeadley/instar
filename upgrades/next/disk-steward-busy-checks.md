@@ -1,0 +1,26 @@
+<!-- bump: patch -->
+## What Changed
+
+The disk steward's cache cleanup no longer waits forever on a busy agent machine.
+- **npm:** a recent `npm exec` or `npx` now counts as busy only in its first two minutes, while it may be downloading. Install commands still count for 30 minutes. A new check looks at npm's own cache and waits while a file there is being written.
+- **Xcode:** the build-data cleanup no longer treats Xcode's idle indexing service (SourceKit) as a running build.
+
+On the Mac Studio both checks were always on, and an approved cleanup freed nothing while 18 GB of cache waited (fb-eb8372d8-043).
+
+## What to Tell Your User
+
+Nothing to do. When a machine's disk gets full, the automatic cache cleanup can now actually run instead of always waiting.
+
+## Summary of New Capabilities
+
+- npm and Xcode cache cleanup run on busy agent machines, while still waiting for real downloads and builds.
+
+## Evidence
+
+`tests/unit/diskSteward-pruneCategories.test.ts` passes 16 of 16, including the new tests:
+- an `npm exec` Playwright helper at 300 s is not busy, and at 90 s it is;
+- `npm install` counts at 1,500 s but not at 1,900 s;
+- an idle SourceKitService is not an Xcode build, and XCBBuildService is;
+- a tmp entry changed 5 s ago means the cache is being written; one from 3 days ago does not; an unreadable folder counts as busy.
+
+The Studio's live tmp folder had 7 leftovers from Nov 16-17 and one entry being written at that moment.
