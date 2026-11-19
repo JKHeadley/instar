@@ -23,13 +23,13 @@ Nothing is left out. Every test still runs unless the run has already failed, an
 
 ## The safeguards
 
-**The rules for the verdict do not change.** The same tests, the same second chance and the same stopping rule decide. One caveat, stated plainly: a badly written test whose result depends on which other tests ran just before it can change its result when the order changes. That is already true today, and during the trial a sample of runs is repeated the old way to check the answers match.
+**The rules for the verdict do not change.** The same tests, the same second chance and the same stopping rule decide. One caveat, stated plainly: a badly written test whose result depends on which other tests ran just before it can change its result when the order changes. That is already true today. Nothing cheap can prove it never happens, so during the trial each machine keeps a daily list of anything that looks lopsided between the runs with the new order and the runs without, and each item on it must get a written finding within 3 days (the section at the end says why this replaced repeating runs the old way).
 
 **A pass still needs every test.** The first part can end a run early as failed. It can never end one early as passed.
 
 **An unreliable test cannot end a run early.** It gets its second chance first, exactly as today.
 
-**Passing runs must not get slower.** The cost is one extra start-up per group. If a passing run slows by more than a minute, it is switched off.
+**Passing runs must not get slower.** The cost is one extra start-up per group. If passing runs are more than a minute slower on two days in a row, it is switched off.
 
 **It is off until the operator of the test line turns it on,** first on one machine.
 
@@ -48,7 +48,7 @@ The first trial ran for 36 minutes on one machine and switched itself off. The c
 So the second runs are gone. What protects the answer now:
 
 - **The rule that matters is built in and tested:** a run is only ever recorded as passed after every test passed. Running some files first can end a run early only as failed.
-- **Each run writes down one line** about what failed and whether it was in the first part. Once a day the machine lists anything that looks lopsided between the two groups, and any time the main branch went red after a change that had passed with first parts. Each such "suspect" must get a written finding within 3 days; one that is late is shown as overdue. One confirmed case of the order changing an answer ends the trial on both machines.
+- **Each run writes down one line** about what failed and whether it was in the first part. Once a day the machine lists anything that looks lopsided between the two groups, and any time the main branch went red (the full test run on the shared code failed twice after a change was merged into it) following a change that had passed with first parts. Each such "suspect" must get a written finding within 3 days; one that is late is shown as overdue. One confirmed case of the order changing an answer ends the trial on both machines.
 - **Two automatic limits on cost stay:** passing runs more than a minute slower, or runs hitting their time limit more than twice as often, on two days in a row, switch it off.
 
 What this gives up: proof, run by run, that the answer is the same. If a change ever passed wrongly because of the order, it would be noticed the way any wrongly passed change is noticed today: the main branch goes red after it is merged, and someone traces why.
