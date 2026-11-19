@@ -238,6 +238,10 @@ export interface GreenPrSnapshotEntry {
   headRefOid: string;
   /** 'mergeable' | 'code-owner-review' — a code-owned PR waits for GitHub's code-owner review. */
   kind: 'mergeable' | 'code-owner-review';
+  /** code-owner-review only: the PR title, so the owner sees what they are asked to approve (github-approval-from-the-app). */
+  title?: string;
+  /** code-owner-review only: every code-owned path the PR changes. */
+  ownerFiles?: string[];
 }
 
 export interface GreenPrState {
@@ -538,6 +542,14 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   snapshot(): GreenPrState { return this.deps.loadState(); }
+
+  /** The configured repository (`owner/name`): the one every GitHub link and owner approval uses. */
+  get repo(): string { return this.cfg.repo; }
+
+  /** The ownership read `applyHold` uses (author, namespace, not a fork): is this the agent's own PR? */
+  async isOwnPr(pr: number): Promise<boolean> {
+    return (await this.deps.holdEligible(pr)).ok === true;
+  }
 
   configurationView(): {
     ok: boolean;
@@ -891,7 +903,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       }
       if (co.touches && pr.reviewDecision !== 'APPROVED' && co.ownerApproved !== true) {
         // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
-        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
+        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review', title: String(pr.title ?? '').slice(0, 256), ownerFiles: co.files.slice(0, 50) });
         this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });
         await this.refreshAggregate(state, [`PR #${pr.number} changes ${co.files.slice(0, 3).join(', ')} — it waits for your code-owner review on GitHub`]);
         continue;

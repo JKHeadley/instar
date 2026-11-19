@@ -86,7 +86,7 @@ describe('Shipping', () => {
     expect(s.tone).toBe('attn');
     expect(s.tiles.map((t) => [t.key, t.n])).toEqual([['needs', 1], ['testing', 1], ['armed', 1], ['stuck', 0]]);
     expect(s.rows.map((r) => [r.group, r.pr])).toEqual([['needs', 2391], ['testing', 2388], ['armed', 2380], ['held', 2377]]);
-    expect(s.rows[0].sub).toBe('waiting for your code-owner review on GitHub');
+    expect(s.rows[0].sub).toBe('waiting for your approval on GitHub');
     expect(s.rows[0].href).toBe('https://github.com/JKHeadley/instar/pull/2391/files');
     expect(s.rows[1].sub).toBe('1st in line · about 45 min each');
     expect(s.rows[2].stage).toBe('set to merge');

@@ -28,6 +28,37 @@ export function documentDecisionNeedRows(res) {
     d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
 }
 
+const SHA_RE = /^[0-9a-f]{40}$/;
+const prTitleOf = (r) => (r.record && typeof r.record.title === 'string' ? r.record.title.trim() : '');
+
+/**
+ * What a code-owner approval row carries for the phone apps and the console (github-approval-from-the-app.md):
+ * the GitHub link, title and summary, and — only for a watcher `code-owner-review` entry, which has a head —
+ * the head the owner would approve and whether this agent can record the approval here.
+ */
+export function githubFieldsOf(r, watcher) {
+  const rec = r.record || {};
+  const out = { pr: r.pr };
+  if (r.href) out.githubUrl = r.href;
+  const title = prTitleOf(r);
+  if (title) out.prTitle = title;
+  const files = Array.isArray(rec.ownerFiles) ? rec.ownerFiles.filter((f) => typeof f === 'string') : [];
+  if (files.length) {
+    let summary = `Changes ${files.join(', ')}`;
+    if (summary.length > 400) {
+      let shown = [];
+      for (const f of files) { if (`Changes ${[...shown, f].join(', ')}`.length > 360) break; shown.push(f); }
+      summary = `Changes ${shown.join(', ')} and ${files.length - shown.length} more`;
+    }
+    out.prSummary = summary;
+  }
+  const approvable = rec.kind === 'code-owner-review' && typeof rec.headRefOid === 'string' && SHA_RE.test(rec.headRefOid);
+  if (approvable) out.headSha = rec.headRefOid;
+  const oa = watcher && watcher.ok && watcher.data && watcher.data.ownerApproval;
+  out.approveAvailable = Boolean(approvable && oa && oa.available === true);
+  return out;
+}
+
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
 
@@ -93,7 +124,7 @@ export const NEED_SOURCES = [
     } },
   { id: 'shipping-approvals', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => buildShipping({ watcher }, now, {}).rows.filter((r) => r.group === 'needs')
-      .map((r) => row(`pr:${r.pr}`, `Pull request #${r.pr} needs your approval on GitHub`, '', '#/work/development?s=shipping', [`#${r.pr}`, `PR ${r.pr}`])) },
+      .map((r) => ({ ...row(`pr:${r.pr}`, `Pull request #${r.pr} needs your approval on GitHub`, prTitleOf(r), '#/work/development?s=shipping', [`#${r.pr}`, `PR ${r.pr}`]), ...githubFieldsOf(r, watcher) })) },
   // Four reads, on a slower beat, and only where the merge watcher says this is a maintainer's agent.
   { id: 'feedback', page: 'work/development', everyTicks: 4, when: (known) => sourceState(known.merging && known.merging.results && known.merging.results.watcher) === 'ok',
     reads: { readiness: '/feedback-factory/readiness-authorities/proposal', triageProposal: '/feedback-factory/triage/authority/proposal', execute: '/feedback-factory/execute/status', queue: '/feedback-factory/triage/queue' },

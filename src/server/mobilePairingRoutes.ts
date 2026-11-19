@@ -2768,6 +2768,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // the permission switches, and adding accounts joins it). Owner phones only; never named for a team phone.
     // E2E-PAIRING: EXEMPT — rate-bucket name only; the route is covered by the account-sign-in-face-id e2e test
     { method: 'POST', re: /^\/mobile\/accounts\/sign-in\/start$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
+    // Approve a code-owner pull request on GitHub with Face ID (docs/specs/github-approval-from-the-app.md): owner phones
+    // only; the approve records the owner's review, so its own small bucket; the read is the result after a 202.
+    { method: 'POST', re: /^\/mobile\/github\/approvals\/[1-9][0-9]{0,9}\/approve$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'github-approvals' },
+    { method: 'GET', re: /^\/mobile\/github\/approvals\/[1-9][0-9]{0,9}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'github-approval-reads' },
     // Machine care from the app (machine-self-maintenance Part F, CMT-1203): owner phones only; the
     // route refuses the bearer and any other machine's id. Restart only sends the owner's Telegram card.
     { method: 'GET', re: /^\/mobile\/machine-care$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
