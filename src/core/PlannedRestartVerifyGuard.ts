@@ -1,7 +1,9 @@
 /**
  * Cross-process guard for planned server restarts while Local Verify owns a
  * full-suite child. Both consumers read the same durable in-flight marker;
- * a deferred request gets a bounded machine-local proof sidecar.
+ * a deferred request gets a bounded machine-local proof sidecar, and a run whose
+ * child has exited but whose marker is still present gets a short settle window
+ * (see EXIT_SETTLE_RESTART_HOLD_MS).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +16,20 @@ export const VERIFY_RESTART_HOLD_MS = 3 * 60 * 60_000;
 export const PLANNED_RESTART_DELIVERY_MS = VERIFY_RESTART_HOLD_MS + 60 * 60_000;
 const PRE_SPAWN_HOLD_MS = 30_000;
 const FUTURE_CLOCK_SKEW_MS = 5_000;
+/**
+ * How long a planned restart keeps waiting after the run child's pid is gone while the in-flight
+ * marker is still there. The server acts only when its event loop handles the child's exit; then,
+ * in one uninterrupted step, it writes the `settling` merge hold, clears the in-flight marker and
+ * records the result. The window covers the time until that step starts (the marker goes at the
+ * start of the step, and the settling hold is already on disk when it does). Measured gaps were
+ * well under a second, but a restart consumer
+ * that polled inside one saw a dead pid, took the restart, and a finished 39.6-minute run was
+ * thrown away (2026-11-19 01:18Z). 60 seconds is generous for that work on a busy event loop,
+ * and it is the bound that stops a marker left behind by a server that died from holding a
+ * restart: the window is counted from the moment a consumer first sees the pid gone, never
+ * renewed, and it ends at once when the marker is cleared.
+ */
+export const EXIT_SETTLE_RESTART_HOLD_MS = 60_000;
 /**
  * An accepted peer attempt holds until sentAt + this: the peer run ceiling (PEER_LIMITS.maxRunMs,
  * 60 min) plus one poll to import. It was 21 min, from an audit in which runs took 13 min; runs
@@ -53,6 +69,13 @@ export const peerHoldPath = (stateDir: string) => path.join(stateDir, 'state', '
 export const mergeHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'merge-hold.json');
 export const MERGE_SETTLE_RESTART_HOLD_MS = 60_000;
 export const MERGE_HANDOFF_RESTART_HOLD_MS = 10 * 60_000;
+/**
+ * "The pid of this run was first seen gone at T." Written by whichever restart consumer sees it
+ * first (the lifeline's supervisor and the server's own watcher are separate processes, so the
+ * moment has to live in a file, not in memory), keyed by the run's attempt token so it never
+ * applies to another run.
+ */
+export const exitSeenPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'inflight-exit-seen.json');
 const requestKey = (request: PlannedRestartFlag) => crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
 
 function processExists(pid: number): boolean {
@@ -67,7 +90,11 @@ function processExists(pid: number): boolean {
   }
 }
 
-/** Pure decision on a caller-read request; no write or request consumption. */
+/**
+ * The decision on a caller-read request. It never consumes the request. Its one write is the
+ * exit-seen marker, the first time a planned (not bypassed) request finds the run's pid gone
+ * with the in-flight marker still present.
+ */
 export function plannedRestartVerifyState(
   stateDir: string,
   request: PlannedRestartFlag | null,
@@ -95,7 +122,11 @@ export function plannedRestartVerifyState(
   return { pending: true, pendingSinceMs, hold: true, holdUntilMs };
 }
 
-/** When a live local verify child stops holding a restart; null = no live-run hold. */
+/**
+ * When a local verify run stops holding a restart; null = no hold. A live child holds until
+ * startedAt + 3 h. A child that is gone while its marker is still present holds for the settle
+ * window, so the server can record the result and write the merge hold that takes over.
+ */
 function localVerifyHoldUntil(stateDir: string, now: number, pidExists: (pid: number) => boolean): number | null {
   let marker: Record<string, unknown>;
   try {
@@ -110,10 +141,41 @@ function localVerifyHoldUntil(stateDir: string, now: number, pidExists: (pid: nu
   const age = Math.max(0, now - startedAt);
   if (age >= VERIFY_RESTART_HOLD_MS || typeof marker.attemptToken !== 'string' || !marker.attemptToken) return null;
   const pid = marker.pid;
-  const alive = pid === null
-    ? age < PRE_SPAWN_HOLD_MS
-    : typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 && pidExists(pid);
-  return alive ? startedAt + VERIFY_RESTART_HOLD_MS : null;
+  const bound = startedAt + VERIFY_RESTART_HOLD_MS;
+  if (pid === null) return age < PRE_SPAWN_HOLD_MS ? bound : null;
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (pidExists(pid)) return bound;
+  const settleUntil = exitSettleHoldUntil(stateDir, marker.attemptToken, now);
+  return settleUntil === null ? null : Math.min(settleUntil, bound);
+}
+
+/**
+ * The end of the settle window for a run whose pid is gone; null = the window is over (or could
+ * not be bounded). The first sighting is written to a file both consumers read. A sighting that
+ * cannot be written never holds: an unrecorded window would start again at every poll.
+ */
+function exitSettleHoldUntil(stateDir: string, attemptToken: string, now: number): number | null {
+  try {
+    const seen = JSON.parse(fs.readFileSync(exitSeenPath(stateDir), 'utf8')) as { v?: unknown; attemptToken?: unknown; seenAt?: unknown } | null;
+    if (seen && typeof seen === 'object' && seen.v === 1 && seen.attemptToken === attemptToken) {
+      const seenAt = seen.seenAt;
+      // A sighting for this run already exists: its clock decides, and it is never restarted.
+      if (typeof seenAt !== 'number' || !Number.isFinite(seenAt) || seenAt > now + FUTURE_CLOCK_SKEW_MS) return null;
+      const until = seenAt + EXIT_SETTLE_RESTART_HOLD_MS;
+      return until > now ? until : null;
+    }
+  } catch {
+    // @silent-fallback-ok — no readable sighting yet: this is the first one, written below.
+  }
+  try {
+    SafeFsExecutor.atomicWriteJsonSync(exitSeenPath(stateDir), { v: 1, attemptToken, seenAt: now },
+      { operation: 'src/core/PlannedRestartVerifyGuard.ts:exitSettleHoldUntil', mode: 0o600 });
+    return now + EXIT_SETTLE_RESTART_HOLD_MS;
+  } catch {
+    // @silent-fallback-ok — fail open to the restart, as before this window existed, and say so.
+    console.warn('[PlannedRestartVerifyGuard] Could not record the exit sighting; not holding the restart for the settle window');
+    return null;
+  }
 }
 
 /**

@@ -48,7 +48,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
+import { exitSeenPath, MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
@@ -511,6 +511,13 @@ export function decideVerifyRetry(
 
 /** A run a server stop kills: how many of them make an entry starved without waiting for the clock. */
 export const INTERRUPTION_LIMITS = Object.freeze({ starvedAfter: 2 });
+/**
+ * The `restart-interrupted-runs` row. A consumed restart request explains a stop only when it was
+ * consumed within two minutes before it: both consumers record the request and then stop the
+ * server within seconds, and an older request belongs to an earlier restart.
+ */
+const RESTART_REQUEST_EXPLAINS_STOP_MS = 2 * 60_000;
+const RESTART_INTERRUPTED_MAX_PEER_ATTEMPTS = 20;
 
 /**
  * The starved signal: once per entry, when it has waited (capacity waits included) longer
@@ -3259,17 +3266,33 @@ export class LocalVerifyService {
    * queue (not as an attempt), so the next boot resumes it. No timer is armed (the
    * process is exiting); a group that survives SIGTERM is found by the next boot's
    * orphan reap.
+   *
+   * Every stop writes one `restart-interrupted-runs` row first (also when nothing was running),
+   * so restarts and what each one cost are counted here and not reconstructed from logs.
    */
   shutdown(): void {
     if (this.stopped) return;
     this.stopped = true;
     void this.failedFileDiagnosisPeer?.preempt('shutdown');
     this.publishSuitePriority(false);
-    const f = this.inFlight;
-    if (f && !f.cancelled && this.finishedResultAtShutdown(f)) {
+    const f = this.inFlight && !this.inFlight.cancelled ? this.inFlight : null;
+    const finished = f ? this.finishedResultAtShutdown(f) : null;
+    // Observability only: whatever goes wrong while building the row, the stop below still
+    // cancels the run, counts the interruption and persists the queue.
+    try { this.auditRestartInterruptedRuns(f, finished); }
+    catch (e) { this.audit({ event: 'restart-interrupted-runs', error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }); } // @silent-fallback-ok: a minimal row says the stop happened; the stop itself never depends on it
+    if (f && finished?.settle) {
       this.audit({ event: 'settled-at-shutdown', ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }), headSha: f.entry.headSha, ranMs: this.now() - f.startedAt });
       this.onExit(f, { status: null, signal: null });
-    } else if (f && !f.cancelled) {
+    } else if (f) {
+      if (finished?.finished) {
+        // A verdict was on disk and is thrown away: counted by its own row, with the reason.
+        this.audit({
+          event: 'finished-result-discarded-at-shutdown', ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }), headSha: f.entry.headSha,
+          ranMs: this.now() - f.startedAt, reason: finished.discardReason, resultKind: finished.resultKind,
+          ...(finished.outcome ? { outcome: finished.outcome } : {}),
+        });
+      }
       this.cancelInFlight('shutdown', { armKillTimer: false });
       if (f.entry.kind !== 'main') {
         // The stop killed a real run: it stays counted as an attempt, it is recorded as an
@@ -3293,14 +3316,75 @@ export class LocalVerifyService {
    * before the exit event does (2026-11-13: a 24-minute run was cancelled 121 ms after it
    * finished, its result discarded, and it ran again from the start).
    *
-   * Not settled when the verifier on disk has changed: the restart then loads a verifier whose
-   * index ignores a record this one writes, so the run has to happen again anyway, and the
-   * interruption path keeps the entry at the head of the queue for that.
+   * Not settled when the verifier on disk has changed, and that stays so. The result itself is
+   * valid for this process (the run child checked its own version against this server's when it
+   * started), but a record written here is worth something only if the merge step also acts on
+   * it before this process exits, because the restart loads a verifier whose index skips it
+   * (`rebuildIndex`). That cannot happen at a stop: the hand-off is refused once the service is
+   * stopping (`decideMergeHandoff`), the status poster has already been stopped, the merge
+   * itself is several network calls that take from seconds to minutes, and the whole teardown
+   * has a hard 20-second deadline (`shutdownDeadline.ts`). A record with no merge would be a
+   * green that nothing may use, and the entry would leave the queue; the interruption path
+   * instead keeps it at the head of the queue so the next boot runs it again. The loss is
+   * recorded as `finished-result-discarded-at-shutdown`, with the reason. The place that
+   * prevents the loss is before the stop: the restart guard's settle window keeps a planned
+   * restart waiting until the exit handler has recorded the result and offered the merge.
    */
-  private finishedResultAtShutdown(f: InFlight): boolean {
-    if (this.verifierChangedOnDisk()) return false;
-    const result = this.readResult(f.resultPath) as { kind?: unknown } | null;
-    return !!result && typeof result === 'object' && typeof result.kind === 'string';
+  private finishedResultAtShutdown(f: InFlight): { finished: boolean; settle: boolean; resultKind?: string; outcome?: string; discardReason?: 'verifier-changed-on-disk' } {
+    const changed = this.verifierChangedOnDisk();
+    const result = this.readResult(f.resultPath) as { kind?: unknown; record?: { outcome?: unknown } } | null;
+    if (!result || typeof result !== 'object' || typeof result.kind !== 'string') return { finished: false, settle: false };
+    const outcome = typeof result.record?.outcome === 'string' ? result.record.outcome.slice(0, 20) : undefined;
+    const resultKind = result.kind.slice(0, 20);
+    return changed
+      ? { finished: true, settle: false, resultKind, outcome, discardReason: 'verifier-changed-on-disk' }
+      : { finished: true, settle: true, resultKind, outcome };
+  }
+
+  /**
+   * The `restart-interrupted-runs` row: what this stop found in progress. The local run (none
+   * or one): which change, how long it had run, whether its child had already exited, whether a
+   * verdict was on disk and what became of it. Each peer attempt accepted and not yet imported.
+   * And the request that explains the stop, when one was consumed in the last two minutes:
+   * planned or not, holds bypassed or not (null = the request wrote neither, or no request
+   * explains this stop, such as a signal). A request this process's own `boot` row already
+   * named explains its start, not its stop (the process booted from it and was then stopped by
+   * something else). Bounded: one run, at most 20 attempts (the total is given). Written with
+   * empty lists when nothing was running, so a clean restart is counted too. Every field read
+   * from a file (the request log, a persisted queue entry) is type-checked: a malformed one is
+   * left out, never thrown on.
+   */
+  private auditRestartInterruptedRuns(f: InFlight | null, finished: ReturnType<LocalVerifyService['finishedResultAtShutdown']> | null): void {
+    const now = this.now();
+    let last: ReturnType<typeof readLastRestartRequest> = null;
+    try { last = readLastRestartRequest(this.cfg.stateDir); } catch { last = null; } // @silent-fallback-ok: no readable request reads as "no request explains this stop", which is what the row then says
+    const at = last ? Date.parse(last.at) : Number.NaN;
+    const req = last && typeof last.at === 'string' && Number.isFinite(at) && at <= now + 5_000 && now - at <= RESTART_REQUEST_EXPLAINS_STOP_MS
+      && last.at !== this.bootRestartAt ? last : null;
+    const text = (v: unknown, max: number): string | null => (typeof v === 'string' && v ? v.slice(0, max) : null);
+    const requestedBy = req ? text(req.requestedBy, 200) : null;
+    const peerAttemptId = f ? text(f.entry.peerAttempt?.id, 80) : null;
+    let childExited: boolean | null = null;
+    if (f) { try { childExited = !this.seams.isGroupAlive(f.pgid); } catch { childExited = null; } } // @silent-fallback-ok: an unreadable process table reads as unknown
+    const accepted = this.queue.filter((e) => e.remote?.state === 'accepted');
+    this.audit({
+      event: 'restart-interrupted-runs',
+      planned: req && typeof req.plannedRestart === 'boolean' ? req.plannedRestart : null,
+      bypassHolds: req && typeof req.bypassHolds === 'boolean' ? req.bypassHolds : null,
+      ...(req ? { restartAt: req.at, ...(requestedBy ? { requestedBy } : {}) } : {}),
+      localRuns: f ? [{
+        ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }),
+        headSha: f.entry.headSha, ranMs: Math.max(0, now - f.startedAt), childExited,
+        // settled: recorded here; discarded: a verdict was on disk and is thrown away; none: no verdict yet.
+        finishedResult: finished?.settle ? 'settled' : finished?.finished ? 'discarded' : 'none',
+        ...(peerAttemptId ? { peerAttemptId } : {}),
+      }] : [],
+      peerAttempts: accepted.slice(0, RESTART_INTERRUPTED_MAX_PEER_ATTEMPTS).map((e) => {
+        const sentAt = e.remote?.sentAt;
+        return { pr: e.pr, attemptId: text(e.remote?.attemptId, 80), sentAgoMs: typeof sentAt === 'number' && Number.isFinite(sentAt) ? Math.max(0, now - sentAt) : null };
+      }),
+      peerAttemptsTotal: accepted.length,
+    });
   }
 
   // ---- internals ----
@@ -4785,8 +4869,11 @@ export class LocalVerifyService {
     let last: ReturnType<typeof readLastRestartRequest> = null;
     try { last = readLastRestartRequest(this.cfg.stateDir); } catch { last = null; } // @silent-fallback-ok: no readable request reads as unknown, which is what the row then says
     const b = bootReason(last, this.lastBootRestartAt(), this.now());
+    this.bootRestartAt = b.restartAt ?? null;
     this.audit({ event: 'boot', ...b });
   }
+  /** The restart request this process's own `boot` row named: it explains this start, so it cannot also explain this process's stop. */
+  private bootRestartAt: string | null = null;
 
   /** The restart request the newest earlier `boot` row named (so one request explains one start). Reads only the log's tail. */
   private lastBootRestartAt(): string | null {
@@ -5096,6 +5183,8 @@ export class LocalVerifyService {
 
   private clearInFlight(): void {
     try { SafeFsExecutor.safeRmSync(this.inFlightPath, { force: true, operation: 'local-verify:clear-in-flight' }); } catch { /* @silent-fallback-ok: best-effort */ }
+    // The restart guard's "pid first seen gone" note belongs to the run whose marker just went.
+    try { SafeFsExecutor.safeRmSync(exitSeenPath(this.cfg.stateDir), { force: true, operation: 'local-verify:clear-exit-seen' }); } catch { /* @silent-fallback-ok: it is keyed by the attempt token, so a leftover never applies to another run */ }
   }
 
   private readResult(p: string): (VerifyRunResult | { kind: 'crash'; detail: string }) | null {
