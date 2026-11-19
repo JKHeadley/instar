@@ -306,6 +306,10 @@ describe('Feedback', () => {
     expect(readinessAuthorityRequest('revoke', { maxBatch: '40' }, '1234', 'ref')).toEqual({ action: 'revoke', pin: '1234', operatorDecisionRef: 'ref' });
     expect(triageAuthorityRequest('replace', { maxBatch: 20 }, '1', 'r')).toEqual({ action: 'replace', pin: '1', operatorDecisionRef: 'r', useProposal: true, maxBatch: 20 });
     expect(triageAuthorityRequest('restore', {}, '1', 'r')).toEqual({ action: 'restore', pin: '1', operatorDecisionRef: 'r' });
+    // The model the card showed travels with an approval, so the server binds exactly it.
+    expect(readinessAuthorityRequest('create', {}, '1', 'r', 'gpt-6.2-astra')).toMatchObject({ useProposal: true, shownModelFamily: 'gpt-6.2-astra' });
+    expect(triageAuthorityRequest('replace', {}, '1', 'r', 'gpt-6-astra')).toMatchObject({ useProposal: true, shownModelFamily: 'gpt-6-astra' });
+    expect(readinessAuthorityRequest('revoke', {}, '1', 'r', 'gpt-6.2-astra')).not.toHaveProperty('shownModelFamily');
     expect(commitRequest({ planId: 'P', nonce: 'N', renderedText: 'x' }, '9')).toEqual({ pin: '9', planId: 'P', nonce: 'N' });
     expect(authorityResultWords('readiness', 200, { generation: 5 }).text).toBe('Approved (generation 5). The next run starts sorting.');
     expect(authorityResultWords('triage', 200, { generation: 5, revoked: true }).text).toContain('Revoked');

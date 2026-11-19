@@ -26,6 +26,7 @@ import { AbortError, UnexpectedError } from '../../../errors.js';
 import type { OpenAiCodexConfig } from '../config.js';
 import { OPENAI_CODEX_ID, mapExecError } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
+import { codexModelForCliAsync } from '../../../../core/codexCapabilities.js';
 import { buildCodexChildEnv, spawnCodexAndWait } from './codexSpawn.js';
 
 class OpenAiCodexStructuredOneShot implements StructuredOneShot {
@@ -39,7 +40,7 @@ class OpenAiCodexStructuredOneShot implements StructuredOneShot {
     options?: StructuredOneShotOptions,
   ): Promise<StructuredOneShotResult<T>> {
     const timeoutMs = options?.timeoutMs ?? this.config.defaultOneShotTimeoutMs ?? 60_000;
-    const model = resolveCliModelFlag(options?.model ?? this.config.defaultModel);
+    const model = await codexModelForCliAsync(resolveCliModelFlag(options?.model ?? this.config.defaultModel), this.config.codexPath, 'keep');
     const sandbox = this.config.defaultSandboxMode ?? 'read-only';
     const maxRetries = options?.maxRetries ?? 1;
 
