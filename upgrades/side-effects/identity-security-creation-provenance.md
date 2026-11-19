@@ -110,3 +110,12 @@ A pre-existing ordering gap (synthetic message ids) was filed separately as fb-7
 ## Instruction-file size (2026-11-19 05:40Z)
 
 Main's core instruction file is at its size limit: `CLAUDE_MD_CORE_BUDGET_CHARS`, 84,000. PR 3412 failed on it, and every new awareness title costs characters in the capability list. This PR therefore shortens two of my older entry titles, "Dashboard session token" and "Dashboard session revocation" (the SEC-046 entries). The list cuts titles at 60 characters, so this saves about 57 characters. It also gives its own entry the short title "Cross-chat confirm". The net change is about 37 characters fewer than main. Entry bodies are unchanged.
+
+## Guard fixes on the merge with main (2026-11-19 06:45Z)
+
+- `/topic-creation-provenance` is classified in `CapabilityIndex.ts` as a prefix agents reach through the awareness entry, not discovery.
+- `security.crossTopicConfirm` has its ladder entry in `src/data/feature-ladders.json`:
+  - **ran:** cross-conversation changes applied;
+  - **harm:** the share of proposals disarmed by a later message before the owner answered.
+- So the ladder can read them, the armed, applied and disarmed audit rows now carry `crossTopic: true`.
+- The spec's ladder line names the entry id.

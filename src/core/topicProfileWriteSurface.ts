@@ -345,7 +345,7 @@ export class TopicProfileWriteSurface {
       principal: updatedBy,
       origin: req.origin,
       ...(req.agentComposedPayload ? { payloadProvenance: 'agent-composed' } : {}),
-      ...(req.crossTopicConfirm ? { authorizedBy: `owner-confirmed-in:${req.crossTopicConfirm.sourceTopicId}` } : {}),
+      ...(req.crossTopicConfirm ? { crossTopic: true, authorizedBy: `owner-confirmed-in:${req.crossTopicConfirm.sourceTopicId}` } : {}),
       appliedLive: liveFields,
       shadowed: shadowFields,
       refusedFields,

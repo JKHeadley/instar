@@ -146,7 +146,8 @@ As stated under Known limits. Peers see no new authority, and their operator row
 
 ## Maturation plan
 
-- **ladder:** test-agent-live → dev-agent-live → fleet, on the development-agent gate `security.crossTopicConfirm.enabled` (umbrella §10's per-piece switch). Each step is recorded in the build folder with its date and outcome.
+- **ladder:** security.crossTopicConfirm
+- **stages:** test-agent-live → dev-agent-live → fleet, on the development-agent gate `security.crossTopicConfirm.enabled` (umbrella §10's per-piece switch). Each step is recorded in the build folder with its date and outcome.
 - **test-agent-live:** the throwaway proof above.
 - **dev-agent-live:** my own real-Telegram proof on Echo, then Justin's first real use, with no defect found by him.
 - **fleet:** the gate's fleet default flips through its own reviewed change, after graduation.

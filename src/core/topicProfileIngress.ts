@@ -257,7 +257,7 @@ export class ProfileConfirmSlots {
       kind,
       origin,
       superseded,
-      ...(targetTopicKey !== undefined && String(targetTopicKey) !== key ? { targetTopic: String(targetTopicKey) } : {}),
+      ...(targetTopicKey !== undefined && String(targetTopicKey) !== key ? { crossTopic: true, targetTopic: String(targetTopicKey) } : {}),
     });
     return { ok: true, superseded };
   }
@@ -294,7 +294,7 @@ export class ProfileConfirmSlots {
     if (!slot || !slot.targetTopicKey || slot.echoPlatformMessageId === null) return;
     if (platformMessageId <= slot.echoPlatformMessageId) return;
     this.slots.delete(key);
-    this.opts.audit?.({ type: 'cross-topic-disarmed', topic: key, targetTopic: slot.targetTopicKey, reason: 'later-message' });
+    this.opts.audit?.({ type: 'cross-topic-disarmed', crossTopic: true, topic: key, targetTopic: slot.targetTopicKey, reason: 'later-message' });
   }
 
   disarm(topicKey: string): void {
