@@ -10565,8 +10565,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const backendType = (waConf.backend as string) ?? 'baileys';
 
         if (backendType === 'business-api') {
-          const { BusinessApiBackend } = await import('../messaging/backends/BusinessApiBackend.js');
-          const businessApiConf = waConf.businessApi as { phoneNumberId: string; accessToken: string; webhookVerifyToken: string; webhookPort?: number };
+          const { BusinessApiBackend, notifyOwnerUnverifiedOnce } = await import('../messaging/backends/BusinessApiBackend.js');
+          const businessApiConf = waConf.businessApi as { phoneNumberId: string; accessToken: string; webhookVerifyToken: string; appSecret?: string; webhookPort?: number };
           whatsappBusinessBackend = new BusinessApiBackend(
             whatsappAdapter,
             businessApiConf,
@@ -10582,10 +10582,21 @@ export async function startServer(options: StartOptions): Promise<void> {
               onStatusUpdate: (_msgId, status) => {
                 if (status === 'failed') console.warn(`[whatsapp] Message delivery failed`);
               },
+              // SEC-086 observe mode: one owner notice, ever (marker written only after a confirmed send).
+              onUnverifiedDelivery: () => {
+                void (async () => {
+                  const outcome = await notifyOwnerUnverifiedOnce(path.join(config.stateDir, 'state', 'whatsapp-unverified-notice.json'), telegram ? (t: string) => telegram!.sendOwnerDirect(t) : undefined);
+                  if (outcome === 'not-sent') console.warn('[whatsapp] Could not tell the owner that WhatsApp Business deliveries are unverified (no owner channel reachable); will retry after the next restart.');
+                })().catch(() => { /* @silent-fallback-ok: notifyOwnerUnverifiedOnce never throws; this guards the wrapper only */ });
+              },
             },
           );
           await whatsappBusinessBackend.connect();
           console.log(pc.green(`  WhatsApp Business API: webhook routes at /webhooks/whatsapp`));
+          if (!whatsappBusinessBackend.hasAppSecret()) {
+            // SEC-086 observe mode: deliveries still arrive but are unverified until the app secret is set.
+            console.warn(pc.yellow('  WhatsApp Business API: no app secret configured; incoming messages are accepted UNVERIFIED until it is set.'));
+          }
         } else {
           // Baileys backend
           const { BaileysBackend } = await import('../messaging/backends/BaileysBackend.js');

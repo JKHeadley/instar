@@ -48,8 +48,29 @@ export function mountWhatsAppWebhooks(options: WhatsAppWebhookRoutesOptions): vo
     }
   });
 
-  // POST — Message/status delivery
+  // POST — Message/status delivery.
+  // SEC-086: this route sits before bearer auth, so the only proof a body came from Meta is
+  // its X-Hub-Signature-256 HMAC under the app secret. With a secret set, an unsigned or wrongly
+  // signed body is refused before anything is processed. With no secret set (observe mode, per
+  // the identity umbrella section 10) deliveries keep arriving and the owner is told once that
+  // they are unverified until a secret is set.
+  let warnedNoSecret = false;
   app.post(webhookPath, async (req: Request, res: Response) => {
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    const header = req.get?.('x-hub-signature-256') ?? (req.headers?.['x-hub-signature-256'] as string | undefined);
+    const verdict = backend.verifyPayloadSignature(rawBody, header);
+    if (verdict === 'bad-signature') {
+      res.status(401).json({ error: 'invalid-signature' });
+      return;
+    }
+    if (verdict === 'no-secret') {
+      if (!warnedNoSecret) {
+        warnedNoSecret = true;
+        console.warn('[whatsapp-webhook] Accepting an unverified delivery: no Meta app secret is configured, so it cannot be proven to come from Meta. Set businessApi.appSecret to verify.');
+      }
+      backend.noteUnverifiedDelivery();
+    }
+
     // Meta expects a 200 response within 5 seconds — process async
     res.status(200).send('EVENT_RECEIVED');
 
