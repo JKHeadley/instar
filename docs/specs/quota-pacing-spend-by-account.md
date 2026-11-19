@@ -21,7 +21,7 @@ origin: "Justin, topic 144201, 2026-11-18 22:04 PST: 'I want to make sure that w
 The unified usage ledger (`src/monitoring/UsageLedger.ts`) records one row per model request with machine, engine, model, conversation, job and list-price cost. It has an `account_id` column, but:
 
 1. **It is filled only from the spawn binding**, the account the session was *tagged* with (`binding?.accountId`, lines ~1037 and ~1490 on `7429f4fcc`). On 2026-11-17 three sessions were tagged Headley while their processes ran on Dawn's login. Every row they wrote would carry the wrong account. A session with no binding (hand-started, default login) gets `null`.
-2. **No read surface groups by account.** `/usage/tree` and `/usage/top` refuse `account` (`by must use machine, framework, model, topic, job, feature, session_kind, session`).
+2. **No read surface groups by account.** `/usage/tree` and `/usage/top` refuse `account` (`by must use machine, framework, model, topic, job, feature, session_kind, session`), and their pool views read replicated rollups that have no account key.
 3. **Step 1's forecast assumes every account is the same size** ("assumes equal-sized accounts"), because nothing measures how many tokens one percentage point of an account's weekly window is worth.
 
 So today nobody can answer "which account did this week's work actually come from?" or "how much work is one point of Headley's week compared with one point of Dawn's?". Every later pacing step needs both answers.
@@ -29,7 +29,7 @@ So today nobody can answer "which account did this week's work actually come fro
 ## Goal
 
 - Every ledger row carries the account that **actually** served it, taken from where the provider wrote the transcript, with the tagged account kept beside it. A disagreement between the two is surfaced, not resolved by guessing.
-- The usage routes can group by account, pool-wide.
+- A usage route reports spend by account, pool-wide.
 - For each account and each closed weekly cycle, the ledger reports tokens spent against points used, so later steps can stop assuming equal-sized accounts.
 
 ## Non-goals
@@ -40,54 +40,59 @@ So today nobody can answer "which account did this week's work actually come fro
 
 ## Design
 
-### 1. Served account from the root
+### 1. Served slot and served account, recorded at scan time
 
-Each scan root already has an origin (`subscription-pool`, `codex:subscription-pool`, or another). Root registration (`UsageLedger` ~585-596) already iterates the pool's `{ framework, configHome }` homes.
+Claude Code reads and writes under `CLAUDE_CONFIG_DIR` and Codex under `CODEX_HOME`; the ledger scans `<home>/projects` and `<home>/sessions` (`UsageLedger` ~697 and ~1349). A transcript's root is therefore the **slot** (the config home) the process ran in. That is physical. Which **account** sat in that slot is a second question, answered in this order:
 
-- The registration carries the pool account id with each subscription root: `CoverageRoot.accountId` for roots whose origin is `subscription-pool` or `codex:subscription-pool`.
-- A row read from a file under that root gets `served_account_id` = that id, with `served_basis: 'transcript-root'`.
-- A root that is not a pool home (the default `~/.claude`, `~/.codex`, or any other) gets `served_account_id` only if exactly one pool account has that folder as its `configHome` (on the Studio, `codex-dawn-sagemind` is `/Users/dabombstudio/.codex`). Otherwise it is null with `served_basis: 'unknown-root'`.
-- The existing `account_id` column keeps the tagged account from the binding. It is renamed in reads as `taggedAccountId` and is not changed on write.
+1. **Live credential re-pointing in use** (`CredentialLocationLedger` present and not in unknown mode): the slot's assignment `{ slot, accountId, since, lastVerifiedAt, quarantined }`.
+   - The row gets `served_account_id` = the assignment's account and `served_basis: 'ledger-verified'` when `since` ≤ the row's timestamp, `lastVerifiedAt` is set and the slot is not quarantined.
+   - It gets `'ledger-unverified'` (account still recorded) when the tenant was never confirmed.
+   - It gets `'slot-changed'` (account null) when the assignment began after the row, because the tenant at the row's time is no longer known.
+2. **No re-pointing** (each enrolled account owns its own home): the enrollment mapping `configHome → accountId`, `served_basis: 'enrollment-home'`. For Claude slots the poller's identity reconciliation (`reconcileIdentity`) already flags a slot whose signed-in email differs from its record. A slot flagged that way at scan time gives `'enrollment-drifted'` (account null). Codex slots are never identity-checked (`reconcileIdentity` returns early for non-Claude), so their basis is `'enrollment-home'`, labelled as unconfirmed in every read.
+3. **A root no pool account owns, or one two accounts share:** `served_slot` is recorded, account null, `served_basis: 'unknown-root'` or `'ambiguous-root'`. The scanner does not follow symlinked roots (it checks with `lstat` and skips them), so no symlink resolution is added; a symlinked home stays unscanned, as today.
+4. **Rows with no transcript** (internal model calls, grain `invocation`): `served_basis: 'no-transcript'`, account from the binding only, shown as their own bucket.
 
-A new column `served_account_id` (TEXT, nullable) and `served_basis` (TEXT) are added by an idempotent migration (`ALTER TABLE ... ADD COLUMN` guarded by a column check, the pattern the ledger's existing migrations use). Existing rows are not rewritten: they read `served_basis: 'before-attribution'` and are counted under "unknown" in every account view. The ledger's 30-day window means they age out on their own.
+Every row also keeps `served_slot`. The existing `account_id` column keeps the tagged account from the binding and is not changed on write. Three write sites set the new columns: transcript rows (~1037), Codex rollout rows (~1490), and the invocation flush (`flushInvocations`). When the settle window pairs an invocation row with a transcript row, the transcript row's served fields win, because they rest on the root.
 
-**Why the root is evidence:** Claude Code and Codex write a session's transcript into the config home of the login that ran it (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). A file's folder records which login the process used. The tag records only which login it was asked to use. This is the check that would have caught the 2026-11-17 mix-up in the ledger.
+New nullable columns `served_slot`, `served_account_id` and `served_basis` are added to the raw events table only, with a guarded idempotent `ADD COLUMN`. The rollup tables are **not** changed (see §3). Existing rows read `served_basis: 'before-attribution'`.
 
-**Which login, when:** a folder proves which config home the work used, not which login was signed in there at that moment; a home can be signed out and signed in as someone else. So the served account is the **login identity** in force for that home at the request's time, taken from step 1's reading history (`QuotaHistoryLedger` rows carry the identity each reading saw). A request between two readings with the same identity gets that identity. A request in an interval where the identity changed, or with no reading for that home within the step 1 freshness window on both sides, gets `served_basis: 'identity-unconfirmed'` and a null account. The slot id is kept as `served_slot_id` either way.
-
-**When the root is not evidence:** a home shared by two pool accounts, or a home that is a symlink to another, gives `served_basis: 'ambiguous-root'`. The account is then null, never one of the candidates. The root registration resolves symlinks with `fs.realpathSync` before comparing homes.
+The resolver is an in-memory map rebuilt when the pool or the credential ledger changes (both already emit change events). No per-row file reads.
 
 ### 2. Mismatch signal
 
-A row where both accounts are known and differ is a **mismatch**. The ledger keeps a per-machine count by `(session_id, tagged, served)` and exposes it in `/usage/coverage` as an `accountMismatches` total plus `GET /usage/account-mismatches?since=&limit=&cursor=` listing every mismatch `{ sessionId, tagged, served, requests, firstTs, lastTs }`, newest first, paged. This is a signal only. Placement already has its own fix (PR #3390); this makes a recurrence visible within one scan.
+A mismatch is a row whose tagged account (`account_id`) and served account are both known and differ. Both are pool account ids, so they compare directly. `/usage/coverage` gains an `accountMismatches` total. `GET /usage/account-mismatches?since=&limit=&cursor=` lists every mismatching session `{ sessionId, tagged, served, servedBasis, requests, firstTs, lastTs }`, newest first. The default page is 50 and the maximum 500; it is paged, never cut. Mismatches only count from `ledger-verified` and `enrollment-home` rows. A mismatch on a Claude `enrollment-home` row is strong evidence; on a Codex one it is labelled unconfirmed.
 
 ### 3. Reads by account
 
-- `/usage/tree` accepts `by=account` (grouped by `served_account_id`, with `unknown` as its own bucket), and `/usage/top` accepts `dim=account`.
-- New `GET /usage/accounts?since=&until=&scope=pool|local`: per account, the requests, tokens by part (input, output, cache read, cache write) and list-equivalent cost, plus the `unknown` bucket and the mismatch total. Pool scope merges machines by the same fan-out the other `/usage/*` routes use, and names machines that did not answer.
-- Accounts are keyed by step 1's login identity key (`identityKey(provider, email)` in `quotaPacing.ts`) when the pool record has an email, so one login enrolled on two machines under different slot ids is counted once. A slot with no identity is reported under its slot id and labelled `identity unknown`.
+Pool views of `/usage/tree` and `/usage/top` are answered by the lease holder from replicated hour and day rollups whose keys have no account. Re-keying them would be a table rebuild on every machine plus a replication change. This step does **not** do that:
+
+- `GET /usage/accounts?since=&until=` is computed on each machine from its own raw events (kept 90 days). On the lease holder (or proxied to it, like the other `/usage/*` routes) it fans out to every machine through the existing bearer pool fan-out helper (`src/server/poolFanOut.ts`) at request time, merges by account, and names machines that did not answer or are on an older build (`served-account-unsupported`). Per account it returns requests, tokens by part, list-equivalent cost and a breakdown by `served_basis`; the unknown buckets are separate.
+- `/usage/account-mismatches` fans out the same way and pages per machine.
+- `/usage/tree` and `/usage/top` are unchanged.
+- One login enrolled on two machines under different slot ids is merged by step 1's login identity key when the pool record has an email, labelled `merged by enrollment email`.
 
 ### 4. Size of a point
 
-For each account and each **closed** weekly cycle in step 1's history (`QuotaHistoryLedger` cycle-end rows), compute:
+For each account, each **closed** weekly cycle in step 1's history, and each weekly window separately (`sevenDay`, and `fable` on Claude accounts), compute:
 
-- `pointsUsed`: the cycle's last valid reading (a lower bound when that reading is censored, as step 1 defines),
-- `tokensServed`: the sum of tokens with `served_account_id` = that account and `ts` inside the cycle, by part, and the list-equivalent cost,
-- `unattributedCost`: the list-equivalent cost, in the same cycle, of rows on that login's machines whose served account is null, an upper bound on what this account might be missing,
-- `retentionComplete`: whether the whole cycle lies inside every contributing machine's ledger window.
+- `pointsUsed`: the cycle's last valid reading, a lower bound when censored as step 1 defines.
+- `costServed`: list-equivalent cost of rows whose served account is this account and whose time falls in the cycle. For `fable`, only Fable-model rows count.
+- `unattributedCost`: the cost in that cycle of rows on the same machines with a null served account. This is an upper bound on what the account may be missing.
+- `retentionComplete`: whether the whole cycle lies inside every contributing machine's raw-event retention (90 days).
 
-Reported as `GET /usage/accounts/size?account=&cycles=` (and inside `/usage/accounts` as the latest closed cycle). The figure is `costPerPoint = cost / pointsUsed`. List-equivalent cost is used because the providers meter by price-weighted usage, not raw token counts.
+The figure is `costPerPoint = costServed / pointsUsed`. It is withheld (`cannot-tell` with the reason) only when the cycle is not retention-complete or a contributing machine did not answer. Otherwise it is shown with a `quality` label: `low` when `pointsUsed < 5` or `unattributedCost` exceeds 10% of `costServed`, else `ok`.
 
-It is reported **only** when the cycle is retention-complete and every machine that holds that login's transcripts answered; otherwise `cannot-tell` with the reason. Alongside the figure it always shows `pointsUsed` and `unattributedCost`, and it carries a `quality` label: `low` when `pointsUsed < 5` or `unattributedCost` exceeds 10% of the account's attributed cost, else `ok`. A low-quality figure is still shown, labelled, so the reviewer can weigh it. This is evidence for a later step to weigh, never an input to any decision in this one.
+Every figure carries a standing caveat: use of the same login outside this agent (the web app, the phone, machines outside the pool) adds points but no ledger cost, so `costPerPoint` is a ceiling on the true cost per point, never a measurement of it. This is evidence for a later step to weigh, never an input to any decision in this one.
 
 ### 5. Switch and rollout
 
-- **Switch:** `usage.ledger.servedAccount`, resolved through `resolveDevAgentGate()` (on for development agents without the key, off for the fleet). When off, no new columns are written, the new query values answer `400 bad-query` as today, and `/usage/accounts*` answers `503 served-account-off`. The column migration runs regardless, because it is additive and idempotent, so turning the switch on later needs no migration.
-- Registered in `src/core/devGatedFeatures.ts` and given a ladder in `src/data/feature-ladders.json` whose metrics read `/usage/coverage` (unknown share, mismatches).
+- **Switch:** `usage.ledger.servedAccount`, resolved through `resolveDevAgentGate()`. The development-agent flag is agent-wide, so it resolves the same on every machine of an agent unless an operator sets it differently on one. A machine with it off writes `served_basis: 'off'`, so a partial rollout shows in the reads. When off, `/usage/accounts` and `/usage/account-mismatches` answer `503 served-account-off`. The column migration runs regardless, because it is additive and idempotent.
+- Unknown shares are reported from the switch-on time onward (`since` defaults to it), broken down by `served_basis`, so old `before-attribution` rows never distort the measure.
+- Registered in `src/core/devGatedFeatures.ts` with a ladder in `src/data/feature-ladders.json` whose metrics read `/usage/accounts` (unknown share by basis) and the mismatch total.
 
 ## Maturation plan
 
-- **test-agent-live:** before merge, a throwaway agent boots the real server with two seeded pool homes and a transcript written under each, plus one session tagged with home A whose transcript sits in home B. `/usage/accounts` reports each account's tokens; the coverage view lists the mismatch; `/usage/tree?by=account` groups correctly; with the switch off the routes answer 503.
+- **test-agent-live:** before merge, a throwaway agent boots the real server with two seeded pool homes and a transcript written under each, plus one session tagged with home A whose transcript sits in home B. `/usage/accounts` reports each account's cost with its basis, `/usage/account-mismatches` lists the mislabelled session, and with the switch off both answer 503. A second run seeds a credential-ledger assignment that changed after a row, and that row reads `slot-changed`.
 - **dev-agent-live:** on from merge on Echo's machines.
 - **fleet:** last rung, after the review.
 - **graduation criterion:** a review on the maturation board reads, after two weekly resets for most accounts (a newly enrolled account is reported as not yet sized and does not block), the unknown share, the mismatch counts (any mismatch after PR #3390 is a placement bug to file), and whether `costPerPoint` is stable enough across cycles to replace step 1's equal-size assumption. It promotes on judgment from that evidence.
@@ -97,16 +102,37 @@ It is reported **only** when the cycle is retention-complete and every machine t
 ## Safety and side effects
 
 - **Authority:** none. Nothing reads these numbers to decide anything in this step.
-- **Write path:** two extra columns set from data already in hand at scan time (the root being read). No new file reads.
-- **Migration:** additive columns, guarded, idempotent; old rows untouched.
-- **Privacy and team access:** account slot ids and identity hashes, never emails or tokens. The new routes sit under `/usage` and inherit exactly the access rule the existing `/usage/*` routes have (agent bearer, and on a team agent the owner tier), so no person sees spend they cannot already see.
+- **Write path:** three extra columns set from data in hand at scan time (the root being read, an in-memory slot map). No new file reads.
+- **Migration:** additive columns on the raw events table only, guarded, idempotent; rollups and replication untouched; old rows untouched.
+- **Privacy and team access:** account slot ids and identity hashes, never emails or tokens. The new routes sit under `/usage` with exactly the access rule of the existing `/usage/*` routes: agent bearer only, and not on any phone allowlist.
 - **Unknown is not zero:** rows with no served account are shown as their own bucket with a share, never folded into an account.
 
 ## Tests (three tiers)
 
-- **Unit:** root-to-account mapping (pool home, default home owned by one pool account, shared home → ambiguous, symlinked home resolved, non-pool root → unknown); row gets served and tagged accounts; mismatch counting and the top-50 cut with total; identity merge across slot ids; size-of-a-point with censored, low-points, low-coverage and missing-machine cases → `cannot-tell` with the right reason; migration idempotent on an existing database; switch off writes no served columns.
-- **Integration:** `/usage/tree?by=account`, `/usage/top?dim=account`, `/usage/accounts` local and pool with one peer down, `/usage/accounts/size`, 503 when off.
-- **E2E (feature is alive):** the production init path wires the pool homes with account ids into the ledger and `/usage/accounts` answers 200 on a development agent with no config key.
+- **Unit:**
+  - Each `served_basis`:
+    - ledger-verified, ledger-unverified, slot-changed
+    - enrollment-home, enrollment-drifted (Claude), Codex labelled unconfirmed
+    - unknown-root, ambiguous-root, no-transcript, off, before-attribution
+  - Rows and pairing:
+    - transcript, rollout and invocation rows each get the right columns
+    - an invocation/transcript pair keeps the transcript's served fields
+  - Mismatches: mismatch counting; paging defaults and maximum.
+  - Identity merge: merge across slot ids by enrollment email.
+  - Size of a point:
+    - separate sevenDay and fable figures
+    - retention-incomplete and missing-machine cases → cannot-tell
+    - low points and high unattributed cost → shown with `quality: low`
+  - Plumbing:
+    - the in-memory resolver rebuilds on pool and ledger change events
+    - the migration is idempotent on an existing database
+    - with the switch off, rows are written as `off`
+- **Integration:**
+  - `/usage/accounts` and `/usage/account-mismatches`, holder and non-holder (proxied)
+  - one peer down; one peer on an older build (`served-account-unsupported`)
+  - `/usage/tree` and `/usage/top` unchanged
+  - 503 when off
+- **E2E (feature is alive):** the production init path gives the ledger the slot resolver (pool plus credential ledger), and `/usage/accounts` answers 200 on a development agent with no config key.
 
 ## Measure of success
 
@@ -117,25 +143,27 @@ It is reported **only** when the cycle is retention-complete and every machine t
 
 | Decision point | Classification | Basis |
 |---|---|---|
-| The transcript's root folder decides the served account | invariant; basis: external-constraint; evidence: Claude Code and Codex write transcripts into the config home the process ran with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so the folder is the provider-side record of the login used | The tag is kept beside it, never overwritten. |
-| Shared or symlinked homes give `ambiguous-root` (null), never a guess | invariant; basis: enumerable-domain; evidence: a folder used by two accounts cannot say which one wrote a file | |
-| Size of a point withheld only when the cycle is not retention-complete or a contributing machine did not answer; otherwise shown with a `quality` label (low under 5 points or over 10% unattributed cost) | judgment-candidate; floor: an incomplete sum is never shown as whole, and a low-quality figure is labelled, never hidden; arbiter: the graduation review, from how often each label fires | The 5-point and 10% marks only label; they withhold nothing. |
-| Served account = login identity in force for the home at the request time; changed or unconfirmed identity gives null | invariant; basis: external-constraint; evidence: a config home can be re-signed to another login, and only a reading taken from that home records which identity was there | |
-| Mismatch list is paged, never cut | invariant; basis: enumerable-domain; evidence: every mismatch is a row the review must be able to read | |
+| The transcript root decides the served slot | invariant; basis: external-constraint; evidence: Claude Code and Codex write transcripts under the config home the process ran with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), and the ledger reads them from those folders | The slot, not yet the account. |
+| Account in the slot: credential ledger assignment (verified, unverified, changed since) when re-pointing is on, else the enrollment home, with Claude drift marking the slot unconfirmed | judgment-candidate; floor: an assignment newer than the row, a drifted slot, an unknown or shared root all give a null account, never a guess; every row records its basis; arbiter: the graduation review, from the share of rows per basis and the mismatches found | The best available record of the tenant, labelled with how good it is. |
+| The tag is kept beside the served account and never overwritten | invariant; basis: enumerable-domain; evidence: the two answer different questions (what was asked, what was used) and the mismatch between them is the signal | |
+| Size of a point withheld only when retention-incomplete or a machine did not answer; else shown with a quality label (low under 5 points or over 10% unattributed cost), and always as a ceiling | judgment-candidate; floor: an incomplete sum is never shown as whole; a low-quality figure is labelled, never hidden; the outside-use caveat is always attached; arbiter: the graduation review | The 5-point and 10% marks only label. |
+| Mismatch list paged (default 50, max 500), never cut | invariant; basis: enumerable-domain; evidence: every mismatch is a row the review must be able to read; paging bounds one response, not the set | |
+| Rollups are not re-keyed; account reads fan out over raw events | judgment-candidate; floor: a machine that cannot answer is named, never counted as zero; arbiter: the graduation review, from response times and peers that did not answer | Avoids a table rebuild and a replication change. |
 
 ## Multi-machine posture
 
-- **Ledger rows:** unchanged posture: each machine records what it read, merged on read by the existing `/usage/*` pool fan-out. `/usage/accounts` uses the same fan-out and names machines that did not answer.
-- **Root-to-account mapping:** per machine. machine-local-justification: physical-credential-locality — a config home is a folder on this machine's disk holding that login's credentials and transcripts.
-- **Switch:** per machine. machine-local-justification: physical-credential-locality — it governs only this machine's attribution of its own transcript folders. A machine with the switch off reports its rows as `served_basis: 'off'` in the pool views, so a partial rollout is visible, never silent.
-- Accounts are merged across machines by login identity, so one login on two machines is counted once.
+- **Ledger rows and the new columns:** unified, proxied on read. Each machine records the rows it read, and `/usage/accounts` and `/usage/account-mismatches` fan out to every machine at request time through the existing bearer pool fan-out. A machine that did not answer, or that runs an older build, is named.
+- **The slot-to-account resolver:** per machine. machine-local-justification: physical-credential-locality — a config home is a folder on this machine's disk holding a login's credentials, and the credential ledger that says which account is in it is that machine's own record.
+- **Switch:** unified by default. It resolves from the agent-wide development flag, so every machine of an agent agrees unless an operator sets one differently, and a machine with it off writes `served_basis: 'off'`, so a split shows in every read.
+- Accounts are merged across machines by enrollment email where the pool record has one, labelled as such.
 
 ## Frontloaded Decisions
 
-- The served account comes from the transcript root; the tag is kept as a separate column, never overwritten.
-- Old rows are not backfilled; they read `before-attribution` and age out of the 30-day window.
-- Size of a point uses list-equivalent cost, not raw tokens.
-- Read-only, dev-gated; no dashboard page in this step.
+- The served slot comes from the transcript root. The served account comes from the credential ledger when re-pointing is on, otherwise from the enrollment home, and its basis is recorded either way. The tag is a separate column and is never overwritten.
+- The rollups are not re-keyed. Account reads fan out over raw events (90-day retention).
+- Old rows are not backfilled. They read `before-attribution`, and unknown shares count only from the switch-on time.
+- Size of a point uses list-equivalent cost, is computed per weekly window, and is always presented as a ceiling.
+- Read-only and dev-gated; no dashboard page in this step.
 
 ## Open questions
 
