@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "restart-lock-continuity-a",
+  "sessionId": "485df311-0194-4e49-9b81-a38d30559841",
+  "timestamp": "2026-11-18T17:03:57.245Z",
+  "artifactPath": "upgrades/side-effects/restart-lock-continuity-a.md",
+  "artifactSha256": "8209566199c9a385bce3fefa12c9d6195180a2e80c4382cfdd8f3dac4b16ee33",
+  "specPath": "docs/specs/restart-lock-continuity.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/BootSessionCensus.ts",
+    "src/data/awareness/boot-session-census.md",
+    "src/server/routes.ts",
+    "tests/e2e/boot-census-wiring.test.ts",
+    "tests/integration/boot-census-routes.test.ts",
+    "tests/unit/boot-session-census.test.ts",
+    "upgrades/next/restart-lock-continuity-a.md",
+    "upgrades/side-effects/restart-lock-continuity-a.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "boot-time session census before purge, new routes, one notice; converged + approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

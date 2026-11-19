@@ -37,6 +37,8 @@ export interface PeerPresenceMachine {
 
 /** The slice of a peer's self-capacity the puller records (from `session-status`). */
 export interface PeerCapacity {
+  /** The peer server's process start (restart-lock-continuity B.2); old peers omit it. */
+  serverStartedAt?: string;
   selfReportedLastSeen?: string;
   loadAvg?: number;
   /**
@@ -256,6 +258,8 @@ export interface PeerPresencePullerDeps {
   recordPullFailure?: (machineId: string, shape: PullFailureShape) => void;
   /** Record a peer's sightings of other machines (A4, display only). MUST NOT throw. */
   recordPeerSightings?: (observerMachineId: string, sightings: Record<string, { ageMs: number }>) => void;
+  /** restart-lock-continuity B.2: every pull result, for clearing machine-away records. Never throws into the pass. */
+  onPresenceResult?: (machineId: string, ok: boolean, serverStartedAt: string | null) => void;
   /** Optional structured log line per pass (e.g. for the boot log). */
   log?: (line: string) => void;
 
@@ -349,6 +353,7 @@ export class PeerPresencePuller {
         }
         if (!cap) {
           this.noteFailure(m.machineId, classifyPullFailure(failure));
+          try { this.d.onPresenceResult?.(m.machineId, false, null); } catch { /* @silent-fallback-ok: display-only away bookkeeping must never break the presence pass */ }
           return null;
         }
         const rttMs = Math.max(0, mono() - startedMs);
@@ -356,6 +361,7 @@ export class PeerPresencePuller {
         if (cap.peerSightings && this.d.recordPeerSightings) {
           try { this.d.recordPeerSightings(m.machineId, cap.peerSightings); } catch { /* @silent-fallback-ok: display-only sightings must never break the presence pass (the puller's never-throw contract) */ }
         }
+        try { this.d.onPresenceResult?.(m.machineId, true, typeof cap.serverStartedAt === 'string' ? cap.serverStartedAt : null); } catch { /* @silent-fallback-ok: display-only away bookkeeping must never break the presence pass */ }
         this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, rttMs, ...(cap.loadReport !== undefined ? { loadReport: cap.loadReport } : {}), ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}), ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}), ...(cap.coherenceAdvert !== undefined ? { coherenceAdvert: cap.coherenceAdvert } : {}), ...(cap.coherenceAdvertRejected !== undefined ? { coherenceAdvertRejected: cap.coherenceAdvertRejected } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
