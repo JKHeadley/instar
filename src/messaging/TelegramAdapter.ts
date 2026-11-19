@@ -33,6 +33,7 @@ import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { JOIN_REQUEST_COMMAND, standingMay, telegramCommandAction, telegramSenderStanding, type TelegramSenderAction, type TelegramSenderStanding } from './telegramSenderAuthority.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -3244,7 +3245,94 @@ export class TelegramAdapter implements MessagingAdapter {
    * Check if a message is from an authorized user.
    * If no authorizedUserIds configured, all messages are accepted.
    */
-  private isAuthorized(userId: number): boolean {
+  private isAuthorized(userId: number, opts: { isBot?: boolean; path?: string } = {}): boolean {
+    // identity-security-piece1e: the sender rule. Enforced on development agents; elsewhere the legacy
+    // answer stands and each would-refuse is recorded (observe). Bots (other agents, and Telegram's
+    // anonymous-admin bot) are not judged by it: they keep today's answer.
+    const legacy = this.isAuthorizedLegacy(userId);
+    if (opts.isBot) return legacy;
+    return this.senderMay(userId, 'message', { path: opts.path ?? 'poll', legacy });
+  }
+
+  /** identity-security-piece1e: whether the sender rule refuses here (the dev-gated switch). */
+  senderEnforcing(): boolean {
+    if (!this.senderAuthority) return false;
+    try { return this.senderAuthority.enforce(); } catch { return false; /* @silent-fallback-ok: an unreadable switch observes */ }
+  }
+
+  /** identity-security-piece1e: wiring from the server (enforce switch, registered people, observe sink). */
+  private senderAuthority: {
+    enforce: () => boolean;
+    registeredIds: () => ReadonlyArray<number | string>;
+    observe: (row: { userId: string; path: string; action: TelegramSenderAction; standing: TelegramSenderStanding }) => void;
+    ownerUnknown?: () => void;
+  } | null = null;
+  setSenderAuthority(x: NonNullable<TelegramAdapter['senderAuthority']>): void { this.senderAuthority = x; }
+  /** identity-security-piece1e: resolve a join request by code; returns the reply for the owner. */
+  onResolveJoinRequest: ((code: string, action: 'approved' | 'denied', by: string) => Promise<string>) | null = null;
+
+  /** The sender's standing (spec section 1). `proven` is false for ids nothing verified. */
+  senderStanding(userId: number | string | undefined | null, proven = true): TelegramSenderStanding {
+    return telegramSenderStanding(userId, {
+      ownerId: () => {
+        const owner = this.getCallbackApprover();
+        if (owner === undefined) { try { this.senderAuthority?.ownerUnknown?.(); } catch { /* @silent-fallback-ok: the owner item is retried */ } }
+        return owner;
+      },
+      allowList: () => this.config.authorizedUserIds,
+      registeredIds: () => this.senderAuthority?.registeredIds() ?? [],
+    }, { proven });
+  }
+
+  /**
+   * May this sender take this action? Enforcing: the action table. Observing: the legacy answer, with a
+   * recorded would-refuse when the table would refuse what legacy allows. `unknown` is never refused.
+   */
+  senderMay(userId: number | string | undefined | null, action: TelegramSenderAction, opts: { path: string; legacy: boolean; proven?: boolean }): boolean {
+    if (!this.senderAuthority) return opts.legacy;
+    const standing = this.senderStanding(userId, opts.proven ?? true);
+    const list = this.config.authorizedUserIds;
+    const viaWildcardOnly = standing === 'authorized' && !!list?.some((v) => String(v) === '*')
+      && !list.some((v) => String(v) === String(userId)) && !(this.senderAuthority.registeredIds().some((v) => String(v) === String(userId)));
+    // `unknown` keeps today's answer in both modes: this rule never refuses it, and never admits it
+    // past today's check either.
+    if (standing === 'unknown') return opts.legacy;
+    const allowed = standingMay(standing, action, { viaWildcardOnly });
+    if (this.senderEnforcing()) return allowed;
+    if (!allowed && opts.legacy) {
+      try { this.senderAuthority.observe({ userId: String(userId ?? ''), path: opts.path, action, standing }); } catch { /* @silent-fallback-ok: the observe row is evidence only */ }
+    }
+    return opts.legacy;
+  }
+
+  private strangerReplies = new Map<string, number>();
+  private strangerRepliesDay = '';
+  private strangerRepliesToday = 0;
+  /**
+   * identity-security-piece1e: answer a refused stranger. Only in their own private chat with the bot
+   * (never a group); at most once per sender per day and 20 per agent per day. Their request goes to
+   * the owner through the existing join-request callback (which issues the /approve code).
+   */
+  async answerStranger(s: { userId?: number | string; chatType?: string; chatId?: number | string; firstName?: string; username?: string }): Promise<void> {
+    const day = new Date().toISOString().slice(0, 10);
+    if (day !== this.strangerRepliesDay) { this.strangerRepliesDay = day; this.strangerRepliesToday = 0; this.strangerReplies.clear(); }
+    const id = s.userId === undefined || s.userId === null ? '' : String(s.userId);
+    if (!id || this.strangerReplies.has(id) || this.strangerRepliesToday >= 20) return;
+    this.strangerReplies.set(id, Date.now());
+    this.strangerRepliesToday++;
+    try {
+      await this.onNotifyAdminJoinRequest?.({ name: String(s.firstName ?? 'someone').slice(0, 64), username: s.username, telegramUserId: Number(id) });
+    } catch { /* @silent-fallback-ok: the observe/owner item still lists the sender */ }
+    if (s.chatType !== 'private' || String(s.chatId) !== id) return;
+    const policy = this.onGetRegistrationPolicy?.();
+    const name = policy?.agentName || 'This agent';
+    await withNotificationEnvelope(stampNotification(), async () => this.apiCall('sendMessage', { chat_id: id,
+      text: `Hi! ${name} only talks with people its owner has approved. I've let the owner know you asked.` }))
+      .catch(() => undefined);
+  }
+
+  /** Today's rule, kept for observe mode: an empty list means everyone. */
+  private isAuthorizedLegacy(userId: number): boolean {
     // Phase 1d: Delegate to shared AuthGate when flag is enabled
     if (this.sharedAuthGate) {
       return this.sharedAuthGate.isAuthorized(userId.toString());
@@ -3276,7 +3364,7 @@ export class TelegramAdapter implements MessagingAdapter {
   isAuthorizedSender(userId: number | string): boolean {
     const n = typeof userId === 'number' ? userId : Number(String(userId).trim());
     if (!Number.isFinite(n)) return false;
-    return this.isAuthorized(n);
+    return this.isAuthorized(n, { path: 'forward-bind' });
   }
 
   /**
@@ -4259,8 +4347,19 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Process Telegram commands. Returns true if the message was a command.
    */
-  public async handleCommand(text: string, topicId: number, userId: number, source?: { privateChatId: number }): Promise<boolean> {
+  public async handleCommand(text: string, topicId: number, userId: number, source?: { privateChatId: number }, sender: { proven?: boolean; judge?: boolean } = {}): Promise<boolean> {
     const command = text.trim().toLowerCase();
+    // identity-security-piece1e: commands follow the action table. App and phone messages are not
+    // judged here (their device proof decides); an unproven id is `unknown` and keeps today's handling.
+    if (this.senderAuthority && sender.judge !== false) {
+      const action = telegramCommandAction(text);
+      if (!this.senderMay(userId || undefined, action, { path: 'command', legacy: true, proven: sender.proven ?? true })) {
+        const word = command.split(/\s+/)[0];
+        const who = action === 'agent-control' ? 'the agent\'s owner' : 'people on the agent\'s list';
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Only ${who} can use ${word}.`)).catch(() => undefined);
+        return true;
+      }
+    }
     if (source && (command === '/conversations' || command.startsWith('/conversations '))) {
       // This coordinate comes only from authenticated Telegram ingress. Never
       // answer a private request in the configured forum group by topic alias.
@@ -4280,6 +4379,18 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     const cmd = text.trim().toLowerCase();
+
+    // identity-security-piece1e: the owner admits or declines a join request by its code. Owner only,
+    // from a proven sender; anyone else's attempt does nothing but say so.
+    const joinMatch = JOIN_REQUEST_COMMAND.exec(text.trim());
+    if (joinMatch && this.onResolveJoinRequest) {
+      const isOwner = sender.judge !== false && this.senderStanding(userId || undefined, sender.proven ?? true) === 'owner';
+      const reply = isOwner
+        ? await this.onResolveJoinRequest(joinMatch[2], joinMatch[1].toLowerCase() === 'approve' ? 'approved' : 'denied', String(userId)).catch(() => "I couldn't record that just now. Try again in a minute.")
+        : "Only the agent's owner can approve or decline join requests.";
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, reply)).catch(() => undefined);
+      return true;
+    }
 
     // This explicit command never reads owner hierarchy content or dispatches
     // to a model session. Forum groups/unknown audiences get the same pointer.
@@ -6429,7 +6540,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // wired, an invite read here (getUpdates) is authentic and goes to it; without one, the owner
     // is pointed at the dashboard. Unauthorized senders get nothing.
     if (typeof msg.text === 'string' && msg.text.includes(INVITE_PREFIX)) {
-      if (this.isAuthorized(msg.from.id) && this.pairingHandler) {
+      if (this.isAuthorized(msg.from.id, { isBot: msg.from.is_bot === true }) && this.pairingHandler) {
         await this.pairingHandler.onForwardedInvite({
           text: msg.text, topicId: msg.message_thread_id ?? GENERAL_TOPIC_ID, fromUserId: msg.from.id,
           chatId: String(msg.chat.id), verified: true, // read from Telegram's own getUpdates
@@ -6440,7 +6551,7 @@ export class TelegramAdapter implements MessagingAdapter {
         });
         return;
       }
-      if (this.isAuthorized(msg.from.id)) {
+      if (this.isAuthorized(msg.from.id, { isBot: msg.from.is_bot === true })) {
         void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(readPairingOrigin(this.pairingDashboardOrigin)))).catch(() => {});
       }
       return;
@@ -6448,11 +6559,14 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // A pin by someone not authorized here (an anonymous admin, a stranger) is ignored quietly:
     // it is a service message, not someone asking to talk (conversation-pinned-messages).
-    if (msg.pinned_message && !this.isAuthorized(msg.from.id)) return;
+    if (msg.pinned_message && !this.isAuthorized(msg.from.id, { isBot: msg.from.is_bot === true })) return;
 
     // Auth gating — handle messages from unauthorized/unknown users
-    if (!this.isAuthorized(msg.from.id)) {
-      await this.handleUnknownUser(msg.from.id, msg.from.first_name, msg.from.username, msg.text);
+    if (!this.isAuthorized(msg.from.id, { isBot: msg.from.is_bot === true })) {
+      // identity-security-piece1e: with the sender rule wired, a stranger is answered only in their
+      // own private chat (never the group), capped; otherwise today's unknown-user flow.
+      if (this.senderEnforcing() && msg.from.is_bot !== true && this.senderStanding(msg.from.id) === 'stranger') await this.answerStranger({ userId: msg.from.id, chatType: msg.chat?.type, chatId: msg.chat?.id, firstName: msg.from.first_name, username: msg.from.username });
+      else await this.handleUnknownUser(msg.from.id, msg.from.first_name, msg.from.username, msg.text);
       return;
     }
 
@@ -6600,10 +6714,16 @@ export class TelegramAdapter implements MessagingAdapter {
     // Sentinel intercept — fires BEFORE routing to detect emergency stop/pause.
     // This runs in the server process, separate from the session, so it can
     // kill/pause the session even when the session is mid-tool-call.
+    // identity-security-piece1e: only a sender whose standing allows session controls may trigger the
+    // stop (a '*'-only sender may not). Unknown senders and bots keep today's handling.
+    // Asked only once the classifier says stop or pause, so ordinary messages are never judged (or
+    // recorded) as a control. A refused stop falls through to normal routing as text.
+    const stopAllowedBySender = (): boolean => msg.from.is_bot === true
+      || this.senderMay(msg.from.id, 'session-control', { path: 'poll-stop', legacy: true });
     if (this.onSentinelIntercept) {
       try {
         const classification = await this.onSentinelIntercept(text, numericTopicId);
-        if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause')) {
+        if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause') && stopAllowedBySender()) {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {
             console.log(`[sentinel] Emergency stop for session "${sessionName}" in topic ${numericTopicId}`);

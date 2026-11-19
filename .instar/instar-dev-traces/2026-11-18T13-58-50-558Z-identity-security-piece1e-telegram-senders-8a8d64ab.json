@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1e-telegram-senders",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T13:58:50.558Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1e-telegram-senders.md",
+  "artifactSha256": "d2ac4ed160759792070146f2bdcc44b6e254eb15e9d3d81cf98f3464c74f306e",
+  "specPath": "docs/specs/identity-security-piece1e-telegram-senders.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/identity-security-piece1e-telegram-senders.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to piece 1e: the owner item is upserted so its count of would-refuse senders grows instead of keeping the first.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the owner item is upserted on a new would-refuse sender (64 a day), each caused by an inbound message"
+  }
+}
