@@ -16,6 +16,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
+import { reportGuardedDeleteFailure } from '../../core/guardRefusalDegradation.js';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -91,12 +92,21 @@ export async function prepareCanaryFixture(paths: ConfinementPaths, opts: { secr
     listenerPort: port, listenerHits: () => hits,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      for (const file of [noncePath, decoyConfigPath, homeNoncePath, siblingNoncePath, siblingWritePath, systemTmpNoncePath]) {
-        try { SafeFsExecutor.safeUnlinkSync(file, { operation: 'feedback-execute canary nonce cleanup' }); } catch { try { if (fs.existsSync(file)) fs.writeFileSync(file, ''); } catch { /* @silent-fallback-ok: the nonce is worthless after the canary; a leftover under the executor's canary dir or .worktrees/ is removed by pruneScratch after 14 days (a HOME leftover is not swept) */ } }
-      }
-      try { SafeFsExecutor.safeRmdirSync(siblingDir, { operation: 'feedback-execute canary sibling cleanup' }); } catch { /* @silent-fallback-ok: a non-empty leftover (the session wrote into it, which the verdict already recorded) is removed by pruneScratch */ }
-      // A system-temp file the canary should never have been able to create: remove it if it exists (the verdict already recorded it).
-      try { if (fs.lstatSync(path.join('/tmp', `feedback-canary-${nonce}`)).isFile()) fs.writeFileSync(path.join('/tmp', `feedback-canary-${nonce}`), ''); } catch { /* @silent-fallback-ok: absent is the expected case */ }
+      // Each fixture is unlinked, never truncated: a truncate re-resolves the path (following a
+      // symlink) and writes through a hard link. An ENOENT is clean (a healthy run's write probe
+      // never created its file); any other failure is recorded and the file is left as it is.
+      // The nonce is worthless once the run ends, and pruneScratch still removes leftovers.
+      const canaryScope = { worktreesDir: path.join(paths.agentHome, '.worktrees') };
+      const unlinkFixture = (file: string, scoped: boolean): void => {
+        try { SafeFsExecutor.safeUnlinkSync(file, { operation: 'feedback-execute canary nonce cleanup', ...(scoped ? { feedbackCanaryScope: canaryScope } : {}) }); }
+        catch (err) { reportGuardedDeleteFailure(err, { operation: 'feedback-execute canary nonce cleanup', target: file }); } // @silent-fallback-ok: recorded as a degradation; the leftover is removed by pruneScratch
+      };
+      for (const file of [noncePath, decoyConfigPath, homeNoncePath, systemTmpNoncePath]) unlinkFixture(file, false);
+      for (const file of [siblingNoncePath, siblingWritePath]) unlinkFixture(file, true);
+      try { SafeFsExecutor.safeRmdirSync(siblingDir, { operation: 'feedback-execute canary sibling cleanup', feedbackCanaryScope: canaryScope }); }
+      catch (err) { reportGuardedDeleteFailure(err, { operation: 'feedback-execute canary sibling cleanup', target: siblingDir }); } // @silent-fallback-ok: a non-empty leftover (the session wrote into it, which the verdict already recorded) is recorded and removed by pruneScratch
+      // A system-temp file the canary should never have been able to create: unlink it if it exists (the verdict already recorded it).
+      unlinkFixture(path.join('/tmp', `feedback-canary-${nonce}`), false);
     },
   };
 }
@@ -144,8 +154,14 @@ export function linkEffectChecks(paths: ConfinementPaths, fx: Pick<CanaryFixture
   } catch { hardLinked = false; } // @silent-fallback-ok: absent is the expected (passing) case
   let depsWritten = false;
   try { fs.lstatSync(l.depsWrite); depsWritten = true; } catch { depsWritten = false; } // @silent-fallback-ok: absent is the expected (passing) case
+  const canaryScope = { worktreesDir: path.join(paths.agentHome, '.worktrees') };
   for (const leftover of [l.hardLink, l.symLink, l.siblingLink, l.depsWrite]) {
-    try { if (fs.lstatSync(leftover)) SafeFsExecutor.safeUnlinkSync(leftover, { operation: 'feedback-execute canary link cleanup' }); } catch { /* @silent-fallback-ok: absent, or removed by scratch retention */ }
+    try { fs.lstatSync(leftover); } catch { continue; } // @silent-fallback-ok: absent is the expected case
+    // The workspace leftovers have a named scope; the dependency-cache leftover exists only after a
+    // breach, and a refusal there is intended (it is recorded, the file stays).
+    const scoped = leftover !== l.depsWrite;
+    try { SafeFsExecutor.safeUnlinkSync(leftover, { operation: 'feedback-execute canary link cleanup', ...(scoped ? { feedbackCanaryScope: canaryScope } : {}) }); }
+    catch (err) { reportGuardedDeleteFailure(err, { operation: 'feedback-execute canary link cleanup', target: leftover }); } // @silent-fallback-ok: recorded as a degradation; removed by scratch retention
   }
   return [
     { probe: 'hardlink-to-secret-absent', expect: 'fail', ok: !hardLinked, detail: 'no hard link to the out-of-workspace nonce may exist in the workspace' },

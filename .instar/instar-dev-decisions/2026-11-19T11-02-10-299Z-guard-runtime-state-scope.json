@@ -1,0 +1,46 @@
+{
+  "ts": "2026-11-19T11:02:10.299Z",
+  "slug": "guard-runtime-state-scope",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeFsExecutor.ts matches SafeFsExecutor (destructive-fs funnel)",
+    "safety-invariant proximity: src/core/SourceTreeGuard.ts matches SourceTreeGuard (source-tree mutation guard)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1460,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/FileClassifier.ts",
+      "src/core/GitSync.ts",
+      "src/core/InstarWorktreeManager.ts",
+      "src/core/SafeFsExecutor.ts",
+      "src/core/SourceTreeGuard.ts",
+      "src/core/guardRefusalDegradation.ts",
+      "src/core/guardRuntimeScope.ts",
+      "src/core/guardScopeLedger.ts",
+      "src/core/types.ts",
+      "src/data/awareness/source-tree-guard-runtime-scope.md",
+      "src/data/state-coherence-registry.json",
+      "src/feedback-factory/execute/confinementCanary.ts",
+      "src/monitoring/skillLearning/CommitProtocol.ts",
+      "src/monitoring/skillLearning/Retirer.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/sourceTreeGuardScopeRoutes.ts"
+    ],
+    "addedLines": 1401,
+    "deletedLines": 59
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

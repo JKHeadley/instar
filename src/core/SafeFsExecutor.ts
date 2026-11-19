@@ -26,6 +26,22 @@ import {
   SourceTreeGuardError,
 } from './SourceTreeGuard.js';
 import { appendAuditEntry, isLocalVerifyClonePath } from './SafeGitExecutor.js';
+import {
+  configuredRuntimeStateScopeMode,
+  entryIsInstarCheckoutRoot,
+  entryTrackedState,
+  evaluateRuntimeScopePolicy,
+  _runShadowFault,
+  type FeedbackCanaryScope,
+  type GitRebaseStateScope,
+  type GuardRequest,
+  type GuardVerb,
+  type LearnedSkillScope,
+  type NodeModulesCloneStagingScope,
+  type PolicyVerdict,
+  type RuntimeScopeOptions,
+} from './guardRuntimeScope.js';
+import { isObservationIncomplete, recordDiff, type TargetClass } from './guardScopeLedger.js';
 
 export interface SafeFsOptions {
   /** Caller label for error messages and audit log. */
@@ -46,6 +62,20 @@ export interface SafeFsOptions {
    * be a symlink. A rename source is checked by `safeRenameDirSync` only.
    */
   worktreeTrashScope?: WorktreeTrashScope;
+  /**
+   * Named scopes of the runtime-state rule (docs/specs/guard-runtime-state-scope.md §3).
+   * Each allows exactly its caller's targets, by shape, under its own root predicate, and
+   * refuses a git-tracked target. In `report` mode they shape only the recorded shadow
+   * verdict; in `enforce` they decide.
+   */
+  /** The feedback executor's confinement canary fixtures. */
+  feedbackCanaryScope?: FeedbackCanaryScope;
+  /** GitSync's `.git/rebase-merge` / `.git/rebase-apply` cleanup. */
+  gitRebaseStateScope?: GitRebaseStateScope;
+  /** Skill learning's rendering folders under `.claude/skills/` and `.agents/skills/`. */
+  learnedSkillScope?: LearnedSkillScope;
+  /** The worktree `node_modules.clone-<pid>-<ms>` staging folder. */
+  nodeModulesCloneStagingScope?: NodeModulesCloneStagingScope;
 }
 
 /** The narrow allowance the out-of-process worktree reclaim uses (spec reaper-removal-out-of-process §2). */
@@ -193,11 +223,126 @@ function isUnderAgentRuntimeState(canonical: string): boolean {
   return canonical.length > idx + marker.length;
 }
 
+/** What a wrapper is about to do, for the runtime-state policy (spec guard-runtime-state-scope). */
+interface GuardOp {
+  verb: GuardVerb;
+  recursive: boolean;
+  force: boolean;
+  scopes: RuntimeScopeOptions;
+}
+
+function scopesOf(opts: SafeFsOptions): RuntimeScopeOptions {
+  return {
+    localVerifyScopeOk: opts.localVerifyScopeOk,
+    feedbackCanaryScope: opts.feedbackCanaryScope,
+    gitRebaseStateScope: opts.gitRebaseStateScope,
+    learnedSkillScope: opts.learnedSkillScope,
+    nodeModulesCloneStagingScope: opts.nodeModulesCloneStagingScope,
+  };
+}
+
+/** Thrown in `enforce` when the runtime-state policy refuses. A SourceTreeGuardError, so existing catches still match. */
+export class RuntimeScopeRefusalError extends SourceTreeGuardError {
+  readonly policyReason: string;
+  constructor(target: string, entry: string | null, operation: string, verdict: PolicyVerdict) {
+    super(target, entry ?? target, operation);
+    this.policyReason = verdict.scope ? `${verdict.scope}: ${verdict.detail ?? verdict.reason}` : `${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''}`;
+    this.message = `Refusing ${operation} on ${target}: ${this.policyReason} (source-tree guard, runtime-state scope enforce)`;
+  }
+}
+
+const EXECUTOR_FRAME = /SafeFsExecutor\.[jt]s|guardRuntimeScope\.[jt]s|guardScopeLedger\.[jt]s/;
+
+/** The first stack frame outside this executor: the code that asked for the delete. */
+function callerOutsideExecutor(): string {
+  const lines = (new Error().stack || '').split('\n').slice(1);
+  for (const l of lines) if (!EXECUTOR_FRAME.test(l)) return l.trim();
+  return (lines[lines.length - 1] || '').trim();
+}
+
+/** The legacy verdict, exactly as before this change (audits included). Returns the error instead of throwing it. */
+function legacyVerdict(target: string, operation: string, fnName: string, localVerifyScopeOk?: { verifyRoot: string }): { canonical: string; error?: unknown } {
+  const canonical = canonicalizeTarget(target);
+  if (localVerifyScopeOk && isLocalVerifyClonePath(canonical, localVerifyScopeOk.verifyRoot)) {
+    audit(fnName, operation, canonical, 'allowed', 'local-verify-scope-carveout');
+    return { canonical };
+  }
+  // Carve-out: runtime state under `.instar/` is gitignored, not source code.
+  // The guard's brittle-block is a false positive for these paths in
+  // agent-mode deployments where the agent dir IS a checkout of the source.
+  // See isUnderAgentRuntimeState() above for the precise predicate.
+  if (isUnderAgentRuntimeState(canonical)) {
+    audit(fnName, operation, canonical, 'allowed', 'agent-runtime-state-carveout');
+    return { canonical };
+  }
+  try {
+    assertNotInstarSourceTree(canonical, operation);
+  } catch (err) {
+    if (err instanceof SourceTreeGuardError) {
+      audit(fnName, operation, canonical, 'denied', err.message);
+    }
+    return { canonical, error: err };
+  }
+  return { canonical };
+}
+
+const NUKE_OPERATION = /^src\/commands\/nuke\.ts/;
+
+/**
+ * `report` mode's shadow: evaluate the new policy on the original request and record a
+ * difference in either direction. Fenced: it never throws and never changes the
+ * executed verdict; any failure is recorded as a `shadow-error` would-deny row.
+ */
+function shadowEvaluate(req: GuardRequest, operation: string, legacyAllowed: boolean, caller: string): void {
+  try {
+    _runShadowFault();
+    const v = evaluateRuntimeScopePolicy(req);
+    if (v.allow === legacyAllowed) return;
+    const direction = legacyAllowed ? 'would-deny' : 'would-allow';
+    // Classified lazily: recordDiff calls this only for a difference not yet written today,
+    // so a repeat never pays the checkout check or the `git ls-files` spawn.
+    const entry = v.entry;
+    const targetClass = (): TargetClass => {
+      if (direction !== 'would-deny' || !entry) return 'other';
+      if (entryIsInstarCheckoutRoot(entry)) return 'checkout-root';
+      if (v.reason === 'inside-source' && entryTrackedState(entry) === 'tracked') return 'source-file';
+      return 'other';
+    };
+    recordDiff({
+      direction, verb: req.verb, recursive: req.recursive,
+      reason: v.scope ? `${v.reason}:${v.scope}` : v.reason,
+      caller, operation, samplePath: v.entry ?? path.resolve(req.target), targetClass,
+      ...(direction === 'would-deny' && NUKE_OPERATION.test(operation) ? { presetDisposition: { disposition: 'needs-scope' as const, note: 'spec B (nuke teardown)' } } : {}),
+      ...(v.detail ? { detail: String(v.detail).slice(0, 300) } : {}),
+    });
+  } catch (err) {
+    try {
+      recordDiff({
+        direction: 'would-deny', verb: req.verb, recursive: req.recursive, reason: 'shadow-error',
+        caller, operation, samplePath: path.resolve(String(req.target)), targetClass: 'other',
+        detail: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      });
+    } catch { /* @silent-fallback-ok — the ledger cannot be written at all; the shadow must never block the executed verdict */ }
+  }
+}
+
+/**
+ * The mode the guard executes: `enforce` only when configured AND the observation is
+ * provably complete. Fail-safe: a marker that cannot be checked, a marker of any kind, or
+ * no resolvable ledger home counts as incomplete (see isObservationIncomplete), so
+ * `enforce` stays blocked and today's verdict runs.
+ */
+function effectiveScopeMode(): 'report' | 'enforce' {
+  if (configuredRuntimeStateScopeMode() !== 'enforce') return 'report';
+  try { return isObservationIncomplete() ? 'report' : 'enforce'; }
+  catch { return 'report'; } // @silent-fallback-ok — an unexpected error counts as incomplete: enforce stays blocked
+}
+
 function guard(
   target: string,
   operation: string,
   fnName: string,
-  localVerifyScopeOk?: { verifyRoot: string },
+  op: GuardOp | null,
   trash?: { scope: WorktreeTrashScope; role: WorktreeTrashRole },
 ): string {
   // The worktree trash scope comes FIRST and decides alone: it must never fall
@@ -212,28 +357,33 @@ function guard(
     audit(fnName, operation, path.resolve(target), 'denied', `worktree-trash-scope:${trash.role}: ${verdict.reason}`);
     throw new WorktreeTrashScopeError(target, operation, verdict.reason);
   }
-  const canonical = canonicalizeTarget(target);
-  if (localVerifyScopeOk && isLocalVerifyClonePath(canonical, localVerifyScopeOk.verifyRoot)) {
-    audit(fnName, operation, canonical, 'allowed', 'local-verify-scope-carveout');
-    return canonical;
-  }
-  // Carve-out: runtime state under `.instar/` is gitignored, not source code.
-  // The guard's brittle-block is a false positive for these paths in
-  // agent-mode deployments where the agent dir IS a checkout of the source.
-  // See isUnderAgentRuntimeState() above for the precise predicate.
-  if (isUnderAgentRuntimeState(canonical)) {
-    audit(fnName, operation, canonical, 'allowed', 'agent-runtime-state-carveout');
-    return canonical;
-  }
-  try {
-    assertNotInstarSourceTree(canonical, operation);
-  } catch (err) {
-    if (err instanceof SourceTreeGuardError) {
-      audit(fnName, operation, canonical, 'denied', err.message);
+  const scopes = op?.scopes ?? {};
+  const req: GuardRequest = { target, verb: op?.verb ?? 'rm', recursive: op?.recursive ?? false, force: op?.force ?? false, scopes };
+
+  if (effectiveScopeMode() === 'enforce') {
+    let v: PolicyVerdict;
+    try { v = evaluateRuntimeScopePolicy(req); }
+    catch (err) { v = { allow: false, reason: 'indeterminate', entry: null, detail: `policy error: ${(err as Error).message}` }; }
+    const shown = v.entry ?? path.resolve(target);
+    const label = `runtime-state-scope:${v.scope ?? v.reason}`;
+    if (v.allow) {
+      audit(fnName, operation, shown, 'allowed', label);
+      return shown;
     }
-    throw err;
+    const refusal = new RuntimeScopeRefusalError(target, v.entry, operation, v);
+    audit(fnName, operation, shown, 'denied', `${label}: ${refusal.policyReason}`);
+    throw refusal;
   }
-  return canonical;
+
+  // report: the legacy verdict is the one executed; the new policy is only recorded.
+  const legacy = legacyVerdict(target, operation, fnName, scopes.localVerifyScopeOk);
+  shadowEvaluate(req, operation, legacy.error === undefined, callerOutsideExecutor());
+  if (legacy.error !== undefined) throw legacy.error;
+  return legacy.canonical;
+}
+
+function rmOp(opts: SafeRmOptions): GuardOp {
+  return { verb: 'rm', recursive: !!opts.recursive, force: !!opts.force, scopes: scopesOf(opts) };
 }
 
 function trashOf(scope: WorktreeTrashScope | undefined): { scope: WorktreeTrashScope; role: WorktreeTrashRole } | undefined {
@@ -314,8 +464,10 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rm wrapper. */
   static async safeRm(target: string, opts: SafeRmOptions): Promise<void> {
-    const { operation, localVerifyScopeOk, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRm', localVerifyScopeOk, trashOf(worktreeTrashScope));
+    const { operation, localVerifyScopeOk, worktreeTrashScope, feedbackCanaryScope, gitRebaseStateScope, learnedSkillScope, nodeModulesCloneStagingScope, ...rmOpts } = opts;
+    void feedbackCanaryScope; void gitRebaseStateScope; void learnedSkillScope; void nodeModulesCloneStagingScope;
+    const canonical = guard(target, operation, 'safeRm', rmOp(opts), trashOf(worktreeTrashScope));
+    void localVerifyScopeOk;
     try {
       await fsp.rm(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRm', operation, canonical, 'allowed');
@@ -340,7 +492,7 @@ export class SafeFsExecutor {
    */
   static async safeRmTreeSerial(target: string, opts: SafeFsOptions): Promise<void> {
     const { operation } = opts;
-    const canonical = guard(target, operation, 'safeRmTreeSerial', undefined, trashOf(opts.worktreeTrashScope));
+    const canonical = guard(target, operation, 'safeRmTreeSerial', { verb: 'rm', recursive: true, force: true, scopes: { ...scopesOf(opts), localVerifyScopeOk: undefined } }, trashOf(opts.worktreeTrashScope));
     try {
       try {
         await removeTreeSerially(target);
@@ -365,8 +517,8 @@ export class SafeFsExecutor {
    */
   static safeRenameDirSync(source: string, destination: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope }): void {
     if (!opts.worktreeTrashScope) throw new WorktreeTrashScopeError(source, opts.operation, 'safeRenameDirSync requires worktreeTrashScope');
-    const src = guard(source, opts.operation, 'safeRenameDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'rename-source' });
-    const dest = guard(destination, opts.operation, 'safeRenameDirSync', undefined, { scope: opts.worktreeTrashScope, role: 'trash' });
+    const src = guard(source, opts.operation, 'safeRenameDirSync', null, { scope: opts.worktreeTrashScope, role: 'rename-source' });
+    const dest = guard(destination, opts.operation, 'safeRenameDirSync', null, { scope: opts.worktreeTrashScope, role: 'trash' });
     const refuse = (reason: string): never => {
       audit('safeRenameDirSync', opts.operation, `${src} -> ${dest}`, 'denied', reason);
       throw new WorktreeTrashScopeError(source, opts.operation, reason);
@@ -399,7 +551,7 @@ export class SafeFsExecutor {
    */
   static safeRmTreeInSubprocess(target: string, opts: SafeFsOptions & { worktreeTrashScope: WorktreeTrashScope; timeoutMs: number }): Promise<SubprocessRmResult> {
     if (!opts.worktreeTrashScope) throw new WorktreeTrashScopeError(target, opts.operation, 'safeRmTreeInSubprocess requires worktreeTrashScope');
-    const canonical = guard(target, opts.operation, 'safeRmTreeInSubprocess', undefined, { scope: opts.worktreeTrashScope, role: 'trash' });
+    const canonical = guard(target, opts.operation, 'safeRmTreeInSubprocess', null, { scope: opts.worktreeTrashScope, role: 'trash' });
     return new Promise((resolve) => {
       let timedOut = false;
       let stderr = '';
@@ -438,8 +590,10 @@ export class SafeFsExecutor {
 
   /** Sync fs.rmSync wrapper. */
   static safeRmSync(target: string, opts: SafeRmOptions): void {
-    const { operation, localVerifyScopeOk, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmSync', localVerifyScopeOk, trashOf(worktreeTrashScope));
+    const { operation, localVerifyScopeOk, worktreeTrashScope, feedbackCanaryScope, gitRebaseStateScope, learnedSkillScope, nodeModulesCloneStagingScope, ...rmOpts } = opts;
+    void feedbackCanaryScope; void gitRebaseStateScope; void learnedSkillScope; void nodeModulesCloneStagingScope;
+    const canonical = guard(target, operation, 'safeRmSync', rmOp(opts), trashOf(worktreeTrashScope));
+    void localVerifyScopeOk;
     try {
       fs.rmSync(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRmSync', operation, canonical, 'allowed');
@@ -451,7 +605,7 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.unlink wrapper. */
   static async safeUnlink(target: string, opts: SafeFsOptions): Promise<void> {
-    const canonical = guard(target, opts.operation, 'safeUnlink', opts.localVerifyScopeOk, trashOf(opts.worktreeTrashScope));
+    const canonical = guard(target, opts.operation, 'safeUnlink', { verb: 'unlink', recursive: false, force: false, scopes: scopesOf(opts) }, trashOf(opts.worktreeTrashScope));
     try {
       await fsp.unlink(target);
       audit('safeUnlink', opts.operation, canonical, 'allowed');
@@ -463,7 +617,7 @@ export class SafeFsExecutor {
 
   /** Sync fs.unlinkSync wrapper. */
   static safeUnlinkSync(target: string, opts: SafeFsOptions): void {
-    const canonical = guard(target, opts.operation, 'safeUnlinkSync', opts.localVerifyScopeOk, trashOf(opts.worktreeTrashScope));
+    const canonical = guard(target, opts.operation, 'safeUnlinkSync', { verb: 'unlink', recursive: false, force: false, scopes: scopesOf(opts) }, trashOf(opts.worktreeTrashScope));
     try {
       fs.unlinkSync(target);
       audit('safeUnlinkSync', opts.operation, canonical, 'allowed');
@@ -475,8 +629,9 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rmdir wrapper. */
   static async safeRmdir(target: string, opts: SafeRmDirOptions): Promise<void> {
-    const { operation, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmdir', undefined, trashOf(worktreeTrashScope));
+    const { operation, worktreeTrashScope, localVerifyScopeOk, feedbackCanaryScope, gitRebaseStateScope, learnedSkillScope, nodeModulesCloneStagingScope, ...rmOpts } = opts;
+    void localVerifyScopeOk; void feedbackCanaryScope; void gitRebaseStateScope; void learnedSkillScope; void nodeModulesCloneStagingScope;
+    const canonical = guard(target, operation, 'safeRmdir', { verb: 'rmdir', recursive: !!(rmOpts as { recursive?: boolean }).recursive, force: false, scopes: { ...scopesOf(opts), localVerifyScopeOk: undefined } }, trashOf(worktreeTrashScope));
     try {
       await fsp.rmdir(target, rmOpts);
       audit('safeRmdir', operation, canonical, 'allowed');
@@ -488,8 +643,9 @@ export class SafeFsExecutor {
 
   /** Sync fs.rmdirSync wrapper. */
   static safeRmdirSync(target: string, opts: SafeRmDirOptions): void {
-    const { operation, worktreeTrashScope, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmdirSync', undefined, trashOf(worktreeTrashScope));
+    const { operation, worktreeTrashScope, localVerifyScopeOk, feedbackCanaryScope, gitRebaseStateScope, learnedSkillScope, nodeModulesCloneStagingScope, ...rmOpts } = opts;
+    void localVerifyScopeOk; void feedbackCanaryScope; void gitRebaseStateScope; void learnedSkillScope; void nodeModulesCloneStagingScope;
+    const canonical = guard(target, operation, 'safeRmdirSync', { verb: 'rmdir', recursive: !!(rmOpts as { recursive?: boolean }).recursive, force: false, scopes: { ...scopesOf(opts), localVerifyScopeOk: undefined } }, trashOf(worktreeTrashScope));
     try {
       fs.rmdirSync(target, rmOpts);
       audit('safeRmdirSync', operation, canonical, 'allowed');

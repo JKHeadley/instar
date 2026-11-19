@@ -20,6 +20,7 @@ import path from 'node:path';
 import { loadRegistry } from './AgentRegistry.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { reportGuardedDeleteFailure } from './guardRefusalDegradation.js';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -925,12 +926,21 @@ function cloneNodeModules(source: string, target: string): boolean {
     // timeout: the caller falls back to the previous symlink behavior.
     try {
       if (fs.existsSync(staging)) {
-        SafeFsExecutor.safeRmSync(staging, { recursive: true, force: true, operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules' });
+        SafeFsExecutor.safeRmSync(staging, {
+          recursive: true, force: true, operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules',
+          nodeModulesCloneStagingScope: { worktreeRoot: path.dirname(target) },
+        });
       }
-    } catch { /* @silent-fallback-ok — leftover staging folder is inert */ }
+    } catch (err) {
+      // @silent-fallback-ok — a leftover staging folder is inert; a refusal is recorded, not swallowed.
+      reportGuardedDeleteFailure(err, { operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules', target: staging });
+    }
     return false;
   }
 }
+
+/** @internal tests (spec guard-runtime-state-scope: a refused staging delete records a degradation). */
+export { cloneNodeModules as _cloneNodeModulesForTesting };
 
 export function ensureHuskyHooksActive(worktreePath: string): void {
   const packageJsonPath = path.join(worktreePath, 'package.json');

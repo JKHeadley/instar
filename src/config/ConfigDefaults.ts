@@ -53,6 +53,14 @@ export const SKILL_LEARNING_DEFAULTS = Object.freeze({
 } as const);
 
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  // Source-tree guard runtime-state scope (docs/specs/guard-runtime-state-scope.md §4): ships
+  // watch-only. `report` executes today's verdict and records every difference in
+  // .instar/state/guard-scope-diff.jsonl; `enforce` is a separate Chief-of-Staff decision
+  // after 14 days of report and spec B (nuke). Existing agents receive the key through
+  // applyDefaults, which only adds missing fields.
+  safety: {
+    sourceTreeGuard: { runtimeStateScope: 'report' },
+  },
   notifications: {
     selectivity: {
       dryRun: true,

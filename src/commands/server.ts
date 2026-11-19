@@ -5264,6 +5264,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       agentName: config.projectName,
       instarVersion: startupVersion,
     });
+    // Source-tree guard runtime-state scope (docs/specs/guard-runtime-state-scope.md §4): the
+    // mode and the ledger's home. `report` (default) keeps today's verdict and records differences.
+    {
+      const { configureGuardRuntimeScope } = await import('../core/guardRuntimeScope.js');
+      configureGuardRuntimeScope({
+        mode: (config.safety as { sourceTreeGuard?: { runtimeStateScope?: unknown } } | undefined)?.sourceTreeGuard?.runtimeStateScope ?? 'report',
+        stateDir: config.stateDir,
+      });
+    }
     // An awareness entry (src/data/awareness/) that failed its checks is left out of the agent's instructions: say so once.
     for (const event of unreportedRegistryDegradations()) degradationReporter.report(event);
 
