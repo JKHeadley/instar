@@ -30,6 +30,8 @@ async function copyIn(home: string, threadId: string): Promise<Copy | null> {
     const st = await fs.stat(file);
     return st.isFile() ? { file, home, mtimeMs: st.mtimeMs } : null;
   } catch {
+    // @silent-fallback-ok — a file that vanished between lookup and stat is a copy this
+    // home does not hold; the caller reports a conversation found nowhere.
     return null;
   }
 }
