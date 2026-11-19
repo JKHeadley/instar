@@ -8,6 +8,7 @@ parent-principle-fit: "The guard's runtime-state rule allows any path containing
 eli16-overview: "docs/specs/guard-runtime-state-scope.eli16.md"
 review-convergence: "2026-11-19T09:11:00.000Z"
 review-iterations: 7
+review-convergence-note: "Written by hand, not by write-convergence-tag.mjs: the spec did not converge within the 6-round cap. A 7th confirmation round was approved by the Chief of Staff and still found design items; the spec was then split, and spec A was reviewed once more and approved as watch-only (msgs 550f6db5, deabf75a, 30c7f163). See the report."
 review-completed-at: "2026-11-19T09:11:00.000Z"
 review-report: "docs/specs/reports/guard-runtime-state-scope-convergence.md"
 cross-model-review: "ran"
