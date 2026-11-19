@@ -93,3 +93,66 @@ The spec is ready for the Chief of Staff's review. What needs approval by name: 
 ## After approval (2026-11-19 01:44 PT)
 
 The Chief of Staff approved with three conditions, all applied: the constitution check was run on the final text (7 flags: the fixed starting values and stop lines, the read and path-length bounds, the number of comparison runs, and the trial's place on the maturation path; each is a starting value revised from the trial or is answered in the spec; one flag claimed the equal-outcome property fails when three first-part files and one later file all fail and then pass alone, which was checked: both orders fail that verify, because more than three files failed); "a pass is declared only after every test in the run has passed" is now a stated and tested property; and the trial's verdict goes to the Chief of Staff and the throughput session at its stated end, including when the numbers say keep it off.
+
+---
+
+# Amendment review (2026-11-19): the verdict check, amended
+
+**What was reviewed:** only the amendment: the section "The verdict check, amended (2026-11-19)" and the lines changed to match it. The rest of the spec was converged and approved earlier the same day and its code is merged.
+**Converged at:** 2026-11-19, at the round cap (Tier 2: 6 rounds).
+**Final-round design findings:** 0 from the internal reviewer, 3 from the outside-model reviewer, each applied in one edit at the cap and not re-reviewed. None concerns safety, security or data loss; all three are about how well the trial measures.
+
+## Cross-model review: codex-cli:gpt-6.2-astra
+
+The GPT-tier pass ran through the codex CLI in all six rounds, on the whole spec each time. Before the formal rounds, the same outside model analysed the two defects from the code and reviewed four drafts of the amendment (three objections, then a concur). The six internal lenses ran as one combined Claude subagent in every round. The Standards-Conformance Gate ran in rounds 1 to 6 (8, 8, 5, 8, 7 and 5 flags).
+
+## ELI10 Overview
+
+The first trial of "likely-failing files first" ran for 36 minutes on one machine and switched itself off. The idea did not fail; its safety check did. That check ran the same change a second time, the old way, to see whether the answer matched. It took the machine out of the test line for 18 minutes while 15 changes waited, and it ended the trial because one unreliable test failed in one run and passed in the other.
+
+The amendment removes those second runs. What stays is the rule that a run is only recorded as passed after every test file passed, which is built in and tested. What is added costs no test time: each machine writes one line per run, lists each day anything that looks lopsided between the runs with and without the new order, and lists every time the main branch went red after a change that had passed with the new order. Each such "suspect" must get a written finding within 3 days from the session that runs the test line, with the investigation done by the feature's owner away from the line. One confirmed case ends the trial on both machines. Two automatic limits on cost remain.
+
+What is given up, and said in the spec: proof, run by run, that the answer is the same. The first trial showed the second runs could not give that proof either.
+
+## Experience fit
+
+The request behind this is the operator's condition, in its words: "a comparison run must not delay a fronted change and must not run when the queue holds more than a few waiting changes" (echo-increasing-throughput, 2026-11-19 14:04Z), and the Chief of Staff's choice of "no cost to the line" over "proof per verify" (2026-11-19 06:36 PT). The ordinary case after the amendment: a two-week trial in which no machine leaves the line and nobody is asked anything unless a suspect appears. The reviewers found the fit good from round 2 on.
+
+## Iteration Summary
+
+| Iteration | Reviewers who flagged design issues | Design findings | Precision findings | Sections changed |
+|-----------|-------------------------------------|-----------------|---------------------|------------------|
+| 1 | internal (combined), codex | 6 internal, 3 codex | 7 | Report route on every machine, findings kept per machine, red-main episodes defined and stored, removal list completed, awareness entry, overview |
+| 2 | internal (combined), codex | 3 internal, 3 codex | 5 | The three fields travel in the signed record, derived records, trial marker, pilot then both machines |
+| 3 | internal (combined), codex | 1 internal, 3 codex | 3 | How a cost limit switches off, marker kept, joint-trial marker, findings per trial, verdict conclusion from findings |
+| 4 | internal (combined), codex | 1 internal, 3 codex | 2 | Counts after any marker, derived pass in measure 5, final evaluation, meaning of unknown |
+| 5 | internal (combined), codex | 2 internal, 3 codex | 2 | Report of an ended trial, evaluation on request judges no limit, how often a file ran, enrolment |
+| 6 | codex | 3 | 6 | A closed suspect opens again on new failures, enrolment and follow-up dates, how often a file ran (from first-part lists), wording of the first trial's defect |
+
+Standards-Conformance Gate: ran (8 flags), ran (8 flags), ran (5 flags), ran (8 flags), ran (7 flags), ran (5 flags). In round 1 two flags concerned the amendment and were taken: investigation on a line machine is now allowed when the operating session permits it and nothing waits; the two attributed statements now carry the speaker's words and message reference. Every other flag, in every round, is about limits of the design converged before the amendment (list size, lane ceilings, history window, path length, the staging by machine); they were answered in the first convergence as starting values that the trial revises, and the amendment does not change them.
+
+## Full Findings Catalog
+
+Each round's files are kept outside the repository, in the authoring agent's state folder `state/scaling/converge-lff-amend/` (`r1` to `r6`: spec text, internal review, outside review, gate result), with the four pre-round drafts and their reviews.
+
+- **Round 1.** Internal: the report could not be read on a machine that is not the coordinator; findings and suspects lived on different machines; nearly every red main would have been a suspect; eight points a builder would have had to ask; the removal list was incomplete and the awareness text would have described a removed check; the overview contradicted itself. Outside: a deadline case where the outcome differs with first parts (failed, against a retried error) was not stated; a suspect on the helper machine had no way to a finding; measure 5 under a staged start; the wording of the pass rule. All taken.
+- **Round 2.** Internal: the three fields needed a named carrier (the signed record); the maturation plan contradicted measure 5; what a restart of the trial does to the counts. Outside: the lane rule for a first part with only skipped tests (checked in the code: the shipped code applies it to the whole lane; a test is added); a durable start of the trial; records derived without a run. All taken.
+- **Round 3.** Internal: how a cost limit switches the setting off, with the cost of having no second hold file stated. Outside: an explicit start for the joint trial; a finding per trial; the verdict's conclusion written from the findings. All taken.
+- **Round 4.** Internal: counts start after a marker of any kind. Outside: a derived pass in measure 5; a final evaluation before the verdict; what "unknown" means and who pauses the trial over two machines. All taken.
+- **Round 5.** Internal: the report after a switch-off covers the ended trial; an evaluation on request judges no limit. Outside: the same first point; how often a file ran in each group; enrolment only of changes first verified in the joint period. All taken.
+- **Round 6.** Internal: converged, no material finding. Outside: three design findings, applied at the cap (below).
+
+## Proportion
+
+Tier 2; the amendment adds about 50 lines to the spec and removes more machinery than it adds (the comparison runs, their state, their limits and their switch). 6 rounds used of 6. ⚠ The outside reviewer read the whole spec each round and raised about three new points every round, so the count of rounds reflects the reviewer's reach more than the size of the change.
+
+## Left behind
+
+- **Applied at the cap without a further round (design, accepted):** a closed file suspect is opened again after 4 more different pull requests fail on it in the same group (reason: a finding must not outlive its evidence; the number is a starting value); both machines stay on `alternate` through the 7-day follow-up and only enrolled changes count in measure 5 (reason: otherwise late entrants are verified differently); how often a file actually ran is taken from the first-part lists and lane completion already recorded, with unknown shown as unknown (reason: full per-file run records for every verify would be a large new data set for a reading aid).
+- **Precision, not iterated:** part D defines the current trial twice in slightly different words; "the trial that ended at that marker" is loosely worded for the minutes after a switch back on; one test clause uses "it" without a noun.
+- **Not taken, stated limit:** counting how often a file ran is approximate when a verify's report is incomplete.
+- **Gate flags on the first design** (list size, lane ceilings, history window, path limits, staging by machine): unchanged by the amendment; they remain starting values the trial revises.
+
+## Convergence Verdict
+
+Converged at round 6, at the cap. The internal reviewer's final round found nothing that changes what gets built. The outside reviewer's final round had three design findings about the trial's measurement, each applied in one edit; none concerns safety, security or data loss. Approved in substance by the Chief of Staff before the rounds (agent message a2cef9bf, 2026-11-19 06:36 PT) with three conditions, all in the text: the tested pass rule stays untouched; the 3-day finding has a named owner (the session that operates the line, which accepted it in agent message c99b215a) and an overdue finding shows in the report; the formal rounds and the constitution check ran before any build.

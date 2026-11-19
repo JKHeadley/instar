@@ -19,7 +19,7 @@ Every change to Instar is tested on our two computers before it can be merged, a
 
 Each group of tests starts with a small first part: the test files the change itself touches, and the files that failed most often in the last week. If one of them fails, and still fails when run again by itself, the run ends there. Otherwise the rest of the tests run as usual.
 
-Nothing is left out. Every test still runs unless the run has already failed, and what counts as a pass or a failure does not change. Only the order does. A poor guess about which files to run first costs nothing; the run is simply as slow as it is today.
+Nothing is left out. Every test still runs unless the run has already failed, and what counts as a pass or a failure does not change. Only the order does. A poor guess about which files to run first changes no answer; the run is as slow as it is today, plus a small start-up cost that the trial measures.
 
 ## The safeguards
 
