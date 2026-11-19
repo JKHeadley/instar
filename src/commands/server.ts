@@ -26847,6 +26847,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Both the coordinator and a peer read the same live lane switches.
           // A peer can run PR verifies without a source checkout.
           wiring.wireLocalVerifySwitches(localVerifyService, liveConfig);
+          // Queue controls: a lease move that leaves holds behind is announced to the session that
+          // operates the line (monitoring.localVerify.operatorSession), through the agent-message sender.
+          wiring.wireLocalVerifyOperatorNotice(localVerifyService, {
+            liveConfig,
+            send: (session, subject, body) => messageRouter.send(
+              { agent: config.projectName, session: 'server', machine: lvMachineId },
+              { agent: config.projectName, session, machine: 'local' },
+              'alert', 'high', subject, body,
+            ),
+          });
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
