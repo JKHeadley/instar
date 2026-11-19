@@ -60,6 +60,8 @@ import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { IMPORT_RELATED_RERUN, LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { boundedHead } from '../core/boundedInput.js';
 import { WaitingList, type Waiter } from './waitingList.js';
+import { OPERATOR_QUEUE_LIMITS, OperatorQueueStore, bootReason, holdReminderDue, isValidTime, safeIso, type OperatorRecord, type SavedQueueEntry } from './operatorQueue.js';
+import { readLastRestartRequest } from '../core/restartRequestAttribution.js';
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { MAX_LANE_SHARDS, MAX_UNIT_WORKERS, type FailureDetail, type FlakyOnMainFile, type FlakyOnMainTest, type IsolationInput, type IsolationRefusals, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
@@ -626,9 +628,40 @@ export interface MainRedHoldInfo {
 }
 
 export type RequestResult =
-  | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo }
+  | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo; /** Admitted over the cap by an operator front or release. */ operatorOverCap?: true }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' };
+  /** `held`: the operator holds this change (queue controls). `overflow-full`: an operator admission found the queue and its overflow full. */
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' };
+
+// ---- operator queue controls (spec local-verify-queue-controls.md) ----
+
+export type OperatorRefusal = 'disabled' | 'peer-only' | 'stopping' | 'invalid-pr' | 'invalid-time' | 'operator-file-full' | 'state-unwritable';
+type RequestRefusal = Extract<RequestResult, { ok: false }>['code'];
+
+export type OperatorHoldResult =
+  | { ok: true; pr: number; held: true; alreadyHeld: boolean; /** A verify of this change is running (here or on a peer); it is left alone. */ running: boolean; where?: 'here' | 'peer'; removed: 'queue' | 'waiting-list' | null }
+  | { ok: false; code: OperatorRefusal };
+
+export type OperatorReleaseResult =
+  | { ok: true; pr: number; released: boolean; placed: 'queue' | 'waiting-list' | 'already-placed' | 'none' | 'pending'; overCap?: true; detail?: string }
+  | { ok: false; code: OperatorRefusal | 'not-held' };
+
+export type OperatorFrontResult =
+  | { ok: true; pr: number; status: 'fronted' | 'admitted' | 'running' | 'held' | 'recorded'; order?: number; overCap?: true; /** Its place among the fronted changes: 1 = the next change to start. */ rank?: number; where?: 'here' | 'peer' }
+  | { ok: false; code: OperatorRefusal | RequestRefusal | 'front-limit'; fronted?: Array<{ pr: number; reason: string; by: string; at: string | null }> };
+
+export type OperatorUnfrontResult =
+  | { ok: true; pr: number; unfronted: true }
+  | { ok: false; code: OperatorRefusal | 'not-fronted' };
+
+/** The operator's holds and front marks as `GET /local-verify` shows them. */
+export interface OperatorQueueView {
+  enabled: true;
+  held: Array<{ pr: number; reason: string; by: string; at: string | null; until: string | null; heldMs: number; wanted: boolean; reminded: boolean; running: boolean; releasing: boolean; savedEntry: boolean }>;
+  fronted: Array<{ pr: number; reason: string; by: string; at: string | null; order: number; held: boolean; queued: boolean; running: boolean; admitting: boolean }>;
+  overflow: { used: number; max: number };
+  limits: { fronted: number; records: number };
+}
 
 interface InFlight {
   entry: QueueEntry;
@@ -960,6 +993,20 @@ export class LocalVerifyService {
   private suitePriorityClaimed = false;
   /** PRs refused for a full queue, oldest first refusal first (fb-7fde7f49-8ee). Lease holder only. */
   private readonly waiting: WaitingList;
+  // ---- operator queue controls (spec local-verify-queue-controls.md) ----
+  /** `monitoring.localVerify.queueControls`, read live at each decision. Absent ⇒ off. */
+  private queueControlsEnabled: (() => boolean) | null = null;
+  /** The operator's holds and front marks, per PR number. ONE object: admission, the start check and the dispatch check all read it. */
+  private readonly operator: OperatorQueueStore;
+  private operatorLoadReported = false;
+  private operatorCheckAt = 0;
+  private operatorTicking = false;
+  private operatorLeaseMisses = 0;
+  private operatorClosedCursor = 0;
+  /** The head and target branch last read for a fronted change (used when its view cannot be read at a result). */
+  private readonly operatorSeen = new Map<number, { headSha: string; baseRefName: string }>();
+  /** Switch off: how often a held change's re-admission could not read the change (bounded, then given up). */
+  private readonly operatorReadmitTries = new Map<number, number>();
 
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
@@ -985,6 +1032,7 @@ export class LocalVerifyService {
     this.likelyFailing = new LikelyFailingStore(path.join(this.lvStateDir, 'likely-failing.json'), this.now, (e) => this.audit(e));
     this.firstPartGroups = new FirstPartGroups(path.join(this.lvStateDir, 'first-part-groups.json'), this.now, (e) => this.audit(e), () => (seams.random ? seams.random() : Math.random()));
     this.firstPartTrial = new FirstPartTrialState(path.join(this.lvStateDir, 'first-part-trial.json'), (e) => this.audit(e));
+    this.operator = new OperatorQueueStore(path.join(this.lvStateDir, 'operator-queue.json'), this.now, (e) => this.audit(e));
   }
 
   async wireFailedFileDiagnosis(modeSetting: () => unknown, client: DiagnosisPeerClient): Promise<void> {
@@ -1185,11 +1233,14 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']>; waiting: Array<Waiter & { live: boolean }>; preflight: { mode: 'off' | 'observe' | 'enforce'; replayStoreReady: boolean; replays: Array<{ pr: number; headSha: string; baseRefName: string; state: PreflightReplay['state']; admissionAttempts: number; executionAttempts: number; blockedReason?: string }> }; likelyFailingFirst: ReturnType<LocalVerifyService['likelyFailingFirstStatus']> } {
+  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']>; waiting: Array<Waiter & { live: boolean }>; operator?: OperatorQueueView; preflight: { mode: 'off' | 'observe' | 'enforce'; replayStoreReady: boolean; replays: Array<{ pr: number; headSha: string; baseRefName: string; state: PreflightReplay['state']; admissionAttempts: number; executionAttempts: number; blockedReason?: string }> }; likelyFailingFirst: ReturnType<LocalVerifyService['likelyFailingFirstStatus']> } {
     const h = this.verifierHold;
     const hold = this.holdDecision();
     const heldWhy = new Map<number, 'no-overlap' | 'files-unknown'>(hold.active ? hold.heldPrs.map((x) => [x.pr, x.reason] as const) : []);
+    const operator = this.operatorQueue();
     return {
+      // Present only while the queue controls are on: the changes the operator holds and fronts.
+      ...(operator ? { operator } : {}),
       // `text` (the PR body) stays out of the read surface; `files` is bounded and useful.
       queue: this.queue.map((e) => { const { text: _t, ...rest } = e; void _t; const why = heldWhy.get(e.pr); return why && e.kind !== 'main' ? { ...rest, held: { reason: 'main-red' as const, why } } : { ...rest }; }),
       mainRedHold: hold.active ? { ...this.holdInfo(hold), since: this.mainFailure ? this.mainFailure.recordedAt : null } : null,
@@ -1252,6 +1303,7 @@ export class LocalVerifyService {
   // ---- boot ----
 
   async boot(): Promise<void> {
+    this.auditBoot();
     this.health.load();
     this.mainFailure = this.readMainFailure();
     this.mainObs.immediate = true; // the boot-time `main` verify skips the debounce
@@ -1264,6 +1316,7 @@ export class LocalVerifyService {
     if (!this.cfg.peerOnly) await this.reconcilePreflightReplays();
     if (!this.cfg.peerOnly) this.waiting.load();
     if (!this.cfg.peerOnly) await this.restoreQueue();
+    if (!this.cfg.peerOnly) await this.bootOperator();
     this.scheduleReplayAdmission();
   }
 
@@ -1320,6 +1373,7 @@ export class LocalVerifyService {
       return await run;
     } finally {
       this.restoring = null;
+      this.sweepOperatorHeld(); // a restored entry of a held change goes to held, never back to the queue
       this.persistQueue(); // the next tick (or request) starts work: never before the boot finishes
     }
   }
@@ -1368,6 +1422,7 @@ export class LocalVerifyService {
       if (why) {
         drops[why]++;
         this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: why });
+        if (why === 'closed') this.operatorOnClosed(e.pr);
         continue;
       }
       const restoredPriority = view ? prPriority(view) : (e.priority === QUEUE_PRIORITY.mergeThroughput ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary);
@@ -1375,7 +1430,8 @@ export class LocalVerifyService {
       // admitted under (labelled overflow included): restoring the labelled entries first must not
       // push ordinary entries that were legitimately queued below the cap out of the queue.
       // +1: the run interrupted by the restart comes back at the head on top of a full overflow.
-      if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1) { drops['queue-full']++; continue; }
+      // Entries an operator front or release admitted over the cap are restored too (their own bounded overflow).
+      if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1 + this.operatorRestoreAllowance()) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
         // The saved base, never the PR view's `baseRefOid`: that is the base as of the PR's last
@@ -1444,6 +1500,8 @@ export class LocalVerifyService {
     this.mainObs.oldestUnverifiedAt = this.health.unverifiedAge().oldestUnverifiedAt;
     this.mainObs.immediate = true;
     this.mainObs.handled = null;
+    // Queue controls: holds in this machine's own file from an earlier period are kept, and that is written down once.
+    if (opts.foreignHolder) this.noteOperatorRecordsKept();
   }
 
   /**
@@ -1681,12 +1739,28 @@ export class LocalVerifyService {
 
   // ---- the POST path ----
 
-  async request(pr: number, opts: { explicit?: boolean; force?: boolean; replay?: boolean; rerunAfterGreen?: boolean } = {}): Promise<RequestResult> {
+  async request(pr: number, opts: {
+    explicit?: boolean; force?: boolean; replay?: boolean; rerunAfterGreen?: boolean;
+    /** Queue controls: an admission made by an operator front or release (its own bounded overflow; ignored while the switch is off). */
+    operator?: 'front' | 'release';
+    /** Queue controls: what a released change carries back (its first refusal, and the time it was held). */
+    carry?: { firstRefusedAt?: number; pausedMs?: number };
+  } = {}): Promise<RequestResult> {
     const explicit = opts.explicit ?? true;
     if (!isValidPr(pr)) return { ok: false, code: 'invalid-pr' };
     if (this.cfg.peerOnly) return { ok: false, code: 'peer-only' };
     if (this.stopped) return { ok: false, code: 'stopping' };
     if (this.restoring) await this.restoring.catch(() => undefined);
+    // Queue controls: a held change answers `held` and admits nothing; the hold notes that it was
+    // asked for, so a release admits it. A held change that has closed is dropped instead.
+    if (this.operatorHeld(pr)) {
+      const stillOpen = await this.seams.isPrOpen(pr).catch(() => null);
+      if (stillOpen === false) this.operatorOnClosed(pr);
+      else if (this.operatorHeld(pr)) {
+        this.noteOperatorWanted(pr, explicit ? 'explicit' : 'watcher');
+        return { ok: false, code: 'held' };
+      }
+    }
     // While `main` is unhealthy the watcher requests no PR verifies (they fail by
     // construction); POSTed ones still run, which is how a repair gets its record.
     if (!explicit && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
@@ -1697,6 +1771,7 @@ export class LocalVerifyService {
       for (const marker of this.preflightReplays?.list().filter((r) => r.pr === pr) ?? []) this.preflightReplays?.cancel(marker.key);
       this.audit({ event: 'refused', pr, reason: 'pr-closed' });
       this.waiting.remove(pr, 'closed');
+      this.operatorOnClosed(pr);
       // A queued entry for it is no better: drop it now (a run in flight carries on to its own record).
       const queued = this.queue.findIndex((e) => e.pr === pr && e.kind !== 'main');
       if (queued >= 0) {
@@ -1731,6 +1806,7 @@ export class LocalVerifyService {
     const requestedPriority = replayPriority ? QUEUE_PRIORITY.ordinary : prPriority(view);
     const prFiles = viewFiles(view);
     const prText = prMatchText(view.title, view.body);
+    if (this.queueControlsOn() && this.operator.frontOrder(pr) > 0) this.operatorSeen.set(pr, { headSha, baseRefName });
 
     // CMT-973: a PR keeps its place and its firstQueuedAt. A base that moved is refreshed in
     // place; a moved head (or a retarget) takes the old entry's slot — the FRONT when the old
@@ -1795,9 +1871,21 @@ export class LocalVerifyService {
       if (derived) return this.recordedAnswer(pr, derived);
     }
 
+    // Queue controls: an operator front or release admits into a full queue within its own
+    // bounded overflow, and below the cap it does not wait behind the waiting list.
+    const operatorAdmit = opts.operator && this.queueControlsOn() ? opts.operator : null;
+    let operatorOverCap = false;
     // A pushed head re-queued in its kept place replaces an entry that was already admitted:
     // it is never refused for capacity (it would otherwise lose its place while the overflow is in use).
-    if (!keptPlace && this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+    if (operatorAdmit) {
+      if (!keptPlace && this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+        if (this.operatorOverflowUsed() >= OPERATOR_QUEUE_LIMITS.overflow) {
+          this.audit({ event: 'operator-overflow-full', pr, by: operatorAdmit, used: this.operatorOverflowUsed(), max: OPERATOR_QUEUE_LIMITS.overflow });
+          return { ok: false, code: 'overflow-full' };
+        }
+        operatorOverCap = true;
+      }
+    } else if (!keptPlace && this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
       // A queue full of HELD entries must not refuse the repair that would release them: a
       // repair candidate is admitted past the cap while the hold is active. There is no
       // second cap: candidates past it are bounded only by the open PRs that touch, name
@@ -1840,7 +1928,9 @@ export class LocalVerifyService {
     spendRerun?.();
     // Admitted: a waiter leaves the list and carries its first refusal onto the entry (a kept place carries its own).
     const waited = this.waiting.get(pr);
-    const firstRefusedAt = keptPlace ? keptPlace.firstRefusedAt : waited?.firstRefusedAt;
+    const firstRefusedAt = keptPlace ? keptPlace.firstRefusedAt : (waited?.firstRefusedAt ?? opts.carry?.firstRefusedAt);
+    // Time a change spent held is not waiting time (queue controls: a release carries it here).
+    const carriedPausedMs = keptPlace ? keptPlace.pausedMs : opts.carry?.pausedMs;
     if (waited && !keptPlace) this.waiting.remove(pr, 'admitted');
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
@@ -1848,7 +1938,7 @@ export class LocalVerifyService {
       firstQueuedAt: keptPlace?.firstQueuedAt ?? this.now(), attempts: 0, errorRetries: 0,
       starvedRaised: keptPlace?.starvedRaised ?? false, priority: requestedPriority, baseResolvedAt: this.now(),
       files: prFiles, text: prText,
-      ...(keptPlace?.pausedMs ? { pausedMs: keptPlace.pausedMs } : {}),
+      ...(carriedPausedMs ? { pausedMs: carriedPausedMs } : {}),
       ...(keptPlace?.resumeFirst ? { resumeFirst: true as const } : {}),
       ...(firstRefusedAt !== undefined ? { firstRefusedAt } : {}),
     };
@@ -1856,11 +1946,16 @@ export class LocalVerifyService {
     else this.queue.push(entry);
     // The first-part trial's assignment is drawn once, here, when the pull request is first queued.
     this.firstPartGroups.assign(pr);
+    if (operatorOverCap && operatorAdmit) {
+      this.operator.markOverCap(pr);
+      this.operator.persist();
+      this.audit({ event: `${operatorAdmit}-admitted-over-cap`, pr, headSha, used: this.operatorOverflowUsed(), max: OPERATOR_QUEUE_LIMITS.overflow });
+    }
     this.audit({ event: 'queued', pr, headSha, baseSha, explicit, ...(keptPlace ? { keptPlace: true, firstQueuedAt: entry.firstQueuedAt } : {}),
       ...(firstRefusedAt !== undefined ? { firstRefusedAt, refusedWaitMs: entry.firstQueuedAt - firstRefusedAt } : {}) });
     const position = this.queue.indexOf(entry);
     this.pump();
-    return { ok: true, status: 'queued', position, ...this.holdFor(pr) };
+    return { ok: true, status: 'queued', position, ...this.holdFor(pr), ...(operatorOverCap ? { operatorOverCap: true as const } : {}) };
   }
 
   /**
@@ -1899,7 +1994,7 @@ export class LocalVerifyService {
     for (const pr of this.waiting.sweepBatch()) {
       if (this.stopped) return;
       const open = await this.seams.isPrOpen(pr).catch(() => null);
-      if (open === false) this.waiting.remove(pr, 'closed');
+      if (open === false) { this.waiting.remove(pr, 'closed'); this.operatorOnClosed(pr); }
     }
   }
 
@@ -2471,7 +2566,9 @@ export class LocalVerifyService {
     if (e.kind === 'main' && !peerMainRoutingAllowed(this.trust(), this.now(), MAIN_HEALTH_LIMITS.unverifiedSuspectMs).allowed) return false;
     if (e.kind === 'main' && (this.inFlight?.entry.kind === 'main' || this.starting?.kind === 'main' || this.remoteMain())) return false;
     return !e.remote && !e.peerAttempt && e !== this.dispatching && e !== this.starting && this.inFlight?.entry !== e
-      && !heldPrs.has(e.pr) && (e.remoteAttempts ?? 0) < PEER_LIMITS.maxAttemptsPerEntry && !(e.notBefore && e.notBefore > this.now());
+      && !heldPrs.has(e.pr) && (e.remoteAttempts ?? 0) < PEER_LIMITS.maxAttemptsPerEntry && !(e.notBefore && e.notBefore > this.now())
+      // Queue controls: a change the operator holds is never handed to a peer.
+      && !(e.kind !== 'main' && this.operatorHeld(e.pr));
   }
 
   /* @self-action-controller: local-verify-peer-dispatch */
@@ -2490,7 +2587,9 @@ export class LocalVerifyService {
     this.dispatchRunning = true;
     try {
       const now = this.now();
-      for (const peer of peers) {
+      // `repicks`: how often a reservation gave way to a newer choice in this pass (queue controls; bounded).
+      for (let pi = 0, repicks = 0; pi < peers.length; pi++) {
+        const peer = peers[pi];
         const h = this.peerHealth.get(peer.machineId) ?? { consecutiveFailures: 0, openUntil: null, status: null, statusAt: 0 };
         this.peerHealth.set(peer.machineId, h);
         if (!peerHealthy(h, now)) continue;
@@ -2505,22 +2604,32 @@ export class LocalVerifyService {
         this.notePeerSkew(peer.machineId, h);
         if (!st || st.inFlight || st.slotBusy || st.verifierVersion !== this.cfg.verifierVersion || st.policyHash !== this.policyHash) continue;
         if (!this.peerPinned(peer.machineId, st.signerKeyHash)) continue; // SEC-113 D1: never burn a run whose answer could not be verified
-        const hold = this.holdDecision();
-        const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
-        const sorted = [...this.queue].sort((a, b) => effectivePriority(b, this.now()) - effectivePriority(a, this.now()));
-        let entry = sorted.find((e) => this.dispatchable(e, held));
-        if (!entry) return;
-        if (entry.kind === 'main') {
-          // A free peer takes `main` under the same fair share as the local slot (never by
-          // priority alone, which would hand it every opening and starve the waiting PRs).
-          const pr = sorted.find((e) => e.kind !== 'main' && this.dispatchable(e, held));
-          const turn = pr ? decideStart({ foreignHolders: 0, queue: [entry, pr], now: this.now(), fairShare: this.fairShareState() }) : null;
-          // A peer that keeps failing to confirm main's head is offered PRs only, for a while.
-          // SEC-113 D2.4: a quarantined peer is never sent `main` (it still takes PRs).
-          const paused = (this.mainUnconfirmed.get(peer.machineId)?.pausedUntil ?? 0) > this.now() || !!this.trust().quarantine[peer.machineId];
-          if (pr && (paused || (turn && turn.kind === 'start' && turn.index === 1))) entry = pr;
-          else if (paused) continue;
-        }
+        // The choice for this peer: the same order and the same turn rule as the local slot.
+        // `null` = nothing to hand off; 'skip-peer' = this peer is offered nothing now.
+        const pick = (): QueueEntry | null | 'skip-peer' => {
+          this.sweepOperatorHeld(); // a queue entry of a held change goes to held before anything is chosen
+          const hold = this.holdDecision();
+          const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
+          const sorted = this.orderQueue([...this.queue], this.now());
+          let chosen = sorted.find((e) => this.dispatchable(e, held));
+          if (!chosen) return null;
+          if (chosen.kind === 'main') {
+            // A free peer takes `main` under the same fair share as the local slot (never by
+            // priority alone, which would hand it every opening and starve the waiting PRs).
+            const pr = sorted.find((e) => e.kind !== 'main' && this.dispatchable(e, held));
+            const turn = pr ? decideStart({ foreignHolders: 0, queue: [chosen, pr], now: this.now(), fairShare: this.fairShareState() }) : null;
+            // A peer that keeps failing to confirm main's head is offered PRs only, for a while.
+            // SEC-113 D2.4: a quarantined peer is never sent `main` (it still takes PRs).
+            const paused = (this.mainUnconfirmed.get(peer.machineId)?.pausedUntil ?? 0) > this.now() || !!this.trust().quarantine[peer.machineId];
+            if (pr && (paused || (turn && turn.kind === 'start' && turn.index === 1))) chosen = pr;
+            else if (paused) return 'skip-peer';
+          }
+          return chosen;
+        };
+        const picked = pick();
+        if (picked === null) return;
+        if (picked === 'skip-peer') continue;
+        const entry: QueueEntry = picked;
         // Today's base first: the same conditional refresh a local start uses.
         if (entry.kind !== 'main' && decideBaseRefresh(entry, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
           this.dispatching = entry;
@@ -2533,6 +2642,7 @@ export class LocalVerifyService {
           if (open === false) {
             this.queue.splice(this.queue.indexOf(entry), 1);
             this.audit({ event: 'dequeued', pr: entry.pr, reason: 'closed', headSha: entry.headSha });
+            this.operatorOnClosed(entry.pr);
             this.persistQueue();
             this.reconcileSuitePriority();
             continue;
@@ -2556,6 +2666,13 @@ export class LocalVerifyService {
         if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold) return;
         if (this.notePause() || this.verifierChangedOnDisk()) return;
         if (this.queue.some((e) => e.remote?.machineId === peer.machineId) || this.stopped) continue;
+        // Queue controls, the moment of decision: the choice is made again here, at the point of
+        // reserving, with no further wait. A change fronted during the base read now ranks first,
+        // so the entry picked before it gives way and this peer is offered the new choice.
+        if (this.queueControlsOn() && pick() !== entry) {
+          if (repicks++ < 3) pi--;
+          continue;
+        }
         // The head is fixed here, before the snapshot: a reserved entry is never retargeted.
         if (entry.kind === 'main') this.retargetStaleMain(entry);
         // Computed ONCE, before the marker exists: the list that is sent is the list the marker remembers.
@@ -2953,6 +3070,7 @@ export class LocalVerifyService {
     if (!this.cfg.peerOnly) await this.pollArbitration().catch((e) => this.audit({ event: 'peer-arbitration-error', detail: e instanceof Error ? e.message : String(e) }));
     if (!this.cfg.peerOnly) await this.sweepReplayCapacity();
     if (!this.cfg.peerOnly) await this.tickWaitingList();
+    if (!this.cfg.peerOnly) await this.tickOperator().catch((e) => this.audit({ event: 'operator-tick-error', detail: e instanceof Error ? e.message : String(e) }));
     this.checkPeerAttempt();
     await this.failedFileDiagnosisPeer?.tick();
     this.pump();
@@ -3222,6 +3340,7 @@ export class LocalVerifyService {
         this.audit({ event: 'interrupted', pr: f.entry.pr, headSha: f.entry.headSha, interruptions: f.entry.interruptions, ranMs: this.now() - f.startedAt });
       }
     }
+    this.sweepOperatorHeld(); // an interrupted run of a held change goes to held, not back to the queue
     this.persistQueue();
   }
 
@@ -3372,6 +3491,7 @@ export class LocalVerifyService {
     for (const marker of store.list()) {
       if (this.stopped || !this.leaseState().holds) return;
       if (marker.state !== 'pending' && marker.state !== 'retryable-error') continue;
+      if (this.operatorHeld(marker.pr)) continue; // a held change spends no admission attempt; its replay waits for the release
       const current = store.blockIfExpired(marker.key, this.now());
       if (current?.state === 'blocked') {
         this.audit({ event: 'preflight-replay-blocked', pr: marker.pr, reason: current.blockedReason });
@@ -3412,6 +3532,7 @@ export class LocalVerifyService {
   }
 
   private pump(): void {
+    this.sweepOperatorHeld(); // queue controls: a queue entry of a held change goes to held before anything is chosen
     this.persistQueue();
     this.scheduleReplayAdmission();
     if (this.inFlight && !this.inFlight.suiteSlotAcquired &&
@@ -3530,7 +3651,8 @@ export class LocalVerifyService {
     const now = this.now();
     // Stable: FIFO within a level. An ordinary PR that has waited THROUGHPUT_AGING_MS ranks with
     // the merge-throughput label, so the label can never hold an old PR back indefinitely.
-    this.queue.sort((a, b) => effectivePriority(b, now) - effectivePriority(a, now));
+    // Queue controls: a fronted change goes ahead of every other change (the ONE order, also used for the hand-off to a peer).
+    const ordered = this.orderQueue(this.queue, now);
     // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
     // (a PR that touches or names a failing file) or a `main` verify may take the slot;
     // every other PR entry keeps its place and waits for green. Never a doomed run.
@@ -3538,7 +3660,10 @@ export class LocalVerifyService {
     // An entry reserved for a peer attempt (or being prepared for one) is the peer's, never started here.
     // One `main` verify at a time: a pending one waits while a peer runs another.
     const mainOnPeer = !!this.remoteMain();
-    let admissible: QueueEntry[] = this.queue.filter((e) => !e.remote && e !== this.dispatching && !(mainOnPeer && e.kind === 'main'));
+    let admissible: QueueEntry[] = ordered.filter((e) => !e.remote && e !== this.dispatching && !(mainOnPeer && e.kind === 'main'));
+    // Queue controls, the start check: a change the operator holds never starts (its entry is
+    // normally already out of the queue; this covers one that could not be moved yet).
+    if (this.queueControlsOn() && this.operator.anyHold()) admissible = admissible.filter((e) => e.kind === 'main' || !this.operator.isHeld(e.pr));
     if (hold.active) {
       this.noteHold(hold);
       const held = new Set(hold.heldPrs.map((h) => h.pr));
@@ -3586,6 +3711,7 @@ export class LocalVerifyService {
       // Unknown (null) keeps it: only a definite "not open" drops an entry.
       this.queue.splice(this.queue.indexOf(entry), 1);
       this.audit({ event: 'dequeued', pr: entry.pr, reason: 'closed', headSha: entry.headSha });
+      this.operatorOnClosed(entry.pr);
     } else if (this.queue.includes(entry)) {
       if (this.seams.baseHead) { // without a base reader the base stays as resolved
         if (fresh && isValidSha(fresh)) {
@@ -3761,6 +3887,9 @@ export class LocalVerifyService {
     this.persistQueue();
     this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts,
       ...(entry.firstRefusedAt !== undefined ? { firstRefusedAt: entry.firstRefusedAt } : {}) });
+    // Queue controls, the harm detector: a start of a change that is held at that moment. The start
+    // check and the dispatch check make this impossible; the row exists so the review can count zero.
+    if (entry.kind !== 'main' && !entry.peerAttempt && this.operatorHeld(entry.pr)) this.audit({ event: 'operator-held-started', pr: entry.pr, headSha: entry.headSha });
   }
 
   /**
@@ -4430,6 +4559,7 @@ export class LocalVerifyService {
       if (counted.length > 0) this.likelyFailing.record({ pr: record.pr, files: counted, at: Date.parse(record.finishedAt) });
     }
     this.seams.onRecord?.(record);
+    this.operatorOnResult(record);
     this.offerMerge(record);
     if (enforcedRed || this.preflightReplays?.get(replayKey(record))?.state === 'retryable-error') this.scheduleReplayAdmission();
     if (record.outcome !== 'error') {
@@ -4446,6 +4576,771 @@ export class LocalVerifyService {
       this.persistQueue();
     }
     return record;
+  }
+
+  // ---- operator queue controls (spec local-verify-queue-controls.md) ----
+  //
+  // Two controls, hold and front, that take effect at once and never touch a running verify.
+  // The operator's choices live per PR number in `operatorQueue.ts`; everything here reads
+  // them at the moment it admits, orders, starts or hands off work. Off unless the live
+  // switch is `true`: with it off the records are kept but nothing below applies them.
+
+  /** Late-bind the live `monitoring.localVerify.queueControls` switch. Absent ⇒ off; on only for a real `true`. */
+  setQueueControlsEnabled(fn: (() => boolean) | null): void { this.queueControlsEnabled = fn; }
+
+  queueControlsOn(): boolean {
+    try { return this.queueControlsEnabled ? this.queueControlsEnabled() === true : false; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (the queue as it was before the controls)
+  }
+
+  get operatorQueuePath(): string { return this.operator.path; }
+
+  /**
+   * Late-bind how a notice reaches the session that operates the line (an agent message to the
+   * session named in `monitoring.localVerify.operatorSession`). `sent` is true only when the
+   * message router reports the message delivered; anything else (no session set, queued for a
+   * session that is not running, a failure, a throw) falls back to an attention item.
+   */
+  setOperatorNotifier(fn: ((m: { subject: string; body: string }) => Promise<{ sent: boolean; phase?: string | null }>) | null): void { this.operatorNotifier = fn; }
+  private operatorNotifier: ((m: { subject: string; body: string }) => Promise<{ sent: boolean; phase?: string | null }>) | null = null;
+
+  /** Held by the operator right now: the switch is on and the change has a hold that is not being released. */
+  private operatorHeld(pr: number): boolean {
+    return this.queueControlsOn() && this.operator.isHeld(pr);
+  }
+
+  /**
+   * The ONE order of the queue, used by the coordinator's own choice (which passes the queue
+   * itself: sorted in place, as before the controls) and by the hand-off to a peer (which
+   * passes a copy). First the order as it always was: priority, FIFO within a level, an aged
+   * PR at the throughput level. Then, with the switch on, the fronted changes are taken to
+   * the front of the CHANGES, most recently fronted first; a `main` verify keeps its place.
+   * The marks never reorder the queue itself and nothing is written into an entry's priority,
+   * so a change that is unfronted is back in its ordinary place.
+   */
+  private orderQueue(list: QueueEntry[], now: number): QueueEntry[] {
+    list.sort((a, b) => effectivePriority(b, now) - effectivePriority(a, now));
+    if (!this.queueControlsOn() || !this.operator.anyFront()) return list;
+    const mark = (e: QueueEntry) => (e.kind === 'main' ? 0 : this.operator.frontOrder(e.pr));
+    const fronted = list.filter((e) => mark(e) > 0);
+    if (fronted.length === 0) return list;
+    fronted.sort((a, b) => mark(b) - mark(a));
+    return [...list.filter((e) => e.kind === 'main'), ...fronted, ...list.filter((e) => e.kind !== 'main' && mark(e) === 0)];
+  }
+
+  /** A verify of this change is running: in flight here, or reserved by a peer. The controls never touch it. */
+  private operatorRunning(pr: number): 'here' | 'peer' | null {
+    const f = this.inFlight;
+    if (f && !f.cancelled && f.entry.kind !== 'main' && !f.entry.peerAttempt && f.entry.pr === pr) return 'here';
+    return this.queue.some((e) => e.kind !== 'main' && e.pr === pr && !!e.remote) ? 'peer' : null;
+  }
+
+  /** Queued or running here (placing a change that is already placed changes nothing). */
+  private operatorPresent(pr: number): boolean {
+    const f = this.inFlight;
+    return this.queue.some((e) => e.kind !== 'main' && e.pr === pr)
+      || (!!f && !f.cancelled && f.entry.kind !== 'main' && !f.entry.peerAttempt && f.entry.pr === pr);
+  }
+
+  /** Places of the operator overflow in use: entries a front or a release admitted over the cap that are still queued. */
+  private operatorOverflowUsed(): number {
+    return this.operator.overflowUsed(new Set(this.queue.filter((e) => e.kind !== 'main').map((e) => e.pr)));
+  }
+
+  /** How many more entries a restore may bring back: the operator overflow, when it is or was in use. */
+  private operatorRestoreAllowance(): number {
+    return this.queueControlsOn() || this.operator.overCapCount() > 0 ? OPERATOR_QUEUE_LIMITS.overflow : 0;
+  }
+
+  private operatorRefusal(pr: number): OperatorRefusal | null {
+    if (!this.queueControlsOn()) return 'disabled';
+    if (this.cfg.peerOnly) return 'peer-only';
+    if (this.stopped) return 'stopping';
+    if (!isValidPr(pr)) return 'invalid-pr';
+    return null;
+  }
+
+  private savedEntryOf(e: QueueEntry): SavedQueueEntry {
+    return {
+      headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt,
+      attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
+      ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
+      ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
+      ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+      ...(e.interruptions ? { interruptions: e.interruptions } : {}),
+      ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
+      ...(e.priority === QUEUE_PRIORITY.mergeThroughput ? { priority: e.priority } : {}),
+      ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
+      ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
+      ...(e.preflightRediscoverable ? { preflightRediscoverable: true as const } : {}),
+    };
+  }
+
+  /** The entry a hold took out, as it goes back: everything it carried, and the held time counted as paused (not as waiting). */
+  private entryFromSaved(pr: number, s: SavedQueueEntry, heldMs: number): QueueEntry {
+    const pausedMs = (s.pausedMs ?? 0) + Math.max(0, heldMs);
+    return {
+      id: crypto.randomBytes(6).toString('hex'), pr, headSha: s.headSha, baseSha: s.baseSha, baseRefName: s.baseRefName,
+      firstQueuedAt: s.firstQueuedAt, attempts: s.attempts, errorRetries: s.errorRetries, starvedRaised: s.starvedRaised,
+      priority: s.priority === QUEUE_PRIORITY.mergeThroughput ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary,
+      // In memory only on a live entry: the next request for the change re-reads its files and text.
+      files: null, text: '',
+      ...(s.firstRefusedAt !== undefined ? { firstRefusedAt: s.firstRefusedAt } : {}),
+      ...(pausedMs > 0 ? { pausedMs } : {}),
+      ...(s.baseResolvedAt ? { baseResolvedAt: s.baseResolvedAt } : {}),
+      ...(s.interruptions ? { interruptions: s.interruptions } : {}),
+      ...(s.resumeFirst ? { resumeFirst: true as const } : {}),
+      ...(s.remoteAttempts ? { remoteAttempts: s.remoteAttempts } : {}),
+      ...(s.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
+      ...(s.preflightRediscoverable ? { preflightRediscoverable: true } : {}),
+    };
+  }
+
+  /**
+   * Move a held change's queue entry and waiting-list place into its hold record. The operator
+   * file is written BEFORE the entry leaves the queue; when that write fails the entry stays
+   * where it is (the start check and the dispatch check still refuse it). An entry a peer has
+   * reserved is running and is left alone.
+   */
+  private takeToHeld(pr: number, why: 'hold' | 'found-queued'): 'queue' | 'waiting-list' | null {
+    const rec = this.operator.get(pr);
+    if (!rec?.hold || rec.hold.releasing) return null;
+    const idx = this.queue.findIndex((e) => e.kind !== 'main' && e.pr === pr && !e.remote && !e.peerAttempt);
+    const waiter = this.waiting.get(pr);
+    if (idx < 0 && !waiter) return null;
+    const before = this.operator.copyOf(pr);
+    const h = rec.hold;
+    if (idx >= 0) {
+      const saved = this.savedEntryOf(this.queue[idx]);
+      // The first time the change queued is kept across every trip in and out of the queue.
+      if (h.entry) saved.firstQueuedAt = Math.min(saved.firstQueuedAt, h.entry.firstQueuedAt);
+      h.entry = saved;
+    }
+    if (waiter) h.waiter = { firstRefusedAt: waiter.firstRefusedAt, lastOfferedAt: waiter.lastOfferedAt, refusals: waiter.refusals };
+    h.takenAt = this.now();
+    if (!this.operator.persist()) { this.operator.restore(pr, before); return null; }
+    if (idx >= 0) this.queue.splice(idx, 1);
+    if (waiter) this.waiting.remove(pr, 'held');
+    const from = idx >= 0 ? 'queue' as const : 'waiting-list' as const;
+    this.audit({ event: 'operator-held-out', pr, from, why });
+    return from;
+  }
+
+  /**
+   * The one rule that covers every gap: whenever a queue entry (or a waiting-list place) is
+   * found for a held change, at boot or when the service next looks for work, it moves to held.
+   * This is how a run that comes back without a result (an interruption, an error re-run, a
+   * peer attempt abandoned on a restart) goes to held instead of back to the queue.
+   */
+  private sweepOperatorHeld(): void {
+    if (this.restoring || this.cfg.peerOnly || !this.queueControlsOn() || !this.operator.anyHold()) return;
+    let moved = false;
+    for (const r of this.operator.held()) {
+      if (r.hold!.releasing) continue;
+      if (this.takeToHeld(r.pr, 'found-queued') === 'queue') moved = true;
+    }
+    if (moved) this.persistQueue();
+  }
+
+  /** A request arrived for a held change: the hold remembers it, durably, so a release admits the change. */
+  private noteOperatorWanted(pr: number, how: 'explicit' | 'watcher'): void {
+    const h = this.operator.get(pr)?.hold;
+    if (!h || h.wanted === 'explicit' || h.wanted === how) return;
+    h.wanted = how;
+    this.operator.persist();
+  }
+
+  /** A change closed or merged: its hold and its front mark are dropped. */
+  private operatorOnClosed(pr: number): void {
+    this.operatorSeen.delete(pr);
+    if (!this.operator.drop(pr)) return;
+    this.operator.persist();
+    this.audit({ event: 'operator-record-dropped', pr, reason: 'closed' });
+  }
+
+  private endOperatorFront(pr: number, why: string): void {
+    this.operatorSeen.delete(pr);
+    if (!this.operator.get(pr)?.front) return;
+    this.operator.clearFront(pr);
+    this.operator.persist();
+    this.audit({ event: 'operator-front-ended', pr, why });
+  }
+
+  /**
+   * The front mark ends when the change gets a result, pass or fail, for its CURRENT commit and
+   * target branch (the result index's key), from a verify that ran or from a derived record.
+   * Not at a start: an interrupted run, an error re-run or an abandoned peer attempt comes back
+   * first. A result for an older commit or another target branch leaves the mark alone.
+   */
+  private operatorOnResult(record: LocalVerifyRecord): void {
+    if (record.kind === 'main' || !this.queueControlsOn()) return;
+    const pr = record.pr;
+    const order = this.operator.frontOrder(pr);
+    if (order === 0) return;
+    const work: Promise<void> = (async () => {
+      const view = await this.seams.prView(pr).catch(() => null);
+      const current = view ? { headSha: view.headRefOid, baseRefName: view.baseRefName } : (this.operatorSeen.get(pr) ?? null);
+      if (current && (current.headSha !== record.headSha || current.baseRefName !== record.baseRefName)) return;
+      // An error that is being re-run has given no result yet.
+      if (record.outcome === 'error' && this.operatorPresent(pr)) return;
+      if (this.operator.frontOrder(pr) !== order) return; // fronted again meanwhile
+      this.endOperatorFront(pr, `result:${record.outcome}`);
+    })().catch((e) => this.audit({ event: 'operator-front-result-error', pr, detail: e instanceof Error ? e.message : String(e) }));
+    this.pendingMainWork.push(work);
+    void work.finally(() => { const i = this.pendingMainWork.indexOf(work); if (i >= 0) this.pendingMainWork.splice(i, 1); });
+  }
+
+  /**
+   * An unreadable operator file is reported at once, one time: the previous good copy was used
+   * (the most recent change may be missing), or nothing could be read and no hold is in force.
+   */
+  private reportOperatorLoad(): void {
+    if (this.operatorLoadReported) return;
+    this.operatorLoadReported = true;
+    const r = this.operator.loadReport();
+    // Records that were readable only in part: a lost hold or front mark, or a hold that lost what it had saved. Never audit-only.
+    const issues = this.operator.loadIssues();
+    const lost = issues.filter((i) => i.what === 'hold-dropped' || i.what === 'front-dropped' || i.what === 'record-dropped');
+    const stripped = issues.filter((i) => i.what === 'saved-entry-dropped' || i.what === 'saved-waiter-dropped');
+    const names = (list: typeof issues) => [...new Set(list.map((i) => (i.pr === null ? 'a record with no usable number' : `PR #${i.pr}`)))].join(', ');
+    const partial = issues.length === 0 ? '' : ` Part of the list was damaged.${lost.length ? ` A hold or front mark was lost for: ${names(lost)}; those changes are not held now, so set them again.` : ''}${stripped.length ? ` Still held, but what the hold had saved (the place in the queue, a pending re-test) was lost for: ${names(stripped)}; after a release, request those changes again.` : ''}`;
+    const key = `local-verify:operator-file-unreadable:${new Date(this.now()).toISOString()}`;
+    if (r.status !== 'restored-from-previous' && r.status !== 'lost') {
+      if (issues.length === 0) return;
+      this.audit({ event: 'operator-file-unreadable', used: 'file-in-part', lost: lost.map((i) => i.pr), savedLost: stripped.map((i) => i.pr) });
+      this.signal(key, {
+        note: `The file that remembers which changes are held back from testing could be read only in part.${partial}`,
+        used: 'file-in-part', lost: lost.map((i) => i.pr), savedLost: stripped.map((i) => i.pr),
+      });
+      return;
+    }
+    if (r.status === 'restored-from-previous') {
+      const list = r.holds.length ? r.holds.map((h) => `PR #${h.pr} (${h.reason})`).join('; ') : 'none';
+      this.audit({ event: 'operator-file-unreadable', used: 'previous-copy', held: r.holds.map((h) => h.pr), fronted: r.fronted });
+      this.signal(key, {
+        note: `The file that remembers which changes are held back from testing could not be read, so its previous copy is in use. Held now: ${list}. Moved to the front now: ${r.fronted.length ? r.fronted.map((p) => `PR #${p}`).join(', ') : 'none'}. The most recent hold, release or front may be missing: check this list and set it again if it is.${partial}`,
+        used: 'previous-copy', held: r.holds.map((h) => h.pr), fronted: r.fronted,
+      });
+      return;
+    }
+    this.audit({ event: 'operator-file-unreadable', used: 'nothing', held: [], fronted: [] });
+    this.signal(key, {
+      note: 'The file that remembers which changes are held back from testing could not be read, and neither could its previous copy. No change is held and none is moved to the front now, so held changes may be tested. Set the holds again.',
+      used: 'nothing',
+    });
+  }
+
+  /** Room for one more record: changes GitHub reports closed or merged are dropped first. */
+  private async makeOperatorRoom(pr: number): Promise<boolean> {
+    if (this.operator.hasRoomFor(pr)) return true;
+    for (const r of this.operator.records()) {
+      const open = await this.seams.isPrOpen(r.pr).catch(() => null);
+      if (open === false) this.operatorOnClosed(r.pr);
+    }
+    return this.operator.hasRoomFor(pr);
+  }
+
+  /**
+   * Hold a change: it is out of the queue and the waiting list and is not admitted until it is
+   * released. A verify of it that is already running, here or on a peer, is left alone
+   * (`running: true`). After the room check nothing here waits, so a hold and the final step of
+   * a start or a peer reservation cannot interleave: whichever runs first decides both this
+   * answer and whether the verify starts.
+   */
+  async operatorHold(a: { pr: number; by: string; reason: string; until?: number }): Promise<OperatorHoldResult> {
+    const refused = this.operatorRefusal(a.pr);
+    if (refused) return { ok: false, code: refused };
+    // Checked before anything is stored: a time a Date cannot hold could be neither shown nor audited.
+    if (a.until !== undefined && !isValidTime(a.until)) return { ok: false, code: 'invalid-time' };
+    if (this.restoring) await this.restoring.catch(() => undefined);
+    this.reportOperatorLoad();
+    if (!(await this.makeOperatorRoom(a.pr))) {
+      this.audit({ event: 'operator-file-full', pr: a.pr, by: a.by, records: this.operator.size() });
+      return { ok: false, code: 'operator-file-full' };
+    }
+    if (this.stopped) return { ok: false, code: 'stopping' };
+    const before = this.operator.copyOf(a.pr);
+    const rec = this.operator.ensure(a.pr);
+    const old = rec.hold;
+    const alreadyHeld = !!old && !old.releasing;
+    const until = a.until !== undefined ? { until: a.until } : {};
+    if (alreadyHeld && old) {
+      // Held already: who, why and until are updated; what the hold took out stays as it is.
+      const { until: _oldUntil, reminded: _oldReminded, ...kept } = old; void _oldUntil;
+      rec.hold = { ...kept, by: a.by, reason: a.reason, ...until, ...(_oldReminded && a.until === old.until ? { reminded: true as const } : {}) };
+    } else {
+      // New, or a release that had not placed the change yet: what was saved stays saved.
+      rec.hold = {
+        by: a.by, reason: a.reason, at: this.now(), ...until,
+        ...(old?.entry ? { entry: old.entry } : {}), ...(old?.waiter ? { waiter: old.waiter } : {}),
+        ...(old?.takenAt !== undefined ? { takenAt: old.takenAt } : {}), ...(old?.wanted ? { wanted: old.wanted } : {}),
+      };
+    }
+    if (!this.operator.persist()) { this.operator.restore(a.pr, before); return { ok: false, code: 'state-unwritable' }; }
+    const running = this.operatorRunning(a.pr);
+    this.audit({
+      event: 'operator-hold', pr: a.pr, by: a.by, reason: a.reason, running: running ?? false, alreadyHeld,
+      ...(a.until !== undefined ? { until: safeIso(a.until) } : {}),
+    });
+    const removed = this.takeToHeld(a.pr, 'hold');
+    if (removed === 'queue') this.persistQueue();
+    this.pump(); // the freed place is filled by the queue's usual rules; something else may start now
+    return { ok: true, pr: a.pr, held: true, alreadyHeld, running: running !== null, ...(running ? { where: running } : {}), removed };
+  }
+
+  /**
+   * Release a hold and put back exactly what it took out: the saved queue entry (its first
+   * queued time, any pending re-test it carried), the waiting-list place, or the request made
+   * while it was held. A hold that took nothing and was never asked for only ends: a release
+   * never causes a test by itself. `releasing` is written first and cleared once the change is
+   * durably placed, so a restart in between finishes the release.
+   */
+  async operatorRelease(a: { pr: number; by: string }): Promise<OperatorReleaseResult> {
+    const refused = this.operatorRefusal(a.pr);
+    if (refused) return { ok: false, code: refused };
+    if (this.restoring) await this.restoring.catch(() => undefined);
+    this.reportOperatorLoad();
+    const rec = this.operator.get(a.pr);
+    if (!rec?.hold) return { ok: false, code: 'not-held' };
+    if (!rec.hold.releasing) {
+      const before = this.operator.copyOf(a.pr);
+      rec.hold.releasing = { by: a.by, at: this.now() };
+      if (!this.operator.persist()) { this.operator.restore(a.pr, before); return { ok: false, code: 'state-unwritable' }; }
+      this.audit({
+        event: 'operator-release', pr: a.pr, by: a.by, heldMs: this.now() - rec.hold.at,
+        restores: rec.hold.entry ? 'queue-entry' : rec.hold.waiter ? 'waiting-place' : rec.hold.wanted ? 'request' : 'nothing',
+      });
+    }
+    return this.finishOperatorRelease(a.pr, false);
+  }
+
+  /** Place the released change and clear `releasing`. Also run at boot and on ticks for a release a restart or an unreadable change interrupted. */
+  private async finishOperatorRelease(pr: number, retry: boolean): Promise<OperatorReleaseResult> {
+    const h = this.operator.get(pr)?.hold;
+    if (!h?.releasing) return { ok: false, code: 'not-held' };
+    const token = h.releasing.at;
+    const heldMs = h.takenAt !== undefined ? Math.max(0, this.now() - h.takenAt) : 0;
+    const pending = (why: string): OperatorReleaseResult => {
+      const cur = this.operator.get(pr)?.hold;
+      if (retry && cur?.releasing) {
+        cur.releasing.tries = (cur.releasing.tries ?? 0) + 1;
+        if (cur.releasing.tries > OPERATOR_QUEUE_LIMITS.pendingRetries) {
+          // The change could not be read for a long time: the hold still ends, and nothing is placed.
+          this.operator.clearHold(pr);
+          this.audit({ event: 'operator-release-abandoned', pr, reason: why });
+        }
+        this.operator.persist();
+      }
+      return { ok: true, pr, released: false, placed: 'pending', detail: why };
+    };
+    let placed: 'queue' | 'waiting-list' | 'already-placed' | 'none' = 'none';
+    let overCap = false;
+    let detail: string | undefined;
+    let savedEntryDropped = false;
+    if (this.operatorPresent(pr)) placed = 'already-placed';
+    else if (this.waiting.get(pr)) placed = 'waiting-list'; // placed there before a restart: its place is kept
+    else if (h.entry) {
+      const full = this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap;
+      if (full && this.operatorOverflowUsed() >= OPERATOR_QUEUE_LIMITS.overflow) {
+        // The queue and its operator overflow are full: the head of the waiting list, so it takes the next free place.
+        // The waiting list holds only the change number, so what the saved entry carried (a re-test
+        // against a newer base, its attempts) is not kept: the answer and the audit row say so.
+        this.waiting.put(pr, h.entry.firstRefusedAt ?? h.entry.firstQueuedAt, { head: true });
+        placed = 'waiting-list';
+        savedEntryDropped = true;
+        detail = 'placed on the waiting list; the saved re-test was not kept';
+      } else {
+        const entry = this.entryFromSaved(pr, h.entry, heldMs);
+        this.queue.push(entry);
+        if (full) this.operator.markOverCap(pr);
+        if (!this.persistQueue()) {
+          this.queue.splice(this.queue.indexOf(entry), 1);
+          if (full) this.operator.unmarkOverCap(pr);
+          return pending('queue-unwritable');
+        }
+        placed = 'queue';
+        overCap = full;
+        if (full) this.audit({ event: 'release-admitted-over-cap', pr, headSha: entry.headSha, used: this.operatorOverflowUsed(), max: OPERATOR_QUEUE_LIMITS.overflow });
+      }
+    } else if (h.waiter || h.wanted) {
+      const r = await this.request(pr, {
+        explicit: h.wanted !== 'watcher', operator: 'release',
+        carry: { ...(h.waiter ? { firstRefusedAt: h.waiter.firstRefusedAt } : {}), ...(heldMs > 0 ? { pausedMs: heldMs } : {}) },
+      });
+      const cur = this.operator.get(pr)?.hold;
+      if (!cur?.releasing || cur.releasing.at !== token) {
+        // Held again, or dropped as closed, while the change was read: this release placed nothing more.
+        return { ok: true, pr, released: !cur, placed: 'none', detail: r.ok ? 'superseded' : r.code };
+      }
+      if (r.ok && r.status === 'recorded') detail = 'recorded';
+      else if (r.ok) { placed = 'queue'; overCap = r.status === 'queued' && r.operatorOverCap === true; }
+      else if (r.code === 'overflow-full') {
+        this.waiting.put(pr, h.waiter?.firstRefusedAt ?? this.now(), { head: true, ...(h.waiter ? { refusals: h.waiter.refusals } : {}) });
+        placed = 'waiting-list';
+      } else if (r.code === 'pr-unreadable' || r.code === 'pr-invalid-shas' || r.code === 'stopping') return pending(r.code);
+      else detail = r.code;
+    }
+    this.operator.clearHold(pr);
+    this.operator.persist();
+    this.audit({ event: 'operator-release-placed', pr, placed, ...(overCap ? { overCap: true } : {}), ...(savedEntryDropped ? { savedEntryDropped: true } : {}), ...(detail ? { detail } : {}) });
+    // A restored entry is tested at the change's newest commit, as any entry is: the same read
+    // a re-request makes (a moved head takes the entry's place; an unreadable change keeps it).
+    if (h.entry && placed === 'queue') await this.request(pr, { explicit: true }).catch(() => null);
+    this.pump();
+    return { ok: true, pr, released: true, placed, ...(overCap ? { overCap: true as const } : {}), ...(detail ? { detail } : {}) };
+  }
+
+  /**
+   * Front a change: it is the next CHANGE to start (the most recently fronted first). A change
+   * that is not queued is admitted by this call, into a full queue too, within the operator
+   * overflow. Front orders changes among themselves and passes no gate: a due `main` verify, an
+   * update pause, a memory hold, the main-red hold and the verifier hold apply as before.
+   */
+  async operatorFront(a: { pr: number; by: string; reason: string }): Promise<OperatorFrontResult> {
+    const refused = this.operatorRefusal(a.pr);
+    if (refused) return { ok: false, code: refused };
+    if (this.restoring) await this.restoring.catch(() => undefined);
+    this.reportOperatorLoad();
+    const limit = (): OperatorFrontResult | null => {
+      const fronted = this.operator.fronted();
+      if (this.operator.get(a.pr)?.front || fronted.length < OPERATOR_QUEUE_LIMITS.maxFronted) return null;
+      return { ok: false, code: 'front-limit', fronted: fronted.map((r) => ({ pr: r.pr, reason: r.front!.reason, by: r.front!.by, at: safeIso(r.front!.at) })) };
+    };
+    const over = limit();
+    if (over) return over;
+    if (!(await this.makeOperatorRoom(a.pr))) {
+      this.audit({ event: 'operator-file-full', pr: a.pr, by: a.by, records: this.operator.size() });
+      return { ok: false, code: 'operator-file-full' };
+    }
+    if (this.stopped) return { ok: false, code: 'stopping' };
+    const overNow = limit(); // the room check may have waited
+    if (overNow) return overNow;
+    const running = this.operatorRunning(a.pr);
+    const queuedAt = this.queue.findIndex((e) => e.kind !== 'main' && e.pr === a.pr);
+    const held = this.operator.isHeld(a.pr);
+    const admitting = running === null && queuedAt < 0 && !held;
+    const before = this.operator.copyOf(a.pr);
+    const rec = this.operator.ensure(a.pr);
+    const order = this.operator.takeOrder();
+    // "front, admitting" is written BEFORE the change is admitted: a restart in between finishes the admission at boot.
+    rec.front = { order, by: a.by, reason: a.reason, at: this.now(), ...(admitting ? { admitting: true as const } : {}) };
+    // A held change stays held and is first when released: the hold remembers it is wanted.
+    if (held && rec.hold && rec.hold.wanted !== 'explicit') rec.hold.wanted = 'explicit';
+    if (!this.operator.persist()) { this.operator.restore(a.pr, before); return { ok: false, code: 'state-unwritable' }; }
+    const state = running ? 'running' : held ? 'held' : admitting ? 'admitting' : 'queued';
+    this.audit({ event: 'operator-front', pr: a.pr, by: a.by, reason: a.reason, order, state });
+    if (running) return { ok: true, pr: a.pr, status: 'running', order, where: running };
+    if (held) return { ok: true, pr: a.pr, status: 'held', order };
+    if (!admitting) {
+      const e = this.queue[queuedAt];
+      if (e) this.operatorSeen.set(a.pr, { headSha: e.headSha, baseRefName: e.baseRefName });
+      this.pump();
+      return { ok: true, pr: a.pr, status: 'fronted', order, rank: this.operatorFrontRank(a.pr) };
+    }
+    return this.finishOperatorFront(a.pr, false);
+  }
+
+  /** A fronted change's place among the fronted changes, most recently fronted first: 1 = the next change to start. */
+  private operatorFrontRank(pr: number): number {
+    return this.operator.fronted().findIndex((r) => r.pr === pr) + 1;
+  }
+
+  /** Admit a fronted change that was not queued, then clear "admitting". Also run at boot and on ticks. */
+  private async finishOperatorFront(pr: number, retry: boolean): Promise<OperatorFrontResult> {
+    const f = this.operator.get(pr)?.front;
+    if (!f?.admitting) return { ok: true, pr, status: 'fronted', ...(f ? { order: f.order } : {}) };
+    const order = f.order;
+    const r = await this.request(pr, { explicit: true, operator: 'front' });
+    const cur = this.operator.get(pr)?.front;
+    if (!cur || cur.order !== order) {
+      // Unfronted, fronted again or dropped as closed while the change was read.
+      return r.ok ? { ok: true, pr, status: r.status === 'recorded' ? 'recorded' : 'admitted' } : { ok: false, code: r.code };
+    }
+    if (r.ok && r.status !== 'recorded') {
+      delete cur.admitting;
+      delete cur.tries;
+      this.operator.persist();
+      this.pump();
+      return {
+        ok: true, pr, status: 'admitted', order,
+        ...(r.status === 'queued' && r.operatorOverCap ? { overCap: true as const } : {}),
+        rank: this.operatorFrontRank(pr),
+      };
+    }
+    if (r.ok) {
+      // It already has a result for its current commit: nothing to test, so nothing to put first.
+      this.endOperatorFront(pr, 'recorded');
+      return { ok: true, pr, status: 'recorded' };
+    }
+    if (r.code === 'held') {
+      delete cur.admitting;
+      this.noteOperatorWanted(pr, 'explicit');
+      this.operator.persist();
+      return { ok: true, pr, status: 'held', order };
+    }
+    if (retry && (r.code === 'pr-unreadable' || r.code === 'pr-invalid-shas' || r.code === 'stopping')) {
+      cur.tries = (cur.tries ?? 0) + 1;
+      if (cur.tries <= OPERATOR_QUEUE_LIMITS.pendingRetries) { this.operator.persist(); return { ok: false, code: r.code }; }
+    }
+    this.endOperatorFront(pr, r.code);
+    return { ok: false, code: r.code };
+  }
+
+  /** End a front mark: the entry stays queued at its ordinary priority. */
+  operatorUnfront(a: { pr: number; by: string }): OperatorUnfrontResult {
+    const refused = this.operatorRefusal(a.pr);
+    if (refused) return { ok: false, code: refused };
+    this.reportOperatorLoad();
+    if (!this.operator.get(a.pr)?.front) return { ok: false, code: 'not-fronted' };
+    const before = this.operator.copyOf(a.pr);
+    this.operator.clearFront(a.pr);
+    if (!this.operator.persist()) { this.operator.restore(a.pr, before); return { ok: false, code: 'state-unwritable' }; }
+    this.operatorSeen.delete(a.pr);
+    this.audit({ event: 'operator-unfront', pr: a.pr, by: a.by });
+    this.pump();
+    return { ok: true, pr: a.pr, unfronted: true };
+  }
+
+  /** The operator's holds and front marks for `GET /local-verify`; null while the switch is off. */
+  operatorQueue(): OperatorQueueView | null {
+    if (this.cfg.peerOnly || !this.queueControlsOn()) return null;
+    const now = this.now();
+    const iso = (ms: number) => safeIso(ms); // never throws on a bad time
+    return {
+      enabled: true,
+      held: this.operator.held().map((r) => {
+        const h = r.hold!;
+        return {
+          pr: r.pr, reason: h.reason, by: h.by, at: iso(h.at), until: h.until !== undefined ? iso(h.until) : null, heldMs: Math.max(0, now - h.at),
+          wanted: !!(h.entry || h.waiter || h.wanted), reminded: h.reminded === true, running: this.operatorRunning(r.pr) !== null,
+          releasing: !!h.releasing, savedEntry: !!h.entry,
+        };
+      }),
+      fronted: this.operator.fronted().map((r) => {
+        const f = r.front!;
+        return {
+          pr: r.pr, reason: f.reason, by: f.by, at: iso(f.at), order: f.order, held: this.operator.isHeld(r.pr),
+          queued: this.queue.some((e) => e.kind !== 'main' && e.pr === r.pr), running: this.operatorRunning(r.pr) !== null, admitting: f.admitting === true,
+        };
+      }),
+      overflow: { used: this.operatorOverflowUsed(), max: OPERATOR_QUEUE_LIMITS.overflow },
+      limits: { fronted: OPERATOR_QUEUE_LIMITS.maxFronted, records: OPERATOR_QUEUE_LIMITS.maxRecords },
+    };
+  }
+
+  /** The `boot` audit row: why this process started, when the restart request carried a reason; `unknown` otherwise. */
+  private auditBoot(): void {
+    let last: ReturnType<typeof readLastRestartRequest> = null;
+    try { last = readLastRestartRequest(this.cfg.stateDir); } catch { last = null; } // @silent-fallback-ok: no readable request reads as unknown, which is what the row then says
+    const b = bootReason(last, this.lastBootRestartAt(), this.now());
+    this.audit({ event: 'boot', ...b });
+  }
+
+  /** The restart request the newest earlier `boot` row named (so one request explains one start). Reads only the log's tail. */
+  private lastBootRestartAt(): string | null {
+    try {
+      const size = fs.statSync(this.auditPath).size;
+      const fd = fs.openSync(this.auditPath, 'r');
+      try {
+        const len = Math.min(size, 256 * 1024);
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, size - len);
+        const lines = buf.toString('utf8').split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (!lines[i].includes('"event":"boot"')) continue;
+          try {
+            const o = JSON.parse(lines[i]) as { event?: unknown; restartAt?: unknown };
+            if (o.event === 'boot') return typeof o.restartAt === 'string' ? o.restartAt : null;
+          } catch { /* @silent-fallback-ok: a torn first line from the tail cut */ }
+        }
+      } finally { fs.closeSync(fd); }
+    } catch { /* @silent-fallback-ok: no audit log yet (first boot) */ }
+    return null;
+  }
+
+  /**
+   * Boot: an unreadable operator file is reported, and what a restart interrupted is finished
+   * (a front that was still admitting, a release that had not placed its change). The restored
+   * queue was already swept: an entry of a held change is in its hold record.
+   */
+  private async bootOperator(): Promise<void> {
+    if (!this.queueControlsOn()) return;
+    this.reportOperatorLoad();
+    // Only the machine that holds the lease admits or places anything; elsewhere the tick does it once the lease is held.
+    if (this.leaseState().holds) await this.finishOperatorPending();
+    this.sweepOperatorHeld();
+    this.persistQueue();
+  }
+
+  private async finishOperatorPending(): Promise<void> {
+    for (const r of this.operator.records()) {
+      if (this.stopped) return;
+      if (r.hold?.releasing) await this.finishOperatorRelease(r.pr, true);
+      if (this.operator.get(r.pr)?.front?.admitting) await this.finishOperatorFront(r.pr, true);
+    }
+  }
+
+  /**
+   * Every tick on a coordinator. Switch off: held changes that were wanted go back through
+   * ordinary admission, so nothing is stranded outside the queue (the records are kept).
+   * Switch on: the unreadable-file report, the lease notice, what a restart interrupted, the
+   * sweep, and once an hour the reminder for due holds and the drop of closed changes.
+   */
+  private async tickOperator(): Promise<void> {
+    if (this.operatorTicking || this.stopped) return;
+    this.operatorTicking = true;
+    try {
+      if (!this.queueControlsOn()) {
+        await this.readmitHeldWhileOff();
+        return;
+      }
+      this.reportOperatorLoad();
+      if (this.operator.size() === 0) return;
+      const lease = this.leaseState();
+      if (lease.unreadable) return;
+      if (!lease.holds) {
+        // Two readable reads in a row (as the peer-trust check does): one odd read tells nobody.
+        if (this.operator.leaseNoticeSentAt() === null && ++this.operatorLeaseMisses >= 2) this.noticeOperatorLeaseLost(lease.holder);
+        return;
+      }
+      this.operatorLeaseMisses = 0;
+      // The lease is back on this machine after a notice: the records from the earlier period are kept.
+      if (this.operator.leaseNoticeSentAt() !== null) this.noteOperatorRecordsKept();
+      await this.finishOperatorPending();
+      this.sweepOperatorHeld();
+      if (this.now() - this.operatorCheckAt >= OPERATOR_QUEUE_LIMITS.checkEveryMs) await this.checkOperatorHolds();
+    } finally {
+      this.operatorTicking = false;
+    }
+  }
+
+  /**
+   * This machine has the lease again (after another machine held it, or after its own notice)
+   * and finds holds or front marks in its own file from the earlier period: they are kept, and
+   * one audit row lists them.
+   */
+  private noteOperatorRecordsKept(): void {
+    if (this.cfg.peerOnly || !this.queueControlsOn()) return;
+    const noticed = this.operator.leaseNoticeSentAt() !== null;
+    this.operatorLeaseMisses = 0;
+    if (noticed) { this.operator.setLeaseNotice(null); this.operator.persist(); }
+    if (this.operator.size() === 0) return;
+    this.audit({ event: 'operator-records-kept', held: this.operator.held().map((r) => r.pr), fronted: this.operator.fronted().map((r) => r.pr) });
+  }
+
+  /**
+   * This machine holds records and no longer holds the coordinator lease: the machine that took
+   * over cannot read this file and starts with no holds. One notice lists each held and fronted
+   * change with its reason, so they can be set again there.
+   */
+  private noticeOperatorLeaseLost(holder: string | null): void {
+    const held = this.operator.held().map((r) => ({ pr: r.pr, reason: r.hold!.reason, by: r.hold!.by }));
+    const fronted = this.operator.fronted().map((r) => ({ pr: r.pr, reason: r.front!.reason, by: r.front!.by }));
+    this.operator.setLeaseNotice(this.now());
+    this.operator.persist();
+    const line = (x: { pr: number; reason: string; by: string }) => `PR #${x.pr} (${x.reason}; set by ${x.by})`;
+    const note = `This machine no longer runs the test line${holder ? ` (${holder} does now)` : ''}, and the machine that took over does not know these choices. Held back from testing here: ${held.length ? held.map(line).join('; ') : 'none'}. Moved to the front here: ${fronted.length ? fronted.map(line).join('; ') : 'none'}. Set them again on the machine that runs the line now.`;
+    const key = `local-verify:operator-lease-moved:${new Date(this.now()).toISOString()}`;
+    const attention = () => this.signal(key, { note, holder, held, fronted });
+    const row = (to: 'operating-session' | 'attention', why?: string, phase?: string | null) =>
+      this.audit({ event: 'operator-lease-lost', holder, held: held.map((h) => h.pr), fronted: fronted.map((f) => f.pr), announcedTo: to, ...(why ? { why } : {}), ...(phase !== undefined ? { phase } : {}) });
+    const send = this.operatorNotifier;
+    if (!send) { row('attention', 'no-operating-session-set'); attention(); return; }
+    // The operating session is told directly; the attention item is the fallback when no session is set or the message could not be sent.
+    const work: Promise<void> = Promise.resolve()
+      .then(() => send({ subject: 'Local Verify: held changes stayed on a machine that no longer runs the line', body: note }))
+      .then((r) => { if (r.sent) row('operating-session', undefined, r.phase ?? null); else { row('attention', 'not-delivered', r.phase ?? null); attention(); } },
+        (e) => { row('attention', `send-failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`); attention(); });
+    this.pendingMainWork.push(work);
+    void work.finally(() => { const i = this.pendingMainWork.indexOf(work); if (i >= 0) this.pendingMainWork.splice(i, 1); });
+  }
+
+  /** Switch off: every held change that was wanted (queued, waiting, requested or fronted) goes back through ordinary admission. */
+  private async readmitHeldWhileOff(): Promise<void> {
+    if (!this.operator.anyHold() && !this.operator.anyFront()) return;
+    if (!this.leaseState().holds) return;
+    let changed = false;
+    for (const r of this.operator.records()) {
+      if (this.stopped) break;
+      const f = this.operator.get(r.pr)?.front;
+      if (f?.admitting) {
+        // A front that was still admitting when the switch went off: one ordinary request, then nothing pending.
+        const res = await this.request(r.pr, { explicit: true });
+        if (!res.ok && (res.code === 'pr-unreadable' || res.code === 'pr-invalid-shas') && (f.tries = (f.tries ?? 0) + 1) <= OPERATOR_QUEUE_LIMITS.pendingRetries) { changed = true; continue; }
+        const cur = this.operator.get(r.pr)?.front;
+        if (cur) { delete cur.admitting; delete cur.tries; changed = true; }
+      }
+      const h = this.operator.get(r.pr)?.hold;
+      if (!h || !(h.entry || h.waiter || h.wanted || h.releasing)) continue;
+      const heldMs = h.takenAt !== undefined ? Math.max(0, this.now() - h.takenAt) : 0;
+      let placed = 'already-placed';
+      if (!this.operatorPresent(r.pr) && !this.waiting.get(r.pr)) {
+        if (h.entry && this.prQueueLength() < LOCAL_VERIFY_LIMITS.queueCap) {
+          this.queue.push(this.entryFromSaved(r.pr, h.entry, heldMs));
+          placed = 'queue';
+        } else if (h.entry || h.waiter) {
+          // No free place (or it was waiting): the waiting list, with the time it first waited.
+          this.waiting.put(r.pr, h.waiter?.firstRefusedAt ?? h.entry?.firstRefusedAt ?? h.entry?.firstQueuedAt ?? this.now(), h.waiter ? { refusals: h.waiter.refusals } : {});
+          placed = 'waiting-list';
+        } else if (h.wanted) {
+          const res = await this.request(r.pr, { explicit: h.wanted !== 'watcher' });
+          if (!res.ok && (res.code === 'pr-unreadable' || res.code === 'pr-invalid-shas')) {
+            // Asked again on the next tick, a bounded number of times; then the request is given up (audited below).
+            const tries = (this.operatorReadmitTries.get(r.pr) ?? 0) + 1;
+            this.operatorReadmitTries.set(r.pr, tries);
+            if (tries <= OPERATOR_QUEUE_LIMITS.pendingRetries) continue;
+          }
+          this.operatorReadmitTries.delete(r.pr);
+          placed = res.ok ? res.status : res.code;
+        } else placed = 'none';
+      }
+      const cur = this.operator.get(r.pr);
+      if (!cur?.hold) continue; // dropped as closed while it was read
+      if (cur.hold.releasing) this.operator.clearHold(r.pr); // a release in progress simply ends
+      else { delete cur.hold.entry; delete cur.hold.waiter; delete cur.hold.wanted; delete cur.hold.takenAt; }
+      changed = true;
+      this.audit({ event: 'operator-readmitted-switch-off', pr: r.pr, placed });
+    }
+    if (changed) { this.operator.persist(); this.pump(); }
+  }
+
+  /**
+   * Hourly, on the coordinator: a held or fronted change that has closed is dropped; a hold
+   * past its `until`, or 24 hours old with none, is reminded ONCE. Holds found due at the same
+   * check share one attention item, whose id carries the check time.
+   */
+  private async checkOperatorHolds(): Promise<void> {
+    const now = this.now();
+    this.operatorCheckAt = now;
+    const due: OperatorRecord[] = [];
+    const rest: OperatorRecord[] = [];
+    for (const r of this.operator.records()) (r.hold && !r.hold.releasing && holdReminderDue(r.hold, now) ? due : rest).push(r);
+    // Closed changes: every due hold is checked (a closed one is dropped, not reminded), plus a bounded, rotating part of the rest.
+    const n = Math.min(OPERATOR_QUEUE_LIMITS.closedChecksPerPass, rest.length);
+    const start = rest.length ? this.operatorClosedCursor % rest.length : 0;
+    this.operatorClosedCursor = rest.length ? (start + n) % rest.length : 0;
+    const sample = Array.from({ length: n }, (_, i) => rest[(start + i) % rest.length]);
+    const stillDue: OperatorRecord[] = [];
+    for (const r of [...due, ...sample]) {
+      if (this.stopped) return;
+      const open = await this.seams.isPrOpen(r.pr).catch(() => null);
+      if (open === false) this.operatorOnClosed(r.pr);
+      else if (due.includes(r) && this.operator.get(r.pr)?.hold) stillDue.push(r);
+    }
+    if (stillDue.length === 0) return;
+    const items = stillDue.flatMap((r) => {
+      const h = this.operator.get(r.pr)?.hold;
+      if (!h || h.releasing || !holdReminderDue(h, now)) return [];
+      h.reminded = true;
+      this.audit({ event: 'operator-hold-due', pr: r.pr, by: h.by, reason: h.reason, heldMs: now - h.at, ...(h.until !== undefined ? { until: safeIso(h.until) } : {}) });
+      return [{ pr: r.pr, by: h.by, reason: h.reason, heldHours: Math.round((now - h.at) / 3_600_000), until: h.until !== undefined ? safeIso(h.until) : null }];
+    });
+    if (items.length === 0) return;
+    this.operator.persist();
+    const line = (x: (typeof items)[number]) => `PR #${x.pr} (held ${x.heldHours} h by ${x.by}: ${x.reason}${x.until ? `; expected release ${x.until}` : ''})`;
+    this.signal(`local-verify:operator-hold-due:${new Date(now).toISOString()}`, {
+      note: `${items.length === 1 ? 'A change is' : `${items.length} changes are`} still held back from testing past ${items.length === 1 ? 'its' : 'their'} expected release: ${items.map(line).join('; ')}. A held change is not tested and cannot merge on a new result. Release it when it should be tested again; this reminder is sent once per hold.`,
+      holds: items,
+    });
   }
 
   // ---- durable files ----

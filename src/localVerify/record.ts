@@ -203,6 +203,11 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const REF = /^(?!-)(?!\/)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[^\s~^:?*[\\\x00-\x1f\x7f]+(?<!\/)(?<!\.lock)(?<!\.)$/;
 const STATUS_LIMIT = 140;
 
+/** A branch name a record may carry as `baseRefName` (the same check `validateRecord` applies). */
+export function isValidBaseRef(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 255 && REF.test(v);
+}
+
 export function isValidPr(pr: unknown): pr is number {
   return typeof pr === 'number' && Number.isSafeInteger(pr) && pr > 0;
 }
