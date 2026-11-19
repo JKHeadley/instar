@@ -34,7 +34,7 @@ This change moves all of the cleanup's checking and removing into a separate bac
   - Ownership is held by the process group until no member remains.
   - Trash deletes each run in a killable sub-process, under a 300 s budget, with retry counts that survive a restart.
 - **Closed-unmerged PRs** count as finished only on an exact `headRefOid` match and a matching `git ls-remote refs/pull/<n>/head`.
-- **Honest scope.** Most new copies clone `node_modules`, and the reaper keeps those as work. So this change drains the backlog (about 123) in about 6 hourly runs, but it does not by itself stop daily growth. That rule is raised to the Chief of Staff as a separate decision.
+- **Honest scope.** About 61 of the 74 copies made a day have a symlinked `node_modules` or none, and can be reclaimed hourly once clean and merged. About 13 a day hold a real npm install (about 0.7 GB), which the reaper keeps as work. That rule is the separate spec `reaper-node-modules-regenerable`. (An earlier draft said most copies clone `node_modules`; a re-count at 20:58 PT corrected it.)
 
 ## Iteration Summary
 
@@ -57,7 +57,7 @@ Tier 2: irreversible removal plus a guard change. All 6 of 6 rounds were used. E
 - **A few milliseconds between the final re-check and the rename.** The same residual writer race PR 3480 accepts. An already-open file keeps writing into the trash copy.
 - **Prune side effects.** A prune in the microseconds before git writes a new entry's lock makes that add fail loudly. Prune also drops entries for worktrees whose folder is missing elsewhere (re-linkable with `git worktree repair`; no commits lost).
 - **The wider `/.instar/` guard hole** (fb-abdf2088-f27). It predates this change and needs its own spec. This change does not rely on it.
-- **Cloned-`node_modules` worktrees stay kept.** Reclaiming them changes a long-standing safety rule, and that is the Chief of Staff's decision.
+- **Worktrees with a real `node_modules` stay kept** (about 13 a day). Reclaiming them is the separate spec `reaper-node-modules-regenerable`.
 
 ## Full Findings Catalog
 

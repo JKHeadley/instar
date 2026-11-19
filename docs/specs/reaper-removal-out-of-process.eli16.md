@@ -17,7 +17,7 @@ Of yesterday's new copies, 11 already had their work merged and 8 had their work
 
 ## What this does not fix yet
 
-Most new copies carry their own copy of the project's libraries. That copy shares disk space with the original, but the cleanup still treats it as possible work, so those copies stay. Changing that rule is a separate decision for the Chief of Staff, raised alongside this.
+About 13 of the roughly 74 new copies a day carry their own full install of the project's libraries, about 0.7 GB each. The cleanup treats that as possible work, so those copies stay. Changing that rule is its own spec, which the Chief of Staff asked for. The other copies can be cleaned up once their work is merged.
 
 ## Safeguards
 
