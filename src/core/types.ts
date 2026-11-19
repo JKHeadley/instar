@@ -5072,6 +5072,12 @@ export interface InstarConfig {
     toneTierDryRun?: boolean;
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
+    /**
+     * B26_WAITING_ASK_UNLINKED (docs/specs/waiting-on-you-links.md): a reply that refers to
+     * something the agent is waiting on the person for must carry the ask's link and a
+     * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
+     */
+    waitingAskLinks?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
