@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dashboard-card-closeout",
+  "sessionId": "7b04db19-7829-4fc9-8492-204d8ce4c5af",
+  "timestamp": "2026-11-18T07:17:59.632Z",
+  "artifactPath": "upgrades/side-effects/dashboard-card-closeout.md",
+  "artifactSha256": "456b81bbcd59b4976c0c6aec3c3f07a2f63cd15a0eafb1f470f0097a8bedaeb2",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "tests/unit/console-work-closeout.test.ts",
+    "upgrades/eli16/dashboard-card-closeout.md",
+    "upgrades/next/dashboard-card-closeout.md",
+    "upgrades/side-effects/dashboard-card-closeout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Console client for the approved work-front-doors §6 close on the existing PIN tap path; no server or authority change.",
+  "eli16Path": "upgrades/eli16/dashboard-card-closeout.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-card-closeout.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

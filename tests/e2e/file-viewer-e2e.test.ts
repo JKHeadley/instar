@@ -782,7 +782,7 @@ describe('E2E: Dashboard File Viewer', () => {
       const res = await request(baseUrl, 'GET', '/api/files/link?path=.claude/CLAUDE.md');
       expect(res.status).toBe(200);
       expect(res.body.path).toBe('.claude/CLAUDE.md');
-      expect(res.body.relative).toContain('/dashboard?tab=files&path=');
+      expect(res.body.relative).toContain('/dashboard/console/#/settings/files?path=');
       expect(res.body.relative).toContain(encodeURIComponent('.claude/CLAUDE.md'));
       expect(typeof res.body.editable).toBe('boolean');
     });
@@ -815,7 +815,7 @@ describe('E2E: Dashboard File Viewer', () => {
       const res = await request(baseUrl, 'GET', '/api/files/link?path=docs/README.md');
       expect(res.status).toBe(200);
       // URL should be properly encoded
-      expect(res.body.relative).toBe('/dashboard?tab=files&path=docs%2FREADME.md');
+      expect(res.body.relative).toBe('/dashboard/console/#/settings/files?path=docs%2FREADME.md');
     });
 
     it("generates links under the DEFAULT project-root config ['./'] (regression: was a blanket 403)", async () => {

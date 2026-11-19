@@ -28,6 +28,7 @@ export class ConversationGraphRuntimeReadSource implements GraphReadSource {
   if(!this.runtime.isReady())return false;
   try{this.runtime.actuation();return true;}catch{/* @silent-fallback-ok — absent current write authority disables the correction capability; read readiness remains separately verified. */return false;}
  }
+ scoped<T>(fn:()=>T):T{return this.runtime.withPinnedReadView(fn);}
  readiness():{ready:true}|{ready:false;reason:string}{
   this.snapshot=null;this.inventorySnapshot=null;
   try{

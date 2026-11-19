@@ -28,7 +28,7 @@ export async function mountPending({body,syncLine,baseSync='',send,current,unloc
   if(!active())return null;if(response.needsUnlock){unlock();return null;}
   const node=response.ok?nodeModel(response.data):null;
   if(node?.ok&&sameNodeRef(node.node.ref,ref)){const label=[...node.path.map(part=>part.title),node.node.title].join(' / ');known.set(key,label);return label;}
-  return ref.kind==='effort'?'Effort (details unavailable)':'Conversation (details unavailable)';
+  return ref.kind==='effort'?'Group (details unavailable)':'Conversation (details unavailable)';
  };
  const row=item=>{
   const words=el('p',{class:'need-sub',text:item.words});
@@ -49,7 +49,7 @@ export async function mountPending({body,syncLine,baseSync='',send,current,unloc
   const intent=item.localIntent?.change;
   if(intent){
    if(intent.kind==='set-effort-title')detail.textContent=`Pending name: ${intent.title}`;
-   if(intent.kind==='create-effort')detail.textContent='New effort · recorded locally, not yet in the agreed tree.';
+   if(intent.kind==='create-effort')detail.textContent='New group · recorded locally, not yet in the agreed tree.';
    if(intent.kind==='set-primary-placement'||intent.kind==='set-front-door'){
     const from=intent.subject||intent.effort,to=intent.kind==='set-primary-placement'?intent.parent:intent.conversation;
     const reveal=el('button',{type:'button',class:'btn-quiet btn-inline',text:'Show intended placement',onclick:async()=>{

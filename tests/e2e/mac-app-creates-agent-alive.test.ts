@@ -18,7 +18,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
+import { appTicketPlan, readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
 import { localOwnerProofMessage } from '../../src/server/mobileLocalOwnerDevice.js';
 
 const PORT = 4799;
@@ -90,5 +90,19 @@ describe('mac-app-creates-agent is alive on the production boot path', () => {
       .send({ ticket: t2, publicKey: other.publicKey, timeMs: time2, proof: other.sign(localOwnerProofMessage(HOST, other.publicKey, t2, time2)) });
     expect(second.status).toBe(409);
     expect(second.body.error).toBe('owner-device-exists');
+
+    // The app lost its key (reinstalled): --replace-app-key on this same machine names the earlier device,
+    // the new key enrolls, and the old key stops working at once.
+    const machineId = (JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8')) as { machineId: string }).machineId;
+    const plan = appTicketPlan(stateDir, other.publicKey, { replace: true, machineId });
+    expect(plan).toEqual({ replaces: [deviceId] });
+    const t3 = writeLocalOwnerTicket(stateDir, Date.now(), (plan as { replaces: string[] }).replaces);
+    expect(readLocalOwnerTicket(stateDir)!.replaces).toEqual([deviceId]);
+    const time3 = String(Date.now());
+    const replaced = await request(app).post('/mobile/local-owner-device').set('Host', HOST)
+      .send({ ticket: t3, publicKey: other.publicKey, timeMs: time3, proof: other.sign(localOwnerProofMessage(HOST, other.publicKey, t3, time3)) });
+    expect(replaced.status).toBe(200);
+    expect(replaced.body.replaced).toEqual([deviceId]);
+    expect((await signed()).status).toBe(401);
   });
 });

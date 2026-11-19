@@ -93,13 +93,18 @@ export function fileKind(name) {
 
 // ── the server's refusals, in words ───────────────────────────────────────
 
+/** A 413 from the download route: over the (larger) download limit. */
+export function downloadTooLargeWords(data) {
+  return `This file is ${sizeWords(data && data.size) || 'too large'}, more than the ${sizeWords(data && data.maxSize) || 'size'} limit for downloads.`;
+}
+
 /** Any non-200 from a file route → { kind, text }. A refusal is said, never hidden. */
 export function refusalWords(status, data) {
   const err = data && typeof data.error === 'string' ? data.error : '';
   if (status === 401) return { kind: 'signin', text: 'You are signed out. Sign in again to open this.' };
   if (status === 404 && /disabled/i.test(err)) return { kind: 'off', text: 'The file viewer is switched off on this agent.' };
   if (status === 404) return { kind: 'missing', text: 'There is no file or folder at this path.' };
-  if (status === 413) return { kind: 'too-large', text: `This file is ${sizeWords(data && data.size) || 'too large'}, more than the ${sizeWords(data && data.maxSize) || 'size'} this page can open or download.` };
+  if (status === 413) return { kind: 'too-large', text: `This file is ${sizeWords(data && data.size) || 'too large'}, more than the ${sizeWords(data && data.maxSize) || 'size'} this page can show. You can still download it.` };
   if (status === 403) {
     if (/not permitted/i.test(err)) return { kind: 'never-shown', text: 'This file is never shown, by design. It holds key material the agent keeps to itself.' };
     if (/blocked for security/i.test(err)) return { kind: 'never-shown', text: 'This file is never shown, by design. Its name marks it as a secret (.env, a key, credentials or a token).' };
