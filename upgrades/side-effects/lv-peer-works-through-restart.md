@@ -150,3 +150,13 @@ The other notes are accepted and recorded in the findings file: shutdown counts 
   - **E.** It acts once, at the review point or the backstop.
 
   None loops without a brake.
+
+## Addendum (2026-11-19): maturation ladder entry
+
+`src/data/feature-ladders.json` gains the entry `local-verify-peer-works-through-restart`, which the spec's Maturation plan names. The pre-merge check refused the spec while that entry was missing. Its contents:
+- the flag `monitoring.localVerify.peerWorksThroughRestart.enabled`;
+- `final: default-on`, risk `sensitive`, since adoption feeds a merge-authorizing import;
+- rungs `dev-agent-live` and `fleet`, both advanced by code;
+- a "ran" metric (`peer-attempt-adopted` count) and a "harm" metric (adoption waits that ran out, at most 3 in 14 days), read from `.instar/logs/local-verify.jsonl`.
+
+This is data only; no runtime change. Registry tests pass: `feature-ladders-coverage`, `MaturationLadder`, `MaturationLadderService`, 82/82.
