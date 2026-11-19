@@ -66,6 +66,7 @@ import { PREFLIGHT_LIMITS } from './preflight.js';
 import { requestDigest, signPeerResult, verifyPeerResult, type PeerResultRefusal } from './peerResultSignature.js';
 import { holdingDecision, noteDuration, refreshAgeMs, noteLocallyVerified, olderClock, peerMainRoutingAllowed, peersGreenOn, readPeerTrust, rememberPeerGreen, resetHoldingState, writePeerTrust, type PeerTrustState } from './peerTrust.js';
 import type { MachineKeyLookup, MachineSigner } from '../core/AppRecordSignatures.js';
+import type { MainRunEnd, MainRunObserver, MainRunStart } from './mainRunObserver.js';
 import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeerMainRun, parsePeers, peerHealthy,
   type PeerClient, type PeerMainRun, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
@@ -802,6 +803,8 @@ export class LocalVerifyService {
   /** Coordinator: the configured peers (`monitoring.localVerify.peers`; absent ⇒ none). */
   private peersSetting: (() => unknown) | null = null;
   private peerClient: PeerClient | null = null;
+  /** Borrowed-machine shadow observer (never awaited; type-only dependency). */
+  private mainRunObserver: MainRunObserver | null = null;
   private peerFitFn: ((machineId: string) => PeerFit) | null = null;
   private readonly peerSkipAudited = new Map<string, number>();
   /** Machines out of the line for memory now (machineId → since). */
@@ -1808,6 +1811,31 @@ export class LocalVerifyService {
   }
 
   isPeerOnly(): boolean { return this.cfg.peerOnly === true; }
+
+  /**
+   * Borrowed-machine shadow (docs/specs/local-verify-borrowed-unit-slices.md, F): a passive observer
+   * of this machine's own `main` runs. Type-only import, never awaited, every call caught: nothing
+   * it does can change a run, its record or its timing, and nothing it computes reaches a verdict.
+   */
+  setMainRunObserver(o: MainRunObserver | null): void { this.mainRunObserver = o; }
+
+  /** The observer's read-only summary for `GET /local-verify` (null when none is wired). */
+  mainRunObserverInfo(): unknown {
+    try { return this.mainRunObserver?.info?.() ?? null; } catch { return null; } // @silent-fallback-ok: observability only
+  }
+
+  private notifyMainRunObserver(kind: 'start', e: MainRunStart): void;
+  private notifyMainRunObserver(kind: 'end', e: MainRunEnd): void;
+  private notifyMainRunObserver(kind: 'start' | 'end', e: MainRunStart | MainRunEnd): void {
+    const o = this.mainRunObserver;
+    if (!o) return;
+    try {
+      if (kind === 'start') o.onMainRunStart(e as MainRunStart);
+      else o.onMainRunEnd(e as MainRunEnd);
+    } catch (err) {
+      this.audit({ event: 'borrowed-shadow-error', step: `observer-${kind}`, detail: String(err instanceof Error ? err.message : err).slice(0, 300) });
+    }
+  }
 
   private mainOnPeersOn(): boolean {
     try { return this.mainOnPeersEnabled ? this.mainOnPeersEnabled() === true : false; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (main stays on the coordinator)
@@ -3603,6 +3631,7 @@ export class LocalVerifyService {
     this.persistQueue();
     this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts,
       ...(entry.firstRefusedAt !== undefined ? { firstRefusedAt: entry.firstRefusedAt } : {}) });
+    if (entry.kind === 'main' && !entry.peerAttempt) this.notifyMainRunObserver('start', { headSha: entry.headSha, runToken: token, startedAt: intent.startedAt });
   }
 
   private cancelInFlight(reason: string, opts: { armKillTimer?: boolean } = {}): void {
@@ -3700,6 +3729,11 @@ export class LocalVerifyService {
     // No hand-off was opened for this run (red, error, re-queued, or the line held by another
     // PR): the settling hold ends here and a waiting restart may go.
     if (settling && this.mergeHoldFile === 'settling') this.clearMergeHold();
+    if (f.entry.kind === 'main' && !f.entry.peerAttempt) {
+      // After completeMain: the record is written before the borrowed shadow compares anything.
+      const recorded = !f.cancelled && !isVerifierMismatch(result) && result?.kind !== 'requeue';
+      this.notifyMainRunObserver('end', { headSha: f.entry.headSha, runToken: f.token, recorded, outcome: recorded ? (result?.kind === 'record' ? result.record.outcome : 'error') : null, cancelled: f.cancelled });
+    }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const w of waiters) w();

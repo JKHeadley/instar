@@ -10,7 +10,7 @@
  * running server's install, never from the PR being verified.
  */
 
-import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { identityKeyLookup, loadMachineSigner, type MachineKeyLookup, type MachineSigner } from '../core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -599,4 +599,53 @@ export function hasPassingRecord(
   pr: number, head: string, base: string,
 ): boolean {
   return svc.getRecord(pr, head, base)?.outcome === 'success';
+}
+
+// ── Borrowed helpers, run-machine side (docs/specs/local-verify-borrowed-unit-slices.md, F) ──
+
+/**
+ * Wire the borrowed-machine shadow client onto a built service. Inert unless
+ * `monitoring.localVerify.borrowed.mode` is `'shadow'` (read live at each `main` run start); never
+ * written as a config default. The client rides this machine's own `main` verifies as a passive,
+ * never-awaited observer: its results are compared and audited, never used for a verdict.
+ */
+export async function wireBorrowedShadow(
+  svc: Pick<LocalVerifyService, 'setMainRunObserver'>,
+  o: {
+    liveConfig: { get<T>(key: string, fallback: T): T };
+    stateDir: string;
+    agentHome: string;
+    machineId: string;
+    authToken: string;
+    agentId: string;
+    version: string;
+    fetchImpl?: typeof fetch;
+    /** Test seams; production loads this machine's signer and pinned keys from `stateDir`. */
+    signer?: MachineSigner | null;
+    keyLookup?: () => MachineKeyLookup;
+    /** TEST ONLY (e2e): replace the tree-reading seams; production reads this machine's verify clone. */
+    treeSeams?: Partial<Pick<import('./BorrowedShadow.js').BorrowedShadowDeps, 'unitFiles' | 'treeReader' | 'localUnitReport'>>;
+  },
+): Promise<import('./BorrowedShadow.js').BorrowedShadow> {
+  const [{ BorrowedShadow }, { makeHelperClient }, seams, { parseBorrowedConfig }, { LOCAL_VERIFY_LIMITS }] = await Promise.all([
+    import('./BorrowedShadow.js'), import('./borrowedClient.js'), import('./borrowedRunSeams.js'), import('./helper/helperConfig.js'), import('./policy.js'),
+  ]);
+  const auditPath = path.join(o.stateDir, 'logs', 'local-verify.jsonl');
+  const shadow = new BorrowedShadow({
+    config: () => parseBorrowedConfig(o.liveConfig.get<unknown>('monitoring.localVerify.borrowed', null), o.machineId),
+    client: makeHelperClient(o.authToken, o.agentId, o.fetchImpl),
+    signer: o.signer !== undefined ? o.signer : loadMachineSigner(o.stateDir),
+    keyLookup: o.keyLookup ?? (() => identityKeyLookup(o.stateDir)),
+    machineId: o.machineId,
+    stateDir: o.stateDir,
+    version: o.version,
+    localWorkers: LOCAL_VERIFY_LIMITS.unitWorkersParallel,
+    unitFiles: (head) => seams.unitFilesWithDurations(o.agentHome, head),
+    treeReader: (head) => seams.verifyCloneTreeReader(o.agentHome, head),
+    localUnitReport: (head) => seams.localUnitReport(o.agentHome, head),
+    audit: (e) => appendLocalVerifyAudit(auditPath, { src: 'borrowed', ...e }, Date.now()),
+    ...(o.treeSeams ?? {}),
+  });
+  svc.setMainRunObserver(shadow);
+  return shadow;
 }

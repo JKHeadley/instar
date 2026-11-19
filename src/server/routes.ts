@@ -97,6 +97,7 @@ import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { registerHelperRoutes } from '../localVerify/helper/helperRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
@@ -1536,6 +1537,8 @@ export interface RouteContext {
   localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService | null;
   /** The `instar/local-verify` status reconcile loop (local-verify-merge-authority §3); null → GET /local-verify/status 503. */
   localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler | null;
+  /** Borrowed-machine helper role (docs/specs/local-verify-borrowed-unit-slices.md, B); null/disabled → helper routes 404. */
+  localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime | null;
   /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
   guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
   /** Keeps an agent-class stop from being orphaned; checks its release condition. */
@@ -19499,6 +19502,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // SEC-113 D2.5: the peer quarantine clear is owner-only (the dashboard operator session).
     ...(ctx.verifyDashboardOperatorSession ? { verifyOperatorSession: (token: string | undefined) => ctx.verifyDashboardOperatorSession!(token) } : {}),
   });
+
+  // ── borrowed-machine helper role (local-verify-borrowed-unit-slices B) ──
+  // Dark: 404 unless this machine's own monitoring.localVerify.helper.enabled is true.
+  registerHelperRoutes(router, { helper: () => ctx.localVerifyHelper?.get() ?? null });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
   // The watcher is null on installs with no analyzable instar repo + safe-merge,

@@ -1,0 +1,43 @@
+# Lima template for the borrowed-machine helper sandbox `instar-helper`
+# (docs/specs/local-verify-borrowed-unit-slices.md, B and B2).
+#
+# Rendered by src/localVerify/helper/limaDriver.ts (renderLimaTemplate): {{CPUS}}, {{MEMORY_GB}},
+# {{DISK_GB}} come from monitoring.localVerify.helper.sandbox; {{IMAGE_URL}} / {{IMAGE_DIGEST}} from
+# LIMA_BASE_IMAGE (pinned by digest, checked at every daily recreate).
+#
+# The walls this file sets, re-checked at every start (limaConfigChecks + the in-sandbox checks):
+#   - NO host folder is mounted (overrides Lima's default read-only home mount);
+#   - NO guest port is forwarded to the host;
+#   - NO ssh agent forwarding;
+#   - a minimal image, no containerd;
+#   - a fixed CPU, memory and disk size.
+# Trees enter only by copy (a tar streamed through `limactl shell`).
+
+vmType: vz
+plain: true
+images:
+  - location: "{{IMAGE_URL}}"
+    arch: "aarch64"
+    digest: "{{IMAGE_DIGEST}}"
+cpus: {{CPUS}}
+memory: "{{MEMORY_GB}}GiB"
+disk: "{{DISK_GB}}GiB"
+mounts: []
+containerd:
+  system: false
+  user: false
+ssh:
+  forwardAgent: false
+  forwardX11: false
+  forwardX11Trusted: false
+  loadDotSSHPubKeys: false
+portForwards:
+  - guestPortRange: [1, 65535]
+    ignore: true
+propagateProxyEnv: false
+hostResolver:
+  enabled: false
+video:
+  display: "none"
+audio:
+  device: ""

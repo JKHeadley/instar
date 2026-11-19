@@ -2,7 +2,8 @@
  * HTTP surface for local-verify (spec docs/specs/local-verify-merge-authority.md §2).
  *
  *   POST /local-verify          body { "pr": <positive integer> } and nothing else
- *   GET  /local-verify          queue, in-flight run and record count
+ *   GET  /local-verify          queue, in-flight run and record count; `borrowed` = the
+ *                               borrowed-helper shadow summary (docs/specs/local-verify-borrowed-unit-slices.md, G)
  *   GET  /local-verify/record   ?pr=&head=&base=  the record for one key, or 404
  *   POST /local-verify/peer-run     a coordinator hands this machine one PR verify (Part D of
  *                                   docs/specs/local-verify-capacity.md); refused on the lease holder
@@ -118,7 +119,8 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
   router.get('/local-verify', (_req: Request, res: Response) => {
     const svc = gate(res);
     if (!svc) return;
-    res.json({ ...svc.snapshot(), diagnosis: svc.diagnosisSummary() });
+    // borrowed: the borrowed-helper shadow (mode, helpers, last shadow summaries, learned lists); null when not wired.
+    res.json({ ...svc.snapshot(), diagnosis: svc.diagnosisSummary(), borrowed: svc.mainRunObserverInfo() });
   });
 
   router.get('/local-verify/status', (_req: Request, res: Response) => {

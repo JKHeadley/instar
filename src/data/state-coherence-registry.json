@@ -2175,6 +2175,76 @@
       }
     },
     {
+      "category": "local-verify-borrowed-helpers",
+      "description": "Run-machine borrowed-helper shadow state (docs/specs/local-verify-borrowed-unit-slices.md, F): per configured helper only its unreachable-breaker state and rolling counters for its last 50 shadow runs. Shadow results authorize nothing. Machine-local by the approved Local Verify capacity spec's ratified run-machine dispatch exception (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17); rebuildable, so not backed up.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/borrowed-helpers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 102,
+        "note": "At most 2 helpers, each one breaker and its last 50 run summaries; rewritten in place. Absent or unreadable state is rebuilt with closed breakers and empty counters."
+      }
+    },
+    {
+      "category": "local-verify-helper-learned",
+      "description": "A borrowed helper's learned exclude list (docs/specs/local-verify-borrowed-unit-slices.md, D), kept ON the helper machine: files that failed or skipped differently there while passing on a run machine twice (once in the dry run), with the run machine and runs that added them, plus single-observation candidates and the helper's run count for re-trials. Unified by placement: one list per helper, read by every run machine through GET /local-verify/helper-status, so no replication; the run machines' audit rows stay the source of truth if the helper is reinstalled. Efficiency only, never a verdict input.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-learned.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 26050,
+        "note": "Entries capped at the eligible unit-file count (~3,850 today, bounded by the 20,000-file duration cap), at most 2,000 candidates and the last 50 run ids; rewritten in place and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-seen-attempts",
+      "description": "A borrowed helper's single-use request ids (docs/specs/local-verify-borrowed-unit-slices.md, C 'Replay'): every signed helper request's attemptId with the time it was seen, persisted so a replayed request is refused across helper restarts. Machine-local: it guards this helper's own routes.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-seen-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 20000,
+        "maxAgeMs": 600000,
+        "note": "Ids older than 10 minutes are pruned on every read and write (requests live at most 60 s plus 30 s clock tolerance); at most 20,000 kept; rewritten atomically."
+      }
+    },
+    {
+      "category": "local-verify-helper-control",
+      "description": "A borrowed helper's owner pause switch (docs/specs/local-verify-borrowed-unit-slices.md, B 'Pause control'), written by instar helper pause|resume and the dashboard toggle, read by the helper at every request and governor sample. Machine-local: it is this machine owner's control.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-control.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One small file overwritten atomically; removed by instar helper uninstall."
+      }
+    },
+    {
       "category": "queue-pace-ledger",
       "description": "Queue pace hourly ledger (docs/specs/queue-pace.md): one row per queue per fixed hour (arrivals, completions, other exits, open count, coverage flags, cursorAfter, ids digest) plus notice audit rows. Machine-local: each machine measures its own queues; GET /queue-pace?scope=pool merges peers live.",
       "scope": "machine-local",

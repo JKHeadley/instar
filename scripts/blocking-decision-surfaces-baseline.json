@@ -214,6 +214,21 @@
       "path": "src/templates/scripts/threadline-reply.sh",
       "sha256": "2c24fd497c4e98488e1a120909b4d4330d2aab79672e33077de2f73acfb9ea93",
       "reason": "memory-privacy-agent-places: a reply relay; it refuses only its own empty input, and every send decision (recipient, thread, ownership) is the server route's, in TypeScript"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-checks.sh",
+      "sha256": "88cee7a51225880d61a20ec27e440888aa22b94ed0660cff659baad667326586",
+      "reason": "local-verify-borrowed-unit-slices B2: in-sandbox containment probes run inside the borrowed helper's own Linux sandbox; it only prints pass/fail facts, and the refuse decision (helper-containment-unproven) is authored in TypeScript (parseContainmentOutput, HelperService.ensureSandbox) where the ratchets walk; it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-runner.sh",
+      "sha256": "8358586943e671b81fd629407bce17fa0ff6fcce35920a1cfd07f64c8ee13bce",
+      "reason": "local-verify-borrowed-unit-slices B2/E: the root runner inside the borrowed helper's sandbox; it refuses only its own malformed arguments or a broken wall (nft hash, surviving processes), and every admission decision (signature, merged, files, governor) is authored in TypeScript (admission.ts, HelperService.ts); it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/provision-sandbox.sh",
+      "sha256": "9b08cee3f1e34da2fe3f8c5d7f2a89bbf476a13ed2e502612c004cd41b704494",
+      "reason": "local-verify-borrowed-unit-slices B2: one-time provisioning inside the borrowed helper's own sandbox (users, pinned node, nft table); it refuses an unpinned node digest and gates no message, session or agent action"
     }
   ]
 }
