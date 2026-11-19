@@ -60,6 +60,38 @@ export interface ExtractorInput {
   rollingSummary?: string;
   /** Existing temporal projection, supplied so one call updates rather than resets it. */
   existingAwareness?: TopicAwarenessState;
+  /**
+   * Context-budget §6 row U, §6.4: the agent messages preceding this operator
+   * message that a referent stub may name. Set ONLY by the layer wiring
+   * (`contextBudget.enabled`) for a protected operator row; absent ⇒ the
+   * prompt, the parse and the result are byte-identical to the stub-less
+   * extractor. The stub rides THIS call; it is never a second call.
+   */
+  referentCandidates?: ReferentCandidate[];
+}
+
+/**
+ * The referent-stub `kind` vocabulary (context-budget §6.2). Single source:
+ * the prompt renders it from here and the deterministic validator
+ * (`src/monitoring/contextLayers/userCorpus.ts`) accepts only these.
+ */
+export const REFERENT_STUB_KINDS = ['answer', 'directive', 'question', 'hypothetical', 'rejection', 'other'] as const;
+export type ReferentStubKind = typeof REFERENT_STUB_KINDS[number];
+
+/** An agent message a stub may name: its TopicMemory message id and its text. */
+export interface ReferentCandidate { messageId: number; text: string }
+
+/** The model's stub, as parsed and NOT yet validated (validation is deterministic, after the call). */
+export interface ReferentStubProposal {
+  stub: string;
+  kind: string;
+  refersTo: string;
+}
+
+/** True when this input asks the extractor's call for a referent stub. */
+export function wantsReferentStub(input: Pick<ExtractorInput, 'referentCandidates' | 'awarenessOnly' | 'message'>): boolean {
+  return input.message.fromUser === true && input.awarenessOnly !== true
+    && Array.isArray(input.referentCandidates) && input.referentCandidates.length > 0;
 }
 
 /**
@@ -85,6 +117,8 @@ export interface SignalProposal {
 export interface ExtractorAnalysis {
   signals: SignalProposal[];
   awareness?: AwarenessDraft;
+  /** Present only when the input asked for a stub (`wantsReferentStub`); null when the model gave none. */
+  referentStub?: ReferentStubProposal | null;
 }
 
 /** Legacy array results remain accepted for injected tests and rolling upgrades. */
@@ -100,6 +134,12 @@ export interface ExtractorResult {
   arcTransitioned: boolean;
   awarenessStaleIgnored: boolean;
   awarenessAnchorCorrected: boolean;
+  /**
+   * Present only when the input asked for a stub (`wantsReferentStub`): the
+   * model's unvalidated proposal, or null. The caller validates it; the
+   * message's own processing never depends on it.
+   */
+  referentStub?: ReferentStubProposal | null;
 }
 
 export class TopicIntentExtractor {
@@ -181,6 +221,7 @@ export class TopicIntentExtractor {
       arcTransitioned,
       awarenessStaleIgnored,
       awarenessAnchorCorrected,
+      ...(wantsReferentStub(input) ? { referentStub: Array.isArray(raw) ? null : (raw.referentStub ?? null) } : {}),
     };
   }
 
@@ -244,6 +285,9 @@ export class TopicIntentExtractor {
 export const MAX_MESSAGE_CHARS = 4000;
 export const MAX_REF_TEXT_CHARS = 400;
 export const MAX_SUMMARY_CHARS = 2000;
+/** Per-candidate cap on the agent messages a stub may name (the prompt carries at most 3). */
+export const MAX_REFERENT_CANDIDATE_CHARS = 600;
+export const MAX_REFERENT_CANDIDATES = 3;
 const FENCE = '<<<DATA';
 const FENCE_END = 'DATA>>>';
 
@@ -287,6 +331,15 @@ Rules:
 - "affirm" is for explicit agreement ("yes", "exactly", "agreed"); "contradict" is for explicit disagreement or a frame change ("actually no", "we switched to X", "we're testing in the dashboard now").
 - "new-ref" is reserved for SIGNIFICANT items (facts, decisions) or a SET/CHANGED task frame — not every passing remark.
 - If unsure about signals, return an empty signals array, but still provide the best conservative three-level awareness projection.`;
+  const stubRequested = wantsReferentStub(input);
+  const stubSystem = !stubRequested ? '' : `
+
+REFERENT STUB: this new message is the operator's own. In the SAME JSON object, add a top-level field "referentStub" that says, in one short bracketed line, what the message is responding to, so it stays meaningful after the agent's earlier messages are folded away:
+"referentStub":{"stub":"[answering: should the gate block or warn?]","kind":${REFERENT_STUB_KINDS.map((k) => `"${k}"`).join('|')},"refersTo":"<messageId of the agent message it responds to>"}
+- stub: ONE line, at most 160 characters, starting with "[" and ending with "]". Describe the referent (the agent's question or proposal) in your own words. NEVER copy the operator's words into the stub; the stub is written beside their message, never into it.
+- kind: "answer" (answers the agent's question), "directive" (tells the agent to do something), "question" (asks the agent something), "hypothetical" (explores a what-if without deciding), "rejection" (declines or rejects the agent's proposal), "other".
+- refersTo: one of the candidate messageIds listed under "Agent messages this one may respond to".
+- If the message responds to none of them, set "referentStub":null.`;
 
   const refsBlock = input.existingRefs.length === 0
     ? '(no existing refs tracked yet)'
@@ -308,7 +361,13 @@ ${refsBlock}
 
 Return the JSON object with signals + all three awareness levels.`;
 
-  return { systemPrompt, userPrompt };
+  if (!stubRequested) return { systemPrompt, userPrompt };
+  const candidatesBlock = (input.referentCandidates ?? []).slice(-MAX_REFERENT_CANDIDATES)
+    .map((c) => `- messageId=${c.messageId} text=${FENCE}\n${truncate(c.text, MAX_REFERENT_CANDIDATE_CHARS)}\n${FENCE_END}`).join('\n');
+  return {
+    systemPrompt: systemPrompt + stubSystem,
+    userPrompt: `${userPrompt}\n\nAgent messages this one may respond to (oldest first):\n${candidatesBlock}\n\nAlso include "referentStub" (or null) in the same JSON object.`,
+  };
 }
 
 /**
@@ -336,7 +395,7 @@ export function parseExtractorResponse(raw: string): SignalProposal[] {
 }
 
 /** Parse the three-level object while retaining legacy array compatibility. */
-export function parseExtractorAnalysis(raw: string): SignalProposal[] | ExtractorAnalysis {
+export function parseExtractorAnalysis(raw: string, opts: { referentStub?: boolean } = {}): SignalProposal[] | ExtractorAnalysis {
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (fenceMatch) cleaned = fenceMatch[1];
@@ -359,17 +418,35 @@ export function parseExtractorAnalysis(raw: string): SignalProposal[] | Extracto
         ? parsed.signals.filter((p) => p && typeof p === 'object' && typeof (p as { kind?: unknown }).kind === 'string') as SignalProposal[]
         : [];
       const awareness = normalizeAwarenessDraft(parsed.awareness);
-      return { signals, ...(awareness ? { awareness } : {}) };
+      return {
+        signals,
+        ...(awareness ? { awareness } : {}),
+        // Only an input that asked for a stub reads one: with the layers off the parse is unchanged.
+        ...(opts.referentStub ? { referentStub: pickReferentStub(parsed.referentStub) } : {}),
+      };
     } catch {
       // @silent-fallback-ok — malformed v2 model output is converted into the
       // structured invalid-awareness result that ingest() meters; capture stays
       // fail-open and the degradation is observable instead of breaking ingress.
-      return { signals: [] };
+      return { signals: [], ...(opts.referentStub ? { referentStub: null } : {}) };
     }
   }
 
   // A rolling-upgrade peer or injected test may still emit the v1 array.
   return parseExtractorResponse(cleaned);
+}
+
+/**
+ * Shape-pick the model's stub (string fields only; a numeric refersTo is
+ * read as its decimal string). Nothing here judges validity: the
+ * deterministic validator runs after the call (context-budget §15, tier 1).
+ */
+export function pickReferentStub(v: unknown): ReferentStubProposal | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const refersTo = typeof o.refersTo === 'number' && Number.isSafeInteger(o.refersTo) ? String(o.refersTo) : o.refersTo;
+  if (typeof o.stub !== 'string' || typeof o.kind !== 'string' || typeof refersTo !== 'string') return null;
+  return { stub: o.stub, kind: o.kind, refersTo };
 }
 
 /**
@@ -453,6 +530,6 @@ export function createLlmExtractFn(
       try { onDegrade?.('error', input.topicId); } catch { /* metering best-effort */ }
       return [];
     }
-    return parseExtractorAnalysis(raw);
+    return wantsReferentStub(input) ? parseExtractorAnalysis(raw, { referentStub: true }) : parseExtractorAnalysis(raw);
   };
 }

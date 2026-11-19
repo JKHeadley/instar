@@ -102,7 +102,7 @@ describe('Inbound-queue boot-order fix (engine constructs when configured, indep
     expect(src).toContain("let _sessionPoolStage: () => string = () => 'dark'");
   });
 
-  it('at stage dark the queue drain delivers on THIS machine only — no router, no forced re-place (CMT-1117 second pass)', () => {
+  it('at stage dark the queue drain delivers on THIS machine only — no router, no forced re-place elsewhere (CMT-1117 second pass)', () => {
     const at = src.indexOf('_drainLocalDeliver = async (dmsg, handover) => {');
     expect(at).toBeGreaterThan(0);
     const drain = src.slice(at, at + 2500);
@@ -110,6 +110,12 @@ describe('Inbound-queue boot-order fix (engine constructs when configured, indep
     expect(drain).toMatch(/poolDark \? \{ action: 'handled-locally', acked: true \} : await _sessionRouter!\.route\(/);
     const fr = src.indexOf('forceReplace: async (msg) => {');
     expect(fr).toBeGreaterThan(0);
-    expect(src.slice(fr, fr + 600)).toContain("if (_sessionPoolStage() === 'dark') return false;");
+    // At dark the forced attempt still never places elsewhere: only a routing-only row (the record
+    // names a peer the live path also bypasses) gets one attempt, and that keeps it on THIS machine
+    // (fb-faa9d074-e09 — it used to run out of tries and expire unanswered).
+    const forced = src.slice(fr, fr + 1400);
+    expect(forced).toContain("const routingOnlyAtDark = _sessionPoolStage() === 'dark' && _routesToPeerAtDark(msg.sessionKey);");
+    expect(forced).toContain("if (_sessionPoolStage() === 'dark' && !routingOnlyAtDark) return false;");
+    expect(forced).toContain('...(routingOnlyAtDark ? { routingOnly: true } : {}),');
   });
 });

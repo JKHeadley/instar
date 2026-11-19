@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-18T06:06:59.321Z",
+  "slug": "usage-ledger-pool-roots",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 317,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SubscriptionPool.ts",
+      "src/monitoring/UsageLedger.ts",
+      "src/monitoring/usageReadModel.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 230,
+    "deletedLines": 87
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

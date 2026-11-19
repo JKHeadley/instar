@@ -26,7 +26,7 @@ import {
   annotateDecisionOutcome,
   installDecisionQualityRecorder,
 } from '../../src/core/DecisionQualityRecorderImpl.js';
-import { _resetDecisionQualityForTest } from '../../src/core/decisionQualityTypes.js';
+import { _resetDecisionQualityForTest, setDecisionQualityMachineId } from '../../src/core/decisionQualityTypes.js';
 import { DP_TERMINAL_PROMPT_DETECT } from '../../src/data/provenanceCoverage.js';
 import { InputDetector } from '../../src/monitoring/PromptGate.js';
 import { PromptDetectOutcomeObserver } from '../../src/monitoring/PromptDetectOutcomeObserver.js';
@@ -94,6 +94,8 @@ async function settle(detector: InputDetector): Promise<void> {
 
 describe('terminal prompt-detect outcome joins its decision rows (CMT-1677)', () => {
   it('incumbent, Jev and outcome rows share one correlation id; no pane text is served', async () => {
+    // A real multi-machine install: the router mints d-m_03b30f-<uuid>, with '_'.
+    setDecisionQualityMachineId('m_03b30f5b32c6ef3eb0afd3ca7054e252');
     const defaultProvider: IntelligenceProvider = { async evaluate() { return 'NO_PROMPT'; } };
     const router = new IntelligenceRouter({
       defaultProvider, defaultFramework: 'claude-code' as IntelligenceFramework,
@@ -128,6 +130,7 @@ describe('terminal prompt-detect outcome joins its decision rows (CMT-1677)', ()
     const jev = rows.find((r) => r.kind === 'decision' && r.decisionPoint === 'prompt-detect');
     expect(jev, 'a Jev shadow row is served').toBeTruthy();
     // The join key is top-level: the served-context credential scrub masks id-shaped values.
+    expect(id, 'a real multi-machine id carries the machine segment').toMatch(/^d-m_03b30f-/);
     expect(jev!.producerCorrelationId).toBe(id);
     expect(String(jev!.contextRedacted)).toContain('"sessionName":"echo-int"');
     const outcome = rows.find((r) => r.kind === 'outcome' && r.correlationId === id);

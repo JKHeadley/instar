@@ -80,7 +80,9 @@ export function createConversationGraphSurface(options:{
  /** The Chief of Staff Telegram topic: the root of the owner's Overview (conversation-graph-suggestions §2). */
  chiefOfStaffTopicId?:()=>number|null;
  /** The suggestion step (§3). Mounted only with owner corrections, since Accept needs them. */
- suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string}};
+ /** Work-front-doors stage 2b: open cards' conversations and their projects' conversations (proposed placement). */
+ cardPlacements?:()=>Array<{card:ConversationRef;project:ConversationRef}>;
+ suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[]};
 }):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();
  const router=Router();
@@ -89,7 +91,7 @@ export function createConversationGraphSurface(options:{
  const custody=new ConversationGraphHeaderCustody(options.stateDir,runtime);
  const corrections=options.correctionsEnabled===true&&options.scope!==null;
  const localIntents=corrections&&typeof options.dashboardPolicy==='function';
- const source=new ConversationGraphRuntimeReadSource(runtime,custody,{correctionsEnabled:corrections,erasureEnabled:corrections,localIntentsEnabled:localIntents});
+ const source=new ConversationGraphRuntimeReadSource(runtime,custody,{correctionsEnabled:corrections,erasureEnabled:corrections,localIntentsEnabled:localIntents,...(options.cardPlacements?{cardPlacements:options.cardPlacements}:{})});
  const rootConversation=():ConversationRef|null=>{
   const topicId=options.chiefOfStaffTopicId?.()??null;
   return topicId!==null&&Number.isSafeInteger(topicId)&&topicId>1&&options.telegramChatId
@@ -98,7 +100,9 @@ export function createConversationGraphSurface(options:{
  const model=new ConversationGraphReadModel(source,{rootConversation});
  router.use(createConversationGraphRouter({model,resolveViewer}));
  if(options.history)router.use(createConversationGraphHistoryRoutes({...options.history,
-  ready:()=>runtime.isReady(),verifyOwner:req=>resolveViewer(req,'dashboard')!==null,
+  // The same private-serving gate as the owner's read view that showed this conversation (readView), not
+  // the 60 s write-readiness proof: history is a read (conversation-graph-suggestions follow-up, 2026-11-17).
+  ready:()=>runtime.privateReadsServable(),verifyOwner:req=>resolveViewer(req,'dashboard')!==null,
   resolveSource:(routeRef,req)=>{
    const viewer=resolveViewer(req,'dashboard'),ref=decodeRouteRef(routeRef);if(!viewer||!ref||ref.kind!=='conversation')return null;
    const result=model.node(viewer,ref,{});if(result.status!==200)return null;
@@ -124,7 +128,7 @@ export function createConversationGraphSurface(options:{
    ...(ownerAdmission?{captureOwnerIntent:ownerAdmission.capture,resolveQueuedOwner:ownerAdmission.resolve}:{})});
   router.use(createConversationGraphChangeRouter({changes,resolveViewer}));
   if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,
-   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence})}));
+   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{})})}));
  }
  return router;
 }

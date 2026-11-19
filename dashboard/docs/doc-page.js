@@ -61,6 +61,8 @@ const state = {
   reopenTried: false,
   sheet: null,
   compareOpen: false,
+  appOps: null, // what the app said it can do (document-decisions §3.3); null until it says
+  decisionPoll: 0,
 };
 
 // ── small DOM helpers (text only) ──────────────────────────────────────────────────────────────
@@ -212,7 +214,7 @@ async function docpageHeaders(op, payload) {
 /** Signs an `open` for this document and trades it for the read cookie. */
 async function browserOpen() {
   let dev = await loadDevice();
-  if (!dev) { showLinkComputer(); return false; }
+  if (!dev) { showNoKey(); return false; }
   let r;
   for (;;) {
     let headers;
@@ -227,7 +229,7 @@ async function browserOpen() {
     break;
   }
   if (r.ok) return true;
-  if (r.status === 401) { state.device = null; showLinkComputer(); return false; }
+  if (r.status === 401) { state.device = null; showNoKey(); return false; }
   showMessage(M.errorWords(r.status, r.data, errCtx()), { tone: 'bad' });
   return false;
 }
@@ -252,6 +254,35 @@ const LINK_SCOPE_WORDS = 'This computer can only read and comment on documents y
 
 function linkView(children) {
   main.replaceChildren(el('div', { cls: 'page-message link-computer' }, children));
+}
+
+/** No key here to open the document: a phone gets the app first, a computer the link code. */
+function showNoKey() {
+  const phone = M.prefersAppOpen({
+    inApp: IN_APP,
+    coarsePointer: window.matchMedia('(pointer: coarse)').matches,
+    canHover: window.matchMedia('(hover: hover)').matches,
+  });
+  const link = phone ? M.appDocLink(location.origin, DOC_ID, state.focusKey) : null;
+  if (link) showOpenInApp(link); else showLinkComputer();
+}
+
+/**
+ * On a phone: open the document in the Instar app. Never a scan-this-code screen here, since the
+ * phone that would scan it is the one showing it (fb-54b4d850-0de).
+ */
+function showOpenInApp(link) {
+  linkRun++; // stops any link-code poll from an earlier screen
+  linkView([
+    el('h1', { cls: 'link-title', text: 'Open this document in the Instar app' }),
+    el('p', { text: 'On your phone, documents open in the Instar app, where you can read them and comment.' }),
+    el('p', {}, [el('a', { cls: 'btn primary open-app', text: 'Open in the Instar app', attrs: { href: link, rel: 'noopener' } })]),
+    el('p', { cls: 'scope', text: 'If the app doesn\'t open: open Instar yourself, go to the conversation this document belongs to, and tap it under Documents.' }),
+    el('p', { cls: 'scope' }, [
+      'On a computer instead? ',
+      button('Link a computer', () => showLinkComputer(), 'link-btn'),
+    ]),
+  ]);
 }
 
 /** This computer has no linked browser key for this address: offer to link it. */
@@ -457,6 +488,8 @@ function render() {
     renderHeader(page),
     el('p', { cls: 'notice', attrs: { id: 'doc-notice', role: 'status', 'aria-live': 'polite', hidden: true } }),
   ];
+  const decision = renderDecision(page);
+  if (decision) children.push(decision);
   if (state.compareOpen) children.push(renderCompare(page));
   if (page.version && !page.version.latest) {
     children.push(el('p', { cls: 'note older' }, [
@@ -500,7 +533,10 @@ function renderBlocks(article, page) {
   const ranges = M.highlightRanges(page);
   const numbers = M.itemNumbers(blocks);
   if (!blocks.length) { article.appendChild(el('p', { cls: 'empty', text: 'This document is empty.' })); return; }
+  let table = null; // the table the previous row went into: { body, quote }
   blocks.forEach((b, i) => {
+    if (b.kind === 'row' && Array.isArray(b.align)) { table = renderRow(article, b, ranges, table); return; }
+    table = null;
     let node;
     if (b.kind === 'heading') node = el(`h${Math.min(6, Math.max(1, (b.level || 1) + 1))}`, { cls: 'blk heading' });
     else if (b.kind === 'code') node = el('pre', { cls: 'blk code' });
@@ -530,6 +566,56 @@ function renderBlocks(article, page) {
     }
     article.appendChild(node);
   });
+}
+
+/**
+ * A table row as a real table row. A header row starts a new table; a body row joins the table the
+ * previous row went into. Each run lands in the cell its `cell` index names (so an empty cell stays
+ * empty and the columns line up); the " | " joiner runs are part of the projection text but are not
+ * shown, and a selection or quote across cells still maps to exact offsets through the text nodes.
+ */
+function renderRow(article, b, ranges, table) {
+  const quote = b.quote || 0;
+  if (b.header || !table || table.quote !== quote) {
+    const wrap = el('div', { cls: 'blk table-wrap', attrs: { role: 'region', tabindex: '0', 'aria-label': 'Table' } });
+    if (quote) { wrap.classList.add('quoted'); wrap.style.borderInlineStartWidth = `${Math.min(4, quote) * 3}px`; }
+    const tbl = el('table', { cls: 'doc-table' });
+    const head = el('thead'); const body = el('tbody');
+    tbl.appendChild(head); tbl.appendChild(body); wrap.appendChild(tbl);
+    article.appendChild(wrap);
+    table = { head, body, quote };
+  }
+  const tr = el('tr', { attrs: { 'data-start': String(b.start) } });
+  const cols = Math.max(b.align.length, 1 + b.runs.reduce((m, r) => (Number.isInteger(r.cell) ? Math.max(m, r.cell) : m), -1));
+  const cells = [];
+  for (let c = 0; c < cols; c++) {
+    const cell = el(b.header ? 'th' : 'td');
+    if (b.header) cell.setAttribute('scope', 'col');
+    const a = b.align[c];
+    if (a === 'left' || a === 'center' || a === 'right') cell.style.textAlign = a;
+    cells.push(cell); tr.appendChild(cell);
+  }
+  const pieces = M.segmentBlock(b, ranges);
+  let runIndex = -1; let runEl = null;
+  for (const piece of pieces) {
+    const run = b.runs[piece.runIndex];
+    if (run.sep) continue;
+    if (piece.runIndex !== runIndex) {
+      runIndex = piece.runIndex; runEl = runElement(run, false);
+      cells[Number.isInteger(run.cell) && run.cell < cols ? run.cell : cols - 1].appendChild(runEl.outer);
+    }
+    const t = document.createTextNode(piece.text);
+    textStart.set(t, piece.start);
+    state.textNodes.push(t);
+    if (piece.keys.length) {
+      const mark = el('mark', { cls: 'hl', attrs: { 'data-keys': piece.keys.join(' ') } });
+      if (piece.keys.length > 1) mark.classList.add('multi');
+      mark.appendChild(t);
+      runEl.inner.appendChild(mark);
+    } else runEl.inner.appendChild(t);
+  }
+  (b.header ? table.head : table.body).appendChild(tr);
+  return table;
 }
 
 /** Nested inline elements for a run's marks; text goes into `inner`. */
@@ -771,6 +857,77 @@ function renderCompare(page) {
   ]);
   setTimeout(run, 0);
   return panel;
+}
+
+// ── Decisions (document-decisions §3.3): made on the owner's phone, never by this page ────────────
+
+function renderDecision(page) {
+  const v = M.decisionPanel(page, { inApp: IN_APP, appOps: state.appOps });
+  if (!v) return null;
+  const kids = [el('p', { cls: 'decision-headline', text: v.headline })];
+  if (v.question) kids.push(el('p', { cls: 'decision-question', text: v.question }));
+  for (const line of v.lines) kids.push(el('p', { cls: 'decision-line', text: line }));
+  const actions = el('div', { cls: 'decision-actions' });
+  if (v.controls === 'app-buttons' && (v.waiting || v.changeAnswer || !page.decision.decision)) {
+    const current = page.decision.decision && v.changeAnswer && !v.waiting ? page.decision.decision.verdict : null;
+    if (current) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
+    if (current !== 'approve') actions.appendChild(button('Approve', () => askApp('approve'), 'btn primary'));
+    if (current !== 'decline') actions.appendChild(button('Decline', () => askApp('decline'), current ? 'btn primary' : 'btn'));
+  } else if (v.controls === 'update-app') {
+    actions.appendChild(el('p', { cls: 'decision-line', text: 'Update the Instar app to decide here.' }));
+  } else if (v.controls === 'phone-buttons' && (v.waiting || v.changeAnswer)) {
+    // On a computer: the buttons stay on the document; one tap sends it to the phone for Face ID.
+    // After an answer, only the other answer is offered (the current one is already recorded).
+    const current = page.decision.decision && v.changeAnswer && !v.waiting ? page.decision.decision.verdict : null;
+    if (current) actions.appendChild(el('span', { cls: 'decision-change', text: 'Change your answer:' }));
+    if (current !== 'approve') actions.appendChild(button('Approve', (e) => askPhone(e.currentTarget, 'approve'), 'btn primary'));
+    if (current !== 'decline') actions.appendChild(button('Decline', (e) => askPhone(e.currentTarget, 'decline'), current ? 'btn' : 'btn'));
+    actions.appendChild(el('span', { cls: 'decision-line', text: 'You confirm on your phone with Face ID.' }));
+  } else if (v.controls === 'open-in-app' && v.waiting) {
+    const link = M.appDocLink(location.origin, DOC_ID);
+    if (link) actions.appendChild(el('a', { cls: 'btn primary', text: 'Open in the Instar app to decide', attrs: { href: link } }));
+    else actions.appendChild(el('p', { cls: 'decision-line', text: 'Open this document in the Instar app on your phone to decide.' }));
+  } else if (v.controls === 'open-latest') {
+    actions.appendChild(button('Open the latest version to decide', () => load(null), 'btn'));
+  }
+  if (actions.childNodes.length) kids.push(actions);
+  return el('section', { cls: `decision ${v.tone}`, attrs: { id: 'doc-decision', role: 'region', 'aria-label': 'Decision' } }, kids);
+}
+
+/** In the app: hand the answer to the app's own sheet (it fetches the ask itself and asks for Face ID). */
+function askApp(verdict) {
+  const page = state.page;
+  if (!IN_APP || !page || !page.version) return;
+  try { bridge.postMessage({ type: 'decide', docId: DOC_ID, verdict, versionId: page.version.id }); } catch { notice('The app did not answer. Open the document again.'); }
+}
+
+/** In a browser: ask the owner's phone, then re-read until the answer arrives. */
+async function askPhone(btn, verdict) {
+  const page = state.page;
+  const ask = page && page.decision && page.decision.ask;
+  if (!ask || !state.device) return;
+  btn.disabled = true;
+  const r = await writeSigned('decide-on-phone', { askId: ask.askId, verdict });
+  btn.disabled = false;
+  const outcome = r.ok && r.data ? r.data.outcome : 'unavailable';
+  const bad = outcome === 'unavailable' || outcome === 'no-phone';
+  notice(M.phoneAskWords(outcome, verdict), bad ? 'bad' : 'info');
+  if (bad) return;
+  clearTimeout(state.decisionPoll);
+  const delays = M.decisionPollDelays();
+  const before = JSON.stringify(page.decision.decision || null);
+  let failures = 0;
+  const tick = async (i) => {
+    if (i >= delays.length) { notice('Reload to see your answer.', 'info'); return; }
+    const fresh = await fetchJson(`/docs/${DOC_ID}/page-data`);
+    if (!fresh.ok) { failures++; if (failures >= 3) { notice('Reload to see your answer.', 'info'); return; } }
+    else {
+      failures = 0;
+      if (JSON.stringify((fresh.data && fresh.data.decision && fresh.data.decision.decision) || null) !== before) { await load(null); return; }
+    }
+    state.decisionPoll = setTimeout(() => tick(i + 1), delays[i + 1] ?? 0);
+  };
+  state.decisionPoll = setTimeout(() => tick(0), delays[0]);
 }
 
 // ── Send (computer browser) ────────────────────────────────────────────────────────────────────
@@ -1032,6 +1189,9 @@ function installGlobalHandlers() {
         load(state.versionId);
       } else if (ev.type === 'focus-comment') {
         if (state.page) focusThread(ev.commentKey); else state.focusKey = ev.commentKey;
+      } else if (ev.type === 'hello') {
+        state.appOps = ev.ops;
+        if (state.page) render();
       }
     });
   }

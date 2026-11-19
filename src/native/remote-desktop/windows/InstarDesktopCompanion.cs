@@ -42,6 +42,9 @@ namespace InstarDesktop {
     static VideoStream Video;
 
     [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    static extern bool WTSQuerySessionInformationW(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytes);
+    [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr memory);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll", SetLastError = true)] static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -82,8 +85,51 @@ namespace InstarDesktop {
         int needed;
         StringBuilder name = new StringBuilder(80);
         return GetUserObjectInformation(desktop, 2, name, name.Capacity * 2, out needed)
-          && String.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
+          && String.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase)
+          && !ScreenLocked();
       } finally { CloseDesktop(desktop); }
+    }
+    // A locked PC keeps its lock picture on the Default desktop, so the desktop
+    // name alone reads it as usable. The first click then lifts that picture,
+    // Windows switches to the secure sign-in desktop that no program in the
+    // user's session can see or type into, and the session went blank and
+    // ended. Locked needs BOTH Windows' own session flag and the sign-in screen
+    // process in this session, so a misread flag can never block an unlocked PC.
+    static readonly object LockGate = new object();
+    static long LockReadAt; // 0 = never read (Now() is milliseconds since 1970)
+    static bool LockCached;
+    static bool ScreenLocked() {
+      lock (LockGate) {
+        long now = Now();
+        if (now - LockReadAt < 500) return LockCached;
+        LockCached = SessionFlagLocked() && SignInScreenShown();
+        LockReadAt = now;
+        return LockCached;
+      }
+    }
+    static int OwnSessionId = -1;
+    static int OwnSession() {
+      if (OwnSessionId < 0) { using (Process self = Process.GetCurrentProcess()) OwnSessionId = self.SessionId; }
+      return OwnSessionId;
+    }
+    static bool SessionFlagLocked() {
+      IntPtr buffer; int bytes;
+      int session = OwnSession();
+      // WTSSessionInfoEx (25): WTSINFOEXW, level 1. SessionFlags follows
+      // Level (padded to 8), SessionId and SessionState: 0 = locked, 1 = unlocked.
+      if (!WTSQuerySessionInformationW(IntPtr.Zero, session, 25, out buffer, out bytes)) return false;
+      try {
+        if (bytes < 20 || Marshal.ReadInt32(buffer) != 1 || Marshal.ReadInt32(buffer, 8) != session) return false;
+        return Marshal.ReadInt32(buffer, 16) == 0;
+      } finally { WTSFreeMemory(buffer); }
+    }
+    static bool SignInScreenShown() {
+      int session = OwnSession();
+      Process[] found = Process.GetProcessesByName("LogonUI");
+      try {
+        foreach (Process process in found) { if (process.SessionId == session) return true; }
+        return false;
+      } finally { foreach (Process process in found) process.Dispose(); }
     }
     static Dictionary<string, object> Parse(string json) {
       object value = Json.DeserializeObject(json);
@@ -242,7 +288,7 @@ namespace InstarDesktop {
               bool ready = !Updating && InteractiveDesktop() && Screen.AllScreens.Length > 0;
               result = Reply(new { screenPermission = ready, inputPermission = ready,
                 sessionActive = ready, displayCount = ready ? Screen.AllScreens.Length : 0,
-                controlActive = Active, updatePrepared = Updating });
+                controlActive = Active, updatePrepared = Updating, screenLocked = ScreenLocked() });
             } else if (op == "displays") {
               result = Reply(new { displays = !Updating && InteractiveDesktop() ? DisplayRows() : new object[0] });
             } else if (op == "prepare-update") {

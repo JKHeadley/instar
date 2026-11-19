@@ -89,7 +89,8 @@ describe('context budget metrics — alive on the production init path', () => {
     expect(r.body.sessions[0].cost.perRequest.inputWeighted).toBeGreaterThan(0);
     expect(r.body.sessions[0].rework).toMatchObject({ repeats: 1, toolInputs: 2 });
     expect(r.body.topics.map((t: { topicId: number }) => t.topicId)).toContain(777);
-    expect(r.body.anchors).toEqual({ unavailable: 'anchor-ledger-not-built' });
+    expect(r.body.anchors).toMatchObject({ source: 'layer store on this machine', ledger: { scope: 'listed-topics' } });
+    expect(r.body.anchors).not.toHaveProperty('unavailable');
   });
 
   it('fleet agent: the route answers 503', async () => {

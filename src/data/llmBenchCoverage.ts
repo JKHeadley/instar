@@ -41,6 +41,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
+  OrgPolicyJudge: { pending: 'wave-3' }, // org never-rule check (org-never-actions); graded by its fixed test set until a bench battery lands
   WorkBoardSpecApprovalJudge: { pending: 'wave-3' }, // B25 card judge (spec-approval-constitution-check); graded by its route tests until a bench battery lands
   // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
   // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
@@ -148,6 +149,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   PreCompactionFlush: { pending: 'wave-3' },
   // context-budget-layered-summaries §6.5 (Phase 1 S8): chunk/C2 summaries; graded by the Phase 2 fold probes (§10) until a bench task lands. <!-- tracked: CMT-1536 -->
   ContextLayerChunk: { pending: 'wave-3' },
+  // context-budget-layered-summaries §6 row H3 (Phase 1 S9): the long-term view from a bounded chunk/C2 selection; graded by the Phase 2 fold probes until a bench task lands. <!-- tracked: CMT-1536 -->
+  ContextLayerH3: { pending: 'wave-3' },
   TreeSynthesis: { pending: 'wave-3' },
   LLMConflictResolver: { pending: 'wave-3' },
   openConversationBrief: { pending: 'wave-3' },
@@ -230,6 +233,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   // ── Gates judging user/session/operation content → true ──
   HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
   PromptGate: true,
+  OrgPolicyJudge: true, // reads the action's target and content, which may quote untrusted text
   ExternalOperationGate: true, // the motivating callsite: credited in-content "user already approved"
   WarrantsReplyGate: true,
   UnjustifiedStopGate: true,
@@ -260,6 +264,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   TopicIntentExtractor: true,
   PreCompactionFlush: true,
   ContextLayerChunk: true,
+  ContextLayerH3: true,
   TreeSynthesis: true,
   LLMConflictResolver: true, // divergent multi-machine state = untrusted peer data
   openConversationBrief: true,
@@ -422,6 +427,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   PromptGate: false, // detects prompt-injection in content
   AutoApprover: false, // mechanical key injection, no LLM prompt of its own
   IntegrationGate: false, // delegates to JobReflector.reflect(), no own callsite
+  OrgPolicyJudge: false, // judges whether an action breaks an organization rule, not an agent's claim of completion or health
   ExternalOperationGate: false, // classifies operation mutability/reversibility, not a completion claim
   WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
@@ -459,6 +465,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   TopicIntentExtractor: false, // extracts topic intent from a turn
   PreCompactionFlush: false, // extracts durable facts before compaction
   ContextLayerChunk: false, // summarizes an archived span of agent work; judges no claim
+  ContextLayerH3: false, // rebuilds the long-term view from chunk/range summaries; judges no claim
   TreeSynthesis: false, // synthesizes knowledge fragments → answer
   LLMConflictResolver: false, // resolves divergent multi-machine state
   openConversationBrief: false, // generates an A2A conversation brief
@@ -535,6 +542,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   ExternalHogClassifier: { pending: 'contract-wave-2' },
   // ── WAVE-1: the four spec-named highest-stakes parsed callsites (rollout §0) ──
   MessagingToneGate: { pending: 'contract-wave-1' }, // THE motivating defect: prompt taught "B15", parser accepts only "B15_CONTEXT_DEATH_STOP"
+  OrgPolicyJudge: { pending: 'contract-wave-2' }, // parses a closed breach / no-breach verdict with a rule index
   ExternalOperationGate: { pending: 'contract-wave-1' }, // parses a closed mutability/reversibility classification
   CompletionEvaluator: { pending: 'contract-wave-1' }, // the stop-judge surface parses a closed done/blocked/continue verdict
   InputClassifier: { pending: 'contract-wave-1' }, // parses a closed auto-approve vs relay decision
@@ -654,10 +662,9 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
     false:
       'routes a turn to candidate TOPIC IDS — an OPEN, machine-supplied set, not a closed taught vocabulary the prompt fixes and a parser gates on',
   },
-  TopicIntentExtractor: {
-    false:
-      'extracts a topic-intent description from a turn — free-text content, not a closed taught verdict vocabulary a parser accepts',
-  },
+  // context-budget §6.2/§15: with the layers on, the same call teaches the closed
+  // referent-stub `kind` vocabulary and the deterministic validator gates on it.
+  TopicIntentExtractor: { contractTest: 'tests/unit/referent-stub-contract.test.ts' },
   PreCompactionFlush: {
     false:
       'extracts durable facts before compaction as free-text content — no closed taught output vocabulary a parser gates on',
@@ -665,6 +672,10 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   ContextLayerChunk: {
     false:
       'summarizes an archived transcript span into free-text fields (attempted, outcome, artifacts, open threads) — a shape check, no closed taught verdict vocabulary a parser gates on',
+  },
+  ContextLayerH3: {
+    false:
+      'rebuilds the long-term view as free text (a one-line purpose and a summary) from chunk and range summaries — a shape check, no closed taught verdict vocabulary a parser gates on',
   },
   TreeSynthesis: {
     false:
@@ -901,6 +912,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
 
   // ── Gates ──
   PromptGate: exposed(EXPOSED_USER_TOOL), // injection detection over inbound content
+  OrgPolicyJudge: exposed(EXPOSED_ALL), // action target, content and the person's request
   ExternalOperationGate: exposed(EXPOSED_USER_TOOL), // in-content "user already approved" claims
   WarrantsReplyGate: exposed(EXPOSED_USER),
   UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
@@ -941,6 +953,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   TopicIntentExtractor: exposed(EXPOSED_USER),
   PreCompactionFlush: exposed(EXPOSED_MODEL_TOOL), // durable facts from a transcript
   ContextLayerChunk: exposed(EXPOSED_ALL), // a transcript span: operator turns, agent prose and tool output
+  ContextLayerH3: exposed(EXPOSED_ALL), // chunk/range summaries derived from transcript spans (operator turns, agent prose, tool output)
   TreeSynthesis: exposed(EXPOSED_TOOL),
   LLMConflictResolver: exposed(EXPOSED_TOOL), // divergent peer state = untrusted peer data
   openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content

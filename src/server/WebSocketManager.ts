@@ -86,6 +86,8 @@ export class WebSocketManager {
   private sessionManager: SessionManager;
   private state: StateManager;
   private authToken?: string;
+  private scopedSessionVerify?: (token: string) => boolean;
+  private scopedSessionOnInvalidated?: (token: string, cb: () => void) => (() => void);
   private registryPath?: string;
   private sessionPresentationSources?: () => SessionPresentationSources;
   private hookEventReceiver?: HookEventReceiver;
@@ -131,11 +133,17 @@ export class WebSocketManager {
      *  derivation GET /sessions uses). Without it every local row lacks
      *  `platform` and the dashboard draws the headless icon. */
     resolveSessionPlatform?: (tmuxSession: string) => SessionPlatformInfo;
+    /** SEC-002b: verify a dst_ scoped dashboard session token for the /ws stream (false when dark). */
+    scopedSessionVerify?: (token: string) => boolean;
+    /** SEC-002b: register a close callback fired when the scoped token's family is invalidated. */
+    scopedSessionOnInvalidated?: (token: string, cb: () => void) => (() => void);
   }) {
     this.sessionManager = options.sessionManager;
     this.state = options.state;
     this.sessionPresentationSources = options.sessionPresentationSources;
     this.authToken = options.authToken;
+    this.scopedSessionVerify = options.scopedSessionVerify;
+    this.scopedSessionOnInvalidated = options.scopedSessionOnInvalidated;
     this.hookEventReceiver = options.hookEventReceiver;
     this.streamTicketStore = options.streamTicketStore;
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
@@ -236,13 +244,20 @@ export class WebSocketManager {
       }
 
       // Authenticate via query param or header
-      if (this.authToken && !this.authenticate(request, url)) {
+      const auth = this.authToken ? this.authenticate(request, url) : { ok: true };
+      if (!auth.ok) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
       }
 
       this.wss.handleUpgrade(request, socket, head, (ws) => {
+        // SEC-002b: if this stream authenticated via a dst_ scoped token, close it the moment that
+        // session family is revoked (so an open dashboard stream cannot outlive a logout/PIN rotation).
+        if (auth.scopedToken && this.scopedSessionOnInvalidated) {
+          const unregister = this.scopedSessionOnInvalidated(auth.scopedToken, () => { try { ws.close(4001, 'session-revoked'); } catch { /* already closed */ } });
+          ws.once('close', () => { try { unregister(); } catch { /* noop */ } });
+        }
         this.wss.emit('connection', ws, request);
       });
     });
@@ -308,21 +323,21 @@ export class WebSocketManager {
     this.sessionBroadcastInterval.unref();
   }
 
-  private authenticate(request: IncomingMessage, url: URL): boolean {
-    if (!this.authToken) return true;
-
-    // Check query param first (for browser WebSocket which can't set headers)
+  /** `{ ok }`, plus the dst_ scoped token when the connection authenticated via one (so the caller
+   *  can close the stream when that session family is revoked — SEC-002b). */
+  private authenticate(request: IncomingMessage, url: URL): { ok: boolean; scopedToken?: string } {
+    if (!this.authToken) return { ok: true };
+    const candidates: string[] = [];
     const tokenParam = url.searchParams.get('token');
-    if (tokenParam && this.verifyToken(tokenParam)) return true;
-
-    // Check Authorization header
+    if (tokenParam) candidates.push(tokenParam);
     const header = request.headers.authorization;
-    if (header?.startsWith('Bearer ')) {
-      const token = header.slice(7);
-      if (this.verifyToken(token)) return true;
+    if (header?.startsWith('Bearer ')) candidates.push(header.slice(7));
+    for (const token of candidates) {
+      if (this.verifyToken(token)) return { ok: true };
+      // SEC-002b: a dst_ scoped session token is also accepted for the /ws stream.
+      if (token.startsWith('dst_') && this.scopedSessionVerify?.(token) === true) return { ok: true, scopedToken: token };
     }
-
-    return false;
+    return { ok: false };
   }
 
   private verifyToken(token: string): boolean {

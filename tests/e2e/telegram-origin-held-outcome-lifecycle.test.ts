@@ -52,6 +52,15 @@ describe('held-reply outcome lookup lifecycle', () => {
     expect((await fetch(`${base}/telegram/origins/operations/00000000-0000-4000-8000-000000000000/outcome`)).status).toBe(401);
     expect((await fetch(`${base}/telegram/origins/operations/not%20an%20id/outcome`, { headers: auth })).status).toBe(400);
 
+    // fb-b7abf24e-6cb: a token-less re-seal successor id (`<root>~r<hop>-<plan8>`) is an operation id on both
+    // the outcome and the text route (404 unknown for one this machine never saw, never 400 invalid).
+    const successor = '00000000-0000-4000-8000-000000000000~r1-0a1b2c3d';
+    expect((await fetch(`${base}/telegram/origins/operations/${successor}/outcome`, { headers: auth })).status).toBe(404);
+    const text = await fetch(`${base}/telegram/origins/operations/${successor}/text`, { headers: auth });
+    expect(text.status).toBe(404);
+    expect(await text.json()).toMatchObject({ error: 'unknown-operation' });
+    expect((await fetch(`${base}/telegram/origins/operations/not%20an%20id/text`, { headers: auth })).status).toBe(400);
+
     // Only the fallback record holds Telegram's receipt (the store write failed): delivered, do not resend.
     const operationId = 'f659abab-6f46-4aae-abda-520623faccd9';
     boot.runtime.unrecordedReceipts.append({ operationId, originId: 'o-1', childId: 'c-1', attemptId: 'a-1',

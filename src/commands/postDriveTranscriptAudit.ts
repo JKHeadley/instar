@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import pc from 'picocolors';
 import { loadConfig, getInstarVersion } from '../core/Config.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import type { IssueBucket, IssueSeverity } from '../monitoring/FrameworkIssueLedger.js';
 
 export type TranscriptUxCategory =
@@ -129,7 +130,7 @@ const CATEGORY_REASON: Record<TranscriptUxCategory, string> = {
 };
 
 const RELATED_SPEC = 'Observation Needs Structure (PR #861); UX-blindspot arc / operatorSeatUx gate (PR #856)';
-const DEFAULT_FRAMEWORK = 'codex-cli';
+const DEFAULT_FRAMEWORK = CODEX_CLI_FRAMEWORK;
 
 const ASK_OF_USER_RE =
   /\b(?:re-?send|send (?:it|that|this|the file|the screenshot) again|try again|retry|re-?paste|paste (?:it|that|this) again|upload (?:it|that|this) again|can you send|could you send|please send).{0,80}\b(?:again|retry|re-?paste|re-?send)?/i;

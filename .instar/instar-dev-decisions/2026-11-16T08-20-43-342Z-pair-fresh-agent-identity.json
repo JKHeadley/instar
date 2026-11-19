@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-16T08:20:43.342Z",
+  "slug": "pair-fresh-agent-identity",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SecretStore.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 180,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/machine.ts",
+      "src/core/SecretStore.ts",
+      "src/core/firstPairAgentIdentity.ts",
+      "src/server/machineRoutes.ts"
+    ],
+    "addedLines": 172,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -2,20 +2,20 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-14T00:43:20.000Z",
-      "auditRef": "docs/audits/standards-backreference-completion-building-family-2026-11-13.json",
-      "auditSha256": "aaf7aa6ba2a5500c01c2f5b6467cf858026a0331c6399d699a2da9829d2059aa",
-      "areaSha256": "64edd8878c3d67257177b1850c7abd21dd94676d18ab3e096de0e1dc21045723",
+      "lastAuditedAt": "2026-11-18T21:25:00.000Z",
+      "auditRef": "docs/audits/bounded-input-countdown-met-building-family-2026-11-18.json",
+      "auditSha256": "3cf4df36d0d9d1dcc32b59ffb6f0777a9af5189ba31fbe26dc92bced24d702e4",
+      "areaSha256": "ca80e5f13645eacf1b28c03c50e3b3ac63d7e6deb7827f42c13cf5c8774ec321",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-12T02:10:40.000Z",
-      "auditRef": "docs/audits/ask-links-clause-interaction-family-2026-11-11.json",
-      "auditSha256": "856925af71b686b024f06788e8a8718f6311272f6b3c345d8cb13e7e9ac4aadb",
-      "areaSha256": "74dcb5ea08699c7786e230b4ef2fd75b02aa54b28c7cbc3a9b263e08a90a0981",
+      "lastAuditedAt": "2026-11-17T09:59:00.000Z",
+      "auditRef": "docs/audits/interaction-family-paired-device-2026-11-17.json",
+      "auditSha256": "91cc48ed87e3ce2920b0abc2a7fe8f585b133e8ff2bda0a605a272b6808e8ec2",
+      "areaSha256": "964baec571bc8bb3a833b8468d13843443924a954f41b303674367dcc1482ca2",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
-      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
-      "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
+      "lastAuditedAt": "2026-11-16T06:30:00.000Z",
+      "auditRef": "docs/audits/trust-journey-amendments-substrate-family-2026-11-15.json",
+      "auditSha256": "d5778801623322a61960dc9a7d33d09fc5a4de819fac46cb402115cd9a4b9de5",
+      "areaSha256": "b32a7f199cb411534aa4734c847be545ac99c2182c6582449822bf7b99ca441a",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

@@ -48,8 +48,9 @@ describe('the Bot API probe', () => {
 });
 
 describe('the telegram-v1 recipe', () => {
-  it('is dark: proving agents only, until its live proof', () => {
-    expect(row.setupRecipe).toBeNull();
+  it('is live-proven (2026-11-09) and available on every agent', () => {
+    expect(row.setupRecipe).toBe('telegram-v1');
+    expect(recipeFor(row)?.id).toBe('telegram-v1');
     expect(row.wayIn).toBe(true);
     expect(recipe.secretName).toBeNull();
     expect(recipeFor(catalogWithProving(['telegram-v1'], () => true).find((r) => r.id === 'telegram')!)?.id).toBe('telegram-v1');

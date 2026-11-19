@@ -86,6 +86,10 @@ describe('reviewed browser re-enrollment entrypoint', () => {
     const registry = await enrolledAt676();
     const before = registry.requireTelegramBrokerProfile('telegram').telegramBroker!.exclusiveEnrollment!.proofDigest;
     const driver = fakeDriver(b679);
+    // The proof digest covers checkedAt (a millisecond clock). A second enrollment in the same
+    // millisecond has the same digest, which failed this test on a fast machine (2026-11-16, PR 3212).
+    const first = registry.requireTelegramBrokerProfile('telegram').telegramBroker!.exclusiveEnrollment!.checkedAt;
+    while (Date.now() <= first) await new Promise(resolve => setTimeout(resolve, 1));
     const result = await enrollReviewedOriginBrowser({ registry, profileId: 'telegram', createDriver: () => driver, inspectProcesses: async () => [] });
     expect(result.build.buildId).toBe('web-k-2.2-679');
     expect(driver.resolvePeer).toHaveBeenCalledWith({ kind: 'user', id: '7812716706' });

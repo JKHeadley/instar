@@ -16,7 +16,7 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), 'utf-8');
 describe('Chief of Staff loop wiring', () => {
   const server = read('src/commands/server.ts');
   it('constructs the loop with real gather/judge/sender seams and starts it behind the dev gate', () => {
-    for (const s of ['new loopMod.ChiefOfStaffLoop({', 'evMod.buildGather({', 'evMod.buildJudge({', 'sharedLlmQueue!.enqueueMetered(req)', 'sharedIntelligence!.evaluate(prompt', "sendAutomationReply('chief-of-staff'", 'telegram.sendToOwnerDM(text)', 'loop.start();', '_cosLoop = loop;', 'cosRunStore.blockingStateForTopic(String(t))', 'telegram?.getTopicHistory(t, limit)', 'ghMod.createAuthenticatedGhExec({ stateDir: config.stateDir })']) {
+    for (const s of ['new loopMod.ChiefOfStaffLoop({', 'evMod.buildGather({', 'evMod.buildDoneItemEvaluator({', 'evMod.buildJudge({', 'sharedLlmQueue!.enqueueMetered(req)', 'sharedIntelligence!.evaluate(prompt', "sendAutomationReply('chief-of-staff'", 'telegram.sendToOwnerDM(text)', 'loop.start();', '_cosLoop = loop;', 'cosRunStore.blockingStateForTopic(String(t))', 'telegram?.getTopicHistory(t, limit)', 'ghMod.createAuthenticatedGhExec({ stateDir: config.stateDir })']) {
       expect(server, s).toContain(s);
     }
   });

@@ -1,4 +1,5 @@
 import { renderNotifications } from './notifications.js';
+import { installNetState } from './net-state.js';
 // Instar console — shell, auth, routing, Home rendering.
 // Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
 // can close or resume a promise through its existing bearer-protected routes.
@@ -9,11 +10,13 @@ import { renderNotifications } from './notifications.js';
 import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, needsCardList, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath, DOORS, doorHref, doorOf, resolveRoute, startDoor, FLEET_TILES } from './nav-model.js';
+import { mountNeedsStrip } from './needs-strip.js';
 import { fillPartial } from './home-model.js';
 import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
+import { renderMachineCare } from './machine-care.js';
 import { renderHealth } from './health.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
@@ -54,6 +57,7 @@ const REFRESH_MS = 30000;
 
 let token = '';
 let refreshTimer = null;
+let refreshCurrent = null; // the current page's in-place refresh, for net-state's onBack
 let lastGood = {};                      // card id → last model that was not unknown
 const expanded = new Set();             // cards the operator expanded; kept across refreshes
 const openRows = new Set();             // rows the operator opened; kept across refreshes
@@ -62,6 +66,7 @@ let homeChatId = null;
 // The agent-wide Attention topic, where every attention item is posted.
 let attentionTopicId = null;
 let homeRun = null;
+const LAST_DOOR_KEY = 'console.lastDoor';
 // One visit per page render (page-lifecycle.js): disposers, query-only changes, self-refreshing pages.
 const lifecycle = createLifecycle({ report: (e) => { try { console.warn('console: a page clean-up failed', e); } catch { /* no console */ } } });
 // Phone mode (?phone=1, or phone=1 in the hash's query): the Instar app shows one
@@ -153,16 +158,18 @@ async function post(path, body) {
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
-async function validToken(t) {
+/** `unreachableOk`: only the boot check of an already-stored sign-in keeps it while the agent can't be reached. */
+async function validToken(t, unreachableOk = false) {
   if (!t) return false;
   try {
     const r = await fetch('/sessions', { headers: { Authorization: `Bearer ${t}` }, cache: 'no-store' });
     return r.ok;
-  } catch { return false; }
+  } catch { return unreachableOk; } // @silent-fallback-ok: no connection is not a wrong sign-in at boot (keep it, show what was saved); a typed value is never kept unchecked (app-weak-network §2)
 }
 
 function signOut() {
   forgetOperatorSession();
+  net.clear(); // saved copies belong to this sign-in
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
   token = '';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
@@ -223,15 +230,25 @@ async function renderUnlock(message) {
 }
 
 // ── shell ─────────────────────────────────────────────────────────────────
+// The three doors (work-front-doors.md §2.3): Conversations, Work, Agent. Each front door's target
+// depends on whether its page is switched on here (the same probes its tile always used).
+const doorProbes = { chats: false, board: false, checked: false };
+function probeDoors() {
+  const probe = (path) => fetch(path, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).then((r) => r.ok).catch(() => false); // @silent-fallback-ok: an unreachable probe keeps the door on its always-present page
+  return Promise.all([probe('/mobile/browser-devices/status'), probe('/work-board')]).then(([chats, board]) => {
+    const changed = chats !== doorProbes.chats || board !== doorProbes.board || !doorProbes.checked;
+    Object.assign(doorProbes, { chats, board, checked: true });
+    if (changed) for (const a of document.querySelectorAll('nav.nav a[data-door]')) a.setAttribute('href', doorHref(a.dataset.door, doorProbes));
+    // The board answered after the first paint: a page already showing the bare Work address moves onto the board.
+    if (changed && board && /^#\/work\/?$/.test(location.hash)) location.replace('#/work/board');
+  });
+}
 function navItems(active) {
-  const items = [{ id: 'home', label: 'Home', icon: 'home' }, ...GROUPS];
   const nav = el('nav', { class: 'nav', 'aria-label': 'Console sections' });
-  for (const g of items) {
-    const onChats = g.id === 'work' && /^#\/work\/chats(\?|$)/.test(location.hash);
-    const a = el('a', { href: `#/${g.id}`, icon: g.icon, 'aria-current': g.id === active && !onChats ? 'page' : null });
-    a.append(el('span', { text: g.label }));
+  for (const d of DOORS) {
+    const a = el('a', { href: doorHref(d.id, doorProbes), icon: d.icon, 'data-door': d.id, 'aria-current': d.id === active ? 'page' : null });
+    a.append(el('span', { text: d.label }));
     nav.append(a);
-    if (g.id === 'home') nav.append(conversationsNavItem());
   }
   nav.append(el('div', { class: 'nav-group-label', text: 'Elsewhere' }));
   const legacy = el('a', { href: LEGACY_DASHBOARD, icon: 'external' });
@@ -241,42 +258,28 @@ function navItems(active) {
   return nav;
 }
 
-/**
- * Conversations at the top level of the sidebar, right under Home (Justin, 2026-11-08: "It should
- * show directly in the sidebar menu on the top level"). It stays a Work tile too. Shown only while
- * the same probe as that tile answers 200, so an agent with the switch off shows nothing new.
- */
-function conversationsNavItem() {
-  const t = GROUPS.flatMap((g) => g.tabs).find((x) => x.id === 'chats');
-  const a = el('a', { href: tabHref('chats'), icon: t?.icon || 'chat', hidden: true, class: 'nav-conversations',
-    'aria-current': /^#\/work\/chats(\?|$)/.test(location.hash) ? 'page' : null });
-  a.append(el('span', { text: t?.label || 'Conversations' }));
-  if (t?.probe) {
-    fetch(t.probe, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
-      .then((r) => { a.hidden = !r.ok; })
-      .catch(() => { /* @silent-fallback-ok: an unreachable probe leaves the entry hidden, as the Work tile does */ });
-  }
-  return a;
-}
-
 function renderShell(active) {
   if (phone) {
     // Only the page: the app's own frame holds the title bar and navigation.
     const main = el('main', { class: 'main', id: 'main' });
-    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), main));
+    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), net.lineElement(), main));
     applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
     return main;
   }
   const legacyChip = el('a', { class: 'chip chip-legacy', href: LEGACY_DASHBOARD, text: 'Legacy' });
-  const brand = el('a', { class: 'brand', href: '#/home' },
+  const brand = el('a', { class: 'brand', href: doorHref('conversations', doorProbes) },
     el('img', { src: '/dashboard/logo.png', alt: '' }),
     el('span', { text: 'instar' }),
     el('span', { class: 'agent', id: 'agentName' }),
   );
   const top = el('header', { class: 'topbar' }, brand, el('div', { class: 'spacer' }), legacyChip);
   const main = el('main', { class: 'main', id: 'main' });
-  const app = el('div', { class: 'app' }, previewBanner(), top, navItems(active), main);
+  // The Needs-you list sits above both front doors (spec decision 2); the Agent door has none.
+  const strip = active === 'conversations' || active === 'work' ? el('section', { class: 'needs-strip', id: 'needsStrip', 'aria-label': 'What needs you' }) : null;
+  const column = strip ? el('div', { class: 'main-column' }, strip, main) : main;
+  const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), top, navItems(active), column);
   document.body.replaceChildren(app);
+  if (strip) mountNeedsStrip(strip, { get, hrefFor: stripActionHref });
   applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
   fillAgentName();
   return main;
@@ -312,6 +315,12 @@ function actionHref(action) {
   if (action.kind === 'href') return action.href || null;
   if (action.kind === 'attention') return attentionTopicId ? topicLink(homeChatId, attentionTopicId) : null;
   return null;
+}
+
+/** Where a Needs-you row opens in the console: a conversation in the console's own list when it is on. */
+function stripActionHref(action) {
+  if (action && action.kind === 'topic' && doorProbes.chats) return `#/work/chats?c=${encodeURIComponent(`telegram:${Number(action.topicId)}`)}`;
+  return actionHref(action);
 }
 
 function cardShell(def) {
@@ -665,10 +674,12 @@ function probedTile(t) {
   return host;
 }
 
-function renderGroup(main, g) {
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+/** Tiles whose pages are a front door (Conversations, the board): shown on the doors, not again under Agent. */
+const FRONT_DOOR_TABS = ['chats', 'work-board'];
+
+function groupParts(g, { asSection = false } = {}) {
   const extras = [
-    ...(g.id === 'work' ? [conversationsTile()] : []),
+    ...(g.id === 'work' && !asSection ? [conversationsTile()] : []), // under Agent, Conversations is its own door
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
     ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
     ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
@@ -679,22 +690,49 @@ function renderGroup(main, g) {
   const tileHosts = extras.filter((n) => n && n.classList && n.classList.contains('tiles'));
   for (const h of tileHosts) h.classList.add('tiles-inline');
   const parts = [
-    el('section', { class: 'group-head' },
-      el('div', { class: 'eyebrow', text: g.label }),
-      el('h1', { text: g.question }),
-    ),
-    el('div', { class: 'tiles' }, [...g.tabs.map((t) => (t.probe ? probedTile(t) : tile(t))), ...tileHosts]),
+    asSection
+      ? el('h2', { class: 'agent-section-title', id: `agent-${g.id}` }, el('a', { href: `#/${g.id}`, text: g.label }))
+      : el('section', { class: 'group-head' },
+        el('div', { class: 'eyebrow', text: g.label }),
+        el('h1', { text: g.question }),
+      ),
+    // Under Agent, a page Fleet already lists, or a front door's own page, is not repeated in its section.
+    el('div', { class: 'tiles' }, [...g.tabs.filter((t) => !asSection || !(FLEET_TILES.some((f) => f.id === t.id) || FRONT_DOOR_TABS.includes(t.id))).map((t) => (t.probe ? probedTile(t) : tile(t))), ...tileHosts]),
     ...extras.filter((n) => !tileHosts.includes(n)),
-    ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
+    ...(g.id === 'work' && !asSection ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
   if (g.hood && g.hood.length) {
     parts.push(
-      el('h2', { class: 'eyebrow section-label', text: 'Under the hood' }),
+      el('h3', { class: 'eyebrow section-label', text: 'Under the hood' }),
       el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
+  return parts;
+}
+
+function renderGroup(main, g) {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const parts = groupParts(g);
   if (!phone) parts.push(footNote());
   main.replaceChildren(...parts);
+}
+
+/** The Agent door (spec §2.1): Fleet first, then today's four groups as sections, so every page keeps a home. Names and icons only on the menu; each page keeps its purpose line. */
+function renderAgent(main) {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const parts = [
+    el('section', { class: 'group-head' },
+      el('div', { class: 'eyebrow', text: 'Agent' }),
+      el('h1', { text: 'How this agent runs' }),
+    ),
+    el('h2', { class: 'agent-section-title', id: 'agent-fleet', text: 'Fleet' }),
+    el('div', { class: 'tiles' }, FLEET_TILES.map((t) => tile(t))),
+    ...GROUPS.flatMap((g) => groupParts(g, { asSection: true })),
+  ];
+  if (!phone) parts.push(footNote());
+  // Names and icons only here (spec §2.1); each page keeps its own purpose line.
+  main.classList.add('agent-page');
+  setKids(main, ...parts);
 }
 
 function footNote() {
@@ -721,6 +759,7 @@ const NATIVE = {
   'work/chats': renderChats,
   'work/documents': renderDocuments,
   'capacity/machines': renderMachines,
+  'capacity/machine-care': renderMachineCare,
   'capacity/health': renderHealth,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
@@ -764,11 +803,15 @@ function route() {
   newArrival();
   document.documentElement.toggleAttribute('data-phone', phone);
   const pages = phone ? { ...NATIVE, ...PHONE_ONLY } : NATIVE;
-  const id = path.split('/')[0];
-  const group = GROUPS.find((g) => g.id === id);
-  const active = group ? group.id : 'home';
+  const resolved = resolveRoute(path, { phone, ...doorProbes });
+  // An old address (Home, an empty or unknown hash) lands on a door; the old link keeps working.
+  if (resolved.kind === 'redirect' && !phone) { history.replaceState(null, '', resolved.to); route(); return; }
+  const group = resolved.kind === 'group' ? GROUPS.find((g) => g.id === resolved.path) : null;
+  const active = resolved.door;
+  if (active === 'conversations' || active === 'work') { try { localStorage.setItem(LAST_DOOR_KEY, active); } catch { /* @silent-fallback-ok: storage blocked; the console opens on Conversations */ } }
   const main = renderShell(active);
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  refreshCurrent = null;
   const ctx = lifecycle.begin(path, query);
   const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
   if (pages[path]) {
@@ -778,23 +821,33 @@ function route() {
     // A self-refreshing page (it registered ctx.selfRefreshing()) is never re-run by this cycle.
     if (!lifecycle.isSelfRefreshing()) {
       let refreshing = false;
-      const timer = setInterval(() => {
+      const refreshNow = () => {
         if (refreshing || lifecycle.isSelfRefreshing() || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || splitHash(location.hash).path !== hashPath) return;
         refreshing = true;
         // Each re-run is a new visit: the previous run's disposers are called first.
         const next = lifecycle.begin(path, splitHash(location.hash).query);
         Promise.resolve().then(() => pages[path](main, pageCtx(next))).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
-      }, REFRESH_MS);
+      };
+      const timer = setInterval(refreshNow, REFRESH_MS);
+      refreshCurrent = refreshNow;
       // Cleared by the next route() (and signOut), never by a re-run's own visit change.
       refreshTimer = timer;
     }
-  } else if (group) renderGroup(main, group); else renderHome(main, ctx);
+  } else if (group) renderGroup(main, group);
+  else if (resolved.kind === 'agent') renderAgent(main);
+  else renderHome(main, ctx); // phone mode keeps Home's own page for the app's frame
   window.scrollTo(0, 0);
 }
 
 async function start() {
   phone = phone || isPhoneMode(location.search, location.hash);
-  if (!location.hash) history.replaceState(null, '', '#/home');
+  // Land on the front door used last (Conversations or Work), once the doors know which pages are on.
+  await Promise.race([probeDoors(), new Promise((r) => setTimeout(r, 1500))]);
+  if (phone) { if (!location.hash) history.replaceState(null, '', '#/home'); } // the app's frame keeps Home
+  else if (!location.hash || /^#\/?(home)?(\?.*)?$/.test(location.hash)) {
+    let last = null; try { last = localStorage.getItem(LAST_DOOR_KEY); } catch { /* @silent-fallback-ok: storage blocked */ }
+    history.replaceState(null, '', doorHref(startDoor(last), doorProbes));
+  }
   window.removeEventListener('hashchange', route);
   window.addEventListener('hashchange', route);
   route();
@@ -825,6 +878,9 @@ function previewBanner() {
     el('a', { href: '/dashboard/console/', text: 'Live dashboard' }));
 }
 
+// A weak or missing connection: saved status reads, a short first try, one plain line (net-state.js).
+const net = installNetState({ getToken: () => token, onBack: () => { if (refreshCurrent) refreshCurrent(); else if (homeRun) loadHome(); } });
+
 (async function boot() {
   applyTheme(readTheme());
   await loadPreviewInfo();
@@ -832,7 +888,7 @@ function previewBanner() {
   // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
   let ticket = '';
   try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
-  const signIn = await signInAtBoot({ storedToken: token, validToken, ticket, fetchFn: (p, o) => fetch(p, o) });
+  const signIn = await signInAtBoot({ storedToken: token, validToken: (t) => validToken(t, true), ticket, fetchFn: (p, o) => fetch(p, o) });
   if (signIn.via === 'ticket') {
     // Stored exactly as the PIN unlock stores it.
     try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }

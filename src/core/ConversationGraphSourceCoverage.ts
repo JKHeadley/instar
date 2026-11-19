@@ -16,8 +16,8 @@ export interface GraphSourceInventoryCoverage {
  /** Suppression comes only from a certified later producer checkpoint. */
  removed:Array<{ref:ConversationRef;producerMachineId:string;sourceSequence:number;reason:'deleted'|'forgotten'|'unavailable'}>;
 }
-export function reconcileGraphSourceCoverage(options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;membership?:GraphMembershipEpoch;now?:()=>number}):GraphSourceInventoryCoverage {
- const union=options.source.certifiedUnion(options.reader,options.dropped),rows=new Map<string,ConversationGraphReplicationRecord>();
+export function reconcileGraphSourceCoverage(options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;membership?:GraphMembershipEpoch;now?:()=>number;union?:ReturnType<ConversationGraphReplication['certifiedUnion']>}):GraphSourceInventoryCoverage {
+ const union=options.union??options.source.certifiedUnion(options.reader,options.dropped),rows=new Map<string,ConversationGraphReplicationRecord>();
  const latest=new Map<string,ConversationGraphReplicationRecord>();
  for(const r of union.records){if(r.coreType!=='source-observation')continue;const capture=r.authorizationProof.sourceObservation;
   if(capture?.kind==='conversation-source-observation')rows.set(capture.sourceId,r);

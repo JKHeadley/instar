@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-17T00:37:13.203Z",
+  "slug": "wedge-gentle-resume",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 203,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+      "src/monitoring/machineMaintenance/readings.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 199,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "registered as machine-wedge-gentle-resume: each stuck launch resumed at most twice per server run, at most 20 per sample, only while the canary itself is left stopped, at the sampler's 2-minute floor"
+    }
+  },
+  "verdict": "pass"
+}

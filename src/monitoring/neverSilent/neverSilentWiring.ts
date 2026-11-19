@@ -38,6 +38,8 @@ export interface NeverSilentWiringInput {
   sessionForTelegramTopic: (topicId: number) => string | null;
   sessionForSlackChannel: (channelId: string) => string | null;
   sessionFacts: (tmuxSession: string) => Omit<SessionFacts, 'tmuxSession'> | null;
+  /** The machine this conversation's waiting message is held for in the inbound queue, or null. */
+  awaitingMachineFor?: (platform: ConversationPlatform, key: string) => string | null;
   isProtected: (tmuxSession: string) => boolean;
   capturePane: (tmuxSession: string) => string | null;
   // pool
@@ -117,6 +119,7 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
     config: input.config,
     judge,
     resolveSession: resolve,
+    ...(input.awaitingMachineFor ? { awaitingMachine: input.awaitingMachineFor } : {}),
     capturePane: input.capturePane,
     authStatus: async (framework, configHome) => {
       const reader = framework ? ENGINE_LOGIN_READERS[framework as IntelligenceFramework] : undefined;

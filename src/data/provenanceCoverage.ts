@@ -593,6 +593,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Chunk and range summaries of an archived transcript span (context-budget §6.5). Derived layers for later lookup only; they decide nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade summaries against the raw span.',
   },
   {
+    decisionPoint: 'context-layer-h3',
+    component: 'ContextLayerH3',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'The long-term view (H3) rebuilt from a bounded selection of chunk and range summaries (context-budget §6, §6.5), and the topic summary table\'s single writer. A derived layer; it decides nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade it.',
+  },
+  {
     decisionPoint: 'session-activity-digest',
     component: 'SessionActivitySentinel',
     status: 'pending:backlog:decision-quality-enrolment',
@@ -754,6 +762,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     reason:
       'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text. ' +
       'Outcomes come from the bounded pane observer (terminal-prompt-* rules): only progressed-without-input is tool evidence; the rest grade unknown.',
+  },
+  {
+    decisionPoint: 'org-policy-judge',
+    component: 'OrgPolicyJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      "An organization's never rules judged against one action of a joined agent (org-never-actions); enrollment queued in the ACT-1193 retrofit backlog.",
   },
   {
     decisionPoint: 'external-operation-gate',

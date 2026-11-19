@@ -7,6 +7,8 @@ import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import { answerBodyParseError } from './bodyBudget.js';
+import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
@@ -61,6 +63,19 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   // cross-origin (spec skill-driven-signin-repair §5). A preflight gets a bare refusal.
   if (RELOGIN_HELPER_CODE_PATH.test(req.path)) {
     if (req.method === 'OPTIONS') { res.sendStatus(403); return; }
+    next();
+    return;
+  }
+  // Project app api paths (docs/specs/project-apps-sandbox.md §3.6): the sandboxed frame has an
+  // opaque origin, so its fetches carry `Origin: null`. Exactly these paths, ahead of the generic
+  // branch; no credentials, and the narrow key header is the only extra header allowed.
+  if (PROJECT_APP_API_PATH.test(req.path)) {
+    if (req.headers.origin === 'null') res.header('Access-Control-Allow-Origin', 'null');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'X-Project-App-Key, Content-Type');
+    res.header('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
     next();
     return;
   }
@@ -176,6 +191,33 @@ export function isThreadlinePublicRoute(method: string, reqPath: string): boolea
   return THREADLINE_PUBLIC_ROUTES.some((r) => r.method === m && r.path === reqPath);
 }
 
+/**
+ * Credential-management routes that a dashboard SCOPED session token (dst_) may reach only with a
+ * fresh live-PIN STEP-UP (docs/specs/dashboard-scoped-session-token.md §5). These read or write a
+ * STANDING credential — the raw API token, the PIN, token rotation, credential swaps — so a thief
+ * holding only a stolen session token must not reach them without the owner re-proving the PIN.
+ *
+ * This is the KNOWN-direct-route deny-list; the complete deny-by-default allowlist is the tracked
+ * follow-up SEC-002c (a blocklist cannot be proven complete against indirect reach). The master
+ * token (API/CLI callers) is unaffected — it never takes this branch.
+ */
+const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/retrieve', '/secrets/sync-status', '/identity-recovery/rotate'];
+const DST_CREDENTIAL_EXACT = new Set<string>([
+  '/identity-recovery/rotate',
+  // SEC-045: "sign out all dashboard sessions on this agent" needs a fresh-PIN step-up. The route is
+  // registered pre-authMiddleware and self-gates (master OR step-up), so this entry is defense-in-
+  // depth: if the route is ever moved onto the authed router, it keeps its step-up requirement.
+  '/dashboard/session/revoke-all',
+]);
+export function isDashboardCredentialRoute(method: string, reqPath: string): boolean {
+  const p = reqPath.replace(/\/+$/, '').toLowerCase() || '/';
+  if (DST_CREDENTIAL_EXACT.has(p)) return true;
+  if (DST_CREDENTIAL_PREFIXES.some((pre) => p === pre || p.startsWith(pre))) return true;
+  // PIN / owner-policy mutation (change the dashboard PIN).
+  if (/^\/(dashboard\/)?(pin|owner-policy)\b/.test(p) && method.toUpperCase() !== 'GET') return true;
+  return false;
+}
+
 export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
   if (!authToken) return true;
   const header = req.headers.authorization;
@@ -210,6 +252,15 @@ export function authMiddleware(
   memorySessionLookup?: (token: string) => SessionTokenRecord | null,
   /** Told when a scoped session's reply went out. A record only, after the response. */
   memorySessionReplied?: (session: SessionTokenRecord) => void,
+  /**
+   * Dashboard scoped session token (docs/specs/dashboard-scoped-session-token.md, SEC-002b): verifies
+   * a `Bearer dst_...` token against DashboardSessionStore. A valid scoped token authenticates the
+   * dashboard's ordinary reach, but NEVER counts as the master token and must pass a fresh-PIN
+   * step-up on credential routes. Absent → dst_ tokens are refused like any bad token.
+   */
+  dashboardSessionVerify?: (token: string) => boolean,
+  /** True iff THIS request carries a valid fresh-PIN step-up proof (for a credential route). */
+  dashboardStepUpOk?: (req: Request) => boolean,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -361,6 +412,15 @@ export function authMiddleware(
       return;
     }
 
+    // Project apps (docs/specs/project-apps-sandbox.md §3.6): the sealed frame (single-use ticket,
+    // checked in the handler) and the app's own api (the narrow X-Project-App-Key, checked in the
+    // handler, the ONLY gate there). Exact method + path shapes, never a prefix; the ticket and key
+    // mint routes stay behind this gate.
+    if (isProjectAppPublicRoute(req.method, req.path)) {
+      next();
+      return;
+    }
+
     // Internal endpoints: enforce localhost AND bearer token.
     //
     // Per context-death-pitfall-prevention spec § P0.5 (PR3 fix):
@@ -435,6 +495,28 @@ export function authMiddleware(
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+    // A project app's narrow key is never a Bearer (project-apps-sandbox §3.7): a plain 401.
+    if (header.startsWith('Bearer pak_')) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    // Dashboard scoped session token (SEC-002b): a `dst_` bearer is the dashboard's primary credential
+    // after unlock. It authenticates the dashboard's ordinary reach but is NEVER the master token, and
+    // a credential route additionally requires a fresh live-PIN step-up proof.
+    if (header.startsWith('Bearer dst_')) {
+      if (!dashboardSessionVerify || !dashboardSessionVerify(header.slice(7))) {
+        res.status(401).json({ error: 'Invalid or expired dashboard session' });
+        return;
+      }
+      if (isDashboardCredentialRoute(req.method, req.path) && !(dashboardStepUpOk && dashboardStepUpOk(req))) {
+        res.status(403).json({ error: 'step-up-required', reason: 'Re-enter your PIN to change credentials or security settings.' });
+        return;
+      }
+      res.locals.dashboardScopedSession = true;
+      next();
       return;
     }
 
@@ -935,6 +1017,21 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
           ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
           : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
+    // The project app wrapper (project-apps-sandbox §3.6): its own policy, whose frame-src names the
+    // one frame path for this app on this request's own origin, so the frame cannot navigate itself
+    // anywhere else. The origin must be one of the agent's known addresses (the resolver AgentServer
+    // puts on app.locals); without one the page is refused rather than served with a looser policy.
+    if (isWrapperPagePath(p)) {
+      const appId = typeof req.query?.app === 'string' ? req.query.app : '';
+      const resolve = req.app?.locals?.projectAppOrigin as ((r: Request) => string | null) | undefined;
+      const origin = resolve ? resolve(req) : null;
+      if (!APP_ID_RE.test(appId) || !origin) {
+        res.status(400).type('text/plain').set('Cache-Control', 'no-store')
+          .send(!APP_ID_RE.test(appId) ? 'No such app.' : 'This address is not one of this agent\'s addresses.');
+        return;
+      }
+      res.header('Content-Security-Policy', wrapperCsp(origin, appId));
+    }
   }
   next();
 }
@@ -982,6 +1079,8 @@ export const DASHBOARD_STATIC_OPTIONS = {
 } as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
+  // SEC-103: a body the caller sent malformed or too large is a plain 400/413, never a 500.
+  if (answerBodyParseError(err, req, res)) return;
   const message = operatorError(err, res.app?.locals?.stateDir);
   const stack = err instanceof Error ? err.stack : undefined;
   if (responseAlreadyCommitted(res)) {
@@ -1001,7 +1100,8 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
 
 const DOC_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const DOC_PAGE_GET = new RegExp(`^/docs/(?:_assets/[a-z0-9-]+\\.(?:js|css)|${DOC_UUID}(?:/page-data|/page-compare)?)$`);
-const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+)$`);
+// Page write ops are lower-case words joined by hyphens (`decide-on-phone`, document-decisions §3.3).
+const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+(?:-[a-z]+){0,3})$`);
 /** The document page's self-authenticating routes (documentPageRoutes.ts). */
 export function DOC_PAGE_PATH(method: string, p: string): boolean {
   // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).

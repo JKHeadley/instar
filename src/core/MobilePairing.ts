@@ -16,6 +16,10 @@ export const PAIR_LINK_BASE = 'https://instar.sh/pair';
 export const CODE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 export const MAX_LIVE_CODES = 10;
 export const MAX_MINTS_PER_HOUR = 10;
+/** Codes an owner device mints for a computer (mac-qr-pairing §4): at most this many an hour, inside the shared 10. */
+export const MAX_DEVICE_MINTS_PER_HOUR = 5;
+/** A code minted for a computer is used within seconds; it lives 5 minutes. */
+export const DEVICE_MINT_TTL_MS = 5 * 60 * 1000;
 export const MAX_FAILED_REDEEMS = 30;
 export const FAILURE_WINDOW_MS = 10 * 60 * 1000;
 export const MAX_DEVICE_ROWS = 200;
@@ -75,20 +79,21 @@ export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' }
 /** Who a pairing link is for (people and roles §3.2); absent ⇒ the owner. Server memory only. */
 export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' | 'team' }
 
-interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null; person: PairingPerson | null; watchId?: string }
+interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null; person: PairingPerson | null; watchId?: string; boundKey?: string }
 
 export type MintResult =
   | { ok: true; code: string; expiresAt: number }
   | { ok: false; reason: 'too-many-live-codes' | 'too-many-mints' };
 
 export type RedeemResult =
-  | { ok: true; label: string | null; bound: BoundOrigin | null; person: PairingPerson | null; watchId?: string }
+  | { ok: true; label: string | null; bound: BoundOrigin | null; person: PairingPerson | null; watchId?: string; boundKey?: string }
   | { ok: false; reason: 'invalid' | 'too-many-attempts' };
 
 /** In-memory pairing codes. Only SHA-256 hashes are kept; a restart drops every code. */
 export class PairingCodeStore {
   private codes = new Map<string, CodeEntry>();
   private mintTimes: number[] = [];
+  private deviceMintTimes: number[] = [];
   private failureTimes: number[] = [];
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -97,18 +102,24 @@ export class PairingCodeStore {
     const t = this.now();
     for (const [h, e] of this.codes) if (e.expiresAt <= t) this.codes.delete(h);
     this.mintTimes = this.mintTimes.filter((m) => t - m < HOUR_MS);
+    this.deviceMintTimes = this.deviceMintTimes.filter((m) => t - m < HOUR_MS);
     this.failureTimes = this.failureTimes.filter((f) => t - f < FAILURE_WINDOW_MS);
   }
 
-  /** `currentToken` binds the code to the API token in force now; a later rotation voids it. */
-  mint(ttlMs: number, label: string | null, currentToken: string, bound: BoundOrigin | null = null, person: PairingPerson | null = null): MintResult {
+  /**
+   * `currentToken` binds the code to the API token in force now; a later rotation voids it.
+   * `boundKey` (mac-qr-pairing §4): the only device public key this code may register.
+   */
+  mint(ttlMs: number, label: string | null, currentToken: string, bound: BoundOrigin | null = null, person: PairingPerson | null = null, boundKey: string | null = null): MintResult {
     this.prune();
     if (this.codes.size >= MAX_LIVE_CODES) return { ok: false, reason: 'too-many-live-codes' };
     if (this.mintTimes.length >= MAX_MINTS_PER_HOUR) return { ok: false, reason: 'too-many-mints' };
+    if (boundKey && this.deviceMintTimes.length >= MAX_DEVICE_MINTS_PER_HOUR) return { ok: false, reason: 'too-many-mints' };
     const code = crypto.randomBytes(16).toString('base64url');
     const expiresAt = this.now() + ttlMs;
-    this.codes.set(sha(code), { expiresAt, label, tokenHash: sha(currentToken), bound, person });
+    this.codes.set(sha(code), { expiresAt, label, tokenHash: sha(currentToken), bound, person, ...(boundKey ? { boundKey } : {}) });
     this.mintTimes.push(this.now());
+    if (boundKey) this.deviceMintTimes.push(this.now());
     return { ok: true, code, expiresAt };
   }
 
@@ -124,7 +135,7 @@ export class PairingCodeStore {
       const entry = this.codes.get(h);
       if (entry) {
         this.codes.delete(h);
-        if (entry.tokenHash === sha(currentToken)) return { ok: true, label: entry.label, bound: entry.bound, person: entry.person, ...(entry.watchId ? { watchId: entry.watchId } : {}) };
+        if (entry.tokenHash === sha(currentToken)) return { ok: true, label: entry.label, bound: entry.bound, person: entry.person, ...(entry.watchId ? { watchId: entry.watchId } : {}), ...(entry.boundKey ? { boundKey: entry.boundKey } : {}) };
       }
     }
     if (this.failureTimes.length >= MAX_FAILED_REDEEMS) return { ok: false, reason: 'too-many-attempts' };

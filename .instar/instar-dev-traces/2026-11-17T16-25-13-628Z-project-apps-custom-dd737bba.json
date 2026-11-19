@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "project-apps-custom",
+  "sessionId": "9fedf354-db71-4764-adc2-99986abaf297",
+  "timestamp": "2026-11-17T16:25:13.628Z",
+  "artifactPath": "upgrades/side-effects/project-apps-custom.md",
+  "artifactSha256": "c375b92240140b874c9186e4c02a229b369035641d44660adbbfa0a5d9917f71",
+  "coveredFiles": [
+    "src/core/ProjectAppKeys.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Inline an owner-only atomic write so app keys stop importing the identity key-file module; same behavior.",
+  "eli16Path": "docs/specs/project-apps-sandbox.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/project-apps-custom.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: a local file-write helper."
+  }
+}

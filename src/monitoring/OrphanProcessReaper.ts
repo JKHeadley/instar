@@ -439,7 +439,44 @@ export class OrphanProcessReaper extends EventEmitter {
    *   - instar-orphan: In a project-prefixed tmux session NOT tracked by SessionManager
    *   - external: Everything else (user sessions, VS Code, etc.)
    */
+  /**
+   * One `ps` listing of every process (pid, ppid, command) for the duration of a classify pass.
+   * Before, each candidate cost two synchronous `ps -p` spawns (parent pid, then parent command),
+   * which on a loaded host held the server's event loop for 3-4 s per poll (CPU profile of an
+   * agent server, 2026-11-18). A pid missing here (it exited, or the listing failed) falls back
+   * to the per-pid query, so answers are unchanged.
+   */
+  private psSnapshot: Map<number, { ppid: number; command: string }> | null = null;
+
+  private readPsSnapshot(): Map<number, { ppid: number; command: string }> | null {
+    try {
+      const output = shellExec('ps -A -o pid=,ppid=,command= 2>/dev/null', 10_000);
+      const rows = new Map<number, { ppid: number; command: string }>();
+      for (const line of output.split('\n')) {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        if (match) rows.set(parseInt(match[1], 10), { ppid: parseInt(match[2], 10), command: match[3].trim() });
+      }
+      return rows.size ? rows : null;
+    } catch { // @silent-fallback-ok — no listing: every lookup falls back to its own per-pid query
+      return null;
+    }
+  }
+
   private classifyProcesses(
+    processes: FrameworkProcess[],
+    tmuxSessions: Map<number, string>,
+    trackedSessions: Set<string>,
+    knownInstarSessions: Set<string>,
+  ): ClassifiedProcess[] {
+    this.psSnapshot = processes.length ? this.readPsSnapshot() : null;
+    try {
+      return this.classifyWithSnapshot(processes, tmuxSessions, trackedSessions, knownInstarSessions);
+    } finally {
+      this.psSnapshot = null;
+    }
+  }
+
+  private classifyWithSnapshot(
     processes: FrameworkProcess[],
     tmuxSessions: Map<number, string>,
     trackedSessions: Set<string>,
@@ -560,6 +597,8 @@ export class OrphanProcessReaper extends EventEmitter {
   // ── Process Utilities ──────────────────────────────────────────────
 
   private getParentPid(pid: number): number | null {
+    const known = this.psSnapshot?.get(pid);
+    if (known) return known.ppid;
     try {
       const output = shellExec(`ps -o ppid= -p ${pid} 2>/dev/null`).trim();
       const ppid = parseInt(output, 10);
@@ -570,6 +609,8 @@ export class OrphanProcessReaper extends EventEmitter {
   }
 
   private getProcessCommand(pid: number): string | null {
+    const known = this.psSnapshot?.get(pid);
+    if (known) return known.command || null;
     try {
       const output = shellExec(`ps -o command= -p ${pid} 2>/dev/null`).trim();
       return output || null;

@@ -299,6 +299,6 @@ describe('GET /api/files/link — the explicit isNeverServed guard (allowedPaths
   it('still links a normal allowed file (no over-block)', async () => {
     const res = await request(app).get('/api/files/link').query({ path: 'docs/readme.md' });
     expect(res.status).toBe(200);
-    expect(res.body.relative).toContain('tab=files');
+    expect(res.body.relative).toContain('/dashboard/console/#/settings/files?path=');
   });
 });

@@ -72,6 +72,33 @@ describe('acceptSuggestion',()=>{
   expect(creates).toHaveLength(1);
  });
 
+ // Topic 141385, 2026-11-16: a step waited a minute on another machine and the page said nothing new.
+ it('a slow step says what it is waiting for and for how long, and each stop carries its kind',async()=>{
+  const m=await boot();
+  const s={id:'sg-0123456789abcdef0129',title:'Slow',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};
+  let mode:'pending'|'offline'|'refused'='pending';
+  const send=async(path:string,body?:any)=>{
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0009'});
+   if(path==='/conversation-graph/changes'||path.startsWith('/conversation-graph/changes/')){
+    if(mode==='offline')return{ok:false,status:0};
+    if(mode==='refused')return ok({state:'refused-local',reason:'not-allowed'},409);
+    return ok({state:'saved-pending',waitingMachines:[{name:'Laptop'}]},202);}
+   return ok({ok:true});};
+  const steps:string[]=[];
+  const waiting=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
+  expect(waiting).toMatchObject({done:false,kind:'waiting'});expect(waiting.text).toContain('Waiting for Laptop');
+  expect(steps[0]).toBe('Creating the group…');
+  expect(steps).toContain('Creating the group… Saved here. Waiting for Laptop to confirm. (5 s)');
+  expect(steps.some(t=>/\(0 s\)|\(3 s\)/.test(t))).toBe(false); // nothing extra for a step that is only a moment old
+  mode='offline';steps.length=0;
+  const offline=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
+  expect(offline).toMatchObject({done:false,kind:'waiting'});expect(offline.text).toContain('The agent did not answer');
+  expect(steps).toContain('Creating the group… The agent is not answering yet. (8 s)');
+  mode='refused';
+  expect(await m.acceptSuggestion(s,{send,onStep:()=>{},wait:10000,sleep:async()=>{}})).toMatchObject({done:false,kind:'refused'});
+  expect(await m.acceptSuggestion(s,{send:async()=>({ok:false,status:403,needsUnlock:true}),onStep:()=>{},sleep:async()=>{}})).toMatchObject({done:false,kind:'locked'});
+ });
+
  it('a refused step stops the accept and changes nothing after it',async()=>{
   const m=await boot();
   const s={id:'sg-0123456789abcdef0125',title:'X',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};
@@ -124,5 +151,95 @@ describe('acceptSuggestion respects what the owner already did',()=>{
   expect(changes[0]).toEqual({requestId:'suggestion-create-shared',change:{kind:'create-effort',projectScope:[]}});
   expect(changes.some(c=>c.change.kind==='set-effort-title')).toBe(false);
   expect(changes.filter(c=>c.change.kind==='set-primary-placement').map(c=>c.change.subject.topicId)).toEqual([5]);
+ });
+});
+
+describe('a Chief of Staff project suggestion (work-front-doors stage 2b)',()=>{
+ it('accepts with one member and makes the project conversation the front door, through the owner path',async()=>{
+  const m=await boot();
+  const s={id:'sg-0123456789abcdef0999',title:'Project: Android app',reason:'',frontDoor:tg(7),members:[{ref:tg(7),key:m.encodeNodeRef(tg(7)),title:'Android app'}]};
+  const calls:Array<{path:string;body?:any}>=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0002'});
+   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
+   if(path==='/conversation-graph/preview')return ok({eligible:true});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref));}
+   if(path.endsWith('/accepted'))return ok({ok:true});
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,moved:1,skipped:0,effort});
+  const changes=calls.filter(c=>c.path==='/conversation-graph/changes').map(c=>c.body.change.kind);
+  expect(changes).toEqual(['create-effort','set-effort-title','set-primary-placement','set-front-door']);
+  const fd=calls.find(c=>c.body?.change?.kind==='set-front-door')!.body.change;
+  expect(fd).toMatchObject({effort,conversation:tg(7),replacesFrontDoorEventIds:[],observedPlacementEventIds:['place-head-7']});
+ });
+
+ it('sets no front door when the owner had already placed the project conversation elsewhere',async()=>{
+  const m=await boot();
+  const elsewhere={kind:'effort',id:'99999999-70de-4324-9ef3-22b616fc83ce'};
+  const s={id:'sg-0123456789abcdef0998',title:'Project: X',reason:'',frontDoor:tg(8),members:[{ref:tg(8),key:m.encodeNodeRef(tg(8)),title:'X'}]};
+  const calls:any[]=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0003'});
+   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
+    return ok(nodeBody(ref,ref.kind==='conversation'?{path:[{ref:elsewhere,title:'Theirs'}]}:{}));}
+   if(path.endsWith('/accepted'))return ok({ok:true});
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,moved:0,skipped:1});
+  expect(calls.some(c=>c.body?.change?.kind==='set-front-door')).toBe(false);
+ });
+
+ it('the model admits a one-member project with its front door, and refuses a front door that is not a member',async()=>{
+  const m=await boot();
+  const item=(over:any)=>({id:'sg-0123456789abcdef0997',title:'Project: Y',reason:'r',members:[{ref:tg(9),title:'Y'}],accepting:false,...over});
+  const okModel=m.suggestionsModel({state:'ready',items:[item({frontDoor:tg(9)})]});
+  expect(okModel.ok).toBe(true);
+  expect(okModel.items[0].frontDoor).toEqual(tg(9));
+  expect(m.suggestionsModel({state:'ready',items:[item({frontDoor:tg(10)})]}).ok).toBe(false);
+  expect(m.suggestionsModel({state:'ready',items:[item({})]}).ok).toBe(false); // an ordinary suggestion still needs two
+ });
+ it('second pass: a project whose conversation is already inside another project creates nothing',async()=>{
+  const m=await boot();
+  const other={kind:'effort',id:'77777777-70de-4324-9ef3-22b616fc83ce'};
+  const s={id:'sg-0123456789abcdef0996',title:'Project: B',reason:'',frontDoor:tg(11),members:[{ref:tg(11),key:m.encodeNodeRef(tg(11)),title:'B'}]};
+  const calls:any[]=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref,{path:[{ref:other,title:'Project A'}]}));}
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,placedElsewhere:true,effort:null});
+  expect(calls.some(c=>c.path==='/conversation-graph/changes'||c.path.endsWith('/start'))).toBe(false);
+ });
+ it('second pass: Continue in another tab (accepting on the server, no local progress) resumes the same effort and sets the front door',async()=>{
+  const m=await boot();
+  const s={id:'sg-0123456789abcdef0995',title:'Project: C',reason:'',accepting:true,frontDoor:tg(12),members:[{ref:tg(12),key:m.encodeNodeRef(tg(12)),title:'C'}]};
+  const calls:any[]=[];
+  const send=async(path:string,body?:any)=>{calls.push({path,body});
+   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0004'});
+   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
+   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
+    return ok(nodeBody(ref,ref.kind==='conversation'?{path:[{ref:effort,title:'Project: C'}]}:{}));}
+   if(path.endsWith('/accepted'))return ok({ok:true});
+   return ok({},404);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,effort});
+  expect(out.placedElsewhere).toBeUndefined();
+  expect(calls.some(c=>c.body?.change?.kind==='set-front-door')).toBe(true);
+  expect(calls.some(c=>c.path.endsWith('/accepted'))).toBe(true);
+ });
+});
+
+
+describe('a project page lists its proposed cards (work-front-doors stage 2b)',()=>{
+ it('nodeModel reads the proposed list, drops a malformed row from it only, and defaults to none',async()=>{
+  const m=await boot();
+  const body=(over:any)=>({partial:false,node:{ref:effort,title:'Project: Shop'},path:[],children:{items:[{ref:tg(5),title:'Shop'}],nextCursor:null},...over});
+  const withCards=m.nodeModel(body({proposed:{by:'card-record',items:[{ref:tg(7),title:'Pick the date'},{ref:{kind:'nope'},title:'bad'}]}}));
+  expect(withCards.ok).toBe(true);
+  expect(withCards.proposed.map((i:any)=>i.title)).toEqual(['Pick the date']);
+  expect(withCards.children.map((i:any)=>i.title)).toEqual(['Shop']);
+  expect(m.nodeModel(body({})).proposed).toEqual([]);
  });
 });

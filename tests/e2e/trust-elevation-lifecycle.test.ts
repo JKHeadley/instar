@@ -27,6 +27,10 @@ describe('E2E: Trust Elevation Lifecycle', () => {
   let stateDir: string;
   let server: Server;
   let baseUrl: string;
+  let tracker: TrustElevationTracker;
+  /** A decision the server observed itself (not reported through the agent's token). */
+  const observed = (proposalId: string, decision: 'approved' | 'rejected', ageMs: number, modified = false) =>
+    tracker.recordApprovalEvent({ proposalId, proposedAt: new Date(Date.now() - ageMs).toISOString(), decidedAt: new Date().toISOString(), decision, modified, latencyMs: ageMs });
 
   beforeAll(async () => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-trust-elev-e2e-'));
@@ -53,7 +57,7 @@ describe('E2E: Trust Elevation Lifecycle', () => {
       adaptiveTrust,
     });
 
-    const trustElevationTracker = new TrustElevationTracker({
+    const trustElevationTracker = tracker = new TrustElevationTracker({
       stateDir,
       minProposalsForElevation: 8,
       acceptanceRateThreshold: 0.8,
@@ -141,20 +145,20 @@ describe('E2E: Trust Elevation Lifecycle', () => {
 
   // ── Phase 2: Build Acceptance History ──────────────────────────
 
-  it('builds acceptance rate through proposal decisions', async () => {
-    // Record 10 approved proposals (all slow — genuine reviews)
-    for (let i = 0; i < 10; i++) {
-      const res = await fetch(`${baseUrl}/autonomy/elevation/record`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          proposalId: `EVO-${i + 1}`,
-          proposedAt: new Date(Date.now() - 120000).toISOString(), // 2 min ago
-          decision: 'approved',
-        }),
-      });
-      expect(res.status).toBe(200);
-    }
+  it('rows reported through the token are kept but never counted (trust-journey section 6)', async () => {
+    const res = await fetch(`${baseUrl}/autonomy/elevation/record`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposalId: 'EVO-TOKEN', proposedAt: new Date(Date.now() - 120000).toISOString(), decision: 'approved' }),
+    });
+    expect(res.status).toBe(200);
+    const stats = await (await fetch(`${baseUrl}/autonomy/elevation/acceptance`)).json();
+    expect(stats.totalDecided).toBe(0);
+  });
+
+  it('builds acceptance rate through observed proposal decisions', async () => {
+    // 10 approved proposals (all slow — genuine reviews), observed by the server itself
+    for (let i = 0; i < 10; i++) observed(`EVO-${i + 1}`, 'approved', 120000);
 
     // Check acceptance stats
     const statsRes = await fetch(`${baseUrl}/autonomy/elevation/acceptance`);
@@ -168,18 +172,8 @@ describe('E2E: Trust Elevation Lifecycle', () => {
   // ── Phase 3: Add Rejections and Verify Rate ────────────────────
 
   it('acceptance rate adjusts with rejections', async () => {
-    // Record 2 rejections
-    for (let i = 0; i < 2; i++) {
-      await fetch(`${baseUrl}/autonomy/elevation/record`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          proposalId: `EVO-REJ-${i + 1}`,
-          proposedAt: new Date(Date.now() - 60000).toISOString(),
-          decision: 'rejected',
-        }),
-      });
-    }
+    // 2 observed rejections
+    for (let i = 0; i < 2; i++) observed(`EVO-REJ-${i + 1}`, 'rejected', 60000);
 
     const statsRes = await fetch(`${baseUrl}/autonomy/elevation/acceptance`);
     const stats = await statsRes.json();
@@ -214,22 +208,18 @@ describe('E2E: Trust Elevation Lifecycle', () => {
 
   // ── Phase 5: Dismiss Rubber-Stamp ──────────────────────────────
 
-  it('dismisses rubber-stamp alert', async () => {
+  it('the token cannot hide the rubber-stamp alert (trust-journey section 6)', async () => {
     const res = await fetch(`${baseUrl}/autonomy/elevation/dismiss-rubber-stamp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ days: 60 }),
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.dismissed).toBe(true);
-    expect(body.rubberStamp.dismissedUntil).toBeTruthy();
-
-    // Verify the dismissed date is ~60 days in the future
-    const dismissedUntil = new Date(body.rubberStamp.dismissedUntil);
-    const expectedMin = new Date(Date.now() + 59 * 24 * 60 * 60 * 1000);
-    expect(dismissedUntil.getTime()).toBeGreaterThan(expectedMin.getTime());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('operator-approval-required');
+    const dash = await (await fetch(`${baseUrl}/autonomy/elevation`)).json();
+    expect(dash.rubberStamp.detected).toBe(true);
+    expect(dash.rubberStamp.dismissedUntil ?? null).toBeNull();
   });
 
   // ── Phase 6: Deferred Proposals Don't Count ────────────────────
@@ -261,19 +251,8 @@ describe('E2E: Trust Elevation Lifecycle', () => {
   // ── Phase 7: Modified Proposals Tracked Separately ─────────────
 
   it('tracks modified proposals separately', async () => {
-    // Record 2 approved-with-modifications
-    for (let i = 0; i < 2; i++) {
-      await fetch(`${baseUrl}/autonomy/elevation/record`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          proposalId: `EVO-MOD-${i + 1}`,
-          proposedAt: new Date(Date.now() - 60000).toISOString(),
-          decision: 'approved',
-          modified: true,
-        }),
-      });
-    }
+    // 2 observed approved-with-modifications
+    for (let i = 0; i < 2; i++) observed(`EVO-MOD-${i + 1}`, 'approved', 60000, true);
 
     const statsRes = await fetch(`${baseUrl}/autonomy/elevation/acceptance`);
     const stats = await statsRes.json();

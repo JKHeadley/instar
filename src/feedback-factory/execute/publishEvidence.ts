@@ -68,7 +68,7 @@ export function withoutSessionReleaseNotes(entries: ChangeEntry[]): { entries: C
 }
 
 /** The branch without its `feedback/` prefix: the per-attempt file slug. */
-function fileSlug(branch: string): string {
+export function fileSlug(branch: string): string {
   const s = branch.replace(/^feedback\//, '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
   return s || 'feedback-fix';
 }
@@ -151,4 +151,77 @@ export function writePublishEvidence(publishClone: string, input: PublishEvidenc
     written.push(file.relPath);
   }
   return written;
+}
+
+/**
+ * The publisher's own evidence paths for this branch, exactly as executorDecisionRecord and
+ * executorReleaseFragment name them. The confined session cannot write either (`.instar/` is held
+ * by the diff gate; release notes it wrote are dropped before publication), so a file at one of
+ * these paths in the PR was written by the publisher.
+ */
+export function isPublisherEvidencePath(file: string, branch: string): boolean {
+  const slug = fileSlug(branch).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${DECISION_RECORD_DIR.replace(/\./g, '\\.')}/\\d{4}-\\d{2}-\\d{2}T[\\d-]+Z-${slug}\\.json$`).test(file)
+    || file === `${FRAGMENT_DIR}/${fileSlug(branch)}.md`;
+}
+
+/** What the reviewer filter needs to rebuild the publisher's files for one attempt. */
+export interface EvidenceOwner { branch: string; attemptId: string; initiativeId: string; kind: 'fix' | 'spec' }
+
+/**
+ * The exact bytes the publisher wrote at `file` for this attempt, rebuilt from the PR's other
+ * paths and the attempt's ids (the record's timestamp comes from its own file name); null when
+ * `file` is not one of this branch's evidence paths.
+ */
+export function expectedPublisherEvidence(file: string, prFiles: string[], owner: EvidenceOwner): string | null {
+  if (!isPublisherEvidencePath(file, owner.branch)) return null;
+  const entries: ChangeEntry[] = prFiles.filter((f) => !isPublisherEvidencePath(f, owner.branch)).map((p) => ({ path: p, kind: 'modified' }));
+  const base = { entries, branch: owner.branch, attemptId: owner.attemptId, initiativeId: owner.initiativeId, kind: owner.kind };
+  if (file.startsWith(`${FRAGMENT_DIR}/`)) {
+    const frag = executorReleaseFragment({ ...base, at: new Date(0) });
+    return frag && frag.relPath === file ? frag.content : null;
+  }
+  const m = /(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-[^/]+\.json$/.exec(file);
+  if (!m) return null;
+  const at = new Date(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+  if (Number.isNaN(at.getTime())) return null;
+  const rec = executorDecisionRecord({ ...base, at });
+  return rec && rec.relPath === file ? rec.content : null;
+}
+
+/** The full text of a diff section that ADDS a new file, or null for any other kind of section. */
+export function addedFileText(section: string): string | null {
+  const lines = section.split('\n');
+  if (!lines.includes('new file mode 100644') || !lines.includes('--- /dev/null')) return null;
+  const start = lines.findIndex((l) => l.startsWith('@@ '));
+  if (start < 0) return null;
+  const body: string[] = [];
+  for (const l of lines.slice(start + 1)) {
+    if (l === '') continue;
+    if (l.startsWith('\\ ')) return null; // "\ No newline at end of file": the publisher always ends with one
+    if (!l.startsWith('+')) return null;
+    body.push(l.slice(1));
+  }
+  return body.join('\n') + '\n';
+}
+
+/**
+ * The review sees the change the session made, not the publisher's evidence: a decision record
+ * under `.instar/` reads as a tooling edit to a reviewer (rule 2), and both files are trusted,
+ * fixed-shape output. Drops those paths from the file list and their sections from the diff.
+ */
+export function withoutPublisherEvidence(files: string[], diff: string, owner: EvidenceOwner): { files: string[]; diff: string; omitted: string[] } {
+  if (!files.some((f) => isPublisherEvidencePath(f, owner.branch))) return { files, diff, omitted: [] };
+  const sections = diff.split(/(?=^diff --git )/m);
+  const omitted: string[] = [];
+  const kept = sections.filter((sec) => {
+    const m = /^diff --git a\/(\S+) b\/(\S+)\n/.exec(sec);
+    if (!m || m[1] !== m[2]) return true;
+    const expected = expectedPublisherEvidence(m[2], files, owner);
+    // Hidden only when it is byte for byte what the publisher wrote; anything else stays in view.
+    if (expected === null || addedFileText(sec) !== expected) return true;
+    omitted.push(m[2]);
+    return false;
+  });
+  return { files: files.filter((f) => !omitted.includes(f)), diff: kept.join(''), omitted };
 }

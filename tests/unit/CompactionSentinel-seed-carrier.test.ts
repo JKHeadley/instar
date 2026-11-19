@@ -230,6 +230,6 @@ describe('readSeedMarkerFile', () => {
     write(UUID, JSON.stringify({ sessionId: UUID, epoch: 'fold-1', source: 'clear', seededAt: 123 }));
     expect(readSeedMarkerFile(stateDir, UUID)).toBeNull();
     write(UUID, JSON.stringify({ sessionId: UUID, epoch: '', source: 'compact', seededAt: 124 }));
-    expect(readSeedMarkerFile(stateDir, UUID)).toEqual({ seededAt: 124, epoch: '' });
+    expect(readSeedMarkerFile(stateDir, UUID)).toEqual({ seededAt: 124, epoch: '', source: 'compact' });
   });
 });

@@ -1,6 +1,6 @@
 // The one list of states that need the operator (docs/specs/operator-needs-first-screen.md).
-// Home's count and headline come from it, and every state's own page leads with it, so
-// neither can miss one. Pure: it reads nothing itself and touches no DOM. Rows are built with
+// The Needs-you list (GET /needs, work-front-doors.md decision 2) and Home's headline come from it,
+// and every state's own page leads with it, so neither can miss one. Pure: it reads nothing itself and touches no DOM. Rows are built with
 // each page's own model, so Home and the page cannot disagree.
 
 import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
@@ -17,6 +17,16 @@ import { workBoardNeedRows } from './work-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
+
+/** Needs-you rows for documents that ask the owner to decide (document-decisions.md §3.7). */
+export function documentDecisionNeedRows(res) {
+  if (!res) return UNREADABLE;
+  if (!res.ok) return sourceState(res) === 'off' ? [] : UNREADABLE;
+  const docs = res.data && Array.isArray(res.data.documents) ? res.data.documents : null;
+  if (!docs) return UNREADABLE;
+  return docs.filter((d) => d && typeof d.id === 'string').map((d) => row(`doc-decision:${d.id}`, `Decide: ${d.title || 'a document'}`,
+    d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
+}
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
@@ -55,6 +65,8 @@ export function chiefOfStaffNeedRows(cos, now) {
     : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : String(p.conversationKey || 'a project'));
   for (const p of d.projects) {
     if (!p || typeof p !== 'object') continue;
+    // The owner paused it (spec cos-owner-pause-record §3.3): they already decided, so it asks nothing of them.
+    if (p.pausedBy) continue;
     if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', projectHref(p)));
     else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', projectHref(p)));
     else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', projectHref(p)));
@@ -70,7 +82,7 @@ export function chiefOfStaffNeedRows(cos, now) {
 }
 
 export const NEED_SOURCES = [
-  // First, so a real problem leads Home. Only what affects the person. Internal notes stay on the Health page and never raise this count.
+  // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
     rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
@@ -101,6 +113,8 @@ export const NEED_SOURCES = [
     rows: ({ approvals }) => { const a = buildApprovals(approvals); return a.ok ? a.rows.map((r) => row(r.key, r.headline, r.reason, '#/people/mandates?s=waiting')) : UNREADABLE; } },
   { id: 'plans', page: 'work/plans', reads: { initiatives: '/initiatives', blockers: '/blockers' },
     rows: ({ initiatives, blockers }, now) => {
+      // Plan tracking switched off here (503) means no plan is waiting, even when /blockers answers.
+      if (sourceState(initiatives) === 'off') return [];
       const page = buildPlansPage({ initiatives, blockers }, now);
       if (!page.ok) return UNREADABLE;
       return page.sections.needsYou.map((r) => row(`plan:${r.key}`, r.main, r.needs, '#/work/plans?s=needsYou'));
@@ -110,7 +124,10 @@ export const NEED_SOURCES = [
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
-    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => row(r.key, r.main, r.sub, r.href)); } },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
+  // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
+  { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
+    rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
     rows: ({ pending }, now) => {
@@ -153,17 +170,60 @@ export const NEED_SOURCES = [
  * fails the floor. `file` + `phrase` must both match the line.
  */
 export const NEED_EXEMPT = [
-  { file: 'home-model.js', phrase: '', why: 'Home itself: this is the card the sources feed.' },
+  { file: 'home-model.js', phrase: '', why: 'Home itself: the card the sources feed, which the Needs-you list draws.' },
   { file: 'console.js', phrase: 'What needs you', why: 'Home itself: the card title.' },
+  { file: 'needs-strip.js', phrase: '', why: 'The Needs-you strip itself: it draws GET /needs, which these sources feed.' },
   { file: 'nav-model.js', phrase: 'waiting', why: 'A navigation description of the page, not a state.' },
-  { file: 'promises-model.js', phrase: '', why: 'Already on Home; the operator decided 2026-11-02 that only promises due within 24 hours count.' },
+  { file: 'promises-model.js', phrase: '', why: 'Already in the Needs-you list; the operator decided 2026-11-02 that only promises due within 24 hours count.' },
   { file: 'promises.js', phrase: '', why: 'As promises-model.js.' },
   { file: 'allowed-model.js', phrase: 'will wait for your approval', why: 'Describes what a safety profile means, not something waiting now.' },
   { file: 'pace-model.js', phrase: 'waiting on you', why: 'A verdict on queue pace; the items themselves appear in their own sources.' },
   { file: 'sessions-model.js', phrase: 'Waiting on you', why: 'A comment-like note that sessions do not report this; nothing waits.' },
+  { file: 'projects.js', phrase: 'Your agent suggests', why: 'Project app offers are optional suggestions shown on the project\'s Work row, not needs (docs/specs/project-apps.md §3.5); an unanswered offer waits for nothing.' },
+  { file: 'projects-model.js', phrase: 'Your agent suggests', why: 'As projects.js: the words of an optional project app suggestion, never a Needs-you row.' },
+  { file: 'projects-model.js', phrase: 'Waiting for your approval', why: 'A custom project app with no approved version mirrors its version card, which is already a Needs-you row through the Work board source (docs/specs/project-apps-sandbox.md §3.4); the project row only says why it has no Open button.' },
 ];
 
 const failedRead = (res) => sourceState(res) === 'failed';
+
+/** Plain words a linked row shows for its card: fixed, never the agent's own title (work-board-cards-appear §3). */
+export const HAS_CARD_LABEL = 'Has a card on the work board';
+
+/**
+ * Each need once (docs/specs/work-board-cards-appear.md §3). A card in the owner's shown "Waiting on you" slice that
+ * says it is about other rows (`covers`) and only waits on the person to act (with the person, no Approve, no Confirm done,
+ * no open question, nothing outward) stands in for itself through them:
+ * each covered row keeps its own words, source and action and gains `card`; a server-owned card's own row is dropped
+ * (an agent session's card keeps its own row too).
+ * Two cards on one row: the older card (creation time, then id) links it. A card none of whose rows is present, or
+ * that asks for Approve, an answer or something outward, keeps its own row. Pure: returns new rows, mutates none.
+ */
+export function linkCoveredRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const cards = list.filter((r) => r && r.board && r.board.linkable && r.board.covers.length)
+    .sort((a, b) => String(a.board.createdAt).localeCompare(String(b.board.createdAt)) || String(a.board.cardId).localeCompare(String(b.board.cardId)));
+  if (!cards.length) return list;
+  // The plans source keys its rows `plan:` + the plan model's own key, which already reads `plan:<id>`; a card names `plan:<id>`.
+  const keyOf = (r) => String(r && r.key || '').replace(/^need:/, '').replace(/^plan:plan:/, 'plan:');
+  const present = new Map(list.filter((r) => r && !r.board).map((r) => [keyOf(r), r]));
+  const linkedBy = new Map(); // row key -> card row
+  const standsIn = new Set();
+  for (const c of cards) {
+    let any = false;
+    for (const k of c.board.covers) { if (present.has(k) && !linkedBy.has(k)) { linkedBy.set(k, c); any = true; } }
+    // Only a server-owned card (the Chief of Staff's mirror of its own row) drops its own row; an agent session's
+    // card keeps its row, so an ask can never be made less visible by covering another item.
+    if (any && c.board.serverOwned) standsIn.add(c);
+  }
+  if (!linkedBy.size) return list;
+  const out = [];
+  for (const r of list) {
+    if (standsIn.has(r)) continue;
+    const c = r && !r.board ? linkedBy.get(keyOf(r)) : null;
+    out.push(c ? { ...r, card: { id: c.board.cardId, href: c.board.href, label: HAS_CARD_LABEL } } : r);
+  }
+  return out;
+}
 
 /**
  * known: id → { results, rows?, rowsAt? }, Home's reads so far. Returns the rows that need the
@@ -189,5 +249,6 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
     k.rowsAt = now;
     out.rows.push(...rows);
   }
+  out.rows = linkCoveredRows(out.rows);
   return out;
 }

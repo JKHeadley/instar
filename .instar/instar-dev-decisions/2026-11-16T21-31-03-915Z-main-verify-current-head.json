@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-16T21:31:03.915Z",
+  "slug": "main-verify-current-head",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

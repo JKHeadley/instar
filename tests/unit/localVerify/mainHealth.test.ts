@@ -197,9 +197,9 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 const mainRecord = (head: string, outcome: 'success' | 'failure' | 'error'): LocalVerifyRecord =>
   record({ kind: 'main', pr: 0, headSha: head, baseSha: head, outcome, ...(outcome === 'error' ? { errorStep: 'fetch', mergeTree: '' } : {}) });
 
-function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; ancestor?: (a: string, d: string) => boolean | null; commitInfo?: (sha: string) => Promise<CommitInfo | null> } = {}) {
+function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; ancestor?: (a: string, d: string) => boolean | null; commitInfo?: (sha: string) => Promise<CommitInfo | null>; wm?: Record<string, unknown> } = {}) {
   const stateDir = tmp();
-  if (opts.healthy !== false) watermark(stateDir, {});
+  if (opts.healthy !== false) watermark(stateDir, opts.wm ?? {});
   const spawned: Array<{ inputPath: string; resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
   const signals: string[] = [];
   const signalDetails: Array<{ key: string; detail: Record<string, unknown> }> = [];
@@ -239,7 +239,7 @@ function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; anc
   };
   const inputOf = (i: number) => JSON.parse(fs.readFileSync(spawned[i].inputPath, 'utf-8')) as { pr: number; headSha: string; baseSha: string; kind?: string };
   const auditLines = () => fs.readFileSync(path.join(stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
-  return { svc, spawned, signals, signalDetails, healthChanges, finish, inputOf, auditLines, advance: (ms: number) => { t += ms; } };
+  return { svc, stateDir, spawned, signals, signalDetails, healthChanges, finish, inputOf, auditLines, advance: (ms: number) => { t += ms; }, now: () => t };
 }
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
 const view = (pr: number, head: string): PrView => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: head, baseRefName: 'main', baseRefOid: sha('b') });
@@ -285,7 +285,9 @@ describe('LocalVerifyService — the main verify', () => {
   it('priority over PR verifies, outside the cap of 10, at most one pending; a newer head replaces a pending one; a running one is never cancelled', async () => {
     const views: Record<number, PrView> = {};
     for (let i = 1; i <= 12; i++) views[i] = view(i, (i.toString(16).padStart(2, '0')).repeat(20));
-    const s = svcSetup({ views });
+    // Head 1 is the stored last green head, so this process sees main leave green and knows the age
+    // of what follows (a boot that finds an unverified head with no stored age reads it as unknown).
+    const s = svcSetup({ views, wm: { lastGreenHead: sha('1') } });
     s.svc.noteMainHead(sha('1')); // running
     for (let i = 1; i <= 10; i++) expect((await s.svc.request(i)).ok).toBe(true);
     expect(await s.svc.request(11)).toEqual({ ok: false, code: 'queue-full' });
@@ -466,7 +468,7 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
   });
 
-  it('2026-11-15: every main verify starts on a head that was already replaced; the clock follows the verified heads and main stays healthy', async () => {
+  it('2026-11-15: a merge replaces every queued head before it can start; each main verify starts on the head current at its start and main stays healthy', async () => {
     const s = svcSetup();
     const t0 = Date.parse('2026-10-21T12:00:00.000Z'); // the harness clock
     let now = t0;
@@ -483,9 +485,9 @@ describe('LocalVerifyService — the main verify', () => {
       await s.finish(run, ok({ ...mainRecord(h(runHead), 'success'), startedAt: iso(runStart), finishedAt: iso(now) }));
       await s.svc.tick();
       run = s.spawned.length - 1;
-      // The queued verify starts now, on a head main has already moved past.
-      expect(s.inputOf(run), `round ${round}`).toMatchObject({ kind: 'main', headSha: h(next) });
-      runHead = next; runStart = now; next += 1;
+      // The queued verify starts now, on main's head as observed now (not the queued head main already left).
+      expect(s.inputOf(run), `round ${round}`).toMatchObject({ kind: 'main', headSha: h(next + 1), baseSha: h(next + 1) });
+      runHead = next + 1; runStart = now; next += 2;
       expect(s.svc.mainHealth().state, `round ${round} at +${Math.round((now - t0) / MIN)} min`).toBe('healthy');
     }
     expect(now - t0).toBeGreaterThan(4 * 60 * MIN);     // over four hours, never suspect (the old clock alarmed at three)
@@ -554,6 +556,126 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.spawned).toHaveLength(2);
     await s.finish(1, ok(mainRecord(sha('1'), 'success')));
     expect(s.svc.mainHealth().state).toBe('healthy');
+  });
+});
+
+describe('a pending main verify starts on the head current at its start (2026-11-16)', () => {
+  const A = sha('a'); const B = sha('b');
+  const staleAtStart = (s: ReturnType<typeof svcSetup>) => s.auditLines().filter((l) => l.event === 'main-replaced' && l.why === 'stale-at-start');
+  const mainQueue = (s: ReturnType<typeof svcSetup>) => s.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => e.headSha);
+  /** Run 0 (head 1) is in flight and a `main` entry for head A is pending behind it. */
+  const pendingA = async (opts: Parameters<typeof svcSetup>[0] = {}) => {
+    const s = svcSetup(opts);
+    s.svc.noteMainHead(sha('1')); await s.svc.settle();
+    s.svc.noteMainHead(A); s.advance(10 * MIN); s.svc.noteMainHead(A); await s.svc.settle();
+    return s;
+  };
+
+  it('healthy, main moved to B while A waited: the run starts on B, audited, and its green leaves no second main verify due', async () => {
+    const s = await pendingA();
+    await s.svc.settle();
+    expect(mainQueue(s)).toEqual([A]);
+    s.advance(MIN); s.svc.noteMainHead(B); // too fresh to be queued on its own: the pending entry still says A
+    expect(mainQueue(s)).toEqual([A]);
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.spawned).toHaveLength(2);
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', pr: 0, headSha: B, baseSha: B });
+    expect(staleAtStart(s)).toEqual([expect.objectContaining({ oldHead: A, newHead: B })]);
+    // B is being verified: its own debounce does not queue it again, during the run or after the green.
+    s.advance(10 * MIN); s.svc.noteMainHead(B);
+    expect(mainQueue(s)).toEqual([]);
+    await s.finish(1, ok(mainRecord(B, 'success')));
+    s.advance(30 * MIN); s.svc.noteMainHead(B); await s.svc.tick();
+    expect(s.spawned).toHaveLength(2);
+    expect(mainQueue(s)).toEqual([]);
+    // Nothing is left unverified: main is still healthy long past the 3 h alarm.
+    s.advance(4 * 60 * MIN); s.svc.noteMainHead(B); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('healthy, main still at A: starts on A, no main-replaced event', async () => {
+    const s = await pendingA();
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  it('main head unreadable at start: starts on A as queued', async () => {
+    const s = await pendingA();
+    s.svc.noteMainHead(B);
+    s.svc.noteMainHead(null);
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  it('main suspect: the re-run of the failed head is not retargeted to the newer head', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    s.advance(5 * MIN); s.svc.noteMainHead(B);
+    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.svc.mainHealth().state).toBe('main-suspect');
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1'), baseSha: sha('1') });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  it('main red: a pending entry for A is not retargeted to the newer head B', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, ok(mainRecord(sha('1'), 'failure'))); // suspect; the re-run of head 1 is in flight
+    s.svc.noteMainHead(A); s.advance(10 * MIN); s.svc.noteMainHead(A);
+    expect(mainQueue(s)).toEqual([A]);
+    s.svc.noteMainHead(B);
+    expect(mainQueue(s)).toEqual([A]);
+    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    expect(s.svc.mainHealth().state).toBe('main-red');
+    expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+    expect(staleAtStart(s)).toEqual([]);
+  });
+
+  describe('release commits', () => {
+    const R = sha('e');
+    const rel = (parent: string): CommitInfo => ({ subject: 'chore: release v1.3.1800 [skip ci]', parents: [parent], files: [{ filename: 'package.json', patch: '@@ -1 +1 @@\n-  "version": "1.3.1799",\n+  "version": "1.3.1800",' }] });
+    const feat: CommitInfo = { subject: 'feat: x', parents: [sha('0')], files: [{ filename: 'src/x.ts' }] };
+
+    it('the current head is the release commit of the queued head A: the alias target is A, nothing changes', async () => {
+      const s = await pendingA({ commitInfo: async (x) => (x === R ? rel(A) : feat) });
+      await s.svc.settle();
+      expect(mainQueue(s)).toEqual([A]);
+      s.svc.noteMainHead(R); s.advance(10 * MIN); s.svc.noteMainHead(R); await s.svc.settle();
+      expect(s.auditLines().some((l) => l.event === 'main-release-collapsed' && l.headSha === R && l.into === A)).toBe(true);
+      await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+      expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+      expect(staleAtStart(s)).toEqual([]);
+      // The green run of A covers its release commit: nothing further is queued or started.
+      await s.finish(1, ok(mainRecord(A, 'success')));
+      s.advance(30 * MIN); s.svc.noteMainHead(R); await s.svc.tick();
+      expect(s.spawned).toHaveLength(2);
+      expect(mainQueue(s)).toEqual([]);
+    });
+
+    it('the current head is a release commit of a head already verified: the queued head runs, no main run is spent on a green head', async () => {
+      // R collapses into head 1 (in flight, then green) while the pending entry still says A.
+      const s = await pendingA({ commitInfo: async (x) => (x === R ? rel(sha('1')) : feat) });
+      await s.svc.settle();
+      expect(mainQueue(s)).toEqual([A]);
+      s.svc.noteMainHead(R); s.advance(10 * MIN); s.svc.noteMainHead(R); await s.svc.settle();
+      expect(s.auditLines().some((l) => l.event === 'main-release-collapsed' && l.headSha === R && l.into === sha('1'))).toBe(true);
+      await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+      expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+      expect(staleAtStart(s)).toEqual([]);
+    });
+
+    it('one stale read of the last green head just before the start does not move the run backward', async () => {
+      const s = await pendingA();
+      await s.svc.settle();
+      expect(mainQueue(s)).toEqual([A]);
+      s.advance(MIN); s.svc.noteMainHead(sha('1')); // a stale read: main is really at A
+      await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+      expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
+      expect(staleAtStart(s)).toEqual([]);
+    });
   });
 });
 
@@ -632,7 +754,8 @@ describe('fair share between main and PR verifies', () => {
   });
   it('in the service: a young unverified main waits behind PRs, an old one goes first', async () => {
     const views: Record<number, PrView> = { 1: view(1, sha('c')), 2: view(2, sha('e')) };
-    const s = svcSetup({ views });
+    // Head 1 is the stored last green head: the age of head 2 is known (first seen by this process).
+    const s = svcSetup({ views, wm: { lastGreenHead: sha('1') } });
     s.svc.noteMainHead(sha('1'));
     await s.svc.request(1);
     await s.svc.request(2);
@@ -702,12 +825,12 @@ describe('green main record feeds PR isolation; repeat flakes escalate', () => {
   it('PR verifies get isolation allowed only after this machine has a green main record', async () => {
     const s = svcSetup({ views: { 3: view(3, sha('c')), 4: view(4, sha('e')) } });
     await s.svc.request(3);
-    expect((s.inputOf(0) as unknown as { isolation: unknown }).isolation).toEqual({ allowed: false, notCleanOnGreenMain: [] });
+    expect((s.inputOf(0) as unknown as { isolation: unknown }).isolation).toEqual({ allowed: false, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
     await s.finish(0, ok(record({ pr: 3, headSha: sha('c') })));
     s.svc.noteMainHead(sha('1'));
     await s.finish(1, ok({ ...mainRecord(sha('1'), 'success'), flakyRetried: [{ file: 'tests/e2e/x.test.ts', lane: 'e2e', firstMessage: 'boom' }] }));
     await s.svc.request(4);
-    expect((s.inputOf(2) as unknown as { isolation: unknown }).isolation).toEqual({ allowed: true, notCleanOnGreenMain: ['tests/e2e/x.test.ts'] });
+    expect((s.inputOf(2) as unknown as { isolation: unknown }).isolation).toEqual({ allowed: true, notCleanOnGreenMain: ['tests/e2e/x.test.ts'], importRelatedRerun: false, flakyOnMain: [] });
   });
   it('the same file re-run-passed 3 times within 7 days re-raises its item as a new episode, with the count; once per window', async () => {
     const views: Record<number, PrView> = {};
@@ -732,6 +855,230 @@ describe('green main record feeds PR isolation; repeat flakes escalate', () => {
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(8)], escalatedAt: null }, now)).toEqual({ escalate: false, count: 2 }); // outside the window
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(2) }, now).escalate).toBe(false);
     expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(8) }, now).escalate).toBe(true);
+  });
+});
+
+describe('main evidence for the import-related re-run (spec local-verify-import-related-rerun.md)', () => {
+  const X = 'tests/unit/x.test.ts';
+  const HASH = 'ab'.repeat(32);
+  const flaky = (over: Record<string, unknown> = {}) => [{ file: X, lane: 'unit', firstMessage: 's flaky: boom', failedTests: ['s flaky', 's other'], failedTestsTotal: 2, soloPassedByName: ['s flaky'], testSetHash: HASH, ...over }] as never;
+  const histPath = (dir: string) => path.join(dir, 'state', 'local-verify', 'flaky-history.json');
+  const hist = (dir: string) => JSON.parse(fs.readFileSync(histPath(dir), 'utf-8')) as { files: Record<string, { seen: string[]; mainSeen?: Array<Record<string, unknown>>; mainSeenCut?: string }>; greenMain: unknown };
+  const tokenOf = (s: ReturnType<typeof svcSetup>, i: number) => path.basename(s.spawned[i].resultPath).replace('.result.json', '');
+  const iso = (s: ReturnType<typeof svcSetup>, i: number) => (s.inputOf(i) as unknown as { isolation: { allowed: boolean; importRelatedRerun: boolean; flakyOnMain: Array<{ file: string; tests: Array<Record<string, unknown>>; namesCut?: true }> } }).isolation;
+  const greenMain = (head: string, finishedAt: string, flakyRetried: unknown, lines?: Record<string, unknown>): VerifyRunResult =>
+    ({ ...ok({ ...mainRecord(head, 'success'), startedAt: finishedAt, finishedAt, flakyRetried: flakyRetried as never }), ...(lines ? { flakyTestLines: lines as never } : {}) });
+  const NOW = '2026-10-21T12:00:00.000Z';
+
+  it('a green main verify this machine ran writes mainSeen from soloPassedByName, with the set hash, the line and the run log; the list follows the live switch', async () => {
+    const s = svcSetup({ views: { 3: view(3, sha('c')), 4: view(4, sha('e')) } });
+    let on = false;
+    s.svc.setImportRelatedRerunEnabled(() => on);
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, greenMain(sha('1'), NOW, flaky(), { [X]: [{ test: 's flaky', line: 'Error: mac-desktop-host-timeout' }, { test: 's other', line: 'AssertionError: nope' }] }));
+    const runLog = `${tokenOf(s, 0)}.log`;
+    // Only the name that failed in the lane AND passed by name alone is evidence; `s other` is not.
+    expect(hist(s.stateDir).files[X].mainSeen).toEqual([{ test: 's flaky', at: NOW, line: 'Error: mac-desktop-host-timeout', setHash: HASH, runLog }]);
+    expect(hist(s.stateDir).files[X].seen).toEqual([NOW]); // `seen` is what it was
+    // Switch off: the block carries the switch value and an empty list (written whatever the switch says, offered only when on).
+    await s.svc.request(3);
+    expect(iso(s, 1)).toMatchObject({ allowed: true, importRelatedRerun: false, flakyOnMain: [] });
+    await s.finish(1, ok(record({ pr: 3, headSha: sha('c') })));
+    on = true;
+    await s.svc.request(4);
+    expect(iso(s, 2)).toMatchObject({ allowed: true, importRelatedRerun: true, flakyOnMain: [{ file: X, tests: [{ test: 's flaky', at: NOW, line: 'Error: mac-desktop-host-timeout', setHash: HASH, runLog }] }] });
+    // Read live: an unreadable switch, or anything but a real true, is off.
+    s.svc.setImportRelatedRerunEnabled(() => { throw new Error('config unreadable'); });
+    expect(s.svc.isolationInput()).toMatchObject({ importRelatedRerun: false, flakyOnMain: [] });
+    s.svc.setImportRelatedRerunEnabled(() => 'yes' as unknown as boolean);
+    expect(s.svc.isolationInput()).toMatchObject({ importRelatedRerun: false, flakyOnMain: [] });
+  });
+
+  it('a PR record writes no mainSeen, and neither does a red main verify', async () => {
+    const s = svcSetup({ views: { 3: view(3, sha('c')) } });
+    s.svc.setImportRelatedRerunEnabled(() => true);
+    await s.svc.request(3);
+    await s.finish(0, ok(record({ pr: 3, headSha: sha('c'), flakyRetried: flaky() })));
+    expect(hist(s.stateDir).files[X].seen).toHaveLength(1);
+    expect(hist(s.stateDir).files[X].mainSeen).toBeUndefined();
+    s.svc.noteMainHead(sha('1'));
+    // A red main in which a file passed alone: a merged regression that only fails under load must not seed evidence.
+    await s.finish(1, { kind: 'record', record: { ...mainRecord(sha('1'), 'failure'), flakyRetried: flaky() }, reasons: ['file-failed:tests/unit/z.test.ts:1'], overlaps: [], keptWorktree: null, failures: [] });
+    expect(hist(s.stateDir).files[X].seen).toHaveLength(2);
+    expect(hist(s.stateDir).files[X].mainSeen).toBeUndefined();
+    expect(s.svc.isolationInput().flakyOnMain).toEqual([]);
+  });
+
+  it('one entry per test with the newest time; evidence older than 7 days is dropped', async () => {
+    const s = svcSetup();
+    s.svc.setImportRelatedRerunEnabled(() => true);
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, greenMain(sha('1'), NOW, flaky()));
+    s.advance(2 * 24 * 60 * MIN);
+    const later = new Date(s.now()).toISOString();
+    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    await s.svc.settle();
+    await s.finish(1, greenMain(sha('2'), later, flaky({ soloPassedByName: ['s flaky', 's other'] })));
+    const seen = hist(s.stateDir).files[X].mainSeen!;
+    expect(seen.map((e) => [e.test, e.at]).sort()).toEqual([['s flaky', later], ['s other', later]]);
+    // Six days on, `s flaky`'s entry is 6 days old: still offered. Two more days: gone.
+    s.advance(6 * 24 * 60 * MIN);
+    expect(s.svc.isolationInput().flakyOnMain[0].tests.map((t) => t.test).sort()).toEqual(['s flaky', 's other']);
+    s.advance(2 * 24 * 60 * MIN);
+    expect(s.svc.isolationInput().flakyOnMain).toEqual([]);
+  });
+
+  it('the cap of 40 names and the length bound mark the file as cut, and the offered entry says so', async () => {
+    const s = svcSetup();
+    s.svc.setImportRelatedRerunEnabled(() => true);
+    const day = (n: number) => new Date(Date.parse(NOW) - n * 60 * MIN).toISOString();
+    // 39 names already stored, then one run adds two more: the oldest falls off.
+    fs.mkdirSync(path.dirname(histPath(s.stateDir)), { recursive: true });
+    fs.writeFileSync(histPath(s.stateDir), JSON.stringify({ v: 1, greenMain: null, files: { [X]: { seen: [day(50)], escalatedAt: null, mainSeen: Array.from({ length: 39 }, (_, i) => ({ test: `old ${i}`, at: day(40 - i), line: 'Error: x', setHash: HASH, runLog: '' })) } } }));
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, greenMain(sha('1'), NOW, flaky({ failedTests: ['n1', 'n2'], failedTestsTotal: 2, soloPassedByName: ['n1', 'n2'] })));
+    const h = hist(s.stateDir).files[X];
+    expect(h.mainSeen).toHaveLength(40);
+    expect(h.mainSeen!.some((e) => e.test === 'old 0')).toBe(false); // the oldest was dropped
+    expect(typeof h.mainSeenCut).toBe('string');
+    expect(s.svc.isolationInput().flakyOnMain).toEqual([expect.objectContaining({ file: X, namesCut: true })]);
+
+    // A name left out of the record for its length (the total discloses it) marks the file too.
+    const s2 = svcSetup();
+    s2.svc.setImportRelatedRerunEnabled(() => true);
+    s2.svc.noteMainHead(sha('1'));
+    await s2.finish(0, greenMain(sha('1'), NOW, flaky({ failedTests: ['s flaky'], failedTestsTotal: 2, soloPassedByName: ['s flaky'] })));
+    expect(typeof hist(s2.stateDir).files[X].mainSeenCut).toBe('string');
+    expect(s2.svc.isolationInput().flakyOnMain).toEqual([{ file: X, tests: [expect.objectContaining({ test: 's flaky' })], namesCut: true }]);
+  });
+
+  it('the list is built from mainSeen only: never from notCleanOnGreenMain, never from seen', async () => {
+    const s = svcSetup();
+    s.svc.setImportRelatedRerunEnabled(() => true);
+    s.svc.noteMainHead(sha('1'));
+    // A green main with a flaky file whose failed test did NOT pass by name alone (it was skipped there).
+    await s.finish(0, greenMain(sha('1'), NOW, flaky({ soloPassedByName: [] })));
+    const inp = s.svc.isolationInput();
+    expect(inp).toMatchObject({ allowed: true, notCleanOnGreenMain: [X], importRelatedRerun: true });
+    expect(inp.flakyOnMain).toEqual([]);
+    expect(hist(s.stateDir).files[X].seen).toHaveLength(1);
+    // A record without name fields at all (older shape) is no evidence either.
+    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    await s.svc.settle();
+    await s.finish(1, greenMain(sha('2'), new Date(s.now()).toISOString(), [{ file: X, lane: 'unit', firstMessage: 'boom' }]));
+    expect(s.svc.isolationInput().flakyOnMain).toEqual([]);
+  });
+
+  it('over 200 files: the 200 with the newest evidence are kept and the cut is audited', async () => {
+    const s = svcSetup();
+    s.svc.setImportRelatedRerunEnabled(() => true);
+    const at = (i: number) => new Date(Date.parse(NOW) - i * 60_000).toISOString();
+    const files = Object.fromEntries(Array.from({ length: 205 }, (_, i) => [`tests/unit/f${String(i).padStart(3, '0')}.test.ts`, { seen: [at(i)], escalatedAt: null, mainSeen: [{ test: 't', at: at(i), line: '', setHash: HASH, runLog: '' }] }]));
+    fs.mkdirSync(path.dirname(histPath(s.stateDir)), { recursive: true });
+    fs.writeFileSync(histPath(s.stateDir), JSON.stringify({ v: 1, files, greenMain: { headSha: sha('1'), finishedAt: NOW, notClean: [], origin: 'local' } }));
+    const list = s.svc.isolationInput().flakyOnMain;
+    expect(list).toHaveLength(200);
+    expect(list.some((f) => f.file === 'tests/unit/f000.test.ts')).toBe(true); // the newest
+    expect(list.some((f) => f.file === 'tests/unit/f204.test.ts')).toBe(false); // the oldest five are cut
+    expect(s.auditLines().filter((l) => l.event === 'flaky-on-main-bounded')).toEqual([expect.objectContaining({ files: 205, keptFiles: 200 })]);
+    // A green main without `origin: 'local'` offers nothing, whatever the history holds (SEC-113's gate is kept).
+    fs.writeFileSync(histPath(s.stateDir), JSON.stringify({ v: 1, files, greenMain: { headSha: sha('1'), finishedAt: NOW, notClean: [] } }));
+    expect(s.svc.isolationInput()).toMatchObject({ allowed: false, flakyOnMain: [] });
+  });
+
+  it('an isolation input over 8 MB in UTF-8 bytes drops the oldest evidence, marks namesCut and audits the cut', async () => {
+    const s = svcSetup();
+    s.svc.setImportRelatedRerunEnabled(() => true);
+    // 300 CHARACTERS each, three bytes per character: inside every character bound, far over the byte bound.
+    const name = (f: number, i: number) => `${f}/${i} `.padEnd(300, '測');
+    const at = (n: number) => new Date(Date.parse(NOW) - n * 1000).toISOString();
+    const files = Object.fromEntries(Array.from({ length: 200 }, (_, f) => [`tests/unit/f${String(f).padStart(3, '0')}.test.ts`, {
+      seen: [NOW], escalatedAt: null, mainSeen: Array.from({ length: 40 }, (_, i) => ({ test: name(f, i), at: at(f * 40 + i), line: '線'.repeat(400), setHash: HASH, runLog: '' })),
+    }]));
+    fs.mkdirSync(path.dirname(histPath(s.stateDir)), { recursive: true });
+    fs.writeFileSync(histPath(s.stateDir), JSON.stringify({ v: 1, files, greenMain: { headSha: sha('1'), finishedAt: NOW, notClean: [], origin: 'local' } }));
+    const inp = s.svc.isolationInput();
+    const bytes = Buffer.byteLength(JSON.stringify(inp), 'utf8');
+    expect(bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+    expect(JSON.stringify(inp).length).toBeLessThan(bytes); // the character count is well below: only a byte measure catches it
+    const kept = inp.flakyOnMain.reduce((n, f) => n + f.tests.length, 0);
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(8000);
+    // Oldest first: the newest file keeps all its names and is not marked; the oldest lost names and is.
+    expect(inp.flakyOnMain[0]).toMatchObject({ file: 'tests/unit/f000.test.ts' });
+    expect(inp.flakyOnMain[0].tests).toHaveLength(40);
+    expect(inp.flakyOnMain[0].namesCut).toBeUndefined();
+    const last = inp.flakyOnMain.at(-1)!;
+    expect(last.namesCut).toBe(true);
+    expect(last.tests.length).toBeLessThan(40);
+    expect(inp.flakyOnMain.every((f) => f.tests.length === 40 || f.namesCut === true)).toBe(true);
+    const cut = s.auditLines().filter((l) => l.event === 'flaky-on-main-bounded');
+    expect(cut).toEqual([expect.objectContaining({ bytesLimit: 8 * 1024 * 1024, droppedTests: 8000 - kept })]);
+    expect(cut[0].bytes as number).toBeGreaterThan(8 * 1024 * 1024);
+  });
+
+  it('audit lines: finishedAt, runLog and lanesCompleted on main-record; finishedAt and runLog on run-detail; a clean green main writes no run-detail (carrier pin)', async () => {
+    const s = svcSetup({ views: { 3: view(3, sha('c')) } });
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, greenMain(sha('1'), NOW, flaky()));
+    const main = s.auditLines().find((l) => l.event === 'main-record')!;
+    expect(main).toMatchObject({ headSha: sha('1'), outcome: 'success', finishedAt: NOW, lanesCompleted: ['unit'], runLog: `${tokenOf(s, 0)}.log` });
+    // A green main WITH a re-run pass writes a run-detail line (that is where main events are read from).
+    expect(s.auditLines().filter((l) => l.event === 'run-detail' && l.kind === 'main')).toEqual([expect.objectContaining({ headSha: sha('1'), finishedAt: NOW, runLog: `${tokenOf(s, 0)}.log`, flakyRetried: flaky() })]);
+    // A clean green main writes a main-record line and NO run-detail line.
+    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    await s.svc.settle();
+    await s.finish(1, ok(mainRecord(sha('2'), 'success')));
+    expect(s.auditLines().filter((l) => l.event === 'main-record')).toHaveLength(2);
+    expect(s.auditLines().filter((l) => l.event === 'run-detail' && l.kind === 'main')).toHaveLength(1);
+    // An error ran no lane to its end.
+    s.svc.noteMainHead(sha('3')); s.advance(10 * MIN); s.svc.noteMainHead(sha('3'));
+    await s.svc.settle();
+    await s.finish(2, ok(mainRecord(sha('3'), 'error')));
+    expect(s.auditLines().filter((l) => l.event === 'main-record').at(-1)).toMatchObject({ outcome: 'error', lanesCompleted: [] });
+  });
+
+  it('the refusal lists and their true counts ride on the PR run-detail line, re-bounded to 10 entries', async () => {
+    const s = svcSetup({ views: { 3: view(3, sha('c')) } });
+    await s.svc.request(3);
+    const many = Array.from({ length: 14 }, (_, i) => ({ file: `tests/unit/f${i}.test.ts`, reason: 'noMainEvidence' }));
+    await s.finish(0, {
+      kind: 'record', record: record({ pr: 3, headSha: sha('c'), outcome: 'failure' }), reasons: ['file-failed:tests/unit/x.test.ts:1'], overlaps: [], keptWorktree: null, failures: [],
+      isolationRefusals: {
+        noMainEvidence: many as never, noMainEvidenceCount: 14,
+        noMainEvidenceForTest: [{ file: X, reason: 'noMainEvidenceForTest', test: 's flaky', namesCut: true }], noMainEvidenceForTestCount: 1,
+        importRelatedRefused: [{ file: 'tests/unit/y.test.ts', reason: 'testSetChanged', test: 's a' }], importRelatedRefusedCount: 1,
+      },
+    });
+    const d = s.auditLines().find((l) => l.event === 'run-detail' && l.pr === 3)!;
+    expect(d).toMatchObject({
+      finishedAt: '2026-10-21T10:40:00.000Z', runLog: `${tokenOf(s, 0)}.log`,
+      noMainEvidenceCount: 14, noMainEvidenceForTest: [{ file: X, reason: 'noMainEvidenceForTest', test: 's flaky', namesCut: true }], noMainEvidenceForTestCount: 1,
+      importRelatedRefused: [{ file: 'tests/unit/y.test.ts', reason: 'testSetChanged', test: 's a' }], importRelatedRefusedCount: 1,
+    });
+    expect(d.noMainEvidence).toHaveLength(10);
+    // A run without refusals carries none of these keys (the line is what it was, plus finishedAt and runLog).
+    const s2 = svcSetup({ views: { 3: view(3, sha('c')) } });
+    await s2.svc.request(3);
+    await s2.finish(0, { kind: 'record', record: record({ pr: 3, headSha: sha('c'), outcome: 'failure' }), reasons: ['x'], overlaps: [], keptWorktree: null, failures: [] });
+    expect(Object.keys(s2.auditLines().find((l) => l.event === 'run-detail')!)).not.toContain('noMainEvidence');
+  });
+
+  it('run logs older than 30 days are removed when a run starts, and younger ones are kept', async () => {
+    const s = svcSetup({ views: { 3: view(3, sha('c')) } });
+    const runs = path.join(s.stateDir, 'state', 'local-verify', 'runs');
+    fs.mkdirSync(runs, { recursive: true });
+    const mk = (name: string, ageDays: number) => { const f = path.join(runs, name); fs.writeFileSync(f, 'x'); const when = (s.now() - ageDays * 24 * 60 * MIN) / 1000; fs.utimesSync(f, when, when); return f; };
+    const old = mk('a'.repeat(32) + '.log', 31);
+    const young = mk('b'.repeat(32) + '.log', 29);
+    const notALog = mk('c'.repeat(32) + '.input.json', 90);
+    const stranger = mk('notes.log', 90);
+    await s.svc.request(3);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(young)).toBe(true);
+    expect(fs.existsSync(notALog)).toBe(true); // only run logs are swept
+    expect(fs.existsSync(stranger)).toBe(true);
+    expect(s.auditLines().find((l) => l.event === 'run-logs-swept')).toMatchObject({ removed: 1, keepDays: 30 });
   });
 });
 
@@ -864,5 +1211,259 @@ describe('oldestUnverifiedAfterGreen', () => {
     expect(oldestUnverifiedAfterGreen(null, false, 5_000)).toBeNull();
     expect(oldestUnverifiedAfterGreen(1_000, false, null)).toBe(1_000);
     expect(oldestUnverifiedAfterGreen(1_000, false, Number.NaN)).toBe(1_000);
+  });
+});
+
+// ── the age of an unverified main survives a restart ───────────────────
+// spec docs/specs/local-verify-main-age-survives-restart.md
+
+describe('MainHealth: the age of the oldest unverified merge is kept in the watermark', () => {
+  const T = Date.parse('2026-11-18T12:00:00.000Z');
+  const G = sha('9'); // the last green head
+  function aged(dir: string, machineId = 'm1') {
+    const clock = { now: T };
+    const audits: Array<Record<string, unknown>> = [];
+    const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+    const h = new MainHealth(dir, machineId, {
+      now: () => clock.now, isAncestor: async () => false,
+      signal: (key, detail) => { signals.push({ key, detail }); }, audit: (e) => { audits.push(e); },
+    });
+    return { h, clock, audits, signals, unknownLines: () => audits.filter((a) => a.event === 'main-age-unknown') };
+  }
+  const stored = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, 'state', 'local-verify', 'main-health.json'), 'utf-8')) as Record<string, unknown>;
+
+  it('writes oldestUnverifiedAt when it changes and not when it is unchanged', () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G });
+    const a = aged(d);
+    a.h.load();
+    a.h.noteHeadObserved(G); // nothing unverified at boot
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt');
+    a.clock.now = T + 5 * MIN;
+    a.h.noteHeadObserved(sha('1')); // this process saw the head leave green: the age starts now
+    expect(stored(d)).toMatchObject({ oldestUnverifiedAt: T + 5 * MIN, lastGreenHead: G });
+    expect(stored(d)).not.toHaveProperty('unknownSince');
+    const writtenAt = stored(d).updatedAt;
+    a.clock.now = T + 20 * MIN;
+    a.h.noteHeadObserved(sha('2')); // a later merge: the oldest one is unchanged, nothing is written
+    a.h.noteHeadObserved(sha('2'));
+    expect(stored(d).updatedAt).toBe(writtenAt);
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: T + 5 * MIN, unknownSince: null });
+    expect(a.unknownLines()).toEqual([]);
+  });
+
+  it('a green verify writes the cleared age with lastGreenHead in one write', async () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 30 * MIN });
+    const a = aged(d);
+    a.h.load();
+    a.clock.now = T + MIN;
+    await a.h.onVerify(sha('1'), 'success', undefined, { oldestUnverifiedAt: null });
+    const w = stored(d);
+    expect(w).toMatchObject({ lastGreenHead: sha('1'), updatedAt: new Date(T + MIN).toISOString() });
+    expect(w).not.toHaveProperty('oldestUnverifiedAt');
+    // A green verify of an older head moves the age instead; that lands with lastGreenHead too.
+    a.clock.now = T + 2 * MIN;
+    a.h.noteHeadObserved(sha('2'));
+    a.clock.now = T + 9 * MIN;
+    await a.h.onVerify(sha('2'), 'success', undefined, { oldestUnverifiedAt: T + 8 * MIN });
+    expect(stored(d)).toMatchObject({ lastGreenHead: sha('2'), oldestUnverifiedAt: T + 8 * MIN, updatedAt: new Date(T + 9 * MIN).toISOString() });
+    // An older build's caller (no age passed) leaves the age as it is.
+    await a.h.onVerify(sha('3'), 'success');
+    expect(stored(d)).toMatchObject({ lastGreenHead: sha('3'), oldestUnverifiedAt: T + 8 * MIN });
+  });
+
+  it('a green verify that cannot clear a red main still records the age it settled', async () => {
+    const d = tmp(); watermark(d, { state: 'main-red', redHead: sha('r'), reason: 'rerun-failed', oldestUnverifiedAt: T - 30 * MIN });
+    const a = aged(d);
+    a.h.load();
+    expect(await a.h.onVerify(sha('1'), 'success', undefined, { oldestUnverifiedAt: null })).toBe('none');
+    expect(stored(d)).toMatchObject({ state: 'main-red', redHead: sha('r') });
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt');
+  });
+
+  it("load restores a finite past value from this machine's watermark", () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN });
+    const a = aged(d);
+    a.h.load();
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: T - 50 * MIN, unknownSince: null });
+    a.h.noteHeadObserved(sha('1')); // the first observation after boot keeps the restored value
+    expect(a.h.unverifiedAge().oldestUnverifiedAt).toBe(T - 50 * MIN);
+    expect(a.unknownLines()).toEqual([]);
+    // A value exactly at now is not in the future.
+    const d2 = tmp(); watermark(d2, { oldestUnverifiedAt: T });
+    const b = aged(d2); b.h.load();
+    expect(b.h.unverifiedAge().oldestUnverifiedAt).toBe(T);
+  });
+
+  it('load drops a future, non-finite or other-machine value', () => {
+    const cases: Array<{ w: Record<string, unknown>; raw?: string; reason: string }> = [
+      { w: { oldestUnverifiedAt: T + 1 }, reason: 'future' },
+      { w: { oldestUnverifiedAt: 'yesterday' }, reason: 'non-finite' },
+      { w: {}, raw: '"oldestUnverifiedAt":1e999', reason: 'non-finite' }, // parses to Infinity
+      { w: { machineId: 'm_other', oldestUnverifiedAt: T - 50 * MIN }, reason: 'other-machine' },
+      { w: {}, reason: 'field-absent' },
+    ];
+    for (const c of cases) {
+      const d = tmp(); watermark(d, { lastGreenHead: G, ...c.w });
+      const file = path.join(d, 'state', 'local-verify', 'main-health.json');
+      if (c.raw) fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(/\}$/, `,${c.raw}}`));
+      const a = aged(d);
+      a.h.load();
+      expect(a.h.unverifiedAge().oldestUnverifiedAt, c.reason).toBeNull();
+      a.clock.now = T + 3 * MIN;
+      a.h.noteHeadObserved(sha('1')); // the first unverified head after boot: unknown, never `now` as an age
+      expect(a.h.unverifiedAge(), c.reason).toEqual({ oldestUnverifiedAt: null, unknownSince: T + 3 * MIN });
+      expect(a.unknownLines(), c.reason).toEqual([{ event: 'main-age-unknown', reason: c.reason, unknownSince: T + 3 * MIN }]);
+      expect(stored(d), c.reason).toMatchObject({ unknownSince: T + 3 * MIN });
+      expect(stored(d), c.reason).not.toHaveProperty('oldestUnverifiedAt');
+    }
+    // An unreadable file, and no file at all.
+    const d1 = tmp(); fs.mkdirSync(path.join(d1, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(d1, 'state', 'local-verify', 'main-health.json'), '{not json');
+    const u = aged(d1); u.h.load(); u.h.noteHeadObserved(sha('1'));
+    expect(u.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'file-unreadable', unknownSince: T }]);
+    const n = aged(tmp()); n.h.load(); n.h.noteHeadObserved(sha('1'));
+    expect(n.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'field-absent', unknownSince: T }]);
+    // With no usable value but nothing unverified at boot, a later merge is seen by this process: now.
+    const d3 = tmp(); watermark(d3, { lastGreenHead: G });
+    const s = aged(d3); s.h.load(); s.h.noteHeadObserved(G);
+    s.clock.now = T + 7 * MIN; s.h.noteHeadObserved(sha('1'));
+    expect(s.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: T + 7 * MIN, unknownSince: null });
+    expect(s.unknownLines()).toEqual([]);
+  });
+
+  it("three boots: load's own rewrite keeps both fields", () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN });
+    for (let boot = 0; boot < 3; boot++) {
+      const a = aged(d);
+      a.clock.now = T + boot * 20 * MIN;
+      a.h.load();          // the constructor's read
+      a.h.load();          // boot()
+      a.h.load({ epoch: 4 + boot }); // lease acquisition by this machine
+      expect(stored(d)).toMatchObject({ oldestUnverifiedAt: T - 50 * MIN, lastGreenHead: G });
+      expect(a.h.unverifiedAge().oldestUnverifiedAt).toBe(T - 50 * MIN);
+    }
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G, unknownSince: T - 70 * MIN });
+    for (let boot = 0; boot < 3; boot++) {
+      const a = aged(d2);
+      a.clock.now = T + boot * 20 * MIN;
+      a.h.load(); a.h.load(); a.h.load({ epoch: 4 + boot });
+      a.h.noteHeadObserved(sha('1'));
+      expect(stored(d2)).toMatchObject({ unknownSince: T - 70 * MIN });
+      expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T - 70 * MIN });
+      expect(a.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'carried', unknownSince: T - 70 * MIN }]); // once per process start
+    }
+  });
+
+  it('unknownSince is set once and cleared in the write that settles the age', async () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G });
+    const a = aged(d);
+    a.h.load();
+    a.h.noteHeadObserved(sha('1'));
+    expect(stored(d)).toMatchObject({ unknownSince: T });
+    a.clock.now = T + 40 * MIN;
+    a.h.noteHeadObserved(sha('2'));
+    a.h.load({ epoch: 1 }); // this machine again
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T });
+    // An error and a failure settle nothing.
+    await a.h.onVerify(sha('2'), 'error');
+    await a.h.onVerify(sha('2'), 'failure');
+    expect(stored(d)).toMatchObject({ unknownSince: T, state: 'main-suspect' });
+    // A green verify settles it: gone from the same write that records the green head.
+    a.clock.now = T + 60 * MIN;
+    await a.h.onVerify(sha('2'), 'success', undefined, { oldestUnverifiedAt: null });
+    const w = stored(d);
+    expect(w).toMatchObject({ state: 'healthy', lastGreenHead: sha('2'), updatedAt: new Date(T + 60 * MIN).toISOString() });
+    expect(w).not.toHaveProperty('unknownSince');
+    expect(w).not.toHaveProperty('oldestUnverifiedAt');
+    expect(a.unknownLines()).toHaveLength(1);
+  });
+
+  it('an unusable stored unknownSince is still unknown, and the bound starts again at now', () => {
+    for (const bad of [T + 60 * MIN, 'soon']) {
+      const d = tmp(); watermark(d, { lastGreenHead: G, unknownSince: bad, oldestUnverifiedAt: T - 10 * MIN });
+      const a = aged(d);
+      a.h.load();
+      expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T });
+      expect(a.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: typeof bad === 'number' ? 'future' : 'non-finite', unknownSince: T }]);
+      expect(stored(d)).toMatchObject({ unknownSince: T });
+    }
+  });
+
+  it('a foreign holder or an epoch gap makes the age unknown, bounded by this machine\'s own earlier age', () => {
+    // In a running process, with an age in memory.
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN, leaseEpoch: 5 });
+    const a = aged(d);
+    a.h.load();
+    a.clock.now = T + 10 * MIN;
+    a.h.load({ foreignHolder: true, epoch: 6 });
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T - 50 * MIN });
+    expect(stored(d)).toMatchObject({ unknownSince: T - 50 * MIN, state: 'main-suspect' });
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt'); // cleared in the same write
+    expect(a.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'other-machine', unknownSince: T - 50 * MIN }]);
+    // A second flap keeps the bound; it never restarts at now.
+    a.clock.now = T + 30 * MIN;
+    a.h.load({ foreignHolder: true, epoch: 9 });
+    expect(a.h.unverifiedAge().unknownSince).toBe(T - 50 * MIN);
+    expect(a.unknownLines()).toHaveLength(1);
+    // At boot, through an epoch gap, with the age only on disk.
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G, oldestUnverifiedAt: T - 20 * MIN, leaseEpoch: 5 });
+    const b = aged(d2);
+    b.h.load({ epoch: 9 });
+    expect(b.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T - 20 * MIN });
+    // With no own age at all the bound is now.
+    const d3 = tmp(); watermark(d3, { lastGreenHead: G });
+    const c = aged(d3);
+    c.h.load(); c.h.noteHeadObserved(G);
+    c.clock.now = T + 4 * MIN;
+    c.h.load({ foreignHolder: true });
+    expect(c.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T + 4 * MIN });
+  });
+
+  it('a release collapse clears the age and an unknown one, and writes only when something changed', () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN });
+    const a = aged(d);
+    a.h.load();
+    a.clock.now = T + MIN;
+    a.h.clearUnverifiedAge();
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt');
+    expect(stored(d).updatedAt).toBe(new Date(T + MIN).toISOString());
+    a.clock.now = T + 2 * MIN;
+    a.h.clearUnverifiedAge();
+    expect(stored(d).updatedAt).toBe(new Date(T + MIN).toISOString());
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G, unknownSince: T - 50 * MIN });
+    const b = aged(d2);
+    b.h.load(); b.h.clearUnverifiedAge();
+    expect(b.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: null });
+    expect(stored(d2)).not.toHaveProperty('unknownSince');
+  });
+
+  it('the 3-hour signal says "at least" when the time given is a lower bound', () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G });
+    const a = aged(d);
+    a.h.load();
+    a.h.noteUnverifiedAge(T - 4 * 60 * MIN, { atLeast: true });
+    expect(a.signals).toEqual([{ key: 'local-verify:main-unverified', detail: { ageMs: 4 * 60 * MIN, atLeast: true } }]);
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G });
+    const b = aged(d2);
+    b.h.load();
+    b.h.noteUnverifiedAge(T - 4 * 60 * MIN);
+    expect(b.signals).toEqual([{ key: 'local-verify:main-unverified', detail: { ageMs: 4 * 60 * MIN } }]);
+  });
+});
+
+describe('decideStart: an unknown age of unverified main is due', () => {
+  const NOW = 1_000_000_000;
+  const queue = [{ kind: undefined }, { kind: 'main' as const }];
+  it('healthy main: unknown goes first; no age waits; a young known age waits', () => {
+    const base = { mainHealthy: true, lastStartWasMain: false };
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: null, oldestUnverifiedMainUnknown: true } })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: null, oldestUnverifiedMainUnknown: false } })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: null } })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: NOW - MAIN_FAIR_SHARE_MS + 1 } })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: NOW - MAIN_FAIR_SHARE_MS } })).toEqual({ kind: 'start', index: 1 });
+  });
+  it('a resumed PR run still goes ahead of an unknown-age main', () => {
+    const q = [{ kind: undefined, resumeFirst: true as const }, { kind: 'main' as const }];
+    expect(decideStart({ foreignHolders: 0, queue: q, now: NOW, fairShare: { mainHealthy: true, lastStartWasMain: false, oldestUnverifiedMainAt: null, oldestUnverifiedMainUnknown: true } })).toEqual({ kind: 'start', index: 0 });
   });
 });

@@ -78,6 +78,18 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Context Budget sentinel: reconciles quarantined context folds and escalates torn fold records; off ⇒ no fold can begin.',
   },
   {
+    // Context Budget backfill lane (docs/specs/context-budget-layered-summaries.md §6.1, decision 9, S7):
+    // rebuilds existing topics' Anchor and ledger from TopicMemory on the topic's owner, at most 20 topics
+    // a day, entries backfilled-unconfirmed. Ships dark; built with the layers and ticked always, it does
+    // no work while off (no runtime registration).
+    key: 'contextBudget.backfill', kind: 'config',
+    configPath: 'contextBudget.backfill.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 600_000, process: 'server', expectRuntime: false, liveConfig: true,
+    component: 'BackfillLane',
+    description: 'Context Budget backfill lane: rebuilds existing conversations\' purpose and decisions from history as unconfirmed entries; off ⇒ no work.',
+  },
+  {
     key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
     expectedTickMs: 300_000, process: 'server', expectRuntime: false,
     component: 'JobCoverageMonitor',
@@ -777,11 +789,11 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     key: 'monitoring.bootHealthBeacon.enabled',
     kind: 'config',
     configPath: 'monitoring.bootHealthBeacon.enabled',
-    defaultEnabled: false,
+    defaultEnabled: true,
     process: 'server',
     expectRuntime: false,
     component: 'BootHealthBeacon',
-    description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
+    description: 'Boot-time listener: opens the port at boot start and answers a typed starting state (on for every agent since 2026-11-16; enabled:false turns it off).',
   },
   {
     key: 'monitoring.blockerLifecycleLedger.enabled',
@@ -1296,6 +1308,7 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'TrustRaiseGuard', reason: 'Pure classifiers and the OperatorProof check called inline by the trust owners (AdaptiveTrust, AutonomyProfileManager, TrustRecovery) and the setting routes (trust-journey stage 0). Always-on authority floor with no enable flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
   { component: 'pipeErrorGuard', reason: 'Stateless stream helpers that attach error listeners so a closed pipe cannot become an uncaught exception. Always on, with no enable flag, no state to report, and no block or allow decision over agent behavior.' },
   { component: 'WedgeMonitor', reason: 'Machine self-maintenance Part E wedge sampler, dry-run. It has no enable flag of its own: it is constructed inside the same machineMaintenance.enabled gate as DrainRehearsal, whose GUARD_MANIFEST row already reports that posture, and it can act on nothing (no rung exists). Its live state is GET /machine-maintenance -> wedge.' },
   { component: 'ThrowawayAgentGuard', reason: 'Pure classification module + init/teardown helpers called inline by installAutoStart, the scheduler admission gate and the server/lifeline startup decision (test-agent-leak-guard). Always-on safety floor with no enabled flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },

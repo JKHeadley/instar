@@ -2602,6 +2602,8 @@ export interface MachineCapacity {
    *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
   seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
+    /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
+    documentsDecisionRows?: boolean;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
@@ -3799,6 +3801,14 @@ export interface InstarConfig {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
   };
+  /** Project apps (docs/specs/project-apps.md): a project's own app one tap from its Work row and
+   *  conversation. `enabled` is dev-gated (omit it to follow the gate); it also needs the Chief of
+   *  Staff, which is where projects come from. */
+  projectApps?: {
+    enabled?: boolean;
+    /** Part 2 custom apps (docs/specs/project-apps-sandbox.md §9): dev-gated; omit to follow the gate. */
+    custom?: { enabled?: boolean };
+  };
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
    *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
    *  owner-tunable at the agent level; per-project values live on the binding. */
@@ -4247,6 +4257,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
      */
     permissionActions?: { enabled?: boolean };
+    /** Approving trust raises from a paired device (spec app-trust-approval). On for new installs; dark on the fleet until set. */
+    trustApproval?: { enabled?: boolean };
     /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
@@ -5102,7 +5114,7 @@ export interface InstarConfig {
   dashboardPin?: string;
   /** Server-managed revocation generation, atomically coupled to each PIN write. */
   dashboardPinGeneration?: string;
-  /** Security hardening knobs (docs/specs/dashboard-pin-throttle.md). */
+  /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
@@ -5119,6 +5131,22 @@ export interface InstarConfig {
       maxSources?: number;
       /** TTL of the prior-unlock cookie (ms). Default 30 days. */
       markerTtlMs?: number;
+    };
+    /** SEC-002b: unlock returns a scoped, revocable dashboard session token instead of the master.
+     *  Ships DARK (enabled defaults false) until the full live dashboard proof passes. */
+    dashboardScopedToken?: {
+      enabled?: boolean;
+      ttlMs?: number;
+      absoluteMaxMs?: number;
+      maxTokens?: number;
+    };
+    /** SEC-018: sensitive MCP handlers (thread delete; trust elevation later) require a
+     *  Face-ID owner-presence approval (docs/specs/owner-approved-sensitive-action.md).
+     *  Ships DARK — absent/false = today's isLocal behaviour. */
+    ownerApprovedActions?: {
+      enabled?: boolean;
+      /** Approval TTL (ms) from the owner's tap to the handler's use. Default 5 min. */
+      approvalTtlMs?: number;
     };
   };
   /** Relationship tracking config */
@@ -5263,6 +5291,13 @@ export interface InstarConfig {
      *  failure falls back to the rollout-tail reader, so `false` only forces
      *  the old rollout-only behaviour. */
     codexLiveQuota?: boolean;
+    /**
+     * Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable history of every
+     * quota reading and a read-only forecast (GET /quota-pacing). `enabled` is OMITTED from the
+     * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
+     * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
+     */
+    pacing?: { enabled?: boolean };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
@@ -6187,6 +6222,9 @@ export interface FileViewerConfig {
 
   /** Maximum file size for editing (bytes). Default: 204800 (200KB) */
   maxEditableFileSize: number;
+
+  /** Maximum file size to download (bytes), separate from the preview cap. Default: 1073741824 (1GB) */
+  maxDownloadSize?: number;
 
   /** File patterns that are NEVER served, even within allowed directories. */
   blockedFilenames: string[];

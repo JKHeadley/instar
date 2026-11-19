@@ -220,6 +220,8 @@ describe('item 4 — the session line', () => {
       'Its text is at `GET /telegram/origins/operations/op-1/text`.');
     const own = advisoryReference({ decisionRef: null }, 'op-2');
     expect(own).toBe('op:op-2'); expect(isOperationReference(own)).toBe(true); expect(isOperationReference('dq-9')).toBe(false);
+    // fb-b7abf24e-6cb: a token-less successor's own reference is still its own.
+    expect(isOperationReference('op:op-2~r1-0a1b2c3d')).toBe(true); expect(isOperationReference('op:op 2')).toBe(false);
     expect(advisorySessionLine({ operationId: 'op-1', rule: 'B11_STYLE_MISMATCH', deadlineAt: at, ref: own })).toContain('--tone-decision-ref op:op-2');
   });
   it('the definite lines: a policy refusal names the check, and an unanswered advisory says what to do if it was revised', () => {

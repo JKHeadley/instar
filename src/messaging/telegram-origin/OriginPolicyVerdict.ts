@@ -70,7 +70,8 @@ export function advisoryReference(verdict: Pick<PolicyVerdict, 'decisionRef'>, o
 }
 /** True for a reference this machine resolves itself; it is removed before the policy input is sealed. */
 export function isOperationReference(ref: unknown): ref is string {
-  return typeof ref === 'string' && /^op:[A-Za-z0-9-]{1,256}$/.test(ref);
+  // A token-less successor's id carries `~` (fb-b7abf24e-6cb).
+  return typeof ref === 'string' && /^op:[A-Za-z0-9~-]{1,256}$/.test(ref);
 }
 
 function hhmmUtc(at: number): string {

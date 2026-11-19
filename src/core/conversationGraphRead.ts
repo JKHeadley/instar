@@ -23,6 +23,10 @@ import {
 export interface GraphReadSource {
   /** From the increment-A proof runtime. Anything but ready answers 503. */
   readiness(): { ready: true } | { ready: false; reason: string };
+  /** Runs one synchronous read against a single verified view: every lookup inside
+   * `fn` (readiness, projection, effort titles) sees the view built once at its start.
+   * Optional: a source without it builds per lookup. */
+  scoped?<T>(fn: () => T): T;
   /** Actual owned local intake may remain usable while canonical authority is
    * held. This supplies neither a snapshot nor a positive graph-write grant. */
   localRecordingReady?(): boolean;
@@ -43,7 +47,16 @@ export interface GraphReadSource {
   /** Replication state; every true field becomes a partial reason. Nothing is synthesized complete. */
   replication(): { replicaLag: boolean; eventGap: boolean; evidenceMissing: boolean };
   now(): Date;
+  /**
+   * Work-front-doors stage 2b (spec §3.2): each open work card's own conversation and the conversation of the
+   * project it names (its `projectKey`). A card's conversation is PROPOSED under the effort that holds its
+   * project's conversation, shown from the card record until the `card-record` graph authority exists.
+   */
+  cardPlacements?(): Array<{ card: ConversationRef; project: ConversationRef }>;
 }
+
+/** At most this many proposed card conversations on one effort's page. */
+export const MAX_PROPOSED_CARDS = 50;
 
 export interface GraphViewer {
   principalKey: string;
@@ -80,6 +93,9 @@ export class ConversationGraphReadModel {
 
   private readonly rootConversation: () => ConversationRef | null;
 
+  /** One verified view per read: a page during busy writes rebuilt the whole view once per effort title. */
+  private scoped<T>(fn: () => T): T { return this.source.scoped ? this.source.scoped(fn) : fn(); }
+
   constructor(private readonly source: GraphReadSource, opts: {
     pageSize?: number; snapshotTtlMs?: number;
     /**
@@ -115,6 +131,10 @@ export class ConversationGraphReadModel {
    * The root conversation is never offered. Null while the graph is not ready.
    */
   unassignedConversations(viewer: GraphViewer): ProjectionItem[] | null {
+    return this.scoped(() => this.unassignedConversationsUnscoped(viewer));
+  }
+
+  private unassignedConversationsUnscoped(viewer: GraphViewer): ProjectionItem[] | null {
     if (!this.source.readiness().ready) return null;
     const { projection } = this.project(viewer);
     return projection.list('all', null)
@@ -124,6 +144,10 @@ export class ConversationGraphReadModel {
   }
 
   roots(viewer: GraphViewer, q: { view: 'overview' | 'all'; q?: string | null; cursor?: string | null }): ReadResult {
+    return this.scoped(() => this.rootsUnscoped(viewer, q));
+  }
+
+  private rootsUnscoped(viewer: GraphViewer, q: { view: 'overview' | 'all'; q?: string | null; cursor?: string | null }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const { projection, revision, partialReasons } = this.project(viewer);
@@ -141,6 +165,10 @@ export class ConversationGraphReadModel {
   }
 
   node(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
+    return this.scoped(() => this.nodeUnscoped(viewer, ref, q));
+  }
+
+  private nodeUnscoped(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const valid = validateNodeRef(ref);
@@ -160,6 +188,27 @@ export class ConversationGraphReadModel {
       ? { eligible: false, reason: 'chief-of-staff-is-root' }
       : moveEligibility(this.source.certifiedEvents(), {verify:event=>this.source.verify(event)}, valid, null, this.source.now().toISOString());
     const header = valid.kind === 'effort' ? this.source.headerMetadata?.(valid) : null;
+    // A card's conversation, unplaced, whose project's conversation sits directly in this effort: proposed here.
+    // Visibility is the projection's (the viewer filter already ran); an owner placement anywhere wins.
+    const proposed: ProjectionItem[] = [];
+    if (valid.kind === 'effort' && this.source.cardPlacements) {
+      const here = nodeKey(valid);
+      const seen = new Set<string>();
+      for (const cp of this.source.cardPlacements()) {
+        if (proposed.length >= MAX_PROPOSED_CARDS) break;
+        const cardKey = nodeKey(cp.card);
+        if (seen.has(cardKey) || graph.parentOf.get(cardKey)) continue;
+        // Both ends of the link are checked (spec §4.4): a project conversation the viewer may not see is never
+        // revealed through a card that points at it.
+        if (!projection.has(cp.project)) continue;
+        const projectParent = graph.parentOf.get(nodeKey(cp.project));
+        if (!projectParent || nodeKey(projectParent) !== here) continue;
+        const item = projection.item(cp.card);
+        if (!item) continue;
+        seen.add(cardKey);
+        proposed.push(item);
+      }
+    }
     return {
       status: 200,
       body: {
@@ -167,6 +216,7 @@ export class ConversationGraphReadModel {
         node,
         path: node.primaryPath,
         children: { items: children, nextCursor: page.nextCursor },
+        ...(proposed.length ? { proposed: { items: proposed, by: 'card-record' } } : {}),
         links: [],
         provenance: src ? [{ authority: src.authority, eventId: src.eventId, at: src.at }] : [],
         digest: null,
@@ -185,6 +235,10 @@ export class ConversationGraphReadModel {
   /** Authorized candidate destinations, not a promise that a future move will
    * apply. Preview and write ingress run the real reducer with current heads. */
   destinations(viewer: GraphViewer, subject: NodeRef, q: { q?: string | null; cursor?: string | null }): ReadResult {
+    return this.scoped(() => this.destinationsUnscoped(viewer, subject, q));
+  }
+
+  private destinationsUnscoped(viewer: GraphViewer, subject: NodeRef, q: { q?: string | null; cursor?: string | null }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const valid = validateNodeRef(subject);

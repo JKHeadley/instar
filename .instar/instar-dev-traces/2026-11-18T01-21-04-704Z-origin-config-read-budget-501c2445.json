@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "origin-config-read-budget",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T01:21:04.704Z",
+  "artifactPath": "upgrades/side-effects/origin-config-read-budget.md",
+  "artifactSha256": "a729602494802ec07170417e768fccfa6e1e6393be85d4a6874729ff0dc4ee65",
+  "coveredFiles": [
+    "docs/specs/origin-config-read-budget.eli16.md",
+    "src/messaging/telegram-origin/OriginConfigReader.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "tests/unit/telegram-origin/config-reader.test.ts",
+    "upgrades/next/origin-config-read-budget.md",
+    "upgrades/side-effects/origin-config-read-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tuning a read timeout and two small sync reads; freshness/revocation rules unchanged; a revert fully undoes it",
+  "eli16Path": "docs/specs/origin-config-read-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-config-read-budget.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

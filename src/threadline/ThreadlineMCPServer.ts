@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentDiscovery, ThreadlineAgentInfo } from './AgentDiscovery.js';
 import type { ThreadResumeMap, ThreadResumeEntry } from './ThreadResumeMap.js';
+import { performApprovedDelete, type ApprovedDeleteResult } from './performApprovedDelete.js';
 import type { AgentTrustManager, AgentTrustLevel } from './AgentTrustManager.js';
 import type { MCPAuth, MCPTokenInfo, MCPTokenScope } from './MCPAuth.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
@@ -85,11 +86,34 @@ export interface RelayDiscoverer {
   }>>;
 }
 
+/**
+ * SEC-018 owner-approval gate (docs/specs/owner-approved-sensitive-action.md). A thin structural
+ * interface so threadline stays decoupled from the server's concrete store/registry. When
+ * `enabled()`, an irreversible/sensitive handler (thread delete) requires a device-signed owner
+ * approval the local session cannot forge; `consume` returns a ref when a live approval for the
+ * exact action exists. When absent or `!enabled()`, handlers behave byte-identically to today.
+ */
+export interface OwnerApprovalGate {
+  enabled: () => boolean;
+  consume: (key: { purpose: string; actionKey: string; revision?: string | null }) => string | null;
+  registerPending: (req: { purpose: string; actionKey: string; title: string; why: string; machine: string }) => void;
+  clearPending: (purpose: string, actionKey: string) => void;
+  machineName: () => string;
+}
+
 export interface ThreadlineMCPDeps {
   /** Agent discovery service */
   discovery: AgentDiscovery;
   /** Thread resume map for thread state */
   threadResumeMap: ThreadResumeMap;
+  /** SEC-018: owner-approval gate for sensitive handlers (thread delete). Absent = today's behaviour. */
+  ownerApproval?: OwnerApprovalGate;
+  /** SEC-018 companion: the one server-side gated-delete op the delete handler invokes.
+   *  HTTP transport: the in-process `performApprovedDelete` (left unset → the handler falls
+   *  back to it with `threadResumeMap` + `ownerApproval`). stdio transport: `approvedDeleteViaHttp`,
+   *  which calls the loopback `POST /threadline/approved-delete` route so the mutation + consume
+   *  happen at the authority. */
+  approvedDelete?: (threadId: string) => Promise<ApprovedDeleteResult>;
   /** Agent trust manager for trust levels */
   trustManager: AgentTrustManager;
   /** MCP auth for network transports (null for stdio) */
@@ -247,6 +271,8 @@ export interface RequestSecretResult {
   tunnelUrl?: string | null;
   /** Milliseconds until the request expires. */
   expiresIn?: number;
+  /** A plain line from the server the agent must see (e.g. no receipt message will come). */
+  notice?: string;
   error?: string;
 }
 
@@ -871,6 +897,7 @@ export class ThreadlineMCPServer {
           note: 'Send the submit URL to the secret holder. The secret is submitted ' +
             'off-relay and is never stored on disk or shown in chat. The link is ' +
             'one-time and expires.',
+          ...(result.notice ? { notice: result.notice } : {}),
         });
       },
     );
@@ -1085,31 +1112,40 @@ export class ThreadlineMCPServer {
           );
         }
 
-        // Verify thread exists
-        const threadEntry = this.deps.threadResumeMap.get(args.threadId);
-        if (!threadEntry) {
-          return errorResult(`Thread "${args.threadId}" not found or already deleted`);
-        }
-
+        // SEC-018 (docs/specs/owner-approved-action-stdio-transport.md): the ENTIRE gated
+        // delete — existence check, enabled check, device-signed-approval consume, and the
+        // irreversible mutation — is ONE server-side operation (performApprovedDelete). It is
+        // invoked IN-PROCESS for the HTTP MCP transport, and over the loopback
+        // `POST /threadline/approved-delete` route for the separate-process stdio helper
+        // (`deps.approvedDelete`). The handler holds NO gate logic and performs NO local
+        // `threadResumeMap.remove` — the mutation + the consume happen together at the authority,
+        // so there is no async-gate fail-open and no enforcement gap on the default (stdio)
+        // transport. Absent gate → dark: the op just deletes (byte-identical to today).
+        let result: ApprovedDeleteResult;
         try {
-          // Capture info before deletion
-          const info = {
-            threadId: args.threadId,
-            remoteAgent: threadEntry.remoteAgent,
-            subject: threadEntry.subject,
-            messageCount: threadEntry.messageCount,
-            state: threadEntry.state,
-          };
-
-          this.deps.threadResumeMap.remove(args.threadId);
-
-          return jsonResult({
-            deleted: true,
-            ...info,
-          });
-        } catch (err) {
-          return errorResult(`Deletion failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          result = this.deps.approvedDelete
+            ? await this.deps.approvedDelete(args.threadId)
+            : performApprovedDelete(args.threadId, {
+                threadResumeMap: this.deps.threadResumeMap,
+                ownerApproval: this.deps.ownerApproval,
+              });
+        } catch {
+          // stdio transport failure (timeout / lost response / server unreachable): the server
+          // MAY have consumed-and-deleted before the response was lost. Report OUTCOME-UNKNOWN —
+          // never assert failure, never fall back to a local delete.
+          return errorResult(
+            'outcome-unknown: the agent server was unreachable, so I could not confirm the delete — it may already have happened. Check the conversation; I did not delete anything locally.',
+          );
         }
+        if (!result.ok) {
+          if (result.reason === 'not-found') {
+            return errorResult(`Thread "${args.threadId}" not found or already deleted`);
+          }
+          return errorResult(
+            'owner-approval-required: permanently deleting a thread needs the owner to approve it on their phone with Face ID. I have put the request on your phone — approve it there, then retry.',
+          );
+        }
+        return jsonResult({ deleted: true, ...result.info });
       },
     );
   }

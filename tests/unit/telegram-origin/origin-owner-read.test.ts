@@ -50,6 +50,11 @@ describe('parseReceiptAnswer', () => {
   it('no-record and not-admitted are definite answers from any version', () => {
     expect(parseReceiptAnswer('owner', OP, { ok: true, result: { ok: true, operationId: OP, state: 'no-record', executionOwnerMachineId: 'liar' } })).toEqual({ kind: 'no-record', machineId: 'owner' });
     expect(parseReceiptAnswer('owner', OP, { ok: true, result: { ok: true, operationId: OP, state: 'not-admitted' } })).toEqual({ kind: 'not-admitted', machineId: 'owner' });
+    // fb-b7abf24e-6cb: an author naming a token-less re-seal successor (`~r1-`) is followed, not dropped.
+    expect(parseReceiptAnswer('author', OP, { ok: true, result: { ok: true, operationId: OP, role: 'author', holding: false, supersededBy: `${OP}~r1-0a1b2c3d` } }))
+      .toMatchObject({ kind: 'author', supersededBy: `${OP}~r1-0a1b2c3d` });
+    expect(parseReceiptAnswer('author', OP, { ok: true, result: { ok: true, operationId: OP, role: 'author', holding: false, supersededBy: 'not an id' } }))
+      .toMatchObject({ kind: 'author', supersededBy: null });
   });
   it('values outside the closed sets make an answer with no outcome; an unknown reason is dropped', () => {
     expect(parseReceiptAnswer('owner', OP, ownerReply({ outcome: 'probably-fine' }))).toMatchObject({ kind: 'missing', why: 'old-version' });

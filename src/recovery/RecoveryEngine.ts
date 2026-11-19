@@ -1,4 +1,5 @@
 import { restoreRecoveryMainBindings, validateRecoveryMainBindings, type RecoveryMainBindingSnapshot } from './RecoveryMainBindings.js';
+import { agentNameFromLabel, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -91,6 +92,9 @@ export class LaunchdRecoveryControl implements RecoveryServiceControl {
       let identity:Response;
       try {identity=await fetch(`http://127.0.0.1:${this.config.healthPort}/whoami`,{headers,signal:AbortSignal.timeout(2_000),redirect:'error'});}
       catch(error){return (error as {cause?:{code?:string}})?.cause?.code==='ECONNREFUSED'?set(false,true,'main-http-unreachable'):set(false,false,'main-inspection-unavailable');}
+      // Listen early: the boot beacon answers a typed 503 while the server boots. That is the same
+      // state as the refused connection a booting server gave before, so repair stays allowed.
+      if(identity.status===503&&identity.headers.get('x-instar-boot-state')==='starting'){await identity.body?.cancel();return set(false,true,'main-starting');}
       if(!identity.ok){await identity.body?.cancel();return set(false,false,identity.status===401||identity.status===403?'main-identity-authentication-failed':'main-identity-unavailable');}
       let who:Record<string,unknown>;
       try{who=await recoveryResponseJson(identity,4_096);}catch{return set(false,false,'main-identity-unavailable');}
@@ -136,6 +140,10 @@ export class LaunchdRecoveryControl implements RecoveryServiceControl {
     return /Could not find service|No such process|No such file or directory/.test(String((error as {stderr?:string})?.stderr??''));
   }
   async start(): Promise<void> {
+    // Always available (§B.5): a system service runs this agent; reloading its per-user job would
+    // start a second copy.
+    const aaAgent=agentNameFromLabel(this.config.serviceLabel);
+    if(aaAgent&&daemonRunsAgent(aaAgent))throw new Error('recovery-always-available-daemon');
     if(this.config.serviceLabel.startsWith('ai.instar.'))verifyRecoveryMainService(this.config);
     await this.assertRepairAllowed();
     if(this.config.serviceLabel.startsWith('ai.instar.')&&(this.config.mainBindings||this.config.runtimeSlot))restoreRecoveryMainBindings(this.config);

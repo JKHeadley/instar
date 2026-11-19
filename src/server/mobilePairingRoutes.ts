@@ -38,7 +38,7 @@ import { Router, type Request, type Response, type Application } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import {
-  PairingCodeStore, NONCE_PATTERN, buildPairLink, cleanText, codeTtlMs, pingAnswer, stableOrigin,
+  PairingCodeStore, NONCE_PATTERN, buildPairLink, cleanText, codeTtlMs, pingAnswer, stableOrigin, DEVICE_MINT_TTL_MS,
   type MobilePairingConfig,
 } from '../core/MobilePairing.js';
 import type { InstarConfig } from '../core/types.js';
@@ -63,6 +63,7 @@ import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { localBindingOk, mountLocalOwnerDeviceRoute } from './mobileLocalOwnerDevice.js';
 import { TeamAccessLog, rowSignedByKnownMachine, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { attentionForNonOwner, tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
@@ -1226,6 +1227,8 @@ const json503 = (res: Response) => res.status(503).json({ error: 'Mobile pairing
 
 /** Public routes: registered on the app BEFORE the bearer middleware. */
 export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePairingService): void {
+  // The Mac app's first owner device on this same Mac (docs/specs/mac-app-creates-agent.md §A).
+  mountLocalOwnerDeviceRoute(app, svc, { agentName: () => String(svc.deps.config.projectName ?? '') });
   app.get(MOBILE_PING_PATH, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     // Multi-route proves own names with this same ping, so it answers whenever multi-route is on.
@@ -1297,10 +1300,20 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
+    // mac-qr-pairing §4: a code minted for one computer registers only that computer's key. The
+    // code is already taken, so a copied link is spent; the real computer scans a fresh QR.
+    if (r.boundKey && r.boundKey !== publicKey) {
+      featureEvidence.record('mobilePairing', { kind: 'held', reason: 'redeem refused: wrong-device', context: { routeKind: eligible.kind } });
+      svc.outcomes?.markOutcome(r.watchId, 'ended');
+      res.status(400).json({ error: 'wrong-device', detail: 'This pairing code was made for a different computer. Scan a new code.' });
+      return;
+    }
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
       created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner',
-        ...(r.watchId ? { outcomeWatchId: r.watchId } : {}) });
+        ...(r.watchId ? { outcomeWatchId: r.watchId } : {}),
+        // mac-qr-pairing §4: display-only, untrusted like deviceName; the Mac app says so, a key-bound code implies it.
+        ...(r.boundKey || body.deviceKind === 'computer' ? { deviceKind: 'computer' as const } : {}) });
     } catch (err) {
       svc.outcomes?.markOutcome(r.watchId, 'ended');
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
@@ -1347,19 +1360,22 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const forWhomName = forWhom ? (forWhom.ok ? personLabel(forWhom.name, forWhom.role) : 'someone no longer in your user list') : null;
     // An MSP's phone stays code-only (mobile-pairing-approve §4): handing over the code is the binding.
     const canApprove = isPairingApproveEnabled(svc.deps.config) && svc.approvable(device);
+    // mac-qr-pairing §4: a computer is named as one, never as "a phone" (display only).
+    const noun = device.deviceKind === 'computer' ? 'computer' : 'phone';
+    const Noun = noun === 'computer' ? 'Computer' : 'Phone';
     const codeLine = forWhomName
-      ? `Your code to pair a phone for ${forWhomName} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
-      : `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`;
+      ? `Your code to pair a ${noun} for ${forWhomName} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
+      : `Your code to pair a ${noun} with ${svc.deps.config.projectName} is ${pretty}.`;
     // mobile-pairing-approve §3.2: the decision first, the code kept as the fallback for older apps.
     const text = (canApprove ? [
-      `A phone is asking to pair with ${svc.deps.config.projectName}. Approve only if you are pairing a phone right now and this key matches the one the app shows.`,
-      `Phone key: ${device.fingerprint ?? 'unknown'}\nPhone name: ${device.deviceName ?? '(none given)'} (the phone chose this name, so don't rely on it)`,
+      `A ${noun} is asking to pair with ${svc.deps.config.projectName}${device.deviceKind === 'computer' && device.label ? ` (it calls itself ${device.label})` : ''}. Approve only if you are pairing a ${noun} right now and this key matches the one the app shows.`,
+      `${Noun} key: ${device.fingerprint ?? 'unknown'}\n${Noun} name: ${device.deviceName ?? '(none given)'} (the ${noun} chose this name, so don't rely on it)`,
       `If you did not start this, tap Decline.`,
       `If the app asks for a code instead: ${codeLine} Don't send or show this message to anyone, including me.`,
     ] : [
       codeLine,
-      `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
-      `Phone name: ${device.deviceName ?? '(none given)'}`,
+      `Type it into the Instar app only if you are pairing a ${noun} right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
+      `${Noun} name: ${device.deviceName ?? '(none given)'}`,
     ]).join('\n\n');
     const dm = await deliverOwnerDM(svc, text, nonce, canApprove);
     const delivered = typeof dm === 'number' ? dm : null;
@@ -1425,8 +1441,21 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.enabled()) { json503(res); return; }
     const mintBody = (req.body ?? {}) as Record<string, unknown>;
+    // mac-qr-pairing §4: an owner phone (the device rule is ownerOnly) mints a code for a computer it
+    // scanned. The code is always the owner's and may register only that computer's key; it grants
+    // nothing by itself, since the new device still waits for an existing approval path.
+    const minter = principalOf(req);
+    let forDevice: { publicKey: string; label: string | null } | null = null;
+    if (minter.kind === 'device') {
+      const fd = (mintBody.forDevice ?? {}) as Record<string, unknown>;
+      const key = typeof fd.publicKey === 'string' ? fd.publicKey : '';
+      if (!parseDevicePublicKey(key)) { res.status(400).json({ error: 'bad-device-key', detail: 'forDevice.publicKey must be the new device\'s public key.' }); return; }
+      const phone = svc.devices.get((minter as { deviceId: string }).deviceId);
+      const computer = cleanText(fd.name, 24) ?? 'A computer';
+      forDevice = { publicKey: key, label: cleanText(`${computer} (added from ${cleanText(phone?.deviceName ?? null, 20) ?? 'your phone'})`) };
+    }
     // People and roles §3.2: whose phone this link is for (neither field ⇒ the owner, as before).
-    const chosenPerson = svc.choosePerson(mintBody.userId, mintBody.role);
+    const chosenPerson = forDevice ? svc.choosePerson(undefined, undefined) : svc.choosePerson(mintBody.userId, mintBody.role);
     if (!chosenPerson.ok) { res.status(400).json({ error: chosenPerson.error, detail: chosenPerson.detail }); return; }
     const chosen = svc.pairingOrigin();
     if (!chosen) {
@@ -1461,12 +1490,13 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (svc.ownNames) {
       try { await svc.ownNames.proveNow(new URL(origin).host); } catch (err) { deps.reportDegradation?.('MobileRoutes.probe', err); }
     }
-    const label = cleanText(mintBody.label);
-    const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
-      { userId: chosenPerson.userId, role: chosenPerson.role });
+    const label = forDevice ? forDevice.label : cleanText(mintBody.label);
+    const m = svc.codes.mint(forDevice ? DEVICE_MINT_TTL_MS : codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
+      { userId: chosenPerson.userId, role: chosenPerson.role }, forDevice?.publicKey ?? null);
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
     // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.1): never refuses the link.
-    const notice = svc.watchOutcome(m.code, mintBody.topicId, label, m.expiresAt);
+    const notice = forDevice ? null : svc.watchOutcome(m.code, mintBody.topicId, label, m.expiresAt);
+    if (forDevice) featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'code minted by owner phone for a computer', context: { phoneId: (minter as { deviceId: string }).deviceId } });
     // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
     res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind,
       ...(notice ?? {}),
@@ -1827,6 +1857,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!svc.enabled()) { json503(res); return; }
     const p = principalOf(req);
     if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+    // A device created on this Mac by the Mac app never gets a notification read token: the token
+    // branch runs before the host branches, so it could otherwise be used off this Mac (mac-app-creates-agent §A).
+    if (svc.devices.get(p.deviceId)?.localBinding) { res.status(403).json({ error: 'not-for-local-devices' }); return; }
     const b = (req.body ?? {}) as Record<string, unknown>;
     const revision = b.revision;
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) { res.status(400).json({ error: 'bad-revision' }); return; }
@@ -2409,6 +2442,7 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   // documents router applies its own per-document access (mayDoDocument) on top.
   ['GET', /^\/mobile\/docs$/, 'guest'],
   ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, 'guest'],
+  ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/decision$/, 'guest'],
   ['POST', /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, 'guest'],
   ['GET', /^\/docs\/[0-9a-f-]{36}\/data$/, 'guest'],
   ['POST', /^\/mobile\/browsers\/link$/, 'guest'],
@@ -2417,6 +2451,10 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['POST', /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, 'guest'],
   // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
   ['GET', /^\/mobile\/work-board$/, 'guest'],
+  // The Needs-you list (work-front-doors decision 2): the route filters per viewer; a team phone gets only what it may already read.
+  ['GET', /^\/mobile\/needs$/, 'guest'],
+  // Projects on the Work door (work-front-doors stage 2a): any person may ask; only the owner gets project names (the handler answers others empty).
+  ['GET', /^\/mobile\/work\/projects$/, 'guest'],
   // Searching is reading (conversation-search): only conversations and messages this person may read.
   ['GET', /^\/mobile\/conversations\/search$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
@@ -2470,6 +2508,17 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
 export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   const rules: DeviceRule[] = [
+    // Organization pack acts (docs/specs/org-pack-and-join.md §B2): only the person's tap in the app.
+    // Not in BROWSER_ROUTES, so a browser device (key not hardware-held) is refused.
+    { method: 'POST', re: /^\/mobile\/org\/(publish|join|leave|update-accept)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 5, bucket: 'org-acts' },
+    { method: 'GET', re: /^\/mobile\/org\/status$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    // Never rules checking actions (org-never-actions §C): the app's allow-once card and the mode switch.
+    { method: 'GET', re: /^\/mobile\/org\/pending-checks$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'POST', re: /^\/mobile\/org\/(allow-once|actions-mode)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 10, bucket: 'org-acts' },
+    // Work agents page, departure and keepers (org-members-and-keepers §B–D).
+    { method: 'GET', re: /^\/mobile\/org\/current-bundle$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'GET', re: /^\/mobile\/org\/members$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'org-reads' },
+    { method: 'POST', re: /^\/mobile\/org\/(members\/(remove|restore)|invitations\/revoke|keepers\/(add|remove)|keeper-request|keeper-propose|checkin-consent|recovery-copy|recover|recover-latest|recovery\/(keepers|invitations)\/(reactivate|discard)|recovery\/members\/confirm)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 10, bucket: 'org-admin' }, // its own budget: keeper and recovery steps never use up publishing (local verify 3294)
     // Conversations v3 owner hierarchy. Admission still requires a live device
     // signature; the mounted graph source separately enforces increment A.
     { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
@@ -2495,6 +2544,12 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
+    // Imported Claude/ChatGPT history (import-from-claude-chatgpt §B.3, §D): the owner's app only, never a
+    // browser device or a team member. Kept on this machine; the routes read raw for the owner.
+    { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
+    { method: 'GET', re: /^\/mobile\/imported-history\/conversations\/imported(:|%3a)(claude|chatgpt)(:|%3a)[a-z0-9_.:%-]{1,240}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
+    { method: 'GET', re: /^\/mobile\/imported-history\/search$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'imported-reads' },
+    { method: 'POST', re: /^\/mobile\/imported-history\/(preview|apply|facts)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'imported-import' },
     // Instar Documents phone reads (instar-document-viewer §4.2). Read-only; per-document access is the documents router's.
     { method: 'GET', re: /^\/mobile\/docs$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, statuses: active, body: 'none' },
@@ -2511,6 +2566,12 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Moving a document to another conversation (§4.2): owner phone, Face ID-signed challenge.
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Document decisions (document-decisions §3.2): the app reads the ask itself, then the owner phone
+    // answers on its own sheet with Face ID; the delivered receipt follows the chat route's own record.
+    { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision$/, statuses: active, body: 'none' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision\/delivered$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'doc-open' },
     // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
     { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
@@ -2567,6 +2628,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // re-checks owner, local TLS and the feature switch itself.
     // Approve a waiting phone with Face ID (docs/specs/mobile-pairing-approve.md §3.4): owner phones only.
     { method: 'GET', re: /^\/mobile\/pairing-requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'pairing-requests-read' },
+    // Pair a computer from an owner phone (docs/specs/mac-qr-pairing.md §4): mint a code bound to its key.
+    { method: 'POST', re: /^\/mobile\/pairing-codes$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'pairing-mint' },
     { method: 'POST', re: new RegExp(`^/mobile/pairing-requests/${UUID}/(challenge|approve|decline)$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
     { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
     // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The
@@ -2641,6 +2704,19 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // checks each card's conversation with the shared `mayUse`); only the owner's phone taps. Taps have their
     // own bucket, so a run of card taps never uses up the allowance for approvals and switches.
     { method: 'GET', re: /^\/mobile\/work-board$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'work-board-reads' },
+    // The Needs-you list (work-front-doors.md decision 2): one read for the phone and the Mac app. Any
+    // person's phone may ask; the route itself filters per viewer (a team person gets only what their own
+    // phone may already read, e.g. the work board when its rule admits them). Read-only, its own bucket;
+    // its team tier is named in TEAM_ROUTE_TIERS (guest).
+    { method: 'GET', re: /^\/mobile\/needs$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'needs-reads' },
+    // Projects on the Work door (work-front-doors stage 2a): read-only, its own bucket; the handler gives project
+    // names to the owner only and an empty answer to anyone else (spec §4.4). Team tier in TEAM_ROUTE_TIERS (guest).
+    { method: 'GET', re: /^\/mobile\/work\/projects$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'projects-reads' },
+    // The owner's project actions (docs/specs/work-door-project-rows.md §3.2–3.5): Ask for an update (device-signed, its own
+    // bucket), and Pause / Resume, Mark checked and Finish (Face ID over the exact project line, the owner-presence bucket).
+    // Owner phones only; not in TEAM_ROUTE_TIERS.
+    { method: 'POST', re: /^\/mobile\/work\/projects\/check$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'projects-checks' },
+    { method: 'POST', re: /^\/mobile\/work\/projects\/(pause|done-item|finish)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
@@ -2661,6 +2737,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/desktop\/requests\/[^/]{1,200}\/(ticket|resume|revoke)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
     { method: 'POST', re: /^\/mobile\/permissions\/requests\/[a-z0-9._:-]{1,128}\/(approve|decline)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/permissions\/features\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Approving a trust raise from the app (docs/specs/app-trust-approval.md): owner devices only, the same
+    // Face ID-confirmed path and bucket. Not in BROWSER_ROUTES, so a browser (key not hardware-held) is refused.
+    { method: 'GET', re: /^\/mobile\/trust\/requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
+    { method: 'POST', re: /^\/mobile\/trust\/requests\/tr-[0-9a-f]{12}-[0-9a-z]{6}\/approve$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/trust\/device-acceptance(\/withdraw)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
     { method: 'POST', re: /^\/mobile\/secrets\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
@@ -2687,6 +2768,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // the permission switches, and adding accounts joins it). Owner phones only; never named for a team phone.
     // E2E-PAIRING: EXEMPT — rate-bucket name only; the route is covered by the account-sign-in-face-id e2e test
     { method: 'POST', re: /^\/mobile\/accounts\/sign-in\/start$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
+    // Machine care from the app (machine-self-maintenance Part F, CMT-1203): owner phones only; the
+    // route refuses the bearer and any other machine's id. Restart only sends the owner's Telegram card.
+    { method: 'GET', re: /^\/mobile\/machine-care$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
+    { method: 'POST', re: /^\/mobile\/machine-care\/[A-Za-z0-9_-]{1,128}\/(skip|unskip|window|restart)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Add a Claude or Codex account with Face ID (docs/specs/account-add-face-id.md): same path, the account-actions bucket, owner only.
     { method: 'POST', re: /^\/mobile\/accounts\/add$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
   ];
@@ -2737,7 +2822,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       if (req.method !== 'GET' || !NOTIFY_TOKEN_PATHS.some((re) => re.test(pathNorm)) || req.headers['x-instar-device-sig'] !== undefined || typeof notifyToken !== 'string' || typeof id !== 'string') return refuse(403, 'notify-token-not-allowed');
       const d = svc.devices.get(id);
       // A browser has no notification token: the branch refuses it (dashboard-conversations-browser-device §4.4).
-      if (d && isBrowserDevice(d)) return refuse(403, 'notify-token-not-allowed');
+      if (d && (isBrowserDevice(d) || d.localBinding)) return refuse(403, 'notify-token-not-allowed');
       const h = crypto.createHash('sha256').update(notifyToken).digest();
       const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
       if (!d || d.status !== 'active' || !stored || stored.length !== h.length || !crypto.timingSafeEqual(stored, h)) return refuse(401, 'device-unauthorized');
@@ -2778,8 +2863,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // loopback peer with no forwarding header, in both multi-route modes.
     const peek = typeof id === 'string' ? svc.devices.get(id) : null;
     const browserDevice = !!peek && isBrowserDevice(peek);
-    if (browserDevice && !svc.browserOn()) return refuse(403, 'browser-devices-off');
-    if (browserDevice && isLoopbackHost(peek!.host)) {
+    if (peek?.localBinding) {
+      // The Mac app that created this agent on this Mac (mac-app-creates-agent §A): its own branch,
+      // in both multi-route modes, and never a fall-through to the stored host.
+      if (!localBindingOk(peek, req, svc.deps.selfMachineId)) return refuse(401, 'device-unauthorized');
+      host = peek.host;
+    } else if (browserDevice && !svc.browserOn()) return refuse(403, 'browser-devices-off');
+    else if (browserDevice && isLoopbackHost(peek!.host)) {
       if (!loopbackBindingOk(peek!, req)) { svc.browser.noteRefusal(peek!.id, 'host-refused'); return refuse(401, 'device-unauthorized'); }
       host = peek!.host;
     } else if (svc.ownNames) {

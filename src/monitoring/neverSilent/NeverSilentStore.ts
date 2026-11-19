@@ -44,6 +44,8 @@ export type SilenceClass =
   | 'crashed'
   | 'working-slow'
   | 'message-not-delivered'
+  /** Structural only (never a judge answer): the message is held for the other machine that runs the conversation. */
+  | 'waiting-for-machine'
   | 'other'
   | 'undetermined';
 

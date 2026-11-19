@@ -62,7 +62,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Cloudflare account and a domain.',
     backup: 'Tailscale, your local network, the optional relay, or a temporary relay you agree to.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-16 (topic 135786, main 8bbc4f3db plus this row): a test agent took the person's yes, its setup session took the token through a Secret Drop, the server made the tunnel and DNS name on dawn-tunnel.dev and restarted, the check passed from the public internet, and the switch-off removed both.
+    setupRecipe: 'cloudflare-v1',
   },
   {
     id: 'telegram',
@@ -74,7 +75,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Telegram account, which needs a phone number, plus a bot I set up.',
     backup: 'Slack, WhatsApp, iMessage, the Instar app, or the dashboard.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-09 (topic 135786, PR 2950 head 0b9e3ca01d): a test agent with no Telegram took the person's yes, its own session made the bot and the topics group, the server stored the key and restarted, and the check passed.
+    setupRecipe: 'telegram-v1',
   },
   {
     id: 'jev',
@@ -150,8 +152,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backup: 'The report comes to our conversation instead, with a line saying why.',
     backupStatus: 'exercised',
     drillTest: 'tests/e2e/email-sending-lifecycle.test.ts',
-    // Proving: available only to an agent that lists email-v1 under recommendedServices.provingRecipes until its live proof.
-    setupRecipe: null,
+    // Proven live 2026-11-09 (topic 135786, PR 2988 head d66982d9f5): a test agent took the person's yes, stored the mailbox key, the proof email was accepted and its code entered, and a scheduled report arrived by email.
+    setupRecipe: 'email-v1',
   },
 ] satisfies CatalogRow[]);
 

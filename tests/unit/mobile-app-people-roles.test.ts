@@ -404,8 +404,11 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 32: work-board-asks §7 opened GET /mobile/work-board to guests; the handler shows only the cards whose conversation that person may read.
     // 33: conversation-list-pins opened POST /mobile/conversations/pins to guests (it orders the person's own list).
     // 34: conversation-search opened GET /mobile/conversations/search to guests (searching is reading).
-    // 42: all of the above together (31 + 8 document routes + work-board, pins and search).
-    expect(open).toBe(42);
+    // 43: work-front-doors (decision 2) opened GET /mobile/needs to guests; the route filters per viewer.
+    // 43: all of the above together (31 + 8 document routes + work-board, pins, search and needs).
+    // 44: work-front-doors stage 2a opened GET /mobile/work/projects to guests; only the owner gets project names.
+    // 45: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
+    expect(open).toBe(45);
   });
 
   it.each([

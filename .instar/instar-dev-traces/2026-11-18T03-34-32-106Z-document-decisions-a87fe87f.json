@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "document-decisions",
+  "sessionId": "38198b7c-e6c8-40e3-b7a1-9a04bab0cdb4",
+  "timestamp": "2026-11-18T03:34:32.106Z",
+  "artifactPath": "upgrades/side-effects/document-decisions.md",
+  "artifactSha256": "9e0c7790108e59a1a8b878184662654ece4905de63f5838f7947adf67790d51f",
+  "specPath": "docs/specs/document-decisions.md",
+  "coveredFiles": [
+    "dashboard/docs/doc-page-model.js",
+    "docs/specs/document-decisions.md",
+    "src/documents/originCheck.ts",
+    "src/documents/service.ts",
+    "src/documents/store.ts",
+    "src/server/AgentServer.ts",
+    "src/server/documentPageRoutes.ts",
+    "src/server/documentRoutes.ts",
+    "tests/integration/documents-decisions.test.ts",
+    "tests/unit/documents-decisions.test.ts",
+    "tests/unit/documents-page-model.test.ts",
+    "upgrades/next/document-decisions.md",
+    "upgrades/side-effects/document-decisions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "security gate narrowing on a converged+approved spec; SEC-088 interim decided by CoS with security concurrence",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

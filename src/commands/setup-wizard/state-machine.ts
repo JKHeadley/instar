@@ -39,12 +39,28 @@ export interface WizardAnswers {
   installConsent?: boolean;
   /** Install flow only: the person agreed to start on reboot. Defaults to the install consent. */
   autostartConsent?: boolean;
+  /** Install flow only: an organization invitation the person accepted on the app's join screen (org-pack-and-join §C). */
+  orgBundle?: string;
+  /** Install flow only: the Instar Mac app runs this install and enrolls itself (mac-app-creates-agent §B). */
+  forApp?: boolean;
+  /** The invitation link's token (org-members-and-keepers §A). */
+  orgInviteToken?: string;
+  /** The account the person picked at the account choice (create-agent-accounts-and-always-on §A.2). */
+  accountChoice?: { use: string } | { new: true };
+  /** Set by the account-choice step: the config folder the new agent uses, and whose pool it came from. */
+  accountConfigHome?: string;
+  accountBorrowedFrom?: string | null;
+  /** True when the chosen folder is the AI's default one (left untouched at sign-in). */
+  accountIsDefault?: boolean;
+  /** True when the person chose to sign in to a new account. */
+  accountNew?: boolean;
 }
 
 /** The doors the installer can carry today. Other doors arrive with their proofs (spec section 5). */
 export type InstallDoor = 'claude-code' | 'codex-cli';
 
 export type WizardActionKind =
+  | 'account-choice'        // install flow: which account of the chosen AI (create-agent-accounts-and-always-on §A.2)
   | 'init'                  // run `instar init` with collected name + framework
   | 'add-user'              // `instar user add`
   | 'setup-telegram-agentic' // hand off to framework session w/ Playwright
@@ -434,6 +450,11 @@ export interface InstallFlowContext {
   detectedDoors: InstallDoor[];
   /** The harness running the installer, when there is one. */
   runningInDoor?: InstallDoor;
+  /**
+   * The AI the person already chose (the Mac app's "Which AI account do you have?", or an answers
+   * file's `door`). It wins over every guess: a Claude found on the Mac must not override a ChatGPT pick.
+   */
+  chosenDoor?: InstallDoor;
   /** Refuses a name that can't be used, with a plain reason. */
   validateName: (name: string) => string | null;
   /** What the installer will do, listed in the single consent. */
@@ -442,6 +463,7 @@ export interface InstallFlowContext {
 
 /** The door when there is nothing to ask: the harness running this, or the only one found. */
 export function impliedInstallDoor(context: InstallFlowContext): InstallDoor | undefined {
+  if (context.chosenDoor) return context.chosenDoor;
   if (context.runningInDoor) return context.runningInDoor;
   return context.detectedDoors.length === 1 ? context.detectedDoors[0] : undefined;
 }
@@ -534,7 +556,8 @@ export function buildInstallFlow(context: InstallFlowContext): Record<string, Wi
 
     'do-install-tools': action('do-install-tools', 'install-tools', 'Install the tools your agent needs', 'do-tailscale-operator'),
     'do-tailscale-operator': action('do-tailscale-operator', 'install-tailscale-operator', 'Let your agent use Tailscale', 'do-door-install'),
-    'do-door-install': action('do-door-install', 'door-install', 'Install your AI', 'do-door-sign-in'),
+    'do-door-install': action('do-door-install', 'door-install', 'Install your AI', 'do-account-choice'),
+    'do-account-choice': action('do-account-choice', 'account-choice', 'Choose which account to use', 'do-door-sign-in'),
     'do-door-sign-in': action('do-door-sign-in', 'door-sign-in', 'Check your AI is signed in', 'do-init'),
     'do-init': action('do-init', 'agent-init', 'Create your agent', 'do-start-server'),
     'do-start-server': action('do-start-server', 'start-server', 'Start your agent', 'do-install-autostart'),

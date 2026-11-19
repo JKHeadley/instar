@@ -2,6 +2,7 @@
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -62,7 +63,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
+import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING, CONVERSATIONS_AWARENESS_LEGACY_WORDING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER, refreshHeldReplyAdvisoryAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
@@ -144,7 +145,7 @@ import {
   APPROVAL_NOT_CHORE_TRAP,
   APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
-import { generateClaudeMd } from '../scaffold/templates.js';
+import { generateClaudeMd, RETIRED_DOC_DELIVERY_ROWS, RETIRED_AGENT_PRINCIPLE_WORDING, PRIVATE_VIEWS_SENTENCE } from '../scaffold/templates.js';
 import {
   CLAUDE_MD_DIFFERING_LINES_REL,
   CLAUDE_MD_LEGACY_BACKUP_REL,
@@ -220,6 +221,7 @@ import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.j
 import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
+import { IMPORTED_HISTORY_PROJECT_PATH, IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -369,6 +371,76 @@ const KEEP_INSTRUCTIONS_PY = [
   '    sys.exit(0)',
   'sys.stdout.write(t)',
   'sys.stdout.flush()',
+].join('\n');
+
+/**
+ * The standing-packet read (context-budget-layered-summaries §9.5, Phase 1
+ * S10), embedded in compaction-recovery.sh as `python3 -c` (no `"`, `$` or
+ * backtick inside). argv[1] is the state root, argv[2] the topic. Prints the
+ * staged, VERIFIED packet for the topic wrapped in nonce-delimited lines
+ * (the fitter keeps that section whole), and nothing otherwise: absent,
+ * unverified, stale (over 7 days), a hash or length mismatch, or over the
+ * hook ceiling all print nothing and the hook falls back to today's block.
+ * Schema written by `stageStandingPacket`
+ * (src/monitoring/contextLayers/standingPacket.ts); keep the two in step.
+ */
+export const STANDING_PACKET_PY = [
+  'import sys,json,os,hashlib,time',
+  'root=sys.argv[1]',
+  "topic=sys.argv[2] if len(sys.argv)>2 else ''",
+  "if not topic or len(topic)>15 or not (topic.isascii() and topic.isdigit()):",
+  '    sys.exit(0)',
+  "d=os.path.join(os.path.realpath(os.path.join(root,'state','context-layers')),'_standing')",
+  'try:',
+  "    p=json.load(open(os.path.join(d,topic+'.json')))",
+  'except Exception:',
+  '    sys.exit(0)',
+  "if p.get('schema')!='standing-packet/1' or p.get('topicKey')!=topic or p.get('verified') is not True:",
+  '    sys.exit(0)',
+  "b=p.get('builtAt')",
+  'now=time.time()*1000',
+  'if not isinstance(b,(int,float)) or now-b>7*86400000 or b-now>300000:',
+  '    sys.exit(0)',
+  'try:',
+  "    body=open(os.path.join(d,topic+'.md'),'rb').read(26001)",
+  "    t=body.decode('utf-8')",
+  'except Exception:',
+  '    sys.exit(0)',
+  "h=hashlib.sha256(body).hexdigest()",
+  "if len(body)>26000 or h!=p.get('sha256'):",
+  '    sys.exit(0)',
+  "n=len(t.encode('utf-16-le'))//2",
+  "if n!=p.get('chars') or n>6500:",
+  '    sys.exit(0)',
+  "sys.stdout.buffer.write(('--- STANDING PACKET '+h[:8]+' ---'+chr(10)).encode('ascii')+body+(chr(10)+'--- END STANDING PACKET '+h[:8]+' ---'+chr(10)).encode('ascii'))",
+  'sys.stdout.buffer.flush()',
+].join('\n');
+
+/**
+ * Which carrier a compaction seed delivered (context budget §17 "delivered vs
+ * staged"): the standing packet's nonce, only when the nonce really is the
+ * sha256 of the delimited text (as the fitter checks), else `legacy`. Embedded
+ * in session-start.sh as `python3 -c` (no `"`, `$` or backtick inside).
+ */
+export const SEED_CARRIER_PY = [
+  'import sys,hashlib',
+  "t=sys.stdin.buffer.read().decode('utf-8','replace')",
+  'L=t.split(chr(10))',
+  "out='legacy'",
+  'for i,l in enumerate(L):',
+  "    if not (len(l)==32 and l.startswith('--- STANDING PACKET ') and l.endswith(' ---')):",
+  '        continue',
+  '    n=l[20:28]',
+  "    if not all(c in '0123456789abcdef' for c in n):",
+  '        continue',
+  "    end='--- END STANDING PACKET '+n+' ---'",
+  '    if end in L[i+1:]:',
+  '        j=L.index(end,i+1)',
+  '        inner=chr(10).join(L[i+1:j])',
+  "        if hashlib.sha256(inner.encode('utf-8')).hexdigest().startswith(n) and len(inner.encode('utf-16-le'))//2<=6600:",
+  '            out=n',
+  '            break',
+  'print(out)',
 ].join('\n');
 
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
@@ -1102,7 +1174,10 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
  */
 export const ASK_LINKS_CLAUDEMD_MARKER = '**Every ask carries its links.**';
 export const ASK_LINKS_CLAUDEMD_SECTION = `**Every ask carries its links.** When a message needs the operator to review, approve or decide, end it with a short *What I need from you* section: one line per ask in plain words, a working link to each item (check it opens first; a private view for private content), and the exact reply that settles it. An authority grant links to its Approve/Decline page instead of a reply.`;
-export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
+export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in the Needs-you list, through \`dashboard/console/needs-model.js\`.`;
+/** The sentence the section used before the Needs-you list replaced Home (work-front-doors.md §7 stage 1); migrated in place. */
+export const SURFACE_REFERRAL_OLD_NEEDS_WORDING = 'belongs on the first screen of its page and in Home\'s count, through';
+export const SURFACE_REFERRAL_NEW_NEEDS_WORDING = 'belongs on the first screen of its page and in the Needs-you list, through';
 
 /**
  * Pure helper for migrateClaudeMd: converge a CLAUDE.md on the canonical
@@ -2078,6 +2153,10 @@ export function MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(port: number | string): st
 export const MACHINE_WEDGE_STALE_F1_TEXT = 'F1 the GUI path (a no-op launch; unread on macOS in this build), F2 the process table (`ps` timing, fork failure, rising stuck processes),';
 export const MACHINE_WEDGE_CURRENT_F1_TEXT = 'F1 the GUI path (a no-op launch; on macOS a shipped background app opened through LaunchServices, which counts only after it has passed once since boot and never while the screen is locked or no one is logged in at the console), F2 the process table (`ps` timing, fork failure, rising stuck processes; on macOS also the `data.kalloc.1024` kernel zone over 4 GiB, read without root),';
 
+/** The gentle rung (wedge-gentle-resume), inserted before the section's When-to-use line. */
+export const MACHINE_WEDGE_GENTLE_TEXT = '- **Gentle rung (macOS):** when the canary itself is left frozen, this user\'s other app launches that macOS left frozen (started by the system, from a normal app folder, frozen at least a minute) are continued with SIGCONT, which cannot close anything or lose work. At most 20 per check and twice per app. `machineMaintenance.wedgeRestart.gentleResume` is `dry-run` by default (lists what it would continue), `on` or `off`; the last run is `wedge.lastGentle`.\n';
+const MACHINE_WEDGE_WHEN_TO_USE = '- **When to use** (PROACTIVE): the operator says a machine is frozen, unreachable or "stuck"';
+
 export function MACHINE_WEDGE_CLAUDEMD_SECTION(port: number | string): string {
   return `
 ### Is this machine wedged? (dry-run)
@@ -2085,7 +2164,7 @@ export function MACHINE_WEDGE_CLAUDEMD_SECTION(port: number | string): string {
 - On a development agent, the host maintainer (one agent per login) samples four kinds of evidence every 10 minutes, every 2 while any is positive: ${MACHINE_WEDGE_CURRENT_F1_TEXT} F3 a stuck dialog (not built), F4 the agent itself (impaired or lagging while the processor is idle). Read it: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/machine-maintenance\` → \`wedge\` (\`families\`, \`window\`, \`candidate\`, \`condition\`, \`lastVerdict\`, \`forcedDueAt\`, \`brakes\`). \`wedge: null\` means the sampler is not running here; a family reading \`unknown\`, \`ineligible\` or \`not-covered\` means it was not read, never "healthy".
 - A candidate needs the SAME two families positive at 3 or more observations across 20 minutes; a negative resets it and a gap over 6 minutes restarts it. One family positive for 2 hours forms no candidate but marks the next restart window due early (\`forcedDueAt\`, on paper).
 - Each new wedge condition gets one judge call; its proposal (\`leave\`, \`gentle\`, \`restart-next-window\`, \`restart-now\`) is recorded with the rungs it WOULD run. **Nothing restarts, closes or dismisses anything** (\`actuation: "not-built"\`, \`canRestart: false\`). The operator notice is off unless \`machineMaintenance.wedgeRestart.dryRunNotice\` is true. Audit: \`logs/machine-maintenance.jsonl\`.
-- **When to use** (PROACTIVE): the operator says a machine is frozen, unreachable or "stuck" → read \`wedge\` on that machine (or \`?scope=pool\`) and quote the families and their reasons; never call a machine healthy from unread families, and never run a restart by hand.
+${MACHINE_WEDGE_GENTLE_TEXT}- **When to use** (PROACTIVE): the operator says a machine is frozen, unreachable or "stuck" → read \`wedge\` on that machine (or \`?scope=pool\`) and quote the families and their reasons; never call a machine healthy from unread families, and never run a restart by hand.
 `;
 }
 
@@ -3204,6 +3283,20 @@ export class PostUpdateMigrator {
    * Run all post-update migrations. Safe to call multiple times —
    * each migration is idempotent.
    */
+  /**
+   * The compaction canary's heal ladder, rung 1 (context-budget-layered-
+   * summaries §9.1: "hook not installed ⇒ re-run the migration"): only the two
+   * steps that install the hook family — the always-overwritten built-in hook
+   * scripts and the settings entries — not the whole migration. Idempotent like
+   * every migration step.
+   */
+  repairCompactionRecoveryHooks(): MigrationResult {
+    const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    this.migrateHooks(result);
+    this.migrateSettings(result);
+    return result;
+  }
+
   migrate(): MigrationResult {
     const result: MigrationResult = {
       upgraded: [],
@@ -3213,6 +3306,7 @@ export class PostUpdateMigrator {
 
     this.migrateHooks(result);
     this.migrateClaudeMd(result);
+    this.migrateAgentMdReportDelivery(result);
     this.migrateFrameworkShadowCapabilities(result);
     this.migrateScripts(result);
     this.migrateSecretExternalizationSurvivability(result);
@@ -3279,6 +3373,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
+    this.migrateBootBeaconFleetGraduation(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
@@ -3294,18 +3389,150 @@ export class PostUpdateMigrator {
     this.migrateDeviceLimitProvenanceGitignore(result);
     this.migrateSkillLearningGitignore(result);
     this.migrateUsageLedgerGitignore(result);
+    this.migrateImportedHistoryGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
     this.migrateStallGateInstallProvenance(result);
     this.migrateFeatureMaturationGate(result);
+    this.migrateSpecExperienceReview(result);
     this.migrateRetireStaleReleaseReadinessEvalFailureAttention(result);
     // LAST: every step above that patches CLAUDE.md has run, so the legacy
     // file is complete before it is split (docs/specs/claude-md-reference-layout.md).
     this.migrateClaudeMdReferenceLayout(result);
 
     return result;
+  }
+
+  /** Deliver the promised experience-fit lens without replacing surrounding skill prose. */
+  private migrateSpecExperienceReview(result: MigrationResult): void {
+    const marker = '<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->';
+    let block: string;
+    try {
+      const bundled = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md'), 'utf8');
+      const blocks = bundled.match(/<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->[\s\S]*?<!-- \/INSTAR:SPEC_EXPERIENCE_REVIEW -->/g);
+      if (blocks?.length !== 1 || !blocks[0].includes('templates/reviewer-lessons-aware.md') || !blocks[0].includes('needless repeat asks')) {
+        result.errors.push('spec-converge experience review: bundled lens is missing or incomplete');
+        return;
+      }
+      block = blocks[0];
+    } catch (err) {
+      // @silent-fallback-ok: migration failure is returned explicitly in result.errors; no fallback lens is installed.
+      result.errors.push(`spec-converge experience review: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const root = fs.realpathSync(this.config.projectDir);
+    const canonical = path.join(root, '.instar', 'skills', 'spec-converge', 'SKILL.md');
+    let canonicalHash: string | null = null;
+    const previousCanonicalHashes = new Set<string>();
+    try {
+      if (fs.existsSync(canonical)) {
+        if (fs.lstatSync(canonical).isSymbolicLink() || !fs.realpathSync(canonical).startsWith(`${root}${path.sep}`)) {
+          result.skipped.push('spec-converge experience review: external canonical target — left untouched');
+          return;
+        }
+        const raw = fs.readFileSync(canonical, 'utf8');
+        canonicalHash = skillBodyHash(raw);
+        if (canonicalHash) previousCanonicalHashes.add(canonicalHash);
+        // Also recognize a retry after canonical was written but a rendering was not.
+        const beforeLens = skillBodyHash(raw.replace(`${block}\n\n`, ''));
+        if (beforeLens) previousCanonicalHashes.add(beforeLens);
+      }
+    } catch (err) {
+      result.errors.push(`spec-converge experience review: canonical read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Hold this skill's body migration when a rendering has local edits against
+    // the current canonical version. Advancing canonical first would turn that
+    // protected conflict into ordinary stale drift if the rendering later fails.
+    if (canonicalHash) {
+      for (const skillRoot of ['.claude', '.agents']) {
+        const file = path.join(root, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+        try {
+          if (!fs.existsSync(file)) continue;
+          if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
+            result.skipped.push(`spec-converge experience review: ${skillRoot} external rendering — migration held`);
+            return;
+          }
+          const raw = fs.readFileSync(file, 'utf8');
+          const stamp = raw.match(SKILL_FRONTMATTER_RE)?.[1].match(SKILL_STAMP_LINE_RE)?.[1];
+          if (stamp === canonicalHash && skillBodyHash(raw) !== canonicalHash) {
+            result.skipped.push(`spec-converge experience review: ${skillRoot} user-edit conflict — body migration held`);
+            return;
+          }
+        } catch (err) {
+          result.errors.push(`spec-converge experience review: rendering preflight failed: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
+    }
+    for (const skillRoot of ['.instar', '.claude', '.agents']) {
+      const file = path.join(this.config.projectDir, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+      const label = `spec-converge experience review (${skillRoot})`;
+      try {
+        if (!fs.existsSync(file)) continue; // the fresh-install path ships the bundled lens
+        if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
+          result.skipped.push(`${label}: symlink or external target — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
+        const current = fs.readFileSync(file, 'utf8');
+        if (!current.includes('# /spec-converge') || !current.includes('**Internal reviewers (Claude subagents):**') || current.includes('instar-learned-origin')) {
+          result.skipped.push(`${label}: custom or learned skill — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
+        const markers = current.split(marker).length - 1;
+        let next = current;
+        if (!(markers === 1 && current.includes(block))) {
+          if (markers > 0 || current.includes('<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->')) {
+            result.skipped.push(`${label}: existing lens differs or is incomplete — left untouched`);
+            if (skillRoot === '.instar') return;
+            continue;
+          }
+          const anchors = [...current.matchAll(/^\*\*External reviewers[^\n]*$/gm)];
+          if (anchors.length !== 1) {
+            result.skipped.push(`${label}: missing or ambiguous anchor — left untouched`);
+            if (skillRoot === '.instar') return;
+            continue;
+          }
+          const at = anchors[0].index!;
+          next = `${current.slice(0, at)}${block}\n\n${current.slice(at)}`; // bounded-input-reviewed: insertion joins both complete halves; no source content is truncated or withheld.
+        }
+        const oldBodyHash = skillBodyHash(current);
+        const stamp = current.match(SKILL_FRONTMATTER_RE)?.[1].match(SKILL_STAMP_LINE_RE)?.[1];
+        const knownPrior = (hash: string) => previousCanonicalHashes.has(hash) || (!canonicalHash && hash === oldBodyHash);
+        const newStamp = canonicalHash ?? skillBodyHash(next);
+        // Advance provenance to the new canonical version, not to a customized
+        // rendering's own hash: its body difference must remain a user-edit conflict.
+        if (stamp && newStamp && knownPrior(stamp)) next = next.replace(SKILL_STAMP_LINE_RE, `${SKILL_STAMP_KEY}: ${newStamp}`);
+        if (next !== current) {
+          SafeFsExecutor.atomicWriteFileSync(file, next, { operation: 'PostUpdateMigrator.specExperienceReview', mode: fs.statSync(file).mode & 0o777 });
+          result.upgraded.push(label);
+        }
+        // Publish canonical provenance only after the canonical write succeeds.
+        if (skillRoot === '.instar') canonicalHash = skillBodyHash(next);
+        if (skillRoot === '.agents' && newStamp) {
+          const sibling = path.join(path.dirname(file), 'agents', 'openai.yaml');
+          if (fs.existsSync(sibling)) {
+            if (fs.lstatSync(sibling).isSymbolicLink() || !fs.realpathSync(sibling).startsWith(`${root}${path.sep}`)) {
+              result.skipped.push(`${label}: external metadata target — left untouched`);
+              continue;
+            }
+            const yaml = fs.readFileSync(sibling, 'utf8');
+            const oldStamp = yaml.match(SKILL_STAMP_LINE_RE)?.[1];
+            if (oldStamp && knownPrior(oldStamp) && oldStamp !== newStamp) {
+              SafeFsExecutor.atomicWriteFileSync(sibling, yaml.replace(/^x-instar-stamp:[ \t]*[a-f0-9]{64}[ \t]*$/m, `${SKILL_STAMP_KEY}: ${newStamp}`), { operation: 'PostUpdateMigrator.specExperienceReview.metadata', mode: fs.statSync(sibling).mode & 0o777 });
+              result.upgraded.push(`${label}: Codex metadata stamp`);
+            }
+          }
+        }
+      } catch (err) {
+        result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+        if (skillRoot === '.instar') return;
+      }
+    }
   }
 
   /** Deliver the v1 maturation WARN detector without overwriting customized files. */
@@ -3315,6 +3542,27 @@ export class PostUpdateMigrator {
     ]);
     const root = path.resolve(this.config.projectDir);
     const bundledRoot = path.resolve(__dirname, '..', '..');
+    // Reviewer templates remain shipped-owned files. Also refresh installed
+    // canonical/Codex copies, so those readers do not keep the old review lens.
+    // Never create template-only skill directories or touch another skill name.
+    const templateRoots = ['.claude'];
+    for (const skillRoot of ['.instar', '.agents']) {
+      const skill = path.join(root, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+      try {
+        if (!fs.existsSync(skill)) continue;
+        const realRoot = fs.realpathSync(root);
+        const templates = path.join(path.dirname(skill), 'templates');
+        if (fs.lstatSync(skill).isSymbolicLink() || !fs.realpathSync(skill).startsWith(`${realRoot}${path.sep}`) || (fs.existsSync(templates) && !fs.realpathSync(templates).startsWith(`${realRoot}${path.sep}`))) {
+          result.skipped.push(`spec-converge experience templates (${skillRoot}): symlink or external target — left untouched`);
+          continue;
+        }
+        const text = fs.readFileSync(skill, 'utf8');
+        if (!text.includes('# /spec-converge') || !text.includes('**Internal reviewers (Claude subagents):**') || text.includes('instar-learned-origin')) continue;
+        templateRoots.push(skillRoot);
+      } catch (err) {
+        result.errors.push(`spec-converge experience templates (${skillRoot}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const files = [
       {
         label: 'feature maturation plan detector',
@@ -3414,13 +3662,13 @@ export class PostUpdateMigrator {
         'reviewer-scalability.md',
         'reviewer-security.md',
         'report.md',
-      ].map((name) => ({
-        label: `spec-converge reviewer template ${name}`,
+      ].flatMap((name) => templateRoots.map((skillRoot) => ({
+        label: `spec-converge reviewer template ${name}${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'templates', name),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'templates', name),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'templates', name),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      })),
+      }))),
       {
         // RESTORED 2026-07-28, repointed and un-gated. The previous entry read
         // `<bundledRoot>/docs/STANDARDS-REGISTRY.md` — a path present in NO published
@@ -4092,6 +4340,25 @@ export class PostUpdateMigrator {
   // Fresh installs get both via MachineIdentity GITIGNORE_ENTRIES; existing agents
   // only here (the judgment-provenance precedent: existing files only, idempotent).
   // A legacy file git already tracks stays tracked — this never runs `git rm`.
+  /**
+   * Imported Claude/ChatGPT history (SEC-110): keep the folder out of git on
+   * existing agents, in the project .gitignore and the internal state repo's
+   * .instar/.gitignore, where each file exists. Fresh installs get it through
+   * MachineIdentity GITIGNORE_ENTRIES and GitStateManager DEFAULT_GITIGNORE;
+   * git sync refuses it independently through FileClassifier never-sync.
+   * Idempotent (addGitignoreEntry no-ops when the line is present).
+   */
+  private migrateImportedHistoryGitignore(result: MigrationResult): void {
+    const projectGitignore = path.join(this.config.projectDir, '.gitignore');
+    if (fs.existsSync(projectGitignore)) {
+      this.addGitignoreEntry(projectGitignore, IMPORTED_HISTORY_PROJECT_PATH, result, 'project .gitignore');
+    }
+    const instarGitignore = path.join(this.config.stateDir, '.gitignore');
+    if (fs.existsSync(instarGitignore)) {
+      this.addGitignoreEntry(instarGitignore, IMPORTED_HISTORY_STATE_PATH, result, '.instar/.gitignore');
+    }
+  }
+
   /** Unified usage ledger (docs/specs/unified-usage-ledger.md): keep its databases out of git, where an ignore file exists. Idempotent. */
   private migrateUsageLedgerGitignore(result: MigrationResult): void {
     const projectGitignore = path.join(this.config.projectDir, '.gitignore');
@@ -4445,6 +4712,8 @@ export class PostUpdateMigrator {
           );
           continue;
         }
+// bounded-input-reviewed: a string SPLICE (head up to the anchor + inserted line + the rest), not a bound;
+// nothing is dropped. Matches the detector by shape only.
         const next =
           `${current.slice(0, anchorIndex)}\n${questionLine}` +
           current.slice(anchorIndex);
@@ -4750,6 +5019,60 @@ export class PostUpdateMigrator {
       result.upgraded.push(`dev-gate-teeth: stripped default-shaped \`enabled: false\` at ${stripped.join(', ')} so the developmentAgent gate resolves them live (CMT-1438; re-add \`enabled: false\` to deliberately keep one off — it will not be re-stripped)`);
     } else {
       result.skipped.push('dev-gate-teeth: no default-shaped false to strip (marker set)');
+    }
+  }
+
+  // ── LISTEN-EARLY GRADUATION (PR 3270, 2026-11-17): the boot health beacon left the
+  // dev gate and is on for every agent (`enabled !== false`). A fleet agent that
+  // persisted the old default-shaped `monitoring.bootHealthBeacon.enabled: false`
+  // (applyDefaults is add-missing-only, and migrateDevGateTeethStrip skips fleet
+  // agents) would otherwise keep the beacon dark with no message — the exact M5
+  // outage shape. While dev-gated, a fleet `false` was the dark default, never a
+  // working choice, so it is stripped ONCE here. Dev agents are skipped: their stale
+  // default was already stripped by dev-gate-teeth, so a `false` left there is a
+  // deliberate off. Run-once marker: a later operator-set `false` is never touched.
+  private migrateBootBeaconFleetGraduation(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('boot-beacon-graduation: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`boot-beacon-graduation: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+    const marker = 'boot-beacon-graduation-strip';
+    if (migrations.some(m => typeof m === 'string' && m.startsWith(marker))) {
+      result.skipped.push('boot-beacon-graduation: already migrated');
+      return;
+    }
+    let stripped = false;
+    if (config.developmentAgent !== true) {
+      const mon = config.monitoring;
+      if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+        const sub = (mon as Record<string, unknown>).bootHealthBeacon;
+        if (sub && typeof sub === 'object' && !Array.isArray(sub) && (sub as Record<string, unknown>).enabled === false) {
+          delete (sub as Record<string, unknown>).enabled;
+          stripped = true;
+        }
+      }
+    }
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`boot-beacon-graduation: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (stripped) {
+      result.upgraded.push('boot-beacon-graduation: stripped the stale dark-default `monitoring.bootHealthBeacon.enabled: false` so the boot beacon runs (it is on for every agent now; re-add `enabled: false` to keep it off — it will not be re-stripped)');
+    } else {
+      result.skipped.push('boot-beacon-graduation: nothing to strip (marker set)');
     }
   }
 
@@ -6307,103 +6630,12 @@ export class PostUpdateMigrator {
   // Idempotent: re-runs are no-ops via the _instar_migrations marker AND a
   // content-sniff (skip if parity-sentinel service entry already exists).
   private migrateParitySentinelTrust(result: MigrationResult): void {
-    const configPath = path.join(this.config.stateDir, 'config.json');
-    const trustProfilePath = path.join(this.config.stateDir, 'state', 'trust-profile.json');
-    if (!fs.existsSync(configPath)) {
-      result.skipped.push('parity-sentinel-trust: config.json not found');
-      return;
-    }
-
-    let config: Record<string, unknown>;
-    try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    } catch (err) {
-      result.errors.push(`parity-sentinel-trust: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-
-    const migrations = (config._instar_migrations ?? []) as string[];
-    const marker = 'parity-sentinel-trust-seed';
-    if (migrations.some(m => m.startsWith(marker))) {
-      result.skipped.push('parity-sentinel-trust: already migrated');
-      return;
-    }
-
-    // Load existing trust profile (or create skeleton). Content-sniff: skip
-    // if a parity-sentinel service entry already exists (operator-set).
-    let profile: {
-      services: Record<string, {
-        service: string;
-        operations: Record<string, { level: string; source: string; changedAt: string }>;
-        history: { successCount: number; incidentCount: number; streakSinceIncident: number };
-      }>;
-      global: { maturity: number; lastEvent: string; lastEventAt: string; floor: string };
-    };
-    try {
-      if (fs.existsSync(trustProfilePath)) {
-        profile = JSON.parse(fs.readFileSync(trustProfilePath, 'utf-8'));
-      } else {
-        profile = {
-          services: {},
-          global: {
-            maturity: 0,
-            lastEvent: 'Profile created by parity-sentinel-trust-seed migration',
-            lastEventAt: new Date().toISOString(),
-            floor: 'collaborative',
-          },
-        };
-      }
-    } catch (err) {
-      result.errors.push(`parity-sentinel-trust: trust-profile.json read failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-
-    if (profile.services['parity-sentinel']) {
-      // Operator already configured it — never overwrite. Mark migration done.
-      migrations.push(`${marker}-${new Date().toISOString()}-existing-entry-preserved`);
-      config._instar_migrations = migrations;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      result.skipped.push('parity-sentinel-trust: existing entry preserved');
-      return;
-    }
-
-    const now = new Date().toISOString();
-    profile.services['parity-sentinel'] = {
-      service: 'parity-sentinel',
-      operations: {
-        modify: { level: 'log', source: 'default', changedAt: now },
-      },
-      history: { successCount: 0, incidentCount: 0, streakSinceIncident: 0 },
-    };
-
-    // Ensure state dir exists before writing the profile.
-    const stateDir = path.dirname(trustProfilePath);
-    if (!fs.existsSync(stateDir)) {
-      fs.mkdirSync(stateDir, { recursive: true });
-    }
-    fs.writeFileSync(trustProfilePath, JSON.stringify(profile, null, 2));
-
-    migrations.push(`${marker}-${now}`);
-    config._instar_migrations = migrations;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    result.upgraded.push('parity-sentinel-trust: seeded trust profile entry at level=log');
+    // Retired (trust-journey decision 9): `parity-sentinel` is an Instar system service on the
+    // code-constant allowlist (src/data/effect-kinds.ts SYSTEM_SERVICES), never a person kind, so no
+    // trust level is seeded for it any more. An entry seeded earlier is left in place and unused.
+    result.skipped.push('parity-sentinel-trust: retired (system service allowlist)');
   }
 
-  // ── Provider portability v1.0.0 — Phase 7 migration entry ──────────
-  //
-  // Idempotent migrator that runs on every `instar update`. Confirms the
-  // agent's config is portable-ready and records the migration in
-  // `_instar_migrations` so re-runs are no-ops. Auto-detects Codex CLI
-  // presence and surfaces it in the result for the user-visible upgrade
-  // path. No config mutation beyond the migration marker — the runtime
-  // frameworkBinaryPaths population in Config.ts is the load-bearing
-  // piece, and it runs at every boot.
-  //
-  // What this migrator INTENTIONALLY does NOT do:
-  //  - Flip an existing Claude-only agent to a different framework
-  //    default (operator choice via /route or topicFrameworks config).
-  //  - Force-install Codex CLI (user's package-manager choice).
-  //  - Write any credentials (Spec 12 Rule 1 — subscription-only path).
   private migrateProviderPortability(result: MigrationResult): void {
     const configPath = path.join(this.config.stateDir, 'config.json');
     if (!fs.existsSync(configPath)) {
@@ -8245,6 +8477,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      // Organization never rules checking actions (docs/specs/org-never-actions.md §A): always overwritten.
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/org-policy-gate.sh + .js (organization never rules check)');
+    } catch (err) {
+      result.errors.push(`org-policy-gate: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'action-claim-followthrough.js'), this.getActionClaimFollowthroughHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/action-claim-followthrough.js (action-claim follow-through sentinel, signal-only)');
     } catch (err) {
@@ -9345,6 +9586,32 @@ setTimeout(() => process.exit(0), 2000);
    * Patch CLAUDE.md with any new sections that don't exist yet.
    * Only adds — never modifies or removes existing content.
    */
+  /**
+   * fb-3bc8a879-2c7: AGENT.md principles 6 and 9 and the Private Viewing line sent
+   * reports to the Private Viewer only. Replace each retired wording verbatim;
+   * wording the agent rewrote is left alone. Idempotent.
+   */
+  private migrateAgentMdReportDelivery(result: MigrationResult): void {
+    const agentMdPath = path.join(this.config.stateDir, 'AGENT.md');
+    if (!fs.existsSync(agentMdPath)) return;
+    try {
+      let content = fs.readFileSync(agentMdPath, 'utf-8');
+      let changed = false;
+      for (const [retired, current] of [...RETIRED_AGENT_PRINCIPLE_WORDING, ...RETIRED_DOC_DELIVERY_ROWS]) {
+        if (content.includes(retired)) {
+          content = content.replace(retired, () => current);
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(agentMdPath, content);
+        result.upgraded.push('AGENT.md: reports for a person go to a document, not a GitHub link');
+      }
+    } catch (err) {
+      result.errors.push(`AGENT.md report delivery: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateClaudeMd(result: MigrationResult): void {
     const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
     if (!fs.existsSync(claudeMdPath)) {
@@ -9911,6 +10178,17 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Conversations suggestions awareness');
     }
+    // 2026-11-17: the owner chose "group" as the user-facing word for what the code calls an effort.
+    // The two sections above are install-if-missing, so their old words are rewritten here (idempotent:
+    // each old phrase is replaced once, and the new text no longer contains it).
+    let groupWording = false;
+    for (const [oldText, newText] of CONVERSATIONS_AWARENESS_LEGACY_WORDING) {
+      if (content.includes(oldText)) { content = content.replace(oldText, newText); groupWording = true; }
+    }
+    if (groupWording) {
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Conversations awareness now says "group" to the user');
+    }
 
     if (!content.includes(MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING)) {
       content += '\n' + messageOriginAllPlatformsAwareness(port);
@@ -10333,6 +10611,17 @@ setTimeout(() => process.exit(0), 2000);
         result.upgraded.push('CLAUDE.md: added held script route guidance');
       }
     }
+    // fb-3bc8a879-2c7: the shipped report-delivery rows pointed only at the
+    // Private Viewer (which refuses while documents serve), so a session wrote a
+    // repo file and sent a GitHub link. Replace each retired row verbatim; a row
+    // the agent has edited is left alone.
+    for (const [retired, current] of RETIRED_DOC_DELIVERY_ROWS) {
+      if (content.includes(retired)) {
+        content = content.replace(retired, () => current);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reports for a person go to a document, not a GitHub link');
+      }
+    }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
     const currentTriageLine = '- **After both code gates open**, every trustworthy script result gets a decision record. Exact certified routine shapes may use a fixed rule; Jev judges the rest. Only during a Jev outage may benchmarked Haiku or Luna replace Jev for those judgment results. An uncertain answer keeps the result open and requests isolated diagnosis. Until benchmark and outcome-audit coverage is verified, the model path stays inactive. Active scripts still get a daily must-fail canary.';
     if (content.includes(oldTriageLine)) {
@@ -10542,6 +10831,12 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
+    }
+    // The Needs-you list replaces Home as the one count (work-front-doors.md §7 stage 1): reword in place. Idempotent.
+    if (content.includes(SURFACE_REFERRAL_OLD_NEEDS_WORDING)) {
+      content = content.split(SURFACE_REFERRAL_OLD_NEEDS_WORDING).join(SURFACE_REFERRAL_NEW_NEEDS_WORDING);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: needs belong in the Needs-you list (was: Home\'s count)');
     }
 
     // "Every ask carries its links." (Agent Proposes, Operator Approves named clause,
@@ -14747,6 +15042,12 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       patched = true;
       result.upgraded.push('CLAUDE.md: updated the machine wedge F1/F2 evidence line');
     }
+    // The gentle rung (wedge-gentle-resume). Content-sniffed on its own text; idempotent.
+    if (content.includes(MACHINE_WEDGE_WHEN_TO_USE) && !content.includes(MACHINE_WEDGE_GENTLE_TEXT)) {
+      content = content.replace(MACHINE_WEDGE_WHEN_TO_USE, MACHINE_WEDGE_GENTLE_TEXT + MACHINE_WEDGE_WHEN_TO_USE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the machine wedge gentle rung line');
+    }
 
     // Machine maintenance pool view (CMT-1199). Idempotent via content-sniffing on the pool route.
     if (!content.includes('/machine-maintenance?scope=pool')) {
@@ -15505,7 +15806,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - Update: \`curl -X PUT http://localhost:${port}/view/VIEW_ID -H 'Content-Type: application/json' -d '{"title":"Updated","markdown":"# New content"}'\`
 - Delete: \`curl -X DELETE http://localhost:${port}/view/VIEW_ID\`
 
-**Use private views for sensitive content. Use Telegraph for public content.**
+${PRIVATE_VIEWS_SENTENCE}
 
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl http://localhost:${port}/tunnel\`
@@ -16496,15 +16797,15 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
     // "does compaction recovery work" to its read surface. Idempotent: inserted
     // once after the "What are we working on?" row, sniffed on the route.
     if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
-      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = recovery unverifiable, never healed by injection; Codex stops at \`accruing\`), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
       content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
     }
     // The canary's `counted` state (S16, §9.6 Codex adapter): refresh an existing
     // row that predates it. Idempotent: sniffed on the old row's closing words.
-    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = an engine') && content.includes('`n/a` = recovery switched off), plus')) {
-      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus');
+    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = ') && content.includes('`n/a` = recovery switched off), plus')) {
+      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = recovery unverifiable, never healed by injection; Codex stops at `accruing`), plus');
       patched = true;
       result.upgraded.push('CLAUDE.md: the Context Budget sentinel row names the canary\'s counted state');
     }
@@ -16517,7 +16818,23 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
       patched = true;
       result.upgraded.push('CLAUDE.md: extended the Context Budget sentinel row with its freshness, hold-health and no-fold rows');
     }
+    // S17: Codex recovery became verifiable (the next-prompt seed), so the row's
+    // `counted` example no longer names Codex. Idempotent: sniffed on the old phrase.
+    if (content.includes('`counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection')) {
+      content = content.replace('`counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection', '`counted` = recovery unverifiable, never healed by injection; Codex stops at `accruing`');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the Context Budget sentinel row says a Codex row stops at accruing');
+    }
 
+    // Context Budget U (context-budget-layered-summaries §6 row U, §8): route
+    // "how large is the operator's own text / stub coverage" to its read
+    // surface. Idempotent: inserted once after the sentinel row, sniffed on the route.
+    if (!content.includes('/user-corpus') && content.includes('| Does compaction recovery work on this machine?')) {
+      const row = `| How large are the operator's own messages in topic N? / do their answers carry referent stubs? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic/N/user-corpus\` — U, the protected user corpus (context budget): sizes in tokens and messages per label (\`operator\`, \`forwarded\`, \`relay\`, \`third-party\`; only operator rows carry authority), pasted artifacts and referent-stub coverage. Sizes and labels only, never the words. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| Does compaction recovery work on this machine\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget user-corpus Registry-First row');
+    }
     // Context Budget delta hook (context-budget-layered-summaries §7.7, Phase 1
     // S15): route "is the per-prompt delta safe / saving anything" to its shadow
     // read surface. Idempotent: inserted once after the sentinel row, sniffed on the route.
@@ -16528,6 +16845,58 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
         patched = true;
         result.upgraded.push('CLAUDE.md: added the Context Budget delta-shadow Registry-First row');
       }
+    }
+
+    // Context Budget A and G (context-budget-layered-summaries §6.1, §6.2): route
+    // "what is this topic for / which decisions are settled" to its read surface.
+    // Idempotent: inserted once after the user-corpus row, sniffed on the route.
+    if (!content.includes('/topic/N/anchor') && content.includes("| How large are the operator's own messages in topic N?")) {
+      const row = `| What is topic N for? / which of the operator's decisions are settled, and which purpose changes still need a yes? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic/N/anchor\` — the Anchor (the operator's framing message rows, or \`no-anchor\`) and the decisions/evolutions ledger (context budget): each entry's type, cause, effect, status and supersedes links. Only a decision bound to the operator's own message whose referent stub is an answer or directive reads \`derived-settled\` (\`settled\` once the operator re-affirms it); anything else is \`pending\`. A purpose change is \`tentative\` until the operator confirms it — silence never confirms. Row references and statuses only, never the words. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| How large are the operator's own messages in topic N\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget anchor-ledger Registry-First row');
+    }
+
+    // Context Budget backfill (context-budget-layered-summaries §6.1, S7): route
+    // "which conversations were rebuilt from history / what still waits for the
+    // operator" to its read surface. Idempotent: inserted once after the
+    // anchor-ledger row, sniffed on the metrics field.
+    if (!content.includes('anchors.backfill') && content.includes("| What is topic N for? / which of the operator's decisions are settled")) {
+      const row = `| Which conversations had their purpose and decisions rebuilt from history? / how many rebuilt items still wait for the operator? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/metrics\` → \`anchors.backfill\` (context budget backfill): topics rebuilt, entries still \`backfilled-unconfirmed\` (usable, labelled), and \`pendingConfirmations\` (what the dashboard card and Home count). The per-topic anchor view carries the same as its \`backfill\` block. The one-line check is folded into my next reply in a conversation the operator has written in since; it is never a message of its own. The lane runs on the topic's owner, at most 20 topics a day, only while \`contextBudget.backfill.enabled\` is on. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| What is topic N for\? \/ which of the operator's decisions are settled[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget backfill Registry-First row');
+    }
+
+    // Context Budget H3 (context-budget-layered-summaries §6 row H3, §6.5):
+    // route "what is the whole story / who writes the summary" to /topic/summarize
+    // and say that H3 is the summary's single writer. Idempotent: inserted once
+    // after the anchor-ledger row, sniffed on the 409 reason.
+    if (!content.includes('summary-written-by-h3') && content.includes('| What is topic N for? / which of the operator')) {
+      const row = `| What is the whole story of topic N so far? / who writes the topic summary? | \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/topic/summarize -d '{"topicId":N}'\` — with the context layers on this returns H3, the long-term view (\`writer: h3\`), rebuilt from a bounded selection of the topic's chunk and range summaries with an \`as of\` stamp and which older ranges were read only through their range summary. H3 is then the ONLY writer of the topic summary: \`POST /topic/summary\` returns \`409 summary-written-by-h3\` and the rolling summarizer is off, so never try to write one. With the layers off both routes behave as before |`;
+      content = content.replace(/(\| What is topic N for\? \/ which of the operator[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget H3 Registry-First row');
+    }
+
+    // Context Budget standing packet (context-budget-layered-summaries §9.5, S10):
+    // route "what will this session see after a compaction" to the packet view.
+    // Idempotent: inserted once after the H3 row, sniffed on the route path.
+    if (!content.includes('/standing-packet') && content.includes('| What is the whole story of topic N so far?')) {
+      const row = `| What will topic N's session see after a compaction? / is its standing packet healthy? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic/N/standing-packet\` — the standing packet (context budget): what the session is re-seeded with after an unplanned compaction — the Anchor, the live ledger and the operator's recent messages verbatim, then the current work, phase and long-term view with \`as of\` stamps, and chunk pointers. Shows its sizes against the hook budget, the sections present or absent, whether it was reduced (then saved in full for the session to read), and the verifier's verdict. A packet that fails verification is never delivered: the older recovery block is used instead. Sizes and verdicts only, never the words. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| What is the whole story of topic N so far\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget standing-packet Registry-First row');
+    }
+
+    // Context Budget Codex next-prompt seed (context-budget-layered-summaries §9.6, S17):
+    // route "did a Codex session get its context back" to the seed status.
+    // Idempotent: inserted once after the standing-packet row, sniffed on the route path.
+    if (!content.includes('/context-budget/codex-seed') && content.includes("| What will topic N's session see after a compaction?")) {
+      const row = `| Codex context restored after compaction? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/codex-seed\` — Codex next-prompt seed counts (503: layers off) |`;
+      content = content.replace(/(\| What will topic N's session see after a compaction\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget Codex next-prompt seed Registry-First row');
     }
 
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
@@ -18199,6 +18568,20 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.upgraded.push('.claude/settings.json: added PreToolUse MCP matcher (external operation gate)');
     } else {
       result.skipped.push('.claude/settings.json: PreToolUse MCP matcher already present');
+    }
+
+    // Organization never rules check (org-never-actions §A): its own entries, found by command content,
+    // not by matcher (the external-operation gate already owns an mcp__.* entry).
+    for (const matcher of ['Bash', 'mcp__.*']) {
+      const has = preToolUse.some(e => e.matcher === matcher && JSON.stringify(e.hooks ?? []).includes('org-policy-gate'));
+      if (!has) {
+        preToolUse.push({
+          matcher,
+          hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/org-policy-gate.sh"', blocking: true, timeout: 12 }],
+        });
+        patched = true;
+        result.upgraded.push(`.claude/settings.json: added PreToolUse ${matcher} organization policy check`);
+      }
     }
 
     // Add PostToolUse Write/Edit matcher for the working-set artifact recorder
@@ -20671,7 +21054,11 @@ if [ "\$EVENT" = "compact" ]; then
     # compact-boundary entry only after this hook runs (measured on 2.1.321), so
     # the newest boundary visible now is the PREVIOUS compaction's. The sentinel
     # binds the epoch to the boundary that follows its report.
-    CB_SEED_OUT=\$(bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
+    # CB_PACKET_OK: the recovery seed may print the topic's staged, verified
+    # standing packet (context budget §9.5) in place of today's conversation
+    # context. Only this switch-on Claude Code path sets it; the exec path above
+    # (switch off, other engines) keeps today's block exactly.
+    CB_SEED_OUT=\$(CB_PACKET_OK=1 bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
     CB_SEED_RC=\$?
     CB_STATE_ROOT="$INSTAR_DIR"
     if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
@@ -20699,9 +21086,14 @@ print(s if s and len(s)<=128 and all(c.isalnum() or c in '-_' for c in s) else '
       printf '%s\\n' "\$CB_SEED_OUT"
       if [ "\${#CB_SEED_OUT}" -le 9000 ]; then CB_FIT_OK=1; fi
     fi
+    # Which carrier this seed delivered (context budget §17 "delivered vs staged"):
+    # the standing packet's 8-hex nonce, or legacy.
+    CB_CARRIER=\$(printf '%s\\n' "\$CB_SEED_OUT" | python3 -c "${SEED_CARRIER_PY}" 2>/dev/null)
+    [ -n "\$CB_CARRIER" ] || CB_CARRIER="legacy"
     if [ "\$CB_SEED_RC" -eq 0 ] && [ -n "\$CB_SEED_OUT" ] && [ "\$CB_FIT_OK" -eq 1 ]; then
       printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json,os,time
 root=sys.argv[1]
+carrier=sys.argv[2] if len(sys.argv)>2 else 'legacy'
 try:
     d=json.load(sys.stdin)
 except Exception:
@@ -20715,10 +21107,10 @@ try:
     tmp=os.path.join(dirp,sid+'.json.tmp')
     fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
     with os.fdopen(fd,'w') as w:
-        json.dump({'sessionId':sid,'epoch':'','source':'compact','seededAt':int(time.time()*1000)},w)
+        json.dump({'sessionId':sid,'epoch':'','source':'compact','seededAt':int(time.time()*1000),'carrier':carrier},w)
     os.replace(tmp,os.path.join(dirp,sid+'.json'))
 except Exception:
-    pass" "\$CB_STATE_ROOT" 2>/dev/null
+    pass" "\$CB_STATE_ROOT" "\$CB_CARRIER" 2>/dev/null
     fi
     exit 0
   fi
@@ -21365,9 +21757,13 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
   SAFETY_LEVEL=$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('safety', {}).get('level', 1))" 2>/dev/null || echo "1")
 fi
 
-# ALWAYS blocked (catastrophic, irreversible)
-for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+# ALWAYS blocked (catastrophic, irreversible). The database-schema destruction rules match the
+# setup template (src/templates/hooks/dangerous-command-guard.sh); a parity test keeps them in step.
+# -e: a pattern that starts with "-" is a pattern, not a grep option.
+# The setup template's plain-SQL ask-first rules (DROP/TRUNCATE/DELETE FROM) are deliberately NOT here:
+# updated agents have long run without them and routine sqlite maintenance would start blocking (SEC-043).
+for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};:" "--accept-data-loss" "prisma migrate reset"; do
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     echo "BLOCKED: Catastrophic command detected: $pattern" >&2
     echo "Always blocked regardless of safety level. User must execute directly." >&2
     exit 2
@@ -21376,7 +21772,7 @@ done
 
 # Deployment/push commands — check coherence gate first
 for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wrangler deploy" "fly deploy" "railway up"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+  if echo "$INPUT" | grep -qi -e "$pattern"; then
     if [ -f "$INSTAR_DIR/config.json" ]; then
       PORT=$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('port', 4040))" 2>/dev/null || echo "4040")
       TOPIC_ID="\${INSTAR_TELEGRAM_TOPIC:-}"
@@ -21419,8 +21815,8 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
-  if echo "$INPUT" | grep -qiE "$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)" "prisma db push" "prisma migrate deploy"; do
+  if echo "$INPUT" | grep -qiE -e "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
@@ -21892,7 +22288,7 @@ if [ -n "\$NOW" ]; then
   echo ""
 fi
 
-# Read the user prompt from stdin (Claude Code pipes JSON with { prompt: "..." })
+# Read the user prompt from stdin (Claude Code and Codex pipe JSON with { prompt: "..." }); HOOK_INPUT was captured above.
 USER_PROMPT=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "
 import sys, json
 try:
@@ -21991,6 +22387,59 @@ fi
 
 if [ "\$PC_OK" != "1" ]; then
 # Older server: the two calls the hook always made.
+# Codex next-prompt seed (context-budget-layered-summaries §9.6): Codex has no
+# post-compaction seed hook, so on the first prompt after a detected compaction
+# the server returns the topic's verified standing packet, in its disclosure
+# marker, and it is printed IN PLACE of the briefing and recent history for this
+# one prompt. Printed first, then acknowledged (the acknowledgement writes the
+# seeded marker; the server reads "already seeded" from the rollout itself, so
+# a delivery Codex dropped is retried once on the next prompt). No packet (layers off, not
+# Codex, not the first prompt, an unverified packet, the server slow) leaves
+# today's output exactly.
+CB_SEED_SHOWN=""
+if [ "\${INSTAR_FRAMEWORK:-}" = "codex-cli" ] && [ -n "\$AUTH_TOKEN" ]; then
+  CB_SEED_REQ=\$(printf '%s' "\$HOOK_INPUT" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+import hashlib
+p=d.get("prompt")
+p=p if isinstance(p,str) else ""
+print(json.dumps({"topicId":int(sys.argv[1]),"sessionId":str(d.get("session_id") or ""),"transcriptPath":str(d.get("transcript_path") or ""),"framework":"codex-cli","promptSha256":hashlib.sha256(p.encode("utf-8")).hexdigest()}))' "\$TOPIC_ID" 2>/dev/null)
+  if [ -n "\$CB_SEED_REQ" ]; then
+    CB_SEED_RESP=\$(curl -s --max-time 3 -X POST \\
+      -H "Authorization: Bearer \${AUTH_TOKEN}" -H "X-Instar-AgentId: \${AGENT_ID}" -H 'Content-Type: application/json' \\
+      -d "\$CB_SEED_REQ" "http://localhost:\${PORT}/context-budget/codex-seed" 2>/dev/null)
+    CB_SEED_TEXT=\$(printf '%s' "\$CB_SEED_RESP" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if d.get("deliver") is True and isinstance(d.get("text"),str) and d.get("text"):
+    sys.stdout.write(d["text"])' 2>/dev/null)
+    if [ -n "\$CB_SEED_TEXT" ]; then
+      printf '%s\\n\\n' "\$CB_SEED_TEXT"
+      CB_SEED_SHOWN=1
+      CB_SEED_ACK=\$(printf '%s' "\$CB_SEED_RESP" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+    q=json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+print(json.dumps({"sessionId":q.get("sessionId"),"transcriptPath":q.get("transcriptPath"),"epoch":d.get("epoch"),"carrier":d.get("carrier")}))' "\$CB_SEED_REQ" 2>/dev/null)
+      if [ -n "\$CB_SEED_ACK" ]; then
+        curl -s --max-time 1 -X POST \\
+          -H "Authorization: Bearer \${AUTH_TOKEN}" -H "X-Instar-AgentId: \${AGENT_ID}" -H 'Content-Type: application/json' \\
+          -d "\$CB_SEED_ACK" "http://localhost:\${PORT}/context-budget/codex-seed/ack" >/dev/null 2>&1
+      fi
+    fi
+  fi
+fi
+if [ -n "\$CB_SEED_SHOWN" ]; then
+  exit 0
+fi
+
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
@@ -22131,6 +22580,7 @@ exit 0
     return String.raw`#!/usr/bin/env node
 // Fits the post-compaction recovery block under Claude Code's hook-output limit.
 // Generated by instar (PostUpdateMigrator.getFitRecoveryOutput) — always overwritten.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 const limit = Math.max(2000, Number(process.argv[2]) || 9000);
@@ -22149,9 +22599,9 @@ if (dest) {
     const dir = path.dirname(dest);
     for (const f of fs.readdirSync(dir)) {
       const p = path.join(dir, f);
-      try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 86400000) fs.unlinkSync(p); } catch { /* best-effort */ }
+      try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 86400000) fs.unlinkSync(p); } catch { /* @silent-fallback-ok — best-effort prune of old saved blocks */ }
     }
-  } catch { saved = false; }
+  } catch { saved = false; /* @silent-fallback-ok — the pointer then says the block could not be saved */ }
 }
 // Known sections, each bounded by its OWN end line (a message that quotes a diff
 // header such as '--- a/file' must never end the conversation section early).
@@ -22162,11 +22612,30 @@ const SECTIONS = [
   { key: 'tg', start: /^--- TELEGRAM SESSION/, end: /^--- END TELEGRAM SESSION ---/ },
 ];
 const lines = input.split('\n');
+// The topic's standing packet (context budget §9.5, S10), delimited by a nonce
+// only its own hash yields, so no quoted line can end it. It is kept WHOLE: the
+// server bounded it to fit, and a cut packet would cut the operator's words.
+let pk = null;
+{
+  const i = lines.findIndex((l) => /^--- STANDING PACKET [0-9a-f]{8} ---$/.test(l));
+  if (i >= 0) {
+    const endLine = '--- END STANDING PACKET ' + lines[i].slice(20, 28) + ' ---';
+    const j = lines.findIndex((l, k) => k > i && l === endLine);
+    // Only a REAL packet: its nonce is the sha256 of its own text and it is within
+    // the hook ceiling. A quoted pair of delimiter lines in a message is not one.
+    if (j > i) {
+      const inner = lines.slice(i + 1, j).join('\n');
+      const h = crypto.createHash('sha256').update(Buffer.from(inner, 'utf-8')).digest('hex');
+      if (h.startsWith(lines[i].slice(20, 28)) && inner.length <= 6600) pk = { i, j, text: lines.slice(i, j + 1).join('\n') };
+    }
+  }
+}
+const inPk = (k) => pk !== null && k >= pk.i && k <= pk.j;
 const found = {};
 for (const sec of SECTIONS) {
-  const i = lines.findIndex((l) => sec.start.test(l));
+  const i = lines.findIndex((l, k) => !inPk(k) && sec.start.test(l));
   if (i < 0) continue;
-  let j = lines.findIndex((l, k) => k > i && sec.end.test(l));
+  let j = lines.findIndex((l, k) => k > i && !inPk(k) && sec.end.test(l));
   if (j < 0) j = lines.length - 1;
   found[sec.key] = lines.slice(i, j + 1).join('\n');
 }
@@ -22188,6 +22657,19 @@ const pointer = [
   '=== END IDENTITY RECOVERY ===',
 ].join('\n');
 // The marker always first, so the canary and a 2 KB preview both still carry it.
+if (pk) {
+  // The packet replaces the conversation context; identity and memory heads share what is left.
+  const tg = found.tg ? head(found.tg, 700) : '';
+  const rem = limit - MARKER.length - pk.text.length - tg.length - pointer.length - 16;
+  const identN = Math.min(1200, Math.max(0, Math.floor(rem * 0.7)));
+  const memN = Math.min(600, Math.max(0, rem - identN));
+  const tail = [tg, found.ident && identN >= 150 ? head(found.ident, identN) : '', found.mem && memN >= 150 ? head(found.mem, memN) : ''].filter(Boolean);
+  let o = [MARKER, pk.text, ...tail].join('\n') + '\n' + pointer + '\n';
+  // Never cut the packet: shed the heads instead.
+  while (o.length > limit && tail.length) { tail.pop(); o = [MARKER, pk.text, ...tail].join('\n') + '\n' + pointer + '\n'; }
+  process.stdout.write(o);
+  process.exit(0);
+}
 const parts = [MARKER];
 const fixed = [found.tg ? head(found.tg, 700) : '', found.ident ? head(found.ident, 1200) : '', found.mem ? head(found.mem, 600) : ''].filter(Boolean);
 const used = MARKER.length + fixed.reduce((a, t) => a + t.length + 1, 0) + pointer.length + 8;
@@ -22234,7 +22716,25 @@ echo "=== IDENTITY RECOVERY (post-compaction) ==="
 
 # ── 1. TOPIC CONTEXT (highest priority — what are we working on?) ──
 # After compaction, the conversation history is lost. Re-inject it from TopicMemory.
-if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
+# With the context layers on, the topic's STANDING PACKET (context budget §9.5:
+# the Anchor, the live ledger and the operator's recent messages verbatim, then
+# H1/H2/H3 and chunk pointers, verified and staged by the server) takes this
+# place. Only when the session-start compact branch asks (CB_PACKET_OK=1) and a
+# verified, hash-matching packet is staged; otherwise today's context below.
+CB_PACKET_SHOWN=""
+if [ "\${CB_PACKET_OK:-}" = "1" ] && [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
+  CB_PKT_ROOT="\$INSTAR_DIR"
+  if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+    CB_PKT_ROOT="\$INSTAR_AGENT_HOME/.instar"
+  fi
+  CB_PKT_OUT=\$(python3 -c "${STANDING_PACKET_PY}" "\$CB_PKT_ROOT" "\$INSTAR_TELEGRAM_TOPIC" 2>/dev/null)
+  if [ -n "\$CB_PKT_OUT" ]; then
+    echo ""
+    printf '%s\\n' "\$CB_PKT_OUT"
+    CB_PACKET_SHOWN=1
+  fi
+fi
+if [ -z "\$CB_PACKET_SHOWN" ] && [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
   TOPIC_ID="\$INSTAR_TELEGRAM_TOPIC"
   CONFIG_FILE="\$INSTAR_DIR/config.json"
   if [ -f "\$CONFIG_FILE" ]; then
@@ -23595,11 +24095,20 @@ process.stdin.on('end', async () => {
     if (!rawMessage || !topicRaw) process.exit(0);
     const topicId = parseInt(topicRaw, 10);
     if (!Number.isFinite(topicId)) process.exit(0);
-    // Clamp the payload (§4.4): a pathological multi-MB reply would exceed the
-    // server body-parser limit → a silent non-registration; the classifiers only
-    // need the first 16KB. NO length floor — the high-precision classifiers are the
-    // semantic filter, so terse promises ("I'll fix it") must not be dropped.
-    const message = rawMessage.slice(0, 16384);
+    // Clamp the payload (§4.4) so a pathological multi-MB reply cannot become a
+    // slow classifier pass. The FIRST 16384 characters are kept byte-for-byte:
+    // the route dedups against the completion-claim path by fingerprinting
+    // exactly that prefix (CompletionClaimVerifier messageFingerprint), so the
+    // prefix must not change. A longer reply then gets a disclosure and its last
+    // 8000 characters appended, because a promise ("I'll follow up in an hour")
+    // usually CLOSES a reply and the old head-only cut dropped it. ~25KB worst
+    // case, far under the route's 12MB JSON limit. NO length floor — the
+    // high-precision classifiers are the semantic filter, so terse promises
+    // ("I'll fix it") must not be dropped.
+    const ACTION_CLAIM_HEAD_CHARS = 16384;
+    const ACTION_CLAIM_TAIL_CHARS = 8000;
+    // bounded-input-reviewed: this is emitted hook JS and cannot import src/core/boundedInput.ts; it keeps the dedup prefix + tail and discloses the cut in-band in that helper's wording.
+    const message = rawMessage.length <= ACTION_CLAIM_HEAD_CHARS + ACTION_CLAIM_TAIL_CHARS ? rawMessage : rawMessage.slice(0, ACTION_CLAIM_HEAD_CHARS) + '\\n[BOUNDED INPUT: ' + (rawMessage.length - ACTION_CLAIM_HEAD_CHARS - ACTION_CLAIM_TAIL_CHARS) + ' characters removed from the MIDDLE to fit a size limit. Your view of this section is PARTIAL; do not treat its absence of something as evidence that it is absent.]\\n' + rawMessage.slice(-ACTION_CLAIM_TAIL_CHARS);
     const bindToken = process.env.INSTAR_BIND_TOKEN;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -24521,8 +25030,39 @@ process.stdin.on('end', async () => {
       mutability = 'read';
     }
 
-    // Read operations are always safe — fast-path
-    if (mutability === 'read') {
+    // Trust journey (spec 6a): once this machine has imported its legacy grants, a service with any
+    // governed kind keeps the name-based read fast path only for reads the server's table lists, and
+    // a governed call fails closed when the server cannot be reached. The fallback file lists the
+    // kinds that keep today's behaviour on this machine.
+    let journeyImported = false;
+    let fallback = null;
+    try {
+      const nodeFs = await import('node:fs');
+      const base = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/';
+      const cfg = JSON.parse(nodeFs.readFileSync(base + 'config.json', 'utf-8'));
+      journeyImported = !!(cfg.trustJourney && cfg.trustJourney.legacyImportedAt);
+    } catch { /* @silent-fallback-ok: no config, so the fallback file read just below decides */ }
+    try {
+      const nodeFs = await import('node:fs');
+      const base = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/';
+      // The fallback file existing also means the import ran: losing the config marker (a whole-file
+      // config rewrite) must never quietly restore fail-open.
+      fallback = JSON.parse(nodeFs.readFileSync(base + 'state/trust-legacy-kinds.json', 'utf-8'));
+      journeyImported = true;
+    } catch { fallback = null; }
+    const legacyKinds = fallback && Array.isArray(fallback.legacyKinds) ? fallback.legacyKinds : [];
+    const readNames = fallback && Array.isArray(fallback.readToolNames) ? fallback.readToolNames : [];
+    const serviceAllLegacy = ['write', 'modify', 'delete'].every(op => legacyKinds.includes(service + '.' + op));
+    // Admitted locally when the server cannot answer: only reads it may know about, and unchanged legacy kinds.
+    // Typing into or filling a browser form can be signing in, which never inherits a legacy grant
+    // (decision 15): when the server cannot judge it, it does not pass.
+    const maySignIn = service === 'playwright' && (action === 'browser_type' || action === 'browser_fill_form');
+    const passesWhenUnreachable = () => !journeyImported
+      || (!maySignIn && mutability === 'read' && (serviceAllLegacy || readNames.includes(toolName)))
+      || (!maySignIn && legacyKinds.includes(service + '.' + mutability));
+
+    // Read operations fast-path (today's behaviour, and services whose kinds are all legacy).
+    if (mutability === 'read' && (!journeyImported || serviceAllLegacy || readNames.includes(toolName))) {
       process.exit(0);
     }
 
@@ -24568,6 +25108,10 @@ process.stdin.on('end', async () => {
     // SPEC I13): a session revived to follow through on a dead promise is held
     // status-only until it revalidates. INSTAR_SESSION_NAME is injected into
     // every spawned session via tmux -e; absent for non-session callers (no gate).
+    // tool_name and tool_input let the server derive the kind itself (spec 6a); the fields above stay
+    // for an older server, which ignores the new ones.
+    let toolInputForServer = toolInput;
+    try { if (JSON.stringify(toolInput).length > 200000) toolInputForServer = { _truncated: true }; } catch { toolInputForServer = { _unserializable: true }; }
     const postData = JSON.stringify({
       service,
       mutability,
@@ -24575,10 +25119,13 @@ process.stdin.on('end', async () => {
       description,
       itemCount,
       sessionName: process.env.INSTAR_SESSION_NAME || '',
+      tool_name: toolName,
+      tool_input: toolInputForServer,
     });
 
+    // Above the server's admission forward timeout; the hook entry's own timeout is set higher still.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
     try {
       const res = await fetch('http://127.0.0.1:' + port + '/operations/evaluate', {
@@ -24600,6 +25147,13 @@ process.stdin.on('end', async () => {
       if (actionDecision === 'block') {
         process.stderr.write('BLOCKED: External operation gate denied this action.\\n');
         process.stderr.write('Reason: ' + (decision.reason || 'Operation not permitted') + '\\n');
+        process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
+        process.exit(2);
+      }
+
+      if (actionDecision === 'ask') {
+        // A governed action waits for the person: the server has sent (or tried to send) the card.
+        process.stderr.write('WAITING FOR APPROVAL: ' + (decision.reason || 'This action needs approval from the person.') + '\\n');
         process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
         process.exit(2);
       }
@@ -24675,7 +25229,12 @@ process.stdin.on('end', async () => {
       process.exit(0);
     } catch {
       clearTimeout(timeout);
-      process.exit(0); // Server unreachable or timeout — fail open
+      // Server unreachable, timed out, or unreadable answer. Today's behaviour (fail open) holds for
+      // unchanged legacy kinds and known reads; a governed action is refused (spec 6a).
+      if (passesWhenUnreachable()) process.exit(0);
+      process.stderr.write('BLOCKED: the agent server could not be reached to admit this action, and it needs a grant or approval from the person. Try again once the server answers; continue with other work meanwhile.\\n');
+      process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
+      process.exit(2);
     }
   } catch {
     process.exit(0); // Parse error — fail open
@@ -24709,6 +25268,8 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Token-less standby hold-and-retry version (#3095), before the org-policy 422 branch (org-never-actions).
+    '1636ee1ed4eb4441843383d8085b7489d61add84ebf3f154f81448ac37cac295',
     // Native-conversation-base 3b version (PR #3092), before this PR's token-less
     // forward change. Shipped through v1.3.1795.
     '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',

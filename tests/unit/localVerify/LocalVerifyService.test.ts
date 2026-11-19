@@ -46,14 +46,14 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; token: string; resolve: (x: { status: number | null; signal: string | null }) => void; intentAtSpawn: InFlightIntent | null }
 
-function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number } = {}) {
+function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number; liveOperatorGhLogin?: () => string | null; watermark?: Record<string, unknown> } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
     // A healthy main-health watermark for this machine (main health has its own tests).
     fs.mkdirSync(path.join(stateDir, 'state', 'local-verify'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
-      v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z',
+      v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z', ...(opts.watermark ?? {}),
     }));
   }
   const views: Record<number, PrView> = opts.views ?? {};
@@ -107,6 +107,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   };
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
+    ...(opts.liveOperatorGhLogin ? { liveOperatorGhLogin: opts.liveOperatorGhLogin } : {}),
     verifierVersion: opts.verifierVersion ?? '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
     remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'm1', nodeVersion: 'v24',
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' },
@@ -470,6 +471,16 @@ describe('request + queue', () => {
     (s.svc as unknown as { seams: { baseHead?: (b: string) => Promise<string | null> } }).seams.baseHead = async () => null;
     expect(await s.svc.request(1)).toEqual({ ok: false, code: 'pr-unreadable' });
     expect(s.spawned).toHaveLength(0);
+  });
+
+  it('reads the trusted operator login live: a config change applies without a restart (2026-11-16)', async () => {
+    // Boot-time login is JKHeadley; the live reader says nobody is trusted yet, then JKHeadley.
+    let live: string | null = null;
+    const s = setup({ views: { 1: view({ author: { login: 'JKHeadley' } }) }, liveOperatorGhLogin: () => live });
+    expect(await s.svc.request(1)).toEqual({ ok: false, code: 'untrusted-head' });
+    live = 'JKHeadley';
+    const accepted = await s.svc.request(1);
+    expect(accepted.ok).toBe(true);
   });
 
   it('refuses an untrusted head, an unreadable PR and an invalid number', async () => {
@@ -1802,7 +1813,8 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
   });
 
   it('the reconcile loop seeing a new main head makes the next PR start re-read its base; a failed read starts on the last known base (audited)', async () => {
-    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    // Head b is the stored last green head, so the age of head e is known (first seen by this process, just now).
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) }, watermark: { lastGreenHead: sha('b') } });
     let base: string | null = sha('b');
     withBaseHead(s, async () => base);
     await s.svc.request(1);
@@ -2636,5 +2648,251 @@ describe('a run that finished just before the server stopped (2026-11-13: PR 310
     expect(auditEvents(s)).toContain('interrupted');
     expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
     await s.finish(0, null);
+  });
+});
+
+// spec docs/specs/local-verify-main-age-survives-restart.md
+describe('the age of an unverified main survives a restart (2026-11-18: 12 boots, each under 90 minutes apart, and no main verify for 10 hours)', () => {
+  const MIN = 60_000;
+  const GREEN = sha('9');
+  const wmPath = (dir: string) => path.join(dir, 'state', 'local-verify', 'main-health.json');
+  /** A state dir whose main-health watermark is this machine's, healthy, last green head 9. */
+  const stateDirWith = (extra: Record<string, unknown> = {}): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvage-')));
+    dirs.push(dir);
+    fs.mkdirSync(path.dirname(wmPath(dir)), { recursive: true });
+    fs.writeFileSync(wmPath(dir), JSON.stringify({ v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: GREEN, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z', ...extra }));
+    return dir;
+  };
+  const stored = (dir: string) => JSON.parse(fs.readFileSync(wmPath(dir), 'utf-8')) as Record<string, unknown>;
+  const audits = (dir: string) => fs.readFileSync(path.join(dir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+  const unknownLines = (dir: string) => audits(dir).filter((a) => a.event === 'main-age-unknown').map((a) => a.reason);
+  const prViews = { 1: view({ headRefOid: sha('a') }), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) };
+  type S = ReturnType<typeof setup>;
+  const inputOf = (s: S, i: number) => JSON.parse(fs.readFileSync(s.spawned[i].args[s.spawned[i].args.indexOf('--input') + 1], 'utf-8')) as { pr: number; headSha: string; kind?: string };
+  const mainRecord = (head: string, outcome: 'success' | 'failure' | 'error', over: Partial<LocalVerifyRecord> = {}) =>
+    record({ kind: 'main', pr: 0, headSha: head, baseSha: head, outcome, ...(outcome === 'error' ? { errorStep: 'fetch', mergeTree: '' } : {}), ...over });
+  const prRecord = (pr: 1 | 2 | 3) => record({ pr, headSha: prViews[pr].headRefOid });
+  /** Boot on `dir` with PR 1 running and PR 2 waiting, so a queued `main` has a ready PR to be weighed against. */
+  const bootWithPrs = async (dir: string, at = 0) => {
+    const s = setup({ stateDir: dir, views: prViews });
+    s.advance(at);
+    await s.svc.boot();
+    expect((await s.svc.request(1)).ok).toBe(true);
+    expect((await s.svc.request(2)).ok).toBe(true);
+    await s.flush();
+    expect(inputOf(s, 0)).toMatchObject({ pr: 1 });
+    return s;
+  };
+  const finishAndSettle = async (s: S, i: number, r: LocalVerifyRecord) => { await s.finish(i, ok(r)); await s.svc.settle(); await s.flush(); };
+
+  it('two boots: main is due 90 minutes after the first observation', async () => {
+    const dir = stateDirWith();
+    // First process, T: nothing unverified at boot, then a merge lands (head 1). No main verify starts yet (debounce).
+    const s1 = setup({ stateDir: dir, views: prViews });
+    await s1.svc.boot();
+    s1.svc.noteMainHead(GREEN);
+    await finishAndSettle(s1, 0, mainRecord(GREEN, 'success'));
+    s1.svc.noteMainHead(sha('1'));
+    expect(s1.svc.mainUnverifiedAge()).toEqual({ since: T0, atLeast: false });
+    expect(stored(dir)).toMatchObject({ oldestUnverifiedAt: T0 });
+    s1.svc.shutdown();
+    // Second process boots at T+50 minutes: the age is restored, not started again.
+    const s2 = await bootWithPrs(dir, 50 * MIN);
+    expect(s2.svc.mainUnverifiedAge()).toEqual({ since: T0, atLeast: false });
+    s2.svc.noteMainHead(sha('1')); // the boot-time main verify is queued behind the running PR
+    expect(s2.svc.snapshot().queue.map((e) => e.kind ?? e.pr)).toContain('main');
+    expect(unknownLines(dir)).toEqual([]);
+    // T+89 minutes: a ready pull request still starts first.
+    s2.advance(39 * MIN);
+    await finishAndSettle(s2, 0, prRecord(1));
+    expect(inputOf(s2, 1)).toMatchObject({ pr: 2 });
+    expect((await s2.svc.request(3)).ok).toBe(true);
+    // T+90 minutes: main starts, ahead of the waiting PR 3. (Counted from the second boot it would be 40 minutes old.)
+    s2.advance(1 * MIN);
+    await finishAndSettle(s2, 1, prRecord(2));
+    expect(inputOf(s2, 2)).toMatchObject({ kind: 'main', headSha: sha('1') });
+    s2.svc.shutdown();
+  });
+
+  it('no stored value: age unknown, main starts ahead of a ready pull request', async () => {
+    const dir = stateDirWith();
+    const s = await bootWithPrs(dir);
+    s.svc.noteMainHead(sha('1')); // unverified at the first observation, nothing stored: unknown, never "just now"
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: T0, atLeast: true });
+    expect(stored(dir)).toMatchObject({ unknownSince: T0 });
+    expect(stored(dir)).not.toHaveProperty('oldestUnverifiedAt');
+    expect(unknownLines(dir)).toEqual(['field-absent']);
+    await finishAndSettle(s, 0, prRecord(1));
+    expect(inputOf(s, 1)).toMatchObject({ kind: 'main', headSha: sha('1') }); // not PR 2
+    s.svc.noteMainHead(sha('1')); s.svc.noteMainHead(sha('1'));
+    expect(unknownLines(dir)).toEqual(['field-absent']); // one line per process start
+    s.svc.shutdown();
+  });
+
+  it('unknown persisting across two boots with erroring main verifies raises the signal 3 hours after the first unknown', async () => {
+    const dir = stateDirWith();
+    const s1 = setup({ stateDir: dir });
+    await s1.svc.boot();
+    s1.svc.noteMainHead(sha('1')); // unknown from T; the boot-time main verify starts
+    await finishAndSettle(s1, 0, mainRecord(sha('1'), 'error'));
+    expect(stored(dir)).toMatchObject({ unknownSince: T0 });
+    s1.svc.shutdown();
+    // Second boot at T+100 minutes: still unknown, and the bound is the first one.
+    const s2 = setup({ stateDir: dir });
+    s2.advance(100 * MIN);
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('1'));
+    await s2.flush();
+    expect(s2.svc.mainUnverifiedAge()).toEqual({ since: T0, atLeast: true });
+    expect(unknownLines(dir)).toEqual(['field-absent', 'carried']);
+    if (s2.spawned.length > 0) await finishAndSettle(s2, 0, mainRecord(sha('1'), 'error'));
+    s2.advance(79 * MIN); // T+179 minutes
+    await s2.svc.tick();
+    expect(s2.signals.map((x) => x.key)).not.toContain('local-verify:main-unverified');
+    s2.advance(2 * MIN); // T+181 minutes: 81 minutes after this boot, 3 hours after the first unknown
+    await s2.svc.tick();
+    const raised = s2.signals.filter((x) => x.key === 'local-verify:main-unverified');
+    expect(raised).toHaveLength(1);
+    expect(raised[0].detail).toMatchObject({ ageMs: 181 * MIN, atLeast: true });
+    expect(s2.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
+    s2.svc.shutdown();
+  });
+
+  it('unknown renders as "at least", never as 0 or an exact age', async () => {
+    const dir = stateDirWith();
+    const s = setup({ stateDir: dir });
+    await s.svc.boot();
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: null, atLeast: false }); // nothing observed yet
+    s.svc.noteMainHead(sha('1'));
+    s.advance(200 * MIN);
+    const shown = s.svc.mainUnverifiedAge();
+    expect(shown).toEqual({ since: T0, atLeast: true });
+    expect(shown.since).not.toBe(T0 + 200 * MIN); // not "0 minutes old"
+    await s.svc.tick();
+    const detail = s.signals.find((x) => x.key === 'local-verify:main-unverified')!.detail;
+    expect(detail).toEqual({ ageMs: 200 * MIN, atLeast: true });
+    const line = audits(dir).find((a) => a.event === 'signal' && a.key === 'local-verify:main-unverified')!;
+    expect(line).toMatchObject({ ageMs: 200 * MIN, atLeast: true });
+    s.svc.shutdown();
+    // A known age carries no "at least".
+    const dir2 = stateDirWith({ oldestUnverifiedAt: T0 - 200 * MIN });
+    const k = setup({ stateDir: dir2 });
+    await k.svc.boot();
+    k.svc.noteMainHead(sha('1'));
+    expect(k.svc.mainUnverifiedAge()).toEqual({ since: T0 - 200 * MIN, atLeast: false });
+    await k.svc.tick();
+    expect(k.signals.find((x) => x.key === 'local-verify:main-unverified')!.detail).toEqual({ ageMs: 200 * MIN });
+    k.svc.shutdown();
+  });
+
+  it('lease re-acquisition: own machine keeps the age, foreign holder makes it unknown', async () => {
+    const dir = stateDirWith({ oldestUnverifiedAt: T0 - 50 * MIN, leaseEpoch: 4 });
+    const s = await bootWithPrs(dir);
+    s.svc.noteMainHead(sha('1'));
+    s.advance(5 * MIN);
+    s.svc.onLeaseAcquired({ foreignHolder: false, epoch: 5 }); // this machine again
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: T0 - 50 * MIN, atLeast: false });
+    expect(stored(dir)).toMatchObject({ oldestUnverifiedAt: T0 - 50 * MIN, state: 'healthy' });
+    expect(unknownLines(dir)).toEqual([]);
+    s.svc.onLeaseAcquired({ foreignHolder: true, epoch: 7 }); // another machine held it in between
+    expect(s.svc.mainUnverifiedAge()).toMatchObject({ atLeast: true });
+    expect(stored(dir)).not.toHaveProperty('oldestUnverifiedAt');
+    expect(unknownLines(dir)).toEqual(['other-machine']);
+    s.svc.noteMainHead(sha('1')); // an observation never turns unknown back into "now"
+    expect(s.svc.mainUnverifiedAge()).toMatchObject({ atLeast: true });
+    s.svc.shutdown();
+  });
+
+  it('a release collapse clears the stored value and unknownSince', async () => {
+    const RELEASE = sha('4');
+    const commitInfo = async (h: string) => (h === RELEASE ? { subject: 'chore: release v1.2.3 [skip ci]', parents: [GREEN], files: [{ filename: 'CHANGELOG.md' }] } : null);
+    const withCommitInfo = (s: S) => { (s.svc as unknown as { seams: LocalVerifyServiceSeams }).seams.commitInfo = commitInfo; };
+    // A known age: head 9 is verified green, its release commit lands and is seen as unverified, then collapses.
+    const dir = stateDirWith();
+    const s = setup({ stateDir: dir });
+    withCommitInfo(s);
+    await s.svc.boot();
+    s.svc.noteMainHead(GREEN);
+    await s.svc.settle(); await s.flush();
+    await finishAndSettle(s, 0, mainRecord(GREEN, 'success'));
+    s.advance(MIN);
+    s.svc.noteMainHead(RELEASE);
+    expect(stored(dir)).toMatchObject({ oldestUnverifiedAt: T0 + MIN });
+    s.advance(10 * MIN);
+    s.svc.noteMainHead(RELEASE); // debounce over: the release commit collapses into its verified parent
+    await s.svc.settle();
+    expect(audits(dir).map((a) => a.event)).toContain('main-release-collapsed');
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: null, atLeast: false });
+    expect(stored(dir)).not.toHaveProperty('oldestUnverifiedAt');
+    expect(s.spawned).toHaveLength(1);
+    s.svc.shutdown();
+    // An unknown age carried over a boot: the verify of head 9 is still running when its release commit collapses.
+    const dir2 = stateDirWith({ unknownSince: T0 - 30 * MIN });
+    const u = setup({ stateDir: dir2 });
+    withCommitInfo(u);
+    await u.svc.boot();
+    u.svc.noteMainHead(GREEN);
+    await u.svc.settle(); await u.flush();
+    expect(u.spawned).toHaveLength(1);
+    expect(u.svc.mainUnverifiedAge()).toEqual({ since: T0 - 30 * MIN, atLeast: true });
+    u.svc.noteMainHead(RELEASE);
+    u.advance(10 * MIN);
+    u.svc.noteMainHead(RELEASE);
+    await u.svc.settle();
+    expect(u.svc.mainUnverifiedAge()).toEqual({ since: null, atLeast: false });
+    expect(stored(dir2)).not.toHaveProperty('unknownSince');
+    expect(stored(dir2)).not.toHaveProperty('oldestUnverifiedAt');
+    u.svc.shutdown();
+  });
+
+  it('an unusable unknownSince is still due and restarts the bound at now', async () => {
+    const dir = stateDirWith({ unknownSince: T0 + 24 * 60 * MIN }); // in the future (a wall clock that jumped back)
+    const s = await bootWithPrs(dir);
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: T0, atLeast: true });
+    expect(stored(dir)).toMatchObject({ unknownSince: T0 });
+    expect(unknownLines(dir)).toEqual(['future']);
+    s.svc.noteMainHead(sha('1'));
+    await finishAndSettle(s, 0, prRecord(1));
+    expect(inputOf(s, 1)).toMatchObject({ kind: 'main', headSha: sha('1') });
+    s.svc.shutdown();
+  });
+
+  it('foreign re-acquisition sets unknownSince to the earlier own age', async () => {
+    const dir = stateDirWith({ oldestUnverifiedAt: T0 - 50 * MIN });
+    const s = setup({ stateDir: dir });
+    await s.svc.boot();
+    s.advance(10 * MIN);
+    s.svc.onLeaseAcquired({ foreignHolder: true });
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: T0 - 50 * MIN, atLeast: true });
+    expect(stored(dir)).toMatchObject({ unknownSince: T0 - 50 * MIN, state: 'main-suspect' });
+    expect(stored(dir)).not.toHaveProperty('oldestUnverifiedAt');
+    // A second lease flap 20 minutes later keeps the bound: the 3-hour signal cannot be pushed back.
+    s.advance(20 * MIN);
+    s.svc.onLeaseAcquired({ foreignHolder: true });
+    expect(stored(dir)).toMatchObject({ unknownSince: T0 - 50 * MIN });
+    s.svc.shutdown();
+  });
+
+  it('a green verify of an older head ends unknown; the next observation sets now', async () => {
+    const dir = stateDirWith();
+    const s = setup({ stateDir: dir });
+    await s.svc.boot();
+    s.svc.noteMainHead(sha('1')); // unknown; the boot-time verify of head 1 starts
+    await s.flush();
+    expect(inputOf(s, 0)).toMatchObject({ kind: 'main', headSha: sha('1') });
+    s.advance(5 * MIN);
+    s.svc.noteMainHead(sha('2')); // a merge lands during the run
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: T0, atLeast: true });
+    s.advance(30 * MIN);
+    await finishAndSettle(s, 0, mainRecord(sha('1'), 'success'));
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: null, atLeast: false });
+    expect(stored(dir)).toMatchObject({ lastGreenHead: sha('1') });
+    expect(stored(dir)).not.toHaveProperty('unknownSince');
+    expect(stored(dir)).not.toHaveProperty('oldestUnverifiedAt');
+    s.svc.noteMainHead(sha('2')); // this process now sees an unverified head itself: the age starts now
+    expect(s.svc.mainUnverifiedAge()).toEqual({ since: T0 + 35 * MIN, atLeast: false });
+    expect(stored(dir)).toMatchObject({ oldestUnverifiedAt: T0 + 35 * MIN });
+    s.svc.shutdown();
   });
 });

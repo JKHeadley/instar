@@ -8,6 +8,7 @@
 import { storageMachineName } from '../core/storageMachineName.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
+import { appTicketPlan, ownMachineId, writeLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -238,6 +239,9 @@ export const INSTALLED_AGENT_MOBILE_PAIRING = {
   enabled: true,
   multiRoute: { enabled: true },
   native: { enabled: true, media: { enabled: true } },
+  // The app is the primary way to approve trust raises (app-trust-approval; Justin, topic 143810,
+  // 2026-11-16 20:35 PST: "support Instar app only as the primary route").
+  trustApproval: { enabled: true },
 };
 
 export type PairingLinkResult =
@@ -363,12 +367,35 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
 
     'door-install': async (answers) => doorInstallStep(env, answers.door!, INSTALL_RESUME_WORDS),
 
-    'door-sign-in': async (answers, progress) => doorSignInStep(env, answers.door!, {
-      words: INSTALL_RESUME_WORDS,
-      awaiting: progress.awaiting,
-      claudeTokenHeld: claudeToken.value !== null,
-      obtainClaudeToken: () => askClaudeToken(env, claudeToken),
-    }),
+    // Which account of that AI (create-agent-accounts-and-always-on §A.2); nothing to ask when none is signed in here.
+    'account-choice': async (answers, progress) => {
+      const { discoverAccounts } = await import('../install/accounts.js');
+      const { accountChoiceStep } = await import('../install/accountChoice.js');
+      const { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } = await import('../core/frameworkFacts.js');
+      const door = answers.door;
+      const found = door === CLAUDE_CODE_FRAMEWORK || door === CODEX_CLI_FRAMEWORK ? discoverAccounts(door) : [];
+      const { newAccountFolder } = await import('../install/accountEnroll.js');
+      return accountChoiceStep(answers, progress.awaiting, found, () => newAccountFolder(answers.agentName!, door!));
+    },
+
+    'door-sign-in': async (answers, progress) => {
+      // Sign in to the account chosen at the account choice: its own folder, not the AI's default.
+      // Set only for this step and restored after it, so later steps and the server never inherit it.
+      const { signInEnvFor } = await import('../install/accountEnroll.js');
+      const scoped = signInEnvFor(answers);
+      const before = Object.fromEntries(Object.keys(scoped).map((k) => [k, process.env[k]]));
+      Object.assign(process.env, scoped);
+      try {
+        return await doorSignInStep(env, answers.door!, {
+          words: INSTALL_RESUME_WORDS,
+          awaiting: progress.awaiting,
+          claudeTokenHeld: claudeToken.value !== null,
+          obtainClaudeToken: () => askClaudeToken(env, claudeToken),
+        });
+      } finally {
+        for (const [k, v] of Object.entries(before)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      }
+    },
 
     'agent-init': async (answers) => {
       const file = agentConfigFile(answers);
@@ -383,12 +410,54 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         return { kind: 'failed', message: `Your agent's files weren't created. Details are in ${env.logFile}.`, nextStep: resume };
       }
       finishAgentConfig(file);
-      if (answers.door === 'claude-code' && !claudeToken.value && env.interactive && !env.browser
+      // The account chosen at the account choice joins the new agent's pool (create-agent-accounts-and-always-on §A.3-§A.5).
+      if (answers.accountConfigHome && !answers.accountIsDefault) {
+        const { enrollChosenAccount, recordBorrowedAccount } = await import('../install/accountEnroll.js');
+        const { SubscriptionPool, SubscriptionAccountEmailRegistrar } = await import('../core/SubscriptionPool.js');
+        const { CompositeCredentialIdentityOracle } = await import('../core/CompositeCredentialIdentityOracle.js');
+        const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
+        const stateDir = path.dirname(file);
+        let machineId: string | null = null;
+        try { machineId = (JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8')) as { machineId?: string }).machineId ?? null; } catch { /* @silent-fallback-ok: no machine identity yet; the pool entry carries none */ }
+        const pool = new SubscriptionPool({ stateDir, machineId });
+        const registrar = new SubscriptionAccountEmailRegistrar(pool, new CompositeCredentialIdentityOracle({ anthropic: new CredentialIdentityOracle() }));
+        const enrolled = await enrollChosenAccount(answers, {
+          machineId,
+          has: (id) => pool.get(id) !== null,
+          recordBorrowed: (id, from) => recordBorrowedAccount(stateDir, id, from),
+          register: (input, rawExtra) => registrar.register(input, rawExtra),
+        });
+        if (!enrolled.ok) return { kind: 'failed', message: enrolled.message, nextStep: resume };
+      }
+      // A chosen non-default folder was proven at sign-in; checking the default folder here would be the wrong account.
+      if (answers.door === 'claude-code' && !claudeToken.value && env.interactive && !env.browser && !(answers.accountConfigHome && !answers.accountIsDefault)
         && (await env.proveSignedIn('claude-code')) === 'signed-out') {
         // A resume after sign-in lost the pasted token, which lives only in memory: ask again.
         await askClaudeToken(env, claudeToken);
       }
       if (claudeToken.value && answers.door === 'claude-code') writeClaudeToken(file, claudeToken.value);
+      if (answers.orgBundle) {
+        // Applied before the server first starts; no server needed (org-pack-and-join §C, §D).
+        const { decodeBundle } = await import('../core/OrgPack.js');
+        const { OrgPackStore } = await import('../core/OrgPackStore.js');
+        const { AutonomyProfileManager } = await import('../core/AutonomyProfileManager.js');
+        const stateDir = path.dirname(file);
+        const d = decodeBundle(answers.orgBundle);
+        if (d.ok) {
+          const config = readAgentConfig(answers) as never;
+          const autonomy = new AutonomyProfileManager({ stateDir, config });
+          const r = new OrgPackStore(stateDir, 'single-machine').apply(d.bundle, {}, {
+            currentProfile: () => autonomy.getProfile(),
+            currentSettings: () => autonomy.authoritySettings(),
+            lowerProfile: (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName),
+            clampSettings: (cap) => autonomy.clampForOrgPolicy(cap),
+          });
+          if (!r.ok) return { kind: 'failed', message: `Your organization's policy couldn't be applied (${r.reason}).`, nextStep: resume };
+          // The member key and the link's token; accepting the invitation (orgAccepted) is the consent (org-members-and-keepers §A).
+          const { OrgMemberSide } = await import('../core/OrgMemberSide.js');
+          new OrgMemberSide(stateDir, d.bundle.record.orgId).onJoin({ inviteToken: answers.orgInviteToken ?? null, afterLeave: false, consent: true });
+        }
+      }
       return { kind: 'done' };
     },
 
@@ -435,10 +504,22 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
       return { kind: 'done', note: `Your agent is running, but its automatic start didn't work, so it won't come back after a reboot. Details are in ${env.logFile}.` };
     },
 
-    'owner-slot': async (answers) => {
+    'owner-slot': async (answers, progress) => {
       // The config holds the agent's tokens (and any pasted Claude token). With a 002 umask
       // (Ubuntu's default) it was readable by every user on the machine (2026-11-03).
       restrictToOwner(agentConfigFile(answers));
+      if (!env.interactive && answers.forApp) {
+        // The Mac app enrolls itself with this one-time ticket (mac-app-creates-agent §B). The app's
+        // key never leaves the app, so the installer leaves the ticket and says where the agent is.
+        const agentDir = agentDirFor(answers.agentName!);
+        const port = Number(readAgentConfig(answers).port);
+        if (!Number.isInteger(port) || port <= 0) {
+          return { kind: 'failed', message: 'Your agent has no port set, so the app can\'t reach it.', nextStep: resume };
+        }
+        writeLocalOwnerTicket(path.join(agentDir, '.instar'));
+        progress.appEnroll = { agentDir, port };
+        return { kind: 'done', note: 'Ready for the Instar app to connect.' };
+      }
       if (!env.interactive) {
         return {
           kind: 'awaiting-person',
@@ -710,6 +791,16 @@ export interface InstallAnswersFile {
   purpose?: string;
   door?: string;
   autostart?: boolean;
+  /** The account picked at the account choice: an id from the progress file's list, or a new sign-in. */
+  account?: { use: string } | { new: true };
+  /** An organization invitation's bundle (org-pack-and-join §C), applied only with orgAccepted. */
+  orgBundle?: string;
+  /** Written by the Mac app only after the person tapped Join on its join screen. */
+  orgAccepted?: boolean;
+  /** The Instar Mac app runs this install and enrolls itself (mac-app-creates-agent §B). */
+  forApp?: boolean;
+  /** The invitation link's token (org-members-and-keepers §A), sent on the first check-ins. */
+  orgInviteToken?: string;
 }
 
 /** Maps an answers file onto the flow's questions. `--yes` alone supplies consent (spec 4.1). */
@@ -728,6 +819,14 @@ export interface InstallCommandOptions {
   answers?: string;
   status?: boolean;
   restart?: boolean;
+  /** The Instar Mac app runs this install (mac-app-creates-agent §B). */
+  forApp?: boolean;
+  /** Write a fresh local ticket for the finished app install (§A "Fresh ticket"). */
+  appTicket?: boolean;
+  /** The app's device public key, with appTicket. */
+  key?: string;
+  /** With appTicket: replace this Mac's own earlier app key (the app lost it). */
+  replaceAppKey?: boolean;
 }
 
 export const INSTALL_EXIT_CODES: Record<InstallStatus, number> = {
@@ -745,9 +844,23 @@ export function answersFileProblem(file: InstallAnswersFile): string | null {
   for (const key of ['name', 'purpose', 'door'] as const) {
     if (file[key] !== undefined && typeof file[key] !== 'string') return `In the answers file, ${key} must be text.`;
   }
+  if (file.account !== undefined) {
+    const a = file.account as { use?: unknown; new?: unknown };
+    const ok = !!a && typeof a === 'object' && ((typeof a.use === 'string' && /^[0-9a-f]{16}$/.test(a.use) && a.new === undefined) || (a.new === true && a.use === undefined));
+    if (!ok) return 'In the answers file, account must be { "use": "<account id>" } or { "new": true }.';
+  }
+  if (file.door !== undefined && !(Object.hasOwn(INSTALL_DOOR_LABELS, file.door))) {
+    return `In the answers file, door must be one of: ${Object.keys(INSTALL_DOOR_LABELS).join(', ')}.`;
+  }
   if (file.autostart !== undefined && typeof file.autostart !== 'boolean') {
     return 'In the answers file, autostart must be true or false.';
   }
+  if (file.orgBundle !== undefined && typeof file.orgBundle !== 'string') return 'In the answers file, orgBundle must be text.';
+  if (file.orgAccepted !== undefined && typeof file.orgAccepted !== 'boolean') return 'In the answers file, orgAccepted must be true or false.';
+  if (file.forApp !== undefined && typeof file.forApp !== 'boolean') {
+    return 'In the answers file, forApp must be true or false.';
+  }
+  if (file.orgInviteToken !== undefined && (typeof file.orgInviteToken !== 'string' || !/^[A-Za-z0-9_-]{10,64}$/.test(file.orgInviteToken))) return 'In the answers file, orgInviteToken must be the t= part of the invitation link.';
   return null;
 }
 
@@ -777,10 +890,39 @@ export function reportedStatus(progress: InstallProgress, holder: number | null)
   return progress.status === 'running' && holder === null ? 'interrupted' : progress.status;
 }
 
+/**
+ * `instar install --app-ticket --key <publicKey>` (mac-app-creates-agent §A "Fresh ticket"): a fresh
+ * one-time ticket for the finished install the Mac app ran, so the app can finish (or recover) its
+ * enrollment with the same key. Changes nothing else.
+ */
+export function appTicketCommand(existing: InstallProgress | null, key: string | undefined, replace = false): InstallStatus {
+  if (!existing || existing.status !== 'complete' || !existing.appEnroll) {
+    console.log('  There is no finished install for the Instar app here.');
+    return 'failed';
+  }
+  if (!key) {
+    console.log('  Pass the app\'s device key with --key.');
+    return 'needs-answers';
+  }
+  const stateDir = path.join(existing.appEnroll.agentDir, '.instar');
+  const plan = appTicketPlan(stateDir, key, { replace, machineId: replace ? ownMachineId(stateDir) : null });
+  if ('refusal' in plan) {
+    console.log(`  ${plan.refusal}`);
+    return 'failed';
+  }
+  writeLocalOwnerTicket(stateDir, Date.now(), plan.replaces);
+  console.log(plan.replaces.length
+    ? "  A fresh setup ticket is ready for the Instar app. It replaces this Mac's earlier app connection."
+    : '  A fresh setup ticket is ready for the Instar app.');
+  return 'complete';
+}
+
 export async function runInstallCommand(options: InstallCommandOptions): Promise<InstallStatus> {
   const file = installProgressPath();
   const existing = readInstallProgress(file);
   const lock = installLockPath(file);
+
+  if (options.appTicket) return appTicketCommand(existing, options.key, options.replaceAppKey === true);
 
   if (options.status) {
     const holder = liveLockHolder(lock);
@@ -820,10 +962,32 @@ export async function runInstallCommand(options: InstallCommandOptions): Promise
     return 'needs-answers';
   }
   if (answersFile.autostart !== undefined) progress.answers.autostartConsent = answersFile.autostart;
+  if (answersFile.account !== undefined) progress.answers.accountChoice = answersFile.account;
+  // An organization invitation, checked before any step runs (org-pack-and-join §C "Joining before AI
+  // sign-in"); applied only when the person accepted it on the app's join screen.
+  if (answersFile.orgBundle !== undefined) {
+    if (answersFile.orgAccepted !== true) {
+      console.log('  The answers file has an organization invitation that was not accepted, so it is ignored.');
+    } else {
+      const { decodeBundle, validateBundle } = await import('../core/OrgPack.js');
+      const d = decodeBundle(answersFile.orgBundle);
+      const v = d.ok ? validateBundle(d.bundle, { pinnedKey: null, versionFloor: 0, joined: false, joinedVersion: null, joinedHash: null, joinedOrgId: null }) : d;
+      if (!v.ok) {
+        console.log(`  The organization invitation could not be used (${v.reason}).`);
+        return 'needs-answers';
+      }
+      progress.answers.orgBundle = answersFile.orgBundle;
+      if (answersFile.orgInviteToken) progress.answers.orgInviteToken = answersFile.orgInviteToken;
+    }
+  }
+  // Kept in the ledger's answers, so a --resume (which has no answers file) still takes the app path.
+  if (answersFile.forApp === true || options.forApp === true) progress.answers.forApp = true;
 
   const context: InstallFlowContext = {
     detectedDoors: detectInstallDoors(),
     runningInDoor: detectRunningDoor(),
+    // The person's own pick comes first; without it the flow would take the only AI found here.
+    chosenDoor: answersFile.door && Object.hasOwn(INSTALL_DOOR_LABELS, answersFile.door) ? (answersFile.door as InstallDoor) : undefined,
     validateName: validateNewAgentName,
     describePlan: describeInstallPlan,
   };

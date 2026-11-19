@@ -184,7 +184,7 @@ const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
 /** `person-phone`: a member's own phone linked this browser to them (instar-document-viewer §3.6a). */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone';
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'local-install';
 
 export interface DeviceRecord {
   id: string;
@@ -233,6 +233,14 @@ export interface DeviceRecord {
    * never set on it, so an older version (which reads only `publicKey`) cannot authenticate it.
    */
   client?: 'browser';
+  /** A computer added by scanning its QR code with an owner phone (docs/specs/mac-qr-pairing.md §4); absent ⇒ a phone. Wording only. */
+  deviceKind?: 'computer';
+  /**
+   * The Mac app that created this agent on the same Mac (docs/specs/mac-app-creates-agent.md §A):
+   * this record authenticates only over loopback, with no forwarding header, at its exact host, and
+   * (when both are known) on the machine named here. Written only by `createActiveLocalOwner`.
+   */
+  localBinding?: { machineId: string | null };
   browserPublicKey?: string;
   enrollmentId?: string;
   /** `notifying` while the approval message is being sent, then `awaiting` (§4.2 step 9). */
@@ -335,6 +343,14 @@ interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[]; bro
 
 export class DeviceRegistry {
   readonly file: string;
+  /**
+   * Called after a device becomes active (any pairing path). The trust journey uses it to tell every
+   * device that approves changes that a new device was paired (app-trust-approval §C). Never throws out.
+   */
+  onActivated: ((d: DeviceRecord) => void) | null = null;
+  private activated(d: DeviceRecord): void {
+    try { this.onActivated?.(d); } catch { /* @silent-fallback-ok: a notice is a courtesy; the pairing itself is recorded */ }
+  }
   constructor(stateDir: string, private readonly now: () => number = Date.now) {
     this.file = path.join(stateDir, 'state', 'mobile-devices.json');
   }
@@ -393,6 +409,55 @@ export class DeviceRegistry {
   list(): DeviceRecord[] { return this.normalize(this.read()).devices; }
 
   /**
+   * The registry read strictly: a missing file is empty, but a file that exists and cannot be read
+   * or parsed THROWS, so a damaged registry is never read as "no devices" and then overwritten
+   * (docs/specs/mac-app-creates-agent.md §A).
+   */
+  private readStrict(): RegistryFile {
+    let text: string;
+    try { text = fs.readFileSync(this.file, 'utf-8'); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { devices: [], wrongCodeTimes: [] };
+      throw err;
+    }
+    const raw = JSON.parse(text) as Partial<RegistryFile>;
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.devices)) throw new Error('mobile-devices.json has no devices list');
+    // The parsed value itself, never a second (lenient) read that could see a changed file.
+    const devices = raw.devices.filter((d): d is DeviceRecord => !!d && typeof d === 'object' && typeof (d as DeviceRecord).id === 'string');
+    for (const d of devices) if (!d.status) d.status = 'legacy-token';
+    return { ...raw, devices, wrongCodeTimes: Array.isArray(raw.wrongCodeTimes) ? raw.wrongCodeTimes.filter((n) => typeof n === 'number') : [] };
+  }
+
+  /** Whether any active record counts as an owner device (absent role means owner). */
+  static hasActiveOwner(devices: DeviceRecord[]): boolean {
+    return devices.some((d) => d.status === 'active' && (d.role === undefined || d.role === 'owner'));
+  }
+
+  /**
+   * The first owner device, created active in ONE registry write (mac-app-creates-agent §A, Enroll
+   * step 3). Refuses inside the same write when the key is held or an active owner exists. Throws
+   * (writing nothing) when the registry file exists but cannot be read.
+   */
+  createActiveLocalOwner(row: { id: string; publicKey: string; host: string; label: string | null; machineId: string | null; approvedAt: string }):
+    { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'owner-exists' } {
+    const f = this.normalize(this.readStrict());
+    if (f.devices.some((d) => keysOf(d).includes(row.publicKey) || d.id === row.id)) return { ok: false, reason: 'duplicate-key' };
+    if (DeviceRegistry.hasActiveOwner(f.devices)) return { ok: false, reason: 'owner-exists' };
+    const device: DeviceRecord = {
+      id: row.id, deviceName: row.label, label: row.label, pairedAt: row.approvedAt,
+      status: 'active', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
+      approvedAt: row.approvedAt, approvedVia: 'local-install', deviceKind: 'computer',
+      localBinding: { machineId: row.machineId },
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    this.activated(device);
+    return { ok: true, device };
+  }
+
+  /** `list()` read strictly (see `readStrict`). */
+  listLocalStrict(): DeviceRecord[] { return this.normalize(this.readStrict()).devices; }
+
+  /**
    * Like `list()`, but a registry file that exists and cannot be read or parsed THROWS instead of
    * reading as empty (docs/specs/mobile-pairing-outcome-notice.md §3.3: unknown is not an outcome).
    */
@@ -411,7 +476,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string; deviceKind?: 'computer' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -424,6 +489,7 @@ export class DeviceRegistry {
       status: 'pending', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
       ...(row.userId ? { userId: row.userId } : {}),
+      ...(row.deviceKind ? { deviceKind: row.deviceKind } : {}),
       // Pairing outcome notice (§3.2): joined in this same write, so no crash window separates them.
       ...(row.outcomeWatchId ? { outcomeWatchId: row.outcomeWatchId, pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString() } : {}),
       // Only a non-owner role is written: absent already means owner, so an owner phone's record
@@ -465,6 +531,23 @@ export class DeviceRegistry {
     return 'set';
   }
 
+  /**
+   * Replace an active device's presence key: ONLY for the local override of the device the Instar app
+   * paired on the agent's own computer (docs/specs/app-trust-approval.md §D). The caller has checked
+   * loopback, the local binding and the new key's signature. The old key is gone from the record (no
+   * signature by it verifies again). A key another record holds is refused.
+   */
+  replacePresenceKey(id: string, publicKey: string): 'replaced' | 'same' | 'conflict' | 'not-active' {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return 'not-active';
+    if (d.presenceKey === publicKey) return 'same';
+    if (deviceKeyOf(d) === publicKey || f.devices.some((x) => x.id !== id && keysOf(x).includes(publicKey))) return 'conflict';
+    d.presenceKey = publicKey;
+    this.write(f);
+    return 'replaced';
+  }
+
   remove(id: string): void {
     const f = this.read();
     f.devices = f.devices.filter((d) => d.id !== id);
@@ -493,6 +576,7 @@ export class DeviceRegistry {
       if (d.wrongCodes.length >= MAX_WRONG_PER_DEVICE) { d.status = 'declined'; d.declinedAt = new Date(this.now()).toISOString(); }
     }
     this.write(f);
+    if (outcome.ok) this.activated(d);
     return d;
   }
 
@@ -597,6 +681,7 @@ export class DeviceRegistry {
     };
     f.devices.unshift(device);
     this.write(f);
+    this.activated(device);
     return { ok: true, device };
   }
 
@@ -644,6 +729,7 @@ export class DeviceRegistry {
     if (effects.length) d.effects = effects; else delete d.effects;
     delete d.activating; delete d.setupState; delete d.notifyingSince; delete d.wrongCodes; delete d.expiresAt;
     this.write(f);
+    this.activated(d);
     return d;
   }
 

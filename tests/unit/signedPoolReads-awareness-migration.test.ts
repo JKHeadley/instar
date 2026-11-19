@@ -67,7 +67,7 @@ describe('bearer fallback only on the named reasons', () => {
     expect(signedCalls).toBe(1);
     await read('1.3.1701');
     expect(signedCalls).toBe(2);
-    expect(cap.status(['m1']).counts).toEqual({ signedReads: 0, bearerReads: 3, failuresNotDowngraded: 1 });
+    expect(cap.status(['m1']).counts).toEqual({ signedReads: 0, bearerReads: 3, failuresNotDowngraded: 1, fallbacksRefused: 0 });
     expect(cap.bearerFallbackNeededBy(['m1'])).toEqual([{ machineId: 'm1', kinds: ['transcript', 'list', 'historyPool'] }]);
   });
   it('signed capability is per kind', async () => {

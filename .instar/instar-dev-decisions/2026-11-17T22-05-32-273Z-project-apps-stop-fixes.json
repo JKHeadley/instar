@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-17T22:05:32.273Z",
+  "slug": "project-apps-stop-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 166,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/workBoardViews.ts",
+      "src/server/ProjectAppCustomSource.ts",
+      "src/server/ProjectAppsRuntime.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 142,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-action: a read-time settle (no writes), one refusal, and display state."
+  },
+  "verdict": "blocked"
+}

@@ -147,7 +147,8 @@ describe('GET /context-budget/metrics — integration', () => {
     const day = r.body.extractorByDay.at(-1);
     expect(day.turn).toMatchObject({ attempts: 1, calls: 1, updated: 1, measuredCalls: 1, tokensIn: 1500 });
     expect(day.tick).toMatchObject({ attempts: 1, calls: 1, updated: 1, measuredCalls: 1, tokensOut: 90 });
-    expect(r.body.anchors).toEqual({ unavailable: 'anchor-ledger-not-built' });
+    expect(r.body.anchors).toMatchObject({ source: 'layer store on this machine', ledger: { scope: 'listed-topics' } });
+    expect(r.body.anchors).not.toHaveProperty('unavailable');
     expect(r.body.layerUpdate.reserve.componentDailyInputTokens).toBeGreaterThan(0);
     const row = b.fm.summary({}).features.find((f) => f.feature === 'LayerUpdate');
     expect(row).toBeDefined();

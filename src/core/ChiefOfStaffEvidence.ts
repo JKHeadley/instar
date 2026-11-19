@@ -73,6 +73,61 @@ async function mergedPrsSince(d: GatherDeps, repo: string, sinceIso: string | nu
   return (await d.prCache.get(key)) as number | null;
 }
 
+// ── deterministic done-item evaluators (§1.3) ────────────────────────────────
+
+export interface DoneItemEvaluatorDeps {
+  gh: GhExec | null;
+  /** Default branch per repo (cached); null ⇒ 'main'. */
+  defaultBranch: (repo: string) => Promise<string | null>;
+  /** Bounded page fetch: the body (already capped at 256 KB) or null when unreadable. */
+  fetchPage: (url: URL) => Promise<string | null>;
+}
+
+const PAGE_ITEM_RE = /page\s+(https?:\/\/\S+)\s+contains\s+"([^"]+)"/i;
+/** `PR owner/repo#123 merged` — the §1.3 "PR merged into the default branch" form. */
+const PR_ITEM_ALL_RE = /\bPR\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d{1,7})\s+merged\b/gi;
+
+/**
+ * The deterministic evaluators §1.3 names, by the item's own text. Only links the owner
+ * confirmed are read: a page in a linked domain, a PR in a linked repo. Anything else, or
+ * any read that fails, is `unknown` — which can never certify done (P20).
+ */
+export function buildDoneItemEvaluator(d: DoneItemEvaluatorDeps): (item: { id: string; kind: string; text: string }, project: BoundProject) => Promise<'pass' | 'fail' | 'unknown'> {
+  return async (item, project) => {
+    const page = PAGE_ITEM_RE.exec(item.text);
+    if (page) {
+      let url: URL;
+      try { url = new URL(page[1]!); } catch { /* @silent-fallback-ok: a malformed URL in a done item is unevaluable, so `unknown` (P20) */ return 'unknown'; }
+      if (!project.linked.domains.some((dmn) => url.hostname === dmn || url.hostname.endsWith(`.${dmn}`))) return 'unknown';
+      const body = await d.fetchPage(url);
+      if (body === null) return 'unknown';
+      return body.includes(page[2]!) ? 'pass' : 'fail';
+    }
+    // An item may name several PRs ("PR o/r#1 merged, PR o/r#2 merged"): every one must have merged.
+    // Any PR not merged into the default branch fails the item; otherwise any unreadable one makes it unknown.
+    const prs = [...item.text.matchAll(PR_ITEM_ALL_RE)];
+    if (prs.length) {
+      const one = async (repo: string, num: string): Promise<'pass' | 'fail' | 'unknown'> => {
+        if (!d.gh || !project.linked.repos.some((r) => r.toLowerCase() === repo.toLowerCase())) return 'unknown';
+        const r = await d.gh(['api', `repos/${repo}/pulls/${num}`, '--jq', '{merged_at: .merged_at, state: .state, base: .base.ref}']);
+        if (r.code !== 0) return 'unknown';
+        let row: { merged_at?: string | null; state?: string; base?: string };
+        // RULE 3: EXEMPT — parses the GitHub pulls API's JSON through gh (structured contract), not provider state text; a parse failure reads as `unknown` (P20).
+        try { row = JSON.parse(r.stdout) as typeof row; } catch { /* @silent-fallback-ok: unparseable PR state is `unknown` (P20) */ return 'unknown'; }
+        const base = (await d.defaultBranch(repo)) ?? 'main';
+        if (row.merged_at) return row.base === base ? 'pass' : 'fail';
+        return row.state === 'open' || row.state === 'closed' ? 'fail' : 'unknown';
+      };
+      const results: Array<'pass' | 'fail' | 'unknown'> = [];
+      for (const m of prs) results.push(await one(m[1]!, m[2]!));
+      if (results.includes('fail')) return 'fail';
+      if (results.includes('unknown')) return 'unknown';
+      return 'pass';
+    }
+    return 'unknown';
+  };
+}
+
 /** Net diff (additions + deletions, excluding generated files) of `branch` against the default branch. */
 async function netDiff(d: GatherDeps, repo: string, branch: string): Promise<number | null> {
   if (!d.gh) return null;

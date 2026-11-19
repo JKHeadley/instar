@@ -360,3 +360,44 @@ describe('NeverSilentWatcher', () => {
     expect(restores).toEqual(['7']);
   });
 });
+
+// fb-faa9d074-e09: a message held for the other machine was told "the session stopped running".
+describe('NeverSilentWatcher — a message held for the other machine', () => {
+  it('says it is waiting for the other machine, never that a session stopped', async () => {
+    const h = harness({ resolveSession: () => null, awaitingMachine: () => 'm_m5' });
+    h.w.onInbound('telegram', '7', '101', 'hello?');
+    t += 61_000;
+    await h.w.tick();
+    expect(h.judgeCalls()).toBe(0);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]!.text).toMatch(/waiting for the other machine that runs this conversation/);
+    expect(h.sent[0]!.text).not.toMatch(/stopped running/);
+    expect(h.store.openIncident('telegram', '7')?.silenceClass).toBe('waiting-for-machine');
+  });
+
+  it('with no session and nothing held, the old structural class stands', async () => {
+    const h = harness({ resolveSession: () => null, awaitingMachine: () => null });
+    h.w.onInbound('telegram', '7', '101', 'hello?');
+    t += 61_000;
+    await h.w.tick();
+    expect(h.store.openIncident('telegram', '7')?.silenceClass).toBe('crashed');
+  });
+
+  it('a throwing lookup falls back to the plain class instead of breaking the notice', async () => {
+    const h = harness({ resolveSession: () => null, awaitingMachine: () => { throw new Error('queue down'); } });
+    h.w.onInbound('telegram', '7', '101', 'hello?');
+    t += 61_000;
+    await h.w.tick();
+    expect(h.sent).toHaveLength(1);
+    expect(h.store.openIncident('telegram', '7')?.silenceClass).toBe('crashed');
+  });
+
+  it('a live session here is judged normally even if something is queued', async () => {
+    const awaitingMachine = (): string | null => 'm_m5';
+    const h = harness({ awaitingMachine });
+    h.w.onInbound('telegram', '7', '101', 'hello?');
+    t += 61_000;
+    await h.w.tick();
+    expect(h.judgeCalls()).toBe(1);
+  });
+});

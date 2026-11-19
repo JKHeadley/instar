@@ -258,6 +258,7 @@
 | 14.4 | Skip unchanged URL | Don't re-send if URL hasn't changed | Yes | Yes | - |
 | 14.5 | Platform badges on sessions | Show platform icon on dashboard session cards | N/A (dashboard feature) | Yes (Telegram/Slack/WhatsApp/Headless badges) | - |
 | 14.6 | Platform dropdown for new sessions | Select platform when creating sessions from dashboard | N/A (dashboard feature) | Yes | - |
+| 14.7 | Needs-you list in chat | The same list the console strip and the apps show (work-front-doors decision 2): asked "what needs me?", the agent reads `GET /needs` and answers from it, naming anything it `couldNotCheck`; every row's action keeps its own authorization path | Yes (agent reads `GET /needs`; awareness entry `needs-you-list`) | Yes (same) | - |
 
 ---
 

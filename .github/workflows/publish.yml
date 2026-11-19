@@ -224,7 +224,12 @@ jobs:
           # Resolution policy lives in scripts/resolve-publish-version.mjs so it
           # is unit-tested (tests/unit/resolve-publish-version.test.ts) rather
           # than buried in inline bash.
-          NEXT=$(node scripts/resolve-publish-version.mjs "$LOCAL_VERSION" "$NPM_VERSION")
+          # npm can hold a fresh publish as "staged" (invisible to npm view)
+          # for close to an hour. Every publish pushes published/vX.Y.Z the
+          # moment npm accepts it; the resolver counts those tags and vX.Y.Z
+          # as consumed so a staged version is never resolved again
+          # (fb-354bb7b5-b5d: 1.3.1868 and 1.3.1873 hit E409 this way).
+          NEXT=$(node scripts/resolve-publish-version.mjs "$LOCAL_VERSION" "$NPM_VERSION" --tags-from-remote origin)
           echo "resolved:       $NEXT"
 
           # Apply to package.json
@@ -259,6 +264,17 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Mark the version as consumed (published/ tag)
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        # Pushed before the smoke wait: npm may keep the version staged for
+        # up to an hour, and a later run must not resolve the same number.
+        # Best-effort: a failed push only loses the protection, never the release.
+        env:
+          HUSKY: '0'
+        run: |
+          git tag "published/v${{ steps.bump.outputs.version }}" HEAD
+          git push origin "published/v${{ steps.bump.outputs.version }}" || echo "::warning::could not push published/v${{ steps.bump.outputs.version }}"
 
       - name: Post-publish smoke test (clean install + --version)
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'

@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "slug": "cb-backfill",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-11T03:48:14.189Z",
+  "artifactPath": "upgrades/side-effects/cb-backfill.md",
+  "artifactSha256": "60dcf01c342f1c1b6c836acc051e70bd3fad31804f8bed9b7c8d95b6b597b630",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/TopicIntent.ts",
+    "src/core/TopicIntentBriefing.ts",
+    "src/core/TopicIntentPendingConfirm.ts",
+    "src/data/feature-ladders.json",
+    "src/memory/TopicMemory.ts",
+    "src/monitoring/contextBudgetMetrics.ts",
+    "src/monitoring/contextLayers/anchorLedger.ts",
+    "src/monitoring/contextLayers/backfillLane.ts",
+    "src/monitoring/contextLayers/contextLayersBoot.ts",
+    "src/monitoring/contextLayers/layerCaptureWiring.ts",
+    "src/monitoring/guardManifest.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "tests/e2e/context-layer-backfill-alive.test.ts",
+    "tests/integration/context-layer-backfill.test.ts",
+    "tests/unit/context-layer-backfill.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/migrate-context-budget-backfill-row.test.ts",
+    "upgrades/next/cb-backfill.md",
+    "upgrades/side-effects/cb-backfill.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a dark-by-default background lane and a ledger/confirmation-queue extension behind contextBudget.backfill.enabled on top of the dev-gated layers; no message is sent or blocked, and switch-off restores S6's derivation, so it is a spec-driven Tier 2 change, not Tier 3.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The matched emit is UserCorpus.refresh(), a bounded read of TopicMemory rows into local derived U records, not an external self-action. The backfill lane that calls it sends nothing, restarts or kills nothing, and is hard-bounded: at most 2 topics per 10-minute tick, at most 20 topics started per UTC day (persisted), at most 5 pages per topic per tick, a topic parked after 3 failures or 40 ticks with one report, and done topics never redone. It cannot amplify under sustained pressure: an always-failing topic yields at most 3 attempts and then stops."
+  }
+}

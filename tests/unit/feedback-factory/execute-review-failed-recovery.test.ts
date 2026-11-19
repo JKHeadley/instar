@@ -10,6 +10,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HEAD_SHA, createExecHarness, finishSessions, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { PREVIOUS_REVIEW_FILE, resolveExecuteConfig } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { RerouteRefusedError } from '../../../src/core/rerouteRefusedError.js';
 
 const HOUR = 60 * 60_000;
 const NEW_HEAD = 'e'.repeat(40);
@@ -104,6 +105,27 @@ describe('grace, then close', () => {
     await h.exec.tick();
     expect(Object.keys(h.pushes.at(-1)!.files)).not.toContain(PREVIOUS_REVIEW_FILE);
     expect(auditEvents()).toEqual(expect.arrayContaining(['execute:close-intent', 'execute:review-failed-closed']));
+  });
+
+  it('a rework attempt that stops before publishing (reroute capacity) does not drop the findings: the next attempt still gets them', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await failedPr();
+    h.now.value += 24 * HOUR + 1;
+    h.spawnError.value = new RerouteRefusedError('rerouted-session cap reached (6/6)');
+    await h.exec.tick(); // closes #100; attempt 2 is refused a slot before it can publish
+    expect(h.closed).toEqual([100]);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ attempt: 2, state: 'stopped', reason: 'reroute-capacity', prNumber: null });
+    h.spawnError.value = null;
+    h.now.value += 31 * 60_000;
+    await h.exec.tick();
+    const third = h.execStore.latestFor(initiativeId)!;
+    expect(third.attempt).toBe(3);
+    const file = path.join(third.workspace!, PREVIOUS_REVIEW_FILE);
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(data).toMatchObject({ untrusted: true, previousAttempt: 1, prNumber: 100, reviewReason: 'serious:claude-code' });
+    expect(data.findings).toContain('deletes a test');
+    const prompt = h.sessions.spawned.filter((s) => !s.name.startsWith('feedback-canary-')).at(-1)!.prompt;
+    expect(prompt).toContain(PREVIOUS_REVIEW_FILE);
   });
 
   it('an owner approval inside the grace merges instead of closing', async () => {

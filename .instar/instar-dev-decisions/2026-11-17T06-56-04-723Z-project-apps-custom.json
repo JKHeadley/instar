@@ -1,0 +1,56 @@
+{
+  "ts": "2026-11-17T06:56:04.723Z",
+  "slug": "project-apps-custom",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/durableSecretScrub.ts matches SecretDrop / never-on-disk invariant",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 27,
+  "loc": 2751,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ProjectAppBlobStore.ts",
+      "src/core/ProjectAppCustomFold.ts",
+      "src/core/ProjectAppKeys.ts",
+      "src/core/ProjectAppStore.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/credentialShapes.ts",
+      "src/core/durableSecretScrub.ts",
+      "src/core/types.ts",
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/project-apps.md",
+      "src/monitoring/Redactor.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/ProjectAppCustomSource.ts",
+      "src/server/ProjectAppSandbox.ts",
+      "src/server/ProjectAppsRuntime.ts",
+      "src/server/middleware.ts",
+      "src/server/projectAppCustomRoutes.ts",
+      "src/server/projectAppSandboxRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 2723,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "owner-driven: a version card opens once per (app, content hash) with a deterministic id and one notice; writes come only from the app in the owner's browser, capped by a per-app token bucket and the pool-wide daily byte budget; key renewal is bound to the loaded version with bounded back-off and a two-hour breaker; no timer creates work."
+  },
+  "verdict": "blocked"
+}

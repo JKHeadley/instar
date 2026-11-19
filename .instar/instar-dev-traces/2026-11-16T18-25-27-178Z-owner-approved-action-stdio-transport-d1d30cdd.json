@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "owner-approved-action-stdio-transport",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T18:25:27.178Z",
+  "artifactPath": "upgrades/side-effects/owner-approved-action-stdio-transport.md",
+  "artifactSha256": "bc61c703c5206cde4364a3bdabfbac85cd067b0a7f9196ecf52b82c666962a0c",
+  "coveredFiles": [
+    "src/core/WriteDomainRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Add the new companion route to the write-domain registry (machine-local + per-machine-path story) so the write-domain ratchet passes. No runtime change; part of the already-reviewed SEC-018c companion.",
+  "eli16Path": "docs/specs/owner-approved-action-stdio-transport.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-approved-action-stdio-transport.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

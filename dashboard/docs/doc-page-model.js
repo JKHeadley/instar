@@ -18,6 +18,7 @@ export const PAYLOAD_FIELDS = Object.freeze({
   reanchor: ['docId', 'commentKey', 'onVersion', 'start', 'end'],
   send: ['docId', 'batchId', 'commentKeysHash', 'primaryRow', 'messageRequestId'],
   open: ['docId'],
+  'decide-on-phone': ['docId', 'askId', 'verdict'],
 });
 
 /** JSON with keys sorted and no whitespace; undefined members dropped (src/documents/chain.ts canonicalJson). */
@@ -197,6 +198,34 @@ export function safeHref(href) {
   return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:' ? u.href : null;
 }
 
+// ── opening in the Instar app (phone) ───────────────────────────────────────────────────────────
+
+/**
+ * The universal link that opens this document in the Instar phone app:
+ * `https://instar.sh/doc#v=1&o=<urlencoded https origin>&d=<doc id>[&c=<comment key>]`.
+ * instar.sh's apple-app-site-association names only the Instar app for `/doc`, so iOS hands the
+ * tap to the app; everything is in the fragment, so instar.sh never sees it. null when the page's
+ * origin is not https (the app only talks to https agents) or the id is not a document id.
+ */
+export function appDocLink(origin, docId, commentKey) {
+  let o;
+  try { o = new URL(String(origin || '')); } catch { return null; }
+  if (o.protocol !== 'https:' || !o.hostname) return null;
+  if (!/^[0-9a-f-]{36}$/.test(String(docId || ''))) return null;
+  const parts = [`v=1`, `o=${encodeURIComponent(o.origin)}`, `d=${docId}`];
+  if (typeof commentKey === 'string' && commentKey && commentKey.length <= 200) parts.push(`c=${encodeURIComponent(commentKey)}`);
+  return `https://instar.sh/doc#${parts.join('&')}`;
+}
+
+/**
+ * A phone or tablet browser with no linked key: offer the app first, since the QR code that links
+ * a computer would have to be scanned by this same phone. Touch-first means a coarse pointer and
+ * no hover; a laptop with a touch screen still has a fine pointer and keeps the computer path.
+ */
+export function prefersAppOpen({ inApp, coarsePointer, canHover }) {
+  return !inApp && Boolean(coarsePointer) && !canHover;
+}
+
 // ── location ────────────────────────────────────────────────────────────────────────────────────
 
 /** `#code=…&comment=…` → `{code, comment}` (either null). */
@@ -359,6 +388,8 @@ export function parseAppEvent(detail) {
   if (!detail || typeof detail !== 'object') return null;
   if (detail.type === 'write-result' && typeof detail.id === 'string') return { type: 'write-result', id: detail.id, status: Number(detail.status) || 0, body: detail.body && typeof detail.body === 'object' ? detail.body : null };
   if (detail.type === 'refresh') return { type: 'refresh' };
+  // The app says what it can do on load (document-decisions §3.3): an older app never sends it.
+  if (detail.type === 'hello') return { type: 'hello', ops: Array.isArray(detail.ops) ? detail.ops.filter((o) => typeof o === 'string').slice(0, 32) : [] };
   if (detail.type === 'focus-comment' && typeof detail.commentKey === 'string') return { type: 'focus-comment', commentKey: detail.commentKey };
   return null;
 }
@@ -440,4 +471,74 @@ export function linkSlot(rec) {
 export function linkedRecord(rec, { deviceId, host }) {
   const { linkNonce, linkDeadline: _d, ...rest } = rec;
   return { ...rest, deviceId, host: String(host).toLowerCase(), status: 'active', linkedAt: new Date().toISOString() };
+}
+
+// ── Document decisions (docs/specs/document-decisions.md §3.3) ──────────────────────────────────
+
+const shortTime = (iso) => { const t = Date.parse(iso || ''); return Number.isFinite(t) ? new Date(t).toLocaleString([], { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' }) : ''; };
+
+/**
+ * What the decision panel shows. Pure: the page draws it. Decisions are made on the owner's phone,
+ * never by this page; in the app the buttons hand off to the app's own sheet.
+ *   controls: 'app-buttons' (in the app, it can decide) | 'update-app' (in an older app) |
+ *             'phone-buttons' (a browser or the Mac app: Approve/Decline here, confirmed on the phone) |
+ *             'open-in-app' (a browser that can't ask the phone: open it in the app) | 'open-latest' | 'none'
+ */
+export function decisionPanel(page, { inApp = false, appOps = null } = {}) {
+  const d = page && page.decision;
+  if (!d || (!d.ask && !d.decision)) return null;
+  const owner = d.ownerName || 'the owner';
+  const isOwner = Boolean(page.me && page.me.isOwner);
+  const who = isOwner ? 'You' : owner;
+  const dec = d.decision;
+  const lines = [];
+  let headline;
+  let tone = 'attn';
+  if (dec && dec.verdict === 'approve') {
+    tone = 'ok';
+    headline = `Approved by ${isOwner ? 'you' : owner}${dec.at ? ` · ${shortTime(dec.at)}` : ''} · version ${dec.versionLabel ?? '?'}`;
+    if (!dec.latest && page.versions && page.versions.length) lines.push(`Version ${page.versions[page.versions.length - 1].label} is not approved (approved: version ${dec.versionLabel ?? '?'}).`);
+    if (dec.proof === 'pin') lines.push('Decided on a phone paired with the dashboard PIN.');
+  } else if (dec && dec.verdict === 'decline') {
+    tone = dec.latest ? 'bad' : 'attn';
+    headline = `Declined by ${isOwner ? 'you' : owner}${dec.at ? ` · ${shortTime(dec.at)}` : ''} · version ${dec.versionLabel ?? '?'}`;
+    if (dec.note) lines.push(`Note: ${dec.note}`);
+  } else {
+    headline = isOwner ? `${page.agentName || 'The agent'} asks for your decision` : `Waiting for ${owner}'s decision`;
+    // Advisory only (SEC-088 interim): a held answer can come from a device record any machine may
+    // write, so it never hides the owner's buttons. It says so and leaves the choice with the owner.
+    if (d.confirmingElsewhere) lines.push(`An unconfirmed answer is waiting for confirmation by the machine ${isOwner ? 'your' : `${owner}'s`} phone is paired with. It shows here once that machine confirms it.${isOwner ? ' You can still answer here.' : ''}`);
+  }
+  if (dec && dec.verdict === 'decline' && !dec.latest && d.waitingOnOwner) lines.push(`${who} declined version ${dec.versionLabel ?? '?'}. This version has changes — decide on it.`);
+  if (dec) lines.push(dec.delivered ? `Sent to ${page.primary && page.primary.name ? page.primary.name : 'the conversation'}.` : 'Not sent to the conversation yet.');
+  if (d.crossed) lines.push('Two answers crossed. One is shown; confirm again.');
+  if (d.concurrentVersionLabel) lines.push(`Version ${d.concurrentVersionLabel} was written at the same time as this answer.`);
+  if (d.concurrentEdits) lines.push('Two edits are being merged. Decide once they are.');
+  if (d.writesBlockedBy) lines.push(`${d.writesBlockedBy} needs the update before a decision can be recorded.`);
+  let controls = 'none';
+  const latestShown = !page.version || page.version.latest;
+  const canAct = isOwner && d.ask && !d.concurrentEdits && !d.writesBlockedBy;
+  if (canAct) {
+    if (!latestShown) controls = 'open-latest';
+    else if (inApp) controls = appOps && appOps.includes('decide') ? 'app-buttons' : 'update-app';
+    else controls = page.me && page.me.canAskPhone ? 'phone-buttons' : 'open-in-app';
+  }
+  return { headline, question: d.ask ? d.ask.question : null, lines, tone, controls, waiting: Boolean(d.waitingOnOwner), changeAnswer: Boolean(dec && dec.latest) };
+}
+
+/** Words for what the push answered when the page asked the phone (§3.3). */
+export function phoneAskWords(outcome, verdict = 'approve') {
+  const what = verdict === 'decline' ? 'decline' : 'approval';
+  if (outcome === 'sent') return `Confirm on your phone: your ${what} is waiting there for Face ID. This page updates when you confirm.`;
+  if (outcome === 'deduped') return 'Confirm on your phone: it was sent a moment ago. Check your notifications.';
+  if (outcome === 'no-phone') return 'No phone can confirm decisions yet. Pair your phone with this agent from Telegram (the Instar app, Add agent), then tap again.';
+  return 'Your phone could not be reached right now. Open this document in the Instar app on your phone to decide, or tap again in a moment.';
+}
+
+/** The re-read schedule after asking the phone: 5 s doubling to 60 s, for 10 minutes. */
+export function decisionPollDelays(totalMs = 10 * 60_000) {
+  const out = [];
+  let d = 5000; let sum = 0;
+  while (sum + d <= totalMs) { out.push(d); sum += d; d = Math.min(d * 2, 60_000); }
+  return out;
 }

@@ -23,6 +23,11 @@ import { BrowserCareSweep, DOWNLOAD_FRESH_MS, normalizeBrowserCare, parseChromeP
 import { makeDownloadCheck } from '../../src/core/BrowserCareProbes.js';
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
+import { buildMachineCarePage } from '../../dashboard/console/machine-care-model.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import { createMockSessionManager } from '../helpers/setup.js';
+import { serverHealthFromResponse } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
+import { isPeerBooting } from '../../src/server/BootReadiness.js';
 
 const AUTH = 'e2e-token';
 const auth = { Authorization: `Bearer ${AUTH}` };
@@ -65,6 +70,63 @@ describe('machine maintenance lifecycle', () => {
     expect(res.body.safetyHolds.map((h: { id: string }) => h.id)).toEqual(['S1', 'S2', 'S3', 'S4']);
     expect(res.body.delays.map((d: { id: string }) => d.id)).toEqual(['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7']);
     expect(res.body.nextWindow.restartAt).toBeGreaterThan(res.body.nextWindow.start);
+  });
+
+  it('operator controls are alive on the production wiring: routes answer (PIN-gated), a skip shows in the status', async () => {
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    const wired = new DrainRehearsal({ ...(rehearsal as unknown as { deps: ConstructorParameters<typeof DrainRehearsal>[0] }).deps, store, controls: () => store.readControls() });
+    setActiveDrainRehearsal(wired);
+    for (const route of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window', '/machine-maintenance/remove']) {
+      const res = await request(server.getApp()).post(route).set(auth);
+      expect(res.status, route).toBe(401);
+      expect(res.body.error).toMatch(/PIN unlock/);
+    }
+    expect(wired.skip('dashboard')).toMatchObject({ ok: true });
+    const res = await request(server.getApp()).get('/machine-maintenance').set(auth);
+    expect(res.body.controls).toMatchObject({ skipped: true });
+    // server.ts hands the rehearsal the same host store's controls.
+    const src = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
+    expect(src).toContain('controls: () => mmControlStore.readControls(),');
+    expect(src).toContain('store: mmControlStore,');
+    // Off (CMT-1203): a countdown already running is refused inside the lock once the record is gone.
+    expect(src).toContain("if (!fs.existsSync(path.join(os.homedir(), '.instar', 'host-maintenance', 'enrolment.json'))) return 'machine not signed up';");
+  });
+
+  it('the Machine care page reads the real status through its model: one honest sentence, Skip and window for this machine, and a skip shows as Undo', async () => {
+    const store = new HostMaintenanceStore({ dir: path.join(dir, 'host') });
+    const wired = new DrainRehearsal({ ...(rehearsal as unknown as { deps: ConstructorParameters<typeof DrainRehearsal>[0] }).deps, store, controls: () => store.readControls() });
+    setActiveDrainRehearsal(wired);
+    await wired.tick();
+    const read = async () => { const r = await request(server.getApp()).get('/machine-maintenance').set(auth); return { ok: r.status === 200, data: r.body }; };
+    const first = buildMachineCarePage(await read());
+    expect(first.ok).toBe(true);
+    const row = first.ok ? first.rows[0] : null;
+    expect(row).toMatchObject({ self: true, skipped: false, controls: { skip: true, unskip: false, window: true } });
+    // No enrolment reader on this wiring: "can't tell", never a guessed "not signed up".
+    expect(row!.sentence).toMatch(/^I can’t tell whether this machine is signed up\./);
+    expect(row!.sentence).not.toContain('null');
+    wired.skip('dashboard');
+    const after = buildMachineCarePage(await read());
+    expect(after.ok && after.rows[0]).toMatchObject({ skipped: true, controls: { skip: false, unskip: true } });
+    expect(after.ok && after.rows[0].sentence).toMatch(/Skipped until /);
+  });
+
+  it('the restart proof\'s server row reads the real /health: 200 and finished starting passes; server.ts uses that judge', async () => {
+    // A server with a full config, as server.ts builds it (the minimal one above has no /health body).
+    const stateDir = path.join(dir, 'full', '.instar');
+    for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
+    const sm = createMockSessionManager() as any; sm.on = () => undefined;
+    const full = new AgentServer({ config: { projectName: 'proof-e2e', projectDir: path.dirname(stateDir), stateDir, host: '127.0.0.1', port: 0, authToken: AUTH,
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {} } as any, sessionManager: sm, state: new StateManager(stateDir) } as any);
+    const res = await request(full.getApp()).get('/health');
+    await full.stop();
+    expect(res.status).toBe(200);
+    expect(res.body.bootReadiness?.state).toBe('ready');
+    expect(serverHealthFromResponse({ status: res.status, headers: { get: (n: string) => res.headers[n.toLowerCase()] ?? null }, body: res.body }, isPeerBooting))
+      .toEqual({ state: 'pass', reason: 'health-200-ready' });
+    const src = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
+    expect(src).toContain("serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),");
   });
 
   it('reaches a fresh agent and an updated one through one shared section', () => {

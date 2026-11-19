@@ -207,7 +207,9 @@ describe('IDLE_BACKOFF — tiered sleep engages', () => {
     writeSidecar({ lastResumedAt: now, quickStops: 10 }); // T3 territory (4s)
     const r = runHook({ INSTAR_HOOK_BACKOFF_MAX_SLEEP: '1' });
     expect(r.decision).toBe('block');
-    expect(r.elapsedMs).toBeLessThan(2500); // clamped to 1s, not 4s
+    // Clamped to 1s, not the 4s tier. The bound separates the two, with room for a loaded machine:
+    // 2500 failed at 2501 ms under a full verify run on a host at load 35 (2026-11-18, PR 3316).
+    expect(r.elapsedMs).toBeLessThan(3500);
     expect(readSidecar().lastSleepSecs).toBe(1);
   });
 
@@ -261,8 +263,20 @@ describe('IDLE_BACKOFF — early breaks (responsiveness + safety)', () => {
   it('the state file vanishing mid-sleep (stop/stop-all) exits 0 without re-injecting', async () => {
     const now = Math.floor(Date.now() / 1000);
     writeSidecar({ lastResumedAt: now, quickStops: 12 });
-    const pending = runHookAsync();
-    await new Promise((res) => setTimeout(res, 1200));
+    // Wait for the actual sleep, as the emergency-stop case above does. A fixed 1.2 s guess removed
+    // the state file BEFORE the hook had read it when the host was loaded, so the hook took the
+    // no-state path and the case failed (2026-11-18, PR 3275: expected 1 to be 0).
+    const bin = path.join(tmp, 'bin');
+    const marker = path.join(tmp, 'backoff-sleep-started');
+    fs.mkdirSync(bin);
+    const sleep = path.join(bin, 'sleep');
+    fs.writeFileSync(sleep, `#!/bin/sh\n: > "$INSTAR_BACKOFF_SLEEP_MARKER"\nexec /bin/sleep "$@"\n`, { mode: 0o755 });
+    const pending = runHookAsync({ INSTAR_HOOK_BACKOFF_T3: '8', INSTAR_BACKOFF_SLEEP_MARKER: marker, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` });
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    expect(fs.existsSync(marker)).toBe(true);
     fs.rmSync(stateFile());
     const r = await pending;
     expect(r.exitCode).toBe(0);

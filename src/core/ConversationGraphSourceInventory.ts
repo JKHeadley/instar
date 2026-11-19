@@ -179,11 +179,15 @@ export function purgeGraphSourceObservationCache(options:{stateDir:string;agentI
   const fd=fs.openSync(directory,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}return {fenced:true,removed};
  }
 export function assertGraphSourceObservationAdmission(capture:SignedGraphSourceObservation,options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry}):void {
- const pending=new Set(options.source.recordsForRepair().filter(r=>options.source.verifyHistoricalRecord(r)&&!r.certificate&&!r.cancellationCertificate&&!r.erasure).map(r=>r.packet.eventId));
+ // One copy of the rows for both passes, cheap terminal checks before verification, and no second
+ // verification of rows certifiedUnion verified against their writer in this same synchronous step:
+ // this runs once per local observation (per accepted item in Accept all).
+ const rows=options.source.recordsForRepair();
+ const pending=new Set(rows.filter(r=>!r.certificate&&!r.cancellationCertificate&&!r.erasure&&options.source.verifyHistoricalRecord(r)).map(r=>r.packet.eventId));
  const union=options.source.certifiedUnion(options.reader,options.dropped,pending);if(union.partial||union.quarantined.length)throw new Error('source-causal-inventory-incomplete');
- for(const record of options.source.recordsForRepair()){
+ for(const record of rows){
   const c=record.authorizationProof.sourceObservation;if(record.coreType!=='source-observation'||c?.kind!=='conversation-source-observation'||c.producerMachineId!==capture.producerMachineId||nodeKey(c.subject)!==nodeKey(capture.subject))continue;
-  if(!options.source.verifyHistoricalRecord(record))throw new Error('source-causal-proof-invalid');
+  if(!(union.verifiedEventIds.has(record.packet.eventId)||options.source.verifyHistoricalRecord(record)))throw new Error('source-causal-proof-invalid');
   if(c.producerSequence>capture.producerSequence)throw new Error('source-causal-stale');
   if(c.producerSequence===capture.producerSequence&&(c.sourceId!==capture.sourceId||c.payloadHash!==capture.payloadHash))throw new Error('source-causal-equivocation');
  }
@@ -301,9 +305,11 @@ export function prepareGraphSourceObservation(captured:CapturedGraphSourceObserv
  const authorizationProof:GraphAuthorizationProof={receipt:{...receipt,signature:signGraphRecord('graph-authorization-receipt-v1',receipt,options.identity.loadSigningKey())},membership:m,lease,originalLease:native,sourceObservation:capture};
  return {coreType:'source-observation',core,authorizationProof,plaintextSource:Buffer.from(canonicalJson({sourceObservation:capture,payload})),idempotencyKey,requestHash:canonicalHash(capture)};
 }
-export function materializeGraphSourceInventory(options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;membership?:GraphMembershipEpoch}):{
+export function materializeGraphSourceInventory(options:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;membership?:GraphMembershipEpoch;
+ /** The same reader's certifiedUnion, already computed for this read: it is not computed again. */
+ union?:ReturnType<ConversationGraphReplication['certifiedUnion']>}):{
  coverage:GraphSourceInventoryCoverage;unavailableConversations:ConversationRef[];entries:Array<{ref:ConversationRef;row:GraphSourceFlatRow;producerMachineId:string;eventId:string}>;conversations:ConversationSource[];partial:boolean;missingEventIds:string[]} {
- const union=options.source.certifiedUnion(options.reader,options.dropped);let partial=union.partial;const missingEventIds:string[]=[];
+ const union=options.union??options.source.certifiedUnion(options.reader,options.dropped);let partial=union.partial;const missingEventIds:string[]=[];
  const latest=new Map<string,{record:ConversationGraphReplicationRecord;entry:{ref:ConversationRef;row:GraphSourceFlatRow;producerMachineId:string;eventId:string}|null}>();
  for(const record of union.records){const core=validateGraphSourceObservationCore(record.core),observed=record.authorizationProof.sourceObservation;if(!core||observed?.kind!=='conversation-source-observation')continue;const k=canonicalHash({ref:core.subject,producer:observed.producerMachineId});
   // A newer unavailable/erased observation suppresses the old title and alias.

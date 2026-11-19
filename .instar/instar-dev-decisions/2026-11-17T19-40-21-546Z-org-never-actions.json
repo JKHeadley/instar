@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-17T19:40:21.546Z",
+  "slug": "org-never-actions",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/llmBenchCoverage.ts"
+    ],
+    "addedLines": 0,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "routing classification entry removed until the bench lands"
+  },
+  "verdict": "pass"
+}
