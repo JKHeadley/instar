@@ -4510,8 +4510,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** The tmux session name `spawnSession` gives a session named `name` (callers record it before spawning). */
-  plannedTmuxSessionName(name: string): string {
-    return this.tmuxNameFor(sanitizeSessionName(name), {});
+  plannedTmuxSessionName(name: string, role: { topicId?: number; jobSlug?: string } = {}): string {
+    return this.tmuxNameFor(sanitizeSessionName(name), role);
   }
 
   /**
@@ -4777,7 +4777,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
     const sessionId = this.generateId();
-    const tmuxSession = this.plannedTmuxSessionName(options.name);
+    // Name by the session's own role (its job or topic), so a relaunch of the same job or
+    // topic keeps its tmux name instead of being read as a different role (messages-reach-renamed-sessions §E).
+    const tmuxSession = this.plannedTmuxSessionName(options.name, {
+      jobSlug: options.jobSlug,
+      topicId: typeof options.topicId === 'number' ? options.topicId : undefined,
+    });
 
     // Check if tmux session already exists
     if (this.tmuxSessionExists(tmuxSession)) {
