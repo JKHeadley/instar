@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-spec-followup-owner-approval",
+  "sessionId": "19c7b64a-3509-4c6c-bcf3-d23ec20615c4",
+  "timestamp": "2026-11-18T07:09:01.478Z",
+  "artifactPath": "upgrades/side-effects/feedback-spec-followup-owner-approval.md",
+  "artifactSha256": "28b37ef6686610d407d0673efee2e7d1c6cecbe369878be66419b92c02f4cc59",
+  "coveredFiles": [
+    "docs/specs/feedback-spec-followup-owner-approval.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/feedback-spec-followup-owner-approval.md",
+    "upgrades/side-effects/feedback-spec-followup-owner-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One authority check before an existing trusted spawn (owner approval at the merged head, the check the merged-elsewhere path already uses) plus a fail-closed config switch; reversible by revert, no stored-data change; independently reviewed.",
+  "eli16Path": "docs/specs/feedback-spec-followup-owner-approval.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-spec-followup-owner-approval.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
