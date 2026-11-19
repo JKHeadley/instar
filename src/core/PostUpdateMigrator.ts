@@ -25268,6 +25268,9 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Org-policy 422 branch version (#3275), before the success line printed the
+    // message id and link (waiting-on-you-links).
+    '090634134636c179672490acdedd57697a25f94dea9470154725ec98f0dd60ef',
     // Token-less standby hold-and-retry version (#3095), before the org-policy 422 branch (org-never-actions).
     '1636ee1ed4eb4441843383d8085b7489d61add84ebf3f154f81448ac37cac295',
     // Native-conversation-base 3b version (PR #3092), before this PR's token-less

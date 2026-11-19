@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-17T09:59:00.000Z",
-      "auditRef": "docs/audits/interaction-family-paired-device-2026-11-17.json",
-      "auditSha256": "91cc48ed87e3ce2920b0abc2a7fe8f585b133e8ff2bda0a605a272b6808e8ec2",
-      "areaSha256": "964baec571bc8bb3a833b8468d13843443924a954f41b303674367dcc1482ca2",
+      "lastAuditedAt": "2026-11-19T02:29:00.000Z",
+      "auditRef": "docs/audits/waiting-ask-links-interaction-family-2026-11-18.json",
+      "auditSha256": "e62aa6e0686e1e33aa2c1050b4bbbaad09c90b4a898460cac9fca4e5cd933b06",
+      "areaSha256": "ea321799078369bcddbf248150f3428867af1384c84914882ac6bd06ddd4021c",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
