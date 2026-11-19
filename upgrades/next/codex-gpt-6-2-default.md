@@ -16,4 +16,4 @@ Codex now uses the new GPT-6.2 Sol and Astra models for everyday and heavy work.
 
 ## Evidence
 
-Live subscription probes on 2026-11-17: on Codex CLI 0.169.0 all five Codex accounts listed both ids and answered a one-line prompt with each. CLI 0.166.0 and 0.168.0 also answered both. CLI 0.165.0, 0.160.0 and 0.156.1 refused both with "not supported when using Codex with a ChatGPT account", which sets the 0.166.0 floor. Unit tests cover each tier, each fallback pair, the version boundary, and the review checks.
+Live subscription probes on 2026-11-17: on Codex CLI 0.169.0 all five Codex accounts listed both ids and answered a one-line prompt with each. CLI 0.166.0 and 0.168.0 also answered both. CLI 0.165.0, 0.160.0 and 0.156.1 refused both with "not supported when using Codex with a ChatGPT account", which sets the 0.166.0 floor. Unit tests cover each tier, each fallback pair, the version boundary, and the review checks. The provider test file gives its fake CLI's version probe a 20 second budget through a test-only environment variable, so a busy machine cannot turn a slow start into a wrong model expectation; the product's 2 second deadline is unchanged.

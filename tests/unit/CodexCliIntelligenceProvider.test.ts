@@ -34,6 +34,7 @@ let tmpDir: string;
 let fakeCodexPath: string;
 let nonGitDir: string;
 let prevExecJson: string | undefined;
+let prevProbeScale: string | undefined;
 
 beforeAll(() => {
   // This file pins the PLAIN-mode (kill-switch) invocation contract — the
@@ -43,6 +44,11 @@ beforeAll(() => {
   // tests/unit/codex-cli-provider-execjson.test.ts.
   prevExecJson = process.env.INSTAR_CODEX_EXEC_JSON;
   process.env.INSTAR_CODEX_EXEC_JSON = '0';
+  // The fake CLIs here are shell scripts. On a busy machine one can take longer
+  // than the product's 2 s `--version` deadline to start, which reads as an
+  // unreadable version and keeps the newer model. Give the probe 20 s in this file.
+  prevProbeScale = process.env.INSTAR_CODEX_VERSION_PROBE_SCALE;
+  process.env.INSTAR_CODEX_VERSION_PROBE_SCALE = '10';
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-test-'));
   fakeCodexPath = path.join(tmpDir, 'fake-codex');
   fs.writeFileSync(fakeCodexPath, FAKE_CODEX_SCRIPT, { mode: 0o755 });
@@ -53,6 +59,8 @@ beforeAll(() => {
 afterAll(() => {
   if (prevExecJson === undefined) delete process.env.INSTAR_CODEX_EXEC_JSON;
   else process.env.INSTAR_CODEX_EXEC_JSON = prevExecJson;
+  if (prevProbeScale === undefined) delete process.env.INSTAR_CODEX_VERSION_PROBE_SCALE;
+  else process.env.INSTAR_CODEX_VERSION_PROBE_SCALE = prevProbeScale;
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,
     force: true,

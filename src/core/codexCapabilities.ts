@@ -45,7 +45,20 @@ export const CODEX_OLDER_CLI_FALLBACKS: Readonly<Record<string, string>> = {
  */
 const VERSION_TTL_MS = 600_000;
 const UNREADABLE_TTL_MS = 60_000;
-const VERSION_PROBE_TIMEOUT_MS = 2000;
+const VERSION_PROBE_BASE_TIMEOUT_MS = 2000;
+
+/**
+ * The `codex --version` probe deadline, read at call time: 2 s times the whole
+ * number in INSTAR_CODEX_VERSION_PROBE_SCALE (1..20; unset or invalid = 1).
+ * Nothing in production sets the variable, so the deadline there is 2 s. A test
+ * file whose fake CLI is a shell script sets it so a busy machine's slow spawn
+ * is not read as an unreadable version.
+ */
+export function versionProbeTimeoutMs(): number {
+  const raw = process.env.INSTAR_CODEX_VERSION_PROBE_SCALE;
+  const scale = raw !== undefined && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : 1;
+  return VERSION_PROBE_BASE_TIMEOUT_MS * (scale >= 1 && scale <= 20 ? scale : scale > 20 ? 20 : 1);
+}
 const inflight = new Map<string, Promise<CodexCliVersion | null>>();
 
 function parseVersion(out: string): CodexCliVersion | null {
@@ -91,7 +104,7 @@ export function refreshCodexCliVersion(binaryPath: string): Promise<CodexCliVers
     // stdin closed so a binary that reads it cannot wait on us; SIGKILL on the
     // deadline because a wedged binary may ignore SIGTERM. The deadline settles
     // the probe even if the child never exits, so no caller waits longer than
-    // VERSION_PROBE_TIMEOUT_MS. The promise never rejects.
+    // versionProbeTimeoutMs(). The promise never rejects.
     child = spawn(binaryPath, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
   } catch {
     // @silent-fallback-ok: an unreadable CLI version is reported as null; each caller picks its own policy
@@ -106,7 +119,7 @@ export function refreshCodexCliVersion(binaryPath: string): Promise<CodexCliVers
   deadline = setTimeout(() => {
     try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok: the child is already gone */ }
     finish(null);
-  }, VERSION_PROBE_TIMEOUT_MS);
+  }, versionProbeTimeoutMs());
   deadline.unref?.();
   try {
     child.stdout?.on('data', (chunk: Buffer) => { if (out.length < 4096) out += chunk.toString('utf-8'); });
@@ -141,7 +154,7 @@ export function codexCliVersion(binaryPath: string): CodexCliVersion | null {
   let version: CodexCliVersion | null = null;
   try {
     const out = withSyncOp(() => execFileSync(binaryPath, ['--version'], {
-      encoding: 'utf-8', timeout: VERSION_PROBE_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8', timeout: versionProbeTimeoutMs(), killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'],
     }));
     version = parseVersion(out);
   } catch { /* @silent-fallback-ok: an unreadable CLI version is reported as null; each caller picks its own policy */ }

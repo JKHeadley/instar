@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { codexSupportsHookTrustBypass, codexSupportsGpt61Sol, codexSupportsNewerModels, codexModelForCli, codexModelForCliAsync, codexCliVersion, codexCliVersionCached, refreshCodexCliVersion, CODEX_OLDER_CLI_FALLBACKS, __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
+import { codexSupportsHookTrustBypass, codexSupportsGpt61Sol, codexSupportsNewerModels, codexModelForCli, codexModelForCliAsync, codexCliVersion, codexCliVersionCached, refreshCodexCliVersion, versionProbeTimeoutMs, CODEX_OLDER_CLI_FALLBACKS, __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const made: string[] = [];
@@ -185,5 +185,31 @@ describe('older-CLI fallback for the GPT-6.x ids (live boundary 2026-11-17: 0.16
 
   it('keeps the old gpt-6.1 export as the same gate', () => {
     expect(codexSupportsGpt61Sol).toBe(codexSupportsNewerModels);
+  });
+});
+
+describe('versionProbeTimeoutMs (INSTAR_CODEX_VERSION_PROBE_SCALE)', () => {
+  const KEY = 'INSTAR_CODEX_VERSION_PROBE_SCALE';
+  const withScale = (value: string | undefined): number => {
+    const prev = process.env[KEY];
+    try {
+      if (value === undefined) delete process.env[KEY]; else process.env[KEY] = value;
+      return versionProbeTimeoutMs();
+    } finally {
+      if (prev === undefined) delete process.env[KEY]; else process.env[KEY] = prev;
+    }
+  };
+
+  it('is 2 s when the variable is unset (the production case)', () => {
+    expect(withScale(undefined)).toBe(2000);
+  });
+
+  it('scales by a whole number from 1 to 20, caps above 20, and treats anything invalid as 1', () => {
+    expect(withScale('1')).toBe(2000);
+    expect(withScale('10')).toBe(20_000);
+    expect(withScale('20')).toBe(40_000);
+    expect(withScale('21')).toBe(40_000);
+    expect(withScale('999')).toBe(40_000);
+    for (const bad of ['0', '-3', '2.5', 'abc', '', ' ', '1e3', 'Infinity']) expect(withScale(bad)).toBe(2000);
   });
 });
