@@ -89,3 +89,7 @@ Tier 2 (changes the order and early-end behaviour of the merge gate's test run);
 Converged at the round cap (round 6). The outside-model reviewer raised three design-class points in the final round; none is about safety, security or data loss (all three concern how the trial samples and counts), and all three are in the text. `## Open questions` is empty.
 
 The spec is ready for the Chief of Staff's review. What needs approval by name: the merge gate's test run may end as failed after a group's first part, by the existing second-chance and stop-on-failure rules applied earlier, on machines where the operator turns it on.
+
+## After approval (2026-11-19 01:44 PT)
+
+The Chief of Staff approved with three conditions, all applied: the constitution check was run on the final text (7 flags: the fixed starting values and stop lines, the read and path-length bounds, the number of comparison runs, and the trial's place on the maturation path; each is a starting value revised from the trial or is answered in the spec; one flag claimed the equal-outcome property fails when three first-part files and one later file all fail and then pass alone, which was checked: both orders fail that verify, because more than three files failed); "a pass is declared only after every test in the run has passed" is now a stated and tested property; and the trial's verdict goes to the Chief of Staff and the throughput session at its stated end, including when the numbers say keep it off.

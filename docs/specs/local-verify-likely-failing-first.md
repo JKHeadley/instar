@@ -8,6 +8,8 @@ eli16-overview: "docs/specs/local-verify-likely-failing-first.eli16.md"
 tier: 2
 supervision: tier0
 topic: 145097
+approved: true
+approved-by: "Chief of Staff (echo-chief-of-staff), 2026-11-19 01:44 PT (agent message 9afb9152), by name: the merge gate's run may end as failed after a group's small first part, by the existing second-chance and stop-on-failure rules applied earlier; no test removed; off by default per machine; a randomised trial decides. Conditions: constitution check on the final text folded in; a pass is only ever declared after every test in the run has passed, as a tested property; the trial reports its verdict to the Chief of Staff and the throughput session at its stated end, including when the numbers say keep it off"
 review-convergence: "2026-11-19T09:41:21.181Z"
 review-iterations: 6
 review-completed-at: "2026-11-19T09:41:21.181Z"
@@ -60,6 +62,8 @@ This is the share of the replayed verifies whose failing file was included in a 
 ## Proposed design
 
 **In one sentence:** each lane runs a small first part before the rest, made of the test files the change touches and the files that failed most often lately, so that a failure in one of those files shows within a couple of minutes of the lanes starting; the rules that decide the verdict are unchanged. How many failing verifies that covers is what the trial measures.
+
+**A pass is declared only after every test in the run has passed.** A first part can end a verify early as failed. It can never end one early as passed: a clean first part only lets the rest of the lane start. This is a tested property (Tests).
 
 It is ordering only. Every test file still runs in its own lane, with its own lane's settings, unless the verify has already failed. No file is chosen out of the run, so there is nothing to get wrong by choosing badly: a poor list only means the old timing.
 
@@ -188,6 +192,7 @@ This is a projection from one week of history, not a measurement.
 - **graduation criterion:** for pull requests enrolled over two weeks and each followed for 7 days: machine-minutes per enrolled pull request do not rise and the share reaching a first pass does not fall; machine-minutes per verify fall; the median time to a failed verdict falls on both machines; the passing median is no more than one minute higher with first parts than without and deadline errors are no more frequent; and the verdict check (measure 6) finds no difference that is not explained by a test already known to be unreliable. Stop and switch off on the stop conditions in the measures.
 - **fleet:** off by default until the two-week report; the fleet default is then proposed with the evidence and recorded on the ladder.
 - **dark-window:** from merge until the operating session turns the switch on.
+- **the trial's verdict:** at its stated end (two weeks of enrolment plus the 7-day follow-up) the owner sends the Chief of Staff and the session that operates the line one report with the measures and a recommendation, including when the numbers say to keep it off.
 - **owner:** echo (scaling session, topic 145097). Review two weeks after the switch is turned on. If it has not been turned on 30 days after merge, the owner raises that with the session that operates the line, so the feature cannot stay dark unnoticed.
 
 ## Tests
@@ -202,6 +207,7 @@ This is a projection from one week of history, not a measurement.
   - the shared re-run budget across first parts and the rest;
   - the lane deadline covering both parts, and the rest getting what is left;
   - fail-fast off: both parts run in every lane and all failures are kept;
+  - **no early pass:** for every combination of first-part and rest outcomes, a verify is recorded as passed only when every file of every lane has a passing result in its report; a clean first part with the rest not yet run, cut short, or missing a file is never a pass;
   - the equal-outcome test over every combination of passing, failing and fail-then-pass files;
   - two real test files where the second fails only if the first ran before it in the same process: the result with and without a first part is recorded, as documentation of the accepted risk;
   - main verifies unchanged; the switch off giving today's commands exactly;
