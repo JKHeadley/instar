@@ -19,3 +19,11 @@ Three unit test files that failed under a full parallel run on a loaded machine,
 - All five target files in one command: 54 of 54 passed.
 - The three changed files alongside two heavy unit files, twice with different pairs: 294 of 294 and 396 of 396 passed.
 - `tsc --noEmit -p .` clean.
+
+## What to Tell Your User
+
+None — internal change (no user-facing surface).
+
+## Summary of New Capabilities
+
+None — internal change (no user-facing surface).
