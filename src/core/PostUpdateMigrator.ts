@@ -21839,6 +21839,16 @@ for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};
   fi
 done
 
+# A literal credential on a command line is readable by every process on this machine through ps for
+# as long as the command runs, and process samplers (diagnostics, crash captures) record it
+# (argv-token incident, 2026-11-17). Read the secret inside the command instead; the shell expands it
+# and it never reaches the command line. Always blocked, regardless of safety level.
+if echo "$INPUT" | grep -qE -e '(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[abprs]-[0-9A-Za-z-]{20,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})'; then
+  echo 'BLOCKED: this command carries a literal credential (a token, an API key or a bot token).' >&2
+  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="$(gh auth token)" or "$(node .instar/scripts/secret-get.mjs NAME)". To write a file that holds a fixture, use the Write tool.' >&2
+  exit 2
+fi
+
 # Deployment/push commands — check coherence gate first
 for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wrangler deploy" "fly deploy" "railway up"; do
   if echo "$INPUT" | grep -qi -e "$pattern"; then
