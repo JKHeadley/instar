@@ -124,7 +124,7 @@ Every figure carries a standing caveat: use of the same login outside this agent
   - Rows and pairing:
     - transcript, rollout and invocation rows each get the right columns
     - an invocation/transcript pair keeps the transcript's served fields
-  - Mismatches: mismatch counting; paging defaults and maximum.
+  - Mismatches: mismatch counting; paging defaults and maximum; interleaved timestamps across machines over several pages with no row skipped.
   - Identity merge: merge across slot ids by enrollment email.
   - Size of a point:
     - separate sevenDay and fable figures
@@ -162,7 +162,7 @@ Every figure carries a standing caveat: use of the same login outside this agent
 - **Ledger rows and the new columns:** unified, proxied on read. Each machine records the rows it read, and `/usage/accounts` and `/usage/account-mismatches` fan out to every machine at request time through the existing bearer pool fan-out. A machine that did not answer, or that runs an older build, is named.
 - **The slot-to-account resolver:** per machine. machine-local-justification: physical-credential-locality — a config home is a folder on this machine's disk holding a login's credentials, and the credential ledger that says which account is in it is that machine's own record.
 - **Switch:** unified by default. It resolves from the agent-wide development flag, so every machine of an agent agrees unless an operator sets one differently, and a machine with it off writes `served_basis: 'off'`, so a split shows in every read.
-- Accounts are merged across machines by enrollment email where the pool record has one, labelled as such.
+- Accounts are merged across machines by `served_identity` (step 1's identity key); rows without one stay in labelled `unidentified` buckets.
 
 ## Frontloaded Decisions
 
@@ -171,6 +171,12 @@ Every figure carries a standing caveat: use of the same login outside this agent
 - Old rows are not backfilled. They read `before-attribution`, and unknown shares count only from the switch-on time.
 - Size of a point uses list-equivalent cost, is computed per weekly window, and is always presented as a workload-dependent lower bound.
 - Read-only and dev-gated; no dashboard page in this step.
+
+## Left behind
+
+- Codex identity is never checked, so Codex size-of-a-point stays an unconfirmed estimate until a later change adds a Codex identity check.
+- Re-keying the replicated rollups so `/usage/tree` and `/usage/top` can group by account (a table rebuild plus a replication change); `/usage/accounts` covers the need over raw events.
+- Size of a point for cycles older than step 1's 14-day full-detail history.
 
 ## Open questions
 
