@@ -39,6 +39,7 @@ import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/veri
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
 import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
+import { isUserFacingSurfaceFile, artifactAnswersDelight, defaultFileExists, defaultFileIdentity, secondPassReviewedScreenshots } from './lib/delight-the-user.mjs';
 import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
 import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from './write-audit-convergence.mjs';
@@ -275,6 +276,13 @@ function inScope(file) {
   if (file.startsWith('.husky/')) return true;
   if (file.startsWith('skills/') && file.endsWith('SKILL.md')) return true;
   if (file.startsWith('skills/') && (file.endsWith('.sh') || file.endsWith('.mjs') || file.endsWith('.js'))) return true;
+  // A screen a person sees (dashboard, pairing pages, the public site's pages
+  // and styles, approval / secret-drop pages) ships behavior too: what the
+  // person sees IS the behavior. Without this a dashboard-only commit passed
+  // straight through, so the Operator-Surface Quality and Delight the User
+  // questions never ran on exactly the commits they exist for.
+  // (Standard: docs/STANDARDS-REGISTRY.md → "Delight the User".)
+  if (isUserFacingSurfaceFile(file)) return true;
   return false;
 }
 
@@ -1066,6 +1074,7 @@ if (!promotionGateResult.ok) {
 
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
 assertOperatorSurfaceQuality(staged, validTrace.trace);
+assertDelightTheUser([...staged, ...scopeOnlyPaths], validTrace.trace);
 assertSelfActionDeclared(addedDiffText, inScopeFiles, validTrace.trace);
 enforceDuplicateBuildBackstop(validTrace.trace);
 
@@ -1123,10 +1132,10 @@ function assertFrameworkGenerality(inScopeFiles, trace) {
 // de-emphasize destructive actions, and work at phone width? A "reachable but
 // bad" surface passes Mobile-Complete and still fails the operator (the
 // 2026-06-12 "abysmal" Mandates-grant-form lesson) — this makes the quality
-// question unskippable. Operator-surface files are NOT in the gate's inScope set
-// (they live under dashboard/), so we scan the full STAGED set, not inScopeFiles.
-// Scoped tight so a non-surface commit pays nothing. Companion to
-// assertFrameworkGenerality.
+// question unskippable. Screen files are in the gate's inScope set (since the
+// Delight the User change); we still scan the full STAGED set so a surface path
+// the scope list misses is never skipped here. Scoped tight so a non-surface
+// commit pays nothing. Companion to assertFrameworkGenerality.
 function assertOperatorSurfaceQuality(stagedFiles, trace) {
   const touched = (stagedFiles || []).filter(isOperatorSurfaceFile);
   if (touched.length === 0) return;
@@ -1136,8 +1145,13 @@ function assertOperatorSurfaceQuality(stagedFiles, trace) {
   if (!fs.existsSync(artifactAbs)) return;
   const content = fs.readFileSync(artifactAbs, 'utf8');
   // The artifact must engage the operator-surface-quality question (the §6b
-  // section seeded by skills/instar-dev/templates/side-effects-artifact.md).
-  if (!artifactAddressesOperatorSurfaceQuality(content)) {
+  // section seeded by skills/instar-dev/templates/side-effects-artifact.md),
+  // in the author's own words when it uses the template's §6b heading.
+  let osqTemplate = '';
+  try {
+    osqTemplate = fs.readFileSync(path.join(ROOT, 'skills', 'instar-dev', 'templates', 'side-effects-artifact.md'), 'utf8');
+  } catch { /* no template in this tree: the phrase test alone applies */ }
+  if (!artifactAddressesOperatorSurfaceQuality(content, { templateText: osqTemplate })) {
     blockCommit(
       touched,
       [
@@ -1216,6 +1230,66 @@ function assertOperatorSurfaceQuality(stagedFiles, trace) {
       );
     }
   }
+}
+
+// Delight the User review gate (docs/STANDARDS-REGISTRY.md → "Delight the User",
+// a tree node under "Operator-Surface Quality"; spec
+// docs/specs/delight-the-user-standard.md). Operator-Surface Quality is the
+// floor (reachable, plain, phone width). A screen can clear it and still be
+// unpleasant — the 2026-11-18 Work Board card did. So a change touching any
+// user-facing surface must answer, in the side-effects artifact, whether the
+// screen delights (clear hierarchy, one obvious next action, calm spacing and
+// type, no internal ids or raw formatting, polish matched across Mac, iPhone,
+// Android and dashboard) AND name the before/after screenshots it was reviewed
+// against (files that exist at commit time), or attest "no visible change"
+// with a reason. ATTESTATION, not a taste verdict: whether the screen actually
+// delights is held by the change's independent review and by the person
+// (docs/signal-vs-authority.md). Scans the full STAGED set.
+function assertDelightTheUser(stagedFiles, trace) {
+  const touched = (stagedFiles || []).filter(isUserFacingSurfaceFile);
+  if (touched.length === 0) return;
+  const artifactRel = trace.sideEffectsPath || trace.artifactPath;
+  if (!artifactRel) return; // a missing artifact is already blocked upstream
+  const artifactAbs = path.resolve(ROOT, artifactRel);
+  if (!fs.existsSync(artifactAbs)) return;
+  const content = fs.readFileSync(artifactAbs, 'utf8');
+  let templateText = '';
+  try {
+    templateText = fs.readFileSync(path.join(ROOT, 'skills', 'instar-dev', 'templates', 'side-effects-artifact.md'), 'utf8');
+  } catch { /* no template in this tree: copied guidance simply counts as prose */ }
+  const verdict = artifactAnswersDelight(content, { root: ROOT, fileExists: defaultFileExists, fileIdentity: defaultFileIdentity, templateText });
+  if (verdict.ok && !verdict.screenshots.noVisibleChange) {
+    // "Every screen change is reviewed against before/after screenshots":
+    // a Tier-1 screen commit has no other reviewer, so the second pass is
+    // required here and bound to the pictures by name.
+    const review = secondPassReviewedScreenshots(content, trace, verdict.screenshots.pairs);
+    if (!review.ok) verdict.reasons.push(...review.reasons);
+  }
+  if (verdict.reasons.length === 0) return;
+  blockCommit(
+    touched,
+    [
+      'Delight the User review gate:',
+      `  ${touched.join(', ')} change a screen a person sees, but the side-effects`,
+      '  artifact does not answer the delight question with its screenshots:',
+      ...verdict.reasons.map((r) => `    • ${r}`),
+      '',
+      '  Add the "## 6c. Delight the user" section and answer in writing: does the',
+      '  screen read at a glance (clear visual hierarchy, one obvious next action,',
+      '  calm spacing and type, no internal ids or raw formatting, polish matched',
+      '  across Mac, iPhone, Android and dashboard)? Then name the screenshots:',
+      '    - Before: <path to the screen before this change>   (or "none — new screen: <why>")',
+      '    - After: <path to the screen after this change>',
+      '  (one Before/After pair per screen the change touches; a removed screen keeps',
+      '  its Before and writes "After: none — screen removed: <why>"). A second reader',
+      '  then reviews the pictures: write-trace --second-pass true --reviewer-concurred',
+      '  true, and the artifact\'s "Second-pass review" section names each picture.',
+      '  or, when nothing a person sees changes:',
+      '    - Screenshots: no visible change — <what changed and why nothing moves>',
+      '  (Standard: docs/STANDARDS-REGISTRY.md → "Delight the User". Template:',
+      '  skills/instar-dev/templates/side-effects-artifact.md §6c.)',
+    ].join('\n'),
+  );
 }
 
 // Self-Action Convergence gate (docs/specs/self-action-convergence.md → E3).
@@ -1606,6 +1680,7 @@ function enforceTier1(trace, traceFile) {
 
   assertFrameworkGenerality(inScopeFiles, trace);
   assertOperatorSurfaceQuality(staged, trace);
+  assertDelightTheUser([...staged, ...scopeOnlyPaths], trace);
   assertSelfActionDeclared(addedDiffText, inScopeFiles, trace);
   enforceDuplicateBuildBackstop(trace);
 
