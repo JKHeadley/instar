@@ -197,9 +197,9 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 const mainRecord = (head: string, outcome: 'success' | 'failure' | 'error'): LocalVerifyRecord =>
   record({ kind: 'main', pr: 0, headSha: head, baseSha: head, outcome, ...(outcome === 'error' ? { errorStep: 'fetch', mergeTree: '' } : {}) });
 
-function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; ancestor?: (a: string, d: string) => boolean | null; commitInfo?: (sha: string) => Promise<CommitInfo | null> } = {}) {
+function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; ancestor?: (a: string, d: string) => boolean | null; commitInfo?: (sha: string) => Promise<CommitInfo | null>; wm?: Record<string, unknown> } = {}) {
   const stateDir = tmp();
-  if (opts.healthy !== false) watermark(stateDir, {});
+  if (opts.healthy !== false) watermark(stateDir, opts.wm ?? {});
   const spawned: Array<{ inputPath: string; resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
   const signals: string[] = [];
   const signalDetails: Array<{ key: string; detail: Record<string, unknown> }> = [];
@@ -285,7 +285,9 @@ describe('LocalVerifyService — the main verify', () => {
   it('priority over PR verifies, outside the cap of 10, at most one pending; a newer head replaces a pending one; a running one is never cancelled', async () => {
     const views: Record<number, PrView> = {};
     for (let i = 1; i <= 12; i++) views[i] = view(i, (i.toString(16).padStart(2, '0')).repeat(20));
-    const s = svcSetup({ views });
+    // Head 1 is the stored last green head, so this process sees main leave green and knows the age
+    // of what follows (a boot that finds an unverified head with no stored age reads it as unknown).
+    const s = svcSetup({ views, wm: { lastGreenHead: sha('1') } });
     s.svc.noteMainHead(sha('1')); // running
     for (let i = 1; i <= 10; i++) expect((await s.svc.request(i)).ok).toBe(true);
     expect(await s.svc.request(11)).toEqual({ ok: false, code: 'queue-full' });
@@ -752,7 +754,8 @@ describe('fair share between main and PR verifies', () => {
   });
   it('in the service: a young unverified main waits behind PRs, an old one goes first', async () => {
     const views: Record<number, PrView> = { 1: view(1, sha('c')), 2: view(2, sha('e')) };
-    const s = svcSetup({ views });
+    // Head 1 is the stored last green head: the age of head 2 is known (first seen by this process).
+    const s = svcSetup({ views, wm: { lastGreenHead: sha('1') } });
     s.svc.noteMainHead(sha('1'));
     await s.svc.request(1);
     await s.svc.request(2);
@@ -1208,5 +1211,259 @@ describe('oldestUnverifiedAfterGreen', () => {
     expect(oldestUnverifiedAfterGreen(null, false, 5_000)).toBeNull();
     expect(oldestUnverifiedAfterGreen(1_000, false, null)).toBe(1_000);
     expect(oldestUnverifiedAfterGreen(1_000, false, Number.NaN)).toBe(1_000);
+  });
+});
+
+// ── the age of an unverified main survives a restart ───────────────────
+// spec docs/specs/local-verify-main-age-survives-restart.md
+
+describe('MainHealth: the age of the oldest unverified merge is kept in the watermark', () => {
+  const T = Date.parse('2026-11-18T12:00:00.000Z');
+  const G = sha('9'); // the last green head
+  function aged(dir: string, machineId = 'm1') {
+    const clock = { now: T };
+    const audits: Array<Record<string, unknown>> = [];
+    const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+    const h = new MainHealth(dir, machineId, {
+      now: () => clock.now, isAncestor: async () => false,
+      signal: (key, detail) => { signals.push({ key, detail }); }, audit: (e) => { audits.push(e); },
+    });
+    return { h, clock, audits, signals, unknownLines: () => audits.filter((a) => a.event === 'main-age-unknown') };
+  }
+  const stored = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, 'state', 'local-verify', 'main-health.json'), 'utf-8')) as Record<string, unknown>;
+
+  it('writes oldestUnverifiedAt when it changes and not when it is unchanged', () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G });
+    const a = aged(d);
+    a.h.load();
+    a.h.noteHeadObserved(G); // nothing unverified at boot
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt');
+    a.clock.now = T + 5 * MIN;
+    a.h.noteHeadObserved(sha('1')); // this process saw the head leave green: the age starts now
+    expect(stored(d)).toMatchObject({ oldestUnverifiedAt: T + 5 * MIN, lastGreenHead: G });
+    expect(stored(d)).not.toHaveProperty('unknownSince');
+    const writtenAt = stored(d).updatedAt;
+    a.clock.now = T + 20 * MIN;
+    a.h.noteHeadObserved(sha('2')); // a later merge: the oldest one is unchanged, nothing is written
+    a.h.noteHeadObserved(sha('2'));
+    expect(stored(d).updatedAt).toBe(writtenAt);
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: T + 5 * MIN, unknownSince: null });
+    expect(a.unknownLines()).toEqual([]);
+  });
+
+  it('a green verify writes the cleared age with lastGreenHead in one write', async () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 30 * MIN });
+    const a = aged(d);
+    a.h.load();
+    a.clock.now = T + MIN;
+    await a.h.onVerify(sha('1'), 'success', undefined, { oldestUnverifiedAt: null });
+    const w = stored(d);
+    expect(w).toMatchObject({ lastGreenHead: sha('1'), updatedAt: new Date(T + MIN).toISOString() });
+    expect(w).not.toHaveProperty('oldestUnverifiedAt');
+    // A green verify of an older head moves the age instead; that lands with lastGreenHead too.
+    a.clock.now = T + 2 * MIN;
+    a.h.noteHeadObserved(sha('2'));
+    a.clock.now = T + 9 * MIN;
+    await a.h.onVerify(sha('2'), 'success', undefined, { oldestUnverifiedAt: T + 8 * MIN });
+    expect(stored(d)).toMatchObject({ lastGreenHead: sha('2'), oldestUnverifiedAt: T + 8 * MIN, updatedAt: new Date(T + 9 * MIN).toISOString() });
+    // An older build's caller (no age passed) leaves the age as it is.
+    await a.h.onVerify(sha('3'), 'success');
+    expect(stored(d)).toMatchObject({ lastGreenHead: sha('3'), oldestUnverifiedAt: T + 8 * MIN });
+  });
+
+  it('a green verify that cannot clear a red main still records the age it settled', async () => {
+    const d = tmp(); watermark(d, { state: 'main-red', redHead: sha('r'), reason: 'rerun-failed', oldestUnverifiedAt: T - 30 * MIN });
+    const a = aged(d);
+    a.h.load();
+    expect(await a.h.onVerify(sha('1'), 'success', undefined, { oldestUnverifiedAt: null })).toBe('none');
+    expect(stored(d)).toMatchObject({ state: 'main-red', redHead: sha('r') });
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt');
+  });
+
+  it("load restores a finite past value from this machine's watermark", () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN });
+    const a = aged(d);
+    a.h.load();
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: T - 50 * MIN, unknownSince: null });
+    a.h.noteHeadObserved(sha('1')); // the first observation after boot keeps the restored value
+    expect(a.h.unverifiedAge().oldestUnverifiedAt).toBe(T - 50 * MIN);
+    expect(a.unknownLines()).toEqual([]);
+    // A value exactly at now is not in the future.
+    const d2 = tmp(); watermark(d2, { oldestUnverifiedAt: T });
+    const b = aged(d2); b.h.load();
+    expect(b.h.unverifiedAge().oldestUnverifiedAt).toBe(T);
+  });
+
+  it('load drops a future, non-finite or other-machine value', () => {
+    const cases: Array<{ w: Record<string, unknown>; raw?: string; reason: string }> = [
+      { w: { oldestUnverifiedAt: T + 1 }, reason: 'future' },
+      { w: { oldestUnverifiedAt: 'yesterday' }, reason: 'non-finite' },
+      { w: {}, raw: '"oldestUnverifiedAt":1e999', reason: 'non-finite' }, // parses to Infinity
+      { w: { machineId: 'm_other', oldestUnverifiedAt: T - 50 * MIN }, reason: 'other-machine' },
+      { w: {}, reason: 'field-absent' },
+    ];
+    for (const c of cases) {
+      const d = tmp(); watermark(d, { lastGreenHead: G, ...c.w });
+      const file = path.join(d, 'state', 'local-verify', 'main-health.json');
+      if (c.raw) fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(/\}$/, `,${c.raw}}`));
+      const a = aged(d);
+      a.h.load();
+      expect(a.h.unverifiedAge().oldestUnverifiedAt, c.reason).toBeNull();
+      a.clock.now = T + 3 * MIN;
+      a.h.noteHeadObserved(sha('1')); // the first unverified head after boot: unknown, never `now` as an age
+      expect(a.h.unverifiedAge(), c.reason).toEqual({ oldestUnverifiedAt: null, unknownSince: T + 3 * MIN });
+      expect(a.unknownLines(), c.reason).toEqual([{ event: 'main-age-unknown', reason: c.reason, unknownSince: T + 3 * MIN }]);
+      expect(stored(d), c.reason).toMatchObject({ unknownSince: T + 3 * MIN });
+      expect(stored(d), c.reason).not.toHaveProperty('oldestUnverifiedAt');
+    }
+    // An unreadable file, and no file at all.
+    const d1 = tmp(); fs.mkdirSync(path.join(d1, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(d1, 'state', 'local-verify', 'main-health.json'), '{not json');
+    const u = aged(d1); u.h.load(); u.h.noteHeadObserved(sha('1'));
+    expect(u.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'file-unreadable', unknownSince: T }]);
+    const n = aged(tmp()); n.h.load(); n.h.noteHeadObserved(sha('1'));
+    expect(n.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'field-absent', unknownSince: T }]);
+    // With no usable value but nothing unverified at boot, a later merge is seen by this process: now.
+    const d3 = tmp(); watermark(d3, { lastGreenHead: G });
+    const s = aged(d3); s.h.load(); s.h.noteHeadObserved(G);
+    s.clock.now = T + 7 * MIN; s.h.noteHeadObserved(sha('1'));
+    expect(s.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: T + 7 * MIN, unknownSince: null });
+    expect(s.unknownLines()).toEqual([]);
+  });
+
+  it("three boots: load's own rewrite keeps both fields", () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN });
+    for (let boot = 0; boot < 3; boot++) {
+      const a = aged(d);
+      a.clock.now = T + boot * 20 * MIN;
+      a.h.load();          // the constructor's read
+      a.h.load();          // boot()
+      a.h.load({ epoch: 4 + boot }); // lease acquisition by this machine
+      expect(stored(d)).toMatchObject({ oldestUnverifiedAt: T - 50 * MIN, lastGreenHead: G });
+      expect(a.h.unverifiedAge().oldestUnverifiedAt).toBe(T - 50 * MIN);
+    }
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G, unknownSince: T - 70 * MIN });
+    for (let boot = 0; boot < 3; boot++) {
+      const a = aged(d2);
+      a.clock.now = T + boot * 20 * MIN;
+      a.h.load(); a.h.load(); a.h.load({ epoch: 4 + boot });
+      a.h.noteHeadObserved(sha('1'));
+      expect(stored(d2)).toMatchObject({ unknownSince: T - 70 * MIN });
+      expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T - 70 * MIN });
+      expect(a.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'carried', unknownSince: T - 70 * MIN }]); // once per process start
+    }
+  });
+
+  it('unknownSince is set once and cleared in the write that settles the age', async () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G });
+    const a = aged(d);
+    a.h.load();
+    a.h.noteHeadObserved(sha('1'));
+    expect(stored(d)).toMatchObject({ unknownSince: T });
+    a.clock.now = T + 40 * MIN;
+    a.h.noteHeadObserved(sha('2'));
+    a.h.load({ epoch: 1 }); // this machine again
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T });
+    // An error and a failure settle nothing.
+    await a.h.onVerify(sha('2'), 'error');
+    await a.h.onVerify(sha('2'), 'failure');
+    expect(stored(d)).toMatchObject({ unknownSince: T, state: 'main-suspect' });
+    // A green verify settles it: gone from the same write that records the green head.
+    a.clock.now = T + 60 * MIN;
+    await a.h.onVerify(sha('2'), 'success', undefined, { oldestUnverifiedAt: null });
+    const w = stored(d);
+    expect(w).toMatchObject({ state: 'healthy', lastGreenHead: sha('2'), updatedAt: new Date(T + 60 * MIN).toISOString() });
+    expect(w).not.toHaveProperty('unknownSince');
+    expect(w).not.toHaveProperty('oldestUnverifiedAt');
+    expect(a.unknownLines()).toHaveLength(1);
+  });
+
+  it('an unusable stored unknownSince is still unknown, and the bound starts again at now', () => {
+    for (const bad of [T + 60 * MIN, 'soon']) {
+      const d = tmp(); watermark(d, { lastGreenHead: G, unknownSince: bad, oldestUnverifiedAt: T - 10 * MIN });
+      const a = aged(d);
+      a.h.load();
+      expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T });
+      expect(a.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: typeof bad === 'number' ? 'future' : 'non-finite', unknownSince: T }]);
+      expect(stored(d)).toMatchObject({ unknownSince: T });
+    }
+  });
+
+  it('a foreign holder or an epoch gap makes the age unknown, bounded by this machine\'s own earlier age', () => {
+    // In a running process, with an age in memory.
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN, leaseEpoch: 5 });
+    const a = aged(d);
+    a.h.load();
+    a.clock.now = T + 10 * MIN;
+    a.h.load({ foreignHolder: true, epoch: 6 });
+    expect(a.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T - 50 * MIN });
+    expect(stored(d)).toMatchObject({ unknownSince: T - 50 * MIN, state: 'main-suspect' });
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt'); // cleared in the same write
+    expect(a.unknownLines()).toEqual([{ event: 'main-age-unknown', reason: 'other-machine', unknownSince: T - 50 * MIN }]);
+    // A second flap keeps the bound; it never restarts at now.
+    a.clock.now = T + 30 * MIN;
+    a.h.load({ foreignHolder: true, epoch: 9 });
+    expect(a.h.unverifiedAge().unknownSince).toBe(T - 50 * MIN);
+    expect(a.unknownLines()).toHaveLength(1);
+    // At boot, through an epoch gap, with the age only on disk.
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G, oldestUnverifiedAt: T - 20 * MIN, leaseEpoch: 5 });
+    const b = aged(d2);
+    b.h.load({ epoch: 9 });
+    expect(b.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T - 20 * MIN });
+    // With no own age at all the bound is now.
+    const d3 = tmp(); watermark(d3, { lastGreenHead: G });
+    const c = aged(d3);
+    c.h.load(); c.h.noteHeadObserved(G);
+    c.clock.now = T + 4 * MIN;
+    c.h.load({ foreignHolder: true });
+    expect(c.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: T + 4 * MIN });
+  });
+
+  it('a release collapse clears the age and an unknown one, and writes only when something changed', () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G, oldestUnverifiedAt: T - 50 * MIN });
+    const a = aged(d);
+    a.h.load();
+    a.clock.now = T + MIN;
+    a.h.clearUnverifiedAge();
+    expect(stored(d)).not.toHaveProperty('oldestUnverifiedAt');
+    expect(stored(d).updatedAt).toBe(new Date(T + MIN).toISOString());
+    a.clock.now = T + 2 * MIN;
+    a.h.clearUnverifiedAge();
+    expect(stored(d).updatedAt).toBe(new Date(T + MIN).toISOString());
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G, unknownSince: T - 50 * MIN });
+    const b = aged(d2);
+    b.h.load(); b.h.clearUnverifiedAge();
+    expect(b.h.unverifiedAge()).toEqual({ oldestUnverifiedAt: null, unknownSince: null });
+    expect(stored(d2)).not.toHaveProperty('unknownSince');
+  });
+
+  it('the 3-hour signal says "at least" when the time given is a lower bound', () => {
+    const d = tmp(); watermark(d, { lastGreenHead: G });
+    const a = aged(d);
+    a.h.load();
+    a.h.noteUnverifiedAge(T - 4 * 60 * MIN, { atLeast: true });
+    expect(a.signals).toEqual([{ key: 'local-verify:main-unverified', detail: { ageMs: 4 * 60 * MIN, atLeast: true } }]);
+    const d2 = tmp(); watermark(d2, { lastGreenHead: G });
+    const b = aged(d2);
+    b.h.load();
+    b.h.noteUnverifiedAge(T - 4 * 60 * MIN);
+    expect(b.signals).toEqual([{ key: 'local-verify:main-unverified', detail: { ageMs: 4 * 60 * MIN } }]);
+  });
+});
+
+describe('decideStart: an unknown age of unverified main is due', () => {
+  const NOW = 1_000_000_000;
+  const queue = [{ kind: undefined }, { kind: 'main' as const }];
+  it('healthy main: unknown goes first; no age waits; a young known age waits', () => {
+    const base = { mainHealthy: true, lastStartWasMain: false };
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: null, oldestUnverifiedMainUnknown: true } })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: null, oldestUnverifiedMainUnknown: false } })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: null } })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: NOW - MAIN_FAIR_SHARE_MS + 1 } })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue, now: NOW, fairShare: { ...base, oldestUnverifiedMainAt: NOW - MAIN_FAIR_SHARE_MS } })).toEqual({ kind: 'start', index: 1 });
+  });
+  it('a resumed PR run still goes ahead of an unknown-age main', () => {
+    const q = [{ kind: undefined, resumeFirst: true as const }, { kind: 'main' as const }];
+    expect(decideStart({ foreignHolders: 0, queue: q, now: NOW, fairShare: { mainHealthy: true, lastStartWasMain: false, oldestUnverifiedMainAt: null, oldestUnverifiedMainUnknown: true } })).toEqual({ kind: 'start', index: 0 });
   });
 });

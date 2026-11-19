@@ -109,6 +109,30 @@ describe('zero external configuration owned-machine production default manager',
   // Upkeep refreshes even when the last refresh is fresh.
   await internals.serialized(()=>internals.compose(internals.publication()));expect(counts()[0]).toBe(afterUpkeep[0]+2);
  });
+ it('runs the local history check outside the owner step, one at a time, so a save is not held behind it',async()=>{
+  // Accept-all round 4 part 3: right after a Studio restart the first full history check took 450 s inside the
+  // one-at-a-time owner step, and every Accept all save waited behind it until the page gave up.
+  const f=await fixture(),owner=(id:string)=>({principalKey:'owner:default-agent',authenticationMethod:'owner-dashboard' as const,requestId:id,isCurrent:()=>true});
+  const runtime=await f.manager.ensureOwner(owner('first-visit'));
+  const internals=f.manager as unknown as {serialized<T>(work:()=>Promise<T>):Promise<T>;compose(publication:unknown,forSave?:boolean):Promise<void>;publication():unknown;retainedCheck:Promise<void>|null};
+  await internals.retainedCheck;
+  vi.spyOn(runtime,'isReady').mockReturnValue(false);vi.spyOn(runtime,'refreshReadiness').mockResolvedValue(false as never);
+  let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+  const check=vi.spyOn(runtime,'confirmLocalAcknowledgedSource').mockImplementation(async()=>{await held;return undefined as never;});
+  try{
+   const started=Date.now();
+   await internals.serialized(()=>internals.compose(internals.publication()));
+   expect(check).toHaveBeenCalledTimes(1);expect(internals.retainedCheck).not.toBeNull();
+   // A save goes through while the history check is still running, and does not start a second one.
+   expect(await f.manager.ensureOwner(owner('save-during-history-check'))).toBe(runtime);
+   await internals.serialized(()=>internals.compose(internals.publication()));
+   expect(Date.now()-started).toBeLessThan(5000);expect(check).toHaveBeenCalledTimes(1);
+  }finally{release();}
+  await internals.retainedCheck;expect(internals.retainedCheck).toBeNull();
+  // Once it has finished, the next pass may start a new one.
+  await internals.serialized(()=>internals.compose(internals.publication()));expect(check).toHaveBeenCalledTimes(2);
+  await internals.retainedCheck;
+ });
  it('names an owner step that held the one-at-a-time lane for more than 2 s, once a minute per step',async()=>{
   const f=await fixture(),step=f.manager as unknown as {ownerStepValue:string;ownerStepAt:number};const warn=vi.spyOn(console,'warn');
   const slow=(name:string)=>{step.ownerStepValue=name;step.ownerStepAt=Date.now()-3_000;step.ownerStepValue='nothing (idle)';};

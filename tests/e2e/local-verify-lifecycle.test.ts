@@ -133,6 +133,34 @@ describe('local-verify lifecycle (production wiring)', () => {
     built.service!.shutdown();
   });
 
+  it('a stored oldestUnverifiedAt is restored after boot (spec local-verify-main-age-survives-restart)', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const GREEN = '9'.repeat(40);
+    const seenAt = Date.now() - 50 * 60_000; // an unverified merge first seen 50 minutes before this boot
+    const file = path.join(stateDir, 'state', 'local-verify', 'main-health.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      v: 1, machineId: 'm_e2e', state: 'healthy', redHead: null, lastGreenHead: GREEN, reason: 'green', updatedAt: new Date().toISOString(),
+      oldestUnverifiedAt: seenAt,
+    }));
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    await svc.boot();
+    // Restored through the production-built service: the age did not start again at this boot,
+    // it is a known age (not "at least"), and boot's own rewrite of the watermark kept it.
+    expect(svc.mainUnverifiedAge()).toEqual({ since: seenAt, atLeast: false });
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toMatchObject({ oldestUnverifiedAt: seenAt, lastGreenHead: GREEN, state: 'healthy' });
+    const log = path.join(stateDir, 'logs', 'local-verify.jsonl');
+    const lines = fs.existsSync(log) ? fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string }) : [];
+    expect(lines.map((l) => l.event)).not.toContain('main-age-unknown');
+    expect((await request(serve(ctx(stateDir, svc))).get('/local-verify')).status).toBe(200);
+    svc.shutdown();
+  });
+
   it('production boot keeps an enabled peer diagnosis separate from a red PR record', async () => {
     const { home, stateDir } = sourceCheckout();
     const built = buildLocalVerifyService({

@@ -208,13 +208,13 @@ describe('peer breaker and peer list', () => {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; inputPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }
 
-function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; spawnThrows?: boolean } = {}) {
+function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; spawnThrows?: boolean; watermark?: Record<string, unknown> } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
     fs.mkdirSync(path.join(stateDir, 'state', 'local-verify'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
-      v: 1, machineId: opts.machineId ?? 'coord', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z',
+      v: 1, machineId: opts.machineId ?? 'coord', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z', ...(opts.watermark ?? {}),
     }));
   }
   const views: Record<number, PrView> = opts.views ?? { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) };
@@ -335,8 +335,8 @@ function seedLocalAnchor(stateDir: string, epoch = 7): void {
     notLocallyVerifiedAt: null, locallyVerified: ['f'.repeat(40)], peerMainGreens: [], quarantine: {}, arbitration: null, durations: Array.from({ length: 10 }, () => 10 * 60_000) }));
 }
 
-function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean; noAnchor?: boolean } = {}) {
-  const h = harness();
+function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean; noAnchor?: boolean; watermark?: Record<string, unknown> } = {}) {
+  const h = harness({ watermark: opts.watermark });
   if (!opts.noAnchor) seedLocalAnchor(h.stateDir, opts.epoch ?? 7);
   const peer = fakePeer();
   let epoch = opts.epoch ?? 7;
@@ -1490,8 +1490,13 @@ describe('a main verify on whichever host is free', () => {
     attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 }, ...over,
   });
   /** main queued while another suite holds the coordinator's slot, then handed to the idle peer. */
-  async function mainOnPeer() {
-    const c = coordinator({ mainOnPeers: true });
+  /**
+   * A stored age for the unverified head: first seen when these tests start. Without one, a boot
+   * that finds an unverified head reads its age as unknown (due at once), which has its own tests.
+   */
+  const KNOWN_AGE = { oldestUnverifiedAt: Date.parse('2026-10-21T12:00:00.000Z') };
+  async function mainOnPeer(watermark?: Record<string, unknown>) {
+    const c = coordinator({ mainOnPeers: true, watermark });
     c.setForeignHolders([9001]);
     c.svc.noteMainHead(HEAD);
     await c.runTimers();
@@ -1682,14 +1687,14 @@ describe('a main verify on whichever host is free', () => {
     });
 
     it('fair share holds on the peer too: a waiting PR goes first until main is due, then main goes', async () => {
-      const early = coordinator({ mainOnPeers: true });
+      const early = coordinator({ mainOnPeers: true, watermark: KNOWN_AGE });
       early.setForeignHolders([9001]);
       early.svc.noteMainHead(HEAD);
       await early.svc.request(1);
       await early.runTimers();
       expect(early.peer.runs().map((r) => r.pr)).toEqual([1]); // main not due: the PR takes the free peer
 
-      const due = coordinator({ mainOnPeers: true });
+      const due = coordinator({ mainOnPeers: true, watermark: KNOWN_AGE });
       due.setForeignHolders([9001]);
       due.svc.noteMainHead(HEAD);
       await due.svc.request(1);
@@ -1747,7 +1752,7 @@ describe('a main verify on whichever host is free', () => {
     });
 
     it('a green peer run covers merges by the coordinator\'s own clock and the first newer head, never the peer\'s clock', async () => {
-      const { c, req } = await mainOnPeer();
+      const { c, req } = await mainOnPeer(KNOWN_AGE);
       const obs = (c.svc as unknown as { mainObs: { oldestUnverifiedAt: number | null } }).mainObs;
       const dispatchedAt = Date.parse('2026-10-21T12:00:00.000Z');
       expect(obs.oldestUnverifiedAt).toBe(dispatchedAt);
