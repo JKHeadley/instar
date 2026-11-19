@@ -14,6 +14,8 @@ Echo has a Work Board: a page on the dashboard and the phone where each thing th
 
 4. **Each need shows once.** A card can say which "Needs you" item it is about (a waiting project, a plan, or a pull request; nothing about passwords, permissions, money, health or promises). "Needs you" then shows that item in its own words and with its own button, plus a link to its card. For the Chief of Staff's own cards the card is not listed a second time; a card a session wrote keeps its own line too, so an agent can never make an ask harder to see. Promises, permissions, passwords, plans and project sign-offs keep their own pages and their own approve buttons; they are never turned into cards.
 
+5. **A wait card's detail is readable (amended 2026-11-18).** The card's text no longer shows backslashes before brackets, a "(wait c5c23e80)" code, or a raw "2026-11-17 22:15:31 UTC" time, and a checklist line no longer reads "item.: not known". Each card also carries a structured `brief`: one plain sentence of what Justin is being asked, the goal, each done-when item with its state, the Chief of Staff's own words, and when the wait started (as a time the app formats in his own zone). The apps can lay the card out from those fields; older apps keep reading the text. The brief changes no approval and reopens nothing.
+
 ## What it does not change
 
 Only Justin's own tap approves anything. A card never finishes or pauses a project. No new messages are sent: cards do not notify on their own, so nothing new arrives at night. The daily limit on agent cards and the soft limit on how many cards wait at once still apply; when the soft limit is reached, the Chief of Staff's own line in "Needs you" still shows the wait.
