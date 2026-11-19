@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
@@ -293,6 +294,7 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -2034,13 +2036,25 @@ export class AgentServer {
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
     const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
+    // SEC-103: one credential check (before any body is read) for every parser above 64 KB.
+    const bodyBudgetDeps: BodyBudgetDeps = {
+      authToken: () => this.config.authToken,
+      dashboardSessionValid: (token) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && this.dashboardSessionStore.verify(token),
+      memorySessionValid: options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) !== null : undefined,
+      activeDevice: (id) => this.mobilePairing?.enabled() === true && this.mobilePairing.devices.get(id)?.status === 'active',
+      activeMachine: (id) => this.machineRouteContext?.authDeps.identityManager.loadRegistry().machines[id]?.status === 'active',
+      selfMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
+      verify: keepRawBody,
+    };
     this.app.use('/completion-claim/observe', express.json({ limit: '96kb', verify: keepRawBody }));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
     // PostCompact record route (context-budget-layered-summaries §14 body cap):
     // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
-    this.app.use('/hooks/post-compact', express.json({ limit: '2mb' }));
+    this.app.use('/hooks/post-compact', credentialAwareJsonParser({ ...bodyBudgetDeps, verify: undefined }, 2 * 1024 * 1024));
     // Native hook events: admission (loopback, no forwarding headers, bearer,
     // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
     // 4 MB parser — both ahead of the global parser, which runs before
@@ -2056,7 +2070,7 @@ export class AgentServer {
     this.app.use('/org/checkin', express.json({ limit: '4kb' }));
     this.app.use('/org/pack/propose', express.json({ limit: '80kb' }));
     // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
-    this.app.use('/mobile/org/recover', express.json({ limit: '32mb', verify: keepRawBody }));
+    this.app.use('/mobile/org/recover', credentialAwareJsonParser(bodyBudgetDeps, 32 * 1024 * 1024));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
@@ -2073,7 +2087,9 @@ export class AgentServer {
         runtime.admissionGuard()(req,res,()=>express.json({limit:'4mb'})(req,res,()=>runtime.router(req,res,next)));
       });
     }
-    this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
+    // SEC-103: the general parser reads 12 MB only for a caller with a credential it can check
+    // before the body; a public peer route gets 2 MB, anyone else 64 KB (src/server/bodyBudget.ts).
+    this.app.use(credentialAwareJsonParser(bodyBudgetDeps));
     this.app.locals.stateDir = options.config.stateDir;
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -3050,12 +3066,14 @@ export class AgentServer {
           const list = Array.isArray(reg) ? reg : reg.agents ?? [];
           otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
         } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const subscriptionPool = options.subscriptionPool;
         const ledger = new UsageLedger({
           dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
           machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
           agentId: options.config.projectName ?? path.basename(projectDir),
           agentHomes: homes,
           otherAgentHomes: otherHomes,
+          poolHomes: subscriptionPool ? () => subscriptionPool.transcriptHomes() : undefined,
         });
         if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
         ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
@@ -3076,7 +3094,8 @@ export class AgentServer {
           });
         });
         // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
-        ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
+        if (process.env.CODEX_HOME) ledger.addCodexRoot(process.env.CODEX_HOME, 'server-env');
+        ledger.addCodexRoot(path.join(os.homedir(), '.codex'), 'default');
         setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
         this.usageLedger = ledger;
         // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
@@ -8032,6 +8051,9 @@ export class AgentServer {
           ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
           agentName: () => String(options.config.projectName ?? ''),
           principalKind: (req) => principalOf(req).kind,
+          intelligence: () => options.intelligence ?? null,
+          config: () => options.config,
+          journal: orgDecisionJournal(options.config.stateDir),
           effects: () => ({
             currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
             currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,

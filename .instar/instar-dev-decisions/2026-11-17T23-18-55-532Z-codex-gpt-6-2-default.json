@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-17T23:18:55.532Z",
+  "slug": "codex-gpt-6-2-default",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/codexCapabilities.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the only new spawn is the codex --version probe, at most one per binary per cache window (10 min readable, 60 s unreadable), shared by concurrent callers, with a hard 2 s deadline; it never retries or re-drives itself"
+  },
+  "verdict": "pass"
+}

@@ -67,13 +67,22 @@ export interface TriageCallResult {
   packetHash: string;
 }
 
+/**
+ * Codex ids a triage authority may be bound to: the heavy (astra) tier only.
+ * gpt-6.2-astra joined 2026-11-17 when the capable tier moved to it; gpt-6-astra
+ * stays valid so an authority the operator already approved keeps working until
+ * they approve the replacement. The call is still pinned to the exact id in the
+ * record (strictModelPin + the resolved-model check below).
+ */
+export const TRIAGE_AUTHORITY_MODEL_FAMILIES: ReadonlySet<string> = new Set(['gpt-6.2-astra', 'gpt-6-astra']);
+
 export class FeedbackTriageArbiter {
   constructor(private readonly intelligence: IntelligenceProvider) {}
 
   checkAuthority(authority: AuthorityRecord): void {
     if (authority.revoked || authority.promptVersion !== FEEDBACK_TRIAGE_PROMPT_ID ||
       authority.schemaVersion !== FEEDBACK_TRIAGE_SCHEMA_ID || authority.decisionPointId !== FEEDBACK_TRIAGE_DECISION_POINT ||
-      authority.provider !== 'codex-cli' || authority.modelFamily !== 'gpt-6-astra') {
+      authority.provider !== 'codex-cli' || !TRIAGE_AUTHORITY_MODEL_FAMILIES.has(authority.modelFamily)) {
       throw new TriageContractViolation('triage authority does not match the deployed prompt/schema/decision point', 'canary-mismatch');
     }
   }

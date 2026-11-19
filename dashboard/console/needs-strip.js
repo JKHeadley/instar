@@ -50,6 +50,13 @@ export function stripModel(res, { expanded = false } = {}) {
   };
 }
 
+/** A row's card link, only when it points at a Work page card (never another place); the label is the server's fixed words. */
+export function cardLinkOf(row) {
+  const c = row && row.card;
+  if (!c || typeof c.href !== 'string' || !/^#\/work\/board\?card=[A-Za-z0-9_%.-]{1,200}$/.test(c.href)) return null;
+  return { href: c.href, label: typeof c.label === 'string' && c.label ? c.label : 'Has a card on the work board' };
+}
+
 // One strip at a time: a new mount (another door) stops the previous refresh.
 let timer = null;
 let last = null; // the last answer, so a door change paints at once
@@ -71,7 +78,10 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
-      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body));
+      // A row the server linked to its card (work-board-cards-appear §3): a second, small link beside it (links cannot nest).
+      const card = cardLinkOf(r);
+      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
+        card ? el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label }) : null);
     }));
     host.replaceChildren(
       el('div', { class: 'needs-head' },

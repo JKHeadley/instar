@@ -13,7 +13,7 @@ import {
   buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Development';
@@ -125,13 +125,14 @@ function paint() {
   // Approvals live in the Shipping fold, which is often closed: the lead line opens it and goes there.
   const approvalsLine = approvals ? markNeed(el('button', { class: 'btn-primary btn-inline need-line', type: 'button', text: `${approvals === 1 ? 'A pull request needs' : `${approvals} pull requests need`} your approval: show ${approvals === 1 ? 'it' : 'them'}`, onclick: () => { view.open = 'shipping'; paint(); arrivalScroll(main.querySelector('#sec-shipping'), { key: `tap:${Date.now()}` }); } }), 'shipping-approvals') : null;
   const stopped = stoppedCard(shipping, deps);
+  const keptOff = keptOffMainCards(res.verify, deps);
   const moreLine = todos.length > 1 ? el('button', { class: 'link-btn older-line', type: 'button', text: `${todos.length - 1} more ${todos.length === 2 ? 'thing needs' : 'things need'} you ›`, onclick: () => openMore(todos.slice(1), deps) }) : null;
 
   // First arrival opens the section with the worst news (Shipping otherwise); 'none' is the operator's own collapse.
   if (!view.open) view.open = feedback.tone === 'attn' || feedback.state === 'cant-tell' ? 'feedback' : 'shipping';
   setKids(main, el('div', { class: 'dev-page' },
     pageHead({ eyebrow: EYEBROW, headline: h.text, sub: h.sub, tone: h.tone }),
-    stopped, lead, approvalsLine, moreLine,
+    stopped, ...keptOff, lead, approvalsLine, moreLine,
     el('div', { class: 'page-sections' },
       fold({ id: 'shipping', title: 'Shipping', line: shipping.line, tone: shipping.tone, body: () => shippingBody(shipping, deps) }),
       fold({ id: 'feedback', title: 'Feedback', line: feedback.line, tone: feedback.tone, body: () => feedbackBody(feedback, deps) }),
@@ -175,6 +176,37 @@ function sub(title, ...kids) { return el('div', { class: 'dev-sub' }, el('h3', {
 function backOnButton(s, deps, primary = false) {
   return el('button', { class: primary ? 'btn-primary btn-inline' : 'btn-quiet', type: 'button', text: 'Turn auto-merge back on', onclick: () => enableAutoMerge(s, deps) });
 }
+/**
+ * SEC-113: a helper machine kept off main after it called main green where this machine's own run
+ * failed. One card per machine, first on the page, with the owner's Clear (PIN unlock: the route
+ * refuses the bearer token alone).
+ */
+function keptOffMainCards(verify, deps) {
+  const peers = verify && verify.ok && verify.data && verify.data.peers && verify.data.peers.trust ? verify.data.peers.trust.peers : null;
+  if (!Array.isArray(peers)) return [];
+  return peers.filter((p) => p && p.mainQuarantined && typeof p.machineId === 'string').map((p) => markNeed(el('div', { class: 'need-card', 'data-operator-need': 'peer-main-quarantine' },
+    el('span', { class: 'need-title', text: 'A helper machine no longer tests main' }),
+    el('span', { class: 'need-sub', text: 'It said the main code passed its tests, but the same code failed on this machine. Other helper machines still test main. Clear it when you know why, for example after it was updated.' }),
+    el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Let it test main again', onclick: () => clearKeptOff(p.machineId, deps) }),
+    el('span', { class: 'need-sub muted', text: `Machine: ${p.machineId}` }),
+  ), 'peer-main-quarantine'));
+}
+
+async function clearKeptOff(machineId, deps) {
+  const auth = await askPin({ title: 'Let it test main again', explain: 'This helper machine will test main again. A recent PIN unlock is needed; it is kept in this page only until it expires.', adapter: 'session' });
+  if (!auth) return;
+  const status = el('p', { class: 'action-status', role: 'status', text: 'Clearing…' });
+  sheet({ title: 'Let it test main again' }, status);
+  let r;
+  try {
+    const res = await fetch(`/local-verify/peers/${encodeURIComponent(machineId)}/main-quarantine/clear`, { method: 'POST', headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1', 'X-Instar-Operator-Session': auth.session }, body: '{}', cache: 'no-store' });
+    r = { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
+  } catch { r = { ok: false, status: 0, data: { error: 'The server could not be reached.' } }; }
+  if (r.status === 401) { forgetOperatorSession(); status.textContent = 'The unlock expired. Tap the button again and enter your PIN.'; return; }
+  status.textContent = r.ok ? 'Done. That helper machine can test main again.' : r.status === 409 ? 'Another machine runs the tests now. Open its console to clear this.' : (r.data && r.data.error) || `The server answered ${r.status}.`;
+  if (r.ok) setTimeout(() => { closeSheet(); deps.refresh(); }, 800);
+}
+
 /** Auto-merging is stopped: the first thing on the page, whichever fold is open. */
 function stoppedCard(s, deps) {
   const c = stoppedLead(s);
@@ -236,7 +268,7 @@ function authorityForm(kind, card, action, deps, { lead = false, detail = '', ti
     const pin = await askPin({ title: title || card.title, explain: `${what} Your PIN goes in this one request and is not kept.`, adapter: 'body' });
     if (!pin) return;
     go.disabled = true; status.textContent = 'Working…';
-    const body = (kind === 'readiness' ? readinessAuthorityRequest : triageAuthorityRequest)(action, env, pin.pin, newDecisionRef(`console-${kind}`));
+    const body = (kind === 'readiness' ? readinessAuthorityRequest : triageAuthorityRequest)(action, env, pin.pin, newDecisionRef(`console-${kind}`), card.shownModelFamily);
     pin.pin = '';
     const r = await send(route, body);
     body.pin = '';
