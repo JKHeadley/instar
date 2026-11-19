@@ -1,0 +1,2 @@
+- `instar nuke --here` now keeps your project files (CLAUDE.md, AGENTS.md, GEMINI.md, .gitignore, .claude, .codex, .mcp.json, instar.config.json) exactly as they are and removes only the `.instar` folder; it no longer restores them from Git, which could overwrite your edits. It lists what it kept.
+- `instar nuke <name>` no longer commits everything before its backup push. It pushes only existing commits, warns first that uncommitted changes are not in the backup, and reports whether the push worked.

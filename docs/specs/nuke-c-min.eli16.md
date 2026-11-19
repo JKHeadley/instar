@@ -17,3 +17,5 @@ The implementation will need unit, integration, and full command tests. All use 
 # What needs deciding
 
 The Chief of Staff has already chosen this narrow scope. No new product decision is needed. Review should check that the two changes preserve project files, explain the backup limit clearly, and leave existing teardown safeguards intact. Larger hardening and automatic rebuilding of project files remain outside this work. The Chief of Staff ratified CMT-2025’s incident trigger in msg 0552571a. Each stewardship handoff note lists it again. The spec names parent standards for user approval, authority, and evidence.
+
+This change was approved by the Chief of Staff on 2026-11-19.

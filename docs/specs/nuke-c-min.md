@@ -4,6 +4,8 @@ slug: nuke-c-min
 author: echo
 eli16-overview: docs/specs/nuke-c-min.eli16.md
 tier: 2
+parent-principle: "The Person Decides; the Agent Does the Rest"
+parent-principle-fit: "nuke --here overwrote the person's own edits in shared project files with git checkout, and standalone nuke committed and uploaded uncommitted work without the person deciding. Both now leave the person's files and commits as they are, and the agent offers a read-only review for the person to approve."
 review-convergence: "operator-approved after 1 round (Codex cross-model + Standards-Conformance Gate; all 3 + 5 findings fixed in r1; Chief of Staff msg 0d86e88d, 2026-11-19 10:55 PT)"
 review-iterations: 1
 review-report: "docs/specs/reports/nuke-c-min-convergence.md"
