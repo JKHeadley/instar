@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1eb-imessage-sms",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T14:06:28.497Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1eb-imessage-sms.md",
+  "artifactSha256": "312ecd5e7fd68b684abe06308d3ea632f2d6ec3a01e5c75c289de49fb710cc91",
+  "specPath": "docs/specs/identity-security-piece1eb-imessage-sms.md",
+  "coveredFiles": [
+    "src/messaging/imessage/IMessageAdapter.ts",
+    "src/messaging/imessage/NativeBackend.ts",
+    "src/messaging/imessage/smsProvenance.ts",
+    "upgrades/side-effects/identity-security-piece1eb-imessage-sms.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to piece 1e-b: reviewable contract-evidence exemption markers; no code change.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only follow-up; the owner count answers inbound rows (once a day, refreshed at most every 10 minutes)"
+  }
+}

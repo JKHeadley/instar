@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "graph-continuation-bound",
+  "sessionId": "9e47895f-85f4-4695-8f17-b2c0f7538915",
+  "timestamp": "2026-11-18T05:09:29.912Z",
+  "artifactPath": "upgrades/side-effects/graph-continuation-bound.md",
+  "artifactSha256": "b654af6f8648e57e0915b5a50f2ac8b6062636b391c89fa21a906206174b52ee",
+  "coveredFiles": [
+    "docs/specs/graph-continuation-bound.eli16.md",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/unit/conversation-graph-alive-per-run.test.ts",
+    "upgrades/next/graph-continuation-bound.md",
+    "upgrades/side-effects/graph-continuation-bound.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A liveness check's answer reused within one synchronous run; fresh after every await; revert undoes it",
+  "eli16Path": "docs/specs/graph-continuation-bound.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-continuation-bound.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

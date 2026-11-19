@@ -174,3 +174,70 @@ describe('statusDescription', () => {
     expect(statusDescription(rec({ finishedAt: '2026-10-21T12:05:00.000Z' }))).toMatch(/^verified · 2h5m · /);
   });
 });
+
+// ── flakyRetried name fields (spec local-verify-import-related-rerun.md, Recording) ──
+
+describe('validateRecord — flakyRetried name fields', () => {
+  const HASH = 'ab'.repeat(32);
+  const entry = (over: Record<string, unknown> = {}) => ({ file: 'tests/unit/a.test.ts', lane: 'unit', firstMessage: 't: boom', ...over });
+  const withEntry = (e: Record<string, unknown>) => validateRecord(rec({ flakyRetried: [e as never] }));
+  const ev = (test: string) => ({ test, mainAt: '2026-11-16T10:00:00.000Z', mainLine: 'Error: x', prLine: 'Error: x', mainRunLog: 'a'.repeat(32) + '.log' });
+  const clear = (over: Record<string, unknown> = {}) => entry({
+    importRelated: true, failedTests: ['s one', 's two'], failedTestsTotal: 2, soloPassedByName: ['s one', 's two'], testSetHash: HASH,
+    soloPasses: 3, soloSeconds: [1, 2, 3], evidence: [ev('s one'), ev('s two')], ...over,
+  });
+
+  it('shared fields: allowed on any entry, each with its refusals', () => {
+    expect(withEntry(entry({ failedTests: ['a', 'b'], failedTestsTotal: 3, soloPassedByName: ['b'], testSetHash: HASH })).ok).toBe(true);
+    expect(validateRecord(rec({ kind: 'main', pr: 0, baseSha: H, flakyRetried: [entry({ failedTests: ['a'], failedTestsTotal: 1, soloPassedByName: [], testSetHash: HASH }) as never] })).ok).toBe(true);
+    expect(withEntry(entry({ failedTests: [], failedTestsTotal: 2 })).ok).toBe(true); // every name was left out for length: disclosed by the total
+    const bad: Array<Record<string, unknown>> = [
+      { failedTests: Array.from({ length: 21 }, (_, i) => `t${i}`), failedTestsTotal: 21 },
+      { failedTests: ['x'.repeat(301)], failedTestsTotal: 1 },
+      { failedTests: [''], failedTestsTotal: 1 },
+      { failedTests: 'a' },
+      { failedTests: ['a', 'b'], failedTestsTotal: 1 }, // the total may not be below the list
+      { failedTests: ['a'], failedTestsTotal: 1.5 },
+      { failedTests: ['a'], failedTestsTotal: 1, soloPassedByName: ['b'] }, // not a subset
+      { soloPassedByName: ['a'] }, // nothing to be a subset of
+      { testSetHash: 'nope' },
+      { testSetHash: HASH.toUpperCase() },
+    ];
+    for (const b of bad) {
+      const v = withEntry(entry(b));
+      expect(v.ok, JSON.stringify(b).slice(0, 80)).toBe(false);
+      if (!v.ok) expect(v.errors).toContain('flakyRetried');
+    }
+  });
+
+  it('clearance fields: only with importRelated, and then complete, each with its refusals', () => {
+    expect(withEntry(clear()).ok).toBe(true);
+    expect(withEntry(clear({ evidence: [{ ...ev('s one'), mainLineCut: true, prLineCut: true }, ev('s two')] })).ok).toBe(true);
+    const { importRelated: _i, ...noFlag } = clear(); void _i;
+    const bad: Array<Record<string, unknown>> = [
+      noFlag, // clearance fields without importRelated
+      entry({ soloPasses: 3 }),
+      entry({ soloSeconds: [1, 2, 3] }),
+      entry({ evidence: [] }),
+      clear({ importRelated: false }),
+      clear({ soloPasses: 2 }),
+      clear({ soloSeconds: [1, 2] }),
+      clear({ soloSeconds: [1, 2, -1] }),
+      clear({ failedTestsTotal: 3 }), // a name was left out: not the whole truth
+      clear({ failedTests: [], failedTestsTotal: 0, soloPassedByName: [], evidence: [] }), // no vacuous clear
+      clear({ soloPassedByName: ['s one'] }),
+      clear({ evidence: [ev('s one')] }),
+      clear({ evidence: [ev('s one'), ev('other')] }),
+      clear({ evidence: [ev('s one'), { ...ev('s two'), mainAt: 'yesterday' }] }),
+      clear({ evidence: [ev('s one'), { ...ev('s two'), prLine: 'x'.repeat(401) }] }),
+      clear({ evidence: [ev('s one'), { ...ev('s two'), mainLineCut: false }] }),
+      clear({ testSetHash: undefined }),
+      entry({ importRelated: true }), // the flag alone
+    ];
+    for (const b of bad) {
+      const v = withEntry(b);
+      expect(v.ok, JSON.stringify(b).slice(0, 120)).toBe(false);
+      if (!v.ok) expect(v.errors).toContain('flakyRetried');
+    }
+  });
+});

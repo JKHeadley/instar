@@ -5,6 +5,7 @@
  * and the real ProjectAppSandbox, injected the way `src/commands/server.ts` injects them:
  *   POST /project-apps → PUT source → the version card is on the Work Board, marked phone-only, and a
  *   console (PIN) Approve is refused → GET /project-apps/<id>/frame without a ticket is refused;
+ * then "Stop this app" leaves the card saying it was stopped, out of Needs you;
  * and with custom apps off every custom route answers 503.
  */
 import { describe, it, expect, afterAll } from 'vitest';
@@ -17,6 +18,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ProjectAppSandbox } from '../../src/server/ProjectAppSandbox.js';
+import { resolveWorkBoardSettings } from '../../src/core/WorkBoardService.js';
 import { makeHarness, phoneApprove, PROJECT, CONVERGED_SPEC } from '../helpers/projectAppCustomHarness.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
@@ -46,7 +48,7 @@ function boot(customOn: boolean) {
   // The Work Board runtime's route-facing surface over the harness's REAL WorkBoardService (the
   // conversation and pickup plumbing is not part of this proof).
   const workBoard = {
-    svc: h.svc, controller: null,
+    svc: h.svc, controller: null, settings: () => resolveWorkBoardSettings({}),
     appendLine: () => {}, ensureConversation: () => {}, removeConversation: () => {},
     behind: () => null, lastWrittenOn: () => null, repliedAfterQuestion: () => false, brokenAttachments: () => [],
     when: (iso: string) => iso, notePolicyChange: async () => {}, holdsLease: () => true, saveSettingsPatch: () => false,
@@ -94,6 +96,18 @@ describe('custom project apps — production wiring', () => {
     expect(h.source.settleApprovedCards()).toEqual({ closed: [ids[0]], refused: [] });
     const done = await agent(request(app).get(`/work-board/cards/${encodeURIComponent(ids[0])}`));
     expect(done.body.card).toMatchObject({ status: 'done', lane: 'done', needLine: 'Approved on your phone; this version is running' });
+
+    // "Stop this app" (console withdraw): the card says it was stopped, leaves Needs you, and nothing
+    // on it can run the app again in this build (turning it back on is stage 2, CMT-1882).
+    const stop = await agent(request(app).post(`/work-board/cards/${encodeURIComponent(ids[0])}/tap`)).send({ action: 'withdraw-approval', titleHash: done.body.card.titleHash, pin: PIN });
+    expect(stop.status, JSON.stringify(stop.body)).toBe(200);
+    h.source.invalidate();
+    const stopped = await agent(request(app).get(`/work-board/cards/${encodeURIComponent(ids[0])}`));
+    expect(stopped.body.card).toMatchObject({ appStopped: true, lane: 'done', needLine: 'Stopped by you. Turning it back on comes in a later update.' });
+    const board = await agent(request(app).get('/work-board'));
+    expect(board.status, JSON.stringify(board.body).slice(0, 400)).toBe(200);
+    expect(board.body.waitingOnYou).toBe(0);
+    expect((await agent(request(app).post(`/project-apps/${appId}/ticket`)).send({})).body).toMatchObject({ state: 'disabled' });
 
     const list = await agent(request(app).get('/project-apps'));
     expect(list.status).toBe(200);

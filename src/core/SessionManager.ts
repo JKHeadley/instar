@@ -8,6 +8,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  */
 
 import type { SpawnPlacementContext } from './windowAwarePlacement.js';
+import { alwaysAvailableTokenInUse } from './alwaysAvailableToken.js';
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
@@ -123,7 +124,7 @@ import {
 import { createCliVersionReader, defaultCliVersionReaderDeps, CLI_VERSION_UNKNOWN, type CliVersionReader } from './cliVersionReader.js';
 import { boundLaunchRecord, type JobRunLaunch } from '../scheduler/JobRunHistory.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
-import { codexSupportsGpt61Sol } from './codexCapabilities.js';
+import { CODEX_OLDER_CLI_FALLBACKS, codexModelForCliAsync } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -2205,6 +2206,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setSpawnAccountResolver(resolver: (ctx?: SpawnPlacementContext) => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
+  }
+
+  /**
+   * The pool account a new Claude session is pinned to, or null. While Always available's code is the
+   * agent's Claude sign-in it overrides the pool (create-agent-accounts-and-always-on §B.4): the session
+   * runs on that code, so it is not tagged with a pool account it doesn't use.
+   */
+  private poolAccountForSpawn(ctx?: SpawnPlacementContext): { configHome: string; accountId: string } | null {
+    if (!this.spawnAccountResolver) return null;
+    if (this.config.stateDir && alwaysAvailableTokenInUse(this.config.stateDir, this.config.anthropicApiKey)) return null;
+    return this.spawnAccountResolver(ctx);
   }
 
   setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
@@ -4807,7 +4819,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // internal judges) wins; otherwise honor the saved default for the actual
     // launch framework, after any closed-lane fallback.
     const requestedModel = options.model ?? this.config.frameworkDefaultModels?.[headlessFramework];
-    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel);
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel, options.codexLocalProvider);
 
 
 
@@ -4958,7 +4970,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = options.accountPin
       ? options.accountPin
       : headlessFramework === 'claude-code'
-        ? (this.spawnAccountResolver?.({
+        ? (this.poolAccountForSpawn({
             model: launchModel ?? null,
             modelSource: options.model ? 'explicit' : requestedModel ? 'config-default' : 'unknown',
             sessionName: tmuxSession,
@@ -5444,7 +5456,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // always claude-code, so launch under the chosen pool account's config home
     // and tag the session. No-op unless the resolver is wired + returns an account.
     // An explicit account pin (spec skill-driven-signin-repair) always wins over the resolver.
-    const pinnedAccount = options.accountPin ?? this.spawnAccountResolver?.({
+    const pinnedAccount = options.accountPin ?? this.poolAccountForSpawn({
       model: launchModel ?? null,
       modelSource: options.model ? 'explicit' : launchModel ? 'config-default' : 'unknown',
       sessionName: tmuxSession,
@@ -7958,6 +7970,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   private async resolveCodexLaunchModel(
     framework: IntelligenceFramework,
     requestedModel: string | undefined,
+    localProvider?: string,
   ): Promise<string | undefined> {
     const swapCfg = (this.config as { codex?: { rateLimitModelSwap?: CodexModelSwapConfig } })
       .codex?.rateLimitModelSwap;
@@ -7970,16 +7983,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.log(`[SessionManager] ${decision.reason}`);
     }
     const selected = decision.swapped ? decision.model : requestedModel;
-    if (framework === 'codex-cli' && selected === 'gpt-6.1-sol') {
-      const binary = resolveFrameworkBinaryPath({
-        framework,
-        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
-        claudePath: this.config.claudePath,
-        configuredFramework: this.config.framework,
-      });
-      if (!binary || !codexSupportsGpt61Sol(binary)) {
-        console.warn('[SessionManager] This machine has an older Codex CLI; using gpt-6-sol for this session.');
-        return 'gpt-6-sol';
+    // Older-CLI safety: the newer GPT-6.x ids (gpt-6.1-sol, gpt-6.2-sol,
+    // gpt-6.2-astra) need Codex CLI >= 0.166.0. A tier or an unset model is
+    // resolved to the id the builder would launch, so the tier default
+    // (balanced → gpt-6.2-sol) is covered too. A local-provider launch passes
+    // its model verbatim and is never touched.
+    if (framework === 'codex-cli' && !localProvider) {
+      const concrete = resolveModelForFramework(framework, selected ?? 'balanced') ?? selected;
+      if (concrete && CODEX_OLDER_CLI_FALLBACKS[concrete]) {
+        const binary = resolveFrameworkBinaryPath({
+          framework,
+          frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+          claudePath: this.config.claudePath,
+          configuredFramework: this.config.framework,
+        });
+        const launched = await codexModelForCliAsync(concrete, binary ?? '', 'fallback');
+        if (launched !== concrete) {
+          console.warn(`[SessionManager] This machine has an older Codex CLI that cannot run ${concrete}; using ${launched} for this session.`);
+          return launched;
+        }
       }
     }
     return selected;
@@ -8334,7 +8356,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const defaultModel = options?.defaultModel ?? this.config.frameworkDefaultModels?.[framework];
     // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
     // interactive (user-facing) codex session too, not just headless spawns.
-    const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel);
+    const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel, options?.codexLocalProvider);
     // Subscription-pool pinning for the INTERACTIVE (user-facing) lane (B1).
     // Mirrors the headless lane (spawnSession): when pinSessionsToPool wired the
     // spawn-account resolver, launch this claude-code session under the
@@ -8351,7 +8373,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //     account → default-login behavior is exactly unchanged when off.
     const explicitConfigHome = options?.configHome;
     const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
-      ? (this.spawnAccountResolver?.({
+      ? (this.poolAccountForSpawn({
           model: launchDefaultModel ?? null,
           modelSource: options?.defaultModel ? 'explicit' : launchDefaultModel ? 'config-default' : 'unknown',
           sessionName: tmuxSession,

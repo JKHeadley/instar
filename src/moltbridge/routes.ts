@@ -188,7 +188,9 @@ export function createMoltBridgeRoutes(deps: MoltBridgeRouteDeps): Router {
       }
       draft.status = 'approved';
       draft.approvedAt = new Date().toISOString();
-      draft.approvedBy = 'human';
+      // The caller holds the agent's bearer token: an agent session, never a verified person
+      // (identity-security-piece1b §4; umbrella §11 records bearer-only approvals as agent-proposal).
+      draft.approvedBy = 'agent-proposal';
 
       const result = await client.publishProfile(draft.profile);
       profileCompiler.markPublished();

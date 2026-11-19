@@ -156,7 +156,7 @@ describe('3. work page tiles', () => {
   });
   it('the efforts tile is not a second "Conversations"', () => {
     const src = readFileSync('dashboard/console/conversations.js', 'utf8');
-    expect(src).toContain("text: 'Efforts'");
+    expect(src).toContain("text: 'Groups'");
     expect(src).not.toMatch(/t-name', text: 'Conversations'/);
   });
 });

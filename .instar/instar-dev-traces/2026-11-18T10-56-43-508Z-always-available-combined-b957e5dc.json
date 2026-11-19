@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "always-available-combined",
+  "sessionId": "db01f5ec-7e07-4447-a2bc-3edb1a73d2f5",
+  "timestamp": "2026-11-18T10:56:43.508Z",
+  "artifactPath": "upgrades/side-effects/always-available-combined.md",
+  "artifactSha256": "b6de32480febfe6dffc44fe0bd51bb5821e4a6c379d384d9fe0db9fd7a9d050c",
+  "specPath": "docs/specs/create-agent-accounts-and-always-on.md",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/core/localOwnerTicket.ts",
+    "src/server/mobileLocalOwnerDevice.ts",
+    "tests/unit/mobile-local-owner-device.test.ts",
+    "upgrades/side-effects/always-available-combined.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "owner-device replacement path (auth); fix found by Local Verify e2e",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

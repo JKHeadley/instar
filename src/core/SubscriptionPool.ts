@@ -739,6 +739,14 @@ export class SubscriptionPool {
       .map((a) => ({ ...a }));
   }
 
+  /** This machine's transcript directories, including disabled or legacy slots with usage history. */
+  transcriptHomes(): Array<{ framework: SubscriptionFramework; configHome: string }> {
+    this.assertReadable();
+    return this.store.accounts
+      .filter(a => typeof a.configHome === 'string' && a.configHome.length > 0)
+      .map(({ framework, configHome }) => ({ framework, configHome }));
+  }
+
   /** Legacy rows are visible for repair, but never enter normal selectors. */
   listEmailGaps(): SubscriptionAccountEmailGap[] {
     this.assertReadable();

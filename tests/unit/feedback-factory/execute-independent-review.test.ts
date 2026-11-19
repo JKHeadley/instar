@@ -35,6 +35,14 @@ describe('judgeRoutedFeedbackReview', () => {
     expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6-astra' }, opus, ok('gemini-cli', 'SERIOUS ISSUES')], 'astra').reason).toBe('serious:gemini-cli');
     expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6-sol' }, opus], 'opus')).toEqual({ pass: true, reason: 'pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5' });
   });
+  it('accepts the GPT-6.2 model of the same size and still refuses the wrong size', () => {
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6.2-astra' }, opus], 'astra')).toEqual({ pass: true, reason: 'pass:feedback-routing-v1:astra:gpt-6.2-astra+claude-opus-5-5' });
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6.2-sol' }, opus], 'opus')).toEqual({ pass: true, reason: 'pass:feedback-routing-v1:opus:gpt-6.2-sol+claude-opus-5-5' });
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6.2-sol' }, opus], 'astra').reason).toBe('required-codex-model-mismatch');
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6.2-astra' }, opus], 'opus').reason).toBe('required-codex-model-mismatch');
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6.1-sol' }, opus], 'opus').reason).toBe('required-codex-model-mismatch');
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: undefined }, opus], 'opus').reason).toBe('required-codex-model-mismatch');
+  });
 });
 
 describe('judgeIndependentReview', () => {

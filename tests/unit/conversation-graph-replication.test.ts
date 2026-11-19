@@ -143,6 +143,20 @@ describe('graph immutable source and replication proofs', () => {
     await writer.recordCertificateReceipt(r.packet.eventId,ownB);await peer.recordCertificateReceipt(r.packet.eventId,ownA);
     expect(writer.certifiedUnion(view.reader,view.dropped).records).toHaveLength(1);
   });
+  it('names only rows it verified against their own writer and returned unchanged as verifiedEventIds',async()=>{
+    const f=replicationFixture(),dir=await directory(),r=f.record(),writer=await ConversationGraphReplication.open(f.options(dir)),peer=await ConversationGraphReplication.open(f.options(await directory(),'sleeper'));
+    const a=await writer.appendLocal(r),b=await peer.receive(r,'writer'),certificate=f.certificate(r,[a.receipt,b]);
+    const ownA=await writer.attachCertificate(r.packet.eventId,certificate),ownB=await peer.attachCertificate(r.packet.eventId,certificate);
+    for(const receipt of [ownA,ownB]){await writer.recordCertificateReceipt(r.packet.eventId,receipt);await peer.recordCertificateReceipt(r.packet.eventId,receipt);}
+    const view=sourceReader(dir,()=>[...writer.originRecords(),...peer.originRecords()]);
+    // The peer accepts the writer's row exactly as verified against origin 'writer': a caller may reuse that verdict.
+    const atPeer=peer.certifiedUnion(view.reader,view.dropped);
+    expect(atPeer.records.map(x=>x.packet.eventId)).toEqual([r.packet.eventId]);expect([...atPeer.verifiedEventIds]).toEqual([r.packet.eventId]);
+    for(const record of atPeer.records)expect(peer.verifyHistoricalRecord(record)).toBe(true);
+    // The writer rebuilds its own row in the second loop, so the verdict above does not cover what it returns.
+    const atWriter=writer.certifiedUnion(view.reader,view.dropped);
+    expect(atWriter.records).toHaveLength(1);expect([...atWriter.verifiedEventIds]).toEqual([]);
+  });
   it('local source survives enqueue refusal and restart; enqueue acceptance alone is not durable', async () => {
     const f = replicationFixture(); const dir = await directory(); const r = f.record();
     let store = await ConversationGraphReplication.open(f.options(dir));

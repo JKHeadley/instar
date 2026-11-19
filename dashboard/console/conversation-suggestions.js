@@ -103,7 +103,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
   }
   // 1. The effort.
   if (!p.effort) {
-    say('Creating the effort…');
+    say('Creating the group…');
     const started = await send(`${SUGGESTIONS}/${encodeURIComponent(s.id)}/start`, {});
     if (started.needsUnlock) return locked();
     if (noAnswer(started)) return silent();
@@ -112,7 +112,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     p.createId = createId; save();
     const r = await runChange({ send, id: createId, change: { kind: 'create-effort', projectScope: [] }, wait, sleep, onWait });
     if (!r.ok) return stop(r);
-    if (r.data.effort?.kind !== 'effort') return retry('The effort was created but could not be opened. Refresh and try again.');
+    if (r.data.effort?.kind !== 'effort') return retry('The group was created but could not be opened. Refresh and try again.');
     p.effort = r.data.effort; save();
   }
   // 2. Its name.
@@ -121,7 +121,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
     const effort = await node(send, p.effort);
     if (effort?.locked) return locked();
     if (effort?.unreachable) return silent();
-    if (!effort || !Number.isSafeInteger(effort.correction?.headerVersion)) return retry('The new effort is not readable yet. Tap Continue in a moment.');
+    if (!effort || !Number.isSafeInteger(effort.correction?.headerVersion)) return retry('The new group is not readable yet. Tap Continue in a moment.');
     // Named already (by another tab, or before a reload lost this tab's progress): keep that name.
     if (effort.correction.headerVersion === 0) {
       p.nameId = p.nameId || requestId(); save();
@@ -169,7 +169,7 @@ export async function acceptSuggestion(s, { send, onStep, wait = 60000, sleep = 
       const conv = await node(send, s.frontDoor);
       if (effort?.locked || conv?.locked) return locked();
       if (effort?.unreachable || conv?.unreachable) return silent();
-      if (!effort || !conv?.correction) return retry('The new effort is not readable yet. Tap Continue in a moment.');
+      if (!effort || !conv?.correction) return retry('The new group is not readable yet. Tap Continue in a moment.');
       const already = effort.node.frontDoor && encodeNodeRef(effort.node.frontDoor) === frontKey;
       if (!already) {
         p.frontDoorId = p.frontDoorId || requestId(); save();
@@ -355,8 +355,8 @@ export async function renderSuggestions({ main, send, current, unlock, header, b
       }
       if (out.done) {
         finished = true;
-        words.textContent = out.skipped ? `Done. ${out.moved} moved; ${out.skipped} could not be moved and stayed where they were.` : `Done. ${out.moved} conversations are in this effort.`;
-        box.append(el('a', { class: 'btn-quiet btn-inline', href: openEffort(out.effort), text: s.frontDoor ? 'Open project' : 'Open effort' }));
+        words.textContent = out.skipped ? `Done. ${out.moved} moved; ${out.skipped} could not be moved and stayed where they were.` : `Done. ${out.moved} conversations are in this group.`;
+        box.append(el('a', { class: 'btn-quiet btn-inline', href: openEffort(out.effort), text: s.frontDoor ? 'Open project' : 'Open group' }));
         return { ok: true };
       }
       words.textContent = out.text; accept.textContent = 'Continue'; accept.disabled = false; reject.disabled = Boolean(readProgress(s.id).effort);

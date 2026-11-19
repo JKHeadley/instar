@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 /**
  * Signed pool reads: verb first, bearer only on a definite "cannot serve this kind of read"
  * (native-conversation-any-machine-access §3d items 3 and 5, FD-18).
@@ -56,11 +57,67 @@ export function bearerFallbackPermitted(kind: SignedReadKind, res: MeshRpcClient
   return false;
 }
 
+/**
+ * SEC-114 (active form), an interim mitigation. A MeshRpc ANSWER is not signed, so "I cannot serve
+ * this read" can be forged by anyone on the network path between two machines, to make the sender
+ * fall back to the bearer and send the agent token over that same path. No version source is signed
+ * either (the capacity advert also arrives in an unsigned answer), so this does NOT guarantee the
+ * token is never sent; it raises the cost. The rule: once a machine has EVER been seen at a version
+ * that serves these reads, the fallback to it is refused, whatever an answer says. The highest
+ * version seen is a ratchet ({@link PeerVersionFloor}): an attacker can only raise it, which causes
+ * refusals (the safe direction), never lower it to reopen the fallback. The full fix is signed answers.
+ */
+export function bearerFallbackBarredByVersionFloor(highestVersionSeen: string | null | undefined): boolean {
+  return versionAtLeast(highestVersionSeen, SIGNED_POOL_READS_MIN_VERSION);
+}
+
+/** Compare two versions; null/unparseable sorts lowest. */
+function versionGreater(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!versionAtLeast(a, '0.0.0')) return false;
+  if (!versionAtLeast(b, '0.0.0')) return true;
+  return versionAtLeast(a, b as string) && !versionAtLeast(b, a as string);
+}
+
+/**
+ * The highest version ever seen for each peer machine, persisted on THIS machine and never lowered
+ * (SEC-114). Fed from every version the pool registry reports; written only when a value rises.
+ */
+export class PeerVersionFloor {
+  private map: Record<string, string> | null = null;
+  constructor(private readonly filePath: string | null, private readonly write: (path: string, data: unknown) => void) {}
+
+  private load(): Record<string, string> {
+    if (this.map) return this.map;
+    this.map = {};
+    if (this.filePath) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as { floors?: Record<string, unknown> };
+        for (const [k, v] of Object.entries(raw?.floors ?? {})) if (typeof v === 'string') this.map[k] = v;
+      } catch { /* @silent-fallback-ok: no file yet, or unreadable: start empty; every observation re-raises it */ }
+    }
+    return this.map;
+  }
+
+  /** Record what is seen now and return the highest version ever seen for this machine. */
+  observe(machineId: string, ...seen: Array<string | null | undefined>): string | null {
+    const m = this.load();
+    let best = m[machineId] ?? null;
+    for (const v of seen) if (versionGreater(v, best)) best = v as string;
+    if (best && best !== m[machineId]) {
+      m[machineId] = best;
+      if (this.filePath) {
+        try { this.write(this.filePath, { version: 1, floors: m }); } catch { /* @silent-fallback-ok: kept in memory; the next rise retries the write */ }
+      }
+    }
+    return best;
+  }
+}
+
 interface KindState { signedAt?: string | null; bearerNeededAt?: string | null }
 
 export class SignedReadCapability {
   private readonly byMachine = new Map<string, Map<SignedReadKind, KindState>>();
-  private readonly counts = { signedReads: 0, bearerReads: 0, failuresNotDowngraded: 0 };
+  private readonly counts = { signedReads: 0, bearerReads: 0, failuresNotDowngraded: 0, fallbacksRefused: 0 };
 
   private kindState(machineId: string, kind: SignedReadKind): KindState {
     let m = this.byMachine.get(machineId);
@@ -86,6 +143,9 @@ export class SignedReadCapability {
   }
 
   recordBearerRead(): void { this.counts.bearerReads++; }
+
+  /** A bearer fallback refused because the peer has been seen at a version that serves this read (SEC-114). */
+  recordFallbackRefused(): void { this.counts.fallbacksRefused++; }
 
   /** A timeout or transport error on the signed read that was reported, not sent on by bearer. */
   recordFailureNotDowngraded(): void { this.counts.failuresNotDowngraded++; }
@@ -119,7 +179,7 @@ export class SignedReadCapability {
   status(memberIds: readonly string[]): {
     signedCapable: Record<string, Record<SignedReadKind, boolean>>;
     bearerFallbackNeededBy: Array<{ machineId: string; kinds: SignedReadKind[] }>;
-    counts: { signedReads: number; bearerReads: number; failuresNotDowngraded: number };
+    counts: { signedReads: number; bearerReads: number; failuresNotDowngraded: number; fallbacksRefused: number };
   } {
     return {
       signedCapable: Object.fromEntries(memberIds.map((id) => [id, this.signedCapable(id)])),
@@ -155,7 +215,17 @@ export async function signedThenBearer<T>(o: {
   signed: (() => Promise<MeshRpcClientResult>) | null;
   accept: (result: unknown) => T | string;
   bearer: (() => Promise<T>) | null;
+  /** The highest version ever seen for this peer (PeerVersionFloor), or null when none (SEC-114). */
+  versionFloor?: string | null;
+  /** Told once per refused fallback, so a real breakage is loud (SEC-114). */
+  onFallbackRefused?: (why: string) => void;
 }): Promise<SignedReadOutcome<T>> {
+  const barred = bearerFallbackBarredByVersionFloor(o.versionFloor);
+  const refuse = (why: string): SignedReadOutcome<T> => {
+    o.capability.recordFallbackRefused();
+    try { o.onFallbackRefused?.(why); } catch { /* @silent-fallback-ok: the refusal itself is returned to the caller */ }
+    return { via: null, error: `bearer-fallback-refused: ${why}`, unreachable: false };
+  };
   const viaBearer = async (): Promise<SignedReadOutcome<T>> => {
     if (!o.bearer) return { via: null, error: 'no-bearer-route', unreachable: false };
     try {
@@ -168,7 +238,9 @@ export async function signedThenBearer<T>(o: {
   };
   // No signing transport on this machine (mesh not wired): the read is what it was before.
   if (!o.signed) return viaBearer();
-  if (o.capability.bearerRemembered(o.machineId, o.kind, o.peerVersion)) return viaBearer();
+  // A remembered "needs bearer" could itself have come from a forged answer: it is not honoured for a
+  // peer whose version floor says it serves this read.
+  if (o.capability.bearerRemembered(o.machineId, o.kind, o.peerVersion) && !barred) return viaBearer();
   let res: MeshRpcClientResult;
   try {
     res = await o.signed();
@@ -178,6 +250,9 @@ export async function signedThenBearer<T>(o: {
     return { via: null, error: err instanceof Error ? (err.name === 'AbortError' ? 'timed out' : err.message) : String(err), unreachable: true };
   }
   if (bearerFallbackPermitted(o.kind, res, o.peerVersion)) {
+    if (barred) {
+      return refuse(`${o.machineId} answered ${res.ok ? 'an older shape' : (res.reason ?? `HTTP ${res.status}`)} for a ${o.kind} read, but it has been seen at ${o.versionFloor}, which serves it`);
+    }
     o.capability.recordBearerNeeded(o.machineId, o.kind, o.peerVersion);
     return viaBearer();
   }

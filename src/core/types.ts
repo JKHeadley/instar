@@ -2602,6 +2602,8 @@ export interface MachineCapacity {
    *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
   seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
+    /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
+    documentsDecisionRows?: boolean;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
@@ -6230,6 +6232,9 @@ export interface FileViewerConfig {
 
   /** Maximum file size for editing (bytes). Default: 204800 (200KB) */
   maxEditableFileSize: number;
+
+  /** Maximum file size to download (bytes), separate from the preview cap. Default: 1073741824 (1GB) */
+  maxDownloadSize?: number;
 
   /** File patterns that are NEVER served, even within allowed directories. */
   blockedFilenames: string[];

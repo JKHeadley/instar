@@ -1,5 +1,8 @@
 // safe-fs-allow: test fixture cleanup uses SafeFsExecutor.
 /** Cross-component proof: the service's real child PID protects a restart in the separate supervisor. */
+import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
+import { signerKeyHashOf } from '../../src/core/AppRecordSignatures.js';
+import { requestDigest, signPeerResult } from '../../src/localVerify/peerResultSignature.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +20,16 @@ const view = (head: string): PrView => ({
   author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/${head}`,
   headRefOid: sha(head), baseRefName: 'main', baseRefOid: sha('b'),
 });
+
+/** SEC-113 D1: the fake peer's machine key, pinned on the coordinator; its answers are signed like a real peer's. */
+const TEST_PEER_KEYS = generateSigningKeyPair();
+const TEST_PEER_KEY_HASH = signerKeyHashOf(TEST_PEER_KEYS.publicKey);
+function signedDone(req: PeerRunRequest, record: LocalVerifyRecord): PeerResult {
+  const digest = requestDigest(req);
+  const signer = { machineId: () => 'peer1', signerKeyHash: () => TEST_PEER_KEY_HASH,
+    sign: (payload: string) => ({ machineId: 'peer1', signerKeyHash: TEST_PEER_KEY_HASH, sig: edSign(payload, TEST_PEER_KEYS.privateKey) }) };
+  return { state: 'done', record, requestDigest: digest, sig: signPeerResult(signer, { record, requestDigest: digest }) };
+}
 
 describe('planned restart during a live local verification', () => {
   it('retains the request and preserves the next queued PR until the child exits', async () => {
@@ -96,7 +109,7 @@ describe('planned restart during a live local verification', () => {
     let requestSent: PeerRunRequest | null = null;
     let result: PeerResult = { state: 'running' };
     const client: PeerClient = {
-      status: async () => ({ inFlight: null, verifierVersion: '1.0.0', policyHash, slotBusy: false }),
+      status: async () => ({ inFlight: null, verifierVersion: '1.0.0', policyHash, slotBusy: false, signerKeyHash: TEST_PEER_KEY_HASH }),
       run: async (_peer, req) => { requestSent = req; return { ok: true, attemptId: req.attemptId }; },
       result: async () => result,
       cancel: async () => {},
@@ -123,6 +136,8 @@ describe('planned restart during a live local verification', () => {
     service.setPeerWiring({
       peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm1' },
+      // SEC-113 D1: the peer is pinned (this test is about restart holds, not signatures).
+      keyLookupFactory: () => (_m, hash) => (hash === TEST_PEER_KEY_HASH ? { status: 'ok', publicKeyPem: TEST_PEER_KEYS.publicKey } : { status: 'unknown' }),
     });
     const supervisor = new ServerSupervisor({ projectDir: dir, projectName: 'test', port: 9876, stateDir });
     const restart = vi.spyOn(supervisor, 'performGracefulRestart').mockResolvedValue(true);
@@ -145,13 +160,13 @@ describe('planned restart during a live local verification', () => {
 
       const req = requestSent as unknown as PeerRunRequest;
       const now = new Date().toISOString();
-      result = { state: 'done', record: {
+      result = signedDone(req, {
         repo: 'JKHeadley/instar', pr: 1, headSha: req.headSha, baseSha: req.baseSha, baseRefName: 'main', mergeTree: sha('d'),
         lanes: [{ name: 'unit', gating: true, files: 1, tests: 3, passed: 3, failed: 0, skipped: 0, todo: 0, seconds: 1 }],
         nodeVersion: 'v24', machineId: 'peer1', startedAt: now, finishedAt: now, outcome: 'success',
         harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false,
         verifierVersion: '1.0.0', policyHash, attempt: { id: req.attemptId, coordinatorMachineId: 'm1', leaseEpoch: 7 },
-      } as LocalVerifyRecord };
+      } as LocalVerifyRecord);
       (service as unknown as { remotePolledAt: Map<string, number> }).remotePolledAt.clear(); // the next poll is due
       await service.tick();
       expect(service.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'success', machineId: 'peer1' });
