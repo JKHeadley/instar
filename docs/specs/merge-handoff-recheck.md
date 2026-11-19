@@ -18,102 +18,105 @@ topic: 145097
 - **Hand-off:** right after a change passes its verify, the verifier asks the merge watcher to merge exactly that change at that head, and holds its queue until the watcher answers, so the next change is tested on top of the merge.
 - **Merge watcher:** the part that merges green changes (`GreenPrAutoMerger`). It also looks at every open change by itself every 10 minutes (a **tick**).
 - **Miss:** a hand-off that ends without a merge.
+- **Pass:** one run of the merge watcher over the open changes. A hand-off is one pass that may merge only the handed-over change.
 
 ## Problem statement
 
-One hand-off in five ends without a merge, and most of those changes are merged minutes later, unchanged, by hand.
+One hand-off in five ends without a merge, and the largest group of those is merged minutes later, unchanged, by hand.
 
-Measured on the coordinator from its own log (`merge-handoff-result` rows, 2026-11-16 16:16Z to 2026-11-19 13:35Z) and from GitHub's record of when each change merged:
+Measured on the coordinator from its own log (`merge-handoff-result` rows, 2026-11-16 16:16Z to 2026-11-19 13:35Z, 2.9 days) and from GitHub's record of when each change merged:
 
 - 154 hand-offs: 122 merged, 32 missed.
-- 15 misses answered "not mergeable". **All 15 merged later at the same head**, 9 within 2 minutes, 13 within 8, the slowest after 13. None was a real conflict. After main moves, GitHub takes some seconds to work out again whether each open change can be merged, and until then it answers "unknown"; the hand-off reads that as "not mergeable" and gives up.
-- 3 misses answered "not listed" (the change was not in the list of open changes the watcher had just read) and merged at the same head 1, 10 and 16 minutes later. 1 answered "list failed" (the list call itself failed) and merged 1 minute later.
-- The other 13 are of other kinds (a status still pending, a body check, and others); 6 of the 7 "status pending" cases needed a new head, so looking again would not have helped them. They are out of scope.
+- 15 of the misses (about 5 a day) answered "not mergeable". **All 15 merged later at the same head**: 9 within 2 minutes, 13 within 8, the slowest after 13. Most were merged by the session that operates the line, by hand (five times on 2026-11-19 by 14:51Z).
+- The likely cause, not yet proven: after main moves, GitHub's list of open changes answers "unknown" for whether each change can be merged until something reads the change itself, and the watcher treats anything but "mergeable" as not mergeable. The code already knows this for its 10-minute rounds (it makes one direct read so that the next round sees the answer). The log does not record whether GitHub said "unknown" or "conflicting" in those 15 cases; a later merge at the same head shows only that the change could be merged in the end. Part D records the value from now on, with the switch on or off, so the first days show whether the cause is the one assumed.
+- The other 17 misses are of other kinds (a status still pending, the change missing from the list, a failed list call, a body check, and others). They are out of scope: their causes are several or unproven, and for 6 of the 7 "status pending" cases a new head was needed.
 
-So 19 of 32 misses (about 5 a day) are GitHub not being ready at the moment the hand-off asked. Today the code says "a hand-off never retries: a refused merge waits for the watcher's tick", up to 10 minutes later. In practice the session that operates the line merges them by hand (five times on 2026-11-19 by 14:51Z), because a green change left unmerged while the line goes on risks main moving under it.
+Today the code says "a hand-off never retries: a refused merge waits for the watcher's tick", up to 10 minutes later.
 
-**What it costs today:** an operator's attention about 5 times a day; and each time the next verify starts before the merge, the purpose of the hand-off (testing the next change on top of the merge) is lost for that change.
+**What it costs today:** an operator's attention about 5 times a day; and each time, the next verify starts before the merge, so the purpose of the hand-off (the next change is tested on top of the merge) is lost for that change.
 
 ## Proposed design
 
-**In one sentence:** when a hand-off misses for one of three reasons that mean "GitHub was not ready", the hand-off asks again after a short wait, at most three times within one minute, while the queue is still held; everything that decides whether a change may merge is unchanged.
+**In one sentence:** when the handed-over change is not mergeable only because GitHub has not yet said whether it can be merged, the same pass reads that one change again after a few seconds, at most three times within 30 seconds, and goes on to the merge when GitHub says "mergeable"; everything that decides whether a change may merge is unchanged.
 
-### A. When it looks again
+### A. What happens
 
-After the watcher's answer to a hand-off, the hand-off asks once more when the answer is one of:
+In the hand-off pass, at the point where the watcher finds that the handed-over change is not eligible:
 
-1. `handoff-not-eligible:not-mergeable`, **and** GitHub's own answer for that change was "unknown" (not "conflicting"). The watcher already makes one direct read of the change in that case, which is what makes GitHub compute the answer; the hand-off's answer now says which of the two it was (`not-mergeable-unknown` or `not-mergeable-conflicting`), so that a real conflict is never asked about again.
-2. `handoff-not-eligible:not-listed`.
-3. `list-failed`, once only (a failed list call counts toward the watcher's circuit breaker, which opens at three in a row; one more try cannot open it by itself, three could).
+1. If the reason is "not mergeable" and GitHub's value for the change in the list just read is `UNKNOWN`, the watcher waits 5 seconds and reads that one change directly (the read it already uses before acting; it already asks GitHub for the `mergeable` value, and its result now carries it).
+2. If the read says `MERGEABLE` and the head is still the handed-over head, the watcher puts that value on the change's row, judges the row again with the same rule as before, and, if it is now eligible, continues exactly as a hand-off does today: the same checks, then the merge attempt.
+3. If the read still says `UNKNOWN`, it waits 10 seconds and reads again, then 15 seconds and reads a third time. After the third read, or if the read fails, or says `CONFLICTING`, or shows another head, a closed or merged change, the hand-off ends with today's answer.
 
-It waits 10 seconds before the second ask, 20 before the third and 30 before the fourth: at most three more asks and 60 seconds. Each ask is the watcher's normal hand-off pass for the same change and the same head: it lists the open changes again and applies every check again. The first ask that merges, or that answers anything outside the three reasons, ends it.
+Nothing else is repeated: the list is not read again, no other change is looked at again, and the pass's other steps run once, as today.
 
 ### B. What does not change
 
-- **Who may merge, and what.** Every ask goes through the same pass: the lease, the breaker, holds, code owners, the independent review, the required status on GitHub for that head, and safe-merge. The target is still exactly the verified change at the verified head; a head that moved answers `head-moved` and ends it.
-- **The watcher's own ticks.** A change still missed after the last ask is left to the 10-minute tick, as today.
-- **The hold.** The queue is held during the asks, as it is during the first. The hold's own limit (30 minutes) is unchanged. A planned restart waits for the hold as today.
+- **Who may merge, and what.** The change must pass the same eligibility rule on its row, then everything a hand-off does today before and during a merge attempt: the lease, the breaker, holds, code owners, the independent review, the read of the change immediately before acting, and safe-merge with its own checks. The target is still exactly the verified change at the verified head.
+- **A real conflict.** `CONFLICTING` is never read again.
+- **The watcher's own rounds**, the hold and its 30-minute limit, and a planned restart's wait for the hold.
 
 ### C. What it costs
 
-- Up to 60 more seconds of held queue on a hand-off that still misses. At today's rates (19 such misses in 154 hand-offs) that is at most about 7 seconds per hand-off on average, and less when the second ask succeeds. A machine that has just finished a verify waits those seconds before starting the next one.
-- Up to three more list calls to GitHub per such hand-off (about 15 a day).
+- Up to 30 seconds of waiting plus three small reads, inside a pass that is already holding the queue, and only on a hand-off that would otherwise have missed. Those 15 misses held the queue 12 to 37 seconds each as it was. At 15 such cases in 154 hand-offs the worst case averages about 3 seconds per hand-off.
+- While the queue is held longer, a second green change that finishes in the same seconds gets no hand-off of its own (`hold-active`, as today) and waits for the 10-minute round. This happened once in the 154 hand-offs. It is counted (part D).
 
 ### D. Switch, and what is recorded
 
-- `monitoring.greenPrAutoMerge.handoffRecheck`: `false` when absent. Read live at each hand-off. Off means today's behaviour exactly. (No migration: absent is off.)
-- Each further ask writes an audit row `merge-handoff-recheck` (change, head, which ask, the reason that caused it, seconds waited). The final `merge-handoff-result` row is written once, as today, with the last answer and the total time held, plus the number of asks.
-- `GET /local-verify`, under `mergeLine`: whether the switch is on, and since start how many hand-offs looked again and how many of those merged.
-- The awareness entry `src/data/awareness/merge-handoff-recheck.md` says the switch exists, what a `merge-handoff-recheck` row means, and where the counts are.
+- `monitoring.greenPrAutoMerge.handoffRecheck`: off when absent. Read live at each hand-off through a function the server passes to the watcher (the watcher's own settings are fixed at start, so the switch cannot live there). Off means today's behaviour exactly. No migration: absent is off.
+- **With the switch on or off**, the hand-off's answer for a change that is not mergeable now says which it was: `handoff-not-eligible:not-mergeable-unknown` or `handoff-not-eligible:not-mergeable-conflicting` (in the audit row and in the answer the verifier logs). Nothing reads the old string to decide anything: it is only logged and counted.
+- Each further read writes an audit row `handoff-recheck` (change, head, which read, GitHub's answer, seconds waited).
+- `GET /local-verify`, under `mergeLine`, since start: hand-offs that met `UNKNOWN`, how many of those merged in the same hand-off, and hand-offs skipped as `hold-active`.
+- The awareness entry `src/data/awareness/merge-handoff-recheck.md` says the switch exists, what the rows mean and where the counts are.
 
 ## Decision points touched
 
 | Decision point | Classification | Basis and evidence |
 |---|---|---|
-| Whether a change is merged | invariant; basis: enumerable-domain; evidence: unchanged. The same pass with the same checks decides each time; this design only changes how many times, within one minute, the pass is asked for the same change and head. A test asserts that every further ask calls the same pass with the same target and that no answer outside the three reasons is asked about again. | |
-| Whether the hand-off asks again | invariant; basis: enumerable-domain; evidence: three named answers, fixed waits, a fixed count, one switch; tests on each answer, on a conflicting change (never asked again), on a moved head, and on the count. Symbol: the watcher's answer string and GitHub's `mergeable` value for the change. State claimed: "GitHub had not finished computing, or its list was behind". Corroboration: the next ask itself; a wrong guess costs at most 60 seconds of hold and merges nothing. | |
+| Whether a change is merged | invariant; basis: enumerable-domain; evidence: unchanged. The same eligibility rule and the same checks decide; the only new input is a fresher value of GitHub's own `mergeable` field for the same change and head, read from GitHub. A test asserts that a re-read change still passes through every check a hand-off passes through today, and that `CONFLICTING`, another head, a closed change and a failed read all end with no merge attempt. | |
+| Whether the hand-off reads the change again | invariant; basis: enumerable-domain; evidence: one named condition (not mergeable, GitHub's value `UNKNOWN`), fixed waits, a fixed count, one switch; tests on each. Symbol: the `mergeable` value in the list row. State claimed: "GitHub has not computed it yet". Corroboration: the direct read itself, which returns GitHub's computed value; a wrong guess costs at most 30 seconds and merges nothing. | |
 
 ## Fixed limits
 
 | Limit | Value | Why this value |
 |---|---|---|
-| Waits | 10, 20, 30 seconds | On 2026-11-19 a change answered "not mergeable" 34 seconds after its verify passed and was merged by hand 45 seconds later; 9 of 15 such changes were merged by hand within 2 minutes. The waits reach 10, 30 and 60 seconds after the first answer. Starting values: the audit rows show at which ask merges happen, and the values are revised from them at the 7-day review. |
-| Further asks | 3 (1 for a failed list) | Bounds the hold at one minute; one for a failed list so that this cannot open the watcher's breaker by itself. |
+| Waits | 5, 10, 15 seconds | On 2026-11-19 one such change was refused 34 seconds after its verify passed and merged by hand 45 seconds after that; hand merges give only an upper bound on when GitHub was ready. The reads fall 5, 15 and 30 seconds after the refusal. Starting values: the `handoff-recheck` rows show at which read GitHub answers, and the values are revised from them at the 7-day review. |
+| Further reads | 3 | Bounds the added wait at 30 seconds. |
 
 ## Multi-machine posture
 
-- The hand-off and the merge watcher run only on the machine that holds the coordinator lease; a peer never merges. The switch is read on that machine. machine-local-justification: operator-ratified-exception, commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17 (the approved Local Verify capacity spec: the merge line is the coordinator's). If the lease moves during the asks, the next ask answers `not-lease-holder`, which is outside the three reasons, and it ends.
+- The hand-off and the merge watcher run only on the machine that holds the coordinator lease; a peer never merges. The switch is read on that machine. machine-local-justification: operator-ratified-exception, commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17 (the approved Local Verify capacity spec: the merge line is the coordinator's). The lease is checked at the start of the pass and again by the merge attempt, as today.
 - The counts in `GET /local-verify` are the coordinator's, since start, like the other merge-line counts.
 
 ## Maturation plan
 
 - **ladder:** merge-handoff-recheck
-- **test-agent-live:** a throwaway agent with a fake watcher that answers not-mergeable (unknown) twice and then merges: the hand-off holds, asks three times, merges, and writes the rows.
-- **dev-agent-live:** the development agent's line, switched on by the session that operates the line.
-- **graduation criterion:** over 7 days with the switch on: misses of the three kinds fall from about 5 a day to at most 1 a day; no merge of a change that the checks would have refused (there is no path for one, and the audit rows are read for it); the average time a hand-off holds the queue does not rise by more than 10 seconds.
+- **test-agent-live:** a throwaway agent with the real watcher and a fake GitHub command that answers `UNKNOWN` in the list and `MERGEABLE` on the second direct read: the hand-off waits, reads twice, and reaches the merge attempt; the same with `CONFLICTING` ends at once.
+- **dev-agent-live:** the development agent's line. First with the switch off, to read the new `unknown` or `conflicting` values for a few days; then switched on by the session that operates the line.
+- **graduation criterion:** over 7 days with the switch on, from the audit rows: of the hand-offs that met `UNKNOWN`, at least 8 in 10 merged in the same hand-off (every other ending counts as not recovered, whatever its name); no merge attempt on a change whose read said anything but `MERGEABLE`; the average time a hand-off holds the queue does not rise by more than 5 seconds; `hold-active` skips do not rise above 1 in 50 hand-offs. Reported beside it, as the operator's workload and not as the criterion: hand merges per day.
 - **fleet:** off by default until the 7-day report; then proposed as the default with the numbers.
 - **dark-window:** from merge until the operating session turns it on.
 - **owner:** echo (scaling session, topic 145097). Review 7 days after it is switched on. If it is not switched on 30 days after merge, the owner raises that with the session that operates the line.
 
 ## Tests
 
-- **Unit:** each of the three answers leads to another ask after the stated wait; `not-mergeable-conflicting`, `head-moved`, `status-pending`, `not-lease-holder`, `disabled`, `dry-run` and a merge do not; at most three further asks, one for a failed list; the waits are 10, 20, 30 seconds (through the timer seam); every ask passes the same change and head; the switch off gives exactly one ask; the watcher's answer distinguishes unknown from conflicting; the result row is written once with the last answer and the count; the hold is released once.
-- **Integration:** `GET /local-verify` shows the switch and the two counts.
-- **E2E lifecycle:** on the production wiring, with the switch on, a hand-off whose first answer is not-mergeable (unknown) is asked again and merges; with the switch absent it is asked once. A wiring test checks the switch is read live from the real config.
+- **Unit (the watcher, with its existing fake dependencies and a timer seam):** `UNKNOWN` then `MERGEABLE` on the first, second and third read reaches the merge attempt through the same checks; three `UNKNOWN` reads end with `not-mergeable-unknown`; `CONFLICTING` in the list is never read again; a read that fails, shows another head, a closed or a merged change ends with no attempt; the waits are 5, 10 and 15 seconds; the list is read once; no other change is judged again; the switch off gives no read and the old flow, with the new answer strings; a change the re-read makes eligible but which a hold, the code-owner rule or the independent-review rule stops is still stopped.
+- **Integration:** `GET /local-verify` shows the three counts.
+- **E2E lifecycle:** on the production wiring, the switch is read live from the real config (off, then on, without a restart), and a hand-off that meets `UNKNOWN` writes the `handoff-recheck` row.
 
 ## Risks
 
-- **The line waits a minute for nothing** when GitHub stays unready. Bounded at 60 seconds, counted in the audit rows, judged at the review.
-- **More calls to GitHub.** About 15 list calls a day at today's rates; the list call's failure already feeds the breaker, and a failed list is asked again once only.
-- **A change that should not merge is asked about more often.** Asking is not merging: each ask runs every check, and a refusal that is not one of the three reasons ends it.
+- **The line waits 30 seconds for nothing** when GitHub stays unready. Bounded, counted, judged at the review.
+- **The cause is not the one assumed** (GitHub said `CONFLICTING`, and the later merges had another reason). Then the switch does nothing, the rows say so within days, and the change is removed.
+- **A second green change loses its hand-off** while the hold is longer. Counted; it waits for the 10-minute round as today.
 
 ## Frontloaded Decisions
 
-1. Three reasons only: not-mergeable with GitHub's answer unknown, not-listed, list-failed. Status-pending and all other misses are out of scope.
-2. The asks happen inside the hand-off, in the wiring that calls the watcher, while the queue is held; the watcher's pass is called again unchanged, except that its not-mergeable answer says unknown or conflicting.
-3. Waits 10, 20, 30 seconds; at most three further asks; one for a failed list.
-4. Off by default, one live switch, no migration.
-5. The sentence "a hand-off never retries" in the code's comment is replaced by this rule.
+1. One reason only: not mergeable with GitHub's value `UNKNOWN`. Every other miss is out of scope.
+2. The re-read happens inside the watcher's hand-off pass, for the handed-over change only; no second pass, no second list.
+3. Waits 5, 10, 15 seconds; at most three reads.
+4. Off by default; one live switch passed in by the server; no migration.
+5. The answer strings `not-mergeable-unknown` and `not-mergeable-conflicting` are written with the switch on or off.
+6. The sentence "a hand-off never retries" in the code's comments is replaced by this rule.
 
 ## Open questions
 
