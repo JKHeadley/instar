@@ -40,7 +40,7 @@ import { renderIdeas, ideasTile } from './ideas.js';
 import { renderWork } from './work.js';
 import { renderConversations, conversationsTile } from './conversations.js';
 import { paceCard } from './pace.js';
-import { takeTicket, signInAtBoot } from './ticket-model.js';
+import { takeTicket, signInAtBoot, validToken } from './ticket-model.js';
 import { createLifecycle, splitHash } from './page-lifecycle.js';
 import { renderChats } from './chats.js';
 import { renderDocuments } from './documents.js';
@@ -118,10 +118,10 @@ async function getOnce(path, timeoutMs, soft403 = false) {
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
-    if (r.status === 403 && soft403) return failure('the server answered 403');
-    if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
+    if (r.status === 403 && soft403) return { ...failure('the server answered 403'), status: r.status };
+    if (r.status === 401 || r.status === 403) { signOut(); return { ...failure('not signed in'), status: r.status }; }
     if (r.status === 503) return failure('switched off on this agent');
-    if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
+    if (!r.ok) return { ...failure(`the server answered ${r.status}`), status: r.status, retryable: r.status >= 500 };
     try { return { ok: true, data: await r.json() }; } catch { return failure('the answer was not readable'); }
   } catch (e) {
     return { ...failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached'), retryable: true };
@@ -158,15 +158,6 @@ async function post(path, body) {
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
-/** `unreachableOk`: only the boot check of an already-stored sign-in keeps it while the agent can't be reached. */
-async function validToken(t, unreachableOk = false) {
-  if (!t) return false;
-  try {
-    const r = await fetch('/sessions', { headers: { Authorization: `Bearer ${t}` }, cache: 'no-store' });
-    return r.ok;
-  } catch { return unreachableOk; } // @silent-fallback-ok: no connection is not a wrong sign-in at boot (keep it, show what was saved); a typed value is never kept unchecked (app-weak-network §2)
-}
-
 function signOut() {
   forgetOperatorSession();
   net.clear(); // saved copies belong to this sign-in
@@ -888,7 +879,7 @@ const net = installNetState({ getToken: () => token, onBack: () => { if (refresh
   // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
   let ticket = '';
   try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
-  const signIn = await signInAtBoot({ storedToken: token, validToken: (t) => validToken(t, true), ticket, fetchFn: (p, o) => fetch(p, o) });
+  const signIn = await signInAtBoot({ storedToken: token, ticket, fetchFn: (p, o) => fetch(p, o) });
   if (signIn.via === 'ticket') {
     // Stored exactly as the PIN unlock stores it.
     try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }

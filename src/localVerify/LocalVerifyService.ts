@@ -48,7 +48,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
+import { exitSeenPath, MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
@@ -76,7 +76,8 @@ import {
 import { localVerifyRunPrefixes, type LeftoverPrefix, type ReapOptions, type ReapResult } from './leftoverReaper.js';
 import { FIRST_PART_LIMITS, boundLikelyFailingWire, parseFirstPartSetting, type FirstPartGroup, type FirstPartInput, type FirstPartSetting, type FirstPartSummary, type LikelyFailingWire } from './firstPart.js';
 import { LikelyFailingStore, type LikelyFailingInfo } from './likelyFailingList.js';
-import { COMPARE_KINDS, FirstPartGroups, FirstPartTrialState, compareFirstPartRuns, compareKind, type CompareKind, type FileOutcome, type FirstPartComparison, type TrialCounts } from './firstPartTrial.js';
+import { FirstPartGroups } from './firstPartTrial.js';
+import { FirstPartReport, observation, redMainEpisode, type FirstPartEvidence, type ObservationDetail } from './firstPartReport.js';
 
 /** A verify peer's fit for a full verify (resource-aware placement §4). */
 export interface PeerFit {
@@ -339,6 +340,7 @@ export interface LocalVerifyServiceSeams {
   clearSignal?(key: string, resolution: string): void;
   /** A `main` head's subject and parents (release collapse); null when unreadable (verify as usual). */
   commitInfo?(sha: string): Promise<CommitInfo | null>;
+  firstPartHistory?(green: string, red: string): Promise<Array<{ head: string; message: string }> | null>;
   now?(): number;
   setTimer?(fn: () => void, ms: number): void;
   /** The draw that assigns a pull request to the first-part trial's `with` or `without` (0..1). Absent ⇒ Math.random. */
@@ -520,6 +522,13 @@ export function decideVerifyRetry(
 
 /** A run a server stop kills: how many of them make an entry starved without waiting for the clock. */
 export const INTERRUPTION_LIMITS = Object.freeze({ starvedAfter: 2 });
+/**
+ * The `restart-interrupted-runs` row. A consumed restart request explains a stop only when it was
+ * consumed within two minutes before it: both consumers record the request and then stop the
+ * server within seconds, and an older request belongs to an earlier restart.
+ */
+const RESTART_REQUEST_EXPLAINS_STOP_MS = 2 * 60_000;
+const RESTART_INTERRUPTED_MAX_PEER_ATTEMPTS = 20;
 
 /**
  * The starved signal: once per entry, when it has waited (capacity waits included) longer
@@ -678,30 +687,8 @@ interface InFlight {
   preflightAllowanceMs: number;
   /** Latched once this run's exit has been handled, so it is handled exactly once (see shutdown()). */
   settled?: boolean;
-  /** The run input, kept in memory only while the verdict check may follow this run with a comparison. */
+  /** The immutable setting and assignment used by this run. */
   runInput?: VerifyRunInput;
-}
-
-/** A verify waiting for its comparison run (the verdict check of spec local-verify-likely-failing-first.md, measure 6). In memory only. */
-interface PendingCompare {
-  kind: CompareKind;
-  pr: number;
-  headSha: string;
-  /** The run input of the verify it follows; the comparison uses it without the first-part block. */
-  input: VerifyRunInput;
-  first: { outcome: 'success' | 'failure' | 'error'; files: Record<string, FileOutcome> };
-  firstFinishedAt: string;
-  queuedAt: number;
-}
-
-interface CompareRun extends PendingCompare {
-  token: string;
-  pgid: number;
-  inputPath: string;
-  resultPath: string;
-  startedAt: number;
-  failFast: boolean;
-  cancelled: boolean;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -967,10 +954,7 @@ export class LocalVerifyService {
   readonly likelyFailing: LikelyFailingStore;
   /** The coordinator's assignment of pull requests to the trial's two groups. */
   private readonly firstPartGroups: FirstPartGroups;
-  /** This run machine's count of comparison runs. */
-  private readonly firstPartTrial: FirstPartTrialState;
-  private pendingCompare: PendingCompare | null = null;
-  private compareRun: CompareRun | null = null;
+  readonly firstPartReport: FirstPartReport;
   /** Focused preflight is dark unless a host explicitly selects observe or enforce. */
   private preflightModeSetting: (() => unknown) | null = null;
   /** Null means the durable replay store could not be read; fail to observe mode. */
@@ -1031,7 +1015,7 @@ export class LocalVerifyService {
     this.waiting = new WaitingList(path.join(this.lvStateDir, 'waiting.json'), this.now, (e) => this.audit(e));
     this.likelyFailing = new LikelyFailingStore(path.join(this.lvStateDir, 'likely-failing.json'), this.now, (e) => this.audit(e));
     this.firstPartGroups = new FirstPartGroups(path.join(this.lvStateDir, 'first-part-groups.json'), this.now, (e) => this.audit(e), () => (seams.random ? seams.random() : Math.random()));
-    this.firstPartTrial = new FirstPartTrialState(path.join(this.lvStateDir, 'first-part-trial.json'), (e) => this.audit(e));
+    this.firstPartReport = new FirstPartReport(this.cfg.stateDir, this.now, (e) => this.audit(e));
     this.operator = new OperatorQueueStore(path.join(this.lvStateDir, 'operator-queue.json'), this.now, (e) => this.audit(e));
   }
 
@@ -1095,8 +1079,7 @@ export class LocalVerifyService {
   }
 
   isDiagnosisCapacityBusy(): boolean {
-    // A comparison run (the first-part verdict check) holds this machine like a verify: no diagnosis beside it.
-    return !!this.inFlight || !!this.starting || !!this.compareRun || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
+    return !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
   }
 
   // ---- paths ----
@@ -1595,7 +1578,6 @@ export class LocalVerifyService {
 
   /** The two-phase in-flight protocol's boot half. */
   async reapOrphan(): Promise<'none' | 'cleared-pidless' | 'gone' | 'reaped' | 'incomplete'> {
-    await this.reapCompareOrphan();
     const rec = this.readInFlight();
     if (!rec) { this.blockedBy = null; return 'none'; }
     if (rec.pid === null || rec.pgid === null) {
@@ -2335,7 +2317,7 @@ export class LocalVerifyService {
       return { ok: true, attemptId: req.attemptId };
     }
     if (this.failedFileDiagnosisPeer?.busy() && !await this.failedFileDiagnosisPeer.preempt('peer-full-verify')) return refuse('peer-busy');
-    const busy = () => !!this.inFlight || !!this.starting || !!this.compareRun || this.peerState.current?.state === 'running' || this.seams.foreignSuiteHolders().length > 0 || !!this.blockedBy;
+    const busy = () => !!this.inFlight || !!this.starting || this.peerState.current?.state === 'running' || this.seams.foreignSuiteHolders().length > 0 || !!this.blockedBy;
     if (busy()) return refuse('peer-busy');
     // Short of memory: back-pressure (the coordinator offers the PR again later or elsewhere).
     // Its own heartbeat already says so; this catches a coordinator reading an older report.
@@ -2443,7 +2425,7 @@ export class LocalVerifyService {
       inFlight: cur && cur.state === 'running' ? { attemptId: cur.attemptId, pr: cur.pr } : null,
       verifierVersion: this.cfg.verifierVersion,
       policyHash: this.policyHash,
-      slotBusy: !!this.inFlight || !!this.starting || !!this.compareRun || this.seams.foreignSuiteHolders().length > 0 || this.notePause(),
+      slotBusy: !!this.inFlight || !!this.starting || this.seams.foreignSuiteHolders().length > 0 || this.notePause(),
       ...(this.peerSignerKeyHash() ? { signerKeyHash: this.peerSignerKeyHash()! } : {}),
     };
   }
@@ -2505,7 +2487,7 @@ export class LocalVerifyService {
   }
 
   /** Peer side: a peer run ended. Its record is kept for the coordinator, never put in this machine's index. */
-  private finishPeerAttempt(f: Pick<InFlight, 'entry' | 'cancelled'> & { token?: string }, result: VerifyRunResult | null | { kind: 'crash' | 'invalid' } | unknown): void {
+  private finishPeerAttempt(f: Pick<InFlight, 'entry' | 'cancelled' | 'runInput'> & { token?: string }, result: VerifyRunResult | null | { kind: 'crash' | 'invalid' } | unknown): void {
     const id = f.entry.peerAttempt!.id;
     const cur = this.peerState.current;
     if (f.cancelled || this.peerState.tombstones[id] !== undefined || !cur || cur.attemptId !== id) {
@@ -2523,7 +2505,11 @@ export class LocalVerifyService {
       // Anything else (crash, invalid record, a capacity requeue, a verifier mismatch) is an
       // infrastructure error for this attempt: the coordinator counts it and runs the PR again.
       record = { ...this.syntheticError(f.entry, r && typeof r.kind === 'string' ? `peer-${r.kind}` : 'peer-crash'), attempt: f.entry.peerAttempt };
+      // Only this made-up record takes the evidence known at the start. A real record that came
+      // back without the field stays without it, so it reads as unknown, never as "no first parts".
+      if (record.kind !== 'main' && f.runInput?.firstPartEvidence) record.firstPart = f.runInput.firstPartEvidence;
     }
+    this.noteFirstPart(f, { ...(r ?? {}), kind: 'record', record });
     // A red `main` run also hands over which files failed: the record itself may not carry them.
     const mainRun = record.kind === 'main' && record.outcome === 'failure' && r && r.kind === 'record' ? parsePeerMainRun(r) : undefined;
     cur.state = 'done';
@@ -3093,8 +3079,7 @@ export class LocalVerifyService {
 
   /** Nothing of this service is running or about to run on this machine. */
   private localIdle(): boolean {
-    // A running comparison's tests live in this agent's run folders: while it runs they are not leftovers.
-    return !this.inFlight && !this.starting && !this.compareRun && !this.blockedBy && this.peerState.current?.state !== 'running' && !this.failedFileDiagnosisPeer?.busy();
+    return !this.inFlight && !this.starting && !this.blockedBy && this.peerState.current?.state !== 'running' && !this.failedFileDiagnosisPeer?.busy();
   }
 
   /**
@@ -3316,20 +3301,33 @@ export class LocalVerifyService {
    * queue (not as an attempt), so the next boot resumes it. No timer is armed (the
    * process is exiting); a group that survives SIGTERM is found by the next boot's
    * orphan reap.
+   *
+   * Every stop writes one `restart-interrupted-runs` row first (also when nothing was running),
+   * so restarts and what each one cost are counted here and not reconstructed from logs.
    */
   shutdown(): void {
     if (this.stopped) return;
     this.stopped = true;
     void this.failedFileDiagnosisPeer?.preempt('shutdown');
     this.publishSuitePriority(false);
-    // A comparison run is never a record: a stop simply ends it (it is not counted as compared).
-    this.pendingCompare = null;
-    this.cancelCompare('shutdown');
-    const f = this.inFlight;
-    if (f && !f.cancelled && this.finishedResultAtShutdown(f)) {
+    const f = this.inFlight && !this.inFlight.cancelled ? this.inFlight : null;
+    const finished = f ? this.finishedResultAtShutdown(f) : null;
+    // Observability only: whatever goes wrong while building the row, the stop below still
+    // cancels the run, counts the interruption and persists the queue.
+    try { this.auditRestartInterruptedRuns(f, finished); }
+    catch (e) { this.audit({ event: 'restart-interrupted-runs', error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }); } // @silent-fallback-ok: a minimal row says the stop happened; the stop itself never depends on it
+    if (f && finished?.settle) {
       this.audit({ event: 'settled-at-shutdown', ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }), headSha: f.entry.headSha, ranMs: this.now() - f.startedAt });
       this.onExit(f, { status: null, signal: null });
-    } else if (f && !f.cancelled) {
+    } else if (f) {
+      if (finished?.finished) {
+        // A verdict was on disk and is thrown away: counted by its own row, with the reason.
+        this.audit({
+          event: 'finished-result-discarded-at-shutdown', ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }), headSha: f.entry.headSha,
+          ranMs: this.now() - f.startedAt, reason: finished.discardReason, resultKind: finished.resultKind,
+          ...(finished.outcome ? { outcome: finished.outcome } : {}),
+        });
+      }
       this.cancelInFlight('shutdown', { armKillTimer: false });
       if (f.entry.kind !== 'main') {
         // The stop killed a real run: it stays counted as an attempt, it is recorded as an
@@ -3353,14 +3351,75 @@ export class LocalVerifyService {
    * before the exit event does (2026-11-13: a 24-minute run was cancelled 121 ms after it
    * finished, its result discarded, and it ran again from the start).
    *
-   * Not settled when the verifier on disk has changed: the restart then loads a verifier whose
-   * index ignores a record this one writes, so the run has to happen again anyway, and the
-   * interruption path keeps the entry at the head of the queue for that.
+   * Not settled when the verifier on disk has changed, and that stays so. The result itself is
+   * valid for this process (the run child checked its own version against this server's when it
+   * started), but a record written here is worth something only if the merge step also acts on
+   * it before this process exits, because the restart loads a verifier whose index skips it
+   * (`rebuildIndex`). That cannot happen at a stop: the hand-off is refused once the service is
+   * stopping (`decideMergeHandoff`), the status poster has already been stopped, the merge
+   * itself is several network calls that take from seconds to minutes, and the whole teardown
+   * has a hard 20-second deadline (`shutdownDeadline.ts`). A record with no merge would be a
+   * green that nothing may use, and the entry would leave the queue; the interruption path
+   * instead keeps it at the head of the queue so the next boot runs it again. The loss is
+   * recorded as `finished-result-discarded-at-shutdown`, with the reason. The place that
+   * prevents the loss is before the stop: the restart guard's settle window keeps a planned
+   * restart waiting until the exit handler has recorded the result and offered the merge.
    */
-  private finishedResultAtShutdown(f: InFlight): boolean {
-    if (this.verifierChangedOnDisk()) return false;
-    const result = this.readResult(f.resultPath) as { kind?: unknown } | null;
-    return !!result && typeof result === 'object' && typeof result.kind === 'string';
+  private finishedResultAtShutdown(f: InFlight): { finished: boolean; settle: boolean; resultKind?: string; outcome?: string; discardReason?: 'verifier-changed-on-disk' } {
+    const changed = this.verifierChangedOnDisk();
+    const result = this.readResult(f.resultPath) as { kind?: unknown; record?: { outcome?: unknown } } | null;
+    if (!result || typeof result !== 'object' || typeof result.kind !== 'string') return { finished: false, settle: false };
+    const outcome = typeof result.record?.outcome === 'string' ? result.record.outcome.slice(0, 20) : undefined;
+    const resultKind = result.kind.slice(0, 20);
+    return changed
+      ? { finished: true, settle: false, resultKind, outcome, discardReason: 'verifier-changed-on-disk' }
+      : { finished: true, settle: true, resultKind, outcome };
+  }
+
+  /**
+   * The `restart-interrupted-runs` row: what this stop found in progress. The local run (none
+   * or one): which change, how long it had run, whether its child had already exited, whether a
+   * verdict was on disk and what became of it. Each peer attempt accepted and not yet imported.
+   * And the request that explains the stop, when one was consumed in the last two minutes:
+   * planned or not, holds bypassed or not (null = the request wrote neither, or no request
+   * explains this stop, such as a signal). A request this process's own `boot` row already
+   * named explains its start, not its stop (the process booted from it and was then stopped by
+   * something else). Bounded: one run, at most 20 attempts (the total is given). Written with
+   * empty lists when nothing was running, so a clean restart is counted too. Every field read
+   * from a file (the request log, a persisted queue entry) is type-checked: a malformed one is
+   * left out, never thrown on.
+   */
+  private auditRestartInterruptedRuns(f: InFlight | null, finished: ReturnType<LocalVerifyService['finishedResultAtShutdown']> | null): void {
+    const now = this.now();
+    let last: ReturnType<typeof readLastRestartRequest> = null;
+    try { last = readLastRestartRequest(this.cfg.stateDir); } catch { last = null; } // @silent-fallback-ok: no readable request reads as "no request explains this stop", which is what the row then says
+    const at = last ? Date.parse(last.at) : Number.NaN;
+    const req = last && typeof last.at === 'string' && Number.isFinite(at) && at <= now + 5_000 && now - at <= RESTART_REQUEST_EXPLAINS_STOP_MS
+      && last.at !== this.bootRestartAt ? last : null;
+    const text = (v: unknown, max: number): string | null => (typeof v === 'string' && v ? v.slice(0, max) : null);
+    const requestedBy = req ? text(req.requestedBy, 200) : null;
+    const peerAttemptId = f ? text(f.entry.peerAttempt?.id, 80) : null;
+    let childExited: boolean | null = null;
+    if (f) { try { childExited = !this.seams.isGroupAlive(f.pgid); } catch { childExited = null; } } // @silent-fallback-ok: an unreadable process table reads as unknown
+    const accepted = this.queue.filter((e) => e.remote?.state === 'accepted');
+    this.audit({
+      event: 'restart-interrupted-runs',
+      planned: req && typeof req.plannedRestart === 'boolean' ? req.plannedRestart : null,
+      bypassHolds: req && typeof req.bypassHolds === 'boolean' ? req.bypassHolds : null,
+      ...(req ? { restartAt: req.at, ...(requestedBy ? { requestedBy } : {}) } : {}),
+      localRuns: f ? [{
+        ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }),
+        headSha: f.entry.headSha, ranMs: Math.max(0, now - f.startedAt), childExited,
+        // settled: recorded here; discarded: a verdict was on disk and is thrown away; none: no verdict yet.
+        finishedResult: finished?.settle ? 'settled' : finished?.finished ? 'discarded' : 'none',
+        ...(peerAttemptId ? { peerAttemptId } : {}),
+      }] : [],
+      peerAttempts: accepted.slice(0, RESTART_INTERRUPTED_MAX_PEER_ATTEMPTS).map((e) => {
+        const sentAt = e.remote?.sentAt;
+        return { pr: e.pr, attemptId: text(e.remote?.attemptId, 80), sentAgoMs: typeof sentAt === 'number' && Number.isFinite(sentAt) ? Math.max(0, now - sentAt) : null };
+      }),
+      peerAttemptsTotal: accepted.length,
+    });
   }
 
   // ---- internals ----
@@ -3544,8 +3603,6 @@ export class LocalVerifyService {
     if (this.cfg.peerOnly) {
       // A peer verify also prepares before acquiring its suite slot.
       this.publishSuitePriority(!this.stopped && !!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired);
-      // The verdict check's comparison run follows a finished peer verify here too.
-      if (!this.inFlight && !this.starting) this.startCompareIfDue();
       return;
     } // a peer-only service never starts its own queued work
     this.scheduleDispatch();
@@ -3557,8 +3614,6 @@ export class LocalVerifyService {
       this.reconcileSuitePriority();
       return;
     }
-    // A comparison run (the verdict check) holds this machine like a verify: nothing starts beside it.
-    if (this.startCompareIfDue()) return;
     const next = this.nextRunnableQueuedEntry();
     if (!next) { this.publishSuitePriority(false); return; }
     // This claim is written BEFORE checking an occupied slot. Once that slot
@@ -3858,10 +3913,13 @@ export class LocalVerifyService {
       if (entry.peerAttempt) {
         // A peer attempt never touches this machine's own index or queue: the coordinator gets an error record.
         this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e), peerAttempt: entry.peerAttempt.id });
-        this.finishPeerAttempt({ entry, cancelled: false }, { kind: 'crash' });
+        this.finishPeerAttempt({ entry, cancelled: false, runInput: input, token }, { kind: 'crash' });
         return;
       }
-      this.complete(this.syntheticError(entry, 'spawn'), 'run');
+      const failed = this.syntheticError(entry, 'spawn');
+      if (input.firstPartEvidence) failed.firstPart = input.firstPartEvidence;
+      this.complete(failed, 'run');
+      this.noteFirstPart({ runInput: input, token }, { kind: 'record', record: failed });
       this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e) });
       if (!entry.preflightReplay) this.handleErrorRetry(entry);
       this.pump();
@@ -3879,7 +3937,7 @@ export class LocalVerifyService {
     }
     this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt,
       preflightAllowanceMs: input.preflightMode && input.preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0,
-      ...(input.collectFileOutcomes ? { runInput: input } : {}) };
+      runInput: input };
     this.publishSuitePriority(true);
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
@@ -3967,6 +4025,10 @@ export class LocalVerifyService {
     // (also when the settling marker could not be written: nothing would announce the end later)
     if (!settling || this.mergeHoldFile === null) { try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ } }
     const result = this.readResult(f.resultPath);
+    if (!f.runInput) {
+      try { f.runInput = JSON.parse(fs.readFileSync(f.inputPath, 'utf8')) as VerifyRunInput; }
+      catch { /* An incomplete observation discloses an unavailable run input after restart. */ }
+    }
     this.removeRunFiles(f);
     for (const d of (result && 'degradations' in result && Array.isArray(result.degradations)) ? result.degradations : []) {
       try { this.seams.onDegradation?.(d); } catch { /* @silent-fallback-ok: the run log still carries the event */ }
@@ -3974,12 +4036,9 @@ export class LocalVerifyService {
     if (f.entry.peerAttempt) {
       this.publishSuitePriority(false);
       this.finishPeerAttempt(f, result);
-      // After the attempt is final (its record is kept for the coordinator): the first-part row, and the verdict check when due.
-      this.noteFirstPart(f, result);
       const waiters = this.idleWaiters;
       this.idleWaiters = [];
       for (const w of waiters) w();
-      if (this.pendingCompare) this.pump();
       return;
     }
     if (f.cancelled) {
@@ -4003,7 +4062,10 @@ export class LocalVerifyService {
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
       const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
       this.audit({ event: 'run-error', pr: f.entry.pr, step, exit, detail: result && 'detail' in result ? result.detail : undefined });
-      this.complete(this.syntheticError(f.entry, step), 'run');
+      const synthetic = this.syntheticError(f.entry, step);
+      if (f.runInput?.firstPartEvidence) synthetic.firstPart = f.runInput.firstPartEvidence;
+      this.complete(synthetic, 'run');
+      this.noteFirstPart(f, { kind: 'record', record: synthetic });
       if (!f.entry.preflightReplay) this.handleErrorRetry(f.entry);
     } else if (result.kind === 'requeue') {
       // A capacity wait is never an attempt.
@@ -4024,7 +4086,7 @@ export class LocalVerifyService {
       if (rec) this.noteFlaky(rec);
       if (rec && rec.outcome === 'success' && f.entry.kind !== 'main') this.rearmMainAfterGreen(rec.pr);
       if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry, rec.errorStep);
-      // After the record is final and acted on: the first-part row, and the verdict check when due.
+      // Record machine-local observations after the verify has been accepted.
       if (rec) this.noteFirstPart(f, result);
     }
     // No hand-off was opened for this run (red, error, re-queued, or the line held by another
@@ -4209,6 +4271,20 @@ export class LocalVerifyService {
     // A green verify hands the age over, so it is written in the same watermark write as the green head (and ends an unknown age).
     const work = this.health.onVerify(head, record.outcome, detail, record.outcome === 'success' ? { oldestUnverifiedAt: this.mainObs.oldestUnverifiedAt } : undefined).then(async (action) => {
       if (this.health.isHealthy()) this.clearMainFailure();
+      try {
+        if (this.health.isHealthy()) this.firstPartReport.green();
+        const snapshot = this.health.snapshot();
+        if (snapshot.state === 'main-red' && snapshot.redHead && !this.cfg.peerOnly
+          && !this.firstPartReport.hasOpenEpisode()) {
+          const episode = redMainEpisode(snapshot.redHead, snapshot.lastGreenHead, this.now(), null, []);
+          const records = [...this.index.values()];
+          this.firstPartReport.episode(episode); // Reserve once before starting asynchronous history work.
+          void Promise.resolve().then(async () => {
+            const history = snapshot.lastGreenHead ? await this.seams.firstPartHistory?.(snapshot.lastGreenHead, snapshot.redHead!).catch(() => null) : null;
+            this.firstPartReport.completeEpisode(redMainEpisode(episode.redHead, episode.lastGreenHead, episode.at, history, records));
+          }).catch((e) => this.audit({ event: 'first-part-episode-write-failed', detail: String(e) }));
+        }
+      } catch (e) { this.audit({ event: 'first-part-episode-write-failed', detail: String(e) }); }
       // SEC-113 D2.4: this machine's own red on a head a peer called green (after the two-strike rerun).
       if (source === 'local' && record.outcome === 'failure' && !this.cfg.peerOnly) {
         const snap = this.health.snapshot();
@@ -4251,14 +4327,15 @@ export class LocalVerifyService {
 
   /**
    * This machine's setting as it applies now. An unreadable setting is `off` (today's behaviour).
-   * `alternate` reads as `off` once the verdict check has found a difference here, whatever the
-   * config says, until `state/local-verify/first-part-trial.json` is removed.
    */
   likelyFailingFirst(): FirstPartSetting {
-    let v: FirstPartSetting;
-    try { v = parseFirstPartSetting(this.likelyFailingFirstSetting ? this.likelyFailingFirstSetting() : 'off'); } catch { return 'off'; } // @silent-fallback-ok: an unreadable setting reads as off (every lane runs in one piece, as before)
-    if (v === 'alternate' && this.firstPartTrial.get().switchedOff) return 'off';
-    return v;
+    let value: unknown = 'off';
+    try { value = this.likelyFailingFirstSetting?.() ?? 'off'; }
+    catch { /* An unreadable setting uses the existing off default. */ }
+    const setting = parseFirstPartSetting(value);
+    try { this.firstPartReport.readSetting(setting); }
+    catch (e) { this.audit({ event: 'first-part-marker-write-failed', detail: String(e) }); }
+    return setting;
   }
 
   /**
@@ -4299,213 +4376,41 @@ export class LocalVerifyService {
     return { firstPartGroup: fp.group, ...(field ? { likelyFailing: field } : {}) };
   }
 
-  /** The `likelyFailingFirst` block of a run input, or nothing when the setting is off here (the input is then exactly what it was). */
-  private firstPartInput(entry: QueueEntry): { likelyFailingFirst?: FirstPartInput; collectFileOutcomes?: true } {
+  /** The `likelyFailingFirst` block of a run input, plus start evidence; off omits the block but retains evidence. */
+  private firstPartInput(entry: QueueEntry): { likelyFailingFirst?: FirstPartInput; firstPartEvidence?: FirstPartEvidence } {
     if (entry.kind === 'main') return {};
     const setting = this.likelyFailingFirst();
-    if (setting === 'off') return {};
     // A peer run uses what the coordinator sent (a peer never builds its own list); with no
     // assignment sent, a pull request counts as `without`.
     const src = entry.peerAttempt
       ? { group: entry.peerFirstPartGroup ?? null, previous: entry.peerLikelyFailing?.previous ?? [], list: entry.peerLikelyFailing?.list ?? [] }
       : this.firstPartFor(entry.pr);
-    const block: FirstPartInput = { setting, ...(src.group ? { group: src.group } : {}), previous: src.previous, list: src.list };
-    // The verdict check needs what every file did, from the verify and from its comparison.
-    const wanted = setting === 'alternate' && src.group === 'with' && COMPARE_KINDS.some((k) => this.firstPartTrial.mayStart(k));
-    return { likelyFailingFirst: block, ...(wanted ? { collectFileOutcomes: true as const } : {}) };
+    const evidence: FirstPartEvidence = { setting, group: src.group ?? 'without', ran: false };
+    return { firstPartEvidence: evidence, ...(setting === 'off' ? {} : {
+      likelyFailingFirst: { setting, ...(src.group ? { group: src.group } : {}), previous: src.previous, list: src.list },
+    }) };
   }
 
-  /** What `GET /local-verify` shows: the setting, the list's size, age and top files, and the trial's counts. */
-  likelyFailingFirstStatus(): { setting: FirstPartSetting; list: LikelyFailingInfo; trial: TrialCounts & { comparing: { pr: number; headSha: string; kind: CompareKind } | null } } {
-    const c = this.compareRun ?? this.pendingCompare;
-    return { setting: this.likelyFailingFirst(), list: this.likelyFailing.info(), trial: { ...this.firstPartTrial.get(), comparing: c ? { pr: c.pr, headSha: c.headSha, kind: c.kind } : null } };
+  likelyFailingFirstStatus() {
+    const report = this.firstPartReport.counts();
+    return { setting: this.likelyFailingFirst(), list: this.likelyFailing.info(), open: report.open, overdue: report.overdue };
   }
 
-  /** The `first-part` audit row of a finished verify, and the verdict check's follow-up when one is due. */
-  private noteFirstPart(f: InFlight, result: unknown): void {
-    const r = result as { kind?: unknown; record?: LocalVerifyRecord; firstPart?: FirstPartSummary; fileOutcomes?: Record<string, FileOutcome> } | null;
-    if (!r || r.kind !== 'record' || !r.record || !r.firstPart || typeof r.firstPart !== 'object' || !Array.isArray(r.firstPart.lanes)) return;
-    const s = r.firstPart;
+  /** Record evidence only on the machine that ran this verify. */
+  private noteFirstPart(f: Pick<InFlight, 'runInput'> & { token?: string }, result: unknown): void {
+    const r = result as { kind?: unknown; record?: LocalVerifyRecord; firstPart?: FirstPartSummary; observation?: ObservationDetail } | null;
+    if (!r || r.kind !== 'record' || !r.record || r.record.kind === 'main') return;
     const rec = r.record;
-    this.audit({
-      event: 'first-part', pr: rec.pr, headSha: rec.headSha, setting: s.setting, group: s.group ?? null, active: s.active === true,
-      outcome: rec.outcome, endedInFirstPart: s.endedInFirstPart === true,
-      minutes: Math.round(((Date.parse(rec.finishedAt) - Date.parse(rec.startedAt)) / 60_000) * 10) / 10,
-      lanes: s.lanes.slice(0, 5).map((l) => ({ lane: l.lane, files: l.files, fromChange: l.fromChange, fromPrevious: l.fromPrevious, fromList: l.fromList, partners: l.partners, ms: l.ms, endedHere: l.endedHere })),
-    });
-    // The verdict check (measure 6): only in `alternate`, only for a verify that used first parts,
-    // and only while fewer than 5 of its kind have been compared on this machine.
-    if (f.cancelled || this.stopped || s.setting !== 'alternate' || this.likelyFailingFirst() !== 'alternate' || !f.runInput || !r.fileOutcomes) return;
-    const kind = compareKind(rec.outcome, s);
-    if (!kind || !this.firstPartTrial.mayStart(kind) || this.pendingCompare || this.compareRun) return;
-    this.pendingCompare = { kind, pr: rec.pr, headSha: rec.headSha, input: f.runInput, first: { outcome: rec.outcome, files: r.fileOutcomes }, firstFinishedAt: rec.finishedAt, queuedAt: this.now() };
-  }
-
-  /* @self-action-controller: local-verify-first-part-compare */
-  /**
-   * Start the pending comparison run when nothing else runs here: the same merge commit in a
-   * FRESH checkout, the lanes exactly as today's verifier runs them (no first part), fail-fast as
-   * this machine has it set now, its own timing and deadlines. It starts only after the verify it
-   * follows is final (recorded and acted on), and its result is never a record: it can change
-   * neither that verify's verdict nor its end time. Brakes: at most 5 finished and 10 started per
-   * kind per machine, counted durably BEFORE the start; one at a time; dropped when it could not
-   * start within 30 minutes. Returns true when a comparison is now running.
-   */
-  private startCompareIfDue(): boolean {
-    if (this.compareRun) return true;
-    const pc = this.pendingCompare;
-    if (!pc) return false;
-    const drop = (reason: string) => { this.pendingCompare = null; this.audit({ event: 'first-part-compare-dropped', pr: pc.pr, headSha: pc.headSha, kind: pc.kind, reason }); return false; };
-    if (this.now() - pc.queuedAt > FIRST_PART_LIMITS.comparePendingMs) return drop('waited-too-long');
-    if (this.likelyFailingFirst() !== 'alternate') return drop('setting-changed');
-    if (!this.firstPartTrial.mayStart(pc.kind)) return drop('enough-compared');
-    // Every hold a verify respects, and nothing else running or about to run here.
-    if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold || this.inFlight || this.starting) return false;
-    if (this.peerState.current?.state === 'running' || this.failedFileDiagnosisPeer?.busy()) return false;
-    if (this.notePause() || this.verifierChangedOnDisk() || this.selfMemory()) return false;
-    if (this.seams.foreignSuiteHolders().length > 0) return false;
-    if (!this.firstPartTrial.noteStarted(pc.kind)) return drop('count-unwritable');
-    this.pendingCompare = null;
-    const token = crypto.randomBytes(16).toString('hex');
-    const inputPath = path.join(this.runsDir, `${token}.input.json`);
-    const resultPath = path.join(this.runsDir, `${token}.result.json`);
-    const { likelyFailingFirst: _fp, attempt: _a, preflightMode: _pm, preflightRediscoverable: _pr, failFast: _ff, ...base } = pc.input;
-    void _fp; void _a; void _pm; void _pr; void _ff;
-    const failFast = this.failFastOn();
-    const input: VerifyRunInput = { ...base, ...(failFast ? { failFast: true } : {}), preflightMode: 'off', collectFileOutcomes: true, variant: 'compare' };
-    const startedAt = this.now();
-    /** The marker that names the comparison's group durably, so a server that dies under it finds and ends it at boot. */
-    const writeMarker = (pid: number | null) => {
-      const tmp = `${this.compareInFlightPath}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ v: 1, attemptToken: token, pid, pgid: pid, pr: pc.pr, headSha: pc.headSha, startedAt }), { mode: 0o600 }); /* state-registry: local-verify-likely-failing */
-      fs.renameSync(tmp, this.compareInFlightPath);
-    };
-    // Phase 1: the intent is durable BEFORE the child exists; no marker, no child.
+    const evidence = rec.firstPart ?? f.runInput?.firstPartEvidence ?? { setting: 'off', group: 'without', ran: false };
     try {
-      fs.mkdirSync(this.lvStateDir, { recursive: true });
-      writeMarker(null);
-    } catch (e) {
-      this.audit({ event: 'first-part-compare-dropped', pr: pc.pr, headSha: pc.headSha, kind: pc.kind, reason: 'marker-unwritable', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
-      return false;
-    }
-    let handle: ChildHandle;
-    try {
-      fs.mkdirSync(this.runsDir, { recursive: true });
-      fs.writeFileSync(inputPath, JSON.stringify(input), { mode: 0o600 });
-      const childArgs = [this.cfg.mainEntry, '--input', inputPath, '--result', resultPath, '--attempt-token', token];
-      const useNice = this.cfg.nice ?? true;
-      handle = this.seams.spawnRun({
-        command: useNice ? 'nice' : this.cfg.nodePath,
-        args: useNice ? ['-n', '10', this.cfg.nodePath, ...childArgs] : childArgs,
-        env: this.cfg.baseEnv, logFile: path.join(this.runsDir, `${token}.log`),
-      });
-    } catch (e) {
-      for (const f of [inputPath, this.compareInFlightPath]) {
-        try { SafeFsExecutor.safeRmSync(f, { force: true, operation: 'local-verify:remove-run-file' }); } catch { /* @silent-fallback-ok: best-effort */ }
-      }
-      this.audit({ event: 'first-part-compare-dropped', pr: pc.pr, headSha: pc.headSha, kind: pc.kind, reason: 'spawn-failed', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
-      return false;
-    }
-    const run: CompareRun = { ...pc, token, pgid: handle.pid, inputPath, resultPath, startedAt, failFast, cancelled: false };
-    this.compareRun = run;
-    // Phase 2: patch the group into the marker (the same synchronous turn as the spawn).
-    try { writeMarker(handle.pid); } catch (e) {
-      // @silent-fallback-ok: without the group in the marker a crash of this server could leave it running; end the comparison now instead.
-      this.audit({ event: 'first-part-compare-marker-failed', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
-      this.cancelCompare('marker-unwritable');
-    }
-    this.audit({ event: 'first-part-compare-started', pr: pc.pr, headSha: pc.headSha, kind: pc.kind, failFast, pgid: handle.pid });
-    handle.exited.then(() => this.onCompareExit(run), () => this.onCompareExit(run));
-    // Its own bound: the child's total deadline plus a margin; a stuck comparison never holds the line longer.
-    const setTimer = this.seams.setTimer ?? ((fn: () => void, ms: number) => { const tm = setTimeout(fn, ms); tm.unref?.(); });
-    setTimer(() => { if (this.compareRun === run) this.cancelCompare('run-bound'); }, LOCAL_VERIFY_DEADLINES.totalActiveMs + 10 * 60_000);
-    return true;
-  }
-
-  private get compareInFlightPath(): string { return path.join(this.lvStateDir, 'first-part-compare-inflight.json'); }
-
-  private cancelCompare(reason: string): void {
-    const run = this.compareRun;
-    if (!run || run.cancelled) return;
-    run.cancelled = true;
-    this.audit({ event: 'first-part-compare-cancelled', pr: run.pr, headSha: run.headSha, kind: run.kind, reason });
-    try { this.seams.killGroup(run.pgid, 'SIGKILL'); } catch { /* @silent-fallback-ok: the group may already be gone */ }
-  }
-
-  /** The comparison run ended: write the `first-part-compare` row; a difference switches the setting off here. Never a record. */
-  private onCompareExit(run: CompareRun): void {
-    if (this.compareRun !== run) return;
-    this.compareRun = null;
-    if (this.seams.isGroupAlive(run.pgid)) { try { this.seams.killGroup(run.pgid, 'SIGKILL'); } catch { /* @silent-fallback-ok: best-effort */ } }
-    const result = this.readResult(run.resultPath) as { kind?: unknown; record?: LocalVerifyRecord; fileOutcomes?: Record<string, FileOutcome> } | null;
-    for (const p of [run.inputPath, run.resultPath, this.compareInFlightPath]) {
-      try { SafeFsExecutor.safeRmSync(p, { force: true, operation: 'local-verify:remove-run-file' }); } catch { /* @silent-fallback-ok: best-effort */ }
-    }
-    const minutes = Math.round(((this.now() - run.startedAt) / 60_000) * 10) / 10;
-    const id = { pr: run.pr, headSha: run.headSha, kind: run.kind, failFast: run.failFast, compareMinutes: minutes, runLog: `${run.token}.log` };
-    const rec = result && result.kind === 'record' && result.record && validateRecord(result.record).ok ? result.record : null;
-    if (run.cancelled || !rec || !result?.fileOutcomes || rec.outcome === 'error') {
-      // Nothing can be concluded from a comparison that did not reach a verdict: it is not counted.
-      this.audit({ event: 'first-part-compare', ...id, first: run.first.outcome, compare: rec?.outcome ?? null, inconclusive: true,
-        reason: run.cancelled ? 'cancelled' : !rec ? 'no-record' : rec.outcome === 'error' ? `error:${rec.errorStep ?? ''}` : 'no-file-outcomes' });
-    } else {
-      const iso = run.input.isolation;
-      const known = new Set<string>([...Object.keys(this.flakyFiles()), ...(iso?.notCleanOnGreenMain ?? []), ...(iso?.flakyOnMain ?? []).map((x) => x.file)]);
-      const cmp = compareFirstPartRuns(run.first, { outcome: rec.outcome, files: result.fileOutcomes }, known);
-      const cap = <T>(a: T[]) => a.slice(0, 50);
-      this.audit({
-        event: 'first-part-compare', ...id, first: cmp.first, compare: cmp.compare, verdictDiffers: cmp.verdictDiffers,
-        ranInBoth: cmp.ranInBoth, bothPassed: cmp.bothPassed, bothFailed: cap(cmp.bothFailed), flakyInEither: cap(cmp.flakyInEither),
-        bothFailedCount: cmp.bothFailed.length, flakyInEitherCount: cmp.flakyInEither.length,
-        differing: cap(cmp.differing), differingCount: cmp.differing.length,
-        onlyFirstReached: cap(cmp.onlyFirstReached), onlyFirstReachedCount: cmp.onlyFirstReached.length,
-        onlyCompareReached: cap(cmp.onlyCompareReached), onlyCompareReachedCount: cmp.onlyCompareReached.length, difference: cmp.difference,
-      });
-      this.firstPartTrial.noteDone(run.kind);
-      if (cmp.difference) this.switchFirstPartsOff(run, cmp);
-    }
-    const waiters = this.idleWaiters;
-    this.idleWaiters = [];
-    for (const w of waiters) w();
-    if (!this.stopped) this.pump();
-  }
-
-  /** The verdict check found a difference: the setting goes to `off` on this machine, once, and one notice is raised. */
-  private switchFirstPartsOff(run: CompareRun, cmp: FirstPartComparison): void {
-    if (this.firstPartTrial.get().switchedOff) return;
-    this.firstPartTrial.noteSwitchedOff(new Date(this.now()).toISOString(), run.pr, run.headSha);
-    let configWritten = false;
-    try { if (this.likelyFailingFirstOff) { this.likelyFailingFirstOff(); configWritten = true; } }
-    catch (e) { this.audit({ event: 'first-part-switch-off-write-failed', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) }); }
-    const files = cmp.differing.filter((d) => !d.known).map((d) => d.file).slice(0, 10);
-    this.audit({ event: 'first-part-switched-off', pr: run.pr, headSha: run.headSha, kind: run.kind, configWritten, first: cmp.first, compare: cmp.compare, files });
-    try {
-      this.seams.signal?.('local-verify:first-part-difference', {
-        pr: run.pr, headSha: run.headSha, first: cmp.first, compare: cmp.compare, files,
-        note: `Local Verify ran pull request ${run.pr} twice, once with first parts and once without, and the two runs differ`
-          + `${files.length ? ` on ${files.join(', ')}` : ` in their verdict (${cmp.first} with first parts, ${cmp.compare} without)`}. `
-          + `Running likely-failing files first is now off on ${this.cfg.machineId}${configWritten ? '' : ' (the config could not be written; it is held off by state/local-verify/first-part-trial.json)'}. `
-          + 'The comparison is in the audit log as first-part-compare. To start the trial again after looking, remove state/local-verify/first-part-trial.json and set monitoring.localVerify.likelyFailingFirst.',
-      });
-    } catch { /* @silent-fallback-ok: the audit rows above still record the switch */ }
-  }
-
-  /** Boot: end a comparison run a dead server left behind (its group is named in the marker file). */
-  private async reapCompareOrphan(): Promise<void> {
-    let rec: { attemptToken?: unknown; pid?: unknown; pgid?: unknown } | null = null;
-    try { rec = JSON.parse(fs.readFileSync(this.compareInFlightPath, 'utf-8')); } catch { return; } // @silent-fallback-ok: no marker, nothing to end
-    try {
-      if (rec && typeof rec.pid === 'number' && typeof rec.pgid === 'number' && typeof rec.attemptToken === 'string' && this.seams.isGroupAlive(rec.pgid)) {
-        const args = await this.seams.readProcessArgs(rec.pid).catch(() => null);
-        if (args && args.includes(`--attempt-token ${rec.attemptToken}`)) {
-          this.seams.killGroup(rec.pgid, 'SIGKILL');
-          this.audit({ event: 'first-part-compare-orphan-reaped', pgid: rec.pgid });
-        }
-      }
-      SafeFsExecutor.safeRmSync(this.compareInFlightPath, { force: true, operation: 'local-verify:remove-run-file' });
-    } catch (e) {
-      this.audit({ event: 'first-part-compare-orphan-reap-failed', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
-    }
+      this.firstPartReport.observe(observation(rec, rec.attempt?.id ?? f.token ?? `${rec.pr}:${rec.startedAt}`, evidence, r.observation));
+      this.firstPartReport.daily(() => {
+        if (!this.likelyFailingFirstOff) throw new Error('config writer unavailable');
+        this.likelyFailingFirstOff();
+        if (parseFirstPartSetting(this.likelyFailingFirstSetting?.()) !== 'off') throw new Error('config write did not persist off');
+      }, (detail) => this.seams.signal?.(`local-verify:first-part-cost-limit:${String(detail.trial)}`, detail));
+    } catch (e) { this.audit({ event: 'first-part-observation-write-failed', detail: String(e) }); }
+    if (r.firstPart) this.audit({ event: 'first-part', pr: rec.pr, headSha: rec.headSha, ...r.firstPart, outcome: rec.outcome, minutes: Math.round((Date.parse(rec.finishedAt) - Date.parse(rec.startedAt)) / 6000) / 10 });
   }
 
   /**
@@ -5132,8 +5037,11 @@ export class LocalVerifyService {
     let last: ReturnType<typeof readLastRestartRequest> = null;
     try { last = readLastRestartRequest(this.cfg.stateDir); } catch { last = null; } // @silent-fallback-ok: no readable request reads as unknown, which is what the row then says
     const b = bootReason(last, this.lastBootRestartAt(), this.now());
+    this.bootRestartAt = b.restartAt ?? null;
     this.audit({ event: 'boot', ...b });
   }
+  /** The restart request this process's own `boot` row named: it explains this start, so it cannot also explain this process's stop. */
+  private bootRestartAt: string | null = null;
 
   /** The restart request the newest earlier `boot` row named (so one request explains one start). Reads only the log's tail. */
   private lastBootRestartAt(): string | null {
@@ -5443,6 +5351,8 @@ export class LocalVerifyService {
 
   private clearInFlight(): void {
     try { SafeFsExecutor.safeRmSync(this.inFlightPath, { force: true, operation: 'local-verify:clear-in-flight' }); } catch { /* @silent-fallback-ok: best-effort */ }
+    // The restart guard's "pid first seen gone" note belongs to the run whose marker just went.
+    try { SafeFsExecutor.safeRmSync(exitSeenPath(this.cfg.stateDir), { force: true, operation: 'local-verify:clear-exit-seen' }); } catch { /* @silent-fallback-ok: it is keyed by the attempt token, so a leftover never applies to another run */ }
   }
 
   private readResult(p: string): (VerifyRunResult | { kind: 'crash'; detail: string }) | null {

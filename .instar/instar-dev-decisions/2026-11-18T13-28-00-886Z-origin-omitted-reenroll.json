@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T13:28:00.886Z",
+  "slug": "origin-omitted-reenroll",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

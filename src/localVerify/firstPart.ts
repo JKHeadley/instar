@@ -40,11 +40,6 @@ export const FIRST_PART_LIMITS = Object.freeze({
   listFiles: 500,
   failuresPerFile: 40,
   listMaxBytes: 1024 * 1024,
-  /** The verdict check (measure 6): comparisons finished per kind, and comparisons started per kind. */
-  compareEach: 5,
-  compareStartsEach: 10,
-  /** A comparison that could not start within this long of its verify is dropped. */
-  comparePendingMs: 30 * 60_000,
   /** Pull requests whose assignment is remembered. */
   groupsKept: 5000,
 });

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "reviewer-verdict-code",
+  "sessionId": "19c7b64a-3509-4c6c-bcf3-d23ec20615c4",
+  "timestamp": "2026-11-18T07:08:25.713Z",
+  "artifactPath": "upgrades/side-effects/reviewer-verdict-code.md",
+  "artifactSha256": "6cd284f7ce3ed34e5ff4640757a740c653cf547324338dc1cb8886a79eb10ff3",
+  "coveredFiles": [
+    "docs/specs/reviewer-verdict-code.eli16.md",
+    "src/core/crossModelReviewer.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/independentReview.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/crossModelReviewer.test.ts",
+    "tests/unit/feedback-factory/execute-independent-review.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/reviewer-verdict-code.md",
+    "upgrades/side-effects/reviewer-verdict-code.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Verdict parsing for model reviewers: a per-review code on the executor gate and a stricter general reader; fail closed (unknown never admits), no stored data, reversible by revert; four independent adversarial review rounds.",
+  "eli16Path": "docs/specs/reviewer-verdict-code.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reviewer-verdict-code.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

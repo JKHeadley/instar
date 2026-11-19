@@ -868,6 +868,11 @@ export function writePrivatePasteFile(content: string, baseDir: string = os.tmpd
   }
 }
 
+/** SEC-107: a credential-stripped launch blanks its origin token and carries this marker, so a
+ * server restart's re-enrollment (enrollExistingOriginSessions) never hands it one back. */
+const ORIGIN_OMITTED_KEY = 'INSTAR_ORIGIN_OMITTED';
+const ORIGIN_OMITTED_FLAGS: string[] = ['-e', 'INSTAR_ORIGIN_TOKEN=', '-e', `${ORIGIN_OMITTED_KEY}=1`];
+
 export class SessionManager extends EventEmitter {
   private pendingHeadlessSpawns = 0;
   private pendingScheduledSpawns = 0;
@@ -1035,6 +1040,9 @@ export class SessionManager extends EventEmitter {
     for (const session of this.state.listSessions().filter(s => s.status === 'running')) {
       if (!session.framework || !await this.isSessionAliveAsync(session.tmuxSession)) { unavailable.push(session.id); continue; }
       try {
+        // SEC-107: a session launched without credentials (omitAuthEnv) stays without an origin
+        // credential across a server restart. Never re-arm it.
+        if (await this.originOmitted(session.tmuxSession)) { this.revokeOriginSession(session.id); continue; }
         const token = await this.originLifecycle.issue({ sessionId: session.id, harnessId: session.framework,
           projectDir: session.cwd ?? this.config.projectDir, configuredModel: session.model,
           nativeSessionId: session.claudeSessionId,
@@ -1050,6 +1058,32 @@ export class SessionManager extends EventEmitter {
       }
     }
     return { enrolled, unavailable };
+  }
+
+  /** SEC-107: was this session launched credential-stripped? True when it carries the
+   * ORIGIN_OMITTED_FLAGS marker in any form (set, blanked or removed), or, for sessions started
+   * before the marker existed, when its agent token was blanked while this agent has one (both
+   * stripped launch paths blank it; every normal path sets it). Absent keys mean a normal session;
+   * any other tmux failure (no such session, timeout) fails enrollment closed. */
+  private async originOmitted(tmuxSession: string): Promise<boolean> {
+    if (await this.tmuxEnvLine(tmuxSession, ORIGIN_OMITTED_KEY) !== null) return true;
+    if (!this.config.authToken) return false;
+    return await this.tmuxEnvLine(tmuxSession, 'INSTAR_AUTH_TOKEN') === 'INSTAR_AUTH_TOKEN=';
+  }
+
+  /** One key of a session's tmux environment: its line (`K=V`, or `-K` when removed), or null when
+   * tmux reports the variable unknown. Every other failure throws. */
+  private async tmuxEnvLine(tmuxSession: string, key: string): Promise<string | null> {
+    try {
+      const result = await promisify(execFile)(this.config.tmuxPath,
+        ['show-environment', '-t', `=${tmuxSession}`, key], { timeout: 5000, encoding: 'utf8', maxBuffer: 16 * 1024 });
+      const line = result.stdout.trim();
+      return line === '' ? null : line;
+    } catch (error) {
+      const e = error as { code?: number; stderr?: unknown };
+      if (e.code === 1 && /unknown variable/i.test(String(e.stderr ?? ''))) return null;
+      throw error;
+    }
   }
 
   /** Re-enrollment must retain the running process's account home, not the
@@ -5015,7 +5049,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         : undefined;
 
     if (!options.omitAuthEnv) this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
-    const originEnvFlags = options.omitAuthEnv ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
+    const originEnvFlags = options.omitAuthEnv ? ORIGIN_OMITTED_FLAGS : await this.originTokenEnvFlags({
       sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
       configuredModel: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       configHome: this.originConfigHome(headlessFramework, headlessSpec.envOverrides),
@@ -5518,7 +5552,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     } else if (!omitAuth) {
       this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
     }
-    const originEnvFlags = omitAuth ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
+    const originEnvFlags = omitAuth ? ORIGIN_OMITTED_FLAGS : await this.originTokenEnvFlags({
       sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
       configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
     });

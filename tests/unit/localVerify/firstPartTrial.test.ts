@@ -1,8 +1,7 @@
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 /**
  * The trial of first parts (spec docs/specs/local-verify-likely-failing-first.md, section E
- * `alternate`, measures 5 and 6): the assignment of pull requests, the comparison of a verify
- * with its comparison run, the counts that bound the comparisons, and minutes per change.
+ * `alternate`, measure 5): the assignment of pull requests and minutes per change.
  */
 
 import fs from 'node:fs';
@@ -10,10 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { FIRST_PART_LIMITS, type FirstPartSummary } from '../../../src/localVerify/firstPart.js';
+import { FIRST_PART_LIMITS } from '../../../src/localVerify/firstPart.js';
 import {
-  COMPARE_KINDS, FirstPartGroups, FirstPartTrialState, compareFirstPartRuns, compareKind, mayStartCompare, minutesPerChange,
-  type ChangeVerify, type TrialCounts,
+  FirstPartGroups, minutesPerChange, type ChangeVerify,
 } from '../../../src/localVerify/firstPartTrial.js';
 
 const dirs: string[] = [];
@@ -77,169 +75,6 @@ describe('the assignment of pull requests', () => {
   });
 });
 
-describe('which kind a verify is', () => {
-  const s = (over: Partial<FirstPartSummary> = {}): FirstPartSummary => ({
-    setting: 'alternate', group: 'with', active: true, endedInFirstPart: false,
-    lanes: [{ lane: 'unit', files: 3, fromChange: 1, fromPrevious: 0, fromList: 2, partners: 0, ms: 4000, endedHere: false }], ...over,
-  });
-  it('ended in a first part, failed later, or passed', () => {
-    expect(compareKind('failure', s({ endedInFirstPart: true }))).toBe('ended-first');
-    expect(compareKind('failure', s())).toBe('failed-later');
-    expect(compareKind('success', s())).toBe('passed');
-  });
-  it('is none of them for an error, for a verify without first parts, and when no first part ran', () => {
-    expect(compareKind('error', s())).toBeNull();
-    expect(compareKind('success', undefined)).toBeNull();
-    expect(compareKind('success', s({ active: false }))).toBeNull();
-    expect(compareKind('success', s({ lanes: [] }))).toBeNull();
-    expect(compareKind('success', s({ lanes: [{ lane: 'unit', files: 0, fromChange: 0, fromPrevious: 0, fromList: 0, partners: 0, ms: null, endedHere: false }] }))).toBeNull();
-    // A first part was planned but a set-up failure came first: nothing ran.
-    expect(compareKind('failure', s({ lanes: [{ lane: 'unit', files: 3, fromChange: 3, fromPrevious: 0, fromList: 0, partners: 0, ms: null, endedHere: false }] }))).toBeNull();
-  });
-});
-
-describe('compareFirstPartRuns', () => {
-  const A = 'tests/unit/a.test.ts';
-  const B = 'tests/unit/b.test.ts';
-  const C = 'tests/e2e/c.test.ts';
-  const none = new Set<string>();
-
-  it('the same verdict and the same outcome for every file that ran in both: no difference', () => {
-    const c = compareFirstPartRuns({ outcome: 'success', files: { [A]: 'passed', [B]: 'passed' } }, { outcome: 'success', files: { [A]: 'passed', [B]: 'passed' } }, none);
-    expect(c).toMatchObject({ verdictDiffers: false, ranInBoth: 2, bothPassed: 2, differing: [], difference: false, inconclusive: false });
-  });
-
-  it('a file that passed in one run and failed in the other is a difference', () => {
-    const c = compareFirstPartRuns({ outcome: 'failure', files: { [A]: 'passed', [B]: 'failed' } }, { outcome: 'success', files: { [A]: 'passed', [B]: 'passed' } }, none);
-    expect(c.difference).toBe(true);
-    expect(c.verdictDiffers).toBe(true);
-    expect(c.differing).toEqual([{ file: B, first: 'failed', compare: 'passed', known: false }]);
-  });
-
-  it('a change with one fault in each part: the full run sees both, the first run stopped after one. Not a difference', () => {
-    // With first parts: A failed in the first part, the verify ended there, B and C never ran.
-    // The comparison ran everything: A and B both fail.
-    const c = compareFirstPartRuns({ outcome: 'failure', files: { [A]: 'failed' } }, { outcome: 'failure', files: { [A]: 'failed', [B]: 'failed', [C]: 'passed' } }, none);
-    expect(c.difference).toBe(false);
-    expect(c.verdictDiffers).toBe(false);
-    expect(c.bothFailed).toEqual([A]);
-    expect(c.onlyCompareReached).toEqual([B]);
-    expect(c.onlyFirstReached).toEqual([]);
-    expect(c.ranInBoth).toBe(1);
-  });
-
-  it('a failure only the first run reached (the comparison was stopped by its own fail-fast first) is listed separately', () => {
-    const c = compareFirstPartRuns({ outcome: 'failure', files: { [A]: 'failed', [B]: 'failed' } }, { outcome: 'failure', files: { [A]: 'failed' } }, none);
-    expect(c.onlyFirstReached).toEqual([B]);
-    expect(c.difference).toBe(false);
-  });
-
-  it('a difference on a file already known to be unreliable is recorded and does not count', () => {
-    const first = { outcome: 'success' as const, files: { [A]: 'passed' as const, [B]: 'passed' as const } };
-    const second = { outcome: 'failure' as const, files: { [A]: 'passed' as const, [B]: 'failed' as const } };
-    const c = compareFirstPartRuns(first, second, new Set([B]));
-    expect(c.differing).toEqual([{ file: B, first: 'passed', compare: 'failed', known: true }]);
-    expect(c.verdictDiffers).toBe(true);
-    expect(c.difference).toBe(false);
-    // The same two runs with the file NOT known: a difference.
-    expect(compareFirstPartRuns(first, second, none).difference).toBe(true);
-  });
-
-  it('a file that failed and then passed alone in either run is known to be unreliable by that run itself', () => {
-    const c = compareFirstPartRuns({ outcome: 'success', files: { [A]: 'flaky' } }, { outcome: 'failure', files: { [A]: 'failed' } }, none);
-    expect(c.differing).toEqual([{ file: A, first: 'flaky', compare: 'failed', known: true }]);
-    expect(c.difference).toBe(false);
-    const d = compareFirstPartRuns({ outcome: 'success', files: { [A]: 'flaky' } }, { outcome: 'success', files: { [A]: 'passed' } }, none);
-    expect(d).toMatchObject({ differing: [], flakyInEither: [A], difference: false });
-  });
-
-  it('one known and one unknown differing file: still a difference', () => {
-    const c = compareFirstPartRuns({ outcome: 'success', files: { [A]: 'passed', [B]: 'passed' } }, { outcome: 'failure', files: { [A]: 'failed', [B]: 'failed' } }, new Set([A]));
-    expect(c.difference).toBe(true);
-  });
-
-  it('verdicts that differ with nothing in the files to explain it are a difference', () => {
-    // e.g. a dirty tree or an unhandled error in one run only.
-    const c = compareFirstPartRuns({ outcome: 'success', files: { [A]: 'passed' } }, { outcome: 'failure', files: { [A]: 'passed' } }, none);
-    expect(c.difference).toBe(true);
-  });
-
-  it('a comparison that ended as an infrastructure error concludes nothing', () => {
-    const c = compareFirstPartRuns({ outcome: 'failure', files: { [A]: 'failed' } }, { outcome: 'error', files: {} }, none);
-    expect(c.inconclusive).toBe(true);
-    expect(c.difference).toBe(false);
-  });
-});
-
-describe('the bound on comparison runs', () => {
-  const counts = (over: Partial<TrialCounts> = {}): TrialCounts => ({ done: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, started: { 'ended-first': 0, 'failed-later': 0, passed: 0 }, switchedOff: null, ...over });
-
-  it('the first 5 of each of the three kinds: 15 per machine', () => {
-    expect(COMPARE_KINDS).toEqual(['ended-first', 'failed-later', 'passed']);
-    const c = counts();
-    let started = 0;
-    for (let round = 0; round < 50; round++) {
-      for (const k of COMPARE_KINDS) {
-        if (!mayStartCompare(c, k)) continue;
-        c.started[k]++; c.done[k]++; started++;
-      }
-    }
-    expect(started).toBe(15);
-    expect(c.done).toEqual({ 'ended-first': 5, 'failed-later': 5, passed: 5 });
-  });
-
-  it('comparisons that never finish still stop: at most 10 started per kind', () => {
-    const c = counts();
-    let started = 0;
-    for (let round = 0; round < 50; round++) for (const k of COMPARE_KINDS) if (mayStartCompare(c, k)) { c.started[k]++; started++; }
-    expect(started).toBe(30);
-  });
-
-  it('nothing starts once a difference has switched the setting off', () => {
-    expect(mayStartCompare(counts({ switchedOff: { at: 'x', pr: 1, headSha: 'a' } }), 'passed')).toBe(false);
-  });
-
-  it('the counts survive a restart, and an unreadable counts file holds every comparison', () => {
-    const file = path.join(tmp(), 'state', 'first-part-trial.json');
-    const a = new FirstPartTrialState(file, () => {});
-    expect(a.mayStart('passed')).toBe(true);
-    for (let k = 0; k < 5; k++) { expect(a.noteStarted('passed')).toBe(true); a.noteDone('passed'); }
-    expect(a.mayStart('passed')).toBe(false);
-    expect(a.mayStart('ended-first')).toBe(true);
-    const b = new FirstPartTrialState(file, () => {});
-    expect(b.get().done.passed).toBe(5);
-    expect(b.mayStart('passed')).toBe(false);
-    fs.writeFileSync(file, '{ broken');
-    const audit: Array<Record<string, unknown>> = [];
-    const c = new FirstPartTrialState(file, (e) => { audit.push(e); });
-    for (const k of COMPARE_KINDS) expect(c.mayStart(k)).toBe(false);
-    expect(audit.filter((e) => e.event === 'first-part-trial-unreadable')).toHaveLength(1);
-  });
-
-  it('a start that cannot be counted durably is refused', () => {
-    const dir = tmp();
-    const blocker = path.join(dir, 'state');
-    fs.writeFileSync(blocker, 'a file where the folder should be');
-    const audit: Array<Record<string, unknown>> = [];
-    const s = new FirstPartTrialState(path.join(blocker, 'first-part-trial.json'), (e) => { audit.push(e); });
-    expect(s.noteStarted('passed')).toBe(false);
-    expect(s.get().started.passed).toBe(0);
-    expect(audit.some((e) => e.event === 'first-part-trial-write-failed')).toBe(true);
-  });
-
-  it('switched off is remembered; removing the file starts the trial again without a restart', () => {
-    const file = path.join(tmp(), 'first-part-trial.json');
-    const s = new FirstPartTrialState(file, () => {});
-    s.noteSwitchedOff('2026-11-19T00:00:00.000Z', 12, 'a'.repeat(40));
-    expect(s.get().switchedOff).toEqual({ at: '2026-11-19T00:00:00.000Z', pr: 12, headSha: 'a'.repeat(40) });
-    expect(new FirstPartTrialState(file, () => {}).get().switchedOff).not.toBeNull();
-    for (const k of COMPARE_KINDS) expect(s.mayStart(k)).toBe(false);
-    SafeFsExecutor.safeRmSync(file, { force: true, operation: 'firstPartTrial.test.ts' });
-    expect(s.get().switchedOff).toBeNull();
-    expect(s.mayStart('passed')).toBe(true);
-  });
-});
-
 describe('minutes per change to its first pass (measure 5)', () => {
   const T0 = Date.parse('2026-12-01T00:00:00.000Z');
   const MIN = 60_000;
@@ -281,4 +116,14 @@ describe('minutes per change to its first pass (measure 5)', () => {
     expect(r.with.minutesPerChange).toBe(52);
     expect(r.without.minutesPerChange).toBe(68);
   });
+});
+
+
+it('derived passes add no minutes; pilot entrants and first derived results are not enrolled', () => {
+  const day = 86400000; const start = Date.parse('2026-11-01T00:00:00Z');
+  const v = (pr: number, at: number, outcome: ChangeVerify['outcome'], derived = false): ChangeVerify => ({ pr,
+    startedAt: new Date(start + at * day).toISOString(), finishedAt: new Date(start + at * day + 60000).toISOString(), outcome, derived });
+  const result = minutesPerChange([v(1, -1, 'failure'), v(1, 1, 'success'), v(2, 13, 'failure'), v(2, 19, 'success', true),
+    v(3, 19, 'success'), v(4, 2, 'success', true)], () => 'with', { from: start, to: start + 14 * day });
+  expect(result.with).toEqual({ enrolled: 1, minutesPerChange: 1, reachedPass: 1 });
 });

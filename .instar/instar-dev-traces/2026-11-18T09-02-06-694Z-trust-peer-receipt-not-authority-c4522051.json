@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "trust-peer-receipt-not-authority",
+  "sessionId": "d6cfb2c6-e547-4efc-8a51-332115305932",
+  "timestamp": "2026-11-18T09:02:06.694Z",
+  "artifactPath": "upgrades/side-effects/trust-peer-receipt-not-authority.md",
+  "artifactSha256": "9e9e99ba3b95bb11b75a714468b86caa4af7f5c1a34699975bb525da7406889f",
+  "coveredFiles": [
+    "docs/specs/trust-peer-receipt-not-authority.eli16.md",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "tests/integration/trust-account-path-routes.test.ts",
+    "upgrades/next/trust-peer-receipt-not-authority.md",
+    "upgrades/side-effects/trust-peer-receipt-not-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Receipt-path part of SEC-088: the holder stops processing peer receipts; remainder specified separately; scoped independent review concurs.",
+  "eli16Path": "docs/specs/trust-peer-receipt-not-authority.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-peer-receipt-not-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

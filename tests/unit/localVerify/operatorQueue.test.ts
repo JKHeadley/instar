@@ -349,4 +349,18 @@ describe('pure helpers', () => {
     expect(bootReason({ at: new Date(T0 - 2 * HOUR).toISOString(), reason: 'install', requestedBy: 'x' }, null, T0)).toEqual({ reason: 'unknown' });
     expect(bootReason({ at: 'not a date', reason: 'install', requestedBy: 'x' }, null, T0)).toEqual({ reason: 'unknown' });
   });
+
+  it('bootReason: says whether the request was planned and whether it bypassed the holds, only when a request explains the start', () => {
+    const at = new Date(T0 - 60_000).toISOString();
+    expect(bootReason({ at, reason: 'install', requestedBy: 'x', plannedRestart: true, bypassHolds: true }, null, T0))
+      .toEqual({ reason: 'install', requestedBy: 'x', restartAt: at, plannedRestart: true, bypassHolds: true });
+    expect(bootReason({ at, reason: 'install', requestedBy: 'x', plannedRestart: true, bypassHolds: false }, null, T0))
+      .toEqual({ reason: 'install', requestedBy: 'x', restartAt: at, plannedRestart: true, bypassHolds: false });
+    // The request wrote neither (null), or was recorded before the fields existed (absent): left out, never guessed.
+    expect(bootReason({ at, reason: 'install', requestedBy: 'x', plannedRestart: null, bypassHolds: null }, null, T0)).toEqual({ reason: 'install', requestedBy: 'x', restartAt: at });
+    expect(bootReason({ at, reason: 'install', requestedBy: 'x', plannedRestart: true }, null, T0)).toEqual({ reason: 'install', requestedBy: 'x', restartAt: at, plannedRestart: true });
+    // A request that does not explain this start gives nothing of its own.
+    expect(bootReason({ at, reason: 'install', requestedBy: 'x', plannedRestart: true, bypassHolds: true }, at, T0)).toEqual({ reason: 'unknown' });
+    expect(bootReason({ at: new Date(T0 - 2 * HOUR).toISOString(), reason: 'install', requestedBy: 'x', plannedRestart: true, bypassHolds: true }, null, T0)).toEqual({ reason: 'unknown' });
+  });
 });
