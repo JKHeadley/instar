@@ -20,7 +20,7 @@ import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRunti
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
-import { parsePeerMainRun, type PeerClient, type PeerResult, type PeerRunAnswer, type PeerStatus } from './peer.js';
+import { parsePeerMainRun, parsePeerProgress, type PeerClient, type PeerResult, type PeerRunAnswer, type PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
@@ -526,7 +526,12 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       const r = await call(`${peer.url}/local-verify/peer-result?attemptId=${encodeURIComponent(attemptId)}`, { method: 'GET' });
       if (!r || r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
       const b = r.body as PeerResult;
-      if (b.state === 'unknown' || b.state === 'running') return { state: b.state };
+      if (b.state === 'unknown') return { state: 'unknown' };
+      // docs/specs/local-verify-peer-works-through-restart.md E: the peer's progress rides along, bounded and shape-checked.
+      if (b.state === 'running') {
+        const raw = (r.body as { progress?: unknown }).progress;
+        return raw === undefined ? { state: 'running' } : { state: 'running', progress: parsePeerProgress(raw) };
+      }
       if (b.state === 'done' && 'record' in b && b.record) {
         const rawBody = r.body as { record: unknown; run?: unknown; requestDigest?: unknown; sig?: unknown };
         const run = parsePeerMainRun(rawBody.run);
@@ -575,10 +580,11 @@ export function wireLocalVerifyPeers(
 /**
  * The live switches the server reads at each decision (absent ⇒ on):
  * `monitoring.localVerify.mainRedHold` (CMT-1033), `monitoring.localVerify.failFast` and
- * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
+ * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults), and
+ * `monitoring.localVerify.peerWorksThroughRestart.enabled` (absent ⇒ OFF).
  */
 export function wireLocalVerifySwitches(
-  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode'>,
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setPeerWorksThroughRestart'>,
   liveConfig: { get<T>(key: string, fallback: T): T },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
@@ -586,6 +592,8 @@ export function wireLocalVerifySwitches(
   // Processes per slow lane, e.g. { "integration": 1, "e2e": 2 } to return to the pre-2026-10-27 split.
   svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
+  // docs/specs/local-verify-peer-works-through-restart.md: absent or anything but `true` ⇒ off (today's behaviour). No default is written.
+  svc.setPeerWorksThroughRestart(() => liveConfig.get<unknown>('monitoring.localVerify.peerWorksThroughRestart.enabled', false));
 }
 
 /**

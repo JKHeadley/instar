@@ -21,7 +21,7 @@ import { computeInventory, isInventoried, LANES, type LaneName } from './invento
 import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
 
 /** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
-const PROGRESS_MAX_BYTES = 64 * 1024;
+export const PROGRESS_MAX_BYTES = 64 * 1024;
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
 import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';

@@ -732,7 +732,10 @@ export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red
  * Local Verify peer verifiers — the awareness line appended to an existing CLAUDE.md's Local Verify
  * section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
+/** docs/specs/local-verify-peer-works-through-restart.md Visibility: the phrase `migrateClaudeMd` rewrites in existing agents. */
+export const LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch).';
+export const LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch).';
+export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
 /**
  * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
@@ -13780,6 +13783,13 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_PEERS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify peer-verifier awareness');
+    }
+    // local-verify-peer-works-through-restart (Visibility): the peer line in existing agents still says a
+    // record needs "the same … lease epoch". Rewrite that one phrase; content-sniffed on the setting key.
+    if (content.includes(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE) && !content.includes('monitoring.localVerify.peerWorksThroughRestart.enabled')) {
+      content = content.replace(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE, LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
     }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
