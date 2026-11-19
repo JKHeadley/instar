@@ -899,9 +899,9 @@ export function makeAgentWorktreeReaperDeps(opts: {
     ?? path.join(path.dirname(opts.worktreesDir), '.instar', 'instar-dev-decisions-archive');
   const repo = opts.instarRepo;
   const githubMergeCheck = opts.githubMergeCheck ?? true;
-  const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })();
+  const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })(); // @silent-fallback-ok — unresolvable folder ⇒ compare the literal path (stricter, never wider)
   const within = (p: string): boolean => {
-    const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })();
+    const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })(); // @silent-fallback-ok — unresolvable path ⇒ compare it literally; a missing folder is not inside the root
     return real === worktreesReal || real.startsWith(worktreesReal + path.sep);
   };
   // A registration whose folder sits in the trash is never a live worktree (§2).
