@@ -20,6 +20,12 @@ contested-then-cleared: 13
 
 # One file on a Windows PC extends the agent to that PC
 
+## Who this is for (read this first)
+
+**For most people, the Instar desktop app is the recommended way to use Instar on a computer.** Instar Connect is for one narrower case: a Windows PC that your existing agent should be able to *use*, where installing a full agent is not possible or not wanted. Examples: a work laptop without administrator rights, a PC that cannot run the agent, a look-only arrangement, short-term help, or a borrowed or shared PC.
+
+Justin approved this direction on exactly those terms (topic 141385, message 145272, 2026-11-18 16:00 PST): "great! I think that makes perfect sense. As long as we make it very clear what the use case is and that we recommend the main Instar desktop app for most users, then I approve". So every surface this spec adds says the same: the agent offers the desktop app first, and offers Connect only for the case above; the download page and the PC window both state the use case in their first lines.
+
 ## Problem statement
 
 Justin, topic 144319, message 4609198818115544, 2026-11-18 13:57 PST: "I really really really like the idea of a single file that can be run on a Windows machine that gives an agent access", the ideal way "to extend an agent to a machine, other than using the official In[star app]". The Chief of Staff put it on the easy-setup project (topic 143810) the same day with five requirements: one signed file; pairing approved from the owner's app; nothing stored that a stolen file could reuse; a remover; and a full-wipe test on Justin's third machine when it is available.
@@ -46,7 +52,7 @@ This outbound-socket, one-server-per-endpoint shape is the standard remote-manag
 
 ### The person's journey
 
-1. The person tells the agent they want it to use their Windows PC, or the agent offers. The agent replies in the conversation with the download link and one line on what will happen.
+1. The person tells the agent they want it to use a Windows PC. The agent first recommends the Instar desktop app; it offers Connect only when the person's case is the one above (the PC cannot or should not get a full install), and then replies with the download link and one line on what will happen. The download page's first line says who Connect is for and links to the desktop app for everyone else.
 2. On the PC the person opens the link. It downloads `Instar-Connect.exe` for the PC's architecture (x64 or Arm64, from the browser's report; x64 when unknown). The same file serves every agent and person; it holds no secret and no agent address.
 3. Double-click. Nothing asks for administrator rights.
 4. The window says: "This lets an Instar agent use this PC as you." Two choices, neither pre-selected: **"Full control"** (the agent can do anything you can do on this PC) or **"Look only"** (the agent can see the screen and read your files, and change nothing; it can still read anything in those files). It then shows a QR code, with "Paste instead" below it.
@@ -165,6 +171,14 @@ The most likely abuse is a scammer talking a stranger into connecting the scamme
 - Signed with Microsoft Artifact Signing under the individual identity **Justin Headley**, the publisher name of the Mac app. This needs an Azure subscription in Justin's name (about US$10 a month) and a one-time identity check with his ID. Both go to Justin as one four-part request (problem, exactly what changes, what yes does, what no or waiting does) after this spec is approved and before the first public release. If Microsoft does not enrol an individual in his country, that request names signing under SageMind instead. Unsigned builds are never published.
 - Built and signed on a Windows host the agent controls (the Mama PC, with any other reachable Windows machine as fallback). Assets go to GitHub Releases of the instar repo; the download link (instar.sh/pc, the `site/` project) redirects to the right asset.
 - **Release gate** (after approval, before the first public link): Defender file analysis; a fresh Windows install downloads and runs the signed build with Defender and SmartScreen on. A Defender detection fails the gate; SmartScreen's first-run warning for a new publisher passes it, and the download page shows the publisher name the person should see and says to stop if it differs. Because this program does what remote-access tools do, detections can arrive after release: a weekly job re-submits the current build to Microsoft's file analysis and records the verdict, the PC reports `blocked-by-security-software` when it cannot start a command or its own update, and the agent tells the owner in plain words. PCs under company policy control (AppLocker, WDAC) are not supported in v1, and the download page says so.
+
+### Packaging: the separate file now, a desktop-app mode later
+
+A side-by-side comparison (`docs/specs/reports/windows-one-file-extender-vs-desktop-app.md`) found that the desktop app cannot do this today: its two doors either create a brand-new agent on the PC or make the PC an owner device, and neither lets an existing agent use the PC. The Windows desktop app exists but is not released: `apps/instar-ios` branch `echo/windows-app-m1` (657aa31, 2026-11-18) has `InstarWindows` with a Pair sheet (`InstarWindows/App/PairSheet.cs`) and no public download yet. It recommends that, long term, this design live inside the Windows desktop app as a third door, **"Let my agent use this PC"**, rather than as a second program, because one program is easier to explain and saves a second signing, updater and download path.
+
+- **v1 ships as the separate file**, because the Windows desktop app is not released yet (no public download); the separate file can reach people before it. Its download page and window say who it is for and point everyone else to the desktop app. This choice is open to Justin: building Connect into the Windows app from the start (for example as a checkbox on its Pair screen, "Also let this agent work on this computer") is the alternative under his consideration, and the approved frontmatter waits for his answer.
+- **When the Windows desktop app ships**, the same PC side moves into it as that third door, owned by the Windows app lane as a row in its plan. Nothing in the server side changes: the `extender` class, the extender-only approval route, the home machine and the stores are shared. Inside the app the command handler runs as its own process with its own extender key, never the app's owner key, and on a borrowed PC the app starts in that mode only, with no chats and no owner pairing.
+- The separate file then stays available only for borrowed PCs, if real requests for that appear; otherwise it is retired with a final update that points to the desktop app.
 
 ## Maturation plan
 

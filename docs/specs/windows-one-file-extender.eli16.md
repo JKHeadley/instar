@@ -1,5 +1,9 @@
 # One file that connects a Windows PC to your agent: the short version
 
+## Who this is for
+
+For most people, the Instar desktop app is the recommended way to use Instar on a computer. Instar Connect is for a narrower case: letting your existing agent use a Windows PC that shouldn't or can't get a full install, such as a work laptop without admin rights, a look-only arrangement, short-term help, or a borrowed PC. Justin approved it on exactly those terms. The agent offers the desktop app first, and Connect only for that case. The Windows desktop app is built but not released yet. Once it is, Connect becomes a choice inside it (for example "Also let this agent work on this computer" when pairing), and the separate file is kept only if people need it for borrowed PCs. Whether to build it into the app from the start is Justin's call.
+
 ## What this is
 
 Justin wants the simplest possible way to let his agent use a Windows computer: open one link on the PC, run one file, done. Today there is no way at all unless the agent already lives on that PC.
