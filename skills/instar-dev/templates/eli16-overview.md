@@ -1,3 +1,13 @@
+<!--
+STANDS ON ITS OWN (P26, docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md):
+- Write for a reader who has none of this session's context.
+- Open with what this part of the system does today and what is wrong or wanted.
+- Define every term the first time it appears, and name things by what they do before any internal name.
+- Give every number its unit and its comparison.
+- Never write "as discussed", or use shorthand from the conversation.
+- Then read it back as a newcomer and rewrite anything that only makes sense from the history.
+-->
+
 # <Spec Title> — Plain-English Overview
 
 > The one-line version: <the entire decision compressed into one sentence>.

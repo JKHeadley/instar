@@ -26,7 +26,13 @@ afterEach(async () => {
 
 const LINK = 'The standards PR is ready for your approval: https://github.com/JKHeadley/instar/pull/3046';
 
-function fakeGh(opts: { postFails?: boolean }) {
+/** GitHub's approval rules for the repo (Echo Bugs 10000002791): absent → every fact read fails (unknown). */
+type Rules = { files: string[] };
+const CODEOWNERS = 'docs/STANDARDS-REGISTRY.md @JKHeadley\n.github/CODEOWNERS @JKHeadley\n';
+const LIVE_RULE = { type: 'pull_request', parameters: { require_code_owner_review: true, require_last_push_approval: false,
+  required_approving_review_count: 0, required_reviewers: [], require_extra_approval_for_unattributed_changes: true } };
+
+function fakeGh(opts: { postFails?: boolean; rules?: Rules }) {
   const requested: string[] = [];
   const calls: string[][] = [];
   const gh: AuthenticatedGhExec = async (args) => {
@@ -34,8 +40,14 @@ function fakeGh(opts: { postFails?: boolean }) {
     const ok = (body: unknown) => ({ code: 0, stdout: JSON.stringify(body), stderr: '' });
     const p = args[1] === '-X' ? args[3] : args[1];
     if (p === 'user') return { code: 0, stdout: 'EchoOfDawn\n', stderr: '' };
+    if (opts.rules) {
+      if (p === 'graphql') return ok({ data: { repository: { pullRequest: { reviewDecision: null } } } });
+      if (p === 'repos/JKHeadley/instar/rules/branches/main') return ok([LIVE_RULE]);
+      if (p.startsWith('repos/JKHeadley/instar/contents/.github/CODEOWNERS')) return { code: 0, stdout: CODEOWNERS, stderr: '' };
+      if (p.startsWith('repos/JKHeadley/instar/pulls/3046/files')) return { code: 0, stdout: opts.rules.files.join('\n') + '\n', stderr: '' };
+    }
     if (p === 'repos/JKHeadley/instar/pulls/3046') return ok({ state: 'open', user: { login: 'EchoOfDawn' }, head: { sha: 'h' },
-      requested_reviewers: requested.map(login => ({ login })), base: { repo: { owner: { login: 'JKHeadley', type: 'User' } } } });
+      requested_reviewers: requested.map(login => ({ login })), base: { ref: 'main', repo: { owner: { login: 'JKHeadley', type: 'User' } } } });
     if (p.endsWith('/reviews?per_page=100')) return ok([{ user: { login: 'JKHeadley' }, state: 'DISMISSED', commit_id: 'old' }]);
     if (p === 'repos/JKHeadley/instar/pulls/3046/requested_reviewers') {
       if (args[1] === '-X') {
@@ -92,6 +104,24 @@ describe('/telegram/reply requests the reviewer on a PR link before sending', ()
     const res = await reply(LINK);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(sentText()).toContain('could not confirm JKHeadley as a reviewer on PR #3046');
+  }, 60_000);
+
+  it('a PR nobody must approve (the #3326 shape) gets no review request; the reply goes out unchanged', async () => {
+    const g = fakeGh({ rules: { files: ['src/core/SessionManager.ts', 'dashboard/index.html'] } });
+    const { reply, sentText } = await replyApp(g.gh);
+    const res = await reply('Merged once green: https://github.com/JKHeadley/instar/pull/3046');
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(g.requested).toEqual([]);
+    expect(g.calls.filter(c => c[1] === '-X')).toHaveLength(0);
+    expect(sentText()).toContain('pull/3046');
+    expect(sentText()).not.toContain('could not confirm');
+  }, 60_000);
+
+  it('a PR touching a code-owned file still gets the request', async () => {
+    const g = fakeGh({ rules: { files: ['docs/STANDARDS-REGISTRY.md'] } });
+    const { reply } = await replyApp(g.gh);
+    expect((await reply(LINK)).status).toBe(200);
+    expect(g.requested).toEqual(['JKHeadley']);
   }, 60_000);
 
   it('a reply without a PR link never touches GitHub', async () => {

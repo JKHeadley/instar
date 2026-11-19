@@ -25,3 +25,7 @@ Seven cards in the board's "Waiting on you" lane, one per waiting project. "Need
 ## Risks and how they are handled
 
 A machine on an older version shows these cards without the new lines, may show a need twice, and may show them asking for Approve, until it updates. If the Chief of Staff's history is incomplete, a card is never closed just because a project is missing from what it read. If two machines briefly both think they run the Chief of Staff, the one whose information is older writes nothing. The cards can be switched off on their own with one setting, which is the way to roll them back.
+
+## Change approved on 2026-11-18: one line per waiting project
+
+Justin asked for Needs you to be the one list, with each thing in it once. A project's line and its Chief of Staff card are now merged into a single line. The line uses the card's title ("… looks done and needs your OK"), tapping it opens the card, and the project's conversation is linked under it. Only the Chief of Staff's own cards can do this, because only the server writes them. A card that an agent session writes still only adds a link to a plan or pull-request line. It never changes that line's words or where its button goes.
