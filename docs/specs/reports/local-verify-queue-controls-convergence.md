@@ -89,3 +89,7 @@ Tier 2 (new operator authority to stop a verify from starting); the spec is abou
 Converged at the round cap (round 6). The internal reviewer found nothing that changes what gets built in round 2. The outside-model reviewer raised three design-class points in the final round; none is about safety, security or data loss (two are orderings between a hold and a start, one is a stated alarm consequence), and all three are in the text. `## Open questions` is empty.
 
 The spec is ready for the Chief of Staff's review. What needs approval by name: a new operator authority to keep a queued change from being tested, and to put a change first, on the machine that owns the queue, behind the server's existing credential and an off-by-default switch.
+
+## After approval (2026-11-18 23:42 PT)
+
+The Chief of Staff approved with four conditions, all applied to the spec: a due main verify always goes next (the one-ahead allowance and its durable record are removed, which also removes the 3-hour alarm consequence); the constitution check was run on the final text (13 flags: six fixed starting values, the unverified `by` label and the shared credential, fairness under repeated fronts, the single reminder, the operator file's multi-machine posture, re-entering holds by hand after a lease move, the fleet step; each is accepted by name above or in the spec, and none changed the build); a lease move that loses holds is announced to the operating session with the list; every hold and front is audited with who and why (front now requires a reason).
