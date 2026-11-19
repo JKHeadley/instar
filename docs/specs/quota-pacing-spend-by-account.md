@@ -47,8 +47,13 @@ Claude Code reads and writes under `CLAUDE_CONFIG_DIR` and Codex under `CODEX_HO
 1. **Live credential re-pointing in use** (`CredentialLocationLedger` present and not in unknown mode): the slot's assignment `{ slot, accountId, since, lastVerifiedAt, quarantined }`.
    - The row gets `served_account_id` = the assignment's account and `served_basis: 'ledger-verified'` when `since` ≤ the row's timestamp, `lastVerifiedAt` is set and the slot is not quarantined.
    - It gets `'ledger-unverified'` (account still recorded) when the tenant was never confirmed.
-   - It gets `'slot-changed'` (account null) when the assignment began after the row, because the tenant at the row's time is no longer known.
-2. **No re-pointing** (each enrolled account owns its own home): the enrollment mapping `configHome → accountId`, `served_basis: 'enrollment-home'`. For Claude slots the poller's identity reconciliation (`reconcileIdentity`) already flags a slot whose signed-in email differs from its record. A slot flagged that way at scan time gives `'enrollment-drifted'` (account null). Codex slots are never identity-checked (`reconcileIdentity` returns early for non-Claude), so their basis is `'enrollment-home'`, labelled as unconfirmed in every read.
+   - It gets `'slot-changed'` (account null) when the assignment began after the row **and** the journal shows a different account entered the slot. A `reconcile` or `seed` that re-records the same tenant does not count as a change.
+2. **No re-pointing** (each enrolled account owns its own home): the enrollment mapping `configHome → accountId`. Whether the slot really held that login **at the row's time** is judged from a new, small durable log, `.instar/state/identity-checks/<slotId>.jsonl`. The poller's `reconcileIdentity` appends `{ at, result: 'confirmed' | 'drifted' }` on every change of result and at most once a day while it is unchanged, which bounds it to a few hundred rows a year per slot. A row then gets:
+   - `'enrollment-confirmed'` when the latest check at or before its time was `confirmed`, no `drifted` check falls between that check and the row, and the gap is under 3 poll intervals.
+   - `'enrollment-drifted'` (account null) when the latest check before it was `drifted`.
+   - `'identity-unconfirmed'` (account recorded, labelled) otherwise.
+
+   Codex slots are never identity-checked (`reconcileIdentity` returns early for non-Claude), so their rows are always `'identity-unconfirmed'`. Drift is never judged from the flag's state at scan time, because the flag clears on the first confirmed poll and scans can run days after the work.
 3. **A root no pool account owns, or one two accounts share:** `served_slot` is recorded, account null, `served_basis: 'unknown-root'` or `'ambiguous-root'`. The scanner does not follow symlinked roots (it checks with `lstat` and skips them), so no symlink resolution is added; a symlinked home stays unscanned, as today.
 4. **Rows with no transcript** (internal model calls, grain `invocation`): `served_basis: 'no-transcript'`, account from the binding only, shown as their own bucket.
 
@@ -56,11 +61,11 @@ Every row also keeps `served_slot`. The existing `account_id` column keeps the t
 
 Each row also stores `served_identity`: step 1's login identity key for the served account as known **at scan time** (from its pool record's email), so a later re-binding of a slot never relabels old spend. New nullable columns `served_slot`, `served_account_id`, `served_identity` and `served_basis` are added to the raw events table only, with a guarded idempotent `ADD COLUMN`. The rollup tables are **not** changed (see §3). Existing rows read `served_basis: 'before-attribution'`.
 
-The resolver is an in-memory map rebuilt when the pool or the credential ledger changes (both already emit change events). No per-row file reads.
+The resolver is an in-memory map rebuilt at the start of each scan tick when the credential ledger's `version` or the pool's account list has changed (neither emits events), plus the identity-check logs loaded once and appended in memory as the poller writes them. No per-row file reads.
 
 ### 2. Mismatch signal
 
-A mismatch is a row whose tagged account (`account_id`) and served account are both known and differ. Both are pool account ids, so they compare directly. `/usage/coverage` gains an `accountMismatches` total. `GET /usage/account-mismatches?since=&limit=&cursor=` lists every mismatching session `{ sessionId, tagged, served, servedBasis, requests, firstTs, lastTs }`, newest first. The default page is 50 and the maximum 500; it is paged, never cut. Mismatches only count from `ledger-verified` and `enrollment-home` rows. A mismatch on a Claude `enrollment-home` row is strong evidence; on a Codex one it is labelled unconfirmed.
+A mismatch is a row whose tagged account (`account_id`) and served account are both known and differ. Both are pool account ids, so they compare directly. `/usage/coverage` gains an `accountMismatches` total. `GET /usage/account-mismatches?since=&limit=&cursor=` lists every mismatching session `{ sessionId, tagged, served, servedBasis, requests, firstTs, lastTs }`, newest first. The default page is 50 and the maximum 500; it is paged, never cut. Mismatches count from `ledger-verified`, `enrollment-confirmed` and `identity-unconfirmed` rows, each with its basis shown; only the first two are presented as confirmed. Across machines, each machine returns its page newest first with a per-machine cursor; the holder merges by `lastTs` and returns a composite cursor of the per-machine cursors. The fan-out maps a peer's 404 to `served-account-unsupported` and 503 to `served-account-off`, with a per-peer size limit sized for a 500-row page.
 
 ### 3. Reads by account
 
@@ -76,9 +81,9 @@ Pool views of `/usage/tree` and `/usage/top` are answered by the lease holder fr
 For each account, each **closed** weekly cycle in step 1's history, and each weekly window separately (`sevenDay`, and `fable` on Claude accounts), compute:
 
 - `pointsUsed`: the cycle's last valid reading. A cycle whose last reading is censored (step 1's rule: too long before the reset) is `cannot-tell`, because its points and its spend would cover different intervals.
-- `costServed`: list-equivalent cost of rows whose `served_identity` is this login (the identity step 1 recorded for the cycle) and whose time falls in the cycle. For `fable`, only Fable-model rows count.
+- `costServed`: list-equivalent cost of `ledger-verified` and `enrollment-confirmed` rows whose `served_identity` is this login, and separately `costUnconfirmed` for its `identity-unconfirmed` rows (all Codex rows today). The figure uses `costServed` only; for Codex it is therefore `cannot-tell (no identity check)` until a later change confirms Codex identity, with `costUnconfirmed / pointsUsed` shown as a labelled estimate and whose time falls in the cycle. For `fable`, only Fable-model rows count.
 - `unattributedCost`: the cost in that cycle of rows on the same machines with a null served account. This is an upper bound on what the account may be missing.
-- `retentionComplete`: whether the whole cycle lies inside every contributing machine's raw-event retention (90 days).
+- `retentionComplete`: whether the whole cycle lies after every contributing machine's actual oldest raw row (retention is 90 days but the raw-row ceiling can drop rows sooner).
 
 The figure is `costPerPoint = costServed / pointsUsed`. It is withheld (`cannot-tell` with the reason) when the cycle is censored, not retention-complete, a contributing machine did not answer, or the switch was not on for the whole cycle on every contributing machine. Otherwise it is shown with a `quality` label: `low` when `pointsUsed < 5` or `unattributedCost` exceeds 10% of `costServed`, else `ok`.
 
@@ -112,7 +117,7 @@ Every figure carries a standing caveat: use of the same login outside this agent
 - **Unit:**
   - Each `served_basis`:
     - ledger-verified, ledger-unverified, slot-changed
-    - enrollment-home, enrollment-drifted (Claude), Codex labelled unconfirmed
+    - enrollment-confirmed, enrollment-drifted and identity-unconfirmed judged at the row's time (a row written while drifted but scanned after recovery stays drifted); Codex always unconfirmed; the identity-check log's change-or-daily append
     - unknown-root, ambiguous-root, no-transcript, off, before-attribution
   - Rows and pairing:
     - transcript, rollout and invocation rows each get the right columns
@@ -144,7 +149,7 @@ Every figure carries a standing caveat: use of the same login outside this agent
 | Decision point | Classification | Basis |
 |---|---|---|
 | The transcript root decides the served slot | invariant; basis: external-constraint; evidence: Claude Code and Codex write transcripts under the config home the process ran with (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), and the ledger reads them from those folders | The slot, not yet the account. |
-| Account in the slot: credential ledger assignment (verified, unverified, changed since) when re-pointing is on, else the enrollment home, with Claude drift marking the slot unconfirmed | judgment-candidate; floor: an assignment newer than the row, a drifted slot, an unknown or shared root all give a null account, never a guess; every row records its basis; arbiter: the graduation review, from the share of rows per basis and the mismatches found | The best available record of the tenant, labelled with how good it is. |
+| Account in the slot: credential ledger assignment (verified, unverified, changed since) when re-pointing is on, else the enrollment home judged against the identity-check log at the row's time (3-poll-interval gap) | judgment-candidate; floor: an assignment newer than the row, a drifted slot, an unknown or shared root all give a null account, never a guess; every row records its basis; arbiter: the graduation review, from the share of rows per basis and the mismatches found | The best available record of the tenant, labelled with how good it is. |
 | The tag is kept beside the served account and never overwritten | invariant; basis: enumerable-domain; evidence: the two answer different questions (what was asked, what was used) and the mismatch between them is the signal | |
 | Size of a point withheld only when retention-incomplete or a machine did not answer; else shown with a quality label (low under 5 points or over 10% unattributed cost), and always as a ceiling | judgment-candidate; floor: an incomplete sum is never shown as whole; a low-quality figure is labelled, never hidden; the outside-use caveat is always attached; arbiter: the graduation review | The 5-point and 10% marks only label. |
 | Mismatch list paged (default 50, max 500), never cut | invariant; basis: enumerable-domain; evidence: every mismatch is a row the review must be able to read; paging bounds one response, not the set | |
