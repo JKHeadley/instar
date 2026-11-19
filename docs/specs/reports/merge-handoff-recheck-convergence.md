@@ -63,3 +63,8 @@ Tier 2 (it changes when a merge is attempted). The change itself is small: one b
 ## Convergence Verdict
 
 Converged at round 6, at the cap. The internal reviewer's final round found nothing that changes what gets built. The outside reviewer's final round had three design findings, each applied in one edit; none concerns safety, security or data loss. The spec is ready for approval.
+
+## After approval (2026-11-19 07:52 PT)
+
+Approved by the Chief of Staff with two conditions. (1) The constitution check ran on the final text (4 flags): the exact waits and thresholds are starting values (answered in the spec: revised from the recorded rows); the baseline's "half" was a mandate and is now the default of a decision the operating session takes on the reported counts (taken); "unknown" was described as "still computing" and now claims only that GitHub has not supplied its answer (taken); there is no chart or recurring review after graduation (left: the 7-day review and the status counts are the instrument for a change of this size). (2) The re-read change goes on through the same checked merge path as every hand-off: part A step 3 and part B state it, and a test asserts it.
+

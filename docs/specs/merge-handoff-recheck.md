@@ -8,6 +8,8 @@ eli16-overview: "docs/specs/merge-handoff-recheck.eli16.md"
 tier: 2
 supervision: tier0
 topic: 145097
+approved: true
+approved-by: "Chief of Staff (echo-chief-of-staff), 2026-11-19 07:52 PT (agent message 62dbd6b9): when GitHub's mergeable answer is unknown on a hand-off, re-ask about that one change at 5, 10 and 15 s inside the same pass and merge only when GitHub says yes; no merge check changes; a real conflict is never re-asked; off by default; baseline first with the switch off, removed if the cause is disproved. Conditions: constitution check on the final text before building; the re-ask goes through the same checked merge path, so every gate that runs today runs again on the merge."
 review-convergence: "2026-11-19T15:50:30.780Z"
 review-iterations: 6
 review-completed-at: "2026-11-19T15:50:30.780Z"
@@ -83,7 +85,7 @@ Nothing else is repeated: the list is not read again, no other change is looked 
 | Decision point | Classification | Basis and evidence |
 |---|---|---|
 | Whether a change is merged | invariant; basis: enumerable-domain; evidence: unchanged. The same eligibility rule and the same checks decide; the only new input is a fresher value of GitHub's own `mergeable` field for the same change and head, read from GitHub. A test asserts that a re-read change still passes through every check a hand-off passes through today, and that `CONFLICTING`, another head, a closed change and a failed read all end with no merge attempt. | |
-| Whether the hand-off reads the change again | invariant; basis: enumerable-domain; evidence: one named condition (not mergeable, GitHub's value `UNKNOWN`), fixed waits, a fixed count, one switch; tests on each. Symbol: the `mergeable` value in the list row. State claimed: "GitHub has not computed it yet". Corroboration: the direct read itself, which returns GitHub's computed value; a wrong guess costs at most 30 seconds and merges nothing. | |
+| Whether the hand-off reads the change again | invariant; basis: enumerable-domain; evidence: one named condition (not mergeable, GitHub's value `UNKNOWN`), fixed waits, a fixed count, one switch; tests on each. Symbol: the `mergeable` value in the list row. State claimed: "GitHub has not supplied its answer yet", nothing about why. Corroboration: the direct read itself, which returns GitHub's computed value; a wrong guess costs at most 30 seconds and merges nothing. | |
 
 ## Fixed limits
 
@@ -101,7 +103,7 @@ Nothing else is repeated: the list is not read again, no other change is looked 
 
 - **ladder:** merge-handoff-recheck
 - **test-agent-live:** a throwaway agent with the real watcher and a fake GitHub command that answers `UNKNOWN` in the list and `MERGEABLE` on the second direct read: the hand-off waits, reads twice, and reaches the merge attempt; the same with `CONFLICTING` ends at once.
-- **dev-agent-live:** the development agent's line. First a baseline with the switch off, until 10 hand-offs have been refused as not mergeable (about 2 days at the measured rate; at most 7 days, after which the owner reports what was seen and the baseline is extended or the change removed). The baseline decides: if at least half of those refusals began with `UNKNOWN`, the switch is turned on; if fewer, it stays off, the owner reports that the assumed cause was wrong, and the change is removed. (Half is a starting value: below it the gain is at most 2 or 3 refusals a day, which is not worth carrying the code.) Then, if on, it is switched on by the session that operates the line.
+- **dev-agent-live:** the development agent's line. First a baseline with the switch off, until 10 hand-offs have been refused as not mergeable (about 2 days at the measured rate; at most 7 days, after which the owner reports what was seen and the baseline is extended or the change removed). The owner reports the baseline's counts to the session that operates the line, which decides. The default: if at least half of those refusals began with `UNKNOWN`, the switch is turned on; if fewer, it stays off and the change is removed, unless the operating session judges the remaining hand merges worth it and says why. (Half is a starting value: below it the gain is at most 2 or 3 refusals a day.) Then, if on, it is switched on by the session that operates the line.
 - **graduation criterion:** over 7 days with the switch on, or longer until at least 15 hand-offs have met `UNKNOWN` (with fewer the result is inconclusive and the count goes on), from the audit rows: of the hand-offs that met `UNKNOWN`, at least 8 in 10 were recovered (every other ending counts as not recovered, whatever its name, including a merge reported after the hold timed out); no merge attempt on a change whose read said anything but `MERGEABLE`; the seconds spent on waits and on the delayed reads (the read the pass already makes today is not counted), averaged over all hand-offs, stay under 5 (with the switch off this is zero); `hold-active` skips stay at or under 1 in 50 (skips divided by started hand-offs plus skips). Reported beside it, as the operator's workload and not as the criterion: hand merges per day.
 - **fleet:** off by default until the 7-day report; then proposed as the default with the numbers.
 - **dark-window:** from merge until the operating session turns it on.
