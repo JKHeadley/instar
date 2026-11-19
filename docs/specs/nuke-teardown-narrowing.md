@@ -6,6 +6,11 @@ tier: 2
 parent-principle: "Verify the State, Not Its Symbol"
 parent-principle-fit: "`instar nuke` decides which sessions to stop from a symbol, a name starting with `<projectName>-` (nuke.ts:141, :348). It does not check the state: whether the session actually works inside this agent's home. So removing `echo` stops the `echo-wt-*` agents' sessions."
 eli16-overview: "docs/specs/nuke-teardown-narrowing.eli16.md"
+review-convergence: "operator-approved after 5 rounds (NOT converged: round-5 fixes go to the build second pass; Chief of Staff msg a9037bba, 2026-11-19 01:44 PT)"
+review-iterations: 5
+review-report: "docs/specs/reports/nuke-teardown-narrowing-convergence.md"
+approved: true
+approved-by: "Chief of Staff, msg a9037bba, 2026-11-19 01:44 PT"
 supersedes-draft: "docs/specs/nuke-teardown-by-ownership.md (6 rounds, not converged; split approved by the Chief of Staff, msgs 3d7f24de -> 718c4317)"
 ---
 

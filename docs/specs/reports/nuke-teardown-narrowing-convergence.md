@@ -21,3 +21,14 @@ Brought to the Chief of Staff after 5 rounds:
 - The design is stable.
 - Late findings are edge-case refusals.
 - The round-5 fixes are unreviewed.
+
+## Approval
+
+Approved by the Chief of Staff at 01:44 PT on 2026-11-19 (msg a9037bba), at commit 4c9a117ba. Approval conditions:
+- The round-5 fixes are covered by the build's second pass, which looks at these five specifically:
+  - the empty name;
+  - an unregistered nested home;
+  - `has-session` errors;
+  - the Linux running unit;
+  - `launchctl list` in place of parsing `print`.
+- All tests stay sandboxed.

@@ -35,4 +35,4 @@ The wider hardening is a separate spec, already queued by the Chief of Staff:
 
 ## What needs deciding
 
-Nothing now. After one review round, this comes to the Chief of Staff for approval before it is built.
+Nothing now. Approved by the Chief of Staff at 01:44 PT, to be built.
