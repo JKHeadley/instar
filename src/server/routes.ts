@@ -3391,6 +3391,8 @@ export function createRoutes(ctx: RouteContext): Router {
     appsFor: (key) => { const rt = ctx.projectAppsRuntime?.() ?? null; return rt && projectAppsEnabled(ctx.config) ? rt.view(key) : null; },
     // docs/specs/work-door-project-rows.md §3.1.4 / §3.2: whether this machine runs the checks, and "Ask for an update".
     checkContext: () => ({ here: ctx.chiefOfStaffLoop?.checksHere() ?? false, gapMs: ctx.chiefOfStaffLoop?.requestGapMs() ?? 14 * 60_000 }),
+    // "Quiet since …" / "Stalled since …" in the owner's zone (the same `timezone` the Chief of Staff's note hour uses).
+    timeZone: () => (ctx.config as { timezone?: string }).timezone || undefined,
     ...(ctx.chiefOfStaffLoop ? { checkNow: (key: string, by: 'owner-tap' | 'chief-of-staff') => ctx.chiefOfStaffLoop!.checkNow(key, by) } : {}),
   });
   ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
