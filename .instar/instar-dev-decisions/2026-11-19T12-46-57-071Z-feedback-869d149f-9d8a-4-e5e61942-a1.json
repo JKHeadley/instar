@@ -1,0 +1,21 @@
+{
+  "ts": "2026-11-19T12:46:57.071Z",
+  "slug": "feedback-869d149f-9d8a-4-e5e61942-a1",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-869d149f-9d8a-44f0-b87c-d9d1a97935f8:a1",
+  "initiativeId": "feedback-869d149f-9d8a-44f0-b87c-d9d1a97935f8",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 2,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/config/LiveConfig.ts",
+      "src/core/SecretMigrator.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

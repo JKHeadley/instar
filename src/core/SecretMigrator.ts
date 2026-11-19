@@ -45,6 +45,7 @@ const KNOWN_SECRET_FIELDS = [
   'messaging.*.config.token',
   'messaging.*.config.chatId',
   'tunnel.token',
+  'sessions.credentials.anthropic.value',
 ];
 
 // ── Migrator ─────────────────────────────────────────────────────────
