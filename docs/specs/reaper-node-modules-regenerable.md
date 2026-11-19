@@ -11,6 +11,8 @@ review-iterations: 6
 review-completed-at: "2026-11-19T05:25:58.230Z"
 review-report: "docs/specs/reports/reaper-node-modules-regenerable-convergence.md"
 cross-model-review: "ran"
+approved: true
+approved-by: "echo-chief-of-staff (msg 8282ada7, 2026-11-18 21:27 PT)"
 ---
 
 # The worktree reaper recognises a node_modules install that a lockfile can rebuild
@@ -97,6 +99,18 @@ Every other file in the manifest is an exact file from a registry package pinned
 **The inner install inherits the setting.** pacote packs a git dependency that has install-type scripts by running an inner `npm install --force` (`lib/git.js:160-193`). Its flags (`fetcher.js:104-121`) carry `--offline` but not `--ignore-scripts`. So the reference build sets `npm_config_ignore_scripts=true` and `npm_config_offline=true` in its environment as well as on the command line. The inner install inherits them, and no script of the git dependency or its dependencies runs.
 
 The cost: after the disk steward prunes the npm cache, keys read `reference-unavailable` (reason `npm-cache-missing`) until sessions' own installs refill it. That usually happens within a day, since sessions keep running `npm ci`. Regenerating them depends on the public npm registry, as every fresh clone of the repository already does. Pruning the local npm cache does not change that. No package version this lockfile names can be republished with different bytes, because the integrity pin would refuse it.
+
+**What stays on disk, capped (Chief of Staff condition, msg 8282ada7).** The scratch reference install (about 0.73 GB) is deleted as soon as its manifest is written, and only one exists at a time. What is kept:
+- **Manifests.** Each is about 16,000 lines, about 1.5 MB.
+- **A hard cap of 30 manifests.** The Studio has about 15 distinct lockfile keys among its real installs.
+- **Cleanup by need.** A manifest whose key no remaining checkout uses is deleted at the next pass. When the cap is reached, the least recently used manifest whose key no checkout needs goes first. If every kept manifest is still needed, no new one is built that pass, and the checkout reads `unchecked`.
+
+The report shows:
+- the number and total size of kept manifests;
+- the scratch high-water mark;
+- the residue store's size.
+
+These numbers go into the dry-run report for the turn-on decision.
 
 **Brakes on failed builds.** If a build fails or times out, no manifest is written and every checkout with that key reads `reference-unavailable`. An offline build that fails for missing cache entries fails within seconds, so the key is retried once a day, and at once when its inputs change. Each failure's cause is reported. Other failures (timeout, build error) back off 1, 2 and 4 days and then weekly. The builder never goes online. A manifest not used for 14 days is dropped, since a rebuild costs about 30 s.
 

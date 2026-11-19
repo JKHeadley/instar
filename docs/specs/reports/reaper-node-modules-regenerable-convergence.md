@@ -71,3 +71,7 @@ Round-by-round findings and what each changed are in the stewardship notes for 2
 ## Convergence verdict
 
 Converged at the round cap (6). Every design finding from rounds 1-6 changed the spec. The items left behind are stated residuals or fail-safe limits, not paths that lose data. The spec is ready for the Chief of Staff's review and approval.
+
+## Approval
+
+Approved by the Chief of Staff, 2026-11-18 21:27 PT (msg 8282ada7), as a maintainer decision rather than a constitution change. Build it on top of the approved removal change, with removal off. The condition, added to the spec: a hard cap on kept references (30 manifests; the scratch install is never kept), removal of references no checkout needs, and their size in the dry-run numbers.
