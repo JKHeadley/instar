@@ -3,7 +3,7 @@
 **Version / slug:** `local-verify-import-related-rerun`
 **Date:** `2026-11-18`
 **Author:** `echo`
-**Second-pass reviewer:** `pending (the independent reviewer runs after this build)`
+**Second-pass reviewer:** `independent reviewer agent (concurred; see Second-pass review)`
 
 ## Summary of the change
 
@@ -162,16 +162,27 @@ The change is built as the approved spec says, behind a switch that is off by de
 
 The three items the spec's "Left behind" names as fixed in its last edit and not re-reviewed are implemented: the rate denominator (`finishedAt` and `lanesCompleted` on `main-record`, the observation rule in the review script), the byte bound (`flakyOnMainList()` measures the serialized block in UTF-8 bytes and drops the oldest evidence), and the refusal-count carrier (the lists and counts on the PR `run-detail` line). S1 and S2 are covered by tests named in Evidence pointers.
 
-Clear to ship dark, pending the independent second pass.
+Clear to ship dark; the independent second pass concurred (see below).
 
 ---
 
 ## Second-pass review
 
-**Reviewer:** pending
-**Independent read of the artifact: pending**
+**Reviewer:** independent reviewer agent (a separate general-purpose agent with no part in writing the change), started by the session echo-increasing-throughput on 2026-11-18
 
-The independent reviewer runs after this build. It is asked to check S1 (the name-sequence hash and the duplicate check), S2 (no evidence from a peer or a red `main`), the three last-edit fixes named above, and the eight interpretation points.
+**Verdict:** Concur with the review, after one concern was raised and fixed.
+
+The first read was of commit f23db42b4, cold. It confirmed that with the switch off nothing behaves differently; that main evidence is written only from green `main` verifies this machine ran itself; every eligibility condition; the three solo passes, each by name; that a peer applies the rule only when the received block enables it and its own switch is on; that the coordinator refuses a clear it did not offer; and that records stay compatible in both directions. It found all ten interpretation points acceptable.
+
+It raised one concern and three notes. The concern: in vitest 2.1.9 a failed `beforeAll` inside a `describe` marks the tests under it as skipped, and the parser's file-level check sees only file-level cases, so a hook error that happens only under load could sit beside a listed flaky test and the file would still clear. S3 was narrower than this review had disclosed. The notes: three fixed 30 ms sleeps in the new e2e test, a "stop from another lane" unit test that would not have failed if the behaviour were removed, and two inaccurate statements in this artifact (the file totals, and that every `run-detail` line gains `runLog`).
+
+Commit 47fadd217 answered all four. It added the skipped-count rule with a test that failed before the code: a solo run of an import-related file is a pass only if the file skips exactly as many tests as it did in the lane run, otherwise the sequence ends as `skipped-count-changed`. It replaced the e2e sleeps with a bounded wait on the observable condition, strengthened the stop test to assert the recorded outcome and the call count, and corrected this artifact and the spec.
+
+The second read, of 47fadd217, concurred. Both counts are the per-file skipped count from the same parser, and a file reported by two shards already voids the lane report. A legitimately different skipped count only makes the rule stricter. Nothing new applies to plain files or to `main` verifies. The remaining limits are stated ones: a nested `afterAll` error, or a hook in a suite with no tests of its own, changes no count, and is caught only when it also fails a solo run.
+
+One thing has not been done on this machine: the one new e2e test has not run under the e2e config. Each attempt after the first two queued behind the verify slot and did not start. Its logic was checked through a temporary copy under the unit config (18 of 18 passed, the copy removed). Local Verify runs it under the e2e config on the pull request.
+
+After the review, `main` was merged in (commit 0b432b22d). The one conflict was in `src/data/feature-ladders.json`, where both sides had appended an entry; both entries are kept.
 
 ---
 
