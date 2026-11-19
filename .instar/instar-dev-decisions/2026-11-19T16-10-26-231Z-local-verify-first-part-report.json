@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-19T16:10:26.231Z",
+  "slug": "local-verify-first-part-report",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1008,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/local-verify-likely-failing-first.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/firstPart.ts",
+      "src/localVerify/firstPartReport.ts",
+      "src/localVerify/firstPartTrial.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/record.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 488,
+    "deletedLines": 520
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

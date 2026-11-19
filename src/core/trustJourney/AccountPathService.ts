@@ -248,10 +248,23 @@ export class AccountPathService {
     return this.process(r);
   }
 
-  /** The holder processing a receipt another machine already wrote to the replicated store. */
-  async onReceiptFromStore(r: Receipt): Promise<ReceiptOutcome> {
-    if (this.d.store.receiptConsumed(r.uniqueKey)) return 'duplicate';
-    return this.process(r);
+  /**
+   * SEC-088: an owner reply that reached a machine that does not hold the lease. Nothing is approved
+   * or accepted here, and nothing is written for the holder (a replicated receipt is the writing
+   * machine's word, so the holder never takes one as the owner's reply). When the reply would have
+   * acted (an acceptance, a reply to a request card, or an approve command), the owner is told once
+   * to send it again; the holder then receives it from the chat itself.
+   */
+  async onReceiptAwayFromHolder(r: Receipt): Promise<ReceiptOutcome> {
+    const ownerId = this.d.ownerPlatformId(r.adapter);
+    const direct = r.adapter === 'telegram' ? (r.chatType === 'private' && r.chatId === r.senderId) : r.chatType === 'im';
+    if (!ownerId || r.senderId !== ownerId || !direct || r.senderIsBot || r.forwarded) return 'not-for-us';
+    const statement = acceptanceStatement({ adapter: r.adapter, accountId: ownerId, installationId: this.d.installationId });
+    const wouldAct = isAcceptanceReply(r.text, statement)
+      || (!!r.replyToMessageId && !!this.d.store.requestByCard(r.adapter, r.replyToMessageId))
+      || parseApproveCommand(r.text) !== null;
+    if (!wouldAct) return 'not-for-us';
+    return this.instruct(r, 'That reply reached one of my machines that is not handling approvals right now, so nothing changed. Please send the same reply again in a minute.');
   }
 
   private async process(r: Receipt): Promise<ReceiptOutcome> {

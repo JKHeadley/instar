@@ -297,7 +297,7 @@ import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOver
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
-import { desktopProbeUnavailableReason, DESKTOP_PEER_REASON_MAX } from '../core/DesktopProbeReadiness.js';
+import { desktopProbeUnavailableReason, DESKTOP_CHECK_FAILED_REASON, DESKTOP_PEER_REASON_MAX } from '../core/DesktopProbeReadiness.js';
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
@@ -2658,7 +2658,7 @@ export class AgentServer {
             probe = await this.directDesktopAccess.probe();
           } catch {
             return { ...target, ready: false,
-              unavailableReason: 'Desktop capture is not available on this machine.' };
+              unavailableReason: DESKTOP_CHECK_FAILED_REASON };
           }
           const reason = desktopProbeUnavailableReason(probe);
           return { ...target, ready: probe.ready,

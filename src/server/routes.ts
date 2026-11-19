@@ -97,6 +97,7 @@ import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { cleanMergeHoldReason } from '../localVerify/operatorQueue.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
@@ -134,7 +135,7 @@ import { Router } from 'express';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
-import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
@@ -490,6 +491,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { TopicCreationProvenanceStore, checkCitation, parseOnBehalfOf, crossTopicEligible, safeConversationName, CROSS_TOPIC_FIELDS, type CitationDeps } from '../core/topicCreationProvenance.js';
 import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
 import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -625,7 +627,7 @@ import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
-import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
+import { historySenderLabel, resolveSignedByAgent, aspClassifiedText, labelFromEnvelope, signedInboundSnapshot } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -840,6 +842,8 @@ import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
+import { telegramMessageLink, slackMessageLink, appConversationLink, workCardLink, classifyAskLinks } from '../core/messageLinks.js';
+import type { WaitingAskContext, AskLinkability } from '../core/MessagingToneGate.js';
 import { callerHasDocumentHome, detectOldViewLink } from '../documents/readablePages.js';
 import { signViewPath } from './middleware.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
@@ -3105,6 +3109,30 @@ export function findReservedObjectKey(value: unknown, prefix = ''): string | nul
 }
 
 export function createRoutes(ctx: RouteContext): Router {
+  const creationProvenance = new TopicCreationProvenanceStore(ctx.config.stateDir);
+  /** identity-security-creation-provenance v5: one refusal notice per (A, B, reason) per 10 minutes. */
+  const crossTopicNoticeAt = new Map<string, number>();
+  /** identity-security-creation-provenance v5: may a yes in conversation A reach conversation B? */
+  const crossTopicEligibilityFor = (sourceTopicId: number, destKey: string) => {
+    const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
+    const owner = ctx.telegram?.getOwnerUserId();
+    return crossTopicEligible({
+      ownerUid: typeof owner === 'number' && owner > 0 ? String(owner) : null,
+      confirmerUid: ctx.topicOperatorStore?.getOperator(sourceTopicId)?.uid ?? null,
+      destKnown: dest !== null && !!ctx.topicOperatorStore && !!ctx.telegram && ctx.telegram.getTopicName(dest) !== null,
+      destBinding: dest !== null ? ctx.topicOperatorStore?.getBinding(dest) ?? null : null,
+      destVerifiedUid: dest !== null ? ctx.topicOperatorStore?.getOperator(dest)?.uid ?? null : null,
+      destConfined: dest !== null ? new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${dest}`) : null,
+      sourceConfined: new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${sourceTopicId}`),
+    });
+  };
+  /** identity-security-creation-provenance: identity checks for a cited owner message. */
+  const ownerCitationDeps = (): CitationDeps => ({
+    verifiedOperatorUid: (t) => ctx.topicOperatorStore?.getOperator(t)?.uid ?? null,
+    findMessage: (t, m, notBefore) => ctx.telegram ? ctx.telegram.findTopicMessage(t, m, notBefore) : { entry: null, unreadable: true },
+    ownerUid: () => { const o = ctx.telegram?.getOwnerUserId(); return typeof o === 'number' && o > 0 ? String(o) : null; },
+    now: () => Date.now(),
+  });
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
   // (GET /spec/constitution-checks), refreshed in the background at most once a minute
@@ -3248,6 +3276,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const prLinkDeps = {
       enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
       reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      // Echo Bugs 10000002791: request only where the repository's rules may require an approval.
+      requestWhenNotRequired: () => (ctx.config as { prLinkReviewRequest?: { requestWhenNotRequired?: boolean } }).prLinkReviewRequest?.requestWhenNotRequired === true,
       gh: ghFor,
       selfLogin: async () => {
         const gh = ghFor();
@@ -4311,6 +4341,94 @@ export function createRoutes(ctx: RouteContext): Router {
   // only with no tunnel, and a plain "no link yet" while a tunnel starts (topic 10000002573).
   const pairingDashboardOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
   ctx.telegram?.setPairingDashboardOrigin?.(pairingDashboardOrigin);
+
+  // ── waiting-on-you-links (docs/specs/waiting-on-you-links.md) ─────────────────────────────
+  // Links to a message, a card or a conversation, and the facts B26_WAITING_ASK_UNLINKED reads.
+  const askLinkOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+  /** A phone-openable console origin, or why there is none. An agent WITH a tunnel never gets localhost. */
+  const askConsoleOrigin = (): { origin: string; localOnly: boolean } | { pending: true } => {
+    const o = askLinkOrigin();
+    if (o.kind === 'public') return { origin: o.origin, localOnly: false };
+    if (o.kind === 'local' && o.reason === 'no-tunnel') return { origin: o.origin, localOnly: true };
+    return { pending: true };
+  };
+  const askTelegramChats = (): { chatId: string | null; issuesChatId: string | null } => {
+    const cfg = ctx.config.messaging?.find(m => m.type === 'telegram')?.config as { chatId?: unknown; issuesChatId?: unknown } | undefined;
+    const norm = (v: unknown): string | null => (v === undefined || v === null || v === '' ? null : String(v));
+    let chatId = norm(cfg?.chatId);
+    try { chatId = norm(ctx.telegram?.getChatId?.()) ?? chatId; } catch { /* @silent-fallback-ok: the configured chat id stands when the adapter cannot report one */ }
+    return { chatId, issuesChatId: norm(cfg?.issuesChatId) };
+  };
+  /** The link to one Telegram message, or undefined when this chat has no message links. */
+  const askTelegramLink = (topicId: number | null | undefined, messageId: unknown): string | undefined => {
+    if (typeof messageId !== 'number' && typeof messageId !== 'string') return undefined;
+    const r = telegramMessageLink({ ...askTelegramChats(), topicId: topicId ?? null, messageId });
+    return r.ok ? r.url : undefined;
+  };
+  const askWorkBoardOn = (): boolean => {
+    const boot = (ctx.config as { workBoard?: { enabled?: boolean } }).workBoard?.enabled;
+    let live: boolean | undefined;
+    try { live = ctx.liveConfig?.get<boolean | undefined>('workBoard.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+    return workBoardEnabled({ developmentAgent: (ctx.config as { developmentAgent?: boolean }).developmentAgent, workBoard: { enabled: live ?? boot } });
+  };
+  /** `toneGate.waitingAskLinks.enabled`: unset = live on development agents, dark on the fleet. */
+  const waitingAskLinksOn = (): boolean => {
+    const boot = (ctx.config as { toneGate?: { waitingAskLinks?: { enabled?: boolean } } }).toneGate?.waitingAskLinks?.enabled;
+    let live: boolean | undefined;
+    try { live = ctx.liveConfig?.get<boolean | undefined>('toneGate.waitingAskLinks.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+    return resolveDevAgentGate(live ?? boot, ctx.config);
+  };
+  /** Allowance for gathering B26's facts, reusing the reply path's origin-lookup allowance. */
+  const WAITING_ASK_FACTS_BUDGET_MS = 750;
+  /**
+   * The facts B26 reads. Deterministic, never a decision; every part can be omitted
+   * ("unavailable"). A failure or an overrun here only drops facts, never the review.
+   */
+  async function gatherWaitingAskFacts(text: string, channel: 'telegram' | 'slack' | 'app'): Promise<WaitingAskContext> {
+    const out: WaitingAskContext = {};
+    let scan: ReturnType<typeof classifyAskLinks> | null = null;
+    let consoleOrigin: ReturnType<typeof askConsoleOrigin> | null = null;
+    try {
+      scan = classifyAskLinks(text, { telegramChatId: askTelegramChats().chatId, telegramIssuesChatId: askTelegramChats().issuesChatId });
+      out.links = scan.counts;
+    } catch { /* @silent-fallback-ok — the counts are omitted and the judge is told they are unavailable */ }
+    try {
+      consoleOrigin = askConsoleOrigin();
+      const phone: AskLinkability = 'pending' in consoleOrigin ? 'unknown' : consoleOrigin.localOnly ? 'no' : 'yes';
+      const message: AskLinkability = channel === 'telegram'
+        ? (telegramMessageLink({ ...askTelegramChats(), messageId: 1 }).ok ? 'yes' : 'no')
+        : channel === 'slack'
+          ? (() => { const r = slackMessageLink({ workspaceUrl: ctx.slack?.getWorkspaceUrl?.() ?? null, channel: 'C000', ts: '1000000000.000000' }); return r.ok ? 'yes' as const : r.reason === 'workspace-pending' ? 'unknown' as const : 'no' as const; })()
+          : 'no';
+      out.canLink = { message, card: askWorkBoardOn() ? phone : 'no', conversation: channel === 'app' ? phone : 'no' };
+    } catch { /* @silent-fallback-ok — the capability facts are omitted and the judge is told they are unavailable */ }
+    if (!scan) return out;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lookups = (async () => {
+      if (scan.telegramRefs.length === 0) out.linked = [];
+      else if (ctx.telegram?.findLoggedMessages) {
+        try { out.linked = await ctx.telegram.findLoggedMessages(scan.telegramRefs, { signal: controller.signal }); } catch { /* @silent-fallback-ok — the log could not be read in time; the judge is told the facts are unavailable */ }
+      }
+      try {
+        const ownOrigin = consoleOrigin && !('pending' in consoleOrigin) ? consoleOrigin.origin : null;
+        const svc = ctx.workBoard?.()?.svc ?? null;
+        out.cards = scan.cardRefs.map((c) => {
+          if (!ownOrigin || c.origin !== ownOrigin) return { cardId: c.cardId, ownConsole: false };
+          if (!svc) return { cardId: c.cardId, ownConsole: true };
+          const view = svc.view(c.cardId);
+          return view ? { cardId: c.cardId, ownConsole: true, found: true, title: String((view.card as { title?: unknown }).title ?? '') } : { cardId: c.cardId, ownConsole: true, found: false };
+        });
+      } catch { /* @silent-fallback-ok — the board could not be read; the judge is told the card facts are unavailable */ }
+    })();
+    try {
+      await Promise.race([lookups, new Promise<void>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(); }, WAITING_ASK_FACTS_BUDGET_MS); })]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    // A snapshot: whatever was not ready in time stays omitted even if it lands later.
+    return { ...out };
+  }
   const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
     ? new PairingInviteTelegram({
       dashboardOrigin: pairingDashboardOrigin,
@@ -5292,6 +5410,21 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
+      // waiting-on-you-links §3 — B26's facts. Only where the rule can matter: the switch is on, a
+      // live-session `reply` on Telegram, Slack or the app, from a caller that declared it can
+      // react to a nudge (`liveArtefactSignals`) and is not a queued redrive. Nothing about the
+      // text decides it. Gathered BEFORE the review budget starts, inside its own allowance.
+      let waitingAsk: WaitingAskContext | undefined;
+      if ((channel === 'telegram' || channel === 'slack' || channel === 'app')
+        && kindForSignals === 'reply' && options.liveArtefactSignals === true && options.noReactionPossible !== true) {
+        try {
+          if (waitingAskLinksOn()) waitingAsk = await gatherWaitingAskFacts(text, channel);
+        } catch {
+          try { featureEvidence.record('toneGate.waitingAskLinks', { kind: 'error', reason: 'facts-gather-failed', context: { channel } }); } catch { /* @silent-fallback-ok — evidence is observability only */ }
+          // @silent-fallback-ok — B26 is advisory: if its context cannot be built the rule is not rendered and the review runs as before.
+        }
+      }
+
       // ── Invoke the single authority, bounded by the route budget ──
       // The gate is FAIL-OPEN by design, but under rate-limit pressure its
       // provider call can wait up to RATE_LIMIT_WAIT_MS for a window PLUS the
@@ -5413,6 +5546,9 @@ export function createRoutes(ctx: RouteContext): Router {
           // B24 (Echo Bugs topic 10000002750): this machine's built-in constitution
           // check results, so a spec/design approval ask is judged against them.
           specConstitutionChecks: options.messageKind === 'health-alert' ? undefined : safeRecentSpecChecks(ctx.config.stateDir),
+          // B26 (waiting-on-you-links §3): attached only for a live-session reply from a caller that
+          // can react to a nudge. Absent → the rule is not rendered and the prompt is unchanged.
+          ...(waitingAsk ? { waitingAsk } : {}),
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.
@@ -5548,6 +5684,19 @@ export function createRoutes(ctx: RouteContext): Router {
           };
         }
         if (result.advisory === true) {
+          // waiting-on-you-links: one evidence row per B26 citation, with how the agent reacted,
+          // so the fleet decision reads real counts (feature ladder `toneGate.waitingAskLinks`).
+          if (result.rule === 'B26_WAITING_ASK_UNLINKED') {
+            // An override counts only when it carries its reason (a reasonless one is refused below).
+            const b26Override = options.toneAdvisoryAck === result.rule && (options.toneAdvisoryAckReason ?? '').trim().length >= TONE_ADVISORY_REASON_MIN;
+            try {
+              featureEvidence.record('toneGate.waitingAskLinks', {
+                kind: 'fired',
+                reason: b26Override ? 'b26-cited-override' : 'b26-cited',
+                context: { channel, reaction: b26Override ? 'override' : 'handed-back' },
+              });
+            } catch { /* @silent-fallback-ok — evidence is observability only; it never affects the verdict or the send */ }
+          }
           const reactionRecordable = Boolean(result.decisionRef && decisionQualityRecordingLive());
           if (options.toneAdvisoryAck === result.rule) {
             // The override REASON is structurally required, not requested. The
@@ -6320,6 +6469,8 @@ export function createRoutes(ctx: RouteContext): Router {
           slack: ledger ? { ...ledger.counters, coversSince: ledger.coversSince === null ? null : new Date(ledger.coversSince).toISOString() } : null,
         };
       }
+      // SEC-106 decision 9: agent-signed label framing per delivery path since boot (counts only).
+      base.signedInboundLabel = signedInboundSnapshot();
       // Origin worker health rides the AUTHED extension: a held-sends outage is
       // visible without a status fan-out, and never inferred from silence.
       if (ctx.telegramOrigin) {
@@ -6451,6 +6602,10 @@ export function createRoutes(ctx: RouteContext): Router {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        // Memory held outside the V8 heap (native addons' C++ objects, Buffers),
+        // so resident size can be split without attaching a profiler.
+        external: Math.round(mem.external / 1024 / 1024),
+        arrayBuffers: Math.round(mem.arrayBuffers / 1024 / 1024),
       };
       if (ctx.autoUpdater) {
         const auto = ctx.autoUpdater.getStatus();
@@ -13697,24 +13852,74 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       patch[field] = value;
     }
+    // identity-security-creation-provenance v5: `confirmIn` — the owner asked for this change in
+    // another conversation; the proposal and the owner's "yes" happen THERE, and the yes applies the
+    // change here. Checked now and again when the yes arrives (crossTopicEligible).
+    let confirmIn: number | null = null;
+    if (body.confirmIn !== undefined) {
+      const raw = body.confirmIn;
+      const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+      if (!Number.isSafeInteger(n) || (n as number) <= 0 || String(n) === gate.key) {
+        res.status(400).json({ error: '"confirmIn" must be the positive id of another Telegram topic' });
+        return;
+      }
+      confirmIn = n as number;
+      // A cross-conversation yes may change only everyday run settings. Framework, escalation
+      // override and origin display keep today's rule (confirm in that conversation itself).
+      const allowedCross = new Set(CROSS_TOPIC_FIELDS);
+      const outside = Object.keys(patch).filter((k) => !allowedCross.has(k));
+      if (outside.length) {
+        res.status(400).json({ error: `confirmIn may change only model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
+        return;
+      }
+      // Ships behind the umbrella's per-piece switch: live on a development agent, dark on the fleet.
+      const switchLive = ctx.liveConfig?.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined)
+        ?? (ctx.config as { security?: { crossTopicConfirm?: { enabled?: boolean } } }).security?.crossTopicConfirm?.enabled;
+      if (!resolveDevAgentGate(switchLive, ctx.config)) {
+        res.status(503).json({ ok: false, reason: 'confirmIn-dark' });
+        return;
+      }
+      const eligible = crossTopicEligibilityFor(confirmIn, gate.key);
+      if (!eligible.ok) {
+        // A refusal stays a refusal: when the owner asked in A and B is what can't be reached, the
+        // owner hears it in A too, not only the agent.
+        const noticeKey = `${confirmIn}\u0000${gate.key}\u0000${eligible.reason}`;
+        const lastNotice = crossTopicNoticeAt.get(noticeKey) ?? 0;
+        if (eligible.reason.startsWith('destination-') && Date.now() - lastNotice > 10 * 60_000) {
+          crossTopicNoticeAt.set(noticeKey, Date.now());
+          const why = eligible.reason === 'destination-bound' ? 'someone else runs it' : eligible.reason === 'destination-confined' ? 'it belongs to a team member' : 'I could not confirm who runs it';
+          try {
+            await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(confirmIn as number,
+              `I can't change the conversation "${safeConversationName(ctx.telegram!.getTopicName(Number(gate.key)), gate.key)}" from here: ${why}. You can ask for it in that conversation instead.`));
+          } catch { /* @silent-fallback-ok: the refusal is also returned to the caller below */ }
+        }
+        res.status(422).json({ ok: false, reason: 'confirmIn-refused', refusal: eligible.reason });
+        return;
+      }
+    }
     const rendered = gate.surface.renderProposalEcho(gate.key, patch);
     if (!rendered.ok) {
       res.status(400).json({ ok: false, message: rendered.reply });
       return;
     }
-    const armed = ctx.topicProfile.confirmSlots.arm(gate.key, 'propose-confirm', rendered.patch, rendered.echo, 'agent-composed');
+    const echoTopic = confirmIn ?? Number(gate.key);
+    let echoText = confirmIn !== null
+      ? rendered.echo.replace('Proposed profile change for this topic:', `Proposed change for the conversation "${safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key)}" (not this one):`)
+      : rendered.echo;
+    const armed = ctx.topicProfile.confirmSlots.arm(String(echoTopic), 'propose-confirm', rendered.patch, echoText, 'agent-composed', confirmIn !== null ? gate.key : undefined);
+    if (armed.ok && armed.superseded) echoText = `${echoText}\n(This replaces the earlier proposal here.)`;
     if (!armed.ok) {
       res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
       return;
     }
     try {
-      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(Number(gate.key), rendered.echo));
-      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, requireTelegramDelivery(sent).messageId);
-      res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
+      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
+      res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
       // Echo undelivered — tear the slot down (an unseen echo must never be
       // confirmable; matchConfirm would refuse on no-echo-id anyway).
-      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
       res.status(502).json({ ok: false, error: `Echo delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
@@ -15429,9 +15634,8 @@ export function createRoutes(ctx: RouteContext): Router {
       if (probe.ready) return { ready: true };
       return { ready: false, unavailableReason: desktopProbeUnavailableReason(probe) };
     } catch {
-      // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
+      return { ready: false, unavailableReason: DESKTOP_CHECK_FAILED_REASON };
     }
-    return { ready: false, unavailableReason: 'Remote desktop is not ready on this machine.' };
   };
   router.get('/desktop/availability', async (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -15592,7 +15796,7 @@ export function createRoutes(ctx: RouteContext): Router {
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch {
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
-          unavailableReason: 'Remote desktop is not ready on this machine.' };
+          unavailableReason: DESKTOP_CHECK_FAILED_REASON };
       }
     }));
     const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
@@ -19527,6 +19731,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : undefined,
     // SEC-113 D2.5: the peer quarantine clear is owner-only (the dashboard operator session).
     ...(ctx.verifyDashboardOperatorSession ? { verifyOperatorSession: (token: string | undefined) => ctx.verifyDashboardOperatorSession!(token) } : {}),
+    // Queue controls: a hold with `blockMerge` also applies the merge-side [HOLD] marker, through
+    // the same function POST /green-pr-automerge/hold calls (read at call time: the watcher is late-bound).
+    ...(ctx.greenPrAutoMerger ? { applyMergeHold: (pr: number, reason: string) => ctx.greenPrAutoMerger!.applyHold(pr, reason) } : {}),
   });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
@@ -19720,7 +19927,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     // bounded-input-reviewed: API input clamped for the auto-merge hold note; display/audit text, never a model's input.
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
+    // One cleaning for both callers: this route and a Local Verify queue hold with `blockMerge`.
+    const reason = cleanMergeHoldReason(req.body?.reason);
     const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
     res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
   });
@@ -21828,6 +22036,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // identity-security-creation-provenance: why a conversation exists (machine-local).
+  router.get('/topic-creation-provenance/:topicId', (req, res) => {
+    const id = Number(req.params.topicId);
+    if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: 'topicId must be a positive integer' }); return; }
+    // Ids and times only, never message text: the owner opens the source message in their own Telegram.
+    res.json({ topicId: id, provenance: creationProvenance.get(id) });
+  });
+
   router.post('/telegram/topics', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -21835,6 +22051,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { name, color, firstMessage, kind } = req.body;
+    // identity-security-creation-provenance: an optional citation of the operator message this
+    // conversation is started from. Checked before anything is created; a refusal creates nothing.
+    const onBehalfOf = parseOnBehalfOf(req.body?.onBehalfOf);
+    if (onBehalfOf === null) {
+      res.status(400).json({ error: '"onBehalfOf" must be { topicId, messageId } with positive integer ids' });
+      return;
+    }
+    const citation = onBehalfOf ? checkCitation(onBehalfOf, ownerCitationDeps()) : null;
+    if (citation && !citation.ok) {
+      res.status(422).json({ error: 'onBehalfOf-refused', reason: citation.reason });
+      return;
+    }
     if (kind !== undefined && kind !== 'issue' && kind !== 'conversation') {
       res.status(400).json({ error: '"kind" must be "issue" or "conversation" when given' });
       return;
@@ -21876,6 +22104,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions
       // spawned in this topic will see the context in their thread history.
+      // identity-security-creation-provenance: record why this conversation exists. A record only:
+      // it grants nothing and is never posted into the conversation.
+      try {
+        creationProvenance.record({
+          topicId: topic.topicId,
+          createdAt: new Date().toISOString(),
+          session: typeof req.get?.('X-Instar-Session') === 'string' ? String(req.get('X-Instar-Session')).slice(0, 120) : null,
+          sessionAsserted: true,
+          source: citation && citation.ok ? { kind: 'linked-message', linked: citation.cited, authorship: 'unverified' } : { kind: 'source-unknown' },
+        });
+      } catch (err) {
+        console.error(`[topic-creation-provenance] could not record topic ${topic.topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       let messageSent = false;
       if (firstMessage && !topic.reused) {
         await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topic.topicId, firstMessage));
@@ -21889,6 +22130,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         reused: topic.reused,
         messageSent,
         group: space,
+        provenance: citation && citation.ok ? 'linked-message' : 'source-unknown',
       });
     } catch (err) {
       res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
@@ -22504,7 +22746,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // "It's one of my agents" (§11.6). After the send, never blocking or changing it.
       if (pairingInviteTelegram && PairingInviteTelegram.carriesInvite(text)) void pairingInviteTelegram.noteOutboundInvite(text, topicId);
       if (!isProxy && !isSystemTemplate) noteDeliveredFirstResult('telegram', sendResult?.messageId);
-      res.json({ ok: true, topicId, messageId: sendResult?.messageId, destinationStoreConfirmed });
+      // waiting-on-you-links §2: the link to the message just sent, so a later reminder can carry it.
+      const messageLink = askTelegramLink(topicId, sendResult?.messageId);
+      res.json({ ok: true, topicId, messageId: sendResult?.messageId, destinationStoreConfirmed, ...(messageLink ? { messageLink } : {}) });
     } catch (err) {
       // The send failed → release the in-flight reservation so the legitimate
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
@@ -23110,6 +23354,57 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Message Log Search ──────────────────────────────────────────
 
+  /**
+   * GET /messages/link — build the link to a message, a card or a conversation from ids the
+   * caller already holds (docs/specs/waiting-on-you-links.md §2). It does not search.
+   */
+  router.get('/messages/link', async (req, res) => {
+    const q = (k: string): string => (typeof req.query[k] === 'string' ? (req.query[k] as string).trim() : '');
+    const platform = q('platform');
+    const refuse = (reason: string, retryable: boolean) => res.status(409).json({ error: 'not-linkable', reason, retryable });
+    if (platform === 'telegram') {
+      const topicRaw = q('topicId');
+      const DIGITS = /^[1-9]\d{0,15}$/;
+      if (!DIGITS.test(q('messageId')) || (topicRaw !== '' && !DIGITS.test(topicRaw))) {
+        return res.status(400).json({ error: 'topicId and messageId must be positive integers' });
+      }
+      const messageId = Number(q('messageId'));
+      const topicId = topicRaw === '' ? null : Number(topicRaw);
+      if (!Number.isSafeInteger(messageId) || (topicId !== null && !Number.isSafeInteger(topicId))) {
+        return res.status(400).json({ error: 'topicId and messageId must be positive integers' });
+      }
+      const chats = askTelegramChats();
+      if (!ctx.telegram || !chats.chatId) return refuse('not-configured', false);
+      const link = telegramMessageLink({ ...chats, topicId, messageId });
+      if (!link.ok) return link.reason === 'invalid-input' ? res.status(400).json({ error: 'invalid-input' }) : refuse(link.reason, false);
+      // `verified` says only that this machine's retained log holds a message with that id.
+      let verified: true | 'not-in-local-history' | 'unchecked' = 'unchecked';
+      let matched: { sentBy?: string; timestamp?: string; text?: string } | undefined;
+      try {
+        // Bounded: a message this machine does not hold would otherwise cost a full pass of the log.
+        const [hit] = await ctx.telegram.findLoggedMessages([{ topicId, messageId }], { signal: AbortSignal.timeout(2_000) });
+        if (hit?.found) { verified = true; matched = { sentBy: hit.sentBy, timestamp: hit.timestamp, text: hit.text }; }
+        else verified = 'not-in-local-history';
+      } catch { /* @silent-fallback-ok — the log could not be read in time: the link is still built and reported `unchecked` */ }
+      return res.json({ url: link.url, platform, verified, ...(matched ? { matched } : {}) });
+    }
+    if (platform === 'slack') {
+      if (!ctx.slack) return refuse('not-configured', false);
+      const link = slackMessageLink({ workspaceUrl: ctx.slack.getWorkspaceUrl?.() ?? null, channel: q('channel'), ts: q('ts'), threadTs: q('threadTs') || null });
+      if (!link.ok) return link.reason === 'invalid-input' ? res.status(400).json({ error: 'invalid-input' }) : refuse(link.reason, link.reason === 'workspace-pending');
+      return res.json({ url: link.url, platform, verified: 'unchecked' });
+    }
+    if (platform === 'app' || platform === 'card') {
+      if (platform === 'card' && !askWorkBoardOn()) return refuse('not-configured', false);
+      const origin = askConsoleOrigin();
+      if ('pending' in origin) return refuse('tunnel-pending', true);
+      const link = platform === 'card' ? workCardLink(origin.origin, q('cardId')) : appConversationLink(origin.origin, q('conversationKey'));
+      if (!link.ok) return res.status(400).json({ error: 'invalid-input' });
+      return res.json({ url: link.url, platform, verified: 'unchecked', ...(origin.localOnly ? { localOnly: true } : {}) });
+    }
+    return res.status(400).json({ error: 'platform must be telegram, slack, app or card' });
+  });
+
   router.get('/telegram/search', (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -23131,7 +23426,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const results = ctx.telegram.searchLog({ query, topicId, since, limit });
+    // waiting-on-you-links §2: each row carries the link to its message when this chat has message links.
+    const results = ctx.telegram.searchLog({ query, topicId, since, limit }).map((row) => {
+      const messageLink = askTelegramLink(row.topicId, row.messageId);
+      return messageLink ? { ...row, messageLink } : row;
+    });
     res.json({ results, count: results.length });
   });
 
@@ -24356,7 +24655,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
 
       if (metadata?.isProxy !== true) noteDeliveredFirstResult('slack', ts);
-      res.json({ ok: true, topicId: channelId, ts });
+      // waiting-on-you-links §2: the permalink to the message just sent (absent when not buildable).
+      const slackLink = slackMessageLink({ workspaceUrl: ctx.slack.getWorkspaceUrl?.() ?? null, channel: String(channelId), ts: String(ts), threadTs: typeof thread_ts === 'string' ? thread_ts : null });
+      res.json({ ok: true, topicId: channelId, ts, ...(slackLink.ok ? { messageLink: slackLink.url } : {}) });
     } catch (err) {
       // R8-M1 Arm B: an adapter-send TIMEOUT is ambiguous, not a server error.
       // Respond 408 (the ambiguous class the script + recovery-policy already
@@ -31554,7 +31855,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (the 2026-06-25 lockout mechanism) routes THROUGH (falls past this block to
         // normal routing) instead of consuming the operator's message; a long-form
         // genuine stop is rescued to a kill.
-        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId));
+        // One verdict per Telegram message: the lifeline re-sends a forward it gave up
+        // on (10s), and a classification can take longer than that. Without the key,
+        // each re-send asked the model again and any one 'emergency-stop' among the
+        // answers killed the session (2026-11-18, topic 144201).
+        const decision = await ctx.sentinel.decideInboundDisposition(text, Number(topicId),
+          messageId ? `telegram:${Number(topicId)}:${messageId}` : undefined);
         if (decision.disposition === 'kill' || decision.disposition === 'pause') {
           // Resolve the topic's session. Prefer the on-disk registry (the
           // persistent source of truth that both polling modes maintain) since
@@ -31698,6 +32004,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // duplicate/in-flight event we return ok+deduped WITHOUT routing — the
     // structural no-duplicate-reply guarantee. FAIL-OPEN: any ledger error
     // falls through to normal routing (the gate must never drop a real message).
+    // SEC-106 decisions 5a and 6: the classifier read for THIS message's classified text (the same
+    // form the log call above logged), and the processing ledger's ingress-time label for a reclaim.
+    const lifelineClassifiedText = aspClassifiedText(
+      typeof text === 'string' ? text : '',
+      fwdMedia.media.length > 0 ? fwdMedia.media : null,
+    );
+    const lifelineMessageIdNum = typeof messageId === 'number' ? messageId : Number(messageId) || null;
+    const readLifelineClassifier = (): string | null => trust ? null : resolveSignedByAgent(
+      ctx.getAspClassifier?.() ?? null,
+      typeof topicId === 'number' ? topicId : null,
+      lifelineMessageIdNum,
+      lifelineClassifiedText,
+      // The ingress read counts a mismatch; these route reads of the same message do not.
+      { count: false },
+    );
+    let ledgerLabel: string | undefined;
     let shouldClaimInbound = true;
     if (ctx.sessionOwnershipRegistry && ctx.meshSelfId) {
       try {
@@ -31726,6 +32048,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             userId: fromUserId,
             username: fromUsername,
             firstName: fromFirstName,
+            // SEC-106 decision 2c: the label is written in the SAME call that creates the row.
+            ...((): { signedByAgent?: string } => { const l = readLifelineClassifier(); return l ? { signedByAgent: l } : {}; })(),
           },
           epoch,
           maxProcessingMs: ctx.config.multiMachine?.maxProcessingMs ?? 5 * 60_000,
@@ -31737,6 +32061,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         // Claimed for processing — remember it so the outbound reply commits it.
         ctx.currentInboundByTopic?.set(String(topicId), dedupeKey);
+        // SEC-106 decision 6: a reclaimed row (restart + re-forward) still holds the label written when
+        // the message was first seen. Copied ONLY when the row's stored input equals this text (a
+        // dedupe key can fall back from update_id to message_id, so two messages could share a row)
+        // and never for an app message.
+        if (!trust) {
+          const row = ctx.messageLedger.get(dedupeKey);
+          if (row && row.inputSnapshot === text) {
+            const carried = labelFromEnvelope(row.senderEnvelope);
+            if (carried) ledgerLabel = carried;
+          }
+        }
       } catch (err) {
         console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
       }
@@ -31793,11 +32128,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // this human's account is not evidence the human is present, so it never
     // binds them. The verdict is the classifier's own, cached when the message
     // was logged above (single-use nonce — never re-verified), read by message id.
-    const lifelineSignedByAgent = resolveSignedByAgent(
-      ctx.getAspClassifier?.() ?? null,
-      typeof topicId === 'number' ? topicId : null,
-      typeof messageId === 'number' ? messageId : Number(messageId) || null,
-    );
+    // SEC-106 decision 6: the classifier's text-bound verdict, else the ledger copy — a reclaim after a
+    // restart sees a used nonce, but the row still says agent-written, so neither site binds.
+    const lifelineSignedByAgent = readLifelineClassifier() ?? ledgerLabel ?? null;
     if (lifelineSignedByAgent) {
       console.log(`[telegram-forward] ${topicRef(topicId)} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
@@ -31869,6 +32202,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // lifeline that omits the field reads as `false` here (it cannot send
           // a real forward through the legacy wire), which is the safe direction.
           forwarded: req.body.forwarded === true,
+          // SEC-106 decision 6: the ledger copy, in process; ingress reconciles it and removes it.
+          ...(ledgerLabel ? { ledgerSignedByAgent: ledgerLabel } : {}),
         },
       };
 

@@ -2141,6 +2141,24 @@
       }
     },
     {
+      "category": "local-verify-operator-queue",
+      "description": "local-verify operator queue controls (docs/specs/local-verify-queue-controls.md): per pull-request number, the operator's hold (who, why, when, the expected release date, the queue entry or waiting-list place the hold took out, whether the change was asked for while held, the in-progress state of a release) and front mark (a rising number, who, why, the in-progress state of an admission), plus the changes admitted over the queue cap and whether the lease-loss notice was sent. Rewritten atomically on change; the previous good copy is kept beside it as operator-queue.json.prev and used when the file cannot be read. Read at boot and held in memory; admission, the start check and the peer hand-off read that copy. Machine-local: the queue it describes belongs to the machine holding the coordinator lease.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/operator-queue.json",
+        "state/local-verify/operator-queue.json.prev"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 200,
+        "note": "At most OPERATOR_QUEUE_LIMITS.maxRecords (200) changes; records of closed or merged changes are dropped first, then a new record is refused. Replaced in place, never appended; one previous copy. An unreadable file is moved aside once to operator-queue.json.corrupt-<ts> (operator-cleared; one per corruption event)."
+      }
+    },
+    {
       "category": "local-verify-flaky",
       "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised, and, per file, up to 40 test names a `main` verify saw fail and pass alone, each with its time and first failure line; plus this machine's last green `main` record (head, finish time, files not clean on it, and `origin: 'local'`), which a PR verify's isolation re-run requires. A record without `origin: 'local'` (older code, or a peer) counts as absent (SEC-113). Machine-local: it describes this machine's own runs.",
       "scope": "machine-local",
@@ -2155,6 +2173,43 @@
         "class": "fixed-cardinality",
         "maxRecords": 501,
         "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window and at most 40 main-flaky test names inside the same window, plus one green-main entry carrying its origin; rewritten in place."
+      }
+    },
+    {
+      "category": "local-verify-likely-failing",
+      "description": "local-verify first parts (docs/specs/local-verify-likely-failing-first.md): the likely-failing list (per test file, the pull request number and time of each verify that failed finally on it in the last 7 days; built by the coordinator from every verify of a change it records, its own or a peer's, and sent to a peer with each hand-off), the coordinator's one-time assignment of each pull request to the trial's with or without group. Ordering only: the list decides which files run first, never whether a file runs or what a verify's verdict is; lost or unreadable means an empty list. Machine-local by the approved Local Verify capacity spec's ratified lease-holder-local queue and run-machine state (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17): a new coordinator starts with its own list and rebuilds it.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/likely-failing.json",
+        "state/local-verify/first-part-groups.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 5500,
+        "note": "At most 500 listed files with at most 40 entries each (one per pull request, its latest failure) inside a 7-day window (the file is read only when at most 1 MB), at most 5000 pull request assignments (oldest dropped), each rewritten whole and replaced."
+      }
+    },
+    {
+      "category": "local-verify-first-part-report",
+      "description": "Machine-local first-part observations, trial markers, suspects, findings, red-main episodes and daily cost evaluations (local-verify-likely-failing-first amendment, 2026-11-19). Each machine observes and judges only its own verifies. The coordinator alone snapshots confirmed red-main episodes. Findings and episodes stay on their writing machine when the role moves. Machine-local justification: operator-ratified run-machine settings exception, commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/first-part-findings.json",
+        "logs/local-verify-first-part-observations.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "whole-sync",
+        "complianceHold": true,
+        "note": "Observation rows expire after 30 days. Trial marker rows, suspects, findings and episodes are retained across trials as the amendment requires. The findings file keeps the most recent daily evaluation."
       }
     },
     {

@@ -1053,7 +1053,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
   // the adapter will handle the session action and skip the normal handler.
-  public onSentinelIntercept: ((message: string, topicId: number) => Promise<{
+  /** `messageKey` identifies this platform message, so a redelivery reuses its first verdict. */
+  public onSentinelIntercept: ((message: string, topicId: number, messageKey?: string) => Promise<{
     category: 'emergency-stop' | 'pause' | 'redirect' | 'normal';
     action: { type: string; message?: string };
     reason?: string;
@@ -1967,7 +1968,10 @@ export class TelegramAdapter implements MessagingAdapter {
       const data = await response.json() as { ok: boolean; result: unknown };
       if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
       const results = Array.isArray(data.result) ? data.result : [data.result];
-      return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
+      const messageIds = results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n));
+      // identity-security-creation-provenance v5: a captioned file into a topic also disarms a waiting cross-topic proposal.
+      if (this.onTopicMessageSent && messageIds.length) { try { this.onTopicMessageSent(topicId, Math.max(...messageIds)); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
+      return { messageIds };
     } catch (error) {
       if (error instanceof QuietRecordedError) return error.receipt;
       throw error;
@@ -1986,6 +1990,9 @@ export class TelegramAdapter implements MessagingAdapter {
         const sent = await this.selectivityAdmitted.run(true, () => this.sendToTopicDelivered(topicId, text, options));
         if (envelope?.category === 'command-response' && envelope.inboundMessageId) this.commandReceipts.set(sent, { topicId, messageId: sent.messageId, until: Date.now() + 900000, inboundMessageId: envelope.inboundMessageId });
         if (!options?.operatorMirror && !envelope?.inboundMirror && (isVerifiedReplyEnvelope(envelope) || envelope?.category === 'command-response')) this.selectivity?.markAnswered(topicId);
+        // identity-security-creation-provenance v5: a later message into a topic disarms a cross-topic
+        // proposal waiting there, so an owner's "yes" can only answer the proposal itself.
+        if (this.onTopicMessageSent && typeof sent.messageId === 'number') { try { this.onTopicMessageSent(topicId, sent.messageId); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
         return sent;
       } catch (error) { if (error instanceof QuietRecordedError) return error.receipt; throw error; }
     });
@@ -2475,6 +2482,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * promptGate.ownerId for back-compat when ownerUserId isn't
    * explicitly configured.
    */
+  /** identity-security-creation-provenance v5: told of every message this adapter sends into a topic. */
+  onTopicMessageSent: ((topicId: number, messageId: number) => void) | null = null;
+
   getOwnerUserId(): number | undefined {
     return this.config.ownerUserId ?? this.config.promptGate?.ownerId;
   }
@@ -4800,6 +4810,139 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.authorshipJoin.join(matching);
   }
 
+  /**
+   * Exact-id lookup of logged messages (docs/specs/waiting-on-you-links.md §3): for each wanted
+   * `{ topicId, messageId }`, whether this machine's retained log holds it, who sent it and its
+   * full text. One asynchronous pass for all ids together, read backwards in 1 MB blocks so a
+   * recent message is found in the first block, stopping as soon as every id is found. Bounded
+   * only by the log's own rotation. `topicId: null` matches the message id in any topic of the
+   * group the link named (`issues`), since a General-form link carries no topic id. Throws on a read error or when `signal` aborts;
+   * callers report "unavailable".
+   */
+  async findLoggedMessages(refs: Array<{ topicId: number | null; messageId: number; issues?: boolean }>, opts: { signal?: AbortSignal } = {}): Promise<Array<{
+    topicId: number | null; messageId: number; found: boolean; sentBy?: string; text?: string; timestamp?: string;
+  }>> {
+    const wanted = new Map<string, { topicId: number | null; messageId: number; issues: boolean }>();
+    for (const r of refs) {
+      if (!Number.isSafeInteger(r.messageId) || r.messageId <= 0) continue;
+      wanted.set(`${r.topicId ?? (r.issues ? '*issues' : '*')}:${r.messageId}`, { topicId: r.topicId, messageId: r.messageId, issues: r.issues === true });
+    }
+    const hits = new Map<string, LogEntry>();
+    if (wanted.size > 0 && fs.existsSync(this.messageLogPath)) {
+      // Cheap literal pre-filter before any parse; the exact compare after parsing decides.
+      const needles = [...new Set([...wanted.values()].map((w) => `"messageId":${w.messageId}`))];
+      const CHUNK = 1024 * 1024;
+      const fh = await fs.promises.open(this.messageLogPath, 'r');
+      try {
+        let pos = (await fh.stat()).size;
+        let carry = Buffer.alloc(0);
+        while (pos > 0 && hits.size < wanted.size) {
+          // The caller's allowance ran out: stop reading so timed-out lookups never pile up.
+          if (opts.signal?.aborted) throw new Error('find-logged-messages-aborted');
+          const size = Math.min(CHUNK, pos);
+          pos -= size;
+          const read = Buffer.alloc(size);
+          const { bytesRead } = await fh.read(read, 0, size, pos);
+          let buf = Buffer.concat([read.subarray(0, bytesRead), carry]);
+          if (pos > 0) {
+            const nl = buf.indexOf(0x0a);
+            if (nl < 0) { carry = buf; continue; }
+            carry = buf.subarray(0, nl);
+            buf = buf.subarray(nl + 1);
+          } else {
+            carry = Buffer.alloc(0);
+          }
+          const lines = buf.toString('utf-8').split('\n');
+          for (let i = lines.length - 1; i >= 0 && hits.size < wanted.size; i--) {
+            const line = lines[i];
+            if (!line || !needles.some((n) => line.includes(n))) continue;
+            try {
+              const entry: LogEntry = JSON.parse(line);
+              const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId ?? null;
+              for (const [key, w] of wanted) {
+                if (hits.has(key) || entry.messageId !== w.messageId) continue;
+                if (w.topicId !== null && entryTopicId !== w.topicId) continue;
+                // A link with no topic names only its chat. The main group and the Issues group
+                // number their messages separately in this one log, so the row must be in the
+                // same group the link named.
+                if (w.topicId === null && isIssuesTopicId(entryTopicId) !== w.issues) continue;
+                hits.set(key, entry);
+              }
+            } catch { /* @silent-fallback-ok: a malformed log line is skipped; the lookup is built from the lines that parse */ }
+          }
+        }
+      } finally {
+        await fh.close();
+      }
+    }
+    const joined = new Map<string, LogEntry & { authorship?: string }>();
+    const keys = [...hits.keys()];
+    const withAuthorship = this.authorshipJoin.join(keys.map((k) => hits.get(k)!));
+    keys.forEach((k, i) => joined.set(k, withAuthorship[i]));
+    return [...wanted.entries()].map(([key, w]) => {
+      const e = joined.get(key);
+      if (!e) return { topicId: w.topicId, messageId: w.messageId, found: false };
+      return {
+        topicId: w.topicId, messageId: w.messageId, found: true,
+        sentBy: e.teamPhone ? 'team-member' : e.fromUser ? 'person' : String(e.authorship ?? 'not-the-person'),
+        text: String(e.text ?? ''),
+        timestamp: String(e.timestamp ?? ''),
+      };
+    });
+  }
+
+  /**
+   * One message of one topic, by id, logged at or after `notBeforeMs` (identity-security-creation-
+   * provenance). Reads the log backwards in 1 MB chunks and stops at the first entry older than
+   * `notBeforeMs`, so it costs at most that window of log. `unreadable` is distinct from "not found".
+   */
+  findTopicMessage(topicId: number, messageId: number, notBeforeMs: number): { entry: LogEntry | null; unreadable?: boolean; budgetExceeded?: boolean } {
+    if (!fs.existsSync(this.messageLogPath)) return { entry: null };
+    const CHUNK = 1024 * 1024;
+    // I/O budget: at most 16 MB of log read per lookup (synchronous, so kept small). A day of log
+    // past that is reported as budgetExceeded (a distinct outcome), never as "not found".
+    const BUDGET = 16 * CHUNK;
+    let scanned = 0;
+    let fd: number;
+    try { fd = fs.openSync(this.messageLogPath, 'r'); } catch { return { entry: null, unreadable: true }; }
+    try {
+      let pos = fs.fstatSync(fd).size;
+      let carry = Buffer.alloc(0);
+      while (pos > 0) {
+        if (scanned >= BUDGET) return { entry: null, budgetExceeded: true };
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        scanned += size;
+        const read = Buffer.alloc(size);
+        fs.readSync(fd, read, 0, size, pos);
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
+        }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (!lines[i]) continue;
+          let entry: LogEntry;
+          try { entry = JSON.parse(lines[i]); } catch { continue; /* @silent-fallback-ok: a malformed log line is skipped */ }
+          const at = Date.parse(String(entry.timestamp));
+          if (Number.isFinite(at) && at < notBeforeMs) return { entry: null };
+          const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+          if (entryTopicId === topicId && entry.messageId === messageId) return { entry: this.authorshipJoin.join([entry])[0] ?? entry };
+        }
+      }
+      return { entry: null };
+    } catch {
+      return { entry: null, unreadable: true };
+    } finally {
+      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
+    }
+  }
+
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
@@ -6602,7 +6745,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // kill/pause the session even when the session is mid-tool-call.
     if (this.onSentinelIntercept) {
       try {
-        const classification = await this.onSentinelIntercept(text, numericTopicId);
+        const classification = await this.onSentinelIntercept(text, numericTopicId, `telegram:${numericTopicId}:${msg.message_id}`);
         if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause')) {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {

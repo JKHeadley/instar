@@ -11,6 +11,8 @@ import {
   FIRST_TRY_MS, SLOW_LINE_MS, KEEP_MS, RETRY_STEPS_MS,
 } from '../../dashboard/console/net-state.js';
 
+import { signInAtBoot, validToken } from '../../dashboard/console/ticket-model.js';
+
 const ORIGIN = 'https://agent.example';
 
 function memStorage() {
@@ -70,9 +72,44 @@ function rig(opts: { online?: boolean } = {}) {
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 10, 16, 13, 52, 0)); });
 afterEach(() => { vi.useRealTimers(); });
 
+describe('console boot with a stored sign-in and an empty response cache', () => {
+  it.each([502, 504, 522])('keeps the stored sign-in and reports a weak connection on HTTP %i', async (apiStatus) => {
+    const { net, set } = rig();
+    set({ apiStatus });
+    expect(await signInAtBoot({ storedToken: 'tok-1', ticket: '', fetchFn: net.fetch })).toEqual({ via: 'stored', token: 'tok-1' });
+    expect(lineText(net.state(), Date.now())).toContain('Still trying to reach the agent');
+    expect(await validToken('typed', false, net.fetch)).toBe(false);
+  });
+
+  it.each([
+    ['a network exception', { api: 'down' as Behaviour }],
+    ['an offline device', { online: false }],
+  ])('keeps the stored sign-in on %s and still refuses a typed token', async (_label, state) => {
+    const { net, set } = rig();
+    set(state);
+    expect(await signInAtBoot({ storedToken: 'tok-1', ticket: '', fetchFn: net.fetch })).toEqual({ via: 'stored', token: 'tok-1' });
+    expect(await validToken('typed', false, net.fetch)).toBe(false);
+  });
+
+  it.each([401, 403, 503])('does not preserve the stored sign-in on an agent response of %i', async (apiStatus) => {
+    const { net, set } = rig();
+    set({ apiStatus });
+    expect(await signInAtBoot({ storedToken: 'tok-1', ticket: '', fetchFn: net.fetch })).toEqual({ via: 'pin', token: '' });
+  });
+
+  it('requires a live success for a typed token even when a previous read was saved', async () => {
+    const { net, set } = rig();
+    expect(await validToken('tok-1', false, net.fetch)).toBe(true);
+    set({ apiStatus: 502 });
+    expect(await validToken('tok-1', false, net.fetch)).toBe(false);
+  });
+});
+
 describe('which reads are saved', () => {
   it('saves allowlisted status reads only', () => {
     expect(isStorable('/needs', G)).toBe(true);
+    expect(isStorable('/needs?cursor=second-page', G)).toBe(false);
+    expect(isStorable('/needs?x=1&cursor=third-page', G)).toBe(false);
     expect(isStorable('/work/projects', G)).toBe(true);
     expect(isStorable('/commitments?scope=mesh', G)).toBe(true);
     expect(isStorable('/local-verify', G)).toBe(true);

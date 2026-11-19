@@ -50,6 +50,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'The shadow log only writes an audit line and never changes where a session starts. Live placement is opt-in per request (no caller sends placement:"auto" by default), starts through the peer\'s own /sessions/spawn so its caps and admission apply, never starts a name twice from one origin (durable placement record written before the send, unresolved names read-only, no local start after an ambiguous hand-off), never proxies a kill, and no eligible peer means local exactly as today. enabled:false and a restart restore today\'s behaviour; placed sessions keep running where they are.',
   },
   {
+    name: 'crossTopicConfirm',
+    configPath: 'security.crossTopicConfirm.enabled',
+    description: 'A change to one conversation confirmed by the owner in another (identity-security-creation-provenance v5: the topic-profile propose lane\'s confirmIn); omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
@@ -147,6 +153,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Outbound tone-gate representation rules resolve as overridable nudges (with a recorded reason) instead of terminal blocks; the self-stop family and the deterministic credential wall stay hard.',
     justification:
       'Takes LESS action, not more — it removes blocking authority rather than adding it, and is self-limiting: the advisory disposition is withdrawn back to a block whenever the override could not be recorded. No external action, no spend, and the rollback is a config flag.',
+  },
+  {
+    name: 'toneGateWaitingAskLinks',
+    configPath: 'toneGate.waitingAskLinks.enabled',
+    description:
+      'Outbound rule B26: a reply that refers to something the agent is waiting on the person for is handed back unless it carries the link to the ask and a plain restatement with the settling reply.',
+    justification:
+      'An advisory nudge only: a reasoned override always sends, so it can delay a message but never hold or drop it. It reads local facts (link shapes, the local message log, the local Work Board) inside a 750 ms allowance, makes no external call and writes no state; the rollback is this flag.',
   },
   {
     name: 'feedbackFactoryDrain',

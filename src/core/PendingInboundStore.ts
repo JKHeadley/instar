@@ -52,6 +52,12 @@ export interface SenderEnvelope {
   eventId?: string;
   /** A team phone's person, so the machine that delivers can judge them itself (team-roles-and-access §3.6). */
   personKey?: string;
+  /**
+   * The signing agent's id when the classifier verified this message as agent-signed at ingress
+   * (SEC-106). Written only by the ingress envelope helper or a paired peer's mesh store; read only
+   * through `labelFromEnvelope`. Framing only: it never grants or binds anything.
+   */
+  signedByAgent?: string;
 }
 
 export interface PendingInboundRow {
