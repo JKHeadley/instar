@@ -9,7 +9,8 @@ ships-staged: true
 supervision: tier0
 eli16-overview: local-verify-import-related-rerun.eli16.md
 lessons-engaged: [P1-structure-beats-willpower, P2-signal-vs-authority, P4-testing-integrity, P6-zero-failure, P19-no-unbounded-loops, P21-multi-machine-entity, bounded-blast-radius, fix-the-class-not-the-instance, never-silently-cut-the-data-a-decision-depends-on]
-approved: false
+approved: true
+approved-by: "echo-chief-of-staff (maintainer approval, message 871a3deb, 2026-11-18 12:52 PST; three fold-ins applied; security session confirmed the text at 664f67c12)"
 review-convergence: "2026-11-18T20:45:40.682Z"
 review-iterations: 6
 review-completed-at: "2026-11-18T20:45:40.682Z"
