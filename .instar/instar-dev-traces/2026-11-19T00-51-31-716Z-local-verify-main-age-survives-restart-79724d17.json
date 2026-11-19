@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "local-verify-main-age-survives-restart",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T00:51:31.716Z",
+  "artifactPath": "upgrades/side-effects/local-verify-main-age-survives-restart.md",
+  "artifactSha256": "541609147b96a848bcb80b576a7660eed37e12002819afac6272e20193269c6a",
+  "coveredFiles": [
+    "docs/specs/local-verify-main-age-survives-restart.md",
+    "src/data/feature-ladders.json",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/mainHealth.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/side-effects/local-verify-main-age-survives-restart.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small and reversible: two optional fields in an existing machine-local state file and one more input state for an existing scheduler rule; a code revert undoes it and the older build drops the fields.",
+  "eli16Path": "docs/specs/local-verify-main-age-survives-restart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-main-age-survives-restart.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "usage-ledger-pool-roots",
+  "sessionId": "66a3042b-e6a6-4644-a4fe-6f7522b2d409",
+  "timestamp": "2026-11-18T06:08:00.992Z",
+  "artifactPath": "upgrades/side-effects/usage-ledger-pool-roots.md",
+  "artifactSha256": "3224688ff74d15af3ecdf87e6fa2fdb6c6ebca4aba6df0e45deef575eea87fe8",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T06-06-59-321Z-usage-ledger-pool-roots.json",
+    "docs/specs/unified-usage-ledger.eli16.md",
+    "src/core/SubscriptionPool.ts",
+    "src/monitoring/UsageLedger.ts",
+    "src/monitoring/usageReadModel.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/unified-usage-ledger-alive.test.ts",
+    "tests/integration/usage-ledger-pool-roots.test.ts",
+    "tests/unit/UsageLedger.asyncScan.test.ts",
+    "tests/unit/UsageLedger.poolRoots.test.ts",
+    "upgrades/next/usage-ledger-pool-roots.md",
+    "upgrades/side-effects/usage-ledger-pool-roots.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Completes an approved cross-framework source inventory with transactional counting and coverage changes. Independent review measured cold backfill and verified that the runtime yields between files.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

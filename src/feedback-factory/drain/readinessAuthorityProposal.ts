@@ -9,6 +9,7 @@
  * is operator-editable. This module decides nothing: registration stays behind the
  * PIN-gated route (docs/specs/feedback-factory-operating-drain.md §2).
  */
+import { codexModelForCli } from '../../core/codexCapabilities.js';
 import type { AuthorityRecord } from './FeedbackDrainStore.js';
 import type { IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
 import {
@@ -35,6 +36,8 @@ export interface ReadinessAuthorityProposalInput {
   binding: { ownerMachineId: string | null; ownerEpoch: number };
   /** IntelligenceRouter.previewPrimary for READINESS_ARBITER_ROUTING; null = no route. */
   route: { framework: IntelligenceFramework; model: string | undefined } | null;
+  /** This machine's Codex CLI binary, so a codex proposal names a model it can run. */
+  codexBinaryPath?: string;
   /** config.sessions.frameworkDefaultModels['pi-cli'] — pi reports this pattern regardless of hints. */
   piModel?: string;
   current: AuthorityRecord | null;
@@ -63,10 +66,12 @@ export interface ReadinessAuthorityProposal {
 }
 
 /** The model string the provider will report via onModel for this hint (what the arbiter compares). */
-export function reportedModelFor(framework: IntelligenceFramework, hint: string | undefined, piModel?: string): string | null {
+export function reportedModelFor(framework: IntelligenceFramework, hint: string | undefined, piModel?: string, codexBinaryPath?: string): string | null {
   switch (framework) {
     case 'claude-code': return resolveCliFlag(hint ?? 'capable');
-    case 'codex-cli': return codexModelFlag(hint);
+    // On a Codex CLI known to be below 0.166.0 the proposal names the model this
+    // machine can run (gpt-6-astra), so an approval never binds an id it refuses.
+    case 'codex-cli': return codexBinaryPath ? codexModelForCli(codexModelFlag(hint), codexBinaryPath, 'keep') : codexModelFlag(hint);
     case 'gemini-cli': return geminiModelFlag(hint);
     case 'pi-cli': return piModel?.trim() || null;
     default: return hint?.trim() || null;
@@ -121,7 +126,7 @@ export function buildReadinessAuthorityProposal(input: ReadinessAuthorityProposa
   if (!input.agentId.trim()) blockers.push('This agent has no name configured.');
   if (!input.binding.ownerMachineId) blockers.push('No machine is configured to run the feedback drain here, so there is nothing to bind the authority to.');
   if (!Number.isSafeInteger(input.binding.ownerEpoch) || input.binding.ownerEpoch < 1) blockers.push('The drain owner epoch is not readable right now.');
-  const model = input.route ? reportedModelFor(input.route.framework, input.route.model, input.piModel) : null;
+  const model = input.route ? reportedModelFor(input.route.framework, input.route.model, input.piModel, input.codexBinaryPath) : null;
   if (!input.route || !model) blockers.push('No model is currently available to route the sorting decision to, so there is nothing to approve.');
   blockers.push(...envelopeProblems(envelope));
 

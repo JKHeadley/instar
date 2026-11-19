@@ -433,6 +433,8 @@ describe('Conversations page', () => {
     expect(head.querySelector('.chat-group-icon svg')).not.toBeNull();
     expect(head.querySelector('.chat-group-icon-project, .chat-project-status')).toBeNull();
     expect(doc.querySelector('.chat-groups-label')?.textContent).toBe('Groups');
+    // No tracked project: no "Projects" section header at all.
+    expect(doc.querySelector('.chat-projects-label')).toBeNull();
     // Owner-facing words: never "effort"; a plain group (no tracked project) never says "project".
     const words = () => [doc.querySelector('.chat-rows')!.textContent!, ...[...doc.querySelectorAll('.chat-rows [aria-label]')].map((x) => x.getAttribute('aria-label')!)].join(' ').toLowerCase();
     expect(words()).not.toContain('effort');
@@ -476,7 +478,12 @@ describe('Conversations page', () => {
     expect(proj.querySelector('.chat-group-icon-project svg')).not.toBeNull();
     expect(proj.querySelector('.chat-project-status')?.textContent).toBe('Needs you');
     expect(proj.querySelector('.chat-project-status')?.classList.contains('tone-attn')).toBe(true);
-    expect(proj.getAttribute('aria-label')).toBe('Project <b>App work</b>, Needs you, 2 conversations, 3 unread');
+    // The tracked project's own title names the row (the group was titled "<b>App work</b>").
+    expect(proj.querySelector('.chat-row-title')?.textContent).toBe('App project');
+    expect(proj.getAttribute('aria-label')).toBe('Project App project, Needs you, 2 conversations, 3 unread');
+    // Two sections, as on the iPhone: "Projects" above the project row, "Groups" above the plain one.
+    const labels = [...doc.querySelectorAll('.chat-rows > .chat-group-label, .chat-rows > .chat-effort-row')].map((x) => x.classList.contains('chat-effort-row') ? `row:${x.querySelector('.chat-row-title')!.textContent}` : x.textContent);
+    expect(labels.slice(0, 4)).toEqual(['Projects', 'row:App project', 'Groups', 'row:Misc']);
     expect(folder.classList.contains('chat-project-row')).toBe(false);
     expect(folder.querySelector('.chat-project-status, .chat-group-icon-project')).toBeNull();
     expect(folder.getAttribute('aria-label')).toBe('Group Misc, 1 conversation');
