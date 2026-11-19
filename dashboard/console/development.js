@@ -330,7 +330,7 @@ function shippingBody(s, deps) {
     tiles(s.tiles),
     release, toneLine(s.watcher),
     s.partial ? note('Partial: one of Shipping’s sources did not answer; its tile says why. The others are real.') : null,
-    s.repoKnown ? null : note('GitHub links are off: the repository name comes from the Pace read, which did not answer.'),
+    s.repoKnown ? null : note('GitHub links are off: the merge watcher did not name the repository.'),
     // While stopped the way back on sits above the list, not under a long list of pull requests.
     s.stopped ? [foot, list] : [list, foot],
   ];
@@ -341,7 +341,8 @@ function openPr(r, s, deps) {
   const rec = r.record || {};
   const lines = [
     { label: 'State', text: r.sub },
-    r.group === 'needs' ? { label: 'Why it waits', text: 'GitHub requires a reviewer other than the pusher; the watcher merges the moment the approval lands.' } : null,
+    r.group === 'needs' ? { label: 'Why it waits', text: Array.isArray(rec.ownerFiles) && rec.ownerFiles.length ? `It changes ${rec.ownerFiles.join(', ')}, which only you can approve. The watcher merges it the moment your approval lands.` : 'GitHub needs your approval; the watcher merges it the moment your approval lands.' } : null,
+    r.group === 'needs' && rec.kind === 'code-owner-review' ? { label: 'How to approve', text: 'Open it on GitHub and approve there, or approve it with Face ID in the Instar app on your phone.' } : null,
     r.group === 'held' ? { label: 'Why it waits', text: 'A [HOLD] title or a hold / do-not-merge label excludes it from arming.' } : null,
     rec.lastOutcome ? { label: 'Last outcome', text: String(rec.lastOutcome).replace(/[:-]/g, ' ') } : null,
     rec.lastAttemptAt ? { label: 'Last attempt', text: new Date(rec.lastAttemptAt).toLocaleString() } : null,

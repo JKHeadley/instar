@@ -169,6 +169,9 @@ const NAMED: Array<[RegExp, string]> = [
   [/secrets\\\/requests.*cancel/, '/mobile/secrets/requests/abcdef0123456789/cancel'],
   [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
   [/trust\\\/requests\\\/tr-/, '/mobile/trust/requests/tr-0123456789ab-abc123/approve'],
+  // Approve a code-owner pull request with Face ID (github-approval-from-the-app): owner phones only.
+  [/github\\\/approvals.*approve/, '/mobile/github/approvals/3478/approve'],
+  [/github\\\/approvals/, '/mobile/github/approvals/3478'],
 ];
 const pathFor = (re: RegExp) => {
   const s = sample(re);

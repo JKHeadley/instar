@@ -67,7 +67,8 @@ export function maintainerMode({ localVerify, greenPr } = {}, override = null) {
 
 // ── Shipping (legacy pr-pipeline; reads the three live systems) ──────────────
 const STAGES = ['queued', 'verifying', 'passed', 'set to merge', 'merged'];
-function prHref(repo, pr) { return repo ? `https://github.com/${repo}/pull/${pr}/files` : null; }
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+export function prHref(repo, pr) { return typeof repo === 'string' && REPO_RE.test(repo) && Number.isInteger(pr) && pr > 0 ? `https://github.com/${repo}/pull/${pr}/files` : null; }
 
 function shippingRow(group, pr, sub, end, tone, record, repo, stage) {
   return { key: `${group}:${pr}`, pr, group, main: `#${pr}`, sub, end: end || '', tone, record, href: prHref(repo, pr), stage, stages: STAGES };
@@ -126,6 +127,8 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   }
   const w = ws === 'ok' ? (watcher.data || {}) : null;
   const v = vs === 'ok' ? (verify.data || {}) : null;
+  // The merge watcher's own repository first (github-approval-from-the-app): links never wait on the slow Pace read.
+  repo = (w && typeof w.repo === 'string' && REPO_RE.test(w.repo) ? w.repo : null) || repo;
   const rows = [];
   const tile = (key, label, n, tone, reason) => ({ key, label, n, tone, reason: reason || null });
   const tiles = [];
@@ -135,7 +138,7 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
     const entries = Array.isArray(w.snapshot && w.snapshot.entries) ? w.snapshot.entries : [];
     const episodes = Array.isArray(w.episodes) ? w.episodes : [];
     const seen = new Set();
-    for (const e of entries) if (e && e.kind === 'code-owner-review' && !seen.has(e.pr)) { seen.add(e.pr); rows.push(shippingRow('needs', e.pr, 'waiting for your code-owner review on GitHub', w.snapshot.at ? ago(w.snapshot.at, now) : '', 'attn', e, repo, 'passed')); }
+    for (const e of entries) if (e && e.kind === 'code-owner-review' && !seen.has(e.pr)) { seen.add(e.pr); rows.push(shippingRow('needs', e.pr, typeof e.title === 'string' && e.title.trim() ? `waiting for your approval on GitHub: ${e.title.trim()}` : 'waiting for your approval on GitHub', w.snapshot.at ? ago(w.snapshot.at, now) : '', 'attn', e, repo, 'passed')); }
     for (const ep of episodes) if (ep && ep.lastOutcome === 'refused:approval-required' && !seen.has(ep.pr)) { seen.add(ep.pr); rows.push(shippingRow('needs', ep.pr, 'waiting for your approval on GitHub', ep.lastAttemptAt ? ago(ep.lastAttemptAt, now) : '', 'attn', ep, repo, 'passed')); }
     tiles.push(tile('needs', 'Needs you', seen.size, seen.size ? 'attn' : null));
     // Stuck: stuck-red PRs + episodes that gave up.

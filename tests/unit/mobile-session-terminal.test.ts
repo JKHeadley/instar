@@ -176,6 +176,9 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).
       ['POST', '/mobile/accounts/add'],
+      // Approve a code-owner pull request on GitHub with Face ID, and read its result (github-approval-from-the-app).
+      ['POST', '/mobile/github/approvals/3478/approve'],
+      ['GET', '/mobile/github/approvals/3478'],
       // Machine care from the owner's phone (machine-self-maintenance Part F, CMT-1203).
       ['GET', '/mobile/machine-care'],
       ['POST', '/mobile/machine-care/self/skip'],

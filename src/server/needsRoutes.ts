@@ -124,6 +124,18 @@ export interface NeedItem {
    * opens the card, which links on to the project.
    */
   alsoOpens?: { href: string; label: string };
+  /**
+   * A pull request waiting for the owner's approval on GitHub (docs/specs/github-approval-from-the-app.md).
+   * Additive and optional: `githubUrl` opens its changes, `headSha` is the version the owner would approve, and
+   * `approveAvailable` says whether this machine can record the approval on the owner's Face ID tap
+   * (POST /mobile/github/approvals/:pr/approve). A reader that does not know them shows the row as before.
+   */
+  pr?: number;
+  githubUrl?: string;
+  prTitle?: string;
+  prSummary?: string;
+  headSha?: string;
+  approveAvailable?: boolean;
 }
 
 export interface NeedsAnswer {
@@ -242,7 +254,25 @@ function toItem(row: Rec, source: string): NeedItem {
     refs: Array.isArray(row.refs) ? row.refs.filter((x): x is string => typeof x === 'string').slice(0, 8).map((x) => clean(x, 80)) : [],
     ...cardOf(row.card),
     ...alsoOpensOf(row.alsoOpens),
+    ...githubOf(row),
   };
+}
+
+const GITHUB_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]{0,9}\/files$/;
+
+/** The pull-request fields of a code-owner approval row, each validated; anything malformed is left out. */
+export function githubOf(row: Rec): Pick<NeedItem, 'pr' | 'githubUrl' | 'prTitle' | 'prSummary' | 'headSha' | 'approveAvailable'> {
+  const out: Pick<NeedItem, 'pr' | 'githubUrl' | 'prTitle' | 'prSummary' | 'headSha' | 'approveAvailable'> = {};
+  if (!(typeof row.pr === 'number' && Number.isInteger(row.pr) && row.pr > 0)) return out;
+  out.pr = row.pr;
+  if (typeof row.githubUrl === 'string' && GITHUB_URL.test(row.githubUrl) && row.githubUrl.includes(`/pull/${row.pr}/`)) out.githubUrl = row.githubUrl;
+  const title = clean(row.prTitle, 256);
+  if (title) out.prTitle = title;
+  const summary = clean(row.prSummary, DETAIL_MAX);
+  if (summary) out.prSummary = summary;
+  if (typeof row.headSha === 'string' && /^[0-9a-f]{40}$/.test(row.headSha)) out.headSha = row.headSha;
+  if (typeof row.approveAvailable === 'boolean') out.approveAvailable = row.approveAvailable && out.headSha !== undefined;
+  return out;
 }
 
 /** The same href rule as an item's own action (a console hash or a dashboard path), so it can never point outside. */
