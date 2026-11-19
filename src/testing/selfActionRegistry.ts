@@ -3462,21 +3462,25 @@ const localVerifyStatusPassBackoff: SelfActionController = {
 
 /**
  * local-verify-flake-rerun — the isolation re-run inside one verify: a lane whose only
- * problem is 1..3 failed files re-runs exactly those files once each, and the cap (3)
- * covers the whole verify. Pinned worst case (targetAlwaysRejects): every lane of every
- * verify has 2 failing files and every re-run fails again. Per verify: lane 1 re-runs 2,
- * lane 2 re-runs none (only 1 left of the cap), lane 3 none ⇒ ≤ 3 re-runs, each file
- * once. The model drives ONE verify (verifies themselves are bounded by the queue's own
- * controllers), so the bound is horizon-independent.
+ * problem is 1..3 failed files re-runs exactly those files, and the cap (3) covers the whole
+ * verify and counts FILES. A plain file is re-run once. A file that imports a changed file and
+ * whose failed tests `main` has all shown flaky is re-run up to three times in a row (spec
+ * local-verify-import-related-rerun.md); its first run that does not pass ends its sequence.
+ * Pinned worst case (targetAlwaysRejects): every lane of every verify has 3 failing files, all
+ * of them import-related with main evidence, and every solo run passes, so each file gets all
+ * three runs. Per verify: lane 1 re-runs its 3 files three times each, lanes 2 and 3 none (the
+ * cap is spent) ⇒ ≤ 3 × 3 = 9 solo runs, each file at most 3. The model drives ONE verify
+ * (verifies themselves are bounded by the queue's own controllers), so the bound is
+ * horizon-independent.
  */
 const localVerifyFlakeRerun: SelfActionController = {
   id: 'local-verify-flake-rerun',
   actionVerb: 'retry-failed-test-file',
-  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles per verify)',
+  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles files per verify, LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses runs per import-related file)',
   modelsPath: 'src/localVerify/orchestrator.ts',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'The re-run budget lives inside one verify run (the child process); a restart ends that run, and the next run is a new verify bounded by the queue controllers.' },
-  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles,
-  perTargetBoundK: 1,
+  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles * LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
+  perTargetBoundK: LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
   ticks: 3, // one tick per lane of a single verify
   tickMs: 10 * 60_000,
   makeUnderPressure(f, sink) {
@@ -3485,12 +3489,16 @@ const localVerifyFlakeRerun: SelfActionController = {
     return {
       tick() {
         sink.considered += 1;
-        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`];
+        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`, `tests/l${lane}/c.test.ts`];
         const report: ParsedLaneReport = { files: new Map(files.map((x) => [x, { passed: 1, failed: f.targetAlwaysRejects() ? 1 : 0, skipped: 0, todo: 0 }])) };
         lane += 1;
-        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget });
+        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget, importRelated: new Set(files) });
         budget -= d.rerun.length;
-        for (const file of d.rerun) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        if (d.reason !== 'eligible') return;
+        for (const file of d.rerun) {
+          const runs = d.threePass.includes(file) ? LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses : 1;
+          for (let n = 0; n < runs; n++) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        }
       },
     };
   },

@@ -490,6 +490,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { TopicCreationProvenanceStore, checkCitation, parseOnBehalfOf, crossTopicEligible, safeConversationName, CROSS_TOPIC_FIELDS, type CitationDeps } from '../core/topicCreationProvenance.js';
 import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
 import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -874,6 +875,8 @@ import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
+import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 
 /**
  * Build the /whoami request handler.
@@ -3103,6 +3106,30 @@ export function findReservedObjectKey(value: unknown, prefix = ''): string | nul
 }
 
 export function createRoutes(ctx: RouteContext): Router {
+  const creationProvenance = new TopicCreationProvenanceStore(ctx.config.stateDir);
+  /** identity-security-creation-provenance v5: one refusal notice per (A, B, reason) per 10 minutes. */
+  const crossTopicNoticeAt = new Map<string, number>();
+  /** identity-security-creation-provenance v5: may a yes in conversation A reach conversation B? */
+  const crossTopicEligibilityFor = (sourceTopicId: number, destKey: string) => {
+    const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
+    const owner = ctx.telegram?.getOwnerUserId();
+    return crossTopicEligible({
+      ownerUid: typeof owner === 'number' && owner > 0 ? String(owner) : null,
+      confirmerUid: ctx.topicOperatorStore?.getOperator(sourceTopicId)?.uid ?? null,
+      destKnown: dest !== null && !!ctx.topicOperatorStore && !!ctx.telegram && ctx.telegram.getTopicName(dest) !== null,
+      destBinding: dest !== null ? ctx.topicOperatorStore?.getBinding(dest) ?? null : null,
+      destVerifiedUid: dest !== null ? ctx.topicOperatorStore?.getOperator(dest)?.uid ?? null : null,
+      destConfined: dest !== null ? new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${dest}`) : null,
+      sourceConfined: new TeamConfinement(ctx.config.stateDir).isConfined(`telegram:${sourceTopicId}`),
+    });
+  };
+  /** identity-security-creation-provenance: identity checks for a cited owner message. */
+  const ownerCitationDeps = (): CitationDeps => ({
+    verifiedOperatorUid: (t) => ctx.topicOperatorStore?.getOperator(t)?.uid ?? null,
+    findMessage: (t, m, notBefore) => ctx.telegram ? ctx.telegram.findTopicMessage(t, m, notBefore) : { entry: null, unreadable: true },
+    ownerUid: () => { const o = ctx.telegram?.getOwnerUserId(); return typeof o === 'number' && o > 0 ? String(o) : null; },
+    now: () => Date.now(),
+  });
   // ── B24 constitution-check records (Echo Bugs topic 10000002750) ──
   // Proxied-on-read: this machine's ledger merged with each online peer's own answer
   // (GET /spec/constitution-checks), refreshed in the background at most once a minute
@@ -3246,6 +3273,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const prLinkDeps = {
       enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
       reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      // Echo Bugs 10000002791: request only where the repository's rules may require an approval.
+      requestWhenNotRequired: () => (ctx.config as { prLinkReviewRequest?: { requestWhenNotRequired?: boolean } }).prLinkReviewRequest?.requestWhenNotRequired === true,
       gh: ghFor,
       selfLogin: async () => {
         const gh = ghFor();
@@ -13695,24 +13724,74 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       patch[field] = value;
     }
+    // identity-security-creation-provenance v5: `confirmIn` — the owner asked for this change in
+    // another conversation; the proposal and the owner's "yes" happen THERE, and the yes applies the
+    // change here. Checked now and again when the yes arrives (crossTopicEligible).
+    let confirmIn: number | null = null;
+    if (body.confirmIn !== undefined) {
+      const raw = body.confirmIn;
+      const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+      if (!Number.isSafeInteger(n) || (n as number) <= 0 || String(n) === gate.key) {
+        res.status(400).json({ error: '"confirmIn" must be the positive id of another Telegram topic' });
+        return;
+      }
+      confirmIn = n as number;
+      // A cross-conversation yes may change only everyday run settings. Framework, escalation
+      // override and origin display keep today's rule (confirm in that conversation itself).
+      const allowedCross = new Set(CROSS_TOPIC_FIELDS);
+      const outside = Object.keys(patch).filter((k) => !allowedCross.has(k));
+      if (outside.length) {
+        res.status(400).json({ error: `confirmIn may change only model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
+        return;
+      }
+      // Ships behind the umbrella's per-piece switch: live on a development agent, dark on the fleet.
+      const switchLive = ctx.liveConfig?.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined)
+        ?? (ctx.config as { security?: { crossTopicConfirm?: { enabled?: boolean } } }).security?.crossTopicConfirm?.enabled;
+      if (!resolveDevAgentGate(switchLive, ctx.config)) {
+        res.status(503).json({ ok: false, reason: 'confirmIn-dark' });
+        return;
+      }
+      const eligible = crossTopicEligibilityFor(confirmIn, gate.key);
+      if (!eligible.ok) {
+        // A refusal stays a refusal: when the owner asked in A and B is what can't be reached, the
+        // owner hears it in A too, not only the agent.
+        const noticeKey = `${confirmIn}\u0000${gate.key}\u0000${eligible.reason}`;
+        const lastNotice = crossTopicNoticeAt.get(noticeKey) ?? 0;
+        if (eligible.reason.startsWith('destination-') && Date.now() - lastNotice > 10 * 60_000) {
+          crossTopicNoticeAt.set(noticeKey, Date.now());
+          const why = eligible.reason === 'destination-bound' ? 'someone else runs it' : eligible.reason === 'destination-confined' ? 'it belongs to a team member' : 'I could not confirm who runs it';
+          try {
+            await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(confirmIn as number,
+              `I can't change the conversation "${safeConversationName(ctx.telegram!.getTopicName(Number(gate.key)), gate.key)}" from here: ${why}. You can ask for it in that conversation instead.`));
+          } catch { /* @silent-fallback-ok: the refusal is also returned to the caller below */ }
+        }
+        res.status(422).json({ ok: false, reason: 'confirmIn-refused', refusal: eligible.reason });
+        return;
+      }
+    }
     const rendered = gate.surface.renderProposalEcho(gate.key, patch);
     if (!rendered.ok) {
       res.status(400).json({ ok: false, message: rendered.reply });
       return;
     }
-    const armed = ctx.topicProfile.confirmSlots.arm(gate.key, 'propose-confirm', rendered.patch, rendered.echo, 'agent-composed');
+    const echoTopic = confirmIn ?? Number(gate.key);
+    let echoText = confirmIn !== null
+      ? rendered.echo.replace('Proposed profile change for this topic:', `Proposed change for the conversation "${safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key)}" (not this one):`)
+      : rendered.echo;
+    const armed = ctx.topicProfile.confirmSlots.arm(String(echoTopic), 'propose-confirm', rendered.patch, echoText, 'agent-composed', confirmIn !== null ? gate.key : undefined);
+    if (armed.ok && armed.superseded) echoText = `${echoText}\n(This replaces the earlier proposal here.)`;
     if (!armed.ok) {
       res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
       return;
     }
     try {
-      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(Number(gate.key), rendered.echo));
-      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, requireTelegramDelivery(sent).messageId);
-      res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
+      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
+      res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
       // Echo undelivered — tear the slot down (an unseen echo must never be
       // confirmable; matchConfirm would refuse on no-echo-id anyway).
-      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
       res.status(502).json({ ok: false, error: `Echo delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
@@ -17829,6 +17908,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Server-computed readiness authority proposal for the dashboard card. Read-only
   // (Bearer): it derives every binding the runtime later compares, so the operator
   // only chooses the envelope. Registering still requires the PIN route below.
+  // This machine's Codex binary, so an authority proposal names a model its CLI runs.
+  const codexBinaryForProposal = (): string | undefined => resolveFrameworkBinaryPath({
+    framework: CODEX_CLI_FRAMEWORK,
+    frameworkBinaryPaths: ctx.config.sessions?.frameworkBinaryPaths,
+    claudePath: ctx.config.sessions?.claudePath,
+    configuredFramework: ctx.config.sessions?.framework,
+  }) ?? undefined;
+  // The proposal builders read the version cache synchronously; warm it at
+  // boot and before each proposal read so the first one names the right model.
+  const warmCodexVersion = async (): Promise<void> => {
+    const binary = codexBinaryForProposal();
+    if (binary && codexCliVersionCached(binary) === undefined) await refreshCodexCliVersion(binary);
+  };
+  void warmCodexVersion();
+  // An approval that names the model it was shown must bind exactly that model.
+  const assertShownModel = (body: Record<string, unknown>, rebuilt: string): void => {
+    if (typeof body.shownModelFamily === 'string' && body.shownModelFamily !== rebuilt) {
+      throw new Error(`authority proposal changed since it was shown: it now names ${rebuilt}, not ${body.shownModelFamily}; review it again`);
+    }
+  };
   const readinessAuthorityProposal = (envelope?: Partial<ReadinessEnvelope>) => {
     const drain = ctx.feedbackDrain!;
     const intel = ctx.intelligence;
@@ -17842,6 +17941,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       agentId: ctx.config.projectName ?? '',
       binding,
       route,
+      codexBinaryPath: codexBinaryForProposal(),
       piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'],
       current,
       currentMode: current ? drain.store.authorityPosture(current.authorityId, current.generation).mode : undefined,
@@ -17851,8 +17951,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   };
 
-  router.get('/feedback-factory/readiness-authorities/proposal', (req, res) => {
+  router.get('/feedback-factory/readiness-authorities/proposal', async (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    await warmCodexVersion();
     const q = req.query;
     res.json(readinessAuthorityProposal({
       maxBatch: typeof q.maxBatch === 'string' && q.maxBatch.trim() !== '' ? Number(q.maxBatch) : undefined,
@@ -17865,10 +17966,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // with Bearer alone, so “registered” is a real security boundary.
   // `useProposal: true` (create/replace) makes the SERVER derive every binding
   // field from the live proposal; only the operator's envelope comes from the body.
-  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+  router.post('/feedback-factory/readiness-authorities', async (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
+    await warmCodexVersion();
     try {
       const body = req.body ?? {};
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
@@ -17878,6 +17980,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (body.useProposal === true && (action === 'create' || action === 'replace')) {
         const built = readinessAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
         if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+        assertShownModel(body, built.proposal.modelFamily);
         proposed = { ...built.proposal };
       }
       const source = proposed ?? ((action === 'revoke' || action === 'restore') && existing ? existing : body);
@@ -18046,24 +18149,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
     const posture = current ? drain.store.authorityPosture(current.authorityId, current.generation) : null;
     return buildTriageAuthorityProposal({
-      agentId: ctx.config.projectName ?? '', binding, route, piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
+      agentId: ctx.config.projectName ?? '', binding, route, codexBinaryPath: codexBinaryForProposal(), piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
       currentMode: posture?.mode, currentModeReason: posture?.reason,
       currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
       envelope, maxCallsPerDay: ctx.feedbackTriage!.service.summary().maxCallsPerDay as number,
     });
   };
 
-  router.get('/feedback-factory/triage/authority/proposal', (req, res) => {
+  router.get('/feedback-factory/triage/authority/proposal', async (req, res) => {
     if (triageUnavailable(res)) return;
+    await warmCodexVersion();
     const q = req.query;
     const num = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? Number(v) : undefined);
     res.json(triageAuthorityProposal({ maxBatch: num(q.maxBatch), maxTokens: num(q.maxTokens), maxDailySpendUsd: num(q.maxDailySpendUsd) }));
   });
 
-  router.post('/feedback-factory/triage/authority', (req, res) => {
+  router.post('/feedback-factory/triage/authority', async (req, res) => {
     if (triageUnavailable(res)) return;
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
+    await warmCodexVersion();
     try {
       const body = req.body ?? {};
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
@@ -18074,6 +18179,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (body.useProposal === true) {
           const built = triageAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
           if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+          assertShownModel(body, built.proposal.modelFamily);
           source = { ...built.proposal };
         } else {
           // Explicit fields: the prompt, schema and decision point are always the deployed ones.
@@ -21799,6 +21905,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // identity-security-creation-provenance: why a conversation exists (machine-local).
+  router.get('/topic-creation-provenance/:topicId', (req, res) => {
+    const id = Number(req.params.topicId);
+    if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: 'topicId must be a positive integer' }); return; }
+    // Ids and times only, never message text: the owner opens the source message in their own Telegram.
+    res.json({ topicId: id, provenance: creationProvenance.get(id) });
+  });
+
   router.post('/telegram/topics', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -21806,6 +21920,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { name, color, firstMessage, kind } = req.body;
+    // identity-security-creation-provenance: an optional citation of the operator message this
+    // conversation is started from. Checked before anything is created; a refusal creates nothing.
+    const onBehalfOf = parseOnBehalfOf(req.body?.onBehalfOf);
+    if (onBehalfOf === null) {
+      res.status(400).json({ error: '"onBehalfOf" must be { topicId, messageId } with positive integer ids' });
+      return;
+    }
+    const citation = onBehalfOf ? checkCitation(onBehalfOf, ownerCitationDeps()) : null;
+    if (citation && !citation.ok) {
+      res.status(422).json({ error: 'onBehalfOf-refused', reason: citation.reason });
+      return;
+    }
     if (kind !== undefined && kind !== 'issue' && kind !== 'conversation') {
       res.status(400).json({ error: '"kind" must be "issue" or "conversation" when given' });
       return;
@@ -21847,6 +21973,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions
       // spawned in this topic will see the context in their thread history.
+      // identity-security-creation-provenance: record why this conversation exists. A record only:
+      // it grants nothing and is never posted into the conversation.
+      try {
+        creationProvenance.record({
+          topicId: topic.topicId,
+          createdAt: new Date().toISOString(),
+          session: typeof req.get?.('X-Instar-Session') === 'string' ? String(req.get('X-Instar-Session')).slice(0, 120) : null,
+          sessionAsserted: true,
+          source: citation && citation.ok ? { kind: 'linked-message', linked: citation.cited, authorship: 'unverified' } : { kind: 'source-unknown' },
+        });
+      } catch (err) {
+        console.error(`[topic-creation-provenance] could not record topic ${topic.topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       let messageSent = false;
       if (firstMessage && !topic.reused) {
         await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topic.topicId, firstMessage));
@@ -21860,6 +21999,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         reused: topic.reused,
         messageSent,
         group: space,
+        provenance: citation && citation.ok ? 'linked-message' : 'source-unknown',
       });
     } catch (err) {
       res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "graph-history-check-off-lane",
+  "sessionId": "4e81326d-5c23-4bba-a349-427ccf37313c",
+  "timestamp": "2026-11-19T02:21:51.656Z",
+  "artifactPath": "upgrades/side-effects/graph-history-check-off-lane.md",
+  "artifactSha256": "c1e381a1ef3688899fa47c498776cc6b1f4e0e3738058ba055ae3f77228f5348",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-19T02-21-42-822Z-graph-history-check-off-lane.json",
+    "docs/specs/graph-history-check-off-lane.eli16.md",
+    "src/server/ConversationGraphDefault.ts",
+    "tests/helpers/graph-owned-cold-read.mjs",
+    "tests/integration/graph-default-boot.test.ts",
+    "tests/integration/graph-default-peers.test.ts",
+    "upgrades/next/graph-history-check-off-lane.md",
+    "upgrades/side-effects/graph-history-check-off-lane.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves an existing read-only verification out of the serialized owner lane; no state, migration or new authority; a revert undoes it",
+  "eli16Path": "docs/specs/graph-history-check-off-lane.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-history-check-off-lane.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

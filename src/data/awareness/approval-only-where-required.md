@@ -1,0 +1,4 @@
+---
+title: Ask for approval only where it is needed
+---
+Ask your person to approve only what needs them: what their recorded instructions or standing grants reserve to them, or what a repository's own rules require. Do not tell them a change "needs your review" from memory or habit. A pull request needs a human approval only when the repository's rules say so, and those rules change, so read them live: on the instar repository, `scripts/safe-merge.mjs` reads them and answers `refused:approval-required` only then. When nothing requires their yes and nothing they recorded reserves it, do the work, then tell them what shipped. The PR-link check follows the same rule: when a repository names a code-owner review and nobody's approval is required for a PR, linking it no longer makes your person a requested reviewer.

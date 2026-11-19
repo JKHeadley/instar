@@ -20,6 +20,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
   WorktreeMonitor,
+  FILES_CHANGED_KEPT,
   type Worktree,
   type WorktreeMonitorConfig,
 } from '../../src/monitoring/WorktreeMonitor.js';
@@ -212,6 +213,31 @@ describe('WorktreeMonitor', () => {
       expect(result!.filesChanged).toContain('test.ts');
     });
 
+    it('keeps only the first FILES_CHANGED_KEPT names but counts every changed file', async () => {
+      const wtPath = createWorktree(repoDir, 'many-files');
+      const total = FILES_CHANGED_KEPT + 15;
+      for (let i = 0; i < total; i++) fs.writeFileSync(path.join(wtPath, `f-${String(i).padStart(3, '0')}.txt`), `x${i}\n`);
+      shell('git add -A', wtPath);
+      shell('git commit -m "many files"', wtPath);
+
+      const wts = await monitor.listWorktrees();
+      const wt = wts.find(w => w.branch === 'worktree-many-files')!;
+      const result = await monitor.checkUnmergedWork(wt, 'main');
+
+      expect(result).not.toBeNull();
+      expect(result!.filesChangedCount).toBe(total);
+      expect(result!.filesChanged).toHaveLength(FILES_CHANGED_KEPT);
+    });
+
+    it('keeps every name when under the cap', async () => {
+      createWorktree(repoDir, 'few-files', { addCommits: 2, files: ['a.ts', 'b.ts'] });
+      const wts = await monitor.listWorktrees();
+      const wt = wts.find(w => w.branch === 'worktree-few-files')!;
+      const result = await monitor.checkUnmergedWork(wt, 'main');
+      expect(result!.filesChangedCount).toBe(2);
+      expect(result!.filesChanged.sort()).toEqual(['a.ts', 'b.ts']);
+    });
+
     it('returns null for worktree with no branch', async () => {
       const fakeBranchless: Worktree = {
         path: '/tmp/fake',
@@ -292,6 +318,29 @@ describe('WorktreeMonitor', () => {
       expect(report.orphanBranches).toHaveLength(1);
       expect(report.orphanBranches[0]).toBe('worktree-orphaned');
     });
+
+    it('shares one in-flight scan between overlapping callers (no pile-up)', async () => {
+      createWorktree(repoDir, 'busy', { addCommits: 1 });
+
+      // A periodic tick and a session end arriving together must not start two scans.
+      const [first, second] = await Promise.all([monitor.scanWorktrees(), monitor.scanWorktrees()]);
+      expect(second).toBe(first);
+      expect(first.withUnmergedWork).toHaveLength(1);
+
+      // Once the scan settles, the next caller gets a fresh scan.
+      const later = await monitor.scanWorktrees();
+      expect(later).not.toBe(first);
+      expect(later.withUnmergedWork).toHaveLength(1);
+    });
+
+    it('lets a new scan start after a failed one', async () => {
+      const failing = vi.spyOn(monitor as unknown as { runScan: () => Promise<unknown> }, 'runScan')
+        .mockRejectedValueOnce(new Error('git exploded'));
+      await expect(monitor.scanWorktrees()).rejects.toThrow('git exploded');
+      failing.mockRestore();
+      const report = await monitor.scanWorktrees();
+      expect(report.worktrees).toEqual([]);
+    });
   });
 
   // ── Post-Session Scan ────────────────────────────────────────
@@ -357,6 +406,15 @@ describe('WorktreeMonitor', () => {
 
       expect(alerts).toHaveLength(1);
       expect(second.actions).toEqual(['Alert suppressed: findings unchanged since last announcement']);
+    });
+
+    it('a burst of overlapping session ends (sharing one scan) announces an unchanged finding once', async () => {
+      createWorktree(repoDir, 'burst', { addCommits: 1 });
+      const reports = await Promise.all(Array.from({ length: 10 }, (_, i) => monitor.onSessionComplete(makeSession({ name: `job-${i}` }))));
+      expect(alerts).toHaveLength(1);
+      // Each caller gets its own report: one generated the alert, the rest were suppressed.
+      expect(reports.filter((r) => r.actions.some((a) => a.startsWith('Alert generated'))).length).toBe(1);
+      expect(reports.filter((r) => r.actions.includes('Alert suppressed: findings unchanged since last announcement')).length).toBe(9);
     });
 
     it('announces again when a new branch appears', async () => {

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "accept-all-page-patience",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T07:01:36.598Z",
+  "artifactPath": "upgrades/side-effects/accept-all-page-patience.md",
+  "artifactSha256": "65cc218607ddf7826edbc0afb9bdcf492b74a88ce37b9f3f2240dee880481a29",
+  "coveredFiles": [
+    "tests/unit/console-conversations-dom.test.ts",
+    "upgrades/side-effects/accept-all-page-patience.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only follow-up: two page tests still described the old stop rule; no source change; a revert undoes it",
+  "eli16Path": "docs/specs/accept-all-page-patience.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accept-all-page-patience.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
