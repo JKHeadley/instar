@@ -54,7 +54,7 @@ Claude Code reads and writes under `CLAUDE_CONFIG_DIR` and Codex under `CODEX_HO
 
 Every row also keeps `served_slot`. The existing `account_id` column keeps the tagged account from the binding and is not changed on write. Three write sites set the new columns: transcript rows (~1037), Codex rollout rows (~1490), and the invocation flush (`flushInvocations`). When the settle window pairs an invocation row with a transcript row, the transcript row's served fields win, because they rest on the root.
 
-New nullable columns `served_slot`, `served_account_id` and `served_basis` are added to the raw events table only, with a guarded idempotent `ADD COLUMN`. The rollup tables are **not** changed (see §3). Existing rows read `served_basis: 'before-attribution'`.
+Each row also stores `served_identity`: step 1's login identity key for the served account as known **at scan time** (from its pool record's email), so a later re-binding of a slot never relabels old spend. New nullable columns `served_slot`, `served_account_id`, `served_identity` and `served_basis` are added to the raw events table only, with a guarded idempotent `ADD COLUMN`. The rollup tables are **not** changed (see §3). Existing rows read `served_basis: 'before-attribution'`.
 
 The resolver is an in-memory map rebuilt when the pool or the credential ledger changes (both already emit change events). No per-row file reads.
 
@@ -69,18 +69,18 @@ Pool views of `/usage/tree` and `/usage/top` are answered by the lease holder fr
 - `GET /usage/accounts?since=&until=` is computed on each machine from its own raw events (kept 90 days). On the lease holder (or proxied to it, like the other `/usage/*` routes) it fans out to every machine through the existing bearer pool fan-out helper (`src/server/poolFanOut.ts`) at request time, merges by account, and names machines that did not answer or are on an older build (`served-account-unsupported`). Per account it returns requests, tokens by part, list-equivalent cost and a breakdown by `served_basis`; the unknown buckets are separate.
 - `/usage/account-mismatches` fans out the same way and pages per machine.
 - `/usage/tree` and `/usage/top` are unchanged.
-- One login enrolled on two machines under different slot ids is merged by step 1's login identity key when the pool record has an email, labelled `merged by enrollment email`.
+- Spend is grouped by the stored `served_identity` (falling back to the account id when it is null), never by today's pool membership, so one login enrolled on two machines is counted once and a re-bound slot never mixes logins.
 
 ### 4. Size of a point
 
 For each account, each **closed** weekly cycle in step 1's history, and each weekly window separately (`sevenDay`, and `fable` on Claude accounts), compute:
 
-- `pointsUsed`: the cycle's last valid reading, a lower bound when censored as step 1 defines.
-- `costServed`: list-equivalent cost of rows whose served account is this account and whose time falls in the cycle. For `fable`, only Fable-model rows count.
+- `pointsUsed`: the cycle's last valid reading. A cycle whose last reading is censored (step 1's rule: too long before the reset) is `cannot-tell`, because its points and its spend would cover different intervals.
+- `costServed`: list-equivalent cost of rows whose `served_identity` is this login (the identity step 1 recorded for the cycle) and whose time falls in the cycle. For `fable`, only Fable-model rows count.
 - `unattributedCost`: the cost in that cycle of rows on the same machines with a null served account. This is an upper bound on what the account may be missing.
 - `retentionComplete`: whether the whole cycle lies inside every contributing machine's raw-event retention (90 days).
 
-The figure is `costPerPoint = costServed / pointsUsed`. It is withheld (`cannot-tell` with the reason) only when the cycle is not retention-complete or a contributing machine did not answer. Otherwise it is shown with a `quality` label: `low` when `pointsUsed < 5` or `unattributedCost` exceeds 10% of `costServed`, else `ok`.
+The figure is `costPerPoint = costServed / pointsUsed`. It is withheld (`cannot-tell` with the reason) when the cycle is censored, not retention-complete, a contributing machine did not answer, or the switch was not on for the whole cycle on every contributing machine. Otherwise it is shown with a `quality` label: `low` when `pointsUsed < 5` or `unattributedCost` exceeds 10% of `costServed`, else `ok`.
 
 Every figure carries a standing caveat: use of the same login outside this agent (the web app, the phone, machines outside the pool) adds points but no ledger cost, so `costPerPoint` is a ceiling on the true cost per point, never a measurement of it. This is evidence for a later step to weigh, never an input to any decision in this one.
 
