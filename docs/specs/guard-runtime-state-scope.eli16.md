@@ -18,7 +18,9 @@ None touched program code. So the gap has not been used for harm. But nothing st
 - **The shortcut covers what it was meant to:** only the agent's own private `.instar` folder.
 - **Three small jobs that relied on the gap get their own named permissions,** each for exactly its own files: the feedback system's test, removing a stale lock file in a working copy, and removing a half-made copy of the project's libraries.
 - **The check looks further up.** Today it can be fooled when an ordinary project folder sits inside the agent's folder. After this change it checks every folder above, not just the nearest one.
-- **It starts in watch-only mode.** For at least two weeks, the old rule still decides, and every time the new rule would have refused something, a note is written in the safety log. Those notes are kept in their own file, which is not cleared every hour like the main safety log. They show whether anything else quietly relied on the gap, before anything is refused for real.
+- **It starts in watch-only mode.** For at least two weeks, the old rule still decides, and every time the new rule would have refused something, a note is written in the safety log. Those notes are kept in their own file, which is not cleared every hour like the main safety log, and is only ever added to. If it fills up, it stops and says the watch is incomplete, rather than dropping notes. They show whether anything else quietly relied on the gap, before anything is refused for real.
+
+The command that deletes a whole agent (`instar nuke`) is handled separately: it needs its own fix first, so the new rule cannot be switched on before that lands.
 
 ## What needs deciding
 

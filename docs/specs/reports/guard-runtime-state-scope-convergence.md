@@ -1,6 +1,6 @@
 # Convergence Report: The source-tree guard's runtime-state rule matches only an instar checkout's own .instar folder
 
-**Status: NOT converged. Stopped after the confirmation round (round 7) found design-level problems, as the Chief of Staff instructed. Brought back with a recommendation to split the spec.**
+**Status: Spec A (the core, nuke excluded) after its one approved review round. The internal security review found nothing material. The outside reviewers' small design items are applied but not reviewed again. Brought to the Chief of Staff for approval.**
 
 ## Cross-model review: codex-cli:gpt-6.2-astra
 
@@ -22,6 +22,8 @@ The file-deletion safety check has a shortcut for the agent's private `.instar` 
 | 6 (cap) | codex 3, cc 2, internal none | Every scope checks its root and refuses git-tracked targets; `nukeHere` and symlinked homes checked before teardown; append-only ledger; observation marked incomplete on overflow. **Not reviewed again.** |
 
 | 7 (confirmation, CoS-approved) | codex 4 design, internal material | **Stopped here, per the Chief of Staff's instruction.** Findings: (1) nuke teardown stops sessions by name prefix, so `echo` would also stop `echo-dev`, a pre-existing nuke bug; (2) the root rule lets a caller pass `<checkout>/src`; (3) the tracked-file rule refuses the whole-home nuke removal; (4) the ledger roll is a cross-process read-modify-write with no lock. Brought back to the Chief of Staff with a recommendation to split the spec. |
+
+| Spec A (cut, CoS-approved, one round) | internal none; codex 2 design; cc 2 design | Small design items, applied but not reviewed again: the cross-disk feedback fallback gets no scope (it never fires in practice, and refusal only leaks); classifier read errors count as indeterminate; the report-mode shadow check is fenced; the tracked check is skipped inside `.git`. Brought to the Chief of Staff for approval. |
 
 ## Proportion
 

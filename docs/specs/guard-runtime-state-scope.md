@@ -44,7 +44,7 @@ It uses the same canonicalisation as `isInstarSourceTree`: the nearest existing 
 **A three-way ancestor classifier.** The walk does not reuse `isInstarSourceTree`, which answers true when it cannot canonicalise, a fail-closed answer that must never become an allow. A new classifier walks the canonical parent's ancestors, plus the entry itself only when `lstat` shows it is a real directory. Each ancestor is one of three things:
 - `instar`: a confirmed instar checkout, by the same layer and remote evidence `isInstarSourceTree` uses;
 - `ordinary`: a git root that is not instar, or a folder without git metadata that also lacks the instar marker and package signature. A folder carrying the `.instar-source-tree` marker or the instar package signature counts as `instar` even without `.git`, exactly as `isInstarSourceTree` treats it today;
-- `indeterminate`: unreadable, or the 40-level cap was reached.
+- `indeterminate`: unreadable, or the 40-level cap was reached. Each piece of evidence (marker, package signature, layer files, `.git/config` remote) is read with its errors kept, never collapsed to false. One positive match confirms `instar`. With no positive match, any read that failed makes the ancestor `indeterminate`, never `ordinary`.
 
 Only a confirmed `instar` ancestor `R` can make the shortcut true.
 
@@ -67,20 +67,24 @@ Each is a typed option the caller passes, checked before the shortcut. Each allo
 |---|---|---|
 | `localVerifyScopeOk: { verifyRoot }` | the Local Verify service | Unchanged from today: its existing verify-root clone paths and verbs. It is listed so `enforce` keeps it. |
 | `feedbackCanaryScope: { worktreesDir }` | `confinementCanary.ts:95`, `:97`, `:148` | By shape only, never a caller-supplied list. Each name must also match `[A-Za-z0-9]+` after its prefix, and only `unlink` and a non-recursive `rmdir` are allowed, never `rm`. Allowed entries: (1) a direct child of the realpath of `worktreesDir` named `.feedback-canary-sib-<nonce>`, with non-recursive `rmdir` only; (2) inside such a folder, exactly the files `sib-<nonce>.txt` and `w.txt`, with `unlink` only; (3) an entry named `.feedback-canary-{hl,link,siblink}-<nonce>` directly inside a feedback workspace root `<worktreesDir>/feedback-<slug>-a<n>` (the path `FeedbackExecutorService.ts:705` builds), with `unlink` only. The canary's other files live under `.instar/state/.../canary` (`FeedbackExecutorService.ts:898`) and are covered by the shortcut. The `depsWrite` leftover in the dependency cache exists only after a confinement breach, and its refusal there is intended. |
-| `feedbackAttemptTreeScope: { worktreesDir }` | `attemptFs.ts:68` | The cross-device (EXDEV) fallback only: a recursive `rm` of exactly one direct child of `worktreesDir` named `feedback-*`, or of `.feedback-deps/<id>`. The normal path renames into `.instar/state/.../trash` first and is already covered. |
 | `gitRebaseStateScope: { projectDir }` | `GitSync.ts:419`, `:420` | A recursive `rm` of exactly `<projectDir>/.git/rebase-merge` or `<projectDir>/.git/rebase-apply`, after `rebase --abort` failed. |
 | `learnedSkillScope: { projectDir }` | `skillLearning/Retirer.ts:357` (via :588/:597/:619), `CommitProtocol.ts:679`/`:715`/`:719` | A recursive `rm` of exactly one direct child of `<projectDir>/.claude/skills/` or `<projectDir>/.agents/skills/`. The retired-archive side is under `.instar/` and already covered. |
-| `nukeAgentHomeScope: { agentName }` | `commands/nuke.ts:221` | A recursive `rm` of exactly `<instarHome>/agents/<agentName>`, with the path built by the guard from the instar home it resolves itself and a name matching `^[a-z0-9][a-z0-9-]{0,62}$`. It is never caller-supplied. The target must equal that path exactly. The command checks the scope (`SafeFsExecutor.checkScope`) **before** any teardown step (stopping sessions, unregistering), so a refusal stops the command with nothing changed. If the final removal fails, it reports the failure, not success. The protection is the guard-built path plus the name check; no claim is made about which module may pass the option. |
 | `nodeModulesCloneStagingScope: { worktreeRoot }` | `InstarWorktreeManager.ts:927` | A recursive, forced `rm` of exactly one direct child of the worktree root named `node_modules.clone-<digits>-<digits>`, the shape `:916` creates. |
 | `worktreeTrashScope` | the reclaim child | Already defined by PR 3490, which must merge first. |
 
-**Every scope checks its root, and never a tracked file.** A scope's root option (`worktreesDir`, `projectDir`, `worktreeRoot`) is not trusted as given. The guard realpaths it and requires it to be one of two things:
-- a confirmed `instar` checkout root by the classifier;
-- or, for `worktreesDir` and `worktreeRoot`, a direct child (or `.worktrees`) of one.
+**Every scope has an explicit root predicate, and refuses tracked files.** No root option is trusted as given. The guard realpaths it and checks it against that scope's own predicate:
 
-On top of that, every scope refuses a target that is tracked by git in its enclosing checkout (`git ls-files --error-unmatch`, the same check as the ledger's `source-file` class). So no scope can reopen a source-delete hole, whatever root a caller passes.
+| Scope | Root must be |
+|---|---|
+| `feedbackCanaryScope` | exactly `realpath(<R>/.worktrees)` for a confirmed `instar` checkout root `R` |
+| `nodeModulesCloneStagingScope` | a worktree root listed by `git -C <R> worktree list --porcelain` for a confirmed `instar` checkout root `R` |
+| `gitRebaseStateScope`, `learnedSkillScope` | a confirmed `instar` checkout root itself |
 
-**Nuke, both forms.** `nukeAgent` and `nukeHere` both call `checkScope` before any teardown. The agent home must be a real directory (`lstat`, not a symlink) before its `.instar/config.json` is used to pick the sessions and auto-start entries to tear down. `nukeHere` also runs the enclosing-checkout classifier on its folder, so an install in an ordinary repository nested inside an instar checkout is refused before teardown. Both forms report a failed removal as failure.
+So `<checkout>/src` passed as `worktreesDir` is refused. Every scope also refuses a target that is git-tracked: for a file, the file; for a folder, the folder or anything under it, by `git -C <enclosing checkout> ls-files --error-unmatch -- <target>` through `SafeGitExecutor`'s read path with a timeout. The check does not apply to `gitRebaseStateScope`, whose targets are inside `.git`, which git never tracks. Exit 0 means tracked (refused); exit 1 ("did not match") means untracked (allowed). Any other exit, or a timeout, means git could not answer, and the scope refuses in `enforce`. None of these scopes removes a whole checkout.
+
+**The feedback executor's cross-disk fallback is not given a scope.** `attemptFs.ts:68` deletes an attempt tree in place only when renaming it into the trash fails with `EXDEV`. The trash is under `.instar/state`, on the same disk as `.worktrees`, so this does not happen in practice. Such a tree can be a whole disposable checkout, which the tracked-file check cannot vet. In `enforce` the delete is refused, the tree stays (a leak, never a loss), and the `report` ledger shows it first.
+
+**`instar nuke` is out of scope.** It keeps today's path unchanged. Its teardown and guard path are spec B (queued). Its session-prefix bug is filed separately as fb-7e502374-a36 (`nuke.ts:141`, `:348`). Today its whole-home delete is allowed only by the broad shortcut, so in `enforce` it would be refused. **`enforce` therefore cannot be chosen until spec B has merged**, which is part of the enforce floor below. In `report` mode nuke behaves exactly as today, and its whole-home delete is recorded as a `would-deny` with disposition `needs-scope (spec B)`.
 
 **How the list was made.** It comes from a static scan of all 284 files that call the delete functions (2026-11-19 00:48 PT). Callers whose targets resolve inside an enclosing instar checkout but outside its `.instar/` were listed.
 
@@ -102,7 +106,7 @@ An unlink that fails with `ENOENT` counts as clean, since a healthy run's write 
 
 The change ships behind `safety.sourceTreeGuard.runtimeStateScope`, with modes `report` (the default) and `enforce`.
 
-**`report` mode.** Both policies are evaluated independently on the original request. Differences are recorded in **both** directions: `would-deny` (legacy allows, new refuses) and `would-allow` (legacy refuses, new allows). One example of the second: unlinking a link outside source whose target is in source, which today's guard refuses because it follows the link. The shadow verdict is always the one `enforce` would issue, so an indeterminate walk counts as a refusal there and is recorded as a would-deny with reason `indeterminate`. The legacy verdict (today's `guard()`, unchanged) is the one executed. A **would-deny** is exactly the case where legacy allows and the new policy refuses. A request both refuse is not a would-deny: it is refused today and stays refused. The new policy's raw-component rejection affects only its own verdict, never what `report` executes.
+**`report` mode.** Both policies are evaluated independently on the original request. The shadow evaluation is fenced: it runs inside a catch, any exception, timeout or ledger-write failure in it is recorded as a `would-deny` row with reason `shadow-error` (when the ledger can be written at all), and it never throws, blocks or changes the executed verdict. Its `git ls-files` runs only for paths that match a scope's shape, which are rare. Differences are recorded in **both** directions: `would-deny` (legacy allows, new refuses) and `would-allow` (legacy refuses, new allows). One example of the second: unlinking a link outside source whose target is in source, which today's guard refuses because it follows the link. The shadow verdict is always the one `enforce` would issue, so an indeterminate walk counts as a refusal there and is recorded as a would-deny with reason `indeterminate`. The legacy verdict (today's `guard()`, unchanged) is the one executed. A **would-deny** is exactly the case where legacy allows and the new policy refuses. A request both refuse is not a would-deny: it is refused today and stays refused. The new policy's raw-component rejection affects only its own verdict, never what `report` executes.
 
 The 294 machine-level `~/.instar/*.lock` rows have only `ordinary` ancestors, so they are allowed by both and never would-deny.
 
@@ -119,11 +123,11 @@ Rows are deduplicated per day by all of those fields together, so one operation 
 - `checkout-root`;
 - `other`.
 
-Each row carries one sample path. The ledger is capped at 50 MB. On reaching it, the ledger is rolled to one `.1` file that the reader still reads, and the rows of fingerprints that still have no disposition are copied forward. If even those exceed the cap, the observation is marked **incomplete**, and `enforce` cannot be chosen until a full review clears it.
+Each row carries one sample path. The ledger is capped at 50 MB and is **never rolled or rewritten**. Each write opens the file, appends one line and closes it. A writer that finds the file at or over the cap appends nothing and creates `guard-scope-diff.incomplete` instead, with `O_EXCL` so a creation race is harmless. While that marker exists, the observation is incomplete and `enforce` cannot be chosen. Clearing it is a deliberate reviewed reset: the ledger is archived under `.instar/state/guard-scope-diff/archive/` and a fresh observation window starts. Nothing is ever rewritten in place.
 
 **Reading the ledger.** A `source-file` would-deny is a correct refusal, and is recorded as such. Any other class from an operation not named in §3 is the signal that another caller depends on the hole.
 
-**Enforcing.** Moving to `enforce` is the Chief of Staff's decision, with the ledger in hand. The floor: at least 14 days of `report` on the Studio, the observation not marked incomplete, and zero distinct differences without a disposition, in either direction. A disposition is one of:
+**Enforcing.** Moving to `enforce` is the Chief of Staff's decision, with the ledger in hand. The floor: at least 14 days of `report` on the Studio, the observation not marked incomplete, zero distinct differences without a disposition in either direction, and spec B (nuke) merged. A disposition is one of:
 - `correct-refusal`, for example a `.git/config` or source-file delete that must stay refused. This satisfies the floor and creates no exception.
 - `correct-allow`, for a `would-allow` the new policy is right about, such as unlinking an outside link into source.
 - `needs-scope`, which gets its own named scope before enforcing.
@@ -166,25 +170,25 @@ In `enforce` mode, the new rule decides alone.
     - an indeterminate walk.
   - **Allowed:** a machine-level lock outside any checkout.
   - **Symlinks, both directions:** an `unlink` of a symlink inside source that points at runtime state, or at `/tmp` outside every checkout, is refused and the link survives. An `unlink` of a link outside source that points into source is allowed, and the target is untouched.
-  - **Indeterminate:** an unreadable ancestor is indeterminate and never an allow proof. In `report` it writes a would-deny row with reason `indeterminate`.
+  - **Indeterminate:** an unreadable ancestor is indeterminate and never an allow proof; an instar checkout whose only evidence (its `.git/config`) is unreadable is `indeterminate`, not `ordinary`. In `report` it writes a would-deny row with reason `indeterminate`.
   - **Marker without git:** a directory with the `.instar-source-tree` marker and no `.git` is refused, as today.
   - **Canary fallback:** a refused canary unlink leaves the file and any hard-linked twin untouched and records a degradation; an `ENOENT` unlink counts as clean and records nothing; the system-temp probe is unlinked, never truncated.
-  - **Nuke:** a symlinked agent home is refused before teardown, and both agents stay untouched; `nukeHere` on an ordinary repository nested in an instar checkout is refused before teardown, with registration, sessions and files kept; `nukeAgentHomeScope` allows exactly `<instarHome>/agents/<name>`. It refuses a target that is another agent's home when the option names a different agent, a nested path, and a bad name. The command checks the scope before teardown: a refusal leaves sessions running and the agent registered. A failed removal is reported as failure, tested end to end on a throwaway agent.
 - **Unit, the scopes:**
-  - each scope allows exactly its targets and verbs: the canary by shape (`sib` folder `rmdir`, files `unlink`, `hl`/`link`/`siblink` leftovers in a feedback workspace), the staging recursive `rm`, the EXDEV feedback tree, the two rebase folders, a learned-skill folder, the nuke target, and Local Verify as today;
+  - each scope allows exactly its targets and verbs: the canary by shape (`sib` folder `rmdir`, files `unlink`, `hl`/`link`/`siblink` leftovers in a feedback workspace), the staging recursive `rm`, the two rebase folders, a learned-skill folder and Local Verify as today;
   - a caller-chosen path outside the shapes is refused;
-  - a scope given a root that is not a confirmed instar checkout (or its `.worktrees` child) is refused;
+  - each scope refuses a root that fails its predicate (for example `<checkout>/src` as `worktreesDir`);
+  - a tracked folder target, or one holding tracked files, is refused; git being unable to answer means refused in `enforce`;
   - a git-tracked target inside any scope is refused;
   - each refuses a sibling, a deeper path, `..` and a recursive remove where not allowed;
   - after a refused canary `rmdir`, unexpected contents survive.
 - **Unit, modes and ledger:**
-  - `report` executes the legacy verdict exactly;
+  - `report` executes the legacy verdict exactly; a throwing or timed-out shadow evaluation (injected) still executes the legacy verdict and records `shadow-error`;
   - differences are recorded in both directions (`would-deny` and `would-allow`), and both-deny and both-allow write nothing;
   - a disposition can be set on a ledger row, and the route lists undisposed rows;
   - one ledger row per direction, verb, reason, caller, target shape and day, with counts;
   - writes are append-only from several processes at once with no lost rows (concurrent-writer test);
-  - undisposed fingerprints survive the roll;
-  - an over-cap undisposed set marks the observation incomplete and blocks `enforce`;
+  - at the cap, nothing more is appended, the `incomplete` marker is created once (racing writers included), and `enforce` is blocked;
+  - the reviewed reset archives and starts a fresh window;
   - machine-level locks never appear;
   - a `source-file` row is classed as such;
   - the ledger cap holds;
