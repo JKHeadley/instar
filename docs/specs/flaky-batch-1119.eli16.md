@@ -27,3 +27,7 @@ The three-second limit in the product is a real weakness on a busy machine. It w
 ## What you need to decide
 
 Nothing. If one of these tests fails again, it now points at the product, not at the machine.
+
+## A fourth test, added before this was sent
+
+One more test failed now and then for a reason that had nothing to do with a busy machine. To check that the server refuses damaged data, the test damaged a piece of scrambled data by writing the letter A over its first character. About one time in 64 that character already was an A, so nothing was damaged, the server rightly accepted it, and the test called that a failure. The test now writes a character that is different from the one that is there, and checks that the data really changed.

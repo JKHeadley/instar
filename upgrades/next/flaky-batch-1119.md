@@ -12,6 +12,8 @@ Three tests that failed full verify runs on a loaded machine, and passed alone, 
 
 The helper's time limit in product code is unchanged and remains reported as fb-fe25893b-2ad.
 
+A fourth test, `tests/integration/graph-witness-chunks.test.ts`, failed about one run in 64 for a different reason: it damaged a piece of data by overwriting its first character with `A`, which changed nothing when that character already was `A`. The damage now always changes the data.
+
 ## What to Tell Your User
 
 Nothing to tell. This is an internal repair to automated tests; nothing an agent or its user sees has changed.

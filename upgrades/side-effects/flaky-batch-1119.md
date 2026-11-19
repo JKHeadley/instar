@@ -115,3 +115,12 @@ Not required (Tier 1, test files only).
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+
+## Addendum (2026-11-19 13:35 PST, throughput session): a fourth test, and a correction
+
+**Fourth test: `tests/integration/graph-witness-chunks.test.ts`.** The stewardship session found the cause by reading: the test corrupted a chunk by writing `'A'` over the first character of a random base64 ciphertext. When the ciphertext already started with `'A'` (about 1 run in 64) nothing changed, the chunk was valid, and the assertion that it is refused failed. The Local Verify logs of both machines show seven runs since 2026-11-16 where this file failed and then passed alone, and one (PR 3490, 2026-11-19 18:46Z) where the retry failed too. The corruption now writes a character that differs from the one that is there, and the test asserts the ciphertext really changed. Nothing about what the product must refuse is weakened.
+
+**Correction on `tests/e2e/session-management-e2e.test.ts`.** The two failures of the "restores a worktree build context on respawn" case that prompted this work (PR 3426 at 15:07Z and PR 3422 at 19:04Z on 2026-11-19) were NOT a timing flake. They were a real effect of those two changes: a new tmux naming rule gave the respawn a `-2` name and the test waited on the old one. Their owner found and fixed that in PR 3426. The changes to this test in this batch stand on their own grounds, stated above (one maintenance pass with a 2-second tmux read may record nothing; a resumed session is injected no sooner than 8 seconds after spawn while the test polled for 20), and they do not hide that kind of defect: with a wrongly named respawn the pane directory is never recorded for the expected name and the test still fails, after its wait.
+
+Not run locally before the push: the fourth test file, because integration files queue behind the running verify on this machine; Local Verify runs it. Its change is one expression and one added assertion.
