@@ -19,7 +19,7 @@ Before any change to Instar is built, its written design goes through a review i
 
 ## Proposed for the constitution
 
-At 18:05 the same day Justin asked for both rules to be fundamental, and possibly part of the constitution. So this change also proposes two articles in Instar's constitution, *A Safeguard Must Leave a Benefit* and *Documents Stand on Their Own*. They are marked pending until he approves the exact wording, and until then they guide but cannot fail a build.
+At 18:05 the same day Justin asked for both rules to be fundamental, and possibly part of the constitution. So this change also proposes two articles in Instar's constitution, *A Safeguard Must Leave a Benefit* and *Documents Stand on Their Own*. He approved the wording the same evening, so both are ratified.
 
 ## What does not change
 
