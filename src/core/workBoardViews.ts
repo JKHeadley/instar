@@ -178,7 +178,7 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
   }
   // The lanes keep their own order; within what is shown, untouched cards come first (Luna's board, a display
   // order only: which waiting cards survive the soft cut is still decided oldest first, as before).
-  lanes['waiting-on-you'].sort((a, b) => a.v.card.newestRecordAt - b.v.card.newestRecordAt);
+  lanes['waiting-on-you'].sort((a, b) => a.v.card.newestRecordAt - b.v.card.newestRecordAt || (a.v.card.cardId < b.v.card.cardId ? -1 : a.v.card.cardId > b.v.card.cardId ? 1 : 0)); // card id breaks ties, so every machine cuts the same cards
   for (const l of ['with-agent', 'waiting-on-others', 'archived'] as const) lanes[l].sort((a, b) => b.v.card.newestRecordAt - a.v.card.newestRecordAt);
   lanes.done.sort((a, b) => b.v.card.newestRecordAt - a.v.card.newestRecordAt);
   const waiting = lanes['waiting-on-you'];
@@ -186,7 +186,10 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
   const shownWaiting = untouchedFirst(opts.full ? waiting : waiting.slice(0, opts.softOpenCards));
   const page = Math.max(0, opts.donePage ?? 0);
   const doneShown = opts.full ? lanes.done : page === 0 ? lanes.done.slice(0, 20) : lanes.done.slice(20 + (page - 1) * 50, 20 + page * 50);
+  const shownIds = new Set<string>([...shownWaiting, ...lanes['with-agent'], ...lanes['waiting-on-others']].map((x) => x.v.card.cardId));
+  const open = [...waiting, ...lanes['with-agent'], ...lanes['waiting-on-others']];
   return {
+    myBoard: myBoardJson(viewer, open, shownIds),
     lanes: [
       { lane: 'waiting-on-you', cards: shownWaiting.map((x) => x.json), ...(waiting.length > shownWaiting.length ? { more: waiting.length - shownWaiting.length } : {}) },
       { lane: 'with-agent', cards: untouchedFirst(lanes['with-agent']).map((x) => x.json) },
@@ -197,5 +200,71 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
     waitingOnYou: waiting.length,
     policy: svc.policy(),
     newestHlc: svc.newestHlc(),
+  };
+}
+
+// ── My board (docs/specs/work-board-my-board.md) ───────────────────────────
+
+/**
+ * Why a card is on the viewer's board, from Luna's `attention(card, person)`: each card once, under its most
+ * pressing reason. Sections are listed in this order; a held card is shown last, as on Luna's board.
+ */
+export type MyBoardReason = 'approval' | 'reply' | 'own' | 'added' | 'held';
+export const MY_BOARD_ORDER: readonly MyBoardReason[] = ['approval', 'reply', 'own', 'added', 'held'];
+export const MY_BOARD_WORDS: Readonly<Record<MyBoardReason, string>> = {
+  approval: 'Waiting for your approval',
+  reply: 'Waiting for your reply',
+  own: 'Your cards',
+  added: 'Cards you were added to',
+  held: 'Held for later',
+};
+
+/**
+ * The one reason a card is on this viewer's board, or null when it does not need them. Read-only: it derives
+ * from the card's status, its open question, its carrier and the viewer's lane, and decides nothing.
+ * Precedence: held (the card's own status wins, as Luna's), then approval > reply > own > added.
+ * The team owner (and the agent reading on the owner's behalf) is answerable for every card in their "Waiting on
+ * you" lane; only the owner approves in this phase. A member sees only cards whose conversation was shared with
+ * them (the board's existing viewer filter): such a card is one they were added to.
+ */
+export function myBoardReason(v: CardView, viewer: Viewer, lane: Lane): MyBoardReason | null {
+  if (lane === 'done' || lane === 'archived') return null;
+  const c = v.card;
+  const me = viewer.personKey;
+  const ownerish = viewer.isOwner || viewer.isAgent;
+  const q = c.openQuestion?.principal;
+  const qPerson = q && typeof q === 'object' ? q.personKey : null;
+  const carrierPerson = typeof c.carrier === 'object' ? (c.carrier as { personKey?: string }).personKey ?? null : null;
+  if (v.status === 'held') return 'held';
+  if (ownerish) {
+    if (v.status === 'needs-approval' || v.status === 'claims-done') return 'approval';
+    // A solo agent with no team record has no owner personKey: the owner is then the only person a question can be put to.
+    if (v.status === 'waiting-on-person' && qPerson && (me === null || qPerson === me)) return 'reply';
+    // Every other card in the owner's "Waiting on you" lane, including the cards he carries himself (always in that lane while open).
+    return lane === 'waiting-on-you' ? 'own' : null;
+  }
+  if (me !== null && qPerson === me && v.status === 'waiting-on-person') return 'reply';
+  if (me !== null && carrierPerson === me) return 'own';
+  return 'added';
+}
+
+/** The viewer's board: every section in order (clients hide empty ones); within one, untouched first, then newest activity first. */
+export function myBoardJson(viewer: Viewer, open: Array<{ v: CardView; json: Record<string, unknown> }>, shownIds: Set<string>): { sections: Array<{ reason: MyBoardReason; words: string; cardIds: string[]; notStarted: number; more?: number }> } {
+  const by: Record<MyBoardReason, Array<{ v: CardView; json: Record<string, unknown> }>> = { approval: [], reply: [], own: [], added: [], held: [] };
+  for (const x of open) {
+    const r = myBoardReason(x.v, viewer, x.json.lane as Lane);
+    if (r) by[r].push(x);
+  }
+  return {
+    sections: MY_BOARD_ORDER.map((reason) => {
+      const xs = [...by[reason]].sort((a, b) => {
+        const sa = a.json.started === true ? 1 : 0; const sb = b.json.started === true ? 1 : 0;
+        if (sa !== sb) return sa - sb;
+        if (b.v.card.newestRecordAt !== a.v.card.newestRecordAt) return b.v.card.newestRecordAt - a.v.card.newestRecordAt;
+        return a.v.card.cardId < b.v.card.cardId ? -1 : 1;
+      });
+      const shown = xs.filter((x) => shownIds.has(x.v.card.cardId));
+      return { reason, words: MY_BOARD_WORDS[reason], cardIds: shown.map((x) => x.v.card.cardId), notStarted: shown.filter((x) => x.json.started !== true).length, ...(xs.length > shown.length ? { more: xs.length - shown.length } : {}) };
+    }),
   };
 }

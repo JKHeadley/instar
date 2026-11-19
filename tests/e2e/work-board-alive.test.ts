@@ -137,6 +137,7 @@ describe('Work Board E2E (feature is alive)', () => {
       expect(board.body.lanes[0].lane).toBe('waiting-on-you');
       expect(board.body.lanes[0].cards.map((c: { id: string }) => c.id)).toEqual([id]);
       expect(board.body.waitingOnYou).toBe(1);
+      expect(board.body.myBoard.sections[0]).toMatchObject({ reason: 'approval', words: 'Waiting for your approval', cardIds: [id], notStarted: 1 });
       await rig.runtime.controller.tick();
       expect(rig.briefs).toHaveLength(0);
 

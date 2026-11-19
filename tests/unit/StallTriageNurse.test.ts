@@ -161,7 +161,7 @@ describe('StallTriageNurse', () => {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'balanced' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-6-sol');
+        .toBe('gpt-6.2-sol');
     });
     it('codex-cli: legacy Claude tier name maps to Codex equivalent', () => {
       const nurse = new StallTriageNurse(deps, {

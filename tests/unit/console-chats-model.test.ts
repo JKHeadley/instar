@@ -541,4 +541,39 @@ describe('messagePieces: inline markdown in a message (console-chat-markdown)', 
     expect(m.safeMessageUrl('http://a.b')).toBe('http://a.b');
     expect(m.safeMessageUrl('JavaScript:alert(1)')).toBeNull();
   });
+
+  it('grouped sections (iPhone parity, Justin 2026-11-18): Projects apart from Groups, no empty groups, project names without "Project:"', () => {
+    // The prefix rule: only "Project" + a separator; "Projector…" stays whole; nothing left → unchanged.
+    expect(m.stripProjectPrefix('Project: Instar topic management')).toBe('Instar topic management');
+    expect(m.stripProjectPrefix('Project \u2013 Windows app')).toBe('Windows app');
+    expect(m.stripProjectPrefix('Project - Mac app')).toBe('Mac app');
+    expect(m.stripProjectPrefix('project:lowercase')).toBe('lowercase');
+    expect(m.stripProjectPrefix('Project \u2014 Em dash')).toBe('Em dash');
+    expect(m.stripProjectPrefix('Projector setup')).toBe('Projector setup');
+    expect(m.stripProjectPrefix('Projects: plural')).toBe('Projects: plural');
+    expect(m.stripProjectPrefix('Project:')).toBe('Project:');
+    expect(m.stripProjectPrefix('My Project: x')).toBe('My Project: x');
+    // Display title: the tracked project's own title first; else the group title stripped; plain groups untouched.
+    expect(m.groupDisplayTitle({ title: 'Project: Old name' }, { key: 'telegram:9', title: 'Real project' })).toBe('Real project');
+    expect(m.groupDisplayTitle({ title: 'Project: Old name' }, { key: 'telegram:9', title: 'Project: Real' })).toBe('Real');
+    expect(m.groupDisplayTitle({ title: 'Project: Old name' }, { key: 'telegram:9', title: '' })).toBe('Old name');
+    expect(m.groupDisplayTitle({ title: 'Project \u2013 Old' }, { key: 'telegram:9', title: 'telegram:9' })).toBe('Old');
+    expect(m.groupDisplayTitle({ title: 'Projector setup' }, { key: 'k', title: '' })).toBe('Projector setup');
+    expect(m.groupDisplayTitle({ title: 'Project: Plain group' }, null)).toBe('Project: Plain group');
+    // Sections: order kept within each, empty groups dropped.
+    const projects = new Map([['e1', { key: 'telegram:9', title: 'Tracked', status: { label: 'Moving', tone: 'ok' }, href: '#x' }]]);
+    const groups = [
+      { key: 'e0', title: 'Plain A', rows: [{}], count: 1, unread: 0 },
+      { key: 'e1', title: 'Project: Tracked group', rows: [{}, {}], count: 2, unread: 0 },
+      { key: 'e2', title: 'Untitled group', rows: [], count: 0, unread: 0 },
+      { key: 'e3', title: 'Plain B', rows: [{}], count: 1, unread: 0 },
+    ];
+    const s = m.groupSections(groups, projects);
+    expect(s.projects.map((g: any) => [g.key, g.displayTitle, g.project.status.label])).toEqual([['e1', 'Tracked', 'Moving']]);
+    expect(s.groups.map((g: any) => [g.key, g.displayTitle, g.project])).toEqual([['e0', 'Plain A', null], ['e3', 'Plain B', null]]);
+    // An empty project group is hidden too; no projects map → every group is plain.
+    expect(m.groupSections([{ ...groups[1], rows: [], count: 0 }], projects)).toEqual({ projects: [], groups: [] });
+    expect(m.groupSections(groups, null).projects).toEqual([]);
+    expect(m.groupSections(null, projects)).toEqual({ projects: [], groups: [] });
+  });
 });

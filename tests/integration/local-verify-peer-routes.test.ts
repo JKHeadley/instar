@@ -244,6 +244,44 @@ describe('peer verifier routes (integration, real HTTP)', () => {
     p.svc.shutdown();
   });
 
+  it('a peer-run request with the import-related fields is accepted over HTTP and reaches the run child; a malformed one is refused whole (spec local-verify-import-related-rerun.md)', async () => {
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'echo' };
+    const test = { test: 's flaky', at: '2026-10-20T09:00:00.000Z', line: 'Error: main boom', setHash: 'ab'.repeat(32), runLog: 'cd'.repeat(16) + '.log' };
+    const isolation = { allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: 'tests/unit/x.test.ts', tests: [test] }] };
+    const childIsolation = (file: string) => (JSON.parse(fs.readFileSync(file, 'utf-8')) as { isolation: unknown }).isolation;
+
+    // The peer's own switch is on: the coordinator's block reaches the run child as sent.
+    const on = peerService();
+    on.svc.setImportRelatedRerunEnabled(() => true);
+    const urlOn = await listen(appFor(ctx(on.stateDir, on.svc, false)));
+    expect((await request(urlOn).post('/local-verify/peer-run').set(headers).send({ ...runBody(), isolation })).status).toBe(202);
+    expect(on.children).toHaveLength(1);
+    expect(childIsolation(on.children[0])).toEqual(isolation);
+    on.svc.shutdown();
+
+    // The peer's own switch is off (the default): accepted, and the rule is passed off with an empty list.
+    const off = peerService();
+    const urlOff = await listen(appFor(ctx(off.stateDir, off.svc, false)));
+    expect((await request(urlOff).post('/local-verify/peer-run').set(headers).send({ ...runBody(), isolation })).status).toBe(202);
+    expect(childIsolation(off.children[0])).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    off.svc.shutdown();
+
+    // Malformed: an unknown key inside isolation, a list over its bound, a name over its bound. Each is a 400 and starts nothing.
+    const bad = peerService();
+    bad.svc.setImportRelatedRerunEnabled(() => true);
+    const urlBad = await listen(appFor(ctx(bad.stateDir, bad.svc, false)));
+    for (const broken of [
+      { ...isolation, surprise: true },
+      { ...isolation, flakyOnMain: Array.from({ length: 201 }, (_, i) => ({ file: `tests/unit/f${i}.test.ts`, tests: [test] })) },
+      { ...isolation, flakyOnMain: [{ file: 'tests/unit/x.test.ts', tests: [{ ...test, test: 'n'.repeat(301) }] }] },
+      { ...isolation, importRelatedRerun: 'yes' },
+    ]) {
+      expect((await request(urlBad).post('/local-verify/peer-run').set(headers).send({ ...runBody(), isolation: broken })).status).toBe(400);
+    }
+    expect(bad.children).toHaveLength(0);
+    bad.svc.shutdown();
+  });
+
   it('the lease holder refuses peer-run; a malformed body is a 400; a bad attempt id is a 400', async () => {
     const p = peerService();
     const holder = appFor(ctx(p.stateDir, p.svc, true));

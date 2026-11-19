@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-19T02:18:01.719Z",
+  "slug": "local-verify-import-related-rerun",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1277,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/local-verify-import-related-review.mjs",
+      "src/data/awareness/local-verify-import-related-rerun.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/policy.ts",
+      "src/localVerify/record.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1150,
+    "deletedLines": 127
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The controller local-verify-flake-rerun is registered with boundK 9 and perTargetBoundK 3, both derived from LOCAL_VERIFY_LIMITS (3 files per verify x 3 runs per import-related file). Edge: a lane that ends with 1 to 3 failed files re-runs them. Steady-state bound: the cap counts files and is spent once per verify, so at most 3 files are re-run and each at most 3 times. Settling brake: a file's first solo run that does not pass ends its sequence, and after a final failure in a lane a further import-related file gets one detail-only run. The budget lives inside one verify, so the count does not grow with the horizon."
+    }
+  },
+  "verdict": "blocked"
+}
