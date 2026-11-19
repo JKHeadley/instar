@@ -241,6 +241,34 @@
     },
     {
       "door": "openai-list",
+      "modelId": "gpt-6.2-astra",
+      "inPerMtok": 8,
+      "outPerMtok": 40,
+      "cachedInPerMtok": 0.4,
+      "effectiveAt": "2026-11-17T00:00:00Z",
+      "recordedAt": "2026-11-17T00:00:00Z",
+      "source": "openrouter-list-equivalent",
+      "sourceUrl": "https://openrouter.ai/api/v1/models",
+      "retrievedAt": "2026-11-17T22:35:00Z",
+      "corrects": null,
+      "_note": "list price read from the OpenRouter models API (ids openai/gpt-6.2-sol and openai/gpt-6.2-astra) on 2026-11-17, the release day; the same API gives exactly the manifest's existing openai-list prices for gpt-6-astra, gpt-6.1-sol, gpt-6-sol and gpt-6-luna. Applied from 2026-11-17. A price change found later is a new point, never an edit. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-6.2-sol",
+      "inPerMtok": 2,
+      "outPerMtok": 10,
+      "cachedInPerMtok": 0.1,
+      "effectiveAt": "2026-11-17T00:00:00Z",
+      "recordedAt": "2026-11-17T00:00:00Z",
+      "source": "openrouter-list-equivalent",
+      "sourceUrl": "https://openrouter.ai/api/v1/models",
+      "retrievedAt": "2026-11-17T22:35:00Z",
+      "corrects": null,
+      "_note": "list price read from the OpenRouter models API (ids openai/gpt-6.2-sol and openai/gpt-6.2-astra) on 2026-11-17, the release day; the same API gives exactly the manifest's existing openai-list prices for gpt-6-astra, gpt-6.1-sol, gpt-6-sol and gpt-6-luna. Applied from 2026-11-17. A price change found later is a new point, never an edit. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
       "modelId": "gpt-6.1-sol",
       "inPerMtok": 2,
       "outPerMtok": 10,
@@ -365,6 +393,16 @@
       "prefix": "gpt-6-astra",
       "door": "openai-list",
       "modelId": "gpt-6-astra"
+    },
+    {
+      "prefix": "gpt-6.2-astra",
+      "door": "openai-list",
+      "modelId": "gpt-6.2-astra"
+    },
+    {
+      "prefix": "gpt-6.2-sol",
+      "door": "openai-list",
+      "modelId": "gpt-6.2-sol"
     },
     {
       "prefix": "gpt-6.1-sol",

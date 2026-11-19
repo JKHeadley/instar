@@ -50,6 +50,13 @@ export function stripModel(res, { expanded = false } = {}) {
   };
 }
 
+/** A row's card link, only when it points at a Work page card (never another place); the label is the server's fixed words. */
+export function cardLinkOf(row) {
+  const c = row && row.card;
+  if (!c || typeof c.href !== 'string' || !/^#\/work\/board\?card=[A-Za-z0-9_%.-]{1,200}$/.test(c.href)) return null;
+  return { href: c.href, label: typeof c.label === 'string' && c.label ? c.label : 'Has a card on the work board' };
+}
+
 // One strip at a time: a new mount (another door) stops the previous refresh.
 let timer = null;
 let last = null; // the last answer, so a door change paints at once
@@ -71,7 +78,16 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
-      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body));
+      // A row that is its card (needs-one-list) keeps the source's own page one tap away; a row only linked to a card
+      // (work-board-cards-appear §3) gets the card link. Both are siblings, never nested; the card link is skipped
+      // when the row itself already opens that card.
+      const also = r.alsoOpens && typeof r.alsoOpens.href === 'string' && hrefFor ? hrefFor({ kind: 'href', href: r.alsoOpens.href }) : null;
+      const card = cardLinkOf(r);
+      const cardHref = card && hrefFor ? hrefFor({ kind: 'href', href: card.href }) : card?.href;
+      const showCard = card && cardHref !== href;
+      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
+        ...(showCard ? [el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label })] : []),
+        ...(also ? [el('a', { class: 'needs-also', href: also, text: r.alsoOpens.label || 'Open the project conversation' })] : []));
     }));
     host.replaceChildren(
       el('div', { class: 'needs-head' },

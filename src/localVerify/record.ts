@@ -65,10 +65,12 @@ export interface LocalVerifyRecord {
    */
   kind?: 'main';
   /**
-   * Files that failed in their lane and then passed when re-run alone, once, in the same
-   * verify (the evidence-per-run form of the spec's "known-flaky" idea, Throughput budget).
-   * Present only when at least one file was re-run and passed; the lane then counted as
-   * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
+   * Files that failed in their lane and then passed when re-run alone in the same verify:
+   * once, or three times in a row for an import-related file whose failed tests `main` has
+   * shown flaky (the evidence-per-run form of the spec's "known-flaky" idea, Throughput
+   * budget; spec local-verify-import-related-rerun.md). Present only when at least one file
+   * was re-run and passed; the lane then counted as passing. Each one is a tracked item to
+   * fix (`local-verify:flaky:<file>`).
    */
   flakyRetried?: FlakyRetry[];
   /** Complete failed test-file set when a full PR run failed in 1–3 inventoried files. */
@@ -103,11 +105,83 @@ export function isValidAttemptRef(a: unknown): a is PeerAttemptRef {
     && Object.keys(x).every((k) => k === 'id' || k === 'coordinatorMachineId' || k === 'leaseEpoch');
 }
 
+/** One cleared test of an import-related clear: when `main` showed it flaky, and both failure lines. */
+export interface FlakyEvidence {
+  test: string;
+  /** When a `main` verify saw this test fail in its lane and pass alone by name. */
+  mainAt: string;
+  /** The distinguishing error line on `main` and in this PR run, each bounded with its disclosure. */
+  mainLine: string;
+  prLine: string;
+  /** Set when the stored line was shortened: open the full output. */
+  mainLineCut?: true;
+  prLineCut?: true;
+  /** The run log of that `main` verify (a file name under `state/local-verify/runs/` on the machine that ran it). */
+  mainRunLog: string;
+}
+
+/**
+ * One file that failed in its lane and then passed alone. Spec
+ * local-verify-import-related-rerun.md "Recording": the SHARED name fields may ride on any
+ * entry (PR or `main`, plain or import-related); the CLEARANCE fields only with
+ * `importRelated: true` (three consecutive by-name solo passes on named main evidence).
+ */
 export interface FlakyRetry {
   file: string;
   lane: string;
   /** The first run's failure (first failing test + message), bounded. */
   firstMessage: string;
+  /** Shared: full names of the tests that failed in the lane run, at most 20, each whole (a longer name is left out). */
+  failedTests?: string[];
+  /** Shared: the true number of failed tests, so a shorter list is disclosed. */
+  failedTestsTotal?: number;
+  /** Shared: the subset of `failedTests` reported passed by name in the solo run (in all three for a clear). */
+  soloPassedByName?: string[];
+  /** Shared: sha256 of the file's full test names in report (definition) order in the lane run. */
+  testSetHash?: string;
+  /** Clearance: the file imports a file the PR changed and was cleared on main evidence. */
+  importRelated?: true;
+  /** Clearance: always 3. */
+  soloPasses?: 3;
+  /** Clearance: the three solo runs' wall seconds. */
+  soloSeconds?: number[];
+  /** Clearance: one entry per cleared test, in `failedTests` order. */
+  evidence?: FlakyEvidence[];
+}
+
+/** The record-side bounds of the name fields (mirrors policy.ts IMPORT_RELATED_RERUN; record.ts imports no policy). */
+const NAME_FIELDS = Object.freeze({ names: 20, nameChars: 300, lineChars: 400, runLogChars: 200 });
+
+/** Shared and clearance field rules of one `flakyRetried` entry. Pure. */
+function flakyNameFieldsOk(r: Record<string, unknown>): boolean {
+  const isName = (v: unknown): v is string => typeof v === 'string' && v.length >= 1 && v.length <= NAME_FIELDS.nameChars;
+  const names = r.failedTests;
+  if (names !== undefined && !(Array.isArray(names) && names.length <= NAME_FIELDS.names && names.every(isName))) return false;
+  const list = (names as string[] | undefined) ?? [];
+  if (r.failedTestsTotal !== undefined && !(typeof r.failedTestsTotal === 'number' && Number.isSafeInteger(r.failedTestsTotal) && r.failedTestsTotal >= list.length)) return false;
+  if (r.soloPassedByName !== undefined) {
+    const p = r.soloPassedByName;
+    if (!Array.isArray(p) || p.length > list.length || !p.every((n) => typeof n === 'string' && list.includes(n))) return false;
+  }
+  if (r.testSetHash !== undefined && !(typeof r.testSetHash === 'string' && /^[0-9a-f]{64}$/.test(r.testSetHash))) return false;
+  const clearance = r.soloPasses !== undefined || r.soloSeconds !== undefined || r.evidence !== undefined;
+  if (r.importRelated === undefined) return !clearance;
+  if (r.importRelated !== true) return false;
+  if (r.soloPasses !== 3) return false;
+  if (!Array.isArray(r.soloSeconds) || r.soloSeconds.length !== 3 || !r.soloSeconds.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0)) return false;
+  if (names === undefined || list.length < 1 || r.failedTestsTotal !== list.length) return false;
+  const passed = r.soloPassedByName;
+  if (!Array.isArray(passed) || passed.length !== list.length || !passed.every((n, i) => n === list[i])) return false;
+  if (typeof r.testSetHash !== 'string') return false;
+  const ev = r.evidence;
+  if (!Array.isArray(ev) || ev.length !== list.length) return false;
+  const line = (v: unknown) => typeof v === 'string' && v.length <= NAME_FIELDS.lineChars;
+  return ev.every((e, i) => {
+    const x = e as Record<string, unknown> | null;
+    return !!x && typeof x === 'object' && x.test === list[i] && isIso(x.mainAt) && line(x.mainLine) && line(x.prLine)
+      && (x.mainLineCut === undefined || x.mainLineCut === true) && (x.prLineCut === undefined || x.prLineCut === true)
+      && typeof x.mainRunLog === 'string' && x.mainRunLog.length <= NAME_FIELDS.runLogChars;
+  });
 }
 
 /** At most this many flaky entries on a record (the re-run cap is smaller). */
@@ -121,6 +195,11 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 // git check-ref-format essentials: no spaces, control chars, ~^:?*[\, no "..", no leading "-" or "/".
 const REF = /^(?!-)(?!\/)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[^\s~^:?*[\\\x00-\x1f\x7f]+(?<!\/)(?<!\.lock)(?<!\.)$/;
 const STATUS_LIMIT = 140;
+
+/** A branch name a record may carry as `baseRefName` (the same check `validateRecord` applies). */
+export function isValidBaseRef(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 255 && REF.test(v);
+}
 
 export function isValidPr(pr: unknown): pr is number {
   return typeof pr === 'number' && Number.isSafeInteger(pr) && pr > 0;
@@ -170,7 +249,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     const ok = Array.isArray(x.flakyRetried) && x.flakyRetried.length <= FLAKY_RETRIED_MAX && x.flakyRetried.every((f) => {
       const r = f as Record<string, unknown>;
       return !!r && typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 300 && typeof r.lane === 'string'
-        && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
+        && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000 && flakyNameFieldsOk(r);
     });
     if (!ok) errors.push('flakyRetried');
   }

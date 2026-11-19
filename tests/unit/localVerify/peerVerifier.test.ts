@@ -107,6 +107,85 @@ describe('importRefusal', () => {
   });
 });
 
+describe('parsePeerRunRequest — import-related re-run fields', () => {
+  const HASH = 'ab'.repeat(32);
+  const t = (over: Record<string, unknown> = {}) => ({ test: 's one', at: '2026-11-16T10:00:00.000Z', line: 'Error: x', setHash: HASH, runLog: 'a'.repeat(32) + '.log', ...over });
+  const iso = (over: Record<string, unknown> = {}) => ({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: 'tests/unit/a.test.ts', tests: [t()] }], ...over });
+  const parse = (isolation: unknown) => parsePeerRunRequest({ ...runReq(), isolation });
+  it('accepts the new fields, with the optional cut markers', () => {
+    expect(parse(iso())).toBeTruthy();
+    expect(parse(iso({ importRelatedRerun: false, flakyOnMain: [] }))).toBeTruthy();
+    expect(parse(iso({ flakyOnMain: [{ file: 'tests/unit/a.test.ts', tests: [t({ lineCut: true })], namesCut: true }] }))).toBeTruthy();
+    expect(parse(iso({ flakyOnMain: [{ file: 'tests/unit/a.test.ts', tests: [], namesCut: true }] }))).toBeTruthy();
+  });
+  it('refuses each malformed shape and each bound, whole', () => {
+    const files = (n: number) => Array.from({ length: n }, (_, i) => ({ file: `tests/unit/f${i}.test.ts`, tests: [t()] }));
+    const bad: unknown[] = [
+      iso({ importRelatedRerun: 'yes' }),
+      iso({ flakyOnMain: 'x' }),
+      iso({ flakyOnMain: undefined }), // the switch without its list
+      iso({ flakyOnMain: files(201) }),
+      iso({ flakyOnMain: [{ file: '', tests: [] }] }),
+      iso({ flakyOnMain: [{ file: 'f'.repeat(301), tests: [] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: Array.from({ length: 41 }, (_, i) => t({ test: `t${i}` })) }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ test: '' })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ test: 'n'.repeat(301) })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ at: 'yesterday' })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ line: 'x'.repeat(401) })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ setHash: 'nope' })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ runLog: '../../etc/passwd' })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ lineCut: false })] }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t()], namesCut: false }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t()], extra: 1 }] }),
+      iso({ flakyOnMain: [{ file: 'a', tests: [t({ extra: 1 })] }] }),
+      iso({ flakyOnMain: [null] }),
+    ];
+    for (const b of bad) expect(parse(b), JSON.stringify(b).slice(0, 100)).toBeNull();
+    expect(parse(iso({ flakyOnMain: files(200) }))).toBeTruthy();
+  });
+  it('strict keys inside isolation only when importRelatedRerun is present; without it the block parses as today', () => {
+    expect(parse(iso({ surprise: 1 }))).toBeNull();
+    expect(parse({ allowed: true, notCleanOnGreenMain: [], surprise: 1 })).toBeTruthy();
+    expect(parse({ allowed: true, notCleanOnGreenMain: [], flakyOnMain: [] })).toBeTruthy(); // not read without the switch field (as today: unknown keys pass)
+  });
+  it('isolation stays refused on both main kinds', () => {
+    for (const kind of ['main', 'main-arbitration'] as const) {
+      const req = { ...runReq({ pr: 0, baseSha: sha('a'), kind }) };
+      expect(parsePeerRunRequest(req)).toBeTruthy();
+      expect(parsePeerRunRequest({ ...req, isolation: iso() })).toBeNull();
+      expect(parsePeerRunRequest({ ...req, isolation: { allowed: true, notCleanOnGreenMain: [] } })).toBeNull();
+    }
+  });
+});
+
+describe('importRefusal — a clear the coordinator did not offer', () => {
+  const ctx = { repo: REPO, verifierVersion: '1.0.0', policyHash: POLICY, holdsLease: true, leaseEpoch: 7, coordinatorMachineId: 'coord' };
+  const HASH = 'ab'.repeat(32);
+  const ev = (test: string) => ({ test, mainAt: '2026-10-20T10:00:00.000Z', mainLine: 'Error: x', prLine: 'Error: x', mainRunLog: 'a'.repeat(32) + '.log' });
+  const cleared = (file: string, tests: string[]) => record({
+    attempt: { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 },
+    flakyRetried: [{ file, lane: 'unit', firstMessage: 'boom', importRelated: true, failedTests: tests, failedTestsTotal: tests.length, soloPassedByName: tests, testSetHash: HASH, soloPasses: 3, soloSeconds: [1, 1, 1], evidence: tests.map(ev) } as never],
+  });
+  const offered = [{ file: 'tests/unit/a.test.ts', tests: ['s one', 's two'] }];
+  it('accepts an offered clear', () => {
+    expect(importRefusal(cleared('tests/unit/a.test.ts', ['s one']), marker({ offeredFlakyOnMain: offered } as never), ctx)).toBeNull();
+    expect(importRefusal(cleared('tests/unit/a.test.ts', ['s one', 's two']), marker({ offeredFlakyOnMain: offered } as never), ctx)).toBeNull();
+  });
+  it('refuses an unoffered file, an unoffered test name, and any clear when the marker has no valid list', () => {
+    expect(importRefusal(cleared('tests/unit/other.test.ts', ['s one']), marker({ offeredFlakyOnMain: offered } as never), ctx)).toBe('import-related-not-offered');
+    expect(importRefusal(cleared('tests/unit/a.test.ts', ['s one', 's three']), marker({ offeredFlakyOnMain: offered } as never), ctx)).toBe('import-related-not-offered');
+    expect(importRefusal(cleared('tests/unit/a.test.ts', ['s one']), marker(), ctx)).toBe('import-related-not-offered');
+    for (const broken of ['x', [{ file: 1, tests: [] }], [{ file: 'tests/unit/a.test.ts', tests: 'all' }], { file: 'tests/unit/a.test.ts' }]) {
+      expect(importRefusal(cleared('tests/unit/a.test.ts', ['s one']), marker({ offeredFlakyOnMain: broken } as never), ctx)).toBe('import-related-not-offered');
+    }
+  });
+  it('a record without an import-related clear is imported whatever the marker holds (plain flaky entries are not bound to the list)', () => {
+    const plain = record({ attempt: { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 }, flakyRetried: [{ file: 'tests/unit/z.test.ts', lane: 'unit', firstMessage: 'boom', failedTests: ['q'], failedTestsTotal: 1, soloPassedByName: ['q'], testSetHash: HASH } as never] });
+    expect(importRefusal(plain, marker(), ctx)).toBeNull();
+    expect(importRefusal(plain, marker({ offeredFlakyOnMain: 'x' } as never), ctx)).toBeNull();
+  });
+});
+
 describe('peer breaker and peer list', () => {
   it('opens after the configured consecutive failures and closes after its window', () => {
     const h: PeerHealth = { consecutiveFailures: 0, openUntil: null, status: null, statusAt: 0 };
@@ -129,13 +208,13 @@ describe('peer breaker and peer list', () => {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; inputPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }
 
-function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; spawnThrows?: boolean } = {}) {
+function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; spawnThrows?: boolean; watermark?: Record<string, unknown> } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
     fs.mkdirSync(path.join(stateDir, 'state', 'local-verify'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
-      v: 1, machineId: opts.machineId ?? 'coord', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z',
+      v: 1, machineId: opts.machineId ?? 'coord', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z', ...(opts.watermark ?? {}),
     }));
   }
   const views: Record<number, PrView> = opts.views ?? { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) };
@@ -256,8 +335,8 @@ function seedLocalAnchor(stateDir: string, epoch = 7): void {
     notLocallyVerifiedAt: null, locallyVerified: ['f'.repeat(40)], peerMainGreens: [], quarantine: {}, arbitration: null, durations: Array.from({ length: 10 }, () => 10 * 60_000) }));
 }
 
-function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean; noAnchor?: boolean } = {}) {
-  const h = harness();
+function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean; noAnchor?: boolean; watermark?: Record<string, unknown> } = {}) {
+  const h = harness({ watermark: opts.watermark });
   if (!opts.noAnchor) seedLocalAnchor(h.stateDir, opts.epoch ?? 7);
   const peer = fakePeer();
   let epoch = opts.epoch ?? 7;
@@ -978,6 +1057,103 @@ describe('coordinator — heartbeat for a planned restart', () => {
   });
 });
 
+describe('import-related re-run across two machines (spec local-verify-import-related-rerun.md, Peer safety)', () => {
+  const X = 'tests/unit/x.test.ts';
+  const HASH = 'ab'.repeat(32);
+  const NOW = '2026-10-21T12:00:00.000Z';
+  const seedEvidence = (stateDir: string) => {
+    const file = path.join(stateDir, 'state', 'local-verify', 'flaky-history.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ v: 1, greenMain: { headSha: sha('9'), finishedAt: NOW, notClean: [], origin: 'local' },
+      files: { [X]: { seen: [NOW], escalatedAt: null, mainSeen: [
+        { test: 's flaky', at: NOW, line: 'Error: main boom', setHash: HASH, runLog: 'cd'.repeat(16) + '.log' },
+        { test: 's other', at: NOW, line: 'Error: other', setHash: HASH, runLog: 'cd'.repeat(16) + '.log' },
+      ] } } }));
+  };
+  async function dispatchedWith(on: boolean) {
+    const c = coordinator();
+    seedEvidence(c.stateDir);
+    c.svc.setImportRelatedRerunEnabled(() => on);
+    await c.svc.request(1);
+    await c.svc.request(2);
+    await c.runTimers();
+    return { c, req: c.peer.runs()[0] };
+  }
+  const ev = (test: string) => ({ test, mainAt: NOW, mainLine: 'Error: main boom', prLine: 'Error: pr boom', mainRunLog: 'cd'.repeat(16) + '.log' });
+  const clearOf = (req: PeerRunRequest, file: string, tests: string[]) => record({
+    pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, machineId: 'peer1', startedAt: new Date(Date.parse(NOW) + 60_000).toISOString(),
+    attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 },
+    flakyRetried: [{ file, lane: 'unit', firstMessage: 'boom', importRelated: true, failedTests: tests, failedTestsTotal: tests.length, soloPassedByName: tests, testSetHash: HASH, soloPasses: 3, soloSeconds: [1, 1, 1], evidence: tests.map(ev) } as never],
+  });
+  const audit = (dir: string) => fs.readFileSync(path.join(dir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  it('the dispatch carries the switch and the list, and the marker holds the same files and names before it is persisted', async () => {
+    const { c, req } = await dispatchedWith(true);
+    expect(parsePeerRunRequest(JSON.parse(JSON.stringify(req)))).toBeTruthy(); // what is sent is what the peer parser accepts
+    expect(req.isolation).toMatchObject({ allowed: true, importRelatedRerun: true });
+    expect(req.isolation!.flakyOnMain).toEqual([{ file: X, tests: [expect.objectContaining({ test: 's flaky', setHash: HASH }), expect.objectContaining({ test: 's other' })] }]);
+    const atSend = c.peer.queueAtSend() as { entries: Array<{ pr: number; remote?: { state: string; offeredFlakyOnMain?: unknown; dispatched: Record<string, unknown> } }> };
+    const remote = atSend.entries.find((e) => e.pr === 2)!.remote!;
+    expect(remote.state).toBe('sending');
+    expect(remote.offeredFlakyOnMain).toEqual([{ file: X, tests: ['s flaky', 's other'] }]); // names only, no failure lines
+    expect(Object.keys(remote.dispatched)).not.toContain('offeredFlakyOnMain'); // beside `dispatched`, never inside it
+  });
+
+  it('switch off on the coordinator: the block says off, the list is empty and the marker keeps none', async () => {
+    const { c, req } = await dispatchedWith(false);
+    expect(req.isolation).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    const atSend = c.peer.queueAtSend() as { entries: Array<{ pr: number; remote?: Record<string, unknown> }> };
+    expect(atSend.entries.find((e) => e.pr === 2)!.remote!.offeredFlakyOnMain).toBeUndefined();
+  });
+
+  it('an offered clear is imported; a clear of an unoffered test or file is rejected, the attempt abandoned and the PR verified again', async () => {
+    const good = await dispatchedWith(true);
+    good.c.peer.setResult(() => ({ state: 'done', record: clearOf(good.req, X, ['s flaky']) }));
+    await good.c.svc.tick();
+    expect(good.c.svc.getRecord(2, sha('c'), 'main')?.flakyRetried?.[0]).toMatchObject({ importRelated: true, failedTests: ['s flaky'] });
+
+    for (const [file, tests] of [[X, ['s flaky', 's invented']], ['tests/unit/elsewhere.test.ts', ['s flaky']]] as Array<[string, string[]]>) {
+      const bad = await dispatchedWith(true);
+      bad.c.peer.setResult(() => ({ state: 'done', record: clearOf(bad.req, file, tests) }));
+      await bad.c.svc.tick();
+      expect(bad.c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+      expect(audit(bad.c.stateDir).find((l) => l.event === 'peer-record-rejected')).toMatchObject({ pr: 2, reason: 'import-related-not-offered' });
+      const e = bad.c.svc.snapshot().queue.find((x) => x.pr === 2)!;
+      expect(e.remote).toBeUndefined(); // back in the queue: it is verified again
+    }
+  });
+
+  it('a coordinator with its switch off imports no import-related clear at all (nothing was offered)', async () => {
+    const { c, req } = await dispatchedWith(false);
+    c.peer.setResult(() => ({ state: 'done', record: clearOf(req, X, ['s flaky']) }));
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+    expect(audit(c.stateDir).find((l) => l.event === 'peer-record-rejected')).toMatchObject({ reason: 'import-related-not-offered' });
+  });
+
+  describe('peer side', () => {
+    const notHolder = { holdsLease: false, holderMachineId: 'coord' };
+    const sent = { allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: X, tests: [{ test: 's flaky', at: NOW, line: 'Error: main boom', setHash: HASH, runLog: 'cd'.repeat(16) + '.log' }] }] };
+    const childIso = async (peerSwitch: boolean | null, isolation: unknown) => {
+      const h = harness({ peerOnly: true, machineId: 'peer1' });
+      h.svc.setPeerWiring({ peerRoleEnabled: () => true });
+      if (peerSwitch !== null) h.svc.setImportRelatedRerunEnabled(() => peerSwitch);
+      expect(await h.svc.peerRun(parsePeerRunRequest({ ...runReq({ baseSha: sha('7') }), isolation })!, notHolder)).toEqual({ ok: true, attemptId: ATT });
+      return (JSON.parse(fs.readFileSync(h.spawned[0].inputPath, 'utf-8')) as { isolation: unknown }).isolation;
+    };
+    it('applies the rule only when the received block enables it AND its own switch is on', async () => {
+      expect(await childIso(true, sent)).toEqual(sent);
+      // Own switch off, or never wired: the rule is passed off with an empty list.
+      expect(await childIso(false, sent)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+      expect(await childIso(null, sent)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+      // Own switch on but the coordinator's off: off. The peer never computes a list of its own.
+      expect(await childIso(true, { ...sent, importRelatedRerun: false })).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+      // A block in the older shape is passed through as it came.
+      expect(await childIso(true, { allowed: true, notCleanOnGreenMain: ['tests/e2e/a.test.ts'] })).toEqual({ allowed: true, notCleanOnGreenMain: ['tests/e2e/a.test.ts'] });
+    });
+  });
+});
+
 describe('peer — accepting and running', () => {
   function peerSide() {
     const h = harness({ peerOnly: true, machineId: 'peer1' });
@@ -1314,8 +1490,13 @@ describe('a main verify on whichever host is free', () => {
     attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 }, ...over,
   });
   /** main queued while another suite holds the coordinator's slot, then handed to the idle peer. */
-  async function mainOnPeer() {
-    const c = coordinator({ mainOnPeers: true });
+  /**
+   * A stored age for the unverified head: first seen when these tests start. Without one, a boot
+   * that finds an unverified head reads its age as unknown (due at once), which has its own tests.
+   */
+  const KNOWN_AGE = { oldestUnverifiedAt: Date.parse('2026-10-21T12:00:00.000Z') };
+  async function mainOnPeer(watermark?: Record<string, unknown>) {
+    const c = coordinator({ mainOnPeers: true, watermark });
     c.setForeignHolders([9001]);
     c.svc.noteMainHead(HEAD);
     await c.runTimers();
@@ -1433,10 +1614,16 @@ describe('a main verify on whichever host is free', () => {
       expect(Object.keys(trustOf(c.stateDir).quarantine)).toEqual(['peer1']);
       const arb = c.peer.runs().find((r) => r.kind === 'main-arbitration');
       expect(arb).toMatchObject({ pr: 0, headSha: HEAD, baseSha: HEAD });
+      // The arbitration answer names flaky tests: it settles the disagreement and reaches no flaky history (never main evidence).
       c.peer.setResult((id) => (id === arb!.attemptId ? { state: 'done', record: record({ pr: 0, kind: 'main', headSha: HEAD, baseSha: HEAD, machineId: 'peer2',
-        attempt: { id: arb!.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 } }) } : { state: 'running' }));
+        attempt: { id: arb!.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 },
+        flakyRetried: [{ file: 'tests/unit/arb.test.ts', lane: 'unit', firstMessage: 'boom', failedTests: ['s flaky'], failedTestsTotal: 1, soloPassedByName: ['s flaky'], testSetHash: 'ab'.repeat(32) }] as never }) } : { state: 'running' }));
       await c.svc.tick();
       await c.flush();
+      const histFile = path.join(c.stateDir, 'state', 'local-verify', 'flaky-history.json');
+      const histFiles = fs.existsSync(histFile) ? (JSON.parse(fs.readFileSync(histFile, 'utf-8')) as { files: Record<string, unknown> }).files : {};
+      expect(histFiles['tests/unit/arb.test.ts']).toBeUndefined();
+      expect(Object.keys(c.svc.flakyFiles())).not.toContain('tests/unit/arb.test.ts');
       expect(trustOf(c.stateDir).quarantine).toEqual({});
       expect(c.signals).not.toContain('local-verify:peer-main-disagreement:peer1');
       expect(c.svc.mainHealth().state).toBe('main-red'); // the coordinator's own red stands
@@ -1500,14 +1687,14 @@ describe('a main verify on whichever host is free', () => {
     });
 
     it('fair share holds on the peer too: a waiting PR goes first until main is due, then main goes', async () => {
-      const early = coordinator({ mainOnPeers: true });
+      const early = coordinator({ mainOnPeers: true, watermark: KNOWN_AGE });
       early.setForeignHolders([9001]);
       early.svc.noteMainHead(HEAD);
       await early.svc.request(1);
       await early.runTimers();
       expect(early.peer.runs().map((r) => r.pr)).toEqual([1]); // main not due: the PR takes the free peer
 
-      const due = coordinator({ mainOnPeers: true });
+      const due = coordinator({ mainOnPeers: true, watermark: KNOWN_AGE });
       due.setForeignHolders([9001]);
       due.svc.noteMainHead(HEAD);
       await due.svc.request(1);
@@ -1534,7 +1721,24 @@ describe('a main verify on whichever host is free', () => {
       await c.svc.tick();
       await c.flush();
       expect(c.svc.mainHealth().lastGreenHead).toBe(HEAD);
-      expect(c.svc.isolationInput()).toEqual({ allowed: false, notCleanOnGreenMain: [] });
+      expect(c.svc.isolationInput()).toEqual({ allowed: false, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    });
+
+    it('a green main record from a peer that names flaky tests writes no main evidence (S2): nothing a peer returns can make a test eligible', async () => {
+      const { c, req } = await mainOnPeer();
+      c.svc.setImportRelatedRerunEnabled(() => true);
+      const named = [{ file: 'tests/unit/x.test.ts', lane: 'unit', firstMessage: 'boom', failedTests: ['s flaky'], failedTestsTotal: 1, soloPassedByName: ['s flaky'], testSetHash: 'ab'.repeat(32) }];
+      c.peer.setResult(() => ({ state: 'done', record: { ...mainRecord(req), flakyRetried: named as never } }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth().lastGreenHead).toBe(HEAD); // the record itself was imported
+      const file = path.join(c.stateDir, 'state', 'local-verify', 'flaky-history.json');
+      const hist = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) as { files: Record<string, { mainSeen?: unknown }> } : { files: {} };
+      expect(hist.files['tests/unit/x.test.ts']?.mainSeen).toBeUndefined();
+      // Even with a local green baseline in place, the offered list stays empty.
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ v: 1, files: hist.files, greenMain: { headSha: HEAD, finishedAt: '2026-10-21T12:00:00.000Z', notClean: [], origin: 'local' } }));
+      expect(c.svc.isolationInput()).toMatchObject({ allowed: true, importRelatedRerun: true, flakyOnMain: [] });
     });
 
     it('a green-main record written by older code (no origin) never enables isolation, even after later flaky writes (SEC-113 D2.1)', async () => {
@@ -1548,7 +1752,7 @@ describe('a main verify on whichever host is free', () => {
     });
 
     it('a green peer run covers merges by the coordinator\'s own clock and the first newer head, never the peer\'s clock', async () => {
-      const { c, req } = await mainOnPeer();
+      const { c, req } = await mainOnPeer(KNOWN_AGE);
       const obs = (c.svc as unknown as { mainObs: { oldestUnverifiedAt: number | null } }).mainObs;
       const dispatchedAt = Date.parse('2026-10-21T12:00:00.000Z');
       expect(obs.oldestUnverifiedAt).toBe(dispatchedAt);

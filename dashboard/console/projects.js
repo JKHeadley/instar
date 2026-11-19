@@ -7,14 +7,19 @@
 // SAFETY: every server value goes through textContent via el(); links are console hash routes only.
 
 import { el, askPin, operatorSession, forgetOperatorSession } from './ui.js';
-import { projectsView, appPath, appNavigation } from './projects-model.js';
+import { projectsView, appPath, appNavigation, checkAnswerWords } from './projects-model.js';
 import { requestId } from './conversation-write-continuity.js';
 
-const DONE_MARK = { pass: '✓', fail: '✗', unknown: '·' };
+const DONE_MARK = { pass: '✓', fail: '✗', unknown: '·', waiting: '○' };
 /** The console's own dot classes (console.css .dot.attn / .bad / .unknown; plain .dot is ok; quiet is a muted ok). */
 const DOT = { attn: 'dot attn', bad: 'dot bad', unknown: 'dot unknown', ok: 'dot', quiet: 'dot quiet' };
 /** Rows the person opened stay open across the page's refresh and after a tap re-reads the projects. */
 const openRows = new Set();
+/** The Finished fold stays as the person left it across a refresh. */
+let finishedOpen = false;
+/** Ask for an update's answer per project, kept for a minute so a refresh does not wipe what the server said. */
+const asked = new Map();
+const ASK_KEEP_MS = 60_000;
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -163,6 +168,8 @@ function projectRow(p, ctx) {
     el('span', { class: 'project-text' },
       el('span', { class: 'project-title', text: p.title }),
       el('span', { class: 'project-state', text: [p.stateWords, p.doneLine, p.cardsLine].filter(Boolean).join(' · ') }),
+      // The row says where it stands, folded: why it waits on you, why it stopped, or the latest report.
+      (p.waitingLine || p.stoppedLine || p.reportLine) ? el('span', { class: 'project-report', text: p.waitingLine || p.stoppedLine || p.reportLine }) : null,
       v.headline ? summaryEl(v.headline, 'project-app-line') : null,
       v.hint ? el('span', { class: 'project-app-hint', text: v.hint }) : null,
       v.buttons.length ? el('span', { class: 'project-app-buttons' }, v.buttons.map((a) => openLink(p.key, a)), more) : null));
@@ -171,15 +178,43 @@ function projectRow(p, ctx) {
     el('div', { class: 'project-body' },
       p.pausedLine ? el('p', { class: 'need-sub', text: p.pausedLine }) : null,
       p.whyLine ? el('p', { class: 'need-sub', text: p.whyLine }) : null,
+      // The folded line shows the first of: why it waits on you, why it stopped, the latest report (in full once open).
+      // The opened row adds the report whenever it is not that line, so nothing the server said is lost or said twice.
+      p.reportLine && p.reportLine !== (p.waitingLine || p.stoppedLine || p.reportLine) ? el('p', { class: 'card-line project-latest', text: `Latest report: ${p.reportLine}` }) : null,
       p.goal ? el('p', { class: 'project-goal', text: p.goal }) : null,
+      p.checksLine || p.checkNow ? checkNowRow(p) : null,
+      p.phoneLine || p.finishWhy ? el('p', { class: 'need-sub project-phone', text: [p.phoneLine, p.finishWhy ? `Finish: ${p.finishWhy}` : null].filter(Boolean).join(' ') }) : null,
       v.has ? appsDetail(p, ctx) : null,
       p.doneItems.length ? el('ul', { class: 'project-done', 'aria-label': 'Done when' },
-        p.doneItems.map((i) => el('li', { class: `done-${i.state}` }, el('span', { class: 'done-mark', 'aria-hidden': 'true', text: DONE_MARK[i.state] }), el('span', { text: ` ${i.text}` })))) : null,
+        p.doneItems.map((i) => el('li', { class: `done-${i.mark}` }, el('span', { class: 'done-mark', 'aria-hidden': 'true', text: DONE_MARK[i.mark] }), el('span', { text: ` ${i.text}` }),
+          i.words ? el('span', { class: 'need-sub', text: ` · ${i.words}` }) : null))) : null,
       p.cards.length ? el('ul', { class: 'project-cards', 'aria-label': 'Cards' }, p.cards.map(cardLine)) : el('p', { class: 'need-sub', text: 'No cards yet.' }),
       p.moreCards ? el('p', { class: 'need-sub', text: `${p.moreCards} more cards` }) : null,
       p.chatHref ? el('p', {}, el('a', { class: 'link-btn', href: p.chatHref, text: 'Open the project conversation' })) : null));
   details.addEventListener('toggle', () => { if (details.open) openRows.add(p.key); else openRows.delete(p.key); });
   return details;
+}
+
+/** When it was checked, when it is next checked, and Ask for an update (no PIN: it approves nothing, spec §3.2). */
+function checkNowRow(p) {
+  const kept = asked.get(p.key);
+  const status = el('span', { class: 'need-sub project-check-status', role: 'status', text: kept && Date.now() - kept.at < ASK_KEEP_MS ? kept.words : '' });
+  const kids = [p.checksLine ? el('span', { class: 'need-sub', text: p.checksLine }) : null];
+  if (p.checkNow && p.checkNow.allowed) {
+    const b = el('button', { type: 'button', class: 'btn-quiet btn-inline project-check-now', text: 'Ask for an update' });
+    b.addEventListener('click', async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      b.disabled = true; status.textContent = 'Asking…';
+      const r = await post('/work/projects/check', { key: p.key });
+      const w = checkAnswerWords(r.status, r.data);
+      status.textContent = w.words;
+      b.disabled = false;
+      if (w.ok) { asked.set(p.key, { words: w.words, at: Date.now() }); const wrap = b.closest('.projects-section'); if (wrap) setTimeout(() => reloadSection(wrap), 1500); }
+    });
+    kids.push(b);
+  } else if (p.checkNow && p.checkNow.why) kids.push(el('span', { class: 'need-sub', text: p.checkNow.why }));
+  kids.push(status);
+  return el('p', { class: 'project-checks' }, kids);
 }
 
 /** After a tap: read the projects again and redraw this section in place (the row stays open). */
@@ -209,9 +244,12 @@ export function projectsSection(data, { openKey = null } = {}) {
   if (v.empty) wrap.append(el('p', { class: 'empty-line', text: 'No projects are being tracked yet.' }));
   for (const p of v.active) wrap.append(row(p));
   if (v.finished.length) {
-    wrap.append(el('details', { class: 'projects-finished' },
+    const fold = el('details', { class: 'projects-finished', open: finishedOpen });
+    fold.addEventListener('toggle', () => { finishedOpen = fold.open; });
+    wrap.append(fold);
+    fold.append(
       el('summary', { class: 'eyebrow', text: `Finished (${v.finished.length})` }),
-      v.finished.map(row)));
+      ...v.finished.map(row));
   }
   if (openKey && v.ok && focusedFor !== openKey) {
     // The operator tapped "Open project": open that row and move focus to it, once (a refresh never moves the page).

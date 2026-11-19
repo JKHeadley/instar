@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-18T16:22:42.123Z",
+  "slug": "identity-security-piece2a-owner-record-chain",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ownerRecord.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a pure library with no callers and no self-triggered action"
+  },
+  "verdict": "pass"
+}
