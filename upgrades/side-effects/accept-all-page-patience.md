@@ -68,3 +68,7 @@ Revert and install.
   - `acceptAllStep` stops only at the 3rd consecutive waiting project, and resets on a finished or refused one.
   - Both fail on main (the exports do not exist there).
 - The file passes 15/15.
+
+## Addendum (2026-11-18 23:02 PST): two page tests that still described the old stop rule
+
+The first Local Verify run of this change (head fe212172d, Studio, 06:59Z) failed on two tests in `tests/unit/console-conversations-dom.test.ts` that still expected the old behaviour (a 60-second wait and a stop after two still-waiting projects). They were not in the first commit's test run, which is the gap. Both now describe the new behaviour: at 151 seconds the second project is running and Accept all has not stopped; with two projects in a row unanswered the run ends and says two did not finish; a new third test shows three in a row unanswered stopping the run at 4 of 5 with project 5 not tried. No source change in this addendum.
