@@ -14,6 +14,8 @@ import {verifyGraphCustodyBootstrapPublication,type GraphCustodyBootstrapPublica
 import {assertGraphLocalPath,ensureGraphLocalDirectory} from './GraphLocalFiles.js';
 import {SafeFsExecutor} from './SafeFsExecutor.js';
 import {canonicalHash,canonicalJson,exactFields,hash,iso,opaque,positive,unsigned,signGraphRecord,verifyGraphRecord,type GraphMembershipEpoch} from './GraphWitnessTypes.js';
+/** A verified local history result is reused while unchanged, but re-read from disk at least this often. */
+export const RETAINED_REUSE_MAX_MS=5*60_000;
 const REFUSAL_DOMAIN='graph-owned-custody-peer-refusal-v1';
 export const GRAPH_CUSTODY_FRONTIER_DOMAIN='graph-owned-custody-peer-frontier-v1';
 /** Data projection only, never an authority/verification port. Runtime input is
@@ -46,7 +48,7 @@ export class GraphCustodyPeerFrontier {
  private readonly publicationHash:string;private readonly directory:string;private readonly failed=new Map<string,Evidence>();private readonly probes=new Map<string,{challenge:string;startedAt:number}>();
  private readonly verified=new Map<string,GraphCustodyPeerSnapshot>();
  private readonly refusalFailures=new Set<string>();
- private retained:{source:ConversationGraphReplication;snapshot:GraphLocalAcknowledgedSnapshot}|null=null;
+ private retained:{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry;snapshot:GraphLocalAcknowledgedSnapshot;verifiedAt:number}|null=null;
  constructor(private readonly options:{stateDir:string;identity:MachineIdentityManager;identities:IdentityStore;custodyAuthority:GraphCustodyProfileAuthority;publication:GraphCustodyBootstrapPublication}){
   if(!(options.identity instanceof MachineIdentityManager)||!(options.identities instanceof IdentityStore)||!(options.custodyAuthority instanceof GraphCustodyProfileAuthority))throw new Error('graph-peer-frontier-actual-authority-required');this.stateRoot=fs.realpathSync(options.stateDir);this.custodyAuthority=options.custodyAuthority;this.agentId=options.custodyAuthority.agentId;this.ownerPublicKey=options.custodyAuthority.ownerPublicKey;
   if(this.stateRoot!==options.custodyAuthority.stateRoot||this.stateRoot!==fs.realpathSync(options.identity.baseDir)||!verifyGraphCustodyBootstrapPublication(options.publication,options.publication.membership.members,this.ownerPublicKey)||options.publication.membership.agentId!==this.agentId)throw new Error('graph-peer-frontier-scope-mismatch');this.publicationHash=canonicalHash(options.publication);this.directory=path.join(this.stateRoot,'conversation-graph','peer-frontier',canonicalHash(this.agentId));
@@ -94,10 +96,19 @@ export class GraphCustodyPeerFrontier {
  assertRoleFrontier(membership:GraphMembershipEpoch):void{this.assertNoNegativeDebt(membership);if(!this.hasRoleBaseline())throw new Error('graph-peer-frontier-cold-unverified');}
  async confirmLocalAcknowledgedSource(source:ConversationGraphReplication,reader:ReplicatedStoreReader,dropped:DroppedOriginRegistry):Promise<GraphLocalAcknowledgedSnapshot>{
   const membership=this.custodyAuthority.currentMembership();this.custodyAuthority.assertPositiveWrites(membership);this.assertNoNegativeDebt(membership);
+  // The full check re-reads every record from disk. While the graph is not ready the owner step asks for it on every
+  // save and every upkeep tick (accept-all round 4), so a result whose own currency check still passes (same durable
+  // generation, erasures and dropped origins; writes still allowed) is reused. Any change verifies again, and so does
+  // a result older than RETAINED_REUSE_MAX_MS, so files changed on disk outside this process are still found.
+  const held=this.retained;
+  if(held&&held.source===source&&held.reader===reader&&held.dropped===dropped&&Date.now()-held.verifiedAt<RETAINED_REUSE_MAX_MS){
+   let current=false;try{held.snapshot.assertCurrent(source,this.custodyAuthority,membership);current=true;}catch{/* @silent-fallback-ok: a changed store is verified again in full below */}
+   if(current)return held.snapshot;
+  }
   const snapshot=await source.verifyLocalAcknowledgedSnapshot(reader,dropped,this.custodyAuthority);
   this.custodyAuthority.assertPositiveWrites(membership);this.assertNoNegativeDebt(membership);snapshot.assertCurrent(source,this.custodyAuthority,membership);
   if(snapshot.stateRoot!==this.stateRoot||snapshot.agentId!==this.agentId||snapshot.machineId!==this.options.identity.loadIdentity().machineId)throw new Error('graph-peer-frontier-retained-scope-invalid');
-  this.retained={source,snapshot};return snapshot;
+  this.retained={source,reader,dropped,snapshot,verifiedAt:Date.now()};return snapshot;
  }
  retainedSnapshotFor(source:ConversationGraphReplication,membership:GraphMembershipEpoch):GraphLocalAcknowledgedSnapshot|null{
   this.custodyAuthority.assertPositiveWrites(membership);this.assertNoNegativeDebt(membership);if(this.hasRoleBaseline())return null;const retained=this.retained;if(!retained||retained.source!==source)return null;

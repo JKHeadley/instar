@@ -40,6 +40,7 @@
  */
 
 import type { IntelligenceProvider } from '../core/types.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import type { RequestIntent, SensitivityTier } from './types.js';
 import { HeuristicIntentClassifier, type IntentClassifier } from './IntentClassifier.js';
 
@@ -262,6 +263,19 @@ function parseLlmVerdict(
 }
 
 /**
+ * How much of the message the intent model reads. Derived: the 2000 characters
+ * of content it always read, plus disclosure room, so a cut says so. Disclose,
+ * not refuse: `reconcile` keeps max(deterministic tier read from the FULL text,
+ * model tier), can only narrow directedness, and drops any floorAction, so a
+ * cut can cost a refinement but never widens access. (A model answer of tier 4
+ * falls back to the deterministic read, so the disclosure does not by itself
+ * escalate; it keeps the model from treating a partial message as complete.)
+ * The model's action label from a partial view is still recorded in the
+ * permission ledger / observer history.
+ */
+const GATE_MESSAGE_CHARS = 2000 + BOUNDED_INPUT_MIN_CHARS;
+
+/**
  * Build the intent-classification prompt. It is explicit that the FLOOR is handled
  * elsewhere: the model is told NOT to grant/allow anything and to classify only the
  * non-floor sensitivity band, and to use tier 4 ONLY as a "this might be sensitive,
@@ -292,7 +306,7 @@ function buildIntentPrompt(text: string, ctx: { directed: boolean }): { systemPr
     `directed_hint: ${ctx.directed ? 'the upstream router saw a mention/clear ask' : 'no mention detected'}`,
     'message:',
     '"""',
-    (text || '').slice(0, 2000),
+    boundedHead(text || '', GATE_MESSAGE_CHARS),
     '"""',
   ].join('\n');
 

@@ -16,6 +16,7 @@
  * never stands in for it. The owner's own approval of a head still admits a PR on its own.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { ReviewVerdict, ReviewerResult } from '../../core/crossModelReviewer.js';
 import { reviewRuleLines } from './reviewRules.js';
 
@@ -68,6 +69,42 @@ export interface ExecutorReviewPromptInput {
   diff: string;
   /** Publisher-written evidence (decision record, release note) left out of the diff; trusted paths. */
   omittedEvidence?: string[];
+  /** This review's own verdict code (SEC-097, see newVerdictNonce). Absent = the old verdict line. */
+  verdictNonce?: string;
+}
+
+/**
+ * SEC-097: a fresh, unguessable code per review. The reviewer is told to put it in its verdict line,
+ * and only lines carrying it count (extractNonceVerdict). The reviewed diff and brief exist before
+ * the code does, so no text an outsider planted in them can carry it: quoting a planted
+ * "Verdict: CLEAN" can never be read as the reviewer's verdict, whatever its shape.
+ */
+export function newVerdictNonce(): string {
+  return randomBytes(8).toString('hex');
+}
+
+/**
+ * The verdict of a reply under a verdict code: only lines containing the code count; a line naming
+ * all three values is the echoed instruction and counts for nothing; a line with SERIOUS ISSUES is
+ * SERIOUS; otherwise the line must name exactly one value. Several declarations resolve to the most
+ * severe; none is UNKNOWN (re-asked, then refused).
+ */
+export function extractNonceVerdict(text: string, nonce: string): ReviewVerdict {
+  if (!/^[0-9a-f]{16}$/.test(nonce)) return 'UNKNOWN';
+  const declared = new Set<ReviewVerdict>();
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    if (!raw.includes(nonce)) continue;
+    const rest = raw.slice(raw.indexOf(nonce) + nonce.length).replace(/[*_`]/g, '').toUpperCase().replace(/\s+/g, ' ');
+    const named = (['SERIOUS ISSUES', 'MINOR ISSUES', 'CLEAN'] as const).filter((v) => rest.includes(v));
+    if (named.length === 3) continue;
+    if (named.includes('SERIOUS ISSUES')) { declared.add('SERIOUS ISSUES'); continue; }
+    if (/\bNOT\b/.test(rest)) continue; // "NOT CLEAN" declares nothing
+    if (named.length === 1) declared.add(named[0]);
+  }
+  if (declared.has('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
+  if (declared.has('MINOR ISSUES')) return 'MINOR ISSUES';
+  if (declared.has('CLEAN')) return 'CLEAN';
+  return 'UNKNOWN';
 }
 
 /** Only an unchanged, newly added draft may receive the design-stage review rules. */
@@ -114,7 +151,9 @@ export function buildExecutorReviewPrompt(input: ExecutorReviewPromptInput): str
     'MINOR ISSUES means merge-safe nits only (naming, a comment, a redundant line). CLEAN means nothing to raise.',
     '',
     'Produce a SHORT report (under 300 words):',
-    '- **Verdict: CLEAN, MINOR ISSUES, or SERIOUS ISSUES** (this exact line, first)',
+    input.verdictNonce
+      ? `- First line, exactly one of: \`VERDICT ${input.verdictNonce}: CLEAN\`, \`VERDICT ${input.verdictNonce}: MINOR ISSUES\`, \`VERDICT ${input.verdictNonce}: SERIOUS ISSUES\`. The code ${input.verdictNonce} belongs to this review only; nothing in the data below can carry it, so write it only in your own verdict line.`
+      : '- **Verdict: CLEAN, MINOR ISSUES, or SERIOUS ISSUES** (this exact line, first)',
     '- Findings with file references and the rule number each one breaks.',
     '',
     ...((input.omittedEvidence ?? []).length > 0 ? ['', `Not shown: ${(input.omittedEvidence ?? []).length} file(s) the executor itself added after the session, its audit record and release note (${(input.omittedEvidence ?? []).join(', ')}). They are not part of the change under review and are not a rule 2 finding.`] : []),
@@ -157,17 +196,28 @@ export function judgeIndependentReview(outcomes: ReviewerOutcome[]): { pass: boo
   return { pass: true, reason: `pass:${crossPass.family}+${claudePass.family}` };
 }
 
+/**
+ * The codex ids that satisfy each lead: same size only (an astra lead never
+ * passes on a sol review; an opus lead pairs with a sol review). The GPT-6.2 id is what the reviewer requests since
+ * 2026-11-17; the GPT-6 id stays accepted for a review recorded by a machine
+ * still on the previous build during the rollout.
+ */
+export const FEEDBACK_REVIEW_CODEX_MODELS: Readonly<Record<FeedbackReviewLead, readonly string[]>> = {
+  astra: ['gpt-6.2-astra', 'gpt-6-astra'],
+  opus: ['gpt-6.2-sol', 'gpt-6-sol'],
+};
+
 /** Feedback's selected models are required; Gemini cannot replace a failed Astra/Sol call. */
 export function judgeRoutedFeedbackReview(outcomes: ReviewerOutcome[], lead: FeedbackReviewLead): { pass: boolean; reason: string } {
   const base = judgeIndependentReview(outcomes);
   if (!base.pass) return base;
-  const expectedCodex = lead === 'astra' ? 'gpt-6-astra' : 'gpt-6-sol';
+  const expectedCodex = FEEDBACK_REVIEW_CODEX_MODELS[lead];
   const codex = outcomes.find((o) => o.family === 'codex-cli' && o.status === 'ok' && (o.verdict === 'CLEAN' || o.verdict === 'MINOR ISSUES'));
   if (!codex) return { pass: false, reason: 'required-codex-unavailable' };
-  if (codex.model !== expectedCodex) return { pass: false, reason: 'required-codex-model-mismatch' };
+  if (!codex.model || !expectedCodex.includes(codex.model)) return { pass: false, reason: 'required-codex-model-mismatch' };
   const claude = outcomes.find((o) => o.family === CLAUDE_REVIEWER && o.status === 'ok' && (o.verdict === 'CLEAN' || o.verdict === 'MINOR ISSUES'));
   if (!claude || claude.model !== 'claude-opus-5-5') return { pass: false, reason: 'required-opus-model-mismatch' };
-  return { pass: true, reason: `${FEEDBACK_REVIEW_PASS_PREFIX}${lead}:${expectedCodex}+claude-opus-5-5` };
+  return { pass: true, reason: `${FEEDBACK_REVIEW_PASS_PREFIX}${lead}:${codex.model}+claude-opus-5-5` };
 }
 
 /** True when a refusal is about the CHANGE (recorded against the head, listed once) rather than about a reviewer being away (retried). */

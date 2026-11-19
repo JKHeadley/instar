@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "org-never-actions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T23:21:33.751Z",
+  "artifactPath": "upgrades/side-effects/org-never-actions.md",
+  "artifactSha256": "141281473a2754ff7aaf555dd8aa69ab32c24679e693c4036b20a510908894dd",
+  "coveredFiles": [
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/org-policy-judge-classified.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "merge follow-up: fixtures and guard order"
+  }
+}

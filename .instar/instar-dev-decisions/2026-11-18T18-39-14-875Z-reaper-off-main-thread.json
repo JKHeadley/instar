@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T18:39:14.875Z",
+  "slug": "reaper-off-main-thread",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 236,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/agentWorktreeEvaluation.worker.ts",
+      "src/monitoring/agentWorktreeEvaluationJob.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 233,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "request-driven, not a self-triggered loop: report() starts a dry-run pass only on a GET of /worktrees/agent-reaper, one pass at a time (the existing overlap guard), and retries a failed pass at most once per 5 minutes (FAILED_PASS_RETRY_MS); the reaper's own timer is unchanged"
+  },
+  "verdict": "pass"
+}

@@ -256,7 +256,9 @@ export function usageCoverage(ctx: ReadContext, sinceMs = ctx.now - 30 * DAY_MS)
   }
   return {
     ...windowFrame(ctx, sinceMs, false),
+    rootMachineId: l.machineId,
     roots: l.listRoots(),
+    poolRootDiscovery: l.poolDiscovery,
     rows: status,
     shares: {
       unattributed: share(shares.unattributedTokens, shares.totalTokens),

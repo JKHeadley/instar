@@ -1053,7 +1053,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
   // the adapter will handle the session action and skip the normal handler.
-  public onSentinelIntercept: ((message: string, topicId: number) => Promise<{
+  /** `messageKey` identifies this platform message, so a redelivery reuses its first verdict. */
+  public onSentinelIntercept: ((message: string, topicId: number, messageKey?: string) => Promise<{
     category: 'emergency-stop' | 'pause' | 'redirect' | 'normal';
     action: { type: string; message?: string };
     reason?: string;
@@ -1967,7 +1968,10 @@ export class TelegramAdapter implements MessagingAdapter {
       const data = await response.json() as { ok: boolean; result: unknown };
       if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
       const results = Array.isArray(data.result) ? data.result : [data.result];
-      return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
+      const messageIds = results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n));
+      // identity-security-creation-provenance v5: a captioned file into a topic also disarms a waiting cross-topic proposal.
+      if (this.onTopicMessageSent && messageIds.length) { try { this.onTopicMessageSent(topicId, Math.max(...messageIds)); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
+      return { messageIds };
     } catch (error) {
       if (error instanceof QuietRecordedError) return error.receipt;
       throw error;
@@ -1986,6 +1990,9 @@ export class TelegramAdapter implements MessagingAdapter {
         const sent = await this.selectivityAdmitted.run(true, () => this.sendToTopicDelivered(topicId, text, options));
         if (envelope?.category === 'command-response' && envelope.inboundMessageId) this.commandReceipts.set(sent, { topicId, messageId: sent.messageId, until: Date.now() + 900000, inboundMessageId: envelope.inboundMessageId });
         if (!options?.operatorMirror && !envelope?.inboundMirror && (isVerifiedReplyEnvelope(envelope) || envelope?.category === 'command-response')) this.selectivity?.markAnswered(topicId);
+        // identity-security-creation-provenance v5: a later message into a topic disarms a cross-topic
+        // proposal waiting there, so an owner's "yes" can only answer the proposal itself.
+        if (this.onTopicMessageSent && typeof sent.messageId === 'number') { try { this.onTopicMessageSent(topicId, sent.messageId); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
         return sent;
       } catch (error) { if (error instanceof QuietRecordedError) return error.receipt; throw error; }
     });
@@ -2475,6 +2482,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * promptGate.ownerId for back-compat when ownerUserId isn't
    * explicitly configured.
    */
+  /** identity-security-creation-provenance v5: told of every message this adapter sends into a topic. */
+  onTopicMessageSent: ((topicId: number, messageId: number) => void) | null = null;
+
   getOwnerUserId(): number | undefined {
     return this.config.ownerUserId ?? this.config.promptGate?.ownerId;
   }
@@ -4800,6 +4810,58 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.authorshipJoin.join(matching);
   }
 
+  /**
+   * One message of one topic, by id, logged at or after `notBeforeMs` (identity-security-creation-
+   * provenance). Reads the log backwards in 1 MB chunks and stops at the first entry older than
+   * `notBeforeMs`, so it costs at most that window of log. `unreadable` is distinct from "not found".
+   */
+  findTopicMessage(topicId: number, messageId: number, notBeforeMs: number): { entry: LogEntry | null; unreadable?: boolean; budgetExceeded?: boolean } {
+    if (!fs.existsSync(this.messageLogPath)) return { entry: null };
+    const CHUNK = 1024 * 1024;
+    // I/O budget: at most 16 MB of log read per lookup (synchronous, so kept small). A day of log
+    // past that is reported as budgetExceeded (a distinct outcome), never as "not found".
+    const BUDGET = 16 * CHUNK;
+    let scanned = 0;
+    let fd: number;
+    try { fd = fs.openSync(this.messageLogPath, 'r'); } catch { return { entry: null, unreadable: true }; }
+    try {
+      let pos = fs.fstatSync(fd).size;
+      let carry = Buffer.alloc(0);
+      while (pos > 0) {
+        if (scanned >= BUDGET) return { entry: null, budgetExceeded: true };
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        scanned += size;
+        const read = Buffer.alloc(size);
+        fs.readSync(fd, read, 0, size, pos);
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
+        }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (!lines[i]) continue;
+          let entry: LogEntry;
+          try { entry = JSON.parse(lines[i]); } catch { continue; /* @silent-fallback-ok: a malformed log line is skipped */ }
+          const at = Date.parse(String(entry.timestamp));
+          if (Number.isFinite(at) && at < notBeforeMs) return { entry: null };
+          const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+          if (entryTopicId === topicId && entry.messageId === messageId) return { entry: this.authorshipJoin.join([entry])[0] ?? entry };
+        }
+      }
+      return { entry: null };
+    } catch {
+      return { entry: null, unreadable: true };
+    } finally {
+      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
+    }
+  }
+
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
@@ -5559,6 +5621,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const creation = (async (): Promise<number | null> => {
       const label = bucket === '*' ? 'multiple sources' : bucket;
+      // bounded-input-reviewed: Telegram forum-topic names are limited to 128 characters by the platform; a fixed label, not a judgment's input.
       const title = `🔁 ${label}: notices coalesced (flood guard)`.slice(0, 128);
       // 'system' + bounded: the coalesce surface itself must never be refused by
       // the budget it exists to absorb (one topic per bucket, create-once-reuse).
@@ -6601,7 +6664,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // kill/pause the session even when the session is mid-tool-call.
     if (this.onSentinelIntercept) {
       try {
-        const classification = await this.onSentinelIntercept(text, numericTopicId);
+        const classification = await this.onSentinelIntercept(text, numericTopicId, `telegram:${numericTopicId}:${msg.message_id}`);
         if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause')) {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {
@@ -7746,7 +7809,10 @@ export function attentionBodyBlocks(
   const s = (summary ?? '').trim();
   const d = (description ?? '').trim();
   if (!d) return s ? [s] : [];
-  const dSliced = d.slice(0, descriptionSlice);
+  // bounded-input-reviewed: a display cap (callers pass 500 / 1000) on the hub post, which also lands in the topic history a later session reads; the cut is now marked in-band with a pointer to the full attention item, in words a person and a model both read as "partial".
+  const dSliced = d.length > descriptionSlice
+    ? `${d.slice(0, descriptionSlice)}… [description cut at ${descriptionSlice} of ${d.length} characters; the full text is in the attention item]`
+    : d;
   if (s && d.startsWith(s)) return [dSliced];
   // Leading \n preserves the original blank-line separation when joined by '\n'.
   return s ? [s, `\n${dSliced}`] : [dSliced];

@@ -397,6 +397,8 @@ export function authorityCard(kind, p) {
     envelope: { maxBatch: env.maxBatch, maxTokens: env.maxTokens, maxDailySpendUsd: env.maxDailySpendUsd },
     boundTo: p && p.proposal ? `agent ${p.proposal.agentId} · machine ${p.proposal.ownerMachineId} (epoch ${p.proposal.ownerEpoch}) · model ${p.proposal.modelFamily} via ${p.proposal.provider}` : '',
     approveAction: (p && p.approveAction) || null,
+    // Sent back with the approval so the server binds exactly the model shown here.
+    shownModelFamily: (p && p.proposal && p.proposal.modelFamily) || null,
     approveLabel: p && p.approveAction === 'restore' ? 'Approve (restore)' : 'Approve',
     restoreNote: p && p.approveAction === 'restore' ? 'Restore brings back the last approved limits. To change them, restore first, then save new limits.' : null,
     canSaveLimits: Boolean(p && p.status === 'active' && !p.approveAction && (p.blockers || []).length === 0),
@@ -537,10 +539,11 @@ export function newDecisionRef(prefix = 'console', now = new Date(), rand = Math
 }
 
 /** POST /feedback-factory/readiness-authorities body (create/replace/restore/revoke). An emptied limit means "use the default", never 0. */
-export function readinessAuthorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function readinessAuthorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String((envelope || {})[k] ?? '').trim();
       if (v !== '') body[k] = Number(v);
@@ -549,10 +552,11 @@ export function readinessAuthorityRequest(action, envelope, pin, operatorDecisio
   return body;
 }
 /** POST /feedback-factory/triage/authority body: the server fills every binding field from its proposal. */
-export function triageAuthorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function triageAuthorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String((envelope || {})[k] ?? '').trim();
       if (v !== '') body[k] = Number(v);
