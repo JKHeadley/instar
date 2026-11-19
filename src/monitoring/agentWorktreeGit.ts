@@ -197,9 +197,16 @@ function registryCopyIsCommitted(checkout: string, readGit: ReadGit): boolean {
   const segments = REGISTRY_COPY_PATH.split('/');
   if (!isPlainFileInCheckout(checkout, segments)) return false;
   try {
-    const copy = readGit(['-C', checkout, 'hash-object', '--no-filters', '--', path.join(checkout, ...segments)], checkout).trim();
     const source = readGit(['-C', checkout, 'rev-parse', '--verify', '--quiet', `HEAD:${REGISTRY_SOURCE_PATH}`], checkout).trim();
-    return /^[0-9a-f]{40,64}$/.test(copy) && copy === source;
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(source)) return false;
+    // The copy's git blob id, computed in-process (git's own formula: "blob <size>\0" + bytes,
+    // SHA-1 or SHA-256 by the repo's object format). `git hash-object` is refused by the
+    // source-tree guard inside every agent worktree, which made this proof fail for every
+    // checkout in production (the unit fixture was not a source-tree checkout).
+    const bytes = fs.readFileSync(path.join(checkout, ...segments));
+    const copy = crypto.createHash(source.length === 64 ? 'sha256' : 'sha1')
+      .update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
+    return copy === source;
   } catch {
     return false; // @silent-fallback-ok — no proof ⇒ work (KEEP)
   }
