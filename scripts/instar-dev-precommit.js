@@ -684,7 +684,7 @@ if (!spec) {
       'Trace does not reference a spec (trace.specPath is missing).',
       '',
       'Every in-scope change must be driven by a spec that has passed /spec-converge',
-      'and been approved by the user. Write the trace with --spec <path>.',
+      'and been approved (approved: true + approved-by). Write the trace with --spec <path>.',
     ].join('\n'),
   );
 }
@@ -748,8 +748,10 @@ if (!recognition.approved) {
     inScopeFiles,
     [
       `Spec ${spec} has review-convergence but no approved: true tag.`,
-      'The user must review the convergence report and apply the approved tag',
-      'before /instar-dev can ship this change.',
+      'The approver reads the convergence report and applies approved: true with an',
+      'approved-by line naming who approved and why (the agent for its own spec; the',
+      'operator only for a constitution or protected-list amendment, or what their',
+      'recorded instructions reserve) before /instar-dev can ship this change.',
     ].join('\n'),
   );
 }
