@@ -81,3 +81,7 @@ The reaper can tell generated and audit files from work, preserving them byte fo
 The reviewer found the deletion gate otherwise sound: the folder expansion, the registry proof, the re-check list and dry-run, with real `node_modules` and unlisted files still kept. It confirmed the orphaned-work side effect is as stated.
 
 **Round 2 (same reviewer, 19:52 PT): Concur with the review.** Both fixes were verified at file:line. The two unit files run together pass 128/128, and tsc is clean.
+
+## Follow-up: registry location from the resolver (2026-11-18, LV failure 07:26Z)
+
+`tests/unit/standards-registry-asset.test.ts` requires that exactly one module, `standardsRegistryPath.ts`, names the registry asset. The residue list named `src/data/standards-registry.meta.json` literally. It now takes `GENERATED_STANDARDS_REGISTRY_OUTPUTS[1]` from the resolver, the same value. Behaviour is unchanged, with no new runtime surface; the sections above stand.
