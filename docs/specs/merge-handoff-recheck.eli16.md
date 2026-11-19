@@ -18,7 +18,7 @@ Every change to Instar is tested on our own computers, and the moment it passes,
 
 When the only reason for not merging is that GitHub has not yet said whether the change can be merged, the merger waits a few seconds and asks GitHub about that one change again: after 5 seconds, then 10, then 15. At most three times, with at most half a minute of waiting (about a minute in all if GitHub answers slowly). If GitHub's answer is already there when the merger first looks, there is no wait at all. As soon as GitHub says "yes, it can be merged", the merge goes ahead through all the usual checks. If GitHub says the change really conflicts, it stops at once.
 
-It is not yet proven that "GitHub had not answered yet" is the cause in all those cases; the log did not record it. So the first step is to record GitHub's exact answer for three days, and only then switch the waiting on.
+It is not yet proven that "GitHub had not answered yet" is the cause in all those cases; the log did not record it. So the first step is to record GitHub's exact answer for about two days, and only then decide whether to switch the waiting on.
 
 ## The safeguards
 
@@ -34,4 +34,4 @@ On a hand-off that still fails, the test machine waits up to about a minute befo
 
 ## What ships when
 
-One small change, after review. Then seven days of counting: how many merges still need a hand, and whether the waits should be shorter or longer.
+One small change, after review. First it only records GitHub's exact answer, with the waiting switched off, until ten such refusals have been seen (about two days). If at least half of them were "not answered yet", the operator of the test line switches the waiting on; if not, the idea was wrong and the change is removed. With it on, the count goes on until at least fifteen cases: the aim is that eight in ten of them merge without anyone's help.
