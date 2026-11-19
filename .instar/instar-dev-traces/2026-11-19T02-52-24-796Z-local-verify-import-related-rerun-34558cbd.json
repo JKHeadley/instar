@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "slug": "local-verify-import-related-rerun",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T02:52:24.796Z",
+  "artifactPath": "upgrades/side-effects/local-verify-import-related-rerun.md",
+  "artifactSha256": "3b167ff1f23ef92851aff6a1e143f2b9c84b32df690a2d3b1d28dc009392d941",
+  "specPath": "docs/specs/local-verify-import-related-rerun.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-import-related-rerun.eli16.md",
+    "docs/specs/local-verify-import-related-rerun.md",
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "scripts/local-verify-import-related-review.mjs",
+    "src/data/awareness/local-verify-import-related-rerun.md",
+    "src/data/feature-ladders.json",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/policy.ts",
+    "src/localVerify/record.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/localVerify/importRelatedReview.test.ts",
+    "tests/unit/localVerify/laneReport.test.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/localVerify/record.test.ts",
+    "upgrades/next/local-verify-import-related-rerun.md",
+    "upgrades/side-effects/local-verify-import-related-rerun.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "It tightens the solo-pass rule of the import-related re-run (a merge-gate rule, off by default) after the independent reviewer's concern, under the same approved converged spec.",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The controller local-verify-flake-rerun stays registered with boundK 9 and perTargetBoundK 3, derived from LOCAL_VERIFY_LIMITS (3 files per verify x 3 runs per import-related file). This commit only adds a reason for a solo run not to pass (a different skipped count), which ends a file's sequence earlier; it adds no run. Steady-state bound: the cap counts files and is spent once per verify. Settling brake: the first solo run that does not pass ends the sequence. The budget lives inside one verify, so the count does not grow with the horizon."
+    }
+  }
+}
