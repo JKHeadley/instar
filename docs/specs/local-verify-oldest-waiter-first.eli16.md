@@ -16,11 +16,9 @@ Every change to Instar is tested on our own computers before it can be merged. T
 
 ## What this adds
 
-One rule at the door. When a change asks for a place, and another change has been waiting more than 90 minutes and has waited longer than it, the newcomer waits, with or without the label. The free place stays for the older one, which takes it the next time it asks (normally within about 10 minutes). If there are more free places than old waiters, the newcomer can have one of the spare ones. Among changes that have waited more than 90 minutes, it is simply first come, first served.
+One rule at the door. When a change asks for a place, and another change has been waiting more than 90 minutes and has waited longer than it, the newcomer waits, with or without the label. The free place stays for the older one, which takes it the next time it asks (normally within about 10 minutes). As long as there is still room left for every older waiter, a newcomer may go in; it is the last places that are kept. A place is always left for each change that has waited more than 90 minutes.
 
 The label still helps: it puts a change ahead of ordinary changes that have waited less than 90 minutes, and it opens the 5 extra places. It no longer lets a change jump ahead of one that has waited longer.
-
-A second, small thing for the person running the line: when several changes are put at the front by hand, the answer now says in which order they will run, and there is an option to add one behind the others instead of ahead of them. Today each one put at the front goes ahead of the earlier ones, and each is told it is first.
 
 ## The safeguards
 
