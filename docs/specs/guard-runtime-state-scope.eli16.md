@@ -25,3 +25,4 @@ The command that deletes a whole agent (`instar nuke`) is handled separately: it
 ## What needs deciding
 
 Nothing now. After two weeks of notes, the Chief of Staff decides whether to switch the new rule on, with the numbers in hand.
+Approved by the Chief of Staff at 01:11 PT, to be built watch-only.

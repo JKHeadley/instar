@@ -37,3 +37,7 @@ Tier 2, security-sensitive. All 6 of 6 rounds were used. Findings narrowed each 
 ## Convergence verdict
 
 Not converged. The round-6 design findings are applied in the spec, but no reviewer has read them. A confirmation round is requested before the tag is written.
+
+## Approval
+
+Approved by the Chief of Staff, 2026-11-19 01:11 PT (msg 30c7f163): spec A, as a watch-only build. The last small outside-review items were not reviewed again; watch-only mode cannot affect a real delete, and the build's second-pass review covers them. Switching to enforce is a separate decision after the 14 days and spec B, with the disagreement record in hand.

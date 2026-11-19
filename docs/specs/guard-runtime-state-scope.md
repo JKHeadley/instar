@@ -6,6 +6,13 @@ tier: 2
 parent-principle: "A Dark Feature Guards Nothing"
 parent-principle-fit: "The guard's runtime-state rule allows any path containing `/.instar/` anywhere. Agent homes live at `~/.instar/agents/<name>/`, so on every agent home the rule allows every path, including source files. The source-tree guard exists there but guards nothing (fb-abdf2088-f27)."
 eli16-overview: "docs/specs/guard-runtime-state-scope.eli16.md"
+review-convergence: "2026-11-19T09:11:00.000Z"
+review-iterations: 7
+review-completed-at: "2026-11-19T09:11:00.000Z"
+review-report: "docs/specs/reports/guard-runtime-state-scope-convergence.md"
+cross-model-review: "ran"
+approved: true
+approved-by: "echo-chief-of-staff (msg 30c7f163, 2026-11-19 01:11 PT): spec A, watch-only build; enforce is a separate yes after 14 days and spec B"
 ---
 
 # The source-tree guard's runtime-state rule matches only the source root's own .instar folder
