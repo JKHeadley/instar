@@ -150,6 +150,11 @@ export interface ArmedConfirm {
   armedAt: number;
   /** Audit provenance: agent-composed (propose lane) vs ingress-derived. */
   origin: 'agent-composed' | 'ingress';
+  /**
+   * identity-security-creation-provenance v5: the conversation the confirmed change applies to,
+   * when it differs from the conversation where the owner confirms (the propose lane's confirmIn).
+   */
+  targetTopicKey?: string;
 }
 
 export type ConfirmMatch =
@@ -211,6 +216,7 @@ export class ProfileConfirmSlots {
     patch: ProfilePatchInput,
     echoText: string,
     origin: ArmedConfirm['origin'],
+    targetTopicKey?: string,
   ): { ok: true; superseded: boolean } | { ok: false; reason: 'proposal-churn-cooldown' } {
     const key = String(topicKey);
     const now = this.now();
@@ -243,6 +249,7 @@ export class ProfileConfirmSlots {
       echoPlatformMessageId: null,
       armedAt: now,
       origin,
+      ...(targetTopicKey !== undefined && String(targetTopicKey) !== key ? { targetTopicKey: String(targetTopicKey) } : {}),
     });
     this.opts.audit?.({
       type: 'confirm-armed',
@@ -250,6 +257,7 @@ export class ProfileConfirmSlots {
       kind,
       origin,
       superseded,
+      ...(targetTopicKey !== undefined && String(targetTopicKey) !== key ? { targetTopic: String(targetTopicKey) } : {}),
     });
     return { ok: true, superseded };
   }
@@ -263,6 +271,30 @@ export class ProfileConfirmSlots {
   /** The armed slot, if any (readout / switch-now no-op reply). */
   peek(topicKey: string): ArmedConfirm | null {
     return this.slots.get(String(topicKey)) ?? null;
+  }
+
+  /**
+   * Forget the recorded echo id before re-sending the echo ("Please confirm this version"), so the
+   * re-send itself is not taken for a later message that disarms a cross-topic slot. The new echo's
+   * id is recorded after it is sent.
+   */
+  clearEchoMessageId(topicKey: string): void {
+    const slot = this.slots.get(String(topicKey));
+    if (slot) slot.echoPlatformMessageId = null;
+  }
+
+  /**
+   * identity-security-creation-provenance v5: a message was sent into this topic. A CROSS-topic
+   * slot armed here is disarmed by any message after its echo: the owner's next "yes" could be
+   * answering that message, not the proposal. The echo itself (id not yet recorded) never disarms.
+   */
+  noteOutbound(topicKey: string, platformMessageId: number): void {
+    const key = String(topicKey);
+    const slot = this.slots.get(key);
+    if (!slot || !slot.targetTopicKey || slot.echoPlatformMessageId === null) return;
+    if (platformMessageId <= slot.echoPlatformMessageId) return;
+    this.slots.delete(key);
+    this.opts.audit?.({ type: 'cross-topic-disarmed', topic: key, targetTopic: slot.targetTopicKey, reason: 'later-message' });
   }
 
   disarm(topicKey: string): void {

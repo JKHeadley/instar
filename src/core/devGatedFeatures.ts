@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'crossTopicConfirm',
+    configPath: 'security.crossTopicConfirm.enabled',
+    description: 'A change to one conversation confirmed by the owner in another (identity-security-creation-provenance v5: the topic-profile propose lane\'s confirmIn); omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
