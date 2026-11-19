@@ -621,7 +621,14 @@ describe('local-verify lifecycle (production wiring)', () => {
     await started(3);
     expect(isolationOf(3)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
     // End every run of PR 3 (the one retry of an errored run included) so the slot is free.
-    for (let k = 0; k < 3; k++) { for (const end of ends.splice(0)) end({ status: 1, signal: null }); await new Promise((r) => setTimeout(r, 30)); }
+    // Wait on what can be observed, bounded at 5 s: every started run has been ended and nothing is in flight or queued.
+    const drained = () => ends.length === 0 && svc.snapshot().inFlight === null && svc.snapshot().queue.length === 0;
+    for (const until = Date.now() + 5000; Date.now() < until;) {
+      for (const end of ends.splice(0)) end({ status: 1, signal: null });
+      await new Promise((r) => setTimeout(r, 10));
+      if (drained()) break;
+    }
+    expect(drained()).toBe(true);
     // Key on, read when the next run starts (no restart): the list from the history file rides along.
     values['monitoring.localVerify.importRelatedRerun'] = true;
     expect((await svc.request(4)).ok).toBe(true);

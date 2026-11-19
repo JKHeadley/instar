@@ -14,6 +14,8 @@ If the main branch has never shown that test to be flaky, nothing changes: no se
 
 **The honest cost.** On the first day this helps nobody, because the list of known-flaky tests starts empty and fills as tests misbehave on the main branch. For the security fix above, two of its three blocks would have been avoided after about a week of collecting; the third would not.
 
+**One more check on each of the three tries.** The file must also skip exactly as many tests as it did in the full run. Some setup steps inside a test file, when they break, show up only as "these tests were skipped". If such a step broke in the full run and works when the file runs alone, the skipped count differs, and the try does not count as a pass.
+
 **What stays the same.** If the change edited the test file itself, there is no second chance. No time limit gets longer. At most three files per run get any second chance.
 
 **What we accept.** A change that makes an already-flaky test a little worse can still get through. We cannot tell that apart at the moment of testing.

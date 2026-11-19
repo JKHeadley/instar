@@ -1325,6 +1325,53 @@ describe('runVerify — a failed file that imports a changed file, on named main
     const r2 = rec(await runVerify(input({ isolation: iso(true), failFast: true }), g.seams));
     expect(r2.record.outcome).toBe('failure');
     expect(r2.record.flakyRetried?.some((x) => x.file === X) ?? false).toBe(false);
+    // The stop is what ended it: one solo run of x was started, it was recorded as stopped (not failed, not passed),
+    // and runs 2 and 3 never started. Without the stop the hanging run would never return.
+    expect(vitestCalls(g).filter((c) => c.args.at(-1) === X)).toHaveLength(1);
+    expect(g.logs.filter((l) => l.event === 'isolation-rerun' && l.file === X)).toEqual([{ event: 'isolation-rerun', lane: 'unit', file: X, outcome: 'stopped', importRelated: true, run: 1, of: 3, detailOnly: false }]);
+    expect(r2.failures!.find((x) => x.file === X)!.rerunMessage).toBe('isolation re-run stopped: another lane had already failed');
+    expect(g.logs.some((l) => l.event === 'lanes-stop' && l.after === 'integration')).toBe(true);
+  });
+
+  it('a solo pass also needs the same skipped count as the lane run: tests skipped behind a nested hook that failed under load, and run alone, are not a pass (skipped-count-changed)', async () => {
+    // Lane run: the listed flake failed, and a nested beforeAll failed too, which vitest reports as its tests SKIPPED.
+    const lane: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed', msg: 'AssertionError: lane boom' }, { name: 'inner one', status: 'skipped' }, { name: 'inner two', status: 'skipped' }];
+    const names = lane.map((t) => t.name);
+    const listed = [{ file: X, tests: [ev('s flaky', { setHash: hashOf(names) })] }];
+    // Alone, the hook passes: its tests run and pass, nothing is skipped.
+    const allRan: NamedTest[] = names.map((name) => ({ name, status: 'passed' }));
+    const f = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [allRan] } }));
+    const r = rec(await runVerify(input({ isolation: iso(true, listed) }), f.seams));
+    expect(r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(LANE_PROCS + 1); // the first run that is not a pass ends the sequence
+    expect(f.logs.filter((l) => l.event === 'isolation-rerun')).toEqual([{ event: 'isolation-rerun', lane: 'unit', file: X, outcome: 'skipped-count-changed', importRelated: true, run: 1, of: 3, detailOnly: false, seconds: 1 }]);
+    expect(r.failures!.find((x) => x.file === X)!.rerunMessage).toBe('solo run 1 of 3: skipped-count-changed: 2 skipped in the lane run, 0 in the solo run');
+    expect(r.record.flakyRetried).toBeUndefined();
+
+    // The same skipped count in every solo run, and the failed test passed by name: cleared as before.
+    const same: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'passed' }, { name: 'inner one', status: 'skipped' }, { name: 'inner two', status: 'skipped' }];
+    const g = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [same] } }));
+    const r2 = rec(await runVerify(input({ isolation: iso(true, listed) }), g.seams));
+    expect(r2.record.outcome).toBe('success');
+    expect(vitestCalls(g)).toHaveLength(LANE_PROCS + 3);
+    expect(r2.record.flakyRetried![0]).toMatchObject({ file: X, importRelated: true, soloPasses: 3, soloPassedByName: ['s flaky'] });
+
+    // A count that changes on a later run ends the sequence there; more skipped alone than in the lane is a change too.
+    const more: NamedTest[] = [{ name: 's ok', status: 'skipped' }, { name: 's flaky', status: 'passed' }, { name: 'inner one', status: 'skipped' }, { name: 'inner two', status: 'skipped' }];
+    const h = fake(related({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [same, more] } }));
+    const r3 = rec(await runVerify(input({ isolation: iso(true, listed) }), h.seams));
+    expect(r3.record.outcome).toBe('failure');
+    expect(h.logs.filter((l) => l.event === 'isolation-rerun').map((l) => [l.run, l.outcome])).toEqual([[1, 'passed'], [2, 'skipped-count-changed']]);
+    expect(r3.failures!.find((x) => x.file === X)!.rerunMessage).toBe('solo run 2 of 3: skipped-count-changed: 2 skipped in the lane run, 3 in the solo run');
+  });
+
+  it('the skipped-count rule is for import-related files only: a plain file and a main verify keep the one-pass rule whatever was skipped', async () => {
+    const lane: NamedTest[] = [{ name: 's ok', status: 'passed' }, { name: 's flaky', status: 'failed' }, { name: 'inner one', status: 'skipped' }];
+    const allRan: NamedTest[] = lane.map((t) => ({ name: t.name, status: 'passed' }));
+    const plain = fake(related({ imports: {}, laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [allRan] } }));
+    expect(rec(await runVerify(input({ isolation: iso(true) }), plain.seams)).record.outcome).toBe('success');
+    const main = fake({ laneNamed: { unit: { [A]: [{ name: 'a', status: 'passed' }], [X]: lane } }, rerunNamed: { [X]: [allRan] } });
+    expect(rec(await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), main.seams)).record.outcome).toBe('success');
   });
 
   it('the whole failure message goes to the run log per named test, bounded with its disclosure', async () => {

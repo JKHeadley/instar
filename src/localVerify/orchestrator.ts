@@ -914,7 +914,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
    * times in a row for a file in `threePass` (import-related, every failed test shown flaky on
    * `main`). A file that passes replaces its counts in the lane report and is recorded as flaky;
    * one that fails keeps the lane run's counts and both messages. A three-pass file is cleared
-   * only when all three runs pass AND each reports every lane-failed test `passed` by full name;
+   * only when all three runs pass AND each reports every lane-failed test `passed` by full name
+   * AND skips exactly as many tests as the lane run did (`skipped-count-changed` otherwise);
    * its first run that does not pass ends the sequence. Once a file in this lane has failed
    * finally the lane cannot clear: a three-pass file after it gets ONE detail-only run, whose
    * pass is written into the failure detail and nowhere else. Each run computes its own
@@ -983,9 +984,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const ranClean = !!c && c.failed === 0 && c.passed > 0 && r.status === 0 && rerunUnhandled === 0;
         // By name: which of the lane-failed tests this run reported `passed`. A three-pass run needs all of them.
         const byName = passedByName(failedNames, c?.passedTests ?? []);
-        const passed = ranClean && (!ir || byName.notPassed.length === 0);
+        // A three-pass run must also skip exactly as many tests as the lane run did. A failed nested
+        // hook (a beforeAll inside a describe) is reported only as its tests being SKIPPED, so a hook
+        // that failed under load and passes alone shows up as a different skipped count: not a pass.
+        const sameSkipped = !!c && c.skipped === first.skipped;
+        const passed = ranClean && (!ir || (byName.notPassed.length === 0 && sameSkipped));
         const seconds = Math.round((seams.now() - t0) / 1000);
-        const outcome = passed ? 'passed' : r.deadlineKilled ? 'deadline' : ranClean ? 'failed-test-not-passed' : 'failed';
+        const outcome = passed ? 'passed' : r.deadlineKilled ? 'deadline' : !ranClean ? 'failed' : byName.notPassed.length > 0 ? 'failed-test-not-passed' : 'skipped-count-changed';
         seams.log({ event: 'isolation-rerun', lane, file, outcome, ...irLog, ...(ir ? { seconds } : {}) });
         if (!passed) {
           cleared = false;
@@ -993,6 +998,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             rerunMessages.set(file, r.deadlineKilled ? 'isolation re-run hit the lane deadline' : (c?.message || `isolation re-run exit ${r.status ?? r.signal}`));
           } else if (r.deadlineKilled) {
             rerunMessages.set(file, `${label(n)}not finished inside the lane deadline`);
+          } else if (ranClean && byName.notPassed.length === 0) {
+            rerunMessages.set(file, `${label(n)}skipped-count-changed: ${first.skipped} skipped in the lane run, ${c!.skipped} in the solo run`);
           } else if (ranClean) {
             const miss = byName.notPassed[0];
             const was = c!.notPassedTests?.find((x) => x.name === miss)?.status ?? ((c!.passedTests ?? []).includes(miss) ? 'passed fewer times than it failed' : 'missing');
