@@ -34,6 +34,7 @@ describe('plain words', () => {
   it('requests and notes', () => {
     expect(triageAuthorityRequest('create', '1234', 'r')).toEqual({ action: 'create', pin: '1234', operatorDecisionRef: 'r', useProposal: true });
     expect(triageAuthorityRequest('revoke', '1234', 'r')).toEqual({ action: 'revoke', pin: '1234', operatorDecisionRef: 'r' });
+    expect(triageAuthorityRequest('create', '1234', 'r', 'gpt-6.2-astra')).toEqual({ action: 'create', pin: '1234', operatorDecisionRef: 'r', useProposal: true, shownModelFamily: 'gpt-6.2-astra' });
     expect(triageResultNote(false, { error: 'incorrect PIN' })).toMatch(/not accepted/);
     expect(newTriageDecisionRef(new Date(0), () => 0)).toMatch(/^dashboard-triage:/);
     expect(queueRowText({ rank: 1, severity: 'high', title: 'Crash', summary: 'It crashes' })).toBe('1. [high] Crash — It crashes');

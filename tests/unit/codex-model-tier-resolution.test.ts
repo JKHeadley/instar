@@ -40,8 +40,10 @@ const RETIRED_ON_CHATGPT_ACCOUNT = [
 ];
 
 const LIGHT = 'gpt-6-luna';
-const MEDIUM = 'gpt-6-sol';
-const HEAVY = 'gpt-6-astra';
+// 2026-11-17: medium and heavy moved to the GPT-6.2 family (live-probed on
+// every Codex account; CLI >= 0.166.0). No gpt-6.2-luna exists.
+const MEDIUM = 'gpt-6.2-sol';
+const HEAVY = 'gpt-6.2-astra';
 /** The canonical tiers BOTH resolvers understand. */
 const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
 /**

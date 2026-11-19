@@ -1177,7 +1177,10 @@ export class ThreadlineMCPServer {
         ),
       },
       async (args) => {
-        // Trust management is admin-only
+        // Trust management is admin-only. A grant here is made by an agent session (stdio or the
+        // local /mcp/threadline transport), never a verified person, so it is recorded as
+        // 'agent-proposal' (identity-security-piece1b §3; umbrella §11: bearer-only approvals stay
+        // at Basic, recorded as agent-proposal, and become cards from Phone up).
         const authError = this.checkAuth('threadline:admin');
         if (authError && !this.requestContext.isLocal) {
           return errorResult(authError);
@@ -1199,7 +1202,7 @@ export class ThreadlineMCPServer {
               success = trustManager.setTrustLevelByFingerprint(
                 args.fingerprint,
                 args.level as AgentTrustLevel,
-                'user-granted',
+                'agent-proposal',
                 args.reason,
                 args.agent,
               );
@@ -1207,7 +1210,7 @@ export class ThreadlineMCPServer {
               success = trustManager.setTrustLevel(
                 args.agent!,
                 args.level as AgentTrustLevel,
-                'user-granted',
+                'agent-proposal',
                 args.reason,
               );
             }
@@ -1220,8 +1223,8 @@ export class ThreadlineMCPServer {
               action: 'grant',
               agent: args.agent ?? args.fingerprint,
               level: args.level,
-              reason: args.reason ?? 'operator decision',
-              source: 'user-granted',
+              reason: args.reason ?? 'agent proposal',
+              source: 'agent-proposal',
             });
           }
 
@@ -1235,7 +1238,7 @@ export class ThreadlineMCPServer {
               success = trustManager.setTrustLevelByFingerprint(
                 args.fingerprint,
                 'untrusted',
-                'user-granted',
+                'agent-proposal',
                 args.reason ?? 'trust revoked',
                 args.agent,
               );
@@ -1243,7 +1246,7 @@ export class ThreadlineMCPServer {
               success = trustManager.setTrustLevel(
                 args.agent!,
                 'untrusted',
-                'user-granted',
+                'agent-proposal',
                 args.reason ?? 'trust revoked',
               );
             }

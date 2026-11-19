@@ -106,7 +106,7 @@ const GOLDEN: Record<string, { argv?: string[]; env?: Record<string, string>; th
     "argv": [
       "/bin/engine",
       "--model",
-      "gpt-6-sol",
+      "gpt-6.2-sol",
       "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       "check_for_update_on_startup=false"
@@ -119,7 +119,7 @@ const GOLDEN: Record<string, { argv?: string[]; env?: Record<string, string>; th
     "argv": [
       "/bin/engine",
       "--model",
-      "gpt-6-sol",
+      "gpt-6.2-sol",
       "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       "check_for_update_on_startup=false"
@@ -132,7 +132,7 @@ const GOLDEN: Record<string, { argv?: string[]; env?: Record<string, string>; th
     "argv": [
       "/bin/engine",
       "--model",
-      "gpt-6-sol",
+      "gpt-6.2-sol",
       "--sandbox",
       "workspace-write",
       "--ask-for-approval",
@@ -148,7 +148,7 @@ const GOLDEN: Record<string, { argv?: string[]; env?: Record<string, string>; th
     "argv": [
       "/bin/engine",
       "--model",
-      "gpt-6-sol",
+      "gpt-6.2-sol",
       "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       "check_for_update_on_startup=false"
@@ -168,7 +168,7 @@ const GOLDEN: Record<string, { argv?: string[]; env?: Record<string, string>; th
       "-c",
       "sandbox_workspace_write.network_access=true",
       "-m",
-      "gpt-6-sol",
+      "gpt-6.2-sol",
       "run the job"
     ],
     "env": {
@@ -186,7 +186,7 @@ const GOLDEN: Record<string, { argv?: string[]; env?: Record<string, string>; th
       "-c",
       "sandbox_workspace_write.network_access=true",
       "-m",
-      "gpt-6-sol",
+      "gpt-6.2-sol",
       "run the job"
     ],
     "env": {

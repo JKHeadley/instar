@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1b-truthful-approvals",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T09:01:22.064Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1b-truthful-approvals.md",
+  "artifactSha256": "278fef999bd8a08eeda3346bdeba098943712c715ba59a44f106a14a824ee3a2",
+  "specPath": "docs/specs/identity-security-piece1b-truthful-approvals.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece1b-truthful-approvals.eli16.md",
+    "docs/specs/identity-security-piece1b-truthful-approvals.md",
+    "docs/specs/reports/identity-security-piece1b-truthful-approvals-convergence.md",
+    "src/moltbridge/routes.ts",
+    "src/moltbridge/types.ts",
+    "src/threadline/AgentTrustManager.ts",
+    "src/threadline/ThreadlineMCPServer.ts",
+    "src/threadline/TrustEvaluator.ts",
+    "src/threadline/httpPeerTrust.ts",
+    "src/users/peerPlaceAdmission.ts",
+    "tests/unit/identity-piece1b-truthful-approvals.test.ts",
+    "upgrades/next/identity-security-piece1b-truthful-approvals.md",
+    "upgrades/side-effects/identity-security-piece1b-truthful-approvals.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Identity provenance on trust records; small, no behaviour change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
