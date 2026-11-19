@@ -71,7 +71,10 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
-      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body));
+      // A row that is its card (needs-one-list) keeps the source's own page one tap away, as a sibling link (never nested).
+      const also = r.alsoOpens && typeof r.alsoOpens.href === 'string' && hrefFor ? hrefFor({ kind: 'href', href: r.alsoOpens.href }) : null;
+      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
+        ...(also ? [el('a', { class: 'needs-also', href: also, text: r.alsoOpens.label || 'Open the project conversation' })] : []));
     }));
     host.replaceChildren(
       el('div', { class: 'needs-head' },

@@ -112,6 +112,8 @@ What changes is how a card about one of them is shown. In `surfacedNeeds` (`dash
 
 So "each item once" holds exactly for the Chief of Staff's waits; a plan or pull request with a session's card shows its row (linked) and the card's row. Echo's 7 waiting projects show as 7 Chief of Staff rows in Needs-you, each linked to its card, not 14 rows; the board's "Waiting on you" lane holds the 7 cards. The Chief of Staff's own note keeps its lines (it is the Telegram summary, not a list surface).
 
+**Amendment, 2026-11-18: one row per Chief of Staff wait.** Approved by Justin (topic 134088, 18:00 PST, CMT-1983): "Needs you" is the one list, and a project waiting on him appears once and opens its card. A row covered by a server-owned card on a key in the server-only `cos:` namespace now becomes that card: it keeps its key and source, takes the card's title and words, and its `action` opens the card. This applies whatever the card asks (an open wait or a Confirm done). The source's own link to the project conversation moves to an optional `alsoOpens` on the `GET /needs` item (`{ href, label: "Open the project conversation" }`, the same href rule as an action), and `card.label` reads "Opens its card on the work board". Both texts are the server's, and only the server writes `cos:` covers, so no agent text replaces a source's words. Every other covering card is unchanged: a covered plan or pull-request row keeps its own words and action and only gains `card`, and an agent session's card keeps its own row, so an agent's card still cannot take over another source's button. A client that does not know `alsoOpens` opens the card, and the card's text names the project conversation.
+
 ## Decision points touched
 
 | Decision point | Classification | Floor / arbiter / justification |
@@ -168,7 +170,7 @@ Cards stay owned by the team owner and private to them (work-board-asks §4 visi
 1. One wait card per project (deterministic id), reopened by rewrite, not one per wait episode: an episode id would depend on how much history the tick's union holds. The wait start shown is the time of the record that started the current wait, kept on the card.
 2. The card's done item is "the Chief of Staff no longer marks it waiting", not the binding's checklist; the checklist is shown in `need`.
 3. Plans, feedback fixes and promises are not auto-converted to cards. A card about a plan or pull request links its row; feedback and promises are not linkable in this slice.
-4. Needs-you keeps the source row and drops the card row (not the reverse), so every source keeps its own words and action on every client, including ones that do not know about cards.
+4. Needs-you keeps the source row and drops the card row (not the reverse), so every source keeps its own words and action on every client, including ones that do not know about cards. (Amended 2026-11-18 for the Chief of Staff's own waits only: that row takes the server-owned card's words and opens the card, with the project conversation in `alsoOpens`; see §3, "one row per Chief of Staff wait".)
 5. The approval amendment is limited to non-outward, person-carried cards, and an agent's claim on them needs the person's Confirm done (except server-owned wait cards).
 6. Project-app version cards stay exempt from the required fields and stay uncounted against the daily ceiling; wait cards are counted.
 7. Wait cards send no notification of their own, so night hours are untouched.
