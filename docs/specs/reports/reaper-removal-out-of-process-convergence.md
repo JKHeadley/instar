@@ -66,3 +66,7 @@ The round-by-round findings, with what each changed, are in the stewardship note
 ## Convergence verdict
 
 Converged at the round cap (6). Every design finding from rounds 1-6 changed the spec, and the round-6 fixes were confirmed against the code by the internal reviewer: the one gap it found, no guarded sub-process delete existed, is now a named executor method in the spec. The accepted items above are not safety, security or data-loss gaps. The spec is ready for the Chief of Staff's review and approval.
+
+## Approval
+
+Approved by the Chief of Staff, 2026-11-18 20:49 PT (msg 51cdd3bb), as a maintainer decision rather than a constitution change. Build it with real removal off, then bring the hourly dry-run counts plus PR 3480's numbers for the separate turn-on decision. Also approved: a separate spec making a `node_modules` clone whose files still match the source install count as regenerable.

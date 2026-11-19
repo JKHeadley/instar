@@ -28,3 +28,4 @@ Most new copies carry their own copy of the project's libraries. That copy share
 ## What needs deciding
 
 Nothing now. The design comes to the Chief of Staff for approval before it is built.
+Approved by the Chief of Staff, 20:49 PT: build with real removal off.

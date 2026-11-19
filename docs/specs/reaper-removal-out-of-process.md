@@ -11,6 +11,8 @@ review-iterations: 6
 review-completed-at: "2026-11-19T04:47:32.935Z"
 review-report: "docs/specs/reports/reaper-removal-out-of-process-convergence.md"
 cross-model-review: "ran"
+approved: true
+approved-by: "echo-chief-of-staff (msg 51cdd3bb, 2026-11-18 20:49 PT)"
 ---
 
 # Worktree removal runs in its own process, on a cadence that keeps up with creation
