@@ -8316,6 +8316,8 @@ export interface MonitoringConfig {
    */
   greenPrAutoMerge?: {
     enabled: boolean;
+    /** Read live on hand-off; absent disables the bounded UNKNOWN mergeability re-check. */
+    handoffRecheck?: boolean;
     dryRun?: boolean;
     tickIntervalMs?: number;
     maxAttempts?: number;

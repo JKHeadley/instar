@@ -56,9 +56,9 @@ describe('wireMergeLine', () => {
     const w = watcher();
     const s = status();
     expect(wireMergeLine({ service: f.service, watcher: w.w, status: s.st, enabled: () => true })).toEqual({ wired: true, reason: null });
-    const r = await f.handoff()!(rec(), { baseIsCurrentMain: true, currentMainHead: sha('b') });
+    const r = await f.handoff()!(rec(), { baseIsCurrentMain: true, currentMainHead: sha('b'), handoffStartedAt: 123 });
     expect(r).toEqual({ acted: true, reason: 'merged' });
-    expect(w.calls).toEqual([{ pr: 7, head: sha('a') }]);
+    expect(w.calls).toEqual([{ pr: 7, head: sha('a'), startedAt: 123 }]);
     expect(s.log).toEqual([`submit:merge-line:${sha('a').slice(0, 4)}`]);
   });
 

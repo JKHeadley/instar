@@ -26752,6 +26752,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const wiringOpts = {
             repoPath, safeMergePath, stateDir: config.stateDir, machineId: gpMachineId,
             repo: 'JKHeadley/instar', agentNamespace,
+            handoffRecheck: () => liveConfig.get<boolean>('monitoring.greenPrAutoMerge.handoffRecheck', false) === true,
             expectedGhLogin: typeof (gpCfg as { expectedGhLogin?: unknown }).expectedGhLogin === 'string' ? (gpCfg as { expectedGhLogin: string }).expectedGhLogin : undefined,
             mergeTimeoutMs: Number(gpCfg.mergeTimeoutMs) || 1_500_000,
             mergeKillGraceMs: Number(gpCfg.mergeKillGraceMs) || 60_000,

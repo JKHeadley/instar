@@ -214,6 +214,7 @@ export interface GreenPrWiringOpts {
   mergeStrategy?: 'auto' | 'admin';
   armTimeoutMs?: number;
   /** Lease accessors (single-machine: () => true / () => 0). */
+  handoffRecheck?: () => boolean;
   holdsLease: () => boolean;
   leaseEpoch: () => number;
   /** Merged peer guard-latch view (single-machine: () => []). */
@@ -364,6 +365,7 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
   };
 
   return {
+    handoffRecheck: opts.handoffRecheck,
     holdsLease: opts.holdsLease,
     leaseEpoch: opts.leaseEpoch,
     rulesetReviewPolicy: async () => {
@@ -471,6 +473,7 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
           isDraft: !!j.isDraft,
           headRefOid: String(j.headRefOid ?? ''),
           state: String(j.state ?? 'UNKNOWN'),
+          mergeable: typeof j.mergeable === 'string' ? j.mergeable : undefined,
           mergeCommitOid: mergeOid != null ? String(mergeOid) : null,
           autoMergeRequest: amr,
         };

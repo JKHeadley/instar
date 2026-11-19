@@ -158,13 +158,14 @@ describe('buildGreenPrDeps — widened projections (Blocker 4)', () => {
 
   it('refetchPr returns the widened shape (state + mergeCommitOid + autoMergeRequest), mapping gh\'s mergeCommit.oid', async () => {
     // gh's PR JSON has `mergeCommit: { oid }` — there is NO `mergeCommitOid` field.
-    const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'MERGED', mergeCommit: { oid: 'squashBase' }, autoMergeRequest: { expectedHeadOid: 'h1' } });
+    const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'MERGED', mergeable: 'MERGEABLE', mergeCommit: { oid: 'squashBase' }, autoMergeRequest: { expectedHeadOid: 'h1' } });
     const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view } });
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), latches);
     const r = await deps.refetchPr(1);
     expect(r).not.toBeNull();
     expect(r!.state).toBe('MERGED');
+    expect(r!.mergeable).toBe('MERGEABLE');
     expect(r!.mergeCommitOid).toBe('squashBase');
     expect(r!.autoMergeRequest?.expectedHeadOid).toBe('h1');
     // The view projection requested the widened fields — by gh's names.

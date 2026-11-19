@@ -16,6 +16,7 @@
  * real processes, or a real lease.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
 
 import {
@@ -171,6 +172,10 @@ export interface IndependentReviewVerdict {
 }
 
 export interface GreenPrAutoMergerDeps {
+  /** Read the opt-in switch live for each hand-off. */
+  handoffRecheck?(): boolean;
+  /** Timer seam for bounded reads and the three waits. Returns cancellation. */
+  setTimer?(callback: () => void, ms: number): () => void;
   holdsLease(): boolean;
   leaseEpoch(): number;
   /** The single oldest-first GraphQL list call. Throws → tick-failed canary. */
@@ -195,6 +200,7 @@ export interface GreenPrAutoMergerDeps {
   refetchPr(pr: number): Promise<
     | (Pick<PrSummary, 'title' | 'labels' | 'isDraft' | 'headRefOid'> & {
         state: string;
+        mergeable?: string;
         mergeCommitOid?: string | null;
         autoMergeRequest?: { enabledAt?: string | null; expectedHeadOid?: string | null } | null;
       })
@@ -395,6 +401,19 @@ export function orderOldestFirst<T extends { number: number }>(prs: T[]): T[] {
   return [...prs].sort((a, b) => a.number - b.number);
 }
 
+export interface HandoffRecheckResult {
+  firstMergeable?: string;
+  recheckEntered: boolean;
+  /** Delayed reads only; the existing gather read is excluded. */
+  recheckReads: number;
+  /** Waits plus delayed-read duration, excluding the merge attempt. */
+  recheckSeconds: number;
+}
+
+type TickOptions = { manual?: boolean; handoff?: { pr: number; head: string; startedAt?: number } };
+type TickResult = { acted: boolean; reason: string } & Partial<HandoffRecheckResult>;
+type DirectRead = Awaited<ReturnType<GreenPrAutoMergerDeps['refetchPr']>>;
+
 export class GreenPrAutoMerger extends EventEmitter {
   private readonly cfg: ResolvedConfig;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
@@ -408,6 +427,44 @@ export class GreenPrAutoMerger extends EventEmitter {
   private inFlightDone: Promise<void> | null = null;
   /** The longest a hand-off waits on an attempt in flight (its deadline + kill grace + margin). */
   private handoffWaitMaxMs(): number { return this.cfg.mergeTimeoutMs + this.cfg.mergeKillGraceMs + 60_000; }
+  private readonly handoffContext = new AsyncLocalStorage<{ startedAt: number; metrics: HandoffRecheckResult }>();
+
+  private audit(event: Record<string, unknown>): void {
+    const context = this.handoffContext.getStore();
+    this.deps.audit({ ...event, ...(context ? { handoffStartedAt: context.startedAt } : {}) });
+  }
+
+  private timer(callback: () => void, ms: number): () => void {
+    if (this.deps.setTimer) return this.deps.setTimer(callback, ms);
+    const timer = setTimeout(callback, ms);
+    timer.unref();
+    return () => clearTimeout(timer);
+  }
+
+  private async boundedRead(pr: number): Promise<DirectRead> {
+    let cancel = () => {};
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => this.deps.refetchPr(pr)).catch(() => null), // @silent-fallback-ok: a failed read ends the re-check with today's answer and is written in the handoff-recheck row; it never leads to a merge attempt.
+        new Promise<null>((resolve) => { cancel = this.timer(() => resolve(null), 10_000); }),
+      ]);
+    } finally { cancel(); }
+  }
+
+  private takeFlight(): () => void {
+    this.inFlight = true;
+    let release = () => {};
+    const done = new Promise<void>((resolve) => { release = resolve; });
+    this.inFlightDone = done;
+    return () => {
+      if (this.inFlightDone === done) {
+        this.inFlight = false;
+        this.inFlightDone = null;
+      }
+      release();
+    };
+  }
+
   private tickCount = 0;
   private localVerify: LocalVerifyHook | null = null;
   /** Resolved at boot: does the timeout invariant hold? */
@@ -498,7 +555,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       };
       next.push(entry);
       if (prior.get(pr.number)?.headRefOid !== pr.headRefOid) {
-        this.deps.audit({
+        this.audit({
           kind: 'green-pr-automerge', event: 'skipped:not-agent-owned',
           pr: pr.number, head: pr.headRefOid, headRefName: pr.headRefName,
           reason: o.reason, hasVerifyRecord: entry.hasVerifyRecord,
@@ -517,11 +574,11 @@ export class GreenPrAutoMerger extends EventEmitter {
     if (!this.cfg.enabled || this.tickHandle) return;
     if (!this.invariantOk) {
       // Boot refusal must be LOUD (B24) — never start with an inverted invariant.
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'boot-refused-invariant', reason: this.invariantReason });
+      this.audit({ kind: 'green-pr-automerge', event: 'boot-refused-invariant', reason: this.invariantReason });
       return;
     }
     if (!this.configurationOk) {
-      this.deps.audit({
+      this.audit({
         kind: 'green-pr-automerge',
         event: 'boot-refused-configuration',
         issues: this.configurationIssues,
@@ -565,7 +622,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     try {
       const applied = await this.deps.applyHoldMarker(pr, reason);
       if (!applied) return { ok: false, status: 502, detail: 'gh failed to apply the hold marker', pr };
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'hold-applied', pr });
+      this.audit({ kind: 'green-pr-automerge', event: 'hold-applied', pr });
 
       // The HOLD-label/title path does NOT stop GitHub native auto-merge (GitHub
       // gates on checks/mergeability, not title/labels — mergerunner-auto-arm-
@@ -579,10 +636,10 @@ export class GreenPrAutoMerger extends EventEmitter {
         catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — a disable error is honest; never claim the hold stopped the merge */ disabled = false; }
         if (disabled) {
           delete ep.armedAt; delete ep.armedHead; delete ep.overdue; delete ep.overdueSurfacedAt;
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'disarmed', pr, reason: 'hold' });
+          this.audit({ kind: 'green-pr-automerge', event: 'disarmed', pr, reason: 'hold' });
           this.deps.saveState(state);
         } else {
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'disarm-failed', pr, reason: 'hold' });
+          this.audit({ kind: 'green-pr-automerge', event: 'disarm-failed', pr, reason: 'hold' });
           this.deps.saveState(state);
           return { ok: false, status: 502, detail: 'hold marker applied but could not disable the in-flight auto-merge — PR may still merge; disable it on GitHub directly', pr };
         }
@@ -600,10 +657,19 @@ export class GreenPrAutoMerger extends EventEmitter {
    * gate a normal tick applies (lease, latches, breaker, warm-up, floor, holds, code
    * owners, independent review, safe-merge), instead of the oldest candidate at the
    * next interval. A hand-off waits for an attempt in flight rather than feeding the
-   * busy-skip breaker, requests no verifies, and never retries: a refusal is left to
-   * the regular ticks.
+   * busy-skip breaker and requests no verifies. An opt-in re-check repeats only
+   * UNKNOWN mergeability reads; every merge still uses the same act path.
    */
-  async tick(opts: { manual?: boolean; handoff?: { pr: number; head: string } } = {}): Promise<{ acted: boolean; reason: string }> {
+  async tick(opts: TickOptions = {}): Promise<TickResult> {
+    if (!opts.handoff) return this.runTick(opts);
+    const metrics: HandoffRecheckResult = { recheckEntered: false, recheckReads: 0, recheckSeconds: 0 };
+    return this.handoffContext.run({ startedAt: opts.handoff.startedAt ?? this.deps.now(), metrics }, async () => {
+      const result = await this.runTick(opts);
+      return { ...result, ...metrics };
+    });
+  }
+
+  private async runTick(opts: TickOptions): Promise<TickResult> {
     this.tickCount += 1;
     let state = this.deps.loadState();
     state.lastTickAt = this.deps.now();
@@ -620,12 +686,12 @@ export class GreenPrAutoMerger extends EventEmitter {
       if (opts.handoff) {
         // A hand-off is not a missed interval: wait for the attempt in flight (bounded by its
         // own deadline + kill grace), then proceed on fresh state.
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-waited-in-flight', pr: opts.handoff.pr });
+        this.audit({ kind: 'green-pr-automerge', event: 'handoff-waited-in-flight', pr: opts.handoff.pr });
         const waitStart = this.deps.now();
         while (this.inFlight || this.inFlightDone) {
           if (this.deps.now() - waitStart > this.handoffWaitMaxMs()) {
             // Nothing of this tick's was changed (only lastTickAt in memory): no save, left to the next tick.
-            this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-wait-timeout', pr: opts.handoff.pr });
+            this.audit({ kind: 'green-pr-automerge', event: 'handoff-wait-timeout', pr: opts.handoff.pr });
             return { acted: false, reason: 'handoff-wait-timeout' };
           }
           if (this.inFlightDone) await this.inFlightDone;
@@ -635,7 +701,7 @@ export class GreenPrAutoMerger extends EventEmitter {
         state.lastTickAt = this.deps.now();
       } else {
         state.breaker = feedBreaker(state.breaker, 'busy-skip', this.deps.now(), this.breakerCfg());
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-busy' });
+        this.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-busy' });
         this.deps.saveState(state);
         return { acted: false, reason: 'busy' };
       }
@@ -644,14 +710,14 @@ export class GreenPrAutoMerger extends EventEmitter {
     // Dual-latch gate (R9): rollback / emergency-pause / unreadable → no merge.
     const gate = this.deps.latches.isMergeAllowed();
     if (!gate.allowed) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-disabled', reason: gate.reason });
+      this.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-disabled', reason: gate.reason });
       this.deps.saveState(state);
       return { acted: false, reason: `disabled:${gate.reason}` };
     }
 
     // Breaker open within cooldown → skip.
     if (breakerBlocking(state.breaker, this.deps.now(), this.cfg.breakerCooldownMin * 60_000)) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-breaker-open' });
+      this.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-breaker-open' });
       this.deps.saveState(state);
       return { acted: false, reason: 'breaker-open' };
     }
@@ -691,7 +757,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // A hand-off means something only on the local floor (the record IS the authorization
     // there); on the actions floor GitHub's checks decide, at the regular cadence.
     if (opts.handoff && floor !== 'local') {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-skipped', pr: opts.handoff.pr, reason: 'floor-actions' });
+      this.audit({ kind: 'green-pr-automerge', event: 'handoff-skipped', pr: opts.handoff.pr, reason: 'floor-actions' });
       this.deps.saveState(state);
       return { acted: false, reason: 'floor-actions' };
     }
@@ -710,13 +776,16 @@ export class GreenPrAutoMerger extends EventEmitter {
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       // Tick-failed canary (L5(b)): a failed/unparseable list call feeds the breaker.
       state.breaker = feedBreaker(state.breaker, 'tick-failed', this.deps.now(), this.breakerCfg());
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: 'list', detail: String((e as Error)?.message).slice(0, 200) });
+      this.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: 'list', detail: String((e as Error)?.message).slice(0, 200) });
       this.deps.saveState(state);
       return { acted: false, reason: 'list-failed' };
     }
 
+    const recheckOn = !!opts.handoff && safeBool(() => this.deps.handoffRecheck?.() === true);
+    const context = this.handoffContext.getStore();
+    if (context) context.metrics.firstMergeable = candidates.find((p) => p.number === opts.handoff?.pr)?.mergeable;
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
-    const { eligible, snapshotEntries } = await this.gather(candidates, state, floor);
+    const { eligible, snapshotEntries, directReads, holdResults } = await this.gather(candidates, state, floor, recheckOn ? opts.handoff?.pr : undefined);
     state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
     const namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
     this.observeNotAgentOwned(candidates, state);
@@ -737,7 +806,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       if (state.consecutiveWarmupOnlyTenures >= 3) {
         await this.refreshAggregate(state, [`waiting:lease-flap — ${state.consecutiveWarmupOnlyTenures} consecutive warm-up-only tenures (running, seeing PRs, never permitted to act)`]);
       }
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-warm-up', candidates: eligible.length });
+      this.audit({ kind: 'green-pr-automerge', event: 'tick-warm-up', candidates: eligible.length });
       this.deps.saveState(state);
       return { acted: false, reason: 'warm-up' };
     }
@@ -748,30 +817,66 @@ export class GreenPrAutoMerger extends EventEmitter {
     // Merge hand-off: the target is exactly the verified (pr, head), or nothing.
     if (opts.handoff) {
       const h = opts.handoff;
-      const target = eligible.find((p) => p.number === h.pr && p.headRefOid === h.head) ?? null;
-      if (!target) {
-        const row = candidates.find((p) => p.number === h.pr);
-        const why = !row ? 'not-listed'
-          : row.headRefOid !== h.head ? 'head-moved'
-            : (classifyCandidate(row, this.cfg.agentNamespace, { floor, hasRecord: this.recordFor(row), expectedGhLogin: this.cfg.expectedGhLogin }).skip ?? 'waiting');
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-not-eligible', pr: h.pr, head: h.head, reason: why });
-        this.deps.saveState(state);
-        return { acted: false, reason: `handoff-not-eligible:${why}` };
-      }
-      if (this.cfg.dryRun) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'would-merge', pr: target.number, head: target.headRefOid, handoff: true });
-        this.deps.saveState(state);
-        return { acted: false, reason: 'dry-run' };
-      }
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff', pr: target.number, head: target.headRefOid });
-      let r: ActResult = { acted: false, outcome: null };
+      let target = eligible.find((p) => p.number === h.pr && p.headRefOid === h.head) ?? null;
+      const row = candidates.find((p) => p.number === h.pr);
+      let why: string = !row ? 'not-listed'
+        : row.headRefOid !== h.head ? 'head-moved'
+          : (classifyCandidate(row, this.cfg.agentNamespace, { floor, hasRecord: this.recordFor(row), expectedGhLogin: this.cfg.expectedGhLogin }).skip ?? 'waiting');
+      let settle: (() => void) | undefined;
       try {
-        r = await this.act(target, state, floor);
-        this.deps.saveState(state);
+        if (!target && row && why === 'not-mergeable' && row.mergeable === 'UNKNOWN' && recheckOn && !this.inFlight && !this.inFlightDone) {
+          settle = this.takeFlight();
+          const metrics = context!.metrics;
+          metrics.recheckEntered = true;
+          let live = directReads.get(h.pr) ?? null;
+          for (const seconds of [5, 10, 15]) {
+            if (!live || live.state !== 'OPEN' || live.headRefOid !== h.head || live.mergeable !== 'UNKNOWN') break;
+            const waitStart = this.deps.now();
+            await new Promise<void>((resolve) => { this.timer(resolve, seconds * 1000); });
+            const readStart = this.deps.now();
+            live = await this.boundedRead(h.pr);
+            const readEnd = this.deps.now();
+            metrics.recheckReads++;
+            metrics.recheckSeconds += (readEnd - waitStart) / 1000;
+            this.audit({ kind: 'green-pr-automerge', event: 'handoff-recheck', pr: h.pr, head: h.head,
+              read: metrics.recheckReads, mergeable: live?.mergeable ?? null, state: live?.state ?? null, readHead: live?.headRefOid ?? null,
+              waitedSeconds: (readStart - waitStart) / 1000, readSeconds: (readEnd - readStart) / 1000 });
+          }
+          if (live?.state === 'OPEN' && live.headRefOid === h.head && live.mergeable === 'MERGEABLE') {
+            if (!safeBool(() => this.deps.holdsLease()) || safeNum(() => this.deps.leaseEpoch()) !== epoch) {
+              this.audit({ kind: 'green-pr-automerge', event: 'handoff-not-eligible', pr: h.pr, head: h.head, reason: 'not-lease-holder' });
+              return { acted: false, reason: 'not-lease-holder' };
+            }
+            const freshGate = this.deps.latches.isMergeAllowed();
+            if (!freshGate.allowed) {
+              this.audit({ kind: 'green-pr-automerge', event: 'handoff-not-eligible', pr: h.pr, head: h.head, reason: `disabled:${freshGate.reason}` });
+              return { acted: false, reason: `disabled:${freshGate.reason}` };
+            }
+            const fresh = { ...row, ...live, mergeable: live.mergeable };
+            const verdict = classifyCandidate(fresh, this.cfg.agentNamespace, { floor, hasRecord: this.recordFor(fresh), expectedGhLogin: this.cfg.expectedGhLogin });
+            why = verdict.skip ?? 'waiting';
+            if (verdict.eligible && await this.eligibleGates(fresh, state, floor, holdResults.get(h.pr) === true, snapshotEntries)) {
+              target = fresh;
+              snapshotEntries.push({ pr: fresh.number, headRefName: fresh.headRefName, headRefOid: fresh.headRefOid, kind: 'mergeable' });
+            }
+          }
+        }
+        if (!target) {
+          if (why === 'not-mergeable') why = `not-mergeable-${row!.mergeable.toLowerCase()}`;
+          this.audit({ kind: 'green-pr-automerge', event: 'handoff-not-eligible', pr: h.pr, head: h.head, reason: why });
+          return { acted: false, reason: `handoff-not-eligible:${why}` };
+        }
+        if (this.cfg.dryRun) {
+          this.audit({ kind: 'green-pr-automerge', event: 'would-merge', pr: target.number, head: target.headRefOid, handoff: true });
+          return { acted: false, reason: 'dry-run' };
+        }
+        this.audit({ kind: 'green-pr-automerge', event: 'handoff', pr: target.number, head: target.headRefOid });
+        const r = await this.act(target, state, floor, settle);
+        settle = r.settle ?? settle;
+        return { acted: r.acted, reason: r.outcome ?? (r.acted ? 'merged' : 'skipped') };
       } finally {
-        r.settle?.(); // only an attempt THIS call spawned has a settle: released after the save
+        try { this.deps.saveState(state); } finally { settle?.(); }
       }
-      return { acted: r.acted, reason: r.outcome ?? (r.acted ? 'merged' : 'skipped') };
     }
 
     // Verify requests (local-verify §2 "Who starts a verify"): under either floor,
@@ -792,7 +897,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // Act (Step 4 engine). dryRun observes only.
     if (this.cfg.dryRun) {
       const target = ordered[0];
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'would-merge', pr: target.number, head: target.headRefOid });
+      this.audit({ kind: 'green-pr-automerge', event: 'would-merge', pr: target.number, head: target.headRefOid });
       this.deps.saveState(state);
       return { acted: false, reason: 'dry-run' };
     }
@@ -808,14 +913,16 @@ export class GreenPrAutoMerger extends EventEmitter {
       // Only a PR whose own episode rules it out this tick passes the turn on;
       // any real attempt (or a reason that applies to every PR) ends the tick.
       if (!PASS_ON.has(r.outcome ?? '')) break;
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:episode', pr: target.number, outcome: r.outcome });
+      this.audit({ kind: 'green-pr-automerge', event: 'skipped:episode', pr: target.number, outcome: r.outcome });
     }
     return { acted: r.acted, reason: r.acted ? 'acted' : 'skipped' };
   }
 
   // ---- candidate gathering -----------------------------------------------
 
-  private async gather(prs: PrSummary[], state: GreenPrState, floor: 'local' | 'actions' = 'actions'): Promise<{ eligible: PrSummary[]; snapshotEntries: GreenPrSnapshotEntry[] }> {
+  private async gather(prs: PrSummary[], state: GreenPrState, floor: 'local' | 'actions' = 'actions', boundedPr?: number): Promise<{ eligible: PrSummary[]; snapshotEntries: GreenPrSnapshotEntry[]; directReads: Map<number, DirectRead>; holdResults: Map<number, boolean> }> {
+    const directReads = new Map<number, DirectRead>();
+    const holdResults = new Map<number, boolean>();
     const eligible: PrSummary[] = [];
     const snapshotEntries: GreenPrSnapshotEntry[] = [];
     const nowMs = this.deps.now();
@@ -830,7 +937,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       const localArmed = state.episodes[pr.number]?.armedAt != null;
       const githubArmed = pr.autoMergeArmed === true;
       if (localArmed || githubArmed) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:already-armed', pr: pr.number, source: localArmed ? 'local-episode' : 'github' });
+        this.audit({ kind: 'green-pr-automerge', event: 'skipped:already-armed', pr: pr.number, source: localArmed ? 'local-episode' : 'github' });
         snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
         continue;
       }
@@ -842,15 +949,16 @@ export class GreenPrAutoMerger extends EventEmitter {
       // marker is absent for holdReleaseTicks AND tickIntervalMs elapsed.
       const heldNow = holdReasonOf(pr) !== null;
       const deb = debounceHoldRelease(state.holdMemory[pr.number], heldNow, nowMs, this.cfg.holdReleaseTicks, this.cfg.tickIntervalMs);
+      holdResults.set(pr.number, deb.resumeEligible);
       if (deb.mem) state.holdMemory[pr.number] = deb.mem; else delete state.holdMemory[pr.number];
 
       if (!verdict.eligible) {
         if (verdict.skip === 'held' && deb.transition === 'released') {
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'hold-released', pr: pr.number });
+          this.audit({ kind: 'green-pr-automerge', event: 'hold-released', pr: pr.number });
         }
         if (verdict.skip === 'no-checks-ran') {
           // Say so: zero GitHub Actions checks on this head is NOT green.
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
+          this.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
         }
         // GitHub answers UNKNOWN mergeability in list results until something reads the PR
         // itself, and every merge resets it for the others: a verified PR could sit unseen
@@ -859,65 +967,71 @@ export class GreenPrAutoMerger extends EventEmitter {
         // under the actions floor), so this costs one read per ready PR. The read also asks for
         // `mergeable` (REFETCH_PR_JSON_FIELDS), belt-and-braces: a direct read alone was seen to do it.
         if (verdict.skip === 'not-mergeable' && pr.mergeable === 'UNKNOWN' && (floor === 'local' ? this.recordFor(pr) : pr.statusRollup === 'SUCCESS')) {
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'mergeability-unknown', pr: pr.number, head: pr.headRefOid });
-          try { await this.deps.refetchPr(pr.number); } catch { /* @silent-fallback-ok: the read only nudges GitHub to compute mergeability; the next tick lists the result either way */ }
+          this.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'mergeability-unknown', pr: pr.number, head: pr.headRefOid });
+          try { directReads.set(pr.number, pr.number === boundedPr ? await this.boundedRead(pr.number) : await this.deps.refetchPr(pr.number)); } catch { /* @silent-fallback-ok: the read only nudges GitHub to compute mergeability; the next tick lists the result either way */ }
         }
         continue;
       }
-      // verdict.eligible but the hold debounce may still hold it back this tick.
-      if (heldNow || !deb.resumeEligible) continue;
-      // This head was refused for want of an independent review: nothing changes until a
-      // new head (the committed trace) arrives, so do not spawn safe-merge again for it.
-      const prior = state.episodes[pr.number];
-      if (prior?.lastOutcome === NEEDS_INDEPENDENT_REVIEW && prior.headRefOid === pr.headRefOid) {
-        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
-        continue;
-      }
-
-      // Code-owner gate (enumerated to exhaustion). The ONLY PRs the watcher routes to the
-      // operator are those touching a CODEOWNERS-owned file (the constitution): they wait
-      // for GitHub's code-owner review. Protected-path and harness-changing PRs are no longer
-      // routed to the operator; the local floor admits them only with an independent second
-      // pass recorded by the verifier (directive 2026-10-22; spec local-verify-merge-authority).
-      let co: CodeOwnedPathsVerdict;
-      try {
-        co = await this.deps.codeOwnedPaths(pr);
-      } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
-        co = { touches: false, files: [], unverifiable: true };
-      }
-      if (co.unverifiable) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owners-unverifiable', pr: pr.number });
-        continue;
-      }
-      if (co.touches && pr.reviewDecision !== 'APPROVED' && co.ownerApproved !== true) {
-        // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
-        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });
-        await this.refreshAggregate(state, [`PR #${pr.number} changes ${co.files.slice(0, 3).join(', ')} — it waits for your code-owner review on GitHub`]);
-        continue;
-      }
-      // The watcher's own-source protection, kept only as the SAME independent-review
-      // requirement: on the local floor the verifier's record carries it (safe-merge
-      // refuses without it); on the actions floor there is no record, so the watcher
-      // checks the head itself. Never routed to the operator.
-      if (floor === 'actions' && (co.protectedFiles?.length ?? 0) > 0) {
-        let rv: IndependentReviewVerdict;
-        try {
-          rv = this.deps.independentReviewAtHead
-            ? await this.deps.independentReviewAtHead(pr, co.protectedFiles!)
-            : { ok: false, unverifiable: true, problem: 'review-reader-unwired' };
-        } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge */
-          rv = { ok: false, unverifiable: true, problem: 'review-read-failed' };
-        }
-        if (!rv.ok) {
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'needs-independent-review', pr: pr.number, head: pr.headRefOid, problem: rv.problem ?? null });
-          continue;
-        }
-      }
+      if (!await this.eligibleGates(pr, state, floor, deb.resumeEligible, snapshotEntries)) continue;
       eligible.push(pr);
       snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
     }
-    return { eligible, snapshotEntries };
+    return { eligible, snapshotEntries, directReads, holdResults };
+  }
+
+  /** The eligible-only gates are shared by listed and re-read candidates. */
+  private async eligibleGates(pr: PrSummary, state: GreenPrState, floor: 'local' | 'actions', resumeEligible: boolean, snapshotEntries: GreenPrSnapshotEntry[]): Promise<boolean> {
+    // verdict.eligible but the hold debounce may still hold it back this tick.
+    if (holdReasonOf(pr) !== null || !resumeEligible) return false;
+    // This head was refused for want of an independent review: nothing changes until a
+    // new head (the committed trace) arrives, so do not spawn safe-merge again for it.
+    const prior = state.episodes[pr.number];
+    if (prior?.lastOutcome === NEEDS_INDEPENDENT_REVIEW && prior.headRefOid === pr.headRefOid) {
+      snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
+      return false;
+    }
+
+    // Code-owner gate (enumerated to exhaustion). The ONLY PRs the watcher routes to the
+    // operator are those touching a CODEOWNERS-owned file (the constitution): they wait
+    // for GitHub's code-owner review. Protected-path and harness-changing PRs are no longer
+    // routed to the operator; the local floor admits them only with an independent second
+    // pass recorded by the verifier (directive 2026-10-22; spec local-verify-merge-authority).
+    let co: CodeOwnedPathsVerdict;
+    try {
+      co = await this.deps.codeOwnedPaths(pr);
+    } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
+      co = { touches: false, files: [], unverifiable: true };
+    }
+    if (co.unverifiable) {
+      this.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owners-unverifiable', pr: pr.number });
+      return false;
+    }
+    if (co.touches && pr.reviewDecision !== 'APPROVED' && co.ownerApproved !== true) {
+      // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
+      snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
+      this.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });
+      await this.refreshAggregate(state, [`PR #${pr.number} changes ${co.files.slice(0, 3).join(', ')} — it waits for your code-owner review on GitHub`]);
+      return false;
+    }
+    // The watcher's own-source protection, kept only as the SAME independent-review
+    // requirement: on the local floor the verifier's record carries it (safe-merge
+    // refuses without it); on the actions floor there is no record, so the watcher
+    // checks the head itself. Never routed to the operator.
+    if (floor === 'actions' && (co.protectedFiles?.length ?? 0) > 0) {
+      let rv: IndependentReviewVerdict;
+      try {
+        rv = this.deps.independentReviewAtHead
+          ? await this.deps.independentReviewAtHead(pr, co.protectedFiles!)
+          : { ok: false, unverifiable: true, problem: 'review-reader-unwired' };
+      } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge */
+        rv = { ok: false, unverifiable: true, problem: 'review-read-failed' };
+      }
+      if (!rv.ok) {
+        this.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'needs-independent-review', pr: pr.number, head: pr.headRefOid, problem: rv.problem ?? null });
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -933,7 +1047,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     const mismatched = prs.length > 0 && outside.length === prs.length;
     if (!mismatched) {
       if (state.namespaceMismatch) {
-        this.deps.audit({
+        this.audit({
           kind: 'green-pr-automerge',
           event: 'namespace-mismatch-recovered',
           namespace: state.namespaceMismatch.namespace,
@@ -955,7 +1069,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       fingerprint,
     };
     if (prior?.fingerprint !== fingerprint) {
-      this.deps.audit({
+      this.audit({
         kind: 'green-pr-automerge',
         event: 'namespace-mismatch',
         namespace: this.cfg.agentNamespace,
@@ -1023,9 +1137,9 @@ export class GreenPrAutoMerger extends EventEmitter {
     for (const pr of ready) {
       try {
         const r = await lv.requestVerify(pr.number);
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'verify-requested', pr: pr.number, head: pr.headRefOid, result: summarize(r) });
+        this.audit({ kind: 'green-pr-automerge', event: 'verify-requested', pr: pr.number, head: pr.headRefOid, result: summarize(r) });
       } catch (e) { /* @silent-fallback-ok: local-verify fail-safe — a failed request is retried next tick */
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'verify-request-failed', pr: pr.number, detail: String((e as Error)?.message).slice(0, 200) });
+        this.audit({ kind: 'green-pr-automerge', event: 'verify-request-failed', pr: pr.number, detail: String((e as Error)?.message).slice(0, 200) });
       }
     }
   }
@@ -1034,12 +1148,12 @@ export class GreenPrAutoMerger extends EventEmitter {
    * One merge attempt for `target`. `acted` = a real, intended terminal action (merged or
    * armed), `outcome` = the classified result or the skip reason (the hand-off's answer).
    */
-  private async act(target: PrSummary, state: GreenPrState, floor: 'local' | 'actions' = 'actions'): Promise<ActResult> {
+  private async act(target: PrSummary, state: GreenPrState, floor: 'local' | 'actions' = 'actions', ownedFlight?: () => void): Promise<ActResult> {
     const skip = (outcome: string): ActResult => ({ acted: false, outcome });
     // Identity contract (R4): verify gh login matches expectedGhLogin (TTL cached).
     const idOk = await this.identityOk(state);
     if (idOk !== 'ok') {
-      this.deps.audit({ kind: 'green-pr-automerge', event: `skipped:${idOk}` });
+      this.audit({ kind: 'green-pr-automerge', event: `skipped:${idOk}` });
       return skip(`skipped:${idOk}`);
     }
 
@@ -1048,7 +1162,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     if (ep && ep.headRefOid !== target.headRefOid) {
       const re = maybeRearm(ep, target.headRefOid, this.ladderCfg());
       if (re === null) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'gave-up-rearm-exhausted', pr: target.number });
+        this.audit({ kind: 'green-pr-automerge', event: 'gave-up-rearm-exhausted', pr: target.number });
         return skip('gave-up-rearm-exhausted');
       }
       ep = re;
@@ -1059,16 +1173,16 @@ export class GreenPrAutoMerger extends EventEmitter {
     // Contract probe BEFORE every attempt (round-3: mid-run checkout swap).
     const probe = await this.deps.runner.probeContract();
     if (!probe.ok) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:safe-merge-contract' });
+      this.audit({ kind: 'green-pr-automerge', event: 'skipped:safe-merge-contract' });
       return skip('skipped:safe-merge-contract');
     }
 
     // Re-fetch hold/state immediately before acting (R3 residual window bound).
     const live = await this.deps.refetchPr(target.number);
-    if (!live) { this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:vanished', pr: target.number }); return skip('skipped:vanished'); }
+    if (!live) { this.audit({ kind: 'green-pr-automerge', event: 'skipped:vanished', pr: target.number }); return skip('skipped:vanished'); }
     if (live.state !== 'OPEN') { const o = live.state === 'MERGED' ? 'merged-by-other' : 'closed-by-other'; this.recordOutcome(state, target, o); return skip(o); }
     if (live.isDraft || holdReasonOf({ isDraft: live.isDraft, title: live.title, labels: live.labels })) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:held-on-refetch', pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: 'skipped:held-on-refetch', pr: target.number });
       return skip('skipped:held-on-refetch');
     }
     // Authoritative pre-arm gate (mergerunner-auto-arm-handoff Blocker 4 — defense
@@ -1076,7 +1190,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // refetchPr shows auto-merge already armed, REFUSE to re-arm right before
     // spawning. Synthesize the local episode so reconciliation tracks the merge.
     if (live.autoMergeRequest) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:already-armed-on-refetch', pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: 'skipped:already-armed-on-refetch', pr: target.number });
       const ep = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' as const };
       ep.armedAt = ep.armedAt ?? this.deps.now();
       ep.armedHead = ep.armedHead ?? (live.autoMergeRequest.expectedHeadOid ?? live.headRefOid);
@@ -1085,30 +1199,23 @@ export class GreenPrAutoMerger extends EventEmitter {
       return skip('skipped:already-armed-on-refetch');
     }
     if (live.headRefOid !== target.headRefOid) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:head-moved', pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: 'skipped:head-moved', pr: target.number });
       return skip('skipped:head-moved');
     }
 
     // In-process single flight, re-checked HERE (the top-of-tick check happened several awaits
     // ago; two ticks can both pass it): an attempt already running means this call spawns
     // nothing and owns nothing to release.
-    if (this.inFlight || this.inFlightDone) {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:busy-in-act', pr: target.number });
+    if (!ownedFlight && (this.inFlight || this.inFlightDone)) {
+      this.audit({ kind: 'green-pr-automerge', event: 'skipped:busy-in-act', pr: target.number });
       return skip('skipped:busy-in-act');
     }
     // Spawn (the MergeRunner owns the durable in-flight record). The release is a local,
     // handed back on the result: the owning tick settles it after its saveState, never here.
-    this.inFlight = true;
-    let release: () => void = () => {};
-    const done = new Promise<void>((r) => { release = r; });
-    this.inFlightDone = done;
-    const settle = () => {
-      if (this.inFlightDone === done) this.inFlightDone = null;
-      release();
-    };
+    const settle = ownedFlight ?? this.takeFlight();
     let result: MergeRunResult;
     try {
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'merge-attempted', pr: target.number, head: target.headRefOid });
+      this.audit({ kind: 'green-pr-automerge', event: 'merge-attempted', pr: target.number, head: target.headRefOid });
       // The local floor always merges synchronously (neither --auto nor --admin),
       // whatever mergeStrategy says (local-verify-merge-authority §2/§3).
       result = await this.deps.runner.run({
@@ -1117,13 +1224,11 @@ export class GreenPrAutoMerger extends EventEmitter {
       });
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       result = { outcome: `error:runner-${String((e as Error)?.message).slice(0, 40)}`, confirmedMerged: false };
-    } finally {
-      this.inFlight = false;
     }
     try {
       return { ...this.afterRun(target, state, result), settle };
     } catch (e) { /* @silent-fallback-ok: the bookkeeping failed, the attempt itself is over; the waiter must still be released */
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'post-run-error', pr: target.number, detail: String((e as Error)?.message).slice(0, 200) });
+      this.audit({ kind: 'green-pr-automerge', event: 'post-run-error', pr: target.number, detail: String((e as Error)?.message).slice(0, 200) });
       return { acted: false, outcome: 'error:post-run', settle };
     }
   }
@@ -1131,7 +1236,7 @@ export class GreenPrAutoMerger extends EventEmitter {
   /** The bookkeeping after an attempt (breaker, B10 classification, the episode ladder). */
   private afterRun(target: PrSummary, state: GreenPrState, result: MergeRunResult): ActResult {
     if (result.priorRecord && result.priorRecord !== 'orphan-reap-incomplete') {
-      this.deps.audit({ kind: 'green-pr-automerge', event: result.priorRecord === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: result.priorRecord, viaRun: true });
+      this.audit({ kind: 'green-pr-automerge', event: result.priorRecord === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: result.priorRecord, viaRun: true });
     }
 
     if (result.deadlineKilled) {
@@ -1164,7 +1269,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.lastOutcome = outcome;
       ep.nextEligibleAt = this.deps.now() + 5 * 60_000;
       state.episodes[target.number] = ep;
-      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
       return;
     }
     // An earlier attempt's safe-merge may still be alive and its identity could
@@ -1175,7 +1280,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
       ep.lastOutcome = outcome;
       state.episodes[target.number] = ep;
-      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
       if (!(state.attentionLines ?? []).includes(ORPHAN_UNRESOLVED_LINE)) {
         void this.refreshAggregate(state, [ORPHAN_UNRESOLVED_LINE]);
       }
@@ -1191,7 +1296,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.lastOutcome = outcome;
       ep.lastAttemptAt = this.deps.now();
       state.episodes[target.number] = ep;
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'auto-merge-unavailable', pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: 'auto-merge-unavailable', pr: target.number });
       void this.refreshAggregate(state, [`PR #${target.number} is green but I could not arm auto-merge — "Allow auto-merge" is disabled on the repo. Enable it, or set mergeStrategy:'admin'.`]);
       return;
     }
@@ -1207,7 +1312,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.lastOutcome = outcome;
       ep.lastAttemptAt = this.deps.now();
       state.episodes[target.number] = ep;
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'needs-independent-review', pr: target.number, head: target.headRefOid });
+      this.audit({ kind: 'green-pr-automerge', event: 'needs-independent-review', pr: target.number, head: target.headRefOid });
       return;
     }
 
@@ -1219,7 +1324,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.lastAttemptAt = this.deps.now();
       ep.nextEligibleAt = this.deps.now() + 15 * 60_000;
       state.episodes[target.number] = ep;
-      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
       return;
     }
 
@@ -1233,7 +1338,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.lastOutcome = outcome;
       ep.lastAttemptAt = this.deps.now();
       state.episodes[target.number] = ep;
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'approval-required', pr: target.number });
+      this.audit({ kind: 'green-pr-automerge', event: 'approval-required', pr: target.number });
       void this.refreshAggregate(state, [`PR #${target.number} is green and waiting on YOUR approval — the main-branch rule needs a reviewer other than the pusher, and I have already requested you. One click: https://github.com/${this.cfg.repo}/pull/${target.number}/files → Review changes → Approve. I merge the moment it lands.`]);
       return;
     }
@@ -1245,7 +1350,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       // Per-PR ladder failures do NOT feed the global breaker directly (that is
       // for tick/deadline/busy classes); they advance the per-PR ladder only.
     }
-    this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+    this.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
     if (outcome === 'merged') {
       // Reap the episode on success.
       delete state.episodes[target.number];
@@ -1290,7 +1395,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       // UNKNOWN / read-failure → fail-open: leave armed, NO ladder, NO breaker,
       // retry next tick. We never give up on a real in-flight merge.
       if (!live || live.state === 'UNKNOWN') {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'armed-reconcile-read-failed', pr: ep.pr });
+        this.audit({ kind: 'green-pr-automerge', event: 'armed-reconcile-read-failed', pr: ep.pr });
         this.maybeMarkOverdue(state, ep);
         continue;
       }
@@ -1302,11 +1407,11 @@ export class GreenPrAutoMerger extends EventEmitter {
         // clean squash merge).
         const finalHead = live.autoMergeRequest?.expectedHeadOid ?? live.headRefOid;
         if (finalHead && ep.armedHead && finalHead === ep.armedHead) {
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'merged', pr: ep.pr, head: finalHead, viaArmed: true });
+          this.audit({ kind: 'green-pr-automerge', event: 'merged', pr: ep.pr, head: finalHead, viaArmed: true });
         } else {
           // Merged at a head we did NOT arm — post-hoc detection of the residual
           // race. Audit + ONE attention line, but STILL reap (the merge happened).
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'merged-at-unexpected-head', pr: ep.pr, armedHead: ep.armedHead ?? null, finalHead: finalHead ?? null, mergeCommitOid: live.mergeCommitOid ?? null });
+          this.audit({ kind: 'green-pr-automerge', event: 'merged-at-unexpected-head', pr: ep.pr, armedHead: ep.armedHead ?? null, finalHead: finalHead ?? null, mergeCommitOid: live.mergeCommitOid ?? null });
           void this.refreshAggregate(state, [`PR #${ep.pr} auto-merged at a head I did not arm — review the merged commit`]);
         }
         delete state.episodes[ep.pr];
@@ -1314,7 +1419,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       }
 
       if (live.state === 'CLOSED') {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'closed-by-other', pr: ep.pr, viaArmed: true });
+        this.audit({ kind: 'green-pr-automerge', event: 'closed-by-other', pr: ep.pr, viaArmed: true });
         delete state.episodes[ep.pr];
         void this.refreshAggregate(state, [`PR #${ep.pr} was closed without merging — discarded work`]);
         continue;
@@ -1328,7 +1433,7 @@ export class GreenPrAutoMerger extends EventEmitter {
         // past armedHead → clear armedAt/armedHead and let the candidate path
         // re-evaluate and (if still eligible) re-arm. A new head is a genuine new
         // attempt, bounded by the existing maybeRearm ladder.
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'armed-cleared', pr: ep.pr, reason: !stillArmed ? 'disarmed' : 'head-moved' });
+        this.audit({ kind: 'green-pr-automerge', event: 'armed-cleared', pr: ep.pr, reason: !stillArmed ? 'disarmed' : 'head-moved' });
         const fresh = state.episodes[ep.pr];
         if (fresh) {
           delete fresh.armedAt;
@@ -1361,7 +1466,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     if (!dueToReraise) return;
     live.overdue = true;
     live.overdueSurfacedAt = now;
-    this.deps.audit({ kind: 'green-pr-automerge', event: 'armed-overdue', pr: ep.pr });
+    this.audit({ kind: 'green-pr-automerge', event: 'armed-overdue', pr: ep.pr });
     // Byte-stable text so P17 attention-coalescing dedupes it instead of flooding.
     void this.refreshAggregate(state, [`PR #${ep.pr} has had auto-merge armed >24h and still hasn't merged — CI may be stuck or red; needs a look`]);
   }
@@ -1397,11 +1502,11 @@ export class GreenPrAutoMerger extends EventEmitter {
       if (ok) {
         if (ep) { delete ep.armedAt; delete ep.armedHead; delete ep.overdue; delete ep.overdueSurfacedAt; }
         disarmed.push(pr);
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'disarmed', pr, reason });
+        this.audit({ kind: 'green-pr-automerge', event: 'disarmed', pr, reason });
       } else {
         // Leave armedAt set so reconciliation keeps watching it.
         failed.push(pr);
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'disarm-failed', pr, reason });
+        this.audit({ kind: 'green-pr-automerge', event: 'disarm-failed', pr, reason });
       }
     }
     const lines: string[] = [];
@@ -1439,12 +1544,12 @@ export class GreenPrAutoMerger extends EventEmitter {
     try {
       const r = await this.deps.runner.reapOrphan();
       if (r.reaped) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: r.outcome === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: r.outcome });
+        this.audit({ kind: 'green-pr-automerge', event: r.outcome === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: r.outcome });
         this.clearOrphanUnresolvedLine(state);
       }
-      else if (r.outcome === 'orphan-reap-incomplete') this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: 'recorded safe-merge pid alive, identity unconfirmed — record kept, new attempts blocked until it exits' });
+      else if (r.outcome === 'orphan-reap-incomplete') this.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: 'recorded safe-merge pid alive, identity unconfirmed — record kept, new attempts blocked until it exits' });
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: String((e as Error)?.message).slice(0, 120) });
+      this.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: String((e as Error)?.message).slice(0, 120) });
     }
   }
 
@@ -1500,7 +1605,7 @@ export class GreenPrAutoMerger extends EventEmitter {
         // Green / recovered / not-yet-stuck → clear any prior raise.
         if (raised[pr.number]) {
           delete raised[pr.number];
-          this.deps.audit({ kind: 'green-pr-automerge', event: 'red-pr-recovered', pr: pr.number });
+          this.audit({ kind: 'green-pr-automerge', event: 'red-pr-recovered', pr: pr.number });
         }
         continue;
       }
@@ -1513,7 +1618,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       if (!prior || aged || checksChanged) {
         raised[pr.number] = { at: now, firstFailAt, hours, checks: checkNames };
         lines.push(`PR #${pr.number} red for ${hours}h — ${checkNames.join(', ')}`);
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'red-pr-stuck', pr: pr.number, hours, checks: checkNames });
+        this.audit({ kind: 'green-pr-automerge', event: 'red-pr-stuck', pr: pr.number, hours, checks: checkNames });
       }
     }
 
@@ -1522,7 +1627,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       const n = Number(key);
       if (!openPrNumbers.has(n)) {
         delete raised[n];
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'red-pr-cleared', pr: n, reason: 'closed-or-merged' });
+        this.audit({ kind: 'green-pr-automerge', event: 'red-pr-cleared', pr: n, reason: 'closed-or-merged' });
       }
     }
 
