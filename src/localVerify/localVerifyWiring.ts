@@ -52,6 +52,14 @@ export interface LocalVerifyConfigBlock {
    * days (default false; docs/specs/local-verify-import-related-rerun.md). Read live at each run start.
    */
   importRelatedRerun?: boolean;
+  /**
+   * `off` (default), `on` or `alternate`: on this machine, each lane of a pull request's verify
+   * runs a small first part before the rest (the change's own test files, the files it failed on
+   * last time, and the coordinator's likely-failing list), so a failure in one of them ends the
+   * verify within a couple of minutes. `alternate` is the trial setting: half of the pull
+   * requests (docs/specs/local-verify-likely-failing-first.md). Read live at each run start.
+   */
+  likelyFailingFirst?: 'off' | 'on' | 'alternate';
   /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
   peers?: Array<{ machineId: string; url: string }>;
   /** macOS: run each verify as an Interactive launchd job so it uses the performance cores (default true). */
@@ -585,8 +593,9 @@ export function wireLocalVerifyPeers(
  * `monitoring.localVerify.importRelatedRerun` is the exception: absent ⇒ OFF, on only by a real `true`.
  */
 export function wireLocalVerifySwitches(
-  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled'>,
-  liveConfig: { get<T>(key: string, fallback: T): T },
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled'>
+    & Partial<Pick<LocalVerifyService, 'setLikelyFailingFirst' | 'setLikelyFailingFirstOff'>>,
+  liveConfig: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
   svc.setFailFastEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.failFast', true) !== false);
@@ -595,6 +604,12 @@ export function wireLocalVerifySwitches(
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
   // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
   svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
+  // Off unless set to `on` or `alternate` on THIS machine: each lane then runs a small first part
+  // before the rest (docs/specs/local-verify-likely-failing-first.md). Read at the start of each verify.
+  svc.setLikelyFailingFirst?.(() => liveConfig.get<unknown>('monitoring.localVerify.likelyFailingFirst', 'off'));
+  // The verdict check's brake: a difference between a verify and its comparison run writes `off` here.
+  const set = liveConfig.set?.bind(liveConfig);
+  svc.setLikelyFailingFirstOff?.(set ? () => set('monitoring.localVerify.likelyFailingFirst', 'off') : null);
 }
 
 /**

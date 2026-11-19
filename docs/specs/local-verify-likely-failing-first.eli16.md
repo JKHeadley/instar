@@ -25,6 +25,8 @@ Nothing is left out. Every test still runs unless the run has already failed, an
 
 **The rules for the verdict do not change.** The same tests, the same second chance and the same stopping rule decide. One caveat, stated plainly: a badly written test whose result depends on which other tests ran just before it can change its result when the order changes. That is already true today, and during the trial a sample of runs is repeated the old way to check the answers match.
 
+**A pass still needs every test.** The first part can end a run early as failed. It can never end one early as passed.
+
 **An unreliable test cannot end a run early.** It gets its second chance first, exactly as today.
 
 **Passing runs must not get slower.** The cost is one extra start-up per group. If a passing run slows by more than a minute, it is switched off.
