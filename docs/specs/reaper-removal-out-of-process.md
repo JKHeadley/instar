@@ -38,11 +38,13 @@ So about a quarter of each day's worktrees are finished within the day, and most
 
 ## What this change does and does not fix
 
-It makes live removal safe to turn on and fast enough to keep up with eligible worktrees. It does not by itself stop the agent home from growing.
+It makes live removal safe to turn on and fast enough to keep up with eligible worktrees.
 
-Session worktrees made by `InstarWorktreeManager` get an APFS copy-on-write clone of `node_modules` (`InstarWorktreeManager.ts:105-111`). That clone is a real folder, which the reaper rightly keeps as `work`. Its blocks are shared, so it costs little real disk. The real per-worktree cost is the checkout's own tracked files and build output, about 270 MB measured for a checkout with a symlinked `node_modules`.
+Of the 74 worktrees created in the 24 h before 20:10 PT (re-measured 20:58 PT), 48 have a symlinked `node_modules`, 13 a real one and 13 none. A worktree with a symlink or none becomes reclaimable once it is clean and its PR merged or closed, so the hourly pass keeps up with most of the daily creation as PRs land.
 
-Making those cloned-`node_modules` worktrees reclaimable is a separate decision, because it changes the long-standing rule that a real `node_modules` folder is kept. It is raised to the Chief of Staff with this spec's report, not decided here.
+The 13 a day with a real `node_modules` stay `work`: in all, 62 worktrees hold one, and 59 of those are npm installs of about 0.7 GB each. Making those reclaimable changes the long-standing rule that a real `node_modules` folder is kept. It is the separate spec `reaper-node-modules-regenerable`, approved to be written by the Chief of Staff (msg 51cdd3bb).
+
+(Correction, 20:58 PT: an earlier draft said most new worktrees clone `node_modules`. The re-count above shows that was wrong; the design is unchanged.)
 
 ## Proposed design
 
@@ -126,7 +128,7 @@ The child's rows feed the existing `recordReclaimFailure` in the main process (`
 ### 4. Cadence keeps up with creation
 
 The pass interval becomes 1 h. When live, each pass starts at most one reclaim run, which stops at the cap or the deadline. Both are derived:
-- **Cap:** stays the existing `maxReapsPerPass` (20). Its justification is draining the backlog: at most about 123 eligible worktrees today (PR 3480). New eligible ones are only merged or closed worktrees whose `node_modules` is a symlink, and that rate is small while cloned-`node_modules` worktrees stay `work`. With 20 per hourly run, the backlog drains in about 6 hours instead of about 6 days with one run a day, and a worktree that becomes eligible is reclaimed within about an hour.
+- **Cap:** stays the existing `maxReapsPerPass` (20). Its justification is draining the backlog: at most about 123 eligible worktrees today (PR 3480). New eligible ones are the merged or closed worktrees whose `node_modules` is a symlink or absent, about 61 of the 74 created a day, as their PRs land. With 20 per hourly run, the backlog drains in about 6 hours instead of about 6 days with one run a day, and a worktree that becomes eligible is reclaimed within about an hour.
 - **Deadline:** the sum of three bounded parts. That is up to 300 s for trash cleanup, plus the 300 s link-index bound, plus the cap times the measured per-removal time times 5 (20 × 3 s × 5 = 300 s). In all 900 s, so 15 minutes. Because of the rename-first order, a run killed at the deadline leaves only trash, so the deadline is a plain backstop.
 - **Time-left rule:** the child starts a new removal only while at least five times the measured per-removal time, 15 s, remains before the deadline.
 

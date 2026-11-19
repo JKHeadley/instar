@@ -25907,6 +25907,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
       path.join(config.stateDir, 'state', 'worktree-enumeration-failures.json'),
     );
+    const { AgentWorktreeReclaimRunner } = await import('../monitoring/agentWorktreeReclaimRunner.js');
+    const _agentWorktreeReclaimRunner = new AgentWorktreeReclaimRunner({
+      stateDir: path.join(config.stateDir, 'state', 'agent-worktree-reclaim'),
+      processName: 'agentWorktreeReclaimMain',
+      mainScript: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'monitoring', 'agentWorktreeReclaimMain.js'),
+      nodePath: process.execPath,
+      agentHome: path.dirname(config.stateDir),
+      projectDir: config.projectDir,
+      worktreesDir: _agentWorktreesDir,
+      configPath: path.join(config.stateDir, 'config.json'),
+      githubMergeCheck: () => config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+      maxReaps: () => config.monitoring?.agentWorktreeReaper?.maxReapsPerPass ?? 20,
+    });
+    // Adopt a run that survived a restart (asynchronous; never blocks boot).
+    void _agentWorktreeReclaimRunner.recover().catch(() => undefined); // @silent-fallback-ok — an unresolved recovery is retried by the next startRun, which refuses to start while ownership is unknown
     const agentWorktreeReaper = new AgentWorktreeReaper(
       {
         ...makeAgentWorktreeReaperDeps({
@@ -25924,6 +25939,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           worktreesDir: _agentWorktreesDir,
           githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
         }),
+        // Live removal runs in its own child process (docs/specs/reaper-removal-out-of-process.md):
+        // with dryRun false a pass does no git, lsof or ps here and starts at most one child.
+        reclaimRunner: _agentWorktreeReclaimRunner,
       },
       config.monitoring?.agentWorktreeReaper,
     );
