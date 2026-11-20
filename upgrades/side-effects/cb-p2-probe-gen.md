@@ -98,3 +98,8 @@ Reviewer re-check: Concur with the review. I verified all four fixes in `src/mon
 - **Fence strip:** `<\s*/?\s*tag\s*>` with flags `gi` now matches case and whitespace variants.
 
 20 unit and 2 integration tests pass. One non-blocking nit: the artifact's Files line still says `(17)` unit tests; it should say 20.
+
+### Addendum (author): fence hardening
+
+A later reviewer (P2-3a) found two ways past the strip: a nested tag (`</ans</answer>wer>` rebuilt a closing tag after one pass) and a closing tag with attributes (`</answer x="1">`, which the regex did not match). `fenceData` (now exported for the grader) instead escapes every `<` that starts the fence's tag name, in any case or spacing, open or close, to `&lt;`. An escape cannot be reassembled into a tag, so one pass is complete. A test covers both bypass strings.
+
