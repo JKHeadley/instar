@@ -99,24 +99,27 @@ export function bucketWord(iso, grain) {
 }
 
 /** 3. Drill-down: the current node's children as bars, with a breadcrumb back up. */
-export function buildDrill(treeRes, path) {
-  if (!treeRes || !treeRes.ok) return { ok: false, why: treeRes ? treeRes.reason : 'no answer' };
+/** names: { machine(id), topic(id) } so the breakdown shows names, never machine or topic ids (2026-11-20 audit). */
+export function buildDrill(treeRes, path, names = {}) {
+  if (!treeRes || !treeRes.ok) return { ok: false, why: treeRes ? treeRes.reason : 'no answer', names };
   let node = treeRes.data.root;
   const crumbs = [{ label: 'Agent', depth: 0 }];
   // The tree answer starts at the requested parent; its first level is the next dimension.
   const kids = (node.children || []).map((c) => ({
-    dim: c.dim, key: c.key, label: c.dim === 'other' ? c.label : labelFor(c.dim, c.key), tokens: c.figure.tokens.total,
+    dim: c.dim, key: c.key, label: c.dim === 'other' ? c.label : labelFor(c.dim, c.key, names), tokens: c.figure.tokens.total,
     usd: c.figure.equivUsd, unpriced: c.figure.unpricedTokens, canOpen: c.dim !== 'other' && c.key != null,
   }));
-  path.forEach((p, i) => crumbs.push({ label: `${dimWord(p.dim)}: ${labelFor(p.dim, p.key)}`, depth: i + 1 }));
+  path.forEach((p, i) => crumbs.push({ label: `${dimWord(p.dim)}: ${labelFor(p.dim, p.key, names)}`, depth: i + 1 }));
   const max = Math.max(0, ...kids.map((k) => k.tokens));
-  return { ok: true, crumbs, children: kids, max, total: { tokens: node.figure.tokens.total, usd: node.figure.equivUsd }, atSessions: kids.some((k) => k.dim === 'session') };
+  return { ok: true, names, crumbs, children: kids, max, total: { tokens: node.figure.tokens.total, usd: node.figure.equivUsd }, atSessions: kids.some((k) => k.dim === 'session') };
 }
 
-function labelFor(dim, key) {
+function labelFor(dim, key, names = {}) {
   if (key == null) return dim === 'topic' || dim === 'job' || dim === 'feature' ? 'Not attributed' : 'Unknown';
   if (dim === 'framework') return engineWord(key);
   if (dim === 'model') return modelWord(key);
+  if (dim === 'machine') return (names.machine && names.machine(String(key))) || 'A machine with no name yet';
+  if (dim === 'topic') return (names.topic && names.topic(String(key))) || 'A conversation whose name isn’t known yet';
   if (dim === 'session') return `${String(key).slice(0, 8)}…`;
   return String(key);
 }
@@ -197,7 +200,7 @@ export function buildUsageSection({ summary, series, tree, topTopic, topJob, top
     off: false,
     headline: buildHeadline(summary, phrase || 'this week'),
     series: buildSeries(series, split || 'model'),
-    drill: buildDrill(tree, path || []),
+    drill: buildDrill(tree, path || [], { machine: machineName, topic: namesOf }),
     top: [buildTop(topTopic, 'topic', namesOf), buildTop(topJob, 'job'), buildTop(topFeature, 'feature')],
     cache: buildCacheRate(series),
     machines: buildMachines(summary, machineName),

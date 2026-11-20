@@ -7,7 +7,7 @@ Dashboard makeover fixes from a live check of every console page at laptop and p
 - Work board: the "may not have the newest changes" and "may have changed on" notes name the machine by its nickname (`behind.machineName`, `mayHaveChangedOnName`), or "another of your machines", never by its id.
 - Documents: a document's conversation shows by name (pool topic names), or "A Telegram conversation", never "Telegram topic N".
 - Notifications: notice text shows conversation and machine names and drops ids and hex references (shared `plainReferenceText`); the original text stays on hover.
-- Costs: the machine comparison uses nicknames; a conversation with no known name no longer shows as "Conversation <id>".
+- Costs: the machine comparison and the "Where the tokens went" breakdown use machine nicknames and conversation names; a conversation with no known name no longer shows as "Conversation <id>".
 - Telegram: a topic with no known name learns it from Telegram's answer to the agent's own next message there (the topic-creation message the answer replies to). A known name is never replaced. This restores names lost when a machine is rebuilt, with no extra request.
 
 ## What to Tell Your User

@@ -62,9 +62,9 @@ describe('usage model', () => {
   it('drill model: breadcrumb, bars, "other" not openable, unattributed named', () => {
     const d = buildDrill(ok({ root: { dim: 'agent', key: null, figure: fig(10, 1), children: [
       { dim: 'topic', key: null, figure: fig(6, 0.6) }, { dim: 'topic', key: '141063', figure: fig(3, 0.3) }, { dim: 'other', key: null, label: '4 more', figure: fig(1, 0.1) },
-    ] } }), [{ dim: 'machine', key: 'm1' }]);
-    expect(d.crumbs.map((c) => c.label)).toEqual(['Agent', 'Machine: m1']);
-    expect(d.children.map((c) => c.label)).toEqual(['Not attributed', '141063', '4 more']);
+    ] } }), [{ dim: 'machine', key: 'm1' }], { machine: (id) => (id === 'm1' ? 'Studio' : null), topic: (k) => (k === '141063' ? 'Token usage' : null) });
+    expect(d.crumbs.map((c) => c.label)).toEqual(['Agent', 'Machine: Studio']);
+    expect(d.children.map((c) => c.label)).toEqual(['Not attributed', 'Token usage', '4 more']);
     expect(d.children.map((c) => c.canOpen)).toEqual([false, true, false]);
     expect(d.max).toBe(6);
   });
@@ -91,6 +91,19 @@ describe('usage model', () => {
     expect(m.rows.map((r) => [r.label, r.stateWord])).toEqual([['Studio (this one)', ''], ['Laptop', 'not reached']]);
   });
 
+  it('breakdown: machines and conversations by name, never by id', () => {
+    const tree = ok({ root: { figure: { tokens: { total: 30 }, equivUsd: 3 }, children: [
+      { dim: 'machine', key: 'm_9a4a7b7338e7e5aebeda73c0e853ae4c', figure: { tokens: { total: 20 }, equivUsd: 2, unpricedTokens: 0 } },
+      { dim: 'machine', key: 'm_4cbc0d4a0c557cf7e221882f9b42518f', figure: { tokens: { total: 10 }, equivUsd: 1, unpricedTokens: 0 } }] } });
+    const names = { machine: (id: string) => (id === 'm_9a4a7b7338e7e5aebeda73c0e853ae4c' ? 'Mac Studio' : null), topic: () => null };
+    const d = buildDrill(tree, [], names);
+    expect(d.children.map((c: { label: string }) => c.label)).toEqual(['Mac Studio', 'A machine with no name yet']);
+    const deeper = buildDrill(ok({ root: { figure: { tokens: { total: 5 }, equivUsd: 0 }, children: [{ dim: 'topic', key: '127504', figure: { tokens: { total: 5 }, equivUsd: 0, unpricedTokens: 0 } }] } }),
+      [{ dim: 'machine', key: 'm_9a4a7b7338e7e5aebeda73c0e853ae4c' }], names);
+    expect(deeper.crumbs[1].label).toContain('Mac Studio');
+    expect(deeper.children[0].label).toBe('A conversation whose name isn’t known yet');
+    expect([...deeper.crumbs, ...d.children].map((c: { label: string }) => c.label).join(' ')).not.toMatch(/m_9a4a|m_4cbc/);
+  });
   it('machines: without a name a machine never shows its id', () => {
     const m = buildMachines(summary({ machines: [{ machineId: 'm_4cbc0d4a0c557cf7e221882f9b42518f', self: true, ...fig(10, 1), pull: null }] }));
     expect(m.rows[0].label).toBe('A machine with no name yet (this one)');
@@ -154,6 +167,7 @@ describe('usage section in the shipped console', () => {
     '/usage/top?dim=feature': { items: [{ key: 'MessagingToneGate', tokens: { total: 700 }, equivUsd: 0.07, unpricedTokens: 0 }] },
     '/usage/coverage': { shares: { unattributed: 0.1, unpriced: 0, nullTokenCalls: 0 }, notRead: [], pairs: {}, counters: {}, unpricedModels: {} },
     '/telegram/topics': { topics: [{ topicId: 141063, topicName: 'Token usage tracking' }] },
+    '/pool': { machines: [{ machineId: 'm1', nickname: 'Studio' }, { machineId: 'm2', nickname: 'Laptop' }] },
     '/usage/events': { rows: [{ ts: Date.now(), model: 'claude-opus-5-5', tok_input: 5, tok_cache_read: 1, tok_cache_write: 0, tok_output: 2 }] },
   });
 
@@ -175,11 +189,11 @@ describe('usage section in the shipped console', () => {
 
   it('drilling into a machine asks for the next level with the machine as parent', async () => {
     const { doc, got } = await boot(usageTable());
-    const row = [...doc.querySelectorAll('.usage-drill .usage-row')].find((b) => b.textContent!.startsWith('m1')) as HTMLButtonElement;
+    const row = [...doc.querySelectorAll('.usage-drill .usage-row')].find((b) => b.textContent!.startsWith('Studio')) as HTMLButtonElement;
     row.click();
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 10));
     expect(got).toContain(got.find((u) => u.startsWith('/usage/tree') && u.includes('parent=machine%3Am1') && u.includes('by=framework')));
-    expect([...doc.querySelectorAll('.usage-crumbs > *')].map((c) => c.textContent)).toEqual(['Agent', 'Machine: m1']);
+    expect([...doc.querySelectorAll('.usage-crumbs > *')].map((c) => c.textContent)).toEqual(['Agent', 'Machine: Studio']);
     expect(doc.querySelector('.usage-drill .usage-row-label')!.textContent).toBe('Claude Code');
   });
 
