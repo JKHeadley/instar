@@ -91,3 +91,15 @@ What the reviewer verified: each reported file is recorded once per run on every
 Its notes, not changed here: no test asserts the mark for a re-run inside a first part or inside the rest of a two-part lane (confirmed by reading). Not run by the reviewer: any test. Run by the merger: `tsc` clean; `firstPartFlow`, `orchestrator`, `firstPart`, `feature-ladders-coverage` unit files, 202 tests passed.
 
 **Conclusion, corrected.** The earlier line "There are no behaviour changes" holds with the cap qualification above.
+
+## Addendum (2026-11-20 14:13 PST): the merge with main after the Studio outage
+
+One commit came after the last reviewed trace (commit `efd6aca94`): `1cfd81f51`, a merge of main brought up to date after the Studio outage. It touches flagged paths after the trace, so the record needs a fresh independent read.
+
+**Reviewer:** an independent subagent with a fresh context, read-only, given the merge and this artifact, not the author's conclusions. It checked the resolutions against the three-way merge (base `a99c56973`, branch `efd6aca94`, main `c3bb159a9`). Verdict: **concur**.
+
+- **`src/data/feature-ladders.json`:** the result parses, holds 241 entries with no duplicate id, and its ids are exactly the union of both sides. In the conflict, `local-verify-likely-failing-first` takes main's version (main's #3504 replaced the old harm metric with `first-part-cost-limits`; the branch only carried the old text). Main's `toneGate.waitingAskLinks` and this change's `local-verify-borrowed-unit-slices` are both kept and well formed.
+- **`tests/unit/localVerify/firstPartFlow.test.ts`:** no conflict markers; this change's "unit file durations" block is byte-identical to `efd6aca94` with all 5 tests, properly closed, and main's "amended observations" block follows it unchanged. 50 tests (main 45 + 5) and 221 expects (main 204 + 17). Only a doubled blank line differs, cosmetic.
+- **`src/localVerify`:** against main, only `orchestrator.ts` differs, and exactly by this change's own edits (`unitWorkers`, unit lane duration recording, the `reran` mark, `noteUnitWallFactor`). No stray hand edits.
+
+No product behaviour changed in the merge. The sections above are unchanged.
