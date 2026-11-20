@@ -23,7 +23,8 @@ A check of this plan against Instar's rule book (Nov 19-20) found more to fix, a
 - If the agent can settle a question from the project's own records, it does, instead of asking the operator.
 - Nothing is prepared for the client on evidence nobody has checked yet, such as a screenshot no reader has looked at.
 - The agent checks that it didn't copy client text into its memory or another client's folder, instead of just being told not to.
-- What the agent promised in a call is recorded in a way all its machines share, even if the place the files live is unreachable.
+- What the agent promised in a call, and the transcript and read behind it, reach all its machines even if the place the files live is unreachable, without anyone new being able to see them.
+- A run that stops while checkers are still finding things is called incomplete, never done.
 - Fixed numbers (exactly two readers, at least two rounds, one retry) became minimums based on evidence, so a short clear call doesn't pay for work it doesn't need, and a messy one keeps getting checked.
 
 It starts on development agents and on Luna, who will use it on her next real client call. Only after a real call where the operator finds nothing missing does it go to every agent. Nothing runs on its own; an agent uses it only for a meeting read. Turning it off is one setting.
