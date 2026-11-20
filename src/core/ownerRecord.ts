@@ -73,6 +73,9 @@ export interface OwnerRecordState {
   /** What storage (piece 2b) keeps, with their ancestors: `effective` plus the `contested` entries, so a
    *  stored copy evaluates to the same state as the full input. */
   keep: string[];
+  /** For every entry that verified (so `keep` and all its ancestors), the one signature that verified it:
+   *  what storage writes. */
+  signatures: Record<string, string>;
 }
 
 export interface EvaluateOptions {
@@ -239,7 +242,14 @@ export function evaluateOwnerRecord(rawEntries: unknown[], opts: EvaluateOptions
     if (!v.some((x) => x.sig === e.sig)) { v.push(e); v.sort((a, b) => (a.sig < b.sig ? -1 : 1)); }
     byId.set(id, v);
   }
-  const verifiesAny = (id: string, pub: string): boolean => byId.get(id)!.some((x) => verifySig(ownerRecordSignedText(x), x.sig, pub));
+  // The first verifying copy (copies are sorted by signature) is remembered, so storage keeps exactly one
+  // verifying signature per entry and never a junk copy.
+  const verifiedSig = new Map<string, string>();
+  const verifiesAny = (id: string, pub: string): boolean => {
+    const hit = byId.get(id)!.find((x) => verifySig(ownerRecordSignedText(x), x.sig, pub));
+    if (hit && !verifiedSig.has(id)) verifiedSig.set(id, hit.sig);
+    return !!hit;
+  };
 
   // Genesis: the pinned one, else the lowest machine id's (decision 17's tie rule). Others are foreign.
   const geneses = [...byId.keys()].filter((id) => { const e = first(byId, id); return e.kind === 'genesis' && e.signer.type === 'machine' && e.signer.keyId === e.body.machineId && verifiesAny(id, String(e.body.publicKey)); })
@@ -400,6 +410,7 @@ export function evaluateOwnerRecord(rawEntries: unknown[], opts: EvaluateOptions
     agentProducible: !keys.some((k) => k.type === 'owner-key'), held, rejected: sortRejected(rejected),
     effective,
     keep: [...new Set([...effective, ...contested])].sort(),
+    signatures: Object.fromEntries([...verifiedSig.keys()].sort().map((id) => [id, verifiedSig.get(id)!])),
   };
 }
 
@@ -429,7 +440,7 @@ function joinFolds(folds: Fold[], ancestry: (id: string) => Set<string>): Fold {
 }
 
 function emptyState(status: OwnerRecordState['status'], genesis: string | null, rejected: RejectedEntry[]): OwnerRecordState {
-  return { status, genesis, head: [], forked: false, keys: [], revoked: [], level: 'basic', policies: {}, tlsKeys: {}, everEnrolled: false, agentProducible: true, held: [], rejected: sortRejected(rejected), effective: [], keep: [], contested: [] };
+  return { status, genesis, head: [], forked: false, keys: [], revoked: [], level: 'basic', policies: {}, tlsKeys: {}, everEnrolled: false, agentProducible: true, held: [], rejected: sortRejected(rejected), effective: [], keep: [], signatures: {}, contested: [] };
 }
 
 /** Build and sign an entry. `sign` returns a base64 Ed25519 signature over the given text (machine or owner key). */

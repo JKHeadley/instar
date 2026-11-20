@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-19T11:38:52.615Z",
+  "slug": "planned-restart-exit-gap",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 208,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PlannedRestartVerifyGuard.ts",
+      "src/core/restartRequestAttribution.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/operatorQueue.ts"
+    ],
+    "addedLines": 187,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

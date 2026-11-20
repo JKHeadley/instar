@@ -2505,6 +2505,19 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
   return null;
 }
 
+/**
+ * SEC-118: does a device-signed request to this method and path have a route that accepts a body?
+ * The same match the device authenticator makes (method, then the rule's pattern on the lowered,
+ * trailing-slash-trimmed path). Used before the body is read, to size the parser's budget.
+ */
+export function deviceRouteTakesBody(method: string, reqPath: string): boolean {
+  const pathNorm = reqPath.toLowerCase().replace(/\/+$/, '') || '/';
+  const m = method.toUpperCase();
+  if (m === 'GET' || m === 'HEAD') return false; // a read carries no body
+  const rule = DEVICE_ALLOWLIST.find((r) => r.method === m && r.re.test(pathNorm));
+  return !!rule && rule.body !== 'none';
+}
+
 export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   const rules: DeviceRule[] = [

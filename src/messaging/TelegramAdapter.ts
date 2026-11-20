@@ -1053,7 +1053,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
   // the adapter will handle the session action and skip the normal handler.
-  public onSentinelIntercept: ((message: string, topicId: number) => Promise<{
+  /** `messageKey` identifies this platform message, so a redelivery reuses its first verdict. */
+  public onSentinelIntercept: ((message: string, topicId: number, messageKey?: string) => Promise<{
     category: 'emergency-stop' | 'pause' | 'redirect' | 'normal';
     action: { type: string; message?: string };
     reason?: string;
@@ -4810,6 +4811,87 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Exact-id lookup of logged messages (docs/specs/waiting-on-you-links.md §3): for each wanted
+   * `{ topicId, messageId }`, whether this machine's retained log holds it, who sent it and its
+   * full text. One asynchronous pass for all ids together, read backwards in 1 MB blocks so a
+   * recent message is found in the first block, stopping as soon as every id is found. Bounded
+   * only by the log's own rotation. `topicId: null` matches the message id in any topic of the
+   * group the link named (`issues`), since a General-form link carries no topic id. Throws on a read error or when `signal` aborts;
+   * callers report "unavailable".
+   */
+  async findLoggedMessages(refs: Array<{ topicId: number | null; messageId: number; issues?: boolean }>, opts: { signal?: AbortSignal } = {}): Promise<Array<{
+    topicId: number | null; messageId: number; found: boolean; sentBy?: string; text?: string; timestamp?: string;
+  }>> {
+    const wanted = new Map<string, { topicId: number | null; messageId: number; issues: boolean }>();
+    for (const r of refs) {
+      if (!Number.isSafeInteger(r.messageId) || r.messageId <= 0) continue;
+      wanted.set(`${r.topicId ?? (r.issues ? '*issues' : '*')}:${r.messageId}`, { topicId: r.topicId, messageId: r.messageId, issues: r.issues === true });
+    }
+    const hits = new Map<string, LogEntry>();
+    if (wanted.size > 0 && fs.existsSync(this.messageLogPath)) {
+      // Cheap literal pre-filter before any parse; the exact compare after parsing decides.
+      const needles = [...new Set([...wanted.values()].map((w) => `"messageId":${w.messageId}`))];
+      const CHUNK = 1024 * 1024;
+      const fh = await fs.promises.open(this.messageLogPath, 'r');
+      try {
+        let pos = (await fh.stat()).size;
+        let carry = Buffer.alloc(0);
+        while (pos > 0 && hits.size < wanted.size) {
+          // The caller's allowance ran out: stop reading so timed-out lookups never pile up.
+          if (opts.signal?.aborted) throw new Error('find-logged-messages-aborted');
+          const size = Math.min(CHUNK, pos);
+          pos -= size;
+          const read = Buffer.alloc(size);
+          const { bytesRead } = await fh.read(read, 0, size, pos);
+          let buf = Buffer.concat([read.subarray(0, bytesRead), carry]);
+          if (pos > 0) {
+            const nl = buf.indexOf(0x0a);
+            if (nl < 0) { carry = buf; continue; }
+            carry = buf.subarray(0, nl);
+            buf = buf.subarray(nl + 1);
+          } else {
+            carry = Buffer.alloc(0);
+          }
+          const lines = buf.toString('utf-8').split('\n');
+          for (let i = lines.length - 1; i >= 0 && hits.size < wanted.size; i--) {
+            const line = lines[i];
+            if (!line || !needles.some((n) => line.includes(n))) continue;
+            try {
+              const entry: LogEntry = JSON.parse(line);
+              const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId ?? null;
+              for (const [key, w] of wanted) {
+                if (hits.has(key) || entry.messageId !== w.messageId) continue;
+                if (w.topicId !== null && entryTopicId !== w.topicId) continue;
+                // A link with no topic names only its chat. The main group and the Issues group
+                // number their messages separately in this one log, so the row must be in the
+                // same group the link named.
+                if (w.topicId === null && isIssuesTopicId(entryTopicId) !== w.issues) continue;
+                hits.set(key, entry);
+              }
+            } catch { /* @silent-fallback-ok: a malformed log line is skipped; the lookup is built from the lines that parse */ }
+          }
+        }
+      } finally {
+        await fh.close();
+      }
+    }
+    const joined = new Map<string, LogEntry & { authorship?: string }>();
+    const keys = [...hits.keys()];
+    const withAuthorship = this.authorshipJoin.join(keys.map((k) => hits.get(k)!));
+    keys.forEach((k, i) => joined.set(k, withAuthorship[i]));
+    return [...wanted.entries()].map(([key, w]) => {
+      const e = joined.get(key);
+      if (!e) return { topicId: w.topicId, messageId: w.messageId, found: false };
+      return {
+        topicId: w.topicId, messageId: w.messageId, found: true,
+        sentBy: e.teamPhone ? 'team-member' : e.fromUser ? 'person' : String(e.authorship ?? 'not-the-person'),
+        text: String(e.text ?? ''),
+        timestamp: String(e.timestamp ?? ''),
+      };
+    });
+  }
+
+  /**
    * One message of one topic, by id, logged at or after `notBeforeMs` (identity-security-creation-
    * provenance). Reads the log backwards in 1 MB chunks and stops at the first entry older than
    * `notBeforeMs`, so it costs at most that window of log. `unreadable` is distinct from "not found".
@@ -6663,7 +6745,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // kill/pause the session even when the session is mid-tool-call.
     if (this.onSentinelIntercept) {
       try {
-        const classification = await this.onSentinelIntercept(text, numericTopicId);
+        const classification = await this.onSentinelIntercept(text, numericTopicId, `telegram:${numericTopicId}:${msg.message_id}`);
         if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause')) {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {

@@ -124,8 +124,9 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
   .doc-header { margin: 0 auto; max-width: 1060px; }
   #doc > .notice, #doc > .note, #doc > .hint, #doc > .compare { max-width: 1060px; margin-left: auto; margin-right: auto; }
   .threads { margin-top: 0; border-top: 0; padding-top: 0; }
-  .threads.margin .thread-list { position: relative; }
-  .threads.margin .thread-list > .thread { position: absolute; left: 0; right: 0; margin: 0; }
+  /* Only the placed list floats beside its highlights; the "Not in this version" list stays in flow. */
+  .threads.margin .thread-list:not(.static) { position: relative; }
+  .threads.margin .thread-list:not(.static) > .thread { position: absolute; left: 0; right: 0; margin: 0; }
 }
 
 /* ── document text ──────────────────────────────────────── */

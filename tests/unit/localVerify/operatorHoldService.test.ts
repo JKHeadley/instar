@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { QUEUE_PRIORITY, effectivePriority } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
 import { OPERATOR_QUEUE_LIMITS } from '../../../src/localVerify/operatorQueue.js';
+import { recordRestartRequest } from '../../../src/core/restartRequestAttribution.js';
 import { HOUR, MIN, T0, cleanupHarnessDirs, fillQueue, harness, headOf, sha, view } from '../../helpers/operatorQueueHarness.js';
 
 afterEach(() => cleanupHarnessDirs());
@@ -718,5 +719,31 @@ describe('the boot row: why a restart happened', () => {
     expect(c.auditsOf('boot').at(-1)).toEqual(expect.objectContaining({ reason: 'unknown' }));
     expect(c.auditsOf('boot').at(-1)).not.toHaveProperty('restartAt');
     expect(c.auditsOf('boot')).toHaveLength(3);
+  });
+
+  it('says whether the restart was planned and whether it bypassed the holds, as the request wrote them', async () => {
+    const h = harness({});
+    await h.svc.boot();
+    expect(h.auditsOf('boot').at(-1)).not.toHaveProperty('plannedRestart');
+    expect(h.auditsOf('boot').at(-1)).not.toHaveProperty('bypassHolds');
+    // A forced restart, recorded by the real consumer-side recorder.
+    const forced = recordRestartRequest(h.stateDir, { requestedBy: 'operator', reason: 'install now', plannedRestart: true, bypassHolds: true }, 'supervisor', new Date(h.now() + 4 * MIN));
+    const b = harness({ stateDir: h.stateDir });
+    b.advance(5 * MIN);
+    await b.svc.boot();
+    expect(b.auditsOf('boot').at(-1)).toMatchObject({ reason: 'install now', requestedBy: 'operator', restartAt: forced.at, plannedRestart: true, bypassHolds: true });
+    // A plain planned restart: planned, and no bypass written, so the row carries no bypassHolds.
+    const plain = recordRestartRequest(h.stateDir, { requestedBy: 'update', reason: 'update', plannedRestart: true }, 'foreground-watcher', new Date(h.now() + 9 * MIN));
+    const c = harness({ stateDir: h.stateDir });
+    c.advance(10 * MIN);
+    await c.svc.boot();
+    expect(c.auditsOf('boot').at(-1)).toMatchObject({ reason: 'update', restartAt: plain.at, plannedRestart: true });
+    expect(c.auditsOf('boot').at(-1)).not.toHaveProperty('bypassHolds');
+    // The server comes back by itself: no request explains it, so neither field is there.
+    const d = harness({ stateDir: h.stateDir });
+    d.advance(12 * MIN);
+    await d.svc.boot();
+    expect(d.auditsOf('boot').at(-1)).toEqual(expect.objectContaining({ reason: 'unknown' }));
+    expect(d.auditsOf('boot').at(-1)).not.toHaveProperty('plannedRestart');
   });
 });

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "work-board-dismissal-title",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-19T19:07:03.531Z",
+  "artifactPath": "upgrades/side-effects/work-board-dismissal-title.md",
+  "artifactSha256": "86a9ad5b31531d793803aee0839fb36ce4e550e02869fbff60cf85977be2554e",
+  "coveredFiles": [
+    "docs/specs/work-board-dismissal-title.eli16.md",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/work-card-closeout-alive.test.ts",
+    "tests/unit/work-card-closeout.test.ts",
+    "upgrades/next/work-board-dismissal-title.md",
+    "upgrades/side-effects/work-board-dismissal-title.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow integrity fix: a Work Board dismissal reason stays paired with the title the person closed (SEC-122); derived in the fold, no stored data, reversible by revert; independent review concurred.",
+  "eli16Path": "docs/specs/work-board-dismissal-title.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-board-dismissal-title.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "dashboard-proxy-boot-signin",
+  "sessionId": "7b04db19-7829-4fc9-8492-204d8ce4c5af",
+  "timestamp": "2026-11-18T07:04:48.855Z",
+  "artifactPath": "upgrades/side-effects/dashboard-proxy-boot-signin.md",
+  "artifactSha256": "c1f7fb6bc735089fa52fb337d83935ea61d1dfaa238c368554c876cae44247e7",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/ticket-model.js",
+    "tests/unit/console-net-state.test.ts",
+    "upgrades/eli16/dashboard-proxy-boot-signin.md",
+    "upgrades/next/dashboard-proxy-boot-signin.md",
+    "upgrades/side-effects/dashboard-proxy-boot-signin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible console sign-in correction; no authority or server change.",
+  "eli16Path": "upgrades/eli16/dashboard-proxy-boot-signin.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-proxy-boot-signin.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

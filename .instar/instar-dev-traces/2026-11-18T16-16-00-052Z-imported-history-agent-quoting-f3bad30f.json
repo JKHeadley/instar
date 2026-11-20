@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "imported-history-agent-quoting",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-18T16:16:00.052Z",
+  "artifactPath": "upgrades/side-effects/imported-history-agent-quoting.md",
+  "artifactSha256": "37f96eb6cedc0e79db5e490daabfc857d6054b3a623f2bb33d2e37725162dec2",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T16-14-37-034Z-imported-history-agent-quoting.json",
+    ".instar/instar-dev-decisions/2026-11-18T16-15-39-876Z-imported-history-agent-quoting.json",
+    "docs/specs/imported-history-agent-quoting.eli16.md",
+    "src/data/awareness/import-claude-chatgpt-history.md",
+    "src/import/safeZip.ts",
+    "src/server/importedHistoryRoutes.ts",
+    "tests/e2e/imported-history-alive.test.ts",
+    "tests/integration/imported-history-routes.test.ts",
+    "tests/unit/imported-history-agent-view.test.ts",
+    "upgrades/next/imported-history-agent-quoting.md",
+    "upgrades/side-effects/imported-history-agent-quoting.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow presentation fix on the agent view of imported-history routes: export-written fields move inside the existing quoted wrapper; no stored data, config or decision point; reversible by revert; two independent review rounds.",
+  "eli16Path": "docs/specs/imported-history-agent-quoting.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/imported-history-agent-quoting.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

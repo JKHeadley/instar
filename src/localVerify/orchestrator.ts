@@ -39,7 +39,7 @@ export type { FlakyOnMainFile, FlakyOnMainTest, ImportRelatedRefusal } from './l
 import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
 import type { LeftoverPrefix, ReapOptions, ReapResult } from './leftoverReaper.js';
 import { firstPartActive, selectFirstPart, type FirstPartInput, type FirstPartLaneSummary, type FirstPartSelection, type FirstPartSummary } from './firstPart.js';
-import type { FileOutcome } from './firstPartTrial.js';
+import { validFirstPartEvidence, type FirstPartEvidence, type ObservationDetail, type FileFailure } from './firstPartReport.js';
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
@@ -221,13 +221,8 @@ export interface VerifyRunInput {
    * runs exactly as it did before first parts existed. `main` verifies ignore it.
    */
   likelyFailingFirst?: FirstPartInput;
-  /** Return what every reported file did (`fileOutcomes`): asked for only around the verdict check. */
-  collectFileOutcomes?: boolean;
-  /**
-   * `compare`: the verdict check's comparison run. It gets its own fresh checkout and report
-   * folder (so the verify it follows keeps its kept worktree), and never keeps a failed worktree.
-   */
-  variant?: 'compare';
+  /** The setting and assignment read by the run machine before starting. */
+  firstPartEvidence?: FirstPartEvidence;
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
   deadlines?: LocalVerifyDeadlines;
@@ -292,8 +287,7 @@ export type VerifyRunResult = (
     flakyTestLines?: Record<string, Array<{ test: string; line: string; lineCut?: true }>>;
     /** Present when the run input carried `likelyFailingFirst`: the assignment, the setting, and each lane's first part as numbers. */
     firstPart?: FirstPartSummary;
-    /** Present when asked for (`collectFileOutcomes`) and the lanes were evaluated: what every reported file did. */
-    fileOutcomes?: Record<string, FileOutcome>;
+    observation?: ObservationDetail;
   }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] }
@@ -313,11 +307,9 @@ export interface VerifyPaths {
   durationsPath: string;
 }
 
-export function verifyPaths(agentHome: string, headSha: string, variant?: 'compare'): VerifyPaths {
+export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
   const verifyRoot = path.join(agentHome, '.worktrees', '.verify');
-  // The comparison run's folders have their own 12-hex name, so the orphan sweep still knows them
-  // and they never collide with the verify they follow (same head, same merge commit).
-  const sha12 = variant === 'compare' ? crypto.createHash('sha256').update(`compare:${headSha}`).digest('hex').slice(0, 12) : headSha.slice(0, 12);
+  const sha12 = headSha.slice(0, 12);
   return {
     verifyRoot,
     bare: path.join(verifyRoot, 'repo.git'),
@@ -398,7 +390,7 @@ class Requeue extends Error {
 
 export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams): Promise<VerifyRunResult> {
   const d = input.deadlines ?? LOCAL_VERIFY_DEADLINES;
-  const p = verifyPaths(input.agentHome, input.headSha, input.variant);
+  const p = verifyPaths(input.agentHome, input.headSha);
   const startedAtMs = seams.now();
   // Written at the start, so a set-up failure and a verify with empty first parts stay in their group.
   const firstPartInput = input.kind === 'main' ? undefined : input.likelyFailingFirst;
@@ -408,7 +400,19 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   if (firstPartInput) seams.log({ event: 'first-part-setting', pr: input.pr, setting: firstPartInput.setting, group: firstPartInput.group ?? null, active: firstPartOn });
   /** Failed files whose re-run alone was cut off by another lane's failure (never shown to fail again). */
   const rerunCutOff = new Set<string>();
-  let fileOutcomes: Record<string, FileOutcome> | null = null;
+  const interruptedReruns = new Set<string>();
+  const startedFirstParts = new Set<LaneName>();
+  const observedFailures = new Map<string, FileFailure>();
+  const detail: ObservationDetail = { incomplete: true, completedLanes: [], firstPartFiles: {}, failures: [], failuresTotal: 0 };
+  let evidenceIncomplete = false;
+  const collectEvidence = (collect: () => void) => {
+    try { collect(); }
+    catch {
+      evidenceIncomplete = true; detail.incomplete = true;
+      try { seams.log({ event: 'first-part-evidence-incomplete', pr: input.pr }); } catch { /* Evidence logging cannot affect completion. */ }
+    }
+  };
+  let expectedFiles: Partial<Record<LaneName, string[]>> = {};
   const overlaps: Overlap[] = [];
   const ourPids = new Set<number>();
   const laneRuns: LaneRunInput[] = [];
@@ -614,6 +618,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     // The inventory comes first: the isolation re-run needs each lane's assigned files.
     const tree = await gitOk(['ls-tree', '-r', '--name-only', mergeCommit], 'inventory');
     const inventory = computeInventory(tree.split('\n').filter(Boolean));
+    expectedFiles = inventory.byLane;
 
     // ── 4. The lanes, all at once, inside one suite slot ──
     // One foreign-suite check, then this run takes ONE full-suite slot of the host
@@ -736,6 +741,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           if (left <= 0) throw new RunError(`deadline:${key}`, 'the lane deadline was spent before the rest of the lane started');
           return budget(left);
         };
+        if (key === `${lane.name}-first`) collectEvidence(() => { startedFirstParts.add(lane.name); });
         let r: Awaited<ReturnType<typeof exec>>;
         try {
           // The signal is always passed: a deadline anywhere ends the run as an error, so the
@@ -771,6 +777,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         if (text != null) {
           try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
         }
+        collectEvidence(() => {
+          if (report) for (const [file, counts] of report.files) if (counts.failed > 0) observedFailures.set(file, {
+            file, lane: lane.name, firstPart: firstParts.get(lane.name)?.files.includes(file) ?? false,
+            own: changedForIsolation?.has(file) ?? false, result: 'failed',
+          });
+        });
         const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
         return { report, status: r.status, unhandled, aborted: false };
       };
@@ -991,11 +1003,6 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     if (!dirty && onlyAssertionFailureReasons && allFailedFiles.length >= 1 && allFailedFiles.length <= 3
       && allFailedFiles.every((file) => isInventoried(file)
         && (ev.perFile[file]?.assertionFailures ?? 0) > 0 && !ev.perFile[file]?.nonAssertionFailure)) boundedFailedFiles = allFailedFiles;
-    if (input.collectFileOutcomes === true) {
-      const flaky = new Set(flakyRetried.map((x) => x.file));
-      fileOutcomes = {};
-      for (const [file, c] of Object.entries(ev.perFile)) fileOutcomes[file] = c.failed > 0 ? 'failed' : flaky.has(file) ? 'flaky' : 'passed';
-    }
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];
     if (evaluationReasons.length > 0) {
       outcome = 'failure';
@@ -1023,6 +1030,21 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     }
   }
 
+  collectEvidence(() => {
+    for (const lane of LANES) {
+      const run = laneRuns.find((r) => r.lane === lane.name);
+      const files = expectedFiles[lane.name];
+      if (files && run?.report && files.every((f) => run.report!.files.has(f))) detail.completedLanes.push(lane.name);
+      if (startedFirstParts.has(lane.name)) detail.firstPartFiles[lane.name] = firstParts.get(lane.name)?.files ?? [];
+    }
+    detail.incomplete = evidenceIncomplete || detail.completedLanes.length !== LANES.length;
+    for (const f of observedFailures.values()) {
+      if (rerunCutOff.has(f.file) || interruptedReruns.has(f.file)) f.result = 'rerun-interrupted';
+      else if (flakyRetried.some((r) => r.file === f.file)) f.result = 'passed-on-rerun';
+    }
+    detail.failuresTotal = observedFailures.size;
+    detail.failures = [...observedFailures.values()].slice(0, 50);
+  });
   const lanes = laneTotals(laneRuns);
   const record: LocalVerifyRecord = {
     repo: input.repo, pr: input.pr, headSha: input.headSha, baseSha: input.baseSha, baseRefName: input.baseRefName,
@@ -1030,6 +1052,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     startedAt: new Date(startedAtMs).toISOString(), finishedAt: new Date(seams.now()).toISOString(),
     outcome, ...flags, verifierVersion: input.verifierVersion, policyHash: input.policyHash,
   };
+  collectEvidence(() => {
+    if (input.kind === 'main') return;
+    const evidence = {
+      setting: input.firstPartEvidence?.setting ?? firstPartInput?.setting ?? 'off',
+      group: input.firstPartEvidence?.group ?? firstPartInput?.group ?? 'without',
+      ran: startedFirstParts.size > 0,
+    };
+    if (!validFirstPartEvidence(evidence)) throw new Error('invalid first-part evidence');
+    record.firstPart = evidence;
+  });
   if (errorStep) record.errorStep = errorStep;
   if (input.kind === 'main') record.kind = 'main';
   if (input.attempt) record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
@@ -1046,8 +1078,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     endedInFirstPart: outcome === 'failure' && [...firstPartNotes.values()].some((x) => x.endedHere),
   } : null;
   if (firstPartSummary) seams.log({ event: 'first-part-summary', pr: input.pr, ...firstPartSummary, outcome });
-  // The comparison run never keeps a worktree: the verify it follows already kept its own.
-  const kept = await cleanup(outcome !== 'success' && input.variant !== 'compare');
+  const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };
   seams.log({ event: 'run-finished', pr: input.pr, headSha: input.headSha, outcome, errorStep, failureReason, reasons: evaluationReasons.slice(0, 20) });
@@ -1064,7 +1095,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     ...(isolationRefusals ? { isolationRefusals } : {}),
     ...(input.kind === 'main' && Object.keys(flakyTestLines).length > 0 ? { flakyTestLines } : {}),
     ...(firstPartSummary ? { firstPart: firstPartSummary } : {}),
-    ...(fileOutcomes ? { fileOutcomes } : {}),
+    ...(input.kind !== 'main' ? { observation: detail } : {}),
   };
 
   // ── helpers (closures over the run) ──
@@ -1181,6 +1212,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
           { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); }, ...(signal ? { signal } : {}) },
         );
+        if (r.aborted || r.deadlineKilled) collectEvidence(() => { interruptedReruns.add(file); });
         if (r.aborted) {
           // The run already failed in another lane: the re-run's answer no longer matters.
           rerunMessages.set(file, 'isolation re-run stopped: another lane had already failed');

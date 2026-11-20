@@ -16,7 +16,6 @@ import { evaluateRun, type LaneRunInput, type ParsedLaneReport } from '../../../
 import { computeInventory } from '../../../src/localVerify/inventory.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
 import type { FirstPartInput } from '../../../src/localVerify/firstPart.js';
-import { compareFirstPartRuns } from '../../../src/localVerify/firstPartTrial.js';
 
 const HOME = '/agents/echo';
 const HEAD = 'a'.repeat(40);
@@ -31,7 +30,7 @@ const SRC = `import { it } from 'vitest'; it('a', () => {});`;
 const REPORTER = '/opt/instar/dist/localVerify/unhandledErrorsReporter.js';
 
 type Lane = 'unit' | 'integration' | 'e2e';
-type Behaviour = 'pass' | 'fail' | 'flaky';
+type Behaviour = 'pass' | 'fail' | 'flaky' | 'skip';
 const u = (n: number) => `tests/unit/u${n}.test.ts`;
 const i = (n: number) => `tests/integration/i${n}.test.ts`;
 const e = (n: number) => `tests/e2e/e${n}.test.ts`;
@@ -139,7 +138,7 @@ function fake(sim: Sim) {
         files.set(out, JSON.stringify({
           testResults: reported.map((f) => ({
             name: path.join(P.runDir, f), status: fails(f) ? 'failed' : 'passed', message: '', startTime: 0, endTime: 1,
-            assertionResults: [{ status: fails(f) ? 'failed' : 'passed', title: 't', fullName: `${f} t`, ancestorTitles: [], failureMessages: fails(f) ? ['boom'] : [], meta: {} }],
+            assertionResults: [{ status: sim.behaviour?.[f] === 'skip' ? 'skipped' : fails(f) ? 'failed' : 'passed', title: 't', fullName: `${f} t`, ancestorTitles: [], failureMessages: fails(f) ? ['boom'] : [], meta: {} }],
           })),
         }));
       }
@@ -345,8 +344,7 @@ describe('where first parts apply', () => {
       expect(c.key).not.toContain('first');
     }
     expect(off.r.firstPart).toBeUndefined();
-    expect(off.r.fileOutcomes).toBeUndefined();
-    expect(Object.keys(off.r.record).sort()).toEqual(['baseRefName', 'baseSha', 'finishedAt', 'harnessChanging', 'headSha', 'lanes', 'machineId', 'mergeTree', 'nodeVersion', 'outcome', 'policyHash', 'pr', 'protectedPath', 'repo', 'skipsAdded', 'startedAt', 'testsRemoved', 'verifierVersion']);
+    expect(Object.keys(off.r.record).filter((k) => k !== 'firstPart').sort()).toEqual(['baseRefName', 'baseSha', 'finishedAt', 'harnessChanging', 'headSha', 'lanes', 'machineId', 'mergeTree', 'nodeVersion', 'outcome', 'policyHash', 'pr', 'protectedPath', 'repo', 'skipsAdded', 'startedAt', 'testsRemoved', 'verifierVersion']);
     expect(off.logs.some((l) => String(l.event).startsWith('first-part'))).toBe(false);
   });
 
@@ -735,91 +733,33 @@ describe('equal outcome: for tests that give the same result wherever they run, 
 
 // ── Tests that depend on their neighbours (the accepted risk) ──────────
 
-describe('a test that depends on which files share its process (documentation of the accepted risk)', () => {
-  // Scripted files, not real ones: the fake runner applies "fails only if the other ran in the same process".
-  const A = u(1);
-  const B = u(2);
-  const files = { unit: [A, B, u(3)] };
-
-  it('B fails only when A ran before it in the same process: in one piece B fails and passes alone; with A in the first part B never fails', async () => {
-    const sim: Sim = { files, failsWith: { [B]: A } };
-    const whole = await run(sim, { collectFileOutcomes: true });
-    const parts = await run(sim, { ...on({ list: [A] }), collectFileOutcomes: true });
-    // The result with and without a first part, recorded:
-    expect({ outcome: whole.r.record.outcome, b: whole.r.fileOutcomes![B], flaky: whole.r.record.flakyRetried?.map((x) => x.file) })
-      .toEqual({ outcome: 'success', b: 'flaky', flaky: [B] });
-    expect({ outcome: parts.r.record.outcome, b: parts.r.fileOutcomes![B], flaky: parts.r.record.flakyRetried })
-      .toEqual({ outcome: 'success', b: 'passed', flaky: undefined });
-    // The reordering changed what B did. Here both verdicts are a pass; the verdict check records B as unreliable, not as a difference.
-    const cmp = compareFirstPartRuns({ outcome: parts.r.record.outcome, files: parts.r.fileOutcomes! }, { outcome: whole.r.record.outcome, files: whole.r.fileOutcomes! }, new Set());
-    expect(cmp).toMatchObject({ difference: false, flakyInEither: [B] });
-  });
-
-  it('moving X into the first part makes Y fail only in the new order: the verdicts differ, and the comparison detects it', async () => {
-    const X = u(1);
-    const Y = u(2);
-    const sim: Sim = { files, needs: { [Y]: X } }; // Y passes only in a process that also ran X
-    const parts = await run(sim, { ...on({ list: [X] }), collectFileOutcomes: true });
-    const whole = await run(sim, { collectFileOutcomes: true });
+describe('a test that depends on its process neighbours', () => {
+  it('records a neighbour-dependent failure that passes alone without changing either verdict', async () => {
+    const sim: Sim = { files: { unit: range(3, u) }, failsWith: { [u(2)]: u(1) } };
+    const whole = await run(sim);
+    const parts = await run(sim, on({ list: [u(1)] }));
     expect(whole.r.record.outcome).toBe('success');
-    expect(parts.r.record.outcome).toBe('failure'); // the one stated way the order can change a verdict
-    expect(parts.r.record.failedFiles).toEqual([Y]);
-    const cmp = compareFirstPartRuns({ outcome: parts.r.record.outcome, files: parts.r.fileOutcomes! }, { outcome: whole.r.record.outcome, files: whole.r.fileOutcomes! }, new Set());
-    expect(cmp.verdictDiffers).toBe(true);
-    expect(cmp.differing).toEqual([{ file: Y, first: 'failed', compare: 'passed', known: false }]);
-    expect(cmp.difference).toBe(true);
+    expect(parts.r.record.outcome).toBe('success');
+    expect(whole.r.observation?.failures).toContainEqual(expect.objectContaining({ file: u(2), result: 'passed-on-rerun' }));
+    expect(parts.r.observation?.failures).toEqual([]);
   });
-
-  it('a change with one fault in each part: the run with first parts ends on the first, the full run sees both; not a difference', async () => {
+  it('retains both faults when reached, and only the first fault when the first part ends the verify', async () => {
     const sim: Sim = { files: { unit: range(5, u) }, behaviour: { [u(1)]: 'fail', [u(4)]: 'fail' } };
-    const parts = await run(sim, { ...on({ list: [u(1)] }), collectFileOutcomes: true });
-    const whole = await run(sim, { collectFileOutcomes: true, failFast: true });
+    const parts = await run(sim, on({ list: [u(1)] }));
+    const whole = await run(sim);
     expect(parts.r.record.failedFiles).toEqual([u(1)]);
     expect(whole.r.record.failedFiles).toEqual([u(1), u(4)]);
-    const cmp = compareFirstPartRuns({ outcome: parts.r.record.outcome, files: parts.r.fileOutcomes! }, { outcome: whole.r.record.outcome, files: whole.r.fileOutcomes! }, new Set());
-    expect(cmp).toMatchObject({ verdictDiffers: false, difference: false, bothFailed: [u(1)], onlyCompareReached: [u(4)] });
+    expect(parts.r.record.outcome).toBe(whole.r.record.outcome);
+  });
+  it('records a verdict change caused by separating two files', async () => {
+    const sim: Sim = { files: { unit: range(3, u) }, needs: { [u(2)]: u(1) } };
+    const parts = await run(sim, on({ list: [u(1)] }));
+    const whole = await run(sim);
+    expect(whole.r.record.outcome).toBe('success');
+    expect(parts.r.record.outcome).toBe('failure');
+    expect(parts.r.observation?.failures).toContainEqual(expect.objectContaining({ file: u(2), result: 'failed' }));
   });
 });
-
-// ── The comparison run, and what a run hands back ──────────────────────
-
-describe('the comparison run (the verdict check)', () => {
-  const files = { unit: range(4, u) };
-
-  it('runs in a FRESH checkout of the same merge commit, in its own folders, and never keeps a failed worktree', async () => {
-    const first = await run({ files, behaviour: { [u(2)]: 'fail' } }, on({ list: [u(2)] }));
-    expect(first.worktrees).toEqual([P.runDir]);
-    expect(first.r.keptWorktree).toBe(P.runDir); // the failed verify keeps its worktree for diagnosis
-    const cmp = await run({ files, behaviour: { [u(2)]: 'fail' } }, { variant: 'compare', collectFileOutcomes: true });
-    const CP = verifyPaths(HOME, HEAD, 'compare');
-    expect(CP.runDir).not.toBe(P.runDir);
-    expect(path.basename(CP.runDir)).toMatch(/^[0-9a-f]{12}$/); // still a name the orphan sweep knows
-    expect(CP.reportsDir).not.toBe(P.reportsDir);
-    expect(cmp.worktrees).toEqual([CP.runDir]);
-    expect(cmp.removedWorktrees).not.toContain(P.runDir);
-    expect(cmp.r.record.outcome).toBe('failure');
-    expect(cmp.r.keptWorktree).toBeNull();
-    expect(cmp.removedWorktrees).toContain(CP.runDir);
-    // The same merge commit: the worktree is added at the commit made from the same head and base.
-    expect(cmp.r.record.mergeTree).toBe(first.r.record.mergeTree);
-    // And the lanes exactly as today's verifier runs them: no first part.
-    expect(keys(cmp).some((k) => k.includes('first'))).toBe(false);
-    expect(cmp.r.firstPart).toBeUndefined();
-  });
-
-  it('hands back what every reported file did when asked, and nothing otherwise', async () => {
-    const sim: Sim = { files, behaviour: { [u(2)]: 'flaky', [u(3)]: 'fail' } };
-    const asked = await run(sim, { collectFileOutcomes: true, failFast: false });
-    expect(asked.r.fileOutcomes).toMatchObject({ [u(1)]: 'passed', [u(2)]: 'flaky', [u(3)]: 'failed', [u(4)]: 'passed', [i(1)]: 'passed', [e(1)]: 'passed' });
-    expect((await run(sim, { failFast: false })).r.fileOutcomes).toBeUndefined();
-    // A verify that ended in a first part reports only the files that ran.
-    const ended = await run(sim, { ...on({ list: [u(3)] }), collectFileOutcomes: true });
-    expect(ended.r.fileOutcomes![u(3)]).toBe('failed');
-    expect(ended.r.fileOutcomes![u(1)]).toBeUndefined();
-  });
-});
-
-// ── A re-run alone cut off by another lane's failure ───────────────────
 
 describe('a re-run alone cut off by another lane’s failure', () => {
   it('is named on the record (`rerunCutOff`), so the list and the change’s previous failures can leave it out', async () => {
@@ -829,6 +769,7 @@ describe('a re-run alone cut off by another lane’s failure', () => {
     expect(h.r.record.outcome).toBe('failure');
     expect(h.r.record.failedFiles).toEqual([i(1), u(1)]);
     expect(h.r.record.rerunCutOff).toEqual([i(1)]);
+    expect(h.r.observation?.failures).toContainEqual(expect.objectContaining({ file: i(1), result: 'rerun-interrupted' }));
     expect(h.r.failures!.find((x) => x.file === i(1))!.rerunMessage).toBe('isolation re-run stopped: another lane had already failed');
   });
 
@@ -887,5 +828,27 @@ describe('unit file durations and the unit wall factor, with a lane run in two p
     const firstOf = (x: { calls: VitestCall[] }) => laneCalls(x, 'unit').find((c) => c.key === 'unit-first')!.positional;
     expect(firstOf(timed)).toEqual(firstOf(plain));
     expect(firstOf(timed)).toEqual(list);
+  });
+});
+
+
+describe('amended observations beside the unchanged no-early-pass property', () => {
+  it('a skipped-only first part continues to the passing tests in the rest', async () => {
+    const sim: Sim = { files: { unit: range(3, u) }, behaviour: { [u(1)]: 'skip' } };
+    const parts = await run(sim, on({ list: [u(1)] }));
+    const whole = await run(sim);
+    expect(parts.r.record.outcome).toBe('success');
+    expect(parts.r.record.outcome).toBe(whole.r.record.outcome);
+    expectEachFileOnce(parts);
+  });
+  it('records both final and cleared failures with membership and own-file information', async () => {
+    const h = await run({ files: { unit: range(3, u) }, behaviour: { [u(1)]: 'flaky', [i(1)]: 'fail' }, diff: [i(1)] },
+      { ...on({ list: [u(1)], group: 'with' }), failFast: false });
+    expect(h.r.observation?.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ file: u(1), firstPart: true, own: false, result: 'passed-on-rerun' }),
+      expect.objectContaining({ file: i(1), firstPart: true, own: true, result: 'failed' }),
+    ]));
+    expect(h.r.record.firstPart).toEqual({ setting: 'on', group: 'with', ran: true });
+    expect(h.r.observation?.completedLanes).toEqual(['unit', 'integration', 'e2e']);
   });
 });
