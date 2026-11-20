@@ -134,6 +134,7 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
 
 import { Router } from 'express';
 import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
+import { readShadowFolds, summarizeShadowFolds } from '../monitoring/foldShadowLog.js';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
@@ -9673,6 +9674,21 @@ export function createRoutes(ctx: RouteContext): Router {
   // context-budget-layered-summaries §7.8/§9.1: the ContextBudgetSentinel's status —
   // its heartbeat, quarantined and torn folds, and the standing compaction canary's
   // state per machine/engine/version. Read-only; 503 when the sentinel is off.
+  // context-budget-layered-summaries §16 Phase 2: the shadow-fold record — how
+  // many shadow folds were graded toward the 40-fold exit, the would-be lost
+  // rate, and why the rest did not complete. Counts only, never words. 503 when
+  // shadow folding is off on this agent (contextBudget.fold.shadow, dev-gated).
+  router.get('/context-budget/fold-shadow', (_req, res) => {
+    let explicit: boolean | undefined;
+    try { explicit = ctx.liveConfig?.get<boolean | undefined>('contextBudget.fold.shadow', undefined); } catch { explicit = undefined; /* @silent-fallback-ok — an unreadable live value falls back to the boot value */ }
+    if (explicit === undefined) explicit = (ctx.config as { contextBudget?: { fold?: { shadow?: boolean } } }).contextBudget?.fold?.shadow;
+    if (!resolveDevAgentGate(explicit, ctx.config)) {
+      res.status(503).json({ error: 'context-budget shadow folding not enabled on this agent', enableWith: 'contextBudget.fold.shadow' });
+      return;
+    }
+    const rows = readShadowFolds(ctx.config.stateDir);
+    res.json({ ...summarizeShadowFolds(rows), recent: rows.slice(-20).reverse() });
+  });
   router.get('/context-budget/sentinel', (_req, res) => {
     if (!ctx.contextBudgetSentinel) {
       res.status(503).json({ error: 'context-budget sentinel not enabled on this agent', enableWith: 'contextBudget.sentinel.enabled' });

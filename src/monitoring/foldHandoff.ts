@@ -252,3 +252,39 @@ export function verifyHandoff(h: Handoff, ctx: HandoffContext): HandoffVerificat
 
   return { ok: deficiencies.length === 0, deficiencies, items, relabels, decisions, coverage };
 }
+
+// ── The handoff request (§7.4: the internal turn that asks for the handoff) ──
+
+/** At most this many messages in the request's index; basis: one handoff turn's worth of index, newest kept. */
+export const HANDOFF_INDEX_MAX = 200;
+const EXCERPT_CHARS = 80;
+
+export interface IndexMessage { messageId: number; at: string | null; fromUser: boolean; text: string }
+
+/**
+ * The internal turn that asks the live session for its handoff. The session
+ * never sees message ids in its context, so the request carries a compact
+ * message index (id, time, sender, a short excerpt) for it to name finished
+ * stretches by. It is marked internal: the session must not message the
+ * operator about it (the fold hold refuses such a send anyway).
+ */
+export function buildHandoffRequest(i: { foldId: string; messages: readonly IndexMessage[]; questions?: readonly string[] }): string {
+  const index = i.messages.slice(-HANDOFF_INDEX_MAX).map((m) => {
+    const one = m.text.replace(/\s+/g, ' ').trim();
+    const ex = one.length > EXCERPT_CHARS ? `${one.slice(0, EXCERPT_CHARS - 1)}…` : one;
+    return `#${m.messageId} ${m.at ?? '?'} ${m.fromUser ? 'operator' : 'agent'}: ${ex}`;
+  });
+  const lines = [
+    `[internal: context-budget handoff request, fold ${i.foldId}; not from the operator — do not reply to the operator about it]`,
+    'Your working context may later be rebuilt from a summary. Write ONE handoff from your full context now, so nothing you still need is lost.',
+    'Use the message index below to name finished stretches by message id. Keep word for word anything you still need, and say where it came from: "user" only when it is exactly one of the operator\'s messages, "agent" for your own words, "tool:<entry>" for tool output.',
+    'Message index (oldest first):',
+    ...index,
+  ];
+  if (i.questions?.length) lines.push('Your previous handoff needs another look:', ...i.questions.map((q) => `- ${q}`));
+  lines.push(
+    'Reply with ONLY this JSON, no other text:',
+    `{"schema":"${HANDOFF_SCHEMA}","finished":[{"fromMessageId":0,"toMessageId":0,"outcome":"…","artifacts":["…"]}],"stillNeeded":[{"text":"…","origin":"user|agent|tool:<entry>"}],"openThreads":["…"],"nextStep":"…","background":"none|paused|live","decisions":[{"kind":"decision|evolution","quote":"…"}]}`,
+  );
+  return lines.join('\n');
+}
