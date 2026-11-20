@@ -992,6 +992,10 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  */
 export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
 
+/** SEC-124: path prefixes (lowercase) of the pre-auth capability pages given anti-framing,
+ * no-store and no-referrer headers by `dashboardSecurityHeaders`. */
+export const PRE_AUTH_PAGE_PREFIXES: readonly string[] = ['/mcp/approve/', '/memory-privacy/fix/', '/secrets/drop/'];
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
   // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
   // headers must too (dashboard-console-default-and-pair-page round 2).
@@ -1002,6 +1006,19 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   if (p === '/view' || p.startsWith('/view/')) {
     res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
     res.header('X-Content-Type-Options', 'nosniff');
+  }
+  // SEC-124: pages reachable WITHOUT the bearer that act on a capability carried in the
+  // URL (an approval request id, a one-time repair token, a Secret Drop token) and/or ask
+  // for the dashboard PIN. They must not be framed by another site (a click-jacked
+  // Approve), cached, or leak their URL through a Referer header. Only framing, caching
+  // and referrer are restricted: these pages keep their own inline script and style.
+  if (PRE_AUTH_PAGE_PREFIXES.some((prefix) => p.startsWith(prefix))) {
+    res.header('X-Frame-Options', 'DENY');
+    res.header('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.header('Pragma', 'no-cache');
+    res.header('Referrer-Policy', 'no-referrer');
   }
   if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
