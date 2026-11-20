@@ -103,3 +103,9 @@ One commit came after the last reviewed trace (commit `efd6aca94`): `1cfd81f51`,
 - **`src/localVerify`:** against main, only `orchestrator.ts` differs, and exactly by this change's own edits (`unitWorkers`, unit lane duration recording, the `reran` mark, `noteUnitWallFactor`). No stray hand edits.
 
 No product behaviour changed in the merge. The sections above are unchanged.
+
+## Addendum (2026-11-20 15:07 PST): the merge with main after #3470
+
+After #3470 merged, this branch conflicted with main, and the M5 dropped its run. Merge `b5f9e442f` brings main (`628d897b1`) in. Its one conflict: both sides appended an entry at the end of `src/data/feature-ladders.json`, and the resolution keeps both (this change's `local-verify-borrowed-unit-slices`, now with a trailing comma, and #3470's `local-verify-peer-works-through-restart`, word for word). The file parses, 243 entries, no id twice. `src/localVerify/orchestrator.ts` merged without conflict: main's only change there (#3470 exporting `PROGRESS_MAX_BYTES`) is intact and far from this change's lane-duration edits. After the merge: `tsc` clean; `orchestrator.test.ts`, `firstPartFlow.test.ts` and `feature-ladders-coverage.test.ts` pass (184 tests).
+
+**Reviewer:** an independent subagent with a fresh context, read-only, given only the merge commit. Verdict: **concur**. No product behaviour changed.
