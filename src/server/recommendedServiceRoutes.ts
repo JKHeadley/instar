@@ -175,9 +175,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   /** After this many failed refreshes in a row the check is re-run: its fail restarts setup, which asks the person for what changed. */
   const SYNC_FAILURES_BEFORE_RECHECK = 3;
   const nowIso = (): string => new Date(deps.now?.() ?? Date.now()).toISOString();
-  const report = (primary: string, err: unknown, impact: string): void => {
+  const report = (primary: string, err: unknown, impact: string, feature = 'RecommendedServices.setup', fallback = 'The choice is saved. This step did not happen.'): void => {
     DegradationReporter.getInstance().report({
-      feature: 'RecommendedServices.setup', primary, fallback: 'The choice is saved. This step did not happen.',
+      feature, primary, fallback,
       reason: err instanceof Error ? err.message : String(err), impact,
     });
   };
@@ -646,7 +646,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       if (isDuplicateEvent(ledger.reofferRows(owner), kind, nowMs)) return;
       ledger.recordReofferEvent({ service: PROBLEM_KINDS[kind]!.service, owner, kind, evidenceRef });
     } catch (err) { // @silent-fallback-ok — reported through report(); a problem signal never breaks its source
-      report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.');
+      report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
   let lastReofferAttemptAt = 0;
@@ -677,7 +677,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         try {
           pending = ledger.recordReofferPending(decision.event);
         } catch (err) { // @silent-fallback-ok — reported through report(), and nothing is sent on this path
-          report('Reserve the re-offer', err, 'Nothing was sent; the next check tries again.');
+          report('Reserve the re-offer', err, 'Nothing was sent; the next check tries again.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
           return;
         }
       }
@@ -689,14 +689,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       try {
         messageId = await deps.sendOfferList(text, []);
       } catch (err) {
-        report(`Re-offer ${row.name}`, err, 'The re-offer stays reserved and is sent again later.');
+        report(`Re-offer ${row.name}`, err, 'The re-offer stays reserved and is sent again later.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
         return;
       }
       if (messageId === null || messageId === undefined || messageId === '') return;
       try {
         ledger.recordReofferDelivered(pending, messageId);
       } catch (err) {
-        report('Record the delivered re-offer', err, 'The re-offer was sent; the record is missing, so one repeat is possible.');
+        report('Record the delivered re-offer', err, 'The re-offer was sent; the record is missing, so one repeat is possible.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
       }
     } finally {
       reoffering = false;
