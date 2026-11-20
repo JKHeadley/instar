@@ -82,7 +82,7 @@ export function createConversationGraphSurface(options:{
  /** The suggestion step (§3). Mounted only with owner corrections, since Accept needs them. */
  /** Work-front-doors stage 2b: open cards' conversations and their projects' conversations (proposed placement). */
  cardPlacements?:()=>Array<{card:ConversationRef;project:ConversationRef}>;
- suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[]};
+ suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[];decisions?:import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore|null};
 }):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();
  const router=Router();
@@ -128,7 +128,7 @@ export function createConversationGraphSurface(options:{
    ...(ownerAdmission?{captureOwnerIntent:ownerAdmission.capture,resolveQueuedOwner:ownerAdmission.resolve}:{})});
   router.use(createConversationGraphChangeRouter({changes,resolveViewer}));
   if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,
-   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{})})}));
+   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{}),...(options.suggestions.decisions?{decisions:options.suggestions.decisions}:{})})}));
  }
  return router;
 }

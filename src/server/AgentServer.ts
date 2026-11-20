@@ -1585,6 +1585,8 @@ export class AgentServer {
     readMarkersHlcNowMs?: () => number;
     /** Conversation-list pins (docs/specs/conversation-list-pins.md), built by server.ts on the replication path. Absent ⇒ a local store is built here. */
     conversationListPins?: ConversationListPinStore | null;
+    /** The owner's Conversations suggestion decisions on every machine (docs/specs/conversation-graph-suggestions-replicated-decisions.md), built by server.ts on the replication path. Absent ⇒ decisions stay on this machine. */
+    conversationGraphSuggestionDecisions?: import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore | null;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
@@ -8152,7 +8154,9 @@ export class AgentServer {
     // work-front-doors stage 2b: each Chief of Staff bound project is offered as a ready-made suggestion; the
     // owner's Accept makes it an effort with its conversation as the front door (projects become efforts only
     // by the owner's accept). Members: the project conversation and its Chief of Staff tree children.
-    projects:()=>options.chiefOfStaffLoop?projectSuggestionSources(options.chiefOfStaffLoop,graphTelegramChatId()):[]};
+    projects:()=>options.chiefOfStaffLoop?projectSuggestionSources(options.chiefOfStaffLoop,graphTelegramChatId()):[],
+    // conversation-graph-suggestions-replicated-decisions: the owner's decisions shared with the agent's other machines.
+    decisions:options.conversationGraphSuggestionDecisions??null};
     if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
       graphSurfaceMounted=true;
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,

@@ -1,0 +1,26 @@
+<!-- bump: patch -->
+## What Changed
+
+The owner's decisions on Conversations suggestions now reach every machine of the agent (spec `docs/specs/conversation-graph-suggestions-replicated-decisions.md`, closes CMT-1650; replaces §5 of `docs/specs/conversation-graph-suggestions.md`).
+
+- New replicated kind `conversation-graph-suggestion-record` (store `conversationGraphSuggestions`) on the existing WS2 record path. One immutable row per decision: `rejected`, `accepted` (optionally with what the Accept did) or `accepting` (the create request id plus a snapshot of the suggestion: its name, conversation refs and front door, checked against the suggestion id on arrival). No message text.
+- A Reject on one machine hides the suggestion on every machine and keeps it out of every machine's next build. An Accept started on one machine shows Continue on the others (even one that never built that suggestion), keeps its conversations out of new suggestions, and continues the same request.
+- The create request id is now derived from the suggestion id (`suggestionCreateRequestId`, the same value as `acceptRequestId(id, 'create')` in the conversation-groups-phone change), so every tab and every machine asks for the same group. This alone ends the "second empty group" case, even on one machine.
+- The built suggestion list stays on each machine. Each machine's own file keeps only its own decisions; other machines' decisions are overlaid on read and never written into it.
+- Decisions made before the update are shared once at the first read after it. Each machine's own rows are checked against its own journal at boot and re-sent only if missing; unsent rows drain with backoff (10 minutes doubling to 6 hours, at most 100 rows a pass).
+- On wherever the coherence journal runs. Off switch: `multiMachine.stateSync.conversationGraphSuggestions.enabled: false` (read at boot): nothing is sent, landed or overlaid, and each machine is back to machine-local decisions.
+- A machine on an older build ignores these records and keeps machine-local behavior until it updates; its dashboard may still re-offer a suggestion rejected elsewhere.
+
+## What to Tell Your User
+
+If your agent runs on more than one computer: when you reject a suggested group on one, it no longer comes back on another, and an Accept you started on one can be finished from another without making a second group. Nothing to do; it is on wherever your computers already share records.
+
+## Summary of New Capabilities
+
+- Suggestion decisions are shared across the agent's machines (new journal kind `conversation-graph-suggestion-record`; off switch `multiMachine.stateSync.conversationGraphSuggestions.enabled: false`). No new routes.
+
+## Evidence
+
+- Unit: `tests/unit/conversation-graph-suggestion-decisions.test.ts` (schema, fold incl. legacy-vs-derived and clock order, outbox, boot check, drain backoff/fairness, service overlay incl. empty-list Continue, project front door, in-flight build overlap, backfill, no overlay persisted); `tests/unit/conversation-graph-suggestions.test.ts` (derived request id); `tests/unit/CoherenceJournal.test.ts` (kind tables).
+- Integration: `tests/integration/conversation-graph-suggestions-replicated.test.ts` — two machines through the real suggestion router: reject on A honored on B, Continue on B with A's request id, concurrent starts converge, pre-update decisions migrate once, re-delivery idempotent.
+- E2E: `tests/e2e/conversation-graph-suggestion-decisions-alive.test.ts` — real journal, emitter and peer reader: a Reject emits one record, a second machine landing it hides the suggestion, a restart sends nothing again, flag off emits nothing; server.ts / AgentServer wiring checks.
