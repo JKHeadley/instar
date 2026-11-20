@@ -219,7 +219,7 @@ import {
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
-import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
+import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 import { IMPORTED_HISTORY_PROJECT_PATH, IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
@@ -733,7 +733,10 @@ export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red
  * Local Verify peer verifiers — the awareness line appended to an existing CLAUDE.md's Local Verify
  * section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
+/** docs/specs/local-verify-peer-works-through-restart.md Visibility: the phrase `migrateClaudeMd` rewrites in existing agents. */
+export const LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch).';
+export const LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch).';
+export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
 /**
  * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
@@ -3348,6 +3351,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAccountActionSafetySkill(result);
+    this.migrateNormalChromeWindowsBlankPageNote(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -7359,6 +7363,55 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/normal-chrome-browser/SKILL.md (account-action safety)');
     } catch (err) {
       result.errors.push(`account-action safety skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Add the Windows blank-page note (ERR page-not-rendering, the occlusion fix; spec
+   * normal-chrome-windows-occlusion) once to an installed /normal-chrome-browser skill that lacks it:
+   * the note before the Linux section heading (appended if that heading is gone), its row in the recovery
+   * quick list and the flag sentence in the `launch` row (each only when its anchor is still there), edits
+   * kept, in the file's own line endings. An untouched copy of the previous shipped text ends byte-identical
+   * to a fresh install (tested against tests/fixtures/skills/normal-chrome-browser-v3.md). Runs after migrateNormalChromeBrowserSkill, so a copy that step replaced
+   * whole already carries the note and is left alone.
+   * Idempotent on the note's heading; scoped to the built-in skill; a missing file is left to
+   * installBuiltinSkills.
+   */
+  private migrateNormalChromeWindowsBlankPageNote(result: MigrationResult): void {
+    const file = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+    try {
+      if (!fs.existsSync(file)) return;
+      const current = fs.readFileSync(file, 'utf8');
+      if (!current.includes('name: normal-chrome-browser') || current.includes(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)) return;
+      const crlf = current.includes('\r\n');
+      const lf = crlf ? current.replace(/\r\n/g, '\n') : current;
+      // Three guarded edits, each placed where the shipped text has it, so an untouched copy of the previous
+      // shipped text (tests/fixtures/skills/normal-chrome-browser-v3.md) ends byte-identical to a fresh install
+      // and an edited copy keeps every edit.
+      // 1. The note, at the end of the Windows section (just before the Linux section heading), or at the end
+      //    of the file when that heading is gone; one blank line before it, the original gap after it.
+      const linuxAt = lf.indexOf('\n' + NORMAL_CHROME_BROWSER_SKILL_MARKER);
+      let next: string;
+      if (linuxAt >= 0) {
+        const before = lf.slice(0, linuxAt + 1).replace(/\n+$/, '');
+        const gap = lf.slice(before.length, linuxAt + 1);
+        next = before + '\n\n' + NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE + gap.slice(1) + lf.slice(linuxAt + 1);
+      } else {
+        next = lf.replace(/\n*$/, '') + '\n\n' + NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE;
+      }
+      // 2. The recovery quick list row, just above the existing "page document not found" row.
+      const rowAt = next.indexOf('\n' + NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR);
+      if (rowAt >= 0 && !next.includes(NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)) {
+        next = next.slice(0, rowAt + 1) + NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW + '\n' + next.slice(rowAt + 1);
+      }
+      // 3. The flag sentence in the Windows `launch` row.
+      if (!next.includes(NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE) && next.includes(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR)) {
+        next = next.replace(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR + NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE);
+      }
+      fs.writeFileSync(file, crlf ? next.replace(/\n/g, '\r\n') : next);
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (Windows blank-page note: ERR page-not-rendering and the occlusion fix)');
+    } catch (err) {
+      result.errors.push(`skills/normal-chrome-browser/SKILL.md blank-page note: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -13846,6 +13899,13 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_PEERS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify peer-verifier awareness');
+    }
+    // local-verify-peer-works-through-restart (Visibility): the peer line in existing agents still says a
+    // record needs "the same … lease epoch". Rewrite that one phrase; content-sniffed on the setting key.
+    if (content.includes(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE) && !content.includes('monitoring.localVerify.peerWorksThroughRestart.enabled')) {
+      content = content.replace(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE, LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
     }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {

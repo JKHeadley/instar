@@ -8,6 +8,11 @@
  *   - the ids the owner rejected (never offered again);
  *   - the ids the owner accepted (so a finished one is not offered again).
  *
+ * The owner's decisions (rejected, accepted, an Accept in progress) also reach every machine of the agent
+ * (docs/specs/conversation-graph-suggestions-replicated-decisions.md): with a `decisions` store, every
+ * decision written here is recorded there and sent, and `load()` overlays the decisions held from other
+ * machines. The overlay is never written back to this file, which keeps only this machine's own decisions.
+ *
  * Spend is bounded: one model call per build, a build starts automatically at most once per
  * `autoRebuildMs` when the owner opens the list, a manual refresh at most once per
  * `minRebuildMs`, and only one build runs at a time.
@@ -17,11 +22,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { nodeKey, type ConversationRef, type ProjectionItem } from '../core/conversationGraph.js';
+import { nodeKey, untitledConversationName, type ConversationRef, type ProjectionItem } from '../core/conversationGraph.js';
 import {
-  buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, SUGGESTION_LIMITS, projectSuggestionId,
+  buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, SUGGESTION_LIMITS, projectSuggestionId, suggestionCreateRequestId,
   type GraphSuggestion, type SuggestionInput,
 } from '../core/ConversationGraphSuggestions.js';
+import type { SuggestionDecisionRow, SuggestionDecisionStore } from '../core/ConversationGraphSuggestionDecisions.js';
 
 export const SUGGESTIONS_STATE_FILE = 'conversation-graph-suggestions.json';
 export const SUGGESTIONS_LLM_COMPONENT = 'ConversationGraphSuggestions';
@@ -86,6 +92,21 @@ export interface SuggestionServiceDeps {
   minRebuildMs?: number;
   /** A build starts by itself when the list is opened and the last one is older than this. */
   autoRebuildMs?: number;
+  /**
+   * The owner's decisions shared with the agent's other machines (replicated-decisions spec). Absent ⇒
+   * decisions stay on this machine (single machine, journal off, or the kill switch).
+   */
+  decisions?: SuggestionDecisionStore | null;
+}
+
+/** What `load()` added from other machines' decisions, so `save()` can leave it out of the local file. */
+interface Overlay {
+  rejected: Map<string, string>;
+  accepted: Map<string, string>;
+  /** The overlay entry, and the local entry it stood in for (absent when there was none). */
+  accepting: Map<string, { shown: SuggestionState['accepting'][string]; local?: SuggestionState['accepting'][string] }>;
+  /** The overlay suggestion object, and the local one it stood in for (absent when there was none). */
+  suggestions: Map<string, { shown: StoredSuggestion; local?: StoredSuggestion }>;
 }
 
 const empty = (): SuggestionState => ({ v: 1, builtAt: null, lastAttemptAt: null, lastFailure: null, suggestions: [], rejected: {}, accepted: {}, accepting: {} });
@@ -104,6 +125,8 @@ export class ConversationGraphSuggestionService {
   private readonly now: () => Date;
   private readonly minRebuildMs: number;
   private readonly autoRebuildMs: number;
+  private readonly overlays = new WeakMap<SuggestionState, Overlay>();
+  private backfilled = false;
 
   constructor(private readonly deps: SuggestionServiceDeps) {
     this.file = path.join(deps.stateDir, SUGGESTIONS_STATE_FILE);
@@ -113,7 +136,70 @@ export class ConversationGraphSuggestionService {
   }
 
   // E2E-PAIRING: EXEMPT — this commit only adds degradation reporting to two catches; the route behavior is unchanged and covered by tests/e2e/conversation-graph-suggestions-alive.test.ts.
+  /** This machine's file overlaid with the decisions held from every machine (the replicated-decisions spec). */
   private load(): SuggestionState {
+    const state = this.loadLocal();
+    const store = this.deps.decisions;
+    if (!store) return state;
+    if (!this.backfilled) { this.backfilled = true; this.backfill(state); }
+    const folded = store.fold();
+    const overlay: Overlay = { rejected: new Map(), accepted: new Map(), accepting: new Map(), suggestions: new Map() };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    for (const [id, row] of folded.rejected) if (!state.rejected[id]) { state.rejected[id] = iso(row.atMs); overlay.rejected.set(id, state.rejected[id]); }
+    for (const [id, row] of folded.accepted) if (!state.accepted[id]) { state.accepted[id] = iso(row.atMs); overlay.accepted.set(id, state.accepted[id]); }
+    for (const [id, row] of folded.accepting) {
+      if (state.rejected[id] || state.accepted[id] || !row.createRequestId || !row.snapshot) continue;
+      const local = state.accepting[id];
+      if (!local || local.createRequestId !== row.createRequestId) {
+        // Local progress belongs to the local request; a different winning request starts from its own id.
+        const shownEntry = { createRequestId: row.createRequestId, startedAt: iso(row.atMs) };
+        state.accepting[id] = shownEntry;
+        overlay.accepting.set(id, { shown: shownEntry, ...(local ? { local } : {}) });
+      }
+      // The winning snapshot governs the suggestion an Accept works on, on every machine.
+      const shown = snapshotSuggestion(id, row);
+      const i = state.suggestions.findIndex((s) => s.id === id);
+      const current = i >= 0 ? state.suggestions[i] : undefined;
+      if (current && sameWork(current, shown)) continue;
+      if (current) state.suggestions[i] = shown; else state.suggestions.push(shown);
+      overlay.suggestions.set(id, { shown, ...(current ? { local: current } : {}) });
+    }
+    this.overlays.set(state, overlay);
+    return state;
+  }
+
+  /** Records, once, this machine's decisions made before the store existed (idempotent: the store's comparator keeps held rows). */
+  private backfill(state: SuggestionState): void {
+    backfillFromState(state, this.deps.decisions!, this.now().getTime());
+  }
+
+  /** The `accepting` row for a stored suggestion, or null when it is not stored. */
+  private acceptingRow(state: SuggestionState, id: string, createRequestId: string, atMs: number): SuggestionDecisionRow | null {
+    return acceptingRowFor(state, id, createRequestId, atMs);
+  }
+
+  /** The owner tapped here: a value the overlay brought in becomes this machine's own, so `save()` keeps it. */
+  private claimLocal(state: SuggestionState, field: 'rejected' | 'accepted', id: string): void {
+    this.overlays.get(state)?.[field].delete(id);
+  }
+
+  /** A stored ISO time as the row's `atMs`, so backfill later rebuilds the identical row (same record key). */
+  private atMsOf(iso: string): number { return isoMs(iso, this.now().getTime()); }
+
+  /** Hands a decision to the store; a refused row is reported (the decision still holds on this machine). */
+  private recordDecision(row: SuggestionDecisionRow): 'recorded' | 'held' | 'invalid' | 'off' {
+    const store = this.deps.decisions;
+    if (!store) return 'off';
+    let out: 'recorded' | 'held' | 'invalid' = 'invalid';
+    try { out = store.record(row); } catch { out = 'invalid'; }
+    if (out === 'invalid') {
+      DegradationReporter.getInstance().report({ feature: 'ConversationGraphSuggestions.replication', primary: 'Share the owner\'s suggestion decision with the agent\'s other machines',
+        fallback: 'The decision holds on this machine only', reason: `suggestion-decision-refused:${row.decision}`, impact: 'Another machine may offer this suggestion again', internalOnly: true });
+    }
+    return out;
+  }
+
+  private loadLocal(): SuggestionState {
     if (!fs.existsSync(this.file)) return empty();
     try { return validState(JSON.parse(fs.readFileSync(this.file, 'utf8'))) ?? empty(); } catch {
       // A damaged file would forget rejections, so it is reported, never silently replaced.
@@ -126,8 +212,27 @@ export class ConversationGraphSuggestionService {
   private save(state: SuggestionState): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 1), { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify(this.withoutOverlay(state), null, 1), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
+  }
+
+  /** The state as this machine's own file holds it: whatever `load()` added from other machines and the caller left unchanged is dropped. */
+  private withoutOverlay(state: SuggestionState): SuggestionState {
+    const overlay = this.overlays.get(state);
+    if (!overlay) return state;
+    const out: SuggestionState = { ...state, rejected: { ...state.rejected }, accepted: { ...state.accepted }, accepting: { ...state.accepting } };
+    for (const [id, v] of overlay.rejected) if (out.rejected[id] === v) delete out.rejected[id];
+    for (const [id, v] of overlay.accepted) if (out.accepted[id] === v) delete out.accepted[id];
+    for (const [id, o] of overlay.accepting) {
+      if (out.accepting[id] !== o.shown) continue;
+      if (o.local) out.accepting[id] = o.local; else delete out.accepting[id];
+    }
+    out.suggestions = state.suggestions.flatMap((s) => {
+      const o = overlay.suggestions.get(s.id);
+      if (!o || o.shown !== s) return [s];
+      return o.local ? [o.local] : [];
+    });
+    return out;
   }
 
   /** True while a build is running (tests and the route read it). */
@@ -196,8 +301,12 @@ export class ConversationGraphSuggestionService {
     const state = this.load();
     if (!state.suggestions.some((s) => s.id === id) || state.rejected[id] || state.accepted[id]) return null;
     if (!state.accepting[id]) {
-      state.accepting[id] = { createRequestId: `suggestion-${crypto.randomUUID()}`, startedAt: this.now().toISOString() };
+      // Derived from the suggestion id, so every tab and every machine sends the same create request.
+      const at = this.now();
+      state.accepting[id] = { createRequestId: suggestionCreateRequestId(id), startedAt: at.toISOString() };
       this.save(state);
+      const row = this.acceptingRow(state, id, state.accepting[id].createRequestId, at.getTime());
+      if (row) this.recordDecision(row);
     }
     return { createRequestId: state.accepting[id].createRequestId };
   }
@@ -205,8 +314,10 @@ export class ConversationGraphSuggestionService {
   reject(id: string): boolean {
     const state = this.load();
     if (!state.suggestions.some((s) => s.id === id) && !state.rejected[id]) return false;
+    this.claimLocal(state, 'rejected', id);
     state.rejected[id] = state.rejected[id] ?? this.now().toISOString();
     this.save(state);
+    this.recordDecision({ suggestionId: id, decision: 'rejected', atMs: this.atMsOf(state.rejected[id]) });
     return true;
   }
 
@@ -214,16 +325,18 @@ export class ConversationGraphSuggestionService {
   accepted(id: string): boolean {
     const state = this.load();
     if (!state.suggestions.some((s) => s.id === id) && !state.accepted[id]) return false;
+    this.claimLocal(state, 'accepted', id);
     state.accepted[id] = state.accepted[id] ?? this.now().toISOString();
     delete state.accepting[id];
     this.save(state);
+    this.recordDecision({ suggestionId: id, decision: 'accepted', atMs: this.atMsOf(state.accepted[id]) });
     return true;
   }
 
   private start(unassigned: readonly ProjectionItem[]): void {
     if (this.building || !this.deps.intelligence) return;
     const current = this.load();
-    const busy = new Set(current.suggestions.filter((s) => current.accepting[s.id] || s.frontDoorKey).flatMap((s) => s.memberKeys));
+    const busy = new Set(current.suggestions.filter((s) => activeAccept(current, s.id) || s.frontDoorKey).flatMap((s) => s.memberKeys));
     const inputs = this.inputs(unassigned).filter((i) => !busy.has(i.key));
     const startedAt = this.now().toISOString();
     const before = this.load();
@@ -266,7 +379,7 @@ export class ConversationGraphSuggestionService {
     // A project the Chief of Staff no longer tracks is no longer offered (unless its Accept is in progress).
     const current = new Set(projects.slice(0, 100).map((p) => projectSuggestionId(p.key)));
     const before = state.suggestions.length;
-    state.suggestions = state.suggestions.filter((s) => !s.frontDoorKey || current.has(s.id) || state.accepting[s.id]);
+    state.suggestions = state.suggestions.filter((s) => !s.frontDoorKey || current.has(s.id) || activeAccept(state, s.id));
     if (state.suggestions.length !== before) changed = true;
     for (const p of projects.slice(0, 100)) {
       const id = projectSuggestionId(p.key);
@@ -276,7 +389,7 @@ export class ConversationGraphSuggestionService {
       const next = { id, title: `Project: ${p.title}`.slice(0, SUGGESTION_LIMITS.maxEffortNameChars), reason: 'A project the Chief of Staff tracks. Its conversation becomes the project\'s front door.', memberKeys, frontDoorKey: p.key, members };
       const i = state.suggestions.findIndex((s) => s.id === id);
       if (i < 0) { state.suggestions.push(next); changed = true; continue; }
-      if (state.accepting[id]) continue;
+      if (activeAccept(state, id)) continue;
       if (JSON.stringify(state.suggestions[i]) !== JSON.stringify(next)) { state.suggestions[i] = next; changed = true; }
     }
     if (changed) this.save(state);
@@ -306,8 +419,83 @@ export class ConversationGraphSuggestionService {
       // Project suggestions are not the model's: a rebuild keeps them as they are.
       const kept = state.suggestions.filter((s) => s.frontDoorKey || (state.accepting[s.id] && !state.accepted[s.id] && !state.rejected[s.id]));
       const keptIds = new Set(kept.map((s) => s.id));
-      state.suggestions = [...kept, ...groups.filter((g) => !keptIds.has(g.id)).map((g) => ({ ...g, members: g.memberKeys.map((k) => ({ key: k, ref: byKey.get(k)!.ref, title: byKey.get(k)!.title })) }))];
+      // A started Accept (here or on another machine, which may have landed while the model ran) keeps its members out.
+      const busy = new Set(kept.filter((s) => activeAccept(state, s.id)).flatMap((s) => s.memberKeys));
+      state.suggestions = [...kept, ...groups.filter((g) => !keptIds.has(g.id) && !g.memberKeys.some((k) => busy.has(k))).map((g) => ({ ...g, members: g.memberKeys.map((k) => ({ key: k, ref: byKey.get(k)!.ref, title: byKey.get(k)!.title })) }))];
     }
     this.save(state);
   }
+}
+
+/** A stored suggestion built from a winning `accepting` row's snapshot (another machine may never have built it). */
+function snapshotSuggestion(id: string, row: SuggestionDecisionRow): StoredSuggestion {
+  const snap = row.snapshot!;
+  const members = snap.members.map((ref) => ({ key: nodeKey(ref), ref, title: untitledConversationName(ref) }));
+  return {
+    id, title: snap.title, reason: 'Started on another of your machines.',
+    memberKeys: members.map((m) => m.key), members,
+    ...(snap.frontDoor ? { frontDoorKey: nodeKey(snap.frontDoor) } : {}),
+  };
+}
+
+/** The name as a row carries it: the model names' normalization (a project name is sliced but may carry control characters). */
+function snapshotTitle(title: string): string {
+  const flat = title.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SUGGESTION_LIMITS.maxEffortNameChars).trim();
+  return flat || 'Group';
+}
+
+/** Same name (as a row carries it), members and front door: the local suggestion already is the winning snapshot. */
+function sameWork(a: StoredSuggestion, b: StoredSuggestion): boolean {
+  return snapshotTitle(a.title) === snapshotTitle(b.title) && (a.frontDoorKey ?? '') === (b.frontDoorKey ?? '')
+    && a.memberKeys.length === b.memberKeys.length && [...a.memberKeys].sort().join('\n') === [...b.memberKeys].sort().join('\n');
+}
+
+/** An Accept still running: started, and neither rejected nor finished on any machine (a raw local entry can outlive both). */
+function activeAccept(state: SuggestionState, id: string): boolean {
+  return Boolean(state.accepting[id]) && !state.rejected[id] && !state.accepted[id];
+}
+
+function isoMs(iso: string, fallback: number): number {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) && ms >= 0 ? ms : fallback;
+}
+
+/** The `accepting` row for a stored suggestion, or null when it is not stored. */
+function acceptingRowFor(state: SuggestionState, id: string, createRequestId: string, atMs: number): SuggestionDecisionRow | null {
+  const s = state.suggestions.find((x) => x.id === id);
+  if (!s) return null;
+  const members = (s.members ?? []).map((m) => m.ref);
+  const front = s.frontDoorKey ? s.members.find((m) => m.key === s.frontDoorKey)?.ref : undefined;
+  return { suggestionId: id, decision: 'accepting', atMs, createRequestId, snapshot: { title: snapshotTitle(s.title), members, ...(front ? { frontDoor: front } : {}) } };
+}
+
+/**
+ * Hands every local decision to the store's comparator as one batch: a held earlier or identical row keeps it a
+ * no-op, and an earlier local row (a pre-upgrade start whose create may have committed) wins over a later one that
+ * landed first. An `accepting` entry whose id is also rejected or accepted here is skipped (the fold drops it anyway).
+ */
+function backfillFromState(state: SuggestionState, store: SuggestionDecisionStore, nowMs: number): void {
+  const rows: SuggestionDecisionRow[] = [];
+  let skipped = 0;
+  for (const [id, when] of Object.entries(state.rejected)) rows.push({ suggestionId: id, decision: 'rejected', atMs: isoMs(when, nowMs) });
+  for (const [id, when] of Object.entries(state.accepted)) rows.push({ suggestionId: id, decision: 'accepted', atMs: isoMs(when, nowMs) });
+  for (const [id, entry] of Object.entries(state.accepting)) {
+    if (state.rejected[id] || state.accepted[id]) continue;
+    const row = acceptingRowFor(state, id, entry.createRequestId, isoMs(entry.startedAt, nowMs));
+    if (row) rows.push(row); else skipped++;
+  }
+  let invalid = 0;
+  try { invalid = store.recordMany(rows).invalid; } catch { invalid = rows.length; }
+  if (skipped + invalid > 0) console.warn(`  [suggestion-decisions] ${skipped + invalid} decision(s) made before the upgrade could not be shared (no stored suggestion, or an unknown request id)`);
+}
+
+/**
+ * Boot: share this machine's decisions made before the store existed, without waiting for a suggestions request
+ * (the graph surface may never be served from this machine). Reads the local file; an unreadable file shares nothing.
+ */
+export function backfillSuggestionDecisions(stateDir: string, store: SuggestionDecisionStore, nowMs = Date.now()): void {
+  const file = path.join(stateDir, SUGGESTIONS_STATE_FILE);
+  let state: SuggestionState | null = null;
+  try { state = fs.existsSync(file) ? validState(JSON.parse(fs.readFileSync(file, 'utf8'))) : null; } catch { state = null; } // @silent-fallback-ok — the service reports an unreadable file when it loads it
+  if (state) backfillFromState(state, store, nowMs);
 }
