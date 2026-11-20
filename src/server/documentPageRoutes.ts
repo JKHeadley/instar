@@ -502,7 +502,9 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
       const sent = svc.sentKeys(id, c);
       const meKey = c.principal.kind === 'person' ? c.principal.personKey : 'owner';
       const nameOf = (author: string): string => author === meKey ? 'You' : author === 'owner' ? (deps.ownerName?.() ?? 'Owner') : author.startsWith('agent.') ? (deps.agentName?.() ?? 'Echo') : (deps.personName?.(author) ?? author);
-      const comments = svc.comments(id, c, 'all').map((x) => ({ ...x, sent: sent.has(x.key), mine: x.author === (c.principal.kind === 'person' ? c.principal.personKey : 'owner'), authorName: nameOf(x.author), replies: x.replies.map((rp) => ({ ...rp, authorName: nameOf(rp.author) })) }));
+      // E2E-PAIRING: EXEMPT — one argument added to an existing read; page-data needs a phone-minted read
+      // cookie the production-path e2e cannot mint, so tests/integration/documents-page.test.ts covers it.
+      const comments = svc.comments(id, c, 'all', d.version?.versionId).map((x) => ({ ...x, sent: sent.has(x.key), mine: x.author === (c.principal.kind === 'person' ? c.principal.personKey : 'owner'), authorName: nameOf(x.author), replies: x.replies.map((rp) => ({ ...rp, authorName: nameOf(rp.author) })) }));
       const me = c.principal.kind === 'person' ? c.principal.personKey : 'owner';
       const primary = d.state.primary;
       // A removed conversation is reported as missing: no name, no send path, Send off (§3.7).

@@ -490,10 +490,16 @@ export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-ap
 export interface QuestionState { id: string; text: string; options?: string[]; principal: Principal; state: 'open' | 'answered' | 'replaced'; replacedBy?: string; reason?: string; answer?: string; answeredBy?: string; at: string }
 export interface EvidenceState { id: string; itemId: string; text: string; attachmentIds?: string[]; materialHash: string; reopens: string[]; at: string; by: By; counts: boolean }
 export interface ClaimState { id: string; materialHash: string; reopens: string[]; evidenceIds: string[]; at: string; counts: boolean; confirmedBy?: string }
-export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; closeAs?: CloseAs; note?: string }
+export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; closeAs?: CloseAs; note?: string; titleHash?: string }
 
 /** The person's close in force (the newest archive tap still standing that carries a note). */
-export interface CloseoutState { as: CloseAs; note: string; by: By; at: string; tapId: string }
+/**
+ * `title`: the title the person closed (SEC-122). When the closing tap carries the hash of the title on
+ * the person's screen, it is the title that matches that hash; otherwise the fold's title at the tap.
+ * `titleUnconfirmed`: the tap carried no hash, or one that matches no title the card has had, so the
+ * title shown is the fold's and may not be what the person saw.
+ */
+export interface CloseoutState { as: CloseAs; note: string; by: By; at: string; tapId: string; title: string; titleUnconfirmed?: true }
 
 export interface CardFold {
   cardId: string;
@@ -599,6 +605,10 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   let approveIdx = -1; let approveRec: TapState | null = null; let withdrawIdx = -1;
   const releasedHolds = new Set<string>(); const holdIds: string[] = [];
   const releasedArchives = new Set<string>(); const archiveIds: string[] = [];
+  // SEC-122: the title each archive tap closed: the one matching the hash the person's screen sent, else the
+  // fold's title at the tap. `titlesSeen` is every title the card has had, in fold order.
+  const titleAtArchive = new Map<string, { title: string; unconfirmed: boolean }>();
+  const titlesSeen: string[] = [];
   const evidenceIdx = new Map<string, number>(); const claimIdx = new Map<string, number>();
   const confirms: Array<{ tap: TapState; idx: number; reopens: string[] }> = [];
   let idx = -1;
@@ -625,6 +635,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         if (f.created) break;
         f.created = true; f.createdBy = by; f.createdAt = at;
         for (const k of EDITABLE_FIELDS) if (v[k] !== undefined) (f as unknown as Record<string, unknown>)[k] = v[k];
+        titlesSeen.push(f.title);
         if (v.source) f.source = v.source as CardFold['source'];
         const w = byIsPerson(by) ? 'person' : 'agent';
         for (const k of MATERIAL_FIELDS) f.lastWriter[k] = w;
@@ -645,6 +656,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
             f.lastWriter[k as MaterialField] = byIsPerson(by) ? 'person' : 'agent';
           }
         }
+        if (v.title !== undefined && titlesSeen[titlesSeen.length - 1] !== f.title) titlesSeen.push(f.title);
         if (v.carrier !== undefined && changed.includes('carrier')) f.carrierTrail.push({ carrier: f.carrier, by, at });
         if (changed.length) { f.lastMaterialIdx = idx; f.lastMaterialChangeFields = changed; }
         break;
@@ -668,7 +680,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
           ...(v.materialHash ? { materialHash: v.materialHash as string } : {}), ...(v.questionId ? { questionId: v.questionId as string } : {}),
           ...(v.answer ? { answer: v.answer as string } : {}), ...(v.claimId ? { claimId: v.claimId as string } : {}),
           ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}),
-          ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}) };
+          ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}), ...(v.titleHash ? { titleHash: v.titleHash as string } : {}) };
         f.taps.push(t);
         switch (t.action) {
           case 'approve': {
@@ -688,7 +700,17 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
           }
           case 'hold': holdIds.push(t.id); break;
           case 'unhold': if (t.names) releasedHolds.add(t.names); break;
-          case 'archive': archiveIds.push(t.id); break;
+          case 'archive': {
+            archiveIds.push(t.id);
+            // No hash from the person's screen: the fold's title is a guess, so it is marked unconfirmed.
+            let closed = { title: f.title, unconfirmed: !t.titleHash };
+            if (t.titleHash && sha256Hex(f.title) !== t.titleHash) {
+              const seen = [...titlesSeen].reverse().find((x) => sha256Hex(x) === t.titleHash);
+              closed = seen !== undefined ? { title: seen, unconfirmed: false } : { title: f.title, unconfirmed: true };
+            }
+            titleAtArchive.set(t.id, closed);
+            break;
+          }
           case 'unarchive': if (t.names) releasedArchives.add(t.names); break;
           case 'reopen': f.reopens.push(t.id); break;
           case 'confirm-done': confirms.push({ tap: t, idx, reopens: (v.reopens as string[]) ?? [] }); break;
@@ -715,7 +737,8 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   f.archives = archiveIds.filter((a) => !releasedArchives.has(a));
   // The close in force is the newest standing archive (fold order); a plain archive after a close replaces it.
   const standing = f.archives.length ? f.taps.find((t) => t.id === f.archives[f.archives.length - 1]) : undefined;
-  f.closeout = standing?.closeAs && standing.note ? { as: standing.closeAs, note: standing.note, by: standing.by, at: standing.at, tapId: standing.id } : null;
+  const closedTitle = standing ? titleAtArchive.get(standing.id) : undefined;
+  f.closeout = standing?.closeAs && standing.note ? { as: standing.closeAs, note: standing.note, by: standing.by, at: standing.at, tapId: standing.id, title: closedTitle?.title ?? f.title, ...(closedTitle?.unconfirmed ? { titleUnconfirmed: true as const } : {}) } : null;
   f.materialHash = f.created ? materialHashOf(f) : '';
   // The caller passes the policy records that apply (all of them for a read; the prefix seen so far when deriving causes).
   f.policy = opts?.policyOverride ?? policyAt(policies);

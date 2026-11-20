@@ -1,3 +1,8 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   BusinessApiBackend,
@@ -724,6 +729,7 @@ describe('BusinessApiBackend', () => {
         connected: false,
         phoneNumberId: '123456789',
         webhookConfigured: true,
+        webhookSignatureConfigured: false,
         lastWebhookReceived: null,
         messagesSent: 0,
         messagesReceived: 0,
@@ -989,5 +995,65 @@ describe('BusinessApiBackend', () => {
         }),
       );
     });
+  });
+});
+
+describe('BusinessApiBackend webhook signature (SEC-086)', () => {
+  const body = Buffer.from(JSON.stringify({ object: 'whatsapp_business_account', entry: [] }));
+  const sign = (secret: string, b: Buffer) => 'sha256=' + crypto.createHmac('sha256', secret).update(b).digest('hex');
+
+  it('accepts a body signed with the app secret', () => {
+    const { backend } = createBackend({ appSecret: 'app-secret-1' });
+    expect(backend.verifyPayloadSignature(body, sign('app-secret-1', body))).toBe('ok');
+  });
+
+  it('refuses a body signed with another secret, a changed body, or no header', () => {
+    const { backend } = createBackend({ appSecret: 'app-secret-1' });
+    expect(backend.verifyPayloadSignature(body, sign('other', body))).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(Buffer.concat([body, Buffer.from(' ')]), sign('app-secret-1', body))).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(body, undefined)).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(undefined, sign('app-secret-1', body))).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(body, 'sha1=abc')).toBe('bad-signature');
+  });
+
+  it('reports no-secret when no app secret is configured', () => {
+    const { backend } = createBackend({});
+    expect(backend.verifyPayloadSignature(body, sign('', body))).toBe('no-secret');
+    expect(backend.hasAppSecret()).toBe(false);
+    expect(backend.getStatus().webhookSignatureConfigured).toBe(false);
+  });
+
+  it('tells the owner once, not per delivery, that deliveries are unverified', () => {
+    const onUnverifiedDelivery = vi.fn();
+    const { backend } = createBackend({}, undefined, { ...createMockHandlers(), onUnverifiedDelivery });
+    backend.noteUnverifiedDelivery();
+    backend.noteUnverifiedDelivery();
+    expect(onUnverifiedDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the owner as told only after a confirmed send, and only once ever', async () => {
+    const { notifyOwnerUnverifiedOnce, UNVERIFIED_DELIVERY_NOTICE } = await import('../../src/messaging/backends/BusinessApiBackend.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-notice-'));
+    const marker = path.join(dir, 'state', 'whatsapp-unverified-notice.json');
+    try {
+      expect(await notifyOwnerUnverifiedOnce(marker, undefined)).toBe('not-sent');
+      expect(await notifyOwnerUnverifiedOnce(marker, async () => null)).toBe('not-sent');
+      expect(await notifyOwnerUnverifiedOnce(marker, async () => { throw new Error('down'); })).toBe('not-sent');
+      expect(fs.existsSync(marker)).toBe(false);
+      const send = vi.fn(async () => ({ messageId: 1 }));
+      expect(await notifyOwnerUnverifiedOnce(marker, send)).toBe('sent');
+      expect(send).toHaveBeenCalledWith(UNVERIFIED_DELIVERY_NOTICE);
+      expect(await notifyOwnerUnverifiedOnce(marker, send)).toBe('already-sent');
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(UNVERIFIED_DELIVERY_NOTICE).not.toMatch(/paste/i);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/BusinessApiBackend.test.ts:notice-once' });
+    }
+  });
+
+  it('verification GET still matches the verify token and refuses a wrong one', () => {
+    const { backend } = createBackend({});
+    expect(backend.verifyWebhook('subscribe', 'test-verify-token', 'c1')).toBe('c1');
+    expect(backend.verifyWebhook('subscribe', 'test-verify-tokeX', 'c1')).toBeNull();
   });
 });

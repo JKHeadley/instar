@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as root:
  try: m.read(root,"receipt.json"); raise AssertionError("hardlink accepted")
  except ValueError as e: assert "unsafe receipt" in str(e)
 print("atomic-read-safe")`;
-    const result = spawnSync('python3', ['-c', code, SCRIPT], { encoding: 'utf8', timeout: 3_000 });
+    const result = spawnSync('python3', ['-B', '-c', code, SCRIPT], { encoding: 'utf8', timeout: 3_000 });
     expect(result.status, result.stderr).toBe(0); expect(result.stdout.trim()).toBe('atomic-read-safe');
   });
   it('ACKs durably before freeze, then resumes both workers and records a simulated lock at deadline', async () => {

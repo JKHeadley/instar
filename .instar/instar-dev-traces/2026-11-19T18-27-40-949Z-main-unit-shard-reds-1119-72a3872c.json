@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "main-unit-shard-reds-1119",
+  "sessionId": "db1e6a6f-dbd2-41fb-9965-81fd0e391cf2",
+  "timestamp": "2026-11-19T18:27:40.949Z",
+  "artifactPath": "upgrades/side-effects/main-unit-shard-reds-1119.md",
+  "artifactSha256": "e98399148e91818660112929f1716a368d4da45713eabc0f80d22220c7ee602f",
+  "coveredFiles": [
+    "docs/eli16/main-unit-shard-reds-1119.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/locked-proof-watch-end.test.ts",
+    "upgrades/next/main-unit-shard-reds-1119.md",
+    "upgrades/side-effects/main-unit-shard-reds-1119.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test files only; a revert fully undoes it",
+  "eli16Path": "docs/eli16/main-unit-shard-reds-1119.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-unit-shard-reds-1119.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -562,6 +562,7 @@ addCmd
   .option('--phone-number-id <id>', 'Meta Phone Number ID (Business API)')
   .option('--access-token <token>', 'Meta access token (Business API)')
   .option('--webhook-verify-token <token>', 'Webhook verification token (Business API)')
+  .option('--app-secret <secret>', 'Meta app secret that signs webhook deliveries (Business API; or set WHATSAPP_APP_SECRET)')
   .option('--webhook-port <port>', 'Webhook port if different from server port (Business API)', parseInt)
   .action(async (opts) => {
     const { addWhatsApp } = await import('./commands/whatsapp.js');

@@ -84,7 +84,7 @@ export function createConversationGraphSurface(options:{
  /** The suggestion step (§3). Mounted only with owner corrections, since Accept needs them. */
  /** Work-front-doors stage 2b: open cards' conversations and their projects' conversations (proposed placement). */
  cardPlacements?:()=>Array<{card:ConversationRef;project:ConversationRef}>;
- suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[]};
+ suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[];decisions?:import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore|null};
  /** "Make this group a project" (conversation-groups-phone §3): the Chief of Staff's bound goals (null = off or unreadable), its bind, and the holder the phone confirm route reads. */
  groupProjects?:{chiefOfStaffOn():boolean;boundProjects():Map<string,import('./ConversationGroupProjectDrafts.js').BoundProjectContent>|null;bindProject:GroupProjectConfirmDeps['bindProject'];confirmHolder:GroupProjectConfirmHolder};
 }):Router{
@@ -132,7 +132,7 @@ export function createConversationGraphSurface(options:{
    ...(ownerAdmission?{captureOwnerIntent:ownerAdmission.capture,resolveQueuedOwner:ownerAdmission.resolve}:{})});
   router.use(createConversationGraphChangeRouter({changes,resolveViewer}));
   if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,changes,
-   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{})})}));
+   service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{}),...(options.suggestions.decisions?{decisions:options.suggestions.decisions}:{})})}));
   if(options.groupProjects){const groupProjects=options.groupProjects,evidence=options.suggestions?.evidence;
    const projectDeps={model,resolveViewer,telegramChatId:options.telegramChatId,boundProjects:()=>groupProjects.boundProjects(),chiefOfStaffOn:()=>groupProjects.chiefOfStaffOn(),
     evidence:(ref:ConversationRef)=>evidence?evidence(ref).text:''};

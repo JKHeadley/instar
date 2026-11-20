@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-19T09:47:49.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code-subagent"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 0
+  },
+  "convergenceReport": "docs/specs/reports/waiting-ask-links-interaction-family-merge-2026-11-19.md",
+  "convergenceSha256": "3fc81d1db64a4772c259d20555b28e91ccce5ef0088cd830eae40c76cd24b4c7",
+  "areas": {
+    "Interaction": {
+      "areaSha256": "610341e18c0a9f214ecf70f8ee172ed51abbf68b9cd82592c9e3f287806ed2ed",
+      "verdict": "accepted"
+    }
+  }
+}
