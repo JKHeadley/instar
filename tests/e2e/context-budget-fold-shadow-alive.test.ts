@@ -162,5 +162,9 @@ describe('the shadow fold runner on the production trigger path', () => {
     expect(owner).toBeLessThan(src.indexOf('built.coordinator.recoverPendingFolds()', coordBuild));
     expect(src.slice(owner, owner + 800)).toContain('sessionOwnershipRegistry?.read(k)');
     expect(src.slice(owner, owner + 800)).toContain('selfMachineId: () =>');
+    // §10: the layer ticker skips the fold's lock windows (the internal handoff turn).
+    const ticker = src.indexOf('_layerTicker = layerWiring.startTicker(');
+    expect(ticker).toBeGreaterThan(0);
+    expect(src.slice(ticker, ticker + 900)).toContain('lockWindows: (topicId) => readLockWindowsForTicker(config.stateDir, String(topicId))');
   });
 });

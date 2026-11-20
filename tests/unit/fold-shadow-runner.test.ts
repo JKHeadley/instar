@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runShadowFoldOnStop, type ShadowRunnerDeps, type LiveTopicSession } from '../../src/monitoring/foldShadowRunner.js';
 import { buildFoldCoordinator } from '../../src/monitoring/foldCoordinatorBoot.js';
-import { FoldRecordStore } from '../../src/monitoring/FoldCoordinator.js';
+import { FoldRecordStore, readLockWindows } from '../../src/monitoring/FoldCoordinator.js';
 import { LayerStore, rowRefFor, type LayerMeta } from '../../src/monitoring/contextLayers/LayerStore.js';
 import { foldMarkerPath, listFoldMarkers } from '../../src/monitoring/foldMarker.js';
 import { listStagedFoldPackets } from '../../src/monitoring/foldPacket.js';
@@ -139,6 +139,17 @@ describe('runShadowFoldOnStop', () => {
     }
   });
 
+  it('a fold that ends early closes its lock window with a close time (never left open for the ticker)', async () => {
+    const h = harness({ handoffReply: null });
+    let row = null;
+    for (let i = 0; i < 12 && !row; i++) row = await runShadowFoldOnStop(h.d, SESSION);
+    expect(row).toMatchObject({ outcome: 'declined', reason: 'handoff-timeout' });
+    const windows = readLockWindows(h.stateDir, T);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({ fromEntry: 'e-last' });
+    expect(typeof windows[0].closedAt).toBe('number');
+  });
+
   it('a handoff timeout or an unparseable handoff is declined, releases the live session and backs off', async () => {
     for (const [reply, reason] of [[null, 'handoff-timeout'], ['not json', 'handoff-unparseable: not-json']] as const) {
       const h = harness({ handoffReply: reply });
@@ -174,10 +185,12 @@ describe('runShadowFoldOnStop', () => {
     const h = harness({ handoffReply: null });
     const degraded: string[] = [];
     const real = h.d.coordinator;
-    const d = { ...h.d, onDegraded: (e: { reason: string }) => { degraded.push(e.reason); }, coordinator: { ...real, begin: real.begin.bind(real), setLockWindow: real.setLockWindow.bind(real), renew: real.renew.bind(real), reconcileStale: real.reconcileStale.bind(real), transition: () => ({ ok: false as const, reason: 'not-owner' }) } };
+    const d = { ...h.d, onDegraded: (e: { reason: string }) => { degraded.push(e.reason); }, coordinator: { ...real, begin: real.begin.bind(real), setLockWindow: real.setLockWindow.bind(real), renew: real.renew.bind(real), reconcileStale: real.reconcileStale.bind(real), closeLockWindow: real.closeLockWindow.bind(real), transition: () => ({ ok: false as const, reason: 'not-owner' }) } };
     let row = null;
     for (let i = 0; i < 12 && !row; i++) row = await runShadowFoldOnStop(d, SESSION);
     expect(row).toMatchObject({ outcome: 'aborted', reason: 'terminal-refused: not-owner' });
+    // The window is closed even though the record could not be (ownership moved): later work is never hidden.
+    expect(typeof readLockWindows(h.stateDir, T)[0]?.closedAt).toBe('number');
     expect(degraded).toEqual(['terminal-refused: not-owner']);
     expect(h.events).toContain('hold-released'); // the conversation is released even so
   });
@@ -200,7 +213,7 @@ describe('runShadowFoldOnStop', () => {
     const stuck = h.d.coordinator.begin(T, 'prepare');
     if (!stuck.ok) throw new Error(stuck.reason);
     const degraded: string[] = [];
-    const d = { ...h.d, onDegraded: (e: { reason: string }) => { degraded.push(e.reason); }, coordinator: { ...h.d.coordinator, begin: h.d.coordinator.begin.bind(h.d.coordinator), transition: h.d.coordinator.transition.bind(h.d.coordinator), setLockWindow: h.d.coordinator.setLockWindow.bind(h.d.coordinator), renew: h.d.coordinator.renew.bind(h.d.coordinator), reconcileStale: (t: string) => h.d.coordinator.reconcileStale(t, 0) } };
+    const d = { ...h.d, onDegraded: (e: { reason: string }) => { degraded.push(e.reason); }, coordinator: { ...h.d.coordinator, begin: h.d.coordinator.begin.bind(h.d.coordinator), transition: h.d.coordinator.transition.bind(h.d.coordinator), setLockWindow: h.d.coordinator.setLockWindow.bind(h.d.coordinator), renew: h.d.coordinator.renew.bind(h.d.coordinator), closeLockWindow: h.d.coordinator.closeLockWindow.bind(h.d.coordinator), reconcileStale: (t: string) => h.d.coordinator.reconcileStale(t, 0) } };
     let row = null;
     for (let i = 0; i < 12 && !row; i++) row = await runShadowFoldOnStop(d, SESSION);
     expect(row).toMatchObject({ outcome: 'graded' });

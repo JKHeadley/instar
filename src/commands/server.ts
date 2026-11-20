@@ -19666,12 +19666,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 provenance: entry.provenance,
               });
             };
+            const { readLockWindows: readLockWindowsForTicker } = await import('../monitoring/FoldCoordinator.js');
             if (layerWiring) {
               _layerReproject = (topicId) => layerWiring.reproject(topicId);
               _layerTicker = layerWiring.startTicker({
                 extractor: captureExtractor, store: topicIntentStore, topicMemory,
                 shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },
-              }, { liveSecrets: () => _contextLayers?.liveSecrets() ?? [] });
+              }, {
+                liveSecrets: () => _contextLayers?.liveSecrets() ?? [],
+                // §10: skip a fold's internal turns (the durable lock-window log outlives the fold record).
+                lockWindows: (topicId) => readLockWindowsForTicker(config.stateDir, String(topicId)),
+              });
               console.log(pc.green('  Context layers: H1/H2 projection + transcript-growth ticks wired'));
               if (layerWiring.userCorpus) console.log(pc.green('  Context layers: U (protected user corpus) + referent stubs wired'));
               if (layerWiring.anchorLedger) console.log(pc.green('  Context layers: A (Anchor) + G (decisions/evolutions ledger) wired'));

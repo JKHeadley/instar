@@ -497,7 +497,7 @@ export class FoldCoordinator {
    * because consumers that read after the fold went terminal (a shadow fold is
    * `aborted` by design) must still skip the range.
    */
-  setLockWindow(topicKey: string, foldId: string, bounds: { fromEntry?: string; toEntry?: string }): boolean {
+  setLockWindow(topicKey: string, foldId: string, bounds: { fromEntry?: string; toEntry?: string; closedAt?: number }): boolean {
     const rec = this.o.store.get(topicKey, foldId);
     if (!rec || TERMINAL_STATES.has(rec.state) || this.o.preconditions.isOwner(topicKey) !== true) return false;
     const s = this.o.store.getSidecar(topicKey, foldId);
@@ -505,6 +505,20 @@ export class FoldCoordinator {
     this.o.store.putSidecar(topicKey, foldId, { ...s, lockWindow });
     // False when the durable copy could not be written: the caller records it (the bounds would not outlive settle).
     return appendLockWindow(this.o.store.dirFor(topicKey), { foldId, ...lockWindow, at: this.now() });
+  }
+
+  /**
+   * Close a lock window with a close time (§10). A close only ever NARROWS a
+   * window (the ticker ends a toEntry-less window at the first entry after it),
+   * so it is written to the durable log without the owner/terminal checks
+   * `setLockWindow` makes: a fold whose ownership moved mid-way must still be
+   * able to stop hiding later work. Only this machine's own record's fold id is
+   * accepted. Returns false when the durable write failed.
+   */
+  closeLockWindow(topicKey: string, foldId: string, closedAt: number): boolean {
+    const rec = this.o.store.get(topicKey, foldId);
+    if (!rec || rec.machineId !== this.o.machineId) return false;
+    return appendLockWindow(this.o.store.dirFor(topicKey), { foldId, closedAt, at: this.now() });
   }
 
   /**
@@ -631,7 +645,7 @@ export class FoldCoordinator {
 // ── The durable lock-window log (§10 suppression carrier) ─────────────────
 
 /** One recorded lock window: the transcript entry bounds a fold's internal turns occupy. */
-export interface LockWindowRow { foldId: string; fromEntry?: string; toEntry?: string; at: number }
+export interface LockWindowRow { foldId: string; fromEntry?: string; toEntry?: string; at: number; /** Epoch ms the window closed without a recorded toEntry (a fold that ended early): it ends at the first entry after this time. */ closedAt?: number }
 
 const LOCK_WINDOW_FILE = 'lock-windows.jsonl';
 /** Bounded: the newest rows are kept (a window older than the archive's reach no longer matters). */

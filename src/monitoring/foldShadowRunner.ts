@@ -75,7 +75,8 @@ export interface ShadowRunnerDeps {
   coordinator: {
     begin(topicKey: string, mode: 'prepare'): { ok: true; record: FoldRecord } | { ok: false; reason: string };
     transition(topicKey: string, foldId: string, expect: { state: FoldRecord['state']; seq: number; generation: number }, to: FoldRecord['state'], patch?: Partial<FoldRecord>): TransitionResult;
-    setLockWindow(topicKey: string, foldId: string, b: { fromEntry?: string; toEntry?: string }): boolean;
+    setLockWindow(topicKey: string, foldId: string, b: { fromEntry?: string; toEntry?: string; closedAt?: number }): boolean;
+    closeLockWindow(topicKey: string, foldId: string, closedAt: number): boolean;
     renew(topicKey: string, foldId: string, expect: { generation: number }): boolean;
     reconcileStale(topicKey: string, olderThanMs: number): FoldRecord[];
   };
@@ -167,6 +168,11 @@ export async function runShadowFoldOnStop(d: ShadowRunnerDeps, s: LiveTopicSessi
     // Release the live session's carriers, each on its own (one failing never skips the rest or
     // the close), then ALWAYS attempt the terminal transition, whose settle releases every
     // registered carrier again.
+    // Close the lock window first (while the record is still open): a fold that ends before its
+    // toEntry was recorded must not leave an open window that hides later real work from the ticker.
+    guard('lock-window', () => {
+      if (!d.coordinator.closeLockWindow(s.topicKey, foldId, d.now())) d.onDegraded?.({ topicKey: s.topicKey, foldId, reason: 'lock-window-close-failed' });
+    });
     guard('hold', () => d.holds.release(s.topicKey, foldId));
     guard('marker', () => { removeFoldMarkerFor(d.stateDir, s.instarSessionId, foldId); });
     guard('inbound', () => d.inbound.releaseFold(foldId));
