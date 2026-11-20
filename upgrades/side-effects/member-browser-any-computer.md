@@ -132,3 +132,11 @@ Ready to ship dark (dev agents). The fleet turn-on of documents is gated separat
 - Unit: `tests/unit/team-computers.test.ts`, `tests/unit/mobile-device-keys.test.ts`, `tests/unit/documents-page-model.test.ts`, `tests/unit/html-site-ratchet.test.ts`, `tests/unit/awareness-entry-registry.test.ts`.
 - Integration: `tests/integration/documents-join.test.ts`, `tests/integration/mobile-dashboard-pairing.test.ts`, plus the existing documents, pairing and team suites (751 tests green).
 - E2E: `tests/e2e/documents-join.test.ts`, plus the existing documents, team and pairing e2e suites (15 files green).
+
+## Follow-up slice: the owner's phone removes a member's computer (2026-11-20)
+
+The Apple app session (build 119) found that the owner's phone could not remove a member's computer. Only the agent token could, and `GET /mobile/team/people` carried no computers. This slice adds two things:
+- An owner-only route, `POST /mobile/team/people/:personKey/computers/:deviceId/forget`. It is in the device allowlist with `ownerOnly`, re-checked in the route, and shares the forget helper with the agent's route.
+- A `computers` array on owner reads of `GET /mobile/team/people`. A member's read is unchanged.
+
+It takes access away only, and the owner is the one who may. Over-block, under-block and interactions: none new. It reuses the forget helper (ledger revocation plus `browser-unbind`). Multi-machine: the removal replicates as before. Rollback: revert, and the app's Computers section simply stays hidden. E2E: an owner phone lists and removes a computer, and a member's phone gets 403 and no list.
