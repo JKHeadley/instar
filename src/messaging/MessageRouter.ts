@@ -53,6 +53,7 @@ import type { AgentRegistryEntry } from '../core/types.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { sign, verify } from '../core/MachineIdentity.js';
 import { signRequest } from '../server/machineAuth.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { NonceStore } from '../core/NonceStore.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import { localRouteSignatureCounters, logSafe, type LocalEnvelopeSigner } from '../threadline/localEnvelopeSignature.js';
@@ -234,11 +235,25 @@ export class MessageRouter implements IMessageRouter {
     }
     // Broadcast ('*') and an unresolved 'best' stay saved locally as before.
 
-    return {
+    const result: SendResult = {
       messageId,
       threadId,
       phase: envelope.delivery.phase,
     };
+    if (!isLocalMachine) {
+      result.delivered = ['received', 'delivered', 'read'].includes(envelope.delivery.phase);
+      const via = this.lastForwardVia.get(messageId);
+      if (via) {
+        result.via = via;
+        this.lastForwardVia.delete(messageId);
+      }
+      if (envelope.delivery.phase === 'failed') {
+        result.failureReason = envelope.delivery.failureReason ?? 'cross-machine delivery failed';
+        result.notice = this.lastFailureNotice.get(messageId) ?? `The message was not delivered: ${result.failureReason}.`;
+        this.lastFailureNotice.delete(messageId);
+      }
+    }
+    return result;
   }
 
   async acknowledge(messageId: string, sessionId: string): Promise<void> {
@@ -296,6 +311,14 @@ export class MessageRouter implements IMessageRouter {
       }
     }
 
+    // Pool fallback, forwarder side (messages-send-unknown-peer-fallback): an
+    // envelope addressed to ANOTHER machine arrived because its sender does not
+    // know that machine. Carry it exactly one hop — never store it here as if it
+    // were ours — or refuse so the sender tries its next peer / tells the caller.
+    if (source === 'machine' && this.isForeignAddressed(envelope)) {
+      return this.forwardForeignEnvelope(envelope);
+    }
+
     // Update delivery phase to 'received'
     const now = new Date().toISOString();
     envelope.delivery = {
@@ -308,6 +331,18 @@ export class MessageRouter implements IMessageRouter {
     };
 
     await this.store.save(envelope);
+
+    // A cross-machine message for one of THIS agent's own named sessions is
+    // typed into it exactly like a same-machine /messages/send (ownership
+    // checked, retried while queued). 'best' / other agents stay in the inbox.
+    if (
+      source === 'machine'
+      && envelope.message.to.agent === this.config.localAgent
+      && envelope.message.to.session
+      && envelope.message.to.session !== 'best'
+    ) {
+      await this.deliverSameAgentLocal(envelope);
+    }
 
     // Maintain the thread aggregate so getThread()/threadline_history return
     // this inbound leg. relay() previously only saved the envelope file, so the
@@ -723,17 +758,41 @@ export class MessageRouter implements IMessageRouter {
 
     // Verify target machine is paired and active
     if (!identityManager.isMachineActive(targetMachine)) {
-      const now = new Date().toISOString();
-      envelope.delivery = {
-        ...envelope.delivery,
-        phase: 'failed',
-        transitions: [
-          ...envelope.delivery.transitions,
-          { from: envelope.delivery.phase, to: 'failed', at: now, reason: `target machine ${targetMachine} not active or unknown` },
-        ],
-        failureReason: `target machine ${targetMachine} not active or unknown`,
-      };
-      await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+      const standing = this.registryStanding(targetMachine);
+      if (standing === 'revoked') {
+        // A revoked machine is removed from this agent on purpose: no fallback.
+        await this.failCrossMachine(
+          envelope,
+          targetMachine,
+          `target machine ${targetMachine} was removed (revoked) from this agent's machines`,
+          `The message was not delivered: that machine was removed from this agent's machines, so nothing will be sent to it.`,
+        );
+        return;
+      }
+      // Unknown here (e.g. it was paired into the pool through another machine
+      // and this registry has not caught up): hand it to a pool peer that knows it.
+      const via = await this.forwardViaPeer(envelope, targetMachine);
+      if (via) {
+        const now = new Date().toISOString();
+        envelope.delivery = {
+          ...envelope.delivery,
+          phase: 'received',
+          transitions: [
+            ...envelope.delivery.transitions,
+            { from: 'sent', to: 'received', at: now, reason: `forwarded via peer ${via} to machine ${targetMachine}` },
+          ],
+          attempts: envelope.delivery.attempts + 1,
+        };
+        await this.store.updateEnvelope(envelope);
+        this.rememberBounded(this.lastForwardVia, envelope.message.id, via);
+        return;
+      }
+      await this.failCrossMachine(
+        envelope,
+        targetMachine,
+        `target machine ${targetMachine} is not known to this machine, and no reachable peer machine could carry the message to it`,
+        `The message was not delivered: this machine does not know the target machine, and none of the other machines it could reach were able to pass it on. The target may need to be paired with this machine again.`,
+      );
       return;
     }
 
@@ -867,6 +926,143 @@ export class MessageRouter implements IMessageRouter {
     return { valid: true };
   }
 
+  /** Per-send side channel for the honest SendResult (bounded, consumed by send()). */
+  private readonly lastForwardVia = new Map<string, string>();
+  private readonly lastFailureNotice = new Map<string, string>();
+  /** Notice dedup: target machine → last DegradationReporter report (ms). */
+  private readonly failureReportedAt = new Map<string, number>();
+  private static readonly FAILURE_REPORT_WINDOW_MS = 30 * 60_000;
+  private static readonly MAX_TRACKED = 200;
+  /** Bounded fan-out for the pool fallback (never a broadcast storm). */
+  private static readonly MAX_FORWARD_PEERS = 4;
+
+  private rememberBounded(map: Map<string, string>, key: string, value: string): void {
+    map.set(key, value);
+    while (map.size > MessageRouter.MAX_TRACKED) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  /** 'revoked' | 'unknown' standing of a machine this registry does not list as active. */
+  private registryStanding(machineId: string): 'revoked' | 'unknown' {
+    try {
+      const registry = this.crossMachine?.identityManager.loadRegistry();
+      const entry = registry?.machines?.[machineId];
+      if (entry && (entry.status === 'revoked' || entry.revokedAt)) return 'revoked';
+    } catch {
+      // @silent-fallback-ok — an unreadable registry reads as unknown; the
+      // peer fallback still needs an ACTIVE registered peer, so nothing widens.
+    }
+    return 'unknown';
+  }
+
+  /** True when an inbound cross-machine envelope names a machine other than this one. */
+  private isForeignAddressed(envelope: MessageEnvelope): boolean {
+    const to = envelope.message.to.machine;
+    return !!to && to !== 'local' && to !== this.config.localMachine;
+  }
+
+  /**
+   * Sender side of the pool fallback: sign once (self on the relay chain) and
+   * offer the envelope to up to MAX_FORWARD_PEERS active, registered peers.
+   * Each peer authenticates us with Machine-HMAC + the Ed25519 envelope
+   * signature exactly as for a direct relay; a peer that does not know the
+   * target refuses (409) and the next one is tried. Returns the carrying
+   * peer's id, or null.
+   */
+  private async forwardViaPeer(envelope: MessageEnvelope, targetMachine: string): Promise<string | null> {
+    if (!this.crossMachine) return null;
+    let peers: Array<{ machineId: string }> = [];
+    try {
+      peers = this.crossMachine.identityManager.getActiveMachines();
+    } catch {
+      // @silent-fallback-ok — no registry view means no peer to try; the caller
+      // records the failure and raises the notice.
+      peers = [];
+    }
+    const candidates = peers
+      .map((p) => p.machineId)
+      .filter((id) => id !== this.config.localMachine && id !== targetMachine)
+      .slice(0, MessageRouter.MAX_FORWARD_PEERS);
+    if (candidates.length === 0) return null;
+    if (!envelope.transport.relayChain.includes(this.config.localMachine)) {
+      envelope.transport.relayChain.push(this.config.localMachine);
+    }
+    this.signEnvelope(envelope);
+    for (const peer of candidates) {
+      const url = this.crossMachine.identityManager.getMachineUrl(peer);
+      if (!url) continue;
+      if (await this.relayToMachine(envelope, url)) return peer;
+    }
+    return null;
+  }
+
+  /**
+   * Forwarder side: carry a foreign-addressed envelope ONE hop. Only an
+   * envelope that came straight from its origin (relay chain = [origin],
+   * signed by that origin — verified by relay() before we get here) is
+   * carried; the forwarder adds itself to the chain and re-signs, so the
+   * target verifies a machine it knows. Re-signing grants nothing new: the
+   * envelope signature never bound `message.from`, and the target already
+   * accepts any envelope this forwarder signs.
+   */
+  private async forwardForeignEnvelope(envelope: MessageEnvelope): Promise<boolean> {
+    if (!this.crossMachine) return false;
+    const chain = envelope.transport.relayChain;
+    if (chain.length !== 1 || chain[0] !== envelope.transport.signedBy) return false; // hop limit 1
+    const target = envelope.message.to.machine;
+    const { identityManager } = this.crossMachine;
+    if (!identityManager.isMachineActive(target)) return false;
+    const url = identityManager.getMachineUrl(target);
+    if (!url) return false;
+    chain.push(this.config.localMachine);
+    this.signEnvelope(envelope);
+    const ok = await this.relayToMachine(envelope, url);
+    if (ok) {
+      console.log(`[MessageRouter] forwarded message ${envelope.message.id} from ${chain[0]} to ${target} (pool fallback)`);
+    }
+    return ok;
+  }
+
+  /** Terminal cross-machine failure: record it, keep the notice for send(), raise ONE deduped signal per target. */
+  private async failCrossMachine(envelope: MessageEnvelope, targetMachine: string, reason: string, notice: string): Promise<void> {
+    const now = new Date().toISOString();
+    envelope.delivery = {
+      ...envelope.delivery,
+      phase: 'failed',
+      transitions: [
+        ...envelope.delivery.transitions,
+        { from: envelope.delivery.phase, to: 'failed', at: now, reason },
+      ],
+      failureReason: reason,
+    };
+    await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+    this.rememberBounded(this.lastFailureNotice, envelope.message.id, notice);
+    const nowMs = Date.now();
+    const last = this.failureReportedAt.get(targetMachine) ?? 0;
+    if (nowMs - last < MessageRouter.FAILURE_REPORT_WINDOW_MS) return;
+    this.failureReportedAt.set(targetMachine, nowMs);
+    while (this.failureReportedAt.size > MessageRouter.MAX_TRACKED) {
+      const oldest = this.failureReportedAt.keys().next().value;
+      if (oldest === undefined) break;
+      this.failureReportedAt.delete(oldest);
+    }
+    try {
+      DegradationReporter.getInstance().report({
+        feature: 'MessageRouter.crossMachineDelivery',
+        primary: `Deliver a message from ${this.config.localMachine} to machine ${targetMachine}`,
+        fallback: 'Return the failure to the sender (HTTP 502 with a notice); nothing was queued',
+        reason,
+        impact: 'A cross-machine message was not delivered; the sending session was told',
+      });
+    } catch {
+      // @silent-fallback-ok — the failure is already recorded on the envelope and
+      // returned to the caller; the operator signal is best-effort.
+    }
+  }
+
   /**
    * Relay an envelope to a remote machine via HTTP.
    * Uses Machine-HMAC (5-header scheme) for transport auth.
@@ -884,7 +1080,11 @@ export class MessageRouter implements IMessageRouter {
         sequence,
       );
 
-      const url = `${targetUrl}/messages/relay-machine`;
+      // The receiving route is mounted at /api/messages/relay-machine
+      // (machineRoutes.ts, Machine-HMAC auth). The old `/messages/relay-machine`
+      // path matched no route, so every cross-machine relay answered 404 and
+      // fell into the outbound queue as "machine unreachable".
+      const url = `${targetUrl.replace(/\/+$/, '')}/api/messages/relay-machine`;
       const response = await fetch(url, {
         method: 'POST',
         headers: {

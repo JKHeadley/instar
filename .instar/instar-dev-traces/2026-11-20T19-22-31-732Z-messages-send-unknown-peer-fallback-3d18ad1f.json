@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "messages-send-unknown-peer-fallback",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T19:22:31.732Z",
+  "artifactPath": "upgrades/side-effects/messages-send-unknown-peer-fallback.md",
+  "artifactSha256": "0e088c8961fcb50299ddfaf33b8a09d387f8ec88e1a768b5e80b4e12a5ceb814",
+  "coveredFiles": [
+    "docs/specs/messages-send-unknown-peer-fallback.eli16.md",
+    "src/data/awareness/cross-machine-send-fallback.md",
+    "src/messaging/MessageRouter.ts",
+    "src/messaging/types.ts",
+    "src/server/routes.ts",
+    "tests/e2e/messages-send-cross-machine-alive.test.ts",
+    "tests/integration/messages-send-unknown-peer-fallback.test.ts",
+    "tests/unit/message-router-unknown-peer-fallback.test.ts",
+    "upgrades/next/messages-send-unknown-peer-fallback.md",
+    "upgrades/side-effects/messages-send-unknown-peer-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible transport fix: a revert fully restores prior behavior, no state migration, no credential path (reuses existing Machine-HMAC relay route), no content-gating authority",
+  "eli16Path": "docs/specs/messages-send-unknown-peer-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/messages-send-unknown-peer-fallback.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

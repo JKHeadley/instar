@@ -381,6 +381,18 @@ export interface SendResult {
   threadId?: string;
   /** Current delivery phase */
   phase: DeliveryPhase;
+  /**
+   * Cross-machine outcome honesty (messages-send-unknown-peer-fallback): false
+   * when the message did NOT leave this machine toward its target (phase
+   * 'failed'). Absent on purely local sends.
+   */
+  delivered?: boolean;
+  /** Why delivery failed (phase 'failed'), in the router's own words. */
+  failureReason?: string;
+  /** One plain-language sentence a session can relay as-is when delivery failed. */
+  notice?: string;
+  /** Machine id of the pool peer that carried the message when the target was unknown here. */
+  via?: string;
 }
 
 /** Filter options for inbox/outbox queries */
