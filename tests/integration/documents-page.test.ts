@@ -119,6 +119,8 @@ describe('document page', () => {
     const r = await request(s.a).get(`/docs/${s.id}`);
     expect(r.status).toBe(200);
     expect(r.headers['content-security-policy']).toBe(DOC_PAGE_CSP);
+    // The tunnel's CDN may not rewrite the page (it injected an analytics script, 2026-11-20).
+    expect(r.headers['cache-control']).toBe('no-store, no-transform');
     expect(r.text).not.toContain('Friday');
     expect((await request(s.a).get('/docs/_assets/doc-page.js')).status).toBe(200);
     expect((await request(s.a).get('/docs/_assets/..%2Fsecret.js')).status).toBe(404);
