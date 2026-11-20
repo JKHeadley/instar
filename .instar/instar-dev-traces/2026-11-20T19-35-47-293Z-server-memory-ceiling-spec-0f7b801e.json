@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "server-memory-ceiling-spec",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T19:35:47.293Z",
+  "artifactPath": "upgrades/side-effects/server-memory-ceiling-spec.md",
+  "artifactSha256": "1f72f3ddee3f997221a6fa54f3d908d235f691101dac339b93551e3d6bc20075",
+  "coveredFiles": [
+    "docs/specs/reports/server-memory-ceiling-convergence.md",
+    "docs/specs/server-memory-ceiling.eli16.md",
+    "docs/specs/server-memory-ceiling.md",
+    "upgrades/side-effects/server-memory-ceiling-spec.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: a draft, unapproved spec and its review record; no runtime surface.",
+  "eli16Path": "docs/specs/server-memory-ceiling.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/server-memory-ceiling-spec.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
