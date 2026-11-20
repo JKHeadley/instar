@@ -24,7 +24,7 @@ At the very start of every instar program (server, lifeline, and command line), 
 
 **It cannot break requests.** Every service instar calls accepts HTTP/1.1, and Node 20-24 agents have only ever used it. Tests run the real protocol negotiation against a local secure server that offers both, on Node 22 and on Node 26.
 
-**It never throws.** If the pin cannot be applied, a line is logged and fetch keeps Node's default.
+**It never throws.** If the pin cannot be applied, a line is logged, the failure is reported as a degradation, and fetch keeps Node's default.
 
 ## What ships when
 

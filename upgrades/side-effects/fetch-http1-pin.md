@@ -47,7 +47,7 @@ No new static heuristic at a competing-signals decision point.
 
 ## 6. External surfaces
 
-Outbound connections use HTTP/1.1 instead of HTTP/2 on Node 26: more TCP connections per host instead of one multiplexed one (undici's default pool limits apply). One log line only if the pin is skipped or fails. One env var for opt-out. No config, routes, or state.
+Outbound connections use HTTP/1.1 instead of HTTP/2 on Node 26: more TCP connections per host instead of one multiplexed one (undici's default pool limits apply). One log line only if the pin is skipped or fails; a failure is also reported through DegradationReporter (feature `http1-global-fetch`, lazily imported only on that path). One env var for opt-out. No config, routes, or state.
 
 ## 6b. Operator-surface quality
 

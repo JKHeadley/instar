@@ -83,6 +83,18 @@ export async function pinGlobalFetchToHttp1(opts: {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log(`[http1-fetch] could not keep fetch on HTTP/1.1 (${error}); fetch uses Node's default protocol choice in this process`);
+    // Lazy import, only on this failure path: the pin runs before every CLI command.
+    void import('../monitoring/DegradationReporter.js')
+      .then(({ DegradationReporter }) => {
+        DegradationReporter.getInstance().report({
+          feature: 'http1-global-fetch',
+          primary: "Node's global fetch pinned to HTTP/1.1",
+          fallback: "Node's default fetch protocol choice (HTTP/2 on Node 26)",
+          reason: error,
+          impact: 'on Node 26 the HTTP/2 path has ballooned the agent server to tens of GB (2026-11-20 A3)',
+        });
+      })
+      .catch(() => { /* @silent-fallback-ok: the report is a signal; the log line above already ran */ });
     return (lastResult = { status: 'failed', error });
   }
 }

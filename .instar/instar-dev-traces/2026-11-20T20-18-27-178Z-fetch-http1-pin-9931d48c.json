@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "fetch-http1-pin",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T20:18:27.178Z",
+  "artifactPath": "upgrades/side-effects/fetch-http1-pin.md",
+  "artifactSha256": "26cb2dd0da6c6ac9f06c4962b1d219ea240b96d42454be8a7d9f2a61b156f744",
+  "coveredFiles": [
+    "docs/specs/fetch-http1-pin.eli16.md",
+    "src/core/http1GlobalFetch.ts",
+    "upgrades/side-effects/fetch-http1-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Same Tier-1 change: the pin's failure path now also reports through DegradationReporter (no-silent-fallbacks ratchet).",
+  "eli16Path": "docs/specs/fetch-http1-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fetch-http1-pin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
