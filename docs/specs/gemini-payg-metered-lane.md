@@ -379,7 +379,7 @@ unverified price is not a provider ceiling. Run 2's price read, repeated by the 
 reconciliation job, refreshes the points.
 
 **Manifest metadata.** Points use the 45-day freshness convention (`freshnessSlaDays: 45`,
-`staleMode: book-conservative-max`). Points land by reviewed git commit, the sanctioned
+`staleMode: fail-closed` for this door). Points land by reviewed git commit, the sanctioned
 non-PIN price path.
 
 **Unknown model ids** are refused (`unknown-price`), never defaulted.
