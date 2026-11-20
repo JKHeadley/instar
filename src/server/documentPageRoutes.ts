@@ -239,7 +239,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const svc = deps.service();
     if (!svc || !r || !isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId: string } }).instarPrincipal?.deviceId;
-    if (!deviceId) { res.status(404).json({ error: 'unknown-document' }); return; }
+    // A device the page would never accept (identity A4: a home-address or at-computer phone) gets no code.
+    if (!deviceId || !deps.device(deviceId)) { res.status(404).json({ error: 'unknown-document' }); return; }
     try { svc.read(id, withReader(r, id)); } catch (err) { fail(res, err); return; } // @silent-fallback-ok — not a fallback: the refusal is answered (404 for anything the reader may not see)
     const origin = deps.stableOrigin() ?? loopbackOrigin(req);
     if (!origin) { res.status(409).json({ error: 'documents-need-a-named-tunnel', detail: 'Documents need a permanent address for your agent. Turn on a named tunnel in Settings.' }); return; }
@@ -261,7 +262,9 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (off(res)) return null;
     res.setHeader('Cache-Control', 'no-store');
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal?.deviceId;
-    if (!deviceId) { res.status(403).json({ error: 'owner-phone-required' }); return null; }
+    // Identity A4: a device the signed write would refuse (a home-address or at-computer phone; the
+    // production lookup answers null for both) gets no challenge, so none is spent on a write that fails.
+    if (!deviceId || !deps.device(deviceId)) { res.status(403).json({ error: 'owner-phone-required' }); return null; }
     if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto'])) { res.status(403).json({ error: 'secure-transport-required' }); return null; }
     const g = deps.ownerPresence?.(req, deviceId) ?? null;
     if (!g) { res.status(403).json({ error: 'owner-phone-required', detail: 'Only your own phone, with Face ID, can move a document.' }); return null; }
@@ -424,7 +427,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal?.deviceId;
     const r = resolveCaller(req, res, deps);
     const b = (req.body ?? {}) as { rowKey?: unknown; requestId?: unknown; text?: unknown };
-    if (!svc || !r || !deviceId || !isUuid(id) || r.principal.kind !== 'owner-device') { res.status(404).json({ error: 'unknown-document' }); return; }
+    if (!svc || !r || !deviceId || !deps.device(deviceId) || !isUuid(id) || r.principal.kind !== 'owner-device') { res.status(404).json({ error: 'unknown-document' }); return; }
     if (typeof b.rowKey !== 'string' || typeof b.requestId !== 'string' || typeof b.text !== 'string' || !REQUEST_ID_PATTERN.test(b.requestId)) { res.status(400).json({ error: 'bad-request' }); return; }
     // The receipt belongs to this decision: its derived request id, or (a later Send again) a message
     // that links this document, for the decision that is current now.

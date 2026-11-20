@@ -88,18 +88,32 @@ export function mintCeremonyCredential(stateDir: string, opts: { scope: Ceremony
 
 interface FileId { ino: number; dev: number }
 
-function read(stateDir: string): { ok: true; c: StoredCredential; id: FileId } | { ok: false; reason: 'none' | 'unreadable' | 'unsafe-file' | 'malformed'; id?: FileId } {
+type ReadResult = { ok: true; c: StoredCredential; id: FileId } | { ok: false; reason: 'none' | 'unreadable' | 'unsafe-file' | 'malformed'; id?: FileId };
+
+/**
+ * Reads the credential through one handle and returns that handle still OPEN (the caller closes it
+ * after any removal): while it is open the checked file's inode cannot be freed and handed to a newer
+ * file, so the inode comparison in `claimIfSame` cannot match a replacement.
+ */
+function read(stateDir: string): { r: ReadResult; fd: number | null } {
   const file = ceremonyCredentialPath(stateDir);
-  // Opened once, and the OPEN handle is checked before any byte is read, so the file checked is the
-  // file read (no window between a path check and a path read). O_NOFOLLOW refuses a link at the last
-  // path part; O_NONBLOCK keeps a FIFO planted at the path from blocking the open.
   let fd: number;
   try { fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)); } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     // @silent-fallback-ok — no file is no credential; a link (ELOOP) is an unsafe file; anything else refuses
-    return { ok: false, reason: code === 'ENOENT' ? 'none' : code === 'ELOOP' ? 'unsafe-file' : 'unreadable' };
+    return { r: { ok: false, reason: code === 'ENOENT' ? 'none' : code === 'ELOOP' ? 'unsafe-file' : 'unreadable' }, fd: null };
   }
-  try {
+  try { return { r: readOpen(fd), fd }; } catch {
+    try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only handle; nothing to report */ }
+    return { r: { ok: false, reason: 'unreadable' }, fd: null }; // @silent-fallback-ok — an unreadable handle refuses
+  }
+}
+
+function readOpen(fd: number): ReadResult {
+  // The OPEN handle is checked before any byte is read, so the file checked is the file read (no window
+  // between a path check and a path read). O_NOFOLLOW refuses a link at the last path part; O_NONBLOCK
+  // keeps a FIFO planted at the path from blocking the open.
+  {
     const st = fs.fstatSync(fd);
     // Only a regular file with one name, that only the agent's own user can read or write. A link, a
     // second name for another file, or a file another user could have written is never a credential.
@@ -114,17 +128,46 @@ function read(stateDir: string): { ok: true; c: StoredCredential; id: FileId } |
         || typeof c.expiresAt !== 'string' || !Number.isFinite(Date.parse(c.expiresAt)) || typeof c.scope !== 'string') return { ok: false, reason: 'malformed', id };
       return { ok: true, id, c: { version: 1, scope: c.scope as CeremonyScope, hash: c.hash, machineId: c.machineId, createdAt: String(c.createdAt ?? ''), expiresAt: c.expiresAt, failures: typeof c.failures === 'number' ? c.failures : 0 } };
     } catch { return { ok: false, reason: 'malformed', id }; } // @silent-fallback-ok — an unparseable file is no credential (refused)
-  } finally {
-    try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only handle; nothing to report */ }
   }
 }
 
 /**
- * Wrong tries, by credential hash, in this process (the server is the only spender). Kept in memory so
- * a counted try never writes the credential file, which the mint command may be replacing at the same
- * moment. A restart forgets the count; the secret is 256 bits and lives ten minutes.
+ * Wrong tries, by credential hash. Never written into the credential file (the mint command may be
+ * replacing it at that moment): kept in this process and in a sibling file, so a restart does not give
+ * the same credential three more tries. The sibling file names the hash it counts for, so a newer
+ * credential (another hash) starts at zero; the mint command never touches it.
  */
+// Named under the credential's own name, so the never-written-over-HTTP prefix rule (keyMaterialPaths.ts) covers it.
+export const CEREMONY_TRIES_FILE = 'state/ceremony-credential.json.tries';
 const wrongTries = new Map<string, number>();
+
+function persistedTries(stateDir: string, hash: string): number {
+  try {
+    const t = JSON.parse(fs.readFileSync(path.join(stateDir, CEREMONY_TRIES_FILE), 'utf-8')) as { hash?: unknown; failures?: unknown };
+    return t.hash === hash && typeof t.failures === 'number' && Number.isFinite(t.failures) ? t.failures : 0;
+  } catch { return 0; } // @silent-fallback-ok — no count file is no counted tries; the in-memory count still applies
+}
+
+/** Records the count; false when it could not be written (the caller then removes the credential: fail closed). */
+function recordTries(stateDir: string, hash: string, failures: number): boolean {
+  const file = path.join(stateDir, CEREMONY_TRIES_FILE);
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(tmp, `${JSON.stringify({ hash, failures })}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    return true;
+  } catch { // @silent-fallback-ok — reported to the caller, which removes the credential
+    try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'ceremony credential tries tmp' }); } catch { /* @silent-fallback-ok — tmp may not exist */ }
+    return false;
+  }
+}
+
+function forgetTries(stateDir: string, hash: string): void {
+  wrongTries.delete(hash);
+  if (persistedTries(stateDir, hash) === 0) return;
+  try { SafeFsExecutor.safeUnlinkSync(path.join(stateDir, CEREMONY_TRIES_FILE), { operation: 'ceremony credential tries spent' }); } catch { /* @silent-fallback-ok — a stale count names a spent hash and is never matched again */ }
+}
 
 /**
  * Takes the credential file out of its path ONLY if it is still the file that was checked (same inode),
@@ -154,7 +197,7 @@ function removeAside(aside: string, why: string): boolean {
 function removeChecked(stateDir: string, id: FileId | undefined, why: string, hash?: string): void {
   const aside = claimIfSame(stateDir, id);
   if (aside) removeAside(aside, why);
-  if (hash) wrongTries.delete(hash);
+  if (hash) forgetTries(stateDir, hash);
 }
 
 /**
@@ -166,7 +209,14 @@ function removeChecked(stateDir: string, id: FileId | undefined, why: string, ha
  * spend succeeds only for the one caller whose rename took the file.
  */
 export function spendCeremonyCredential(stateDir: string, presented: unknown, opts: { scope: CeremonyScope; machineId: string | null; now?: number }): { ok: true } | { ok: false; reason: CeremonyRefusal } {
-  const r = read(stateDir);
+  const { r, fd } = read(stateDir);
+  try { return spendRead(stateDir, r, presented, opts); } finally {
+    // Closed only after any removal: the checked inode stays allocated until then (see `read`).
+    if (fd !== null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only handle; nothing to report */ }
+  }
+}
+
+function spendRead(stateDir: string, r: ReadResult, presented: unknown, opts: { scope: CeremonyScope; machineId: string | null; now?: number }): { ok: true } | { ok: false; reason: CeremonyRefusal } {
   if (!r.ok) {
     if (r.reason === 'unsafe-file' || r.reason === 'malformed') removeChecked(stateDir, r.id, `refused (${r.reason})`);
     return { ok: false, reason: r.reason };
@@ -187,15 +237,17 @@ export function spendCeremonyCredential(stateDir: string, presented: unknown, op
   const a = Buffer.from(sha(given), 'hex');
   const b = Buffer.from(c.hash, 'hex');
   if (!given.startsWith(PREFIX) || !crypto.timingSafeEqual(a, b)) {
-    const failures = Math.max(c.failures, wrongTries.get(c.hash) ?? 0) + 1;
+    const failures = Math.max(c.failures, wrongTries.get(c.hash) ?? 0, persistedTries(stateDir, c.hash)) + 1;
     wrongTries.set(c.hash, failures);
-    if (failures >= CEREMONY_CREDENTIAL_MAX_FAILURES) removeChecked(stateDir, r.id, 'three wrong tries', c.hash);
+    // A count that cannot be kept across a restart is not kept at all: the credential is removed.
+    const kept = failures < CEREMONY_CREDENTIAL_MAX_FAILURES && recordTries(stateDir, c.hash, failures);
+    if (!kept) removeChecked(stateDir, r.id, failures >= CEREMONY_CREDENTIAL_MAX_FAILURES ? 'three wrong tries' : 'wrong try (count not kept)', c.hash);
     return { ok: false, reason: 'wrong' };
   }
   // Spent means taken: only the caller whose rename moved THIS file aside succeeds, and only once it is deleted.
   const aside = claimIfSame(stateDir, r.id);
   if (!aside) return { ok: false, reason: 'none' };
-  wrongTries.delete(c.hash);
+  forgetTries(stateDir, c.hash);
   if (!removeAside(aside, 'spent')) return { ok: false, reason: 'unreadable' };
   return { ok: true };
 }

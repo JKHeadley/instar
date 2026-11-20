@@ -10973,7 +10973,8 @@ export class AgentServer {
     let d = svc.devices.get(deviceId);
     if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
     for (let depth = 0; depth < 8 && d; depth++) {
-      if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;
+      // Identity A4: a home-address or at-computer phone is never a document device, so it never decides (and is never counted or pushed as a deciding phone).
+      if (isBrowserDevice(d) || d.deviceKind === 'computer' || notADocumentDevice(d)) return null;
       const via = d.approvedVia ?? 'telegram-dm';
       if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
       if (via === 'telegram-dm') return 'telegram';

@@ -275,8 +275,9 @@ export async function readWslNetworkingMode(deps: WslModeDeps = {}): Promise<Wsl
     const profile = await (deps.windowsProfile ?? defaultWindowsProfile)();
     if (!profile) return { mode: 'unknown', source: 'none', detail: 'the Windows user folder could not be found' };
     const file = path.join(profile, '.wslconfig');
+    const mtimeOf = deps.mtimeMs ?? ((f: string) => fs.statSync(f).mtimeMs);
     let mtime: number;
-    try { mtime = (deps.mtimeMs ?? ((f: string) => fs.statSync(f).mtimeMs))(file); } catch (err) {
+    try { mtime = mtimeOf(file); } catch (err) {
       // WSL 2's default is NAT, but a missing file cannot be told from one removed after this WSL
       // started in mirrored mode (no timestamp survives a removal), so it is not trusted.
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { mode: 'unknown', source: 'default', detail: 'no .wslconfig and no wslinfo: the running mode cannot be read' };
@@ -286,7 +287,13 @@ export async function readWslNetworkingMode(deps: WslModeDeps = {}): Promise<Wsl
     if (boot === null) return { mode: 'unknown', source: 'none', detail: 'WSL start time unreadable' };
     // A margin for clock drift between WSL and Windows: a file changed close to WSL's start is not trusted.
     if (mtime > boot - WSLCONFIG_CLOCK_MARGIN_MS) return { mode: 'unknown', source: 'wslconfig', detail: '.wslconfig changed after (or just before) WSL started' };
-    const m = wslconfigNetworkingMode(read(file));
+    const text = read(file);
+    // The time checked must belong to the text read: a save between the two (a new mode with a new
+    // time) is caught by reading the time again after the text. Any change, or a vanished file, is unknown.
+    let after: number;
+    try { after = mtimeOf(file); } catch { return { mode: 'unknown', source: 'wslconfig', detail: '.wslconfig changed while it was read' }; } // @silent-fallback-ok — unknown keeps the home address closed
+    if (after !== mtime) return { mode: 'unknown', source: 'wslconfig', detail: '.wslconfig changed while it was read' };
+    const m = wslconfigNetworkingMode(text);
     // The file changed before WSL started (with a margin) and names no mode: the default, NAT, was in
     // effect at start, and a later change would have moved the file's time.
     if (m === undefined) return { mode: 'nat', source: 'default', detail: '.wslconfig sets no networkingMode: WSL 2 default' };

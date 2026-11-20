@@ -174,3 +174,45 @@ from the first-phone count. MINOR: the gate's forwarding-header list lacks `CDN-
 - **Component:** `src/server/sameNetworkListener.ts` (owner queue + the 15-second reconcile).
 - **Citation:** `tests/unit/same-network-wsl-listener.test.ts`.
 - **How it converges:** owner actions run once each in order with no retries; the reconcile is unchanged in shape (one per 15 s, serialized); the mode reading runs at most once per reconcile with a 5-second timeout and is cached once definite.
+
+## Third outside review (GPT, codex gpt-6.2-sol, read-only, of 3f13f9b0) and what changed after it
+
+Record: `winapp-work/a4/gpt-review-3-20261120T164056Z.md`. It judged B1 and B3 resolved, B2 and B4 partly, named three
+NEW BLOCKERS, and recommended not merge-ready. Each new blocker was checked against the code:
+
+1. **Confirmed, fixed. The `.wslconfig` time and text could come from two versions.** The fallback read the file's time,
+   then opened it again by path for the text; a save in between pairs an old (trusted) time with new text. Now the time
+   is read again after the text, and any change, or a file gone by then, is `unknown` (closed).
+   Over-block: a `.wslconfig` saved during the read reads unknown once; the next 15-second reconcile reads it again.
+2. **Confirmed as correctness, not access; fixed.** A phone the production document lookup refuses (home address, or let
+   in at the computer) could still get a page code from `POST /mobile/docs/:id/open`, a move or decision challenge
+   (`moveGate`), and reach the decision delivery-receipt write; the later signed write then failed with a misleading
+   error after spending the challenge. No write succeeded (every write path re-reads `deps.device`). Those three entry
+   points now require `deps.device(id)` first (404 / 403, as for an unknown device). Normal owner phones are unchanged
+   (the lookup answers them as before).
+3. **Confirmed, fixed. Wrong tries reset on restart.** The count moved to memory in the last round. It is now also kept
+   in `state/ceremony-credential.json.tries` (named under the credential's name so the never-written-over-HTTP prefix
+   rule in `keyMaterialPaths.ts` covers it), naming the hash it counts for, so a newer credential starts at zero and
+   the mint command never touches it. If the count cannot be written, the credential is removed (fail closed).
+   A spend or removal clears it. No cross-process lock: the server is the only spender and the mint never writes it.
+
+B4's partial residue: the checked descriptor closed before the inode comparison, so a freed inode could be reused by a
+newer file and compare equal. The handle now stays open until after any removal, so the checked inode cannot be freed.
+The other residue (a failed link-back after an aside rename drops a newer credential) happens only when an even newer
+one is already in place, or on an I/O error; either way the app makes a new credential. Accepted.
+
+GPT's REMAINING table marks four open items as merge-blocking (`mayMovePort` read before the queued open;
+`closeIfUnused` counting only active home phones; the 15-minute signing window outliving the pending expiry; a
+client-sent `deviceKind: 'computer'` leaving the first-phone count). They were left open in the last round and are not
+fixed here; they are recorded for the identity session's decision before this draft leaves draft.
+
+Evidence: each fix has a test that fails without it (mutation-checked: removing the re-read time check, the document
+eligibility check, the persisted count, and the held handle each fails one test). Neighbour, ratchet, integration and
+e2e files for the touched modules were run one at a time, all passing.
+
+**Second pass on these fixes (independent Opus, read-only): concur on all three.** One related MINOR, fixed here:
+`documentDecisionRoot` (AgentServer.ts) did not apply `notADocumentDevice`, so a Telegram-approved home-address phone
+could be reported `canDecide`, sent a decision push, and counted as a deciding phone while `decideGate` refuses it. The
+root walk now refuses such a device (wiring check in `same-network-review-2-fixes.test.ts`). Its other notes (a
+replacement `.wslconfig` carrying an old time is not caught, as before; a corrupt count file reads as zero, writable only
+by the agent's user) are accepted.

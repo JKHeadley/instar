@@ -8,7 +8,7 @@
  *  4. The ceremony credential: a spend or a refusal removes only the file it checked; a newer one
  *     minted meanwhile survives; wrong tries never rewrite the file.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,7 +19,7 @@ import { markSameNetworkSocket, isSameNetworkPublicRoute } from '../../src/core/
 import { notADocumentDevice, notADocumentDeviceRow } from '../../src/server/documentPageRoutes.js';
 import { DeviceRegistry } from '../../src/core/MobileDeviceKeys.js';
 import { MobilePushService, type ApnsTransport } from '../../src/core/MobilePush.js';
-import { ceremonyCredentialPath, mintCeremonyCredential, spendCeremonyCredential, CEREMONY_CREDENTIAL_MAX_FAILURES } from '../../src/core/ceremonyCredential.js';
+import { ceremonyCredentialPath, mintCeremonyCredential, spendCeremonyCredential, CEREMONY_CREDENTIAL_MAX_FAILURES, CEREMONY_TRIES_FILE } from '../../src/core/ceremonyCredential.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const dirs: string[] = [];
@@ -98,6 +98,8 @@ describe('2. document devices', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/server/AgentServer.ts'), 'utf8');
     expect(src).toMatch(/if \(notADocumentDevice\(d\)\) return null;/);
     expect(src).toMatch(/if \(notADocumentDeviceRow\(act\)\) return null;/);
+    // The decision root too: such a phone is never reported, counted or pushed as a deciding phone.
+    expect(src).toMatch(/d\.deviceKind === 'computer' \|\| notADocumentDevice\(d\)\) return null;/);
   });
 });
 
@@ -145,6 +147,44 @@ describe('4. the ceremony credential and a mint at the same time', () => {
     expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
     for (let i = 1; i < CEREMONY_CREDENTIAL_MAX_FAILURES; i++) spend(d, `icc1_wrong${i + 1}`);
     expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('wrong tries survive a restart: the same credential does not get three more', async () => {
+    const d = newDir('icc3-');
+    mint(d);
+    const file = ceremonyCredentialPath(d);
+    for (let i = 1; i < CEREMONY_CREDENTIAL_MAX_FAILURES; i++) expect(spend(d, `icc1_wrong${i}`)).toEqual({ ok: false, reason: 'wrong' });
+    expect(fs.existsSync(file)).toBe(true);
+    // A restart: a fresh copy of the module, with an empty in-memory count.
+    vi.resetModules();
+    const fresh = await import('../../src/core/ceremonyCredential.js');
+    expect(fresh.spendCeremonyCredential(d, 'icc1_wrong-after-restart', { scope: 'phone-setup', machineId: M })).toEqual({ ok: false, reason: 'wrong' });
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('a newer credential starts its own count; a spend clears the count', () => {
+    const d = newDir('icc3-');
+    mint(d);
+    expect(spend(d, 'icc1_wrong1').ok).toBe(false);
+    const c = mint(d);
+    for (let i = 1; i < CEREMONY_CREDENTIAL_MAX_FAILURES; i++) expect(spend(d, `icc1_wrong${i}`)).toEqual({ ok: false, reason: 'wrong' });
+    expect(fs.existsSync(ceremonyCredentialPath(d))).toBe(true);
+    expect(spend(d, c)).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(d, CEREMONY_TRIES_FILE))).toBe(false);
+  });
+
+  it('the checked handle stays open until the file is taken aside (its inode cannot be reused by a newer file)', () => {
+    const d = newDir('icc3-');
+    const c = mint(d);
+    const order: string[] = [];
+    const realRename = fs.renameSync; const realClose = fs.closeSync;
+    (fs as { renameSync: typeof fs.renameSync }).renameSync = ((from: fs.PathLike, to: fs.PathLike) => { if (String(to).endsWith('.claimed')) order.push('claim'); return realRename(from, to); }) as typeof fs.renameSync;
+    (fs as { closeSync: typeof fs.closeSync }).closeSync = ((fd: number) => { order.push('close'); return realClose(fd); }) as typeof fs.closeSync;
+    try { expect(spend(d, c)).toEqual({ ok: true }); } finally {
+      (fs as { renameSync: typeof fs.renameSync }).renameSync = realRename; (fs as { closeSync: typeof fs.closeSync }).closeSync = realClose;
+    }
+    expect(order.indexOf('claim')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('claim')).toBeLessThan(order.lastIndexOf('close'));
   });
 
   it('a credential spent by another caller first: the second presentation is refused', () => {

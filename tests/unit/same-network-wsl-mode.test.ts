@@ -72,6 +72,20 @@ describe('reading WSL networking mode', () => {
     expect(await readWslNetworkingMode(deps({ config: '[wsl2]\nnetworkingMode=nat', bootTimeMs: () => null }))).toMatchObject({ mode: 'unknown' });
   });
 
+  it('a .wslconfig saved between its time check and its read is unknown (the time must belong to the text read)', async () => {
+    // First stat: an old time (trusted); the read sees new text; the second stat sees the save's new time.
+    let calls = 0;
+    const racing = deps({ config: '[wsl2]\nnetworkingMode=nat', mtimeMs: () => (++calls === 1 ? BOOT - 3_600_000 : BOOT + 60_000) });
+    expect(await readWslNetworkingMode(racing)).toMatchObject({ mode: 'unknown', detail: '.wslconfig changed while it was read' });
+    expect(calls).toBe(2);
+    // Removed between the read and the second stat: unknown too.
+    let n = 0;
+    const vanished = deps({ config: '[wsl2]\nnetworkingMode=nat', mtimeMs: () => (++n === 1 ? BOOT - 3_600_000 : enoent()) });
+    expect(await readWslNetworkingMode(vanished)).toMatchObject({ mode: 'unknown' });
+    // Unchanged across the read: the reading stands (positive control).
+    expect(await readWslNetworkingMode(deps({ config: '[wsl2]\nnetworkingMode=nat' }))).toMatchObject({ mode: 'nat', source: 'wslconfig' });
+  });
+
   it('anything unreadable is unknown: no Windows user folder, an unreadable file, a failing interop', async () => {
     expect(await readWslNetworkingMode(deps({ windowsProfile: async () => null }))).toMatchObject({ mode: 'unknown' });
     expect(await readWslNetworkingMode(deps({ windowsProfile: async () => { throw new Error('interop off'); } }))).toMatchObject({ mode: 'unknown' });
