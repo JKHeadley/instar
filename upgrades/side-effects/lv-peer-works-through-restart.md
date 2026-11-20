@@ -201,3 +201,14 @@ After the merge and both fixes: `tsc` clean; unit files run on the authoring mac
 ## Addendum (2026-11-19 06:00 PST): the reporter fix committed on its own
 
 The round 2 fix above (the test reporter's last progress snapshot, `src/localVerify/unhandledErrorsReporter.ts`, with its test) was first committed inside the merge commit. The commit gate does not run on a merge commit, so no decision record named that file and the merge check refused the pull request on it. The merge commit was rebuilt without those two files and they are committed here on their own, so the gate evaluates the change and writes its record. The content of both files is byte-for-byte what the second reviewer read in rounds 2 and 3; nothing else in the tree changed.
+
+## Addendum (2026-11-20 14:05 PST): the merge after the Studio outage and the migration-test correction
+
+Two commits came after the last reviewed trace (commit `c5b193f0e`): `f60f3214b`, a merge of main brought up to date after the Studio outage, and `8e06dff98`, a test correction. Local Verify then passed the head `8e06dff98` on the M5 (unit 72,274 tests, integration 7,702, e2e 4,303, no failures), but the record stayed held for an independent review because both commits touch flagged paths after the trace.
+
+**Reviewer:** an independent subagent with a fresh context, read-only, given the two commits and this artifact, not the author's conclusions. Verdict: **concur**.
+
+- **The merge authored one resolution only.** `git show --remerge-diff f60f3214b` shows a single conflict, in `src/data/feature-ladders.json`. It keeps main's newer `local-verify-likely-failing-first` entry (whose harm metric became `first-part-cost-limits`), the identical `local-verify-queue-controls` entry, main's new `toneGate.waitingAskLinks` entry, and this change's own `local-verify-peer-works-through-restart` entry unchanged. The file parses, every id appears once, nothing from either side is lost. Every other difference in the merge is main's own reviewed and merged content; no source file was edited by hand.
+- **The test change is a correction, not a weakening.** The migration test counted mentions of the setting `monitoring.localVerify.peerWorksThroughRestart.enabled` in the migrated CLAUDE.md. After main's awareness-notes change, the entry `local-verify-main-on-peers` also names the setting, so the count was two for a correct migration. The test now counts the whole peer line (still exactly once) and separately checks the setting is named. It still proves the old phrase is rewritten, a second run changes nothing, and no second copy of the line is added.
+
+No product behaviour changed in either commit. Over-block, under-block, signal vs authority, interactions, multi-machine posture and rollback are unchanged from the sections above.
