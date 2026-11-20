@@ -500,14 +500,15 @@ today's vault sync copies the whole vault to every online peer.
     { noEchoTransfer: {attestedBy, at, method, sourceMessageRef},
       oneKeyArtifact: {providerKeyId, keyFingerprint, readAt, screenshotPath,
                        screenshotSha256},
-      boundTo: {designationEpoch, mintStartedAt} }
+      boundTo: {designationEpoch} }
     ```
 
     Render reads only this file. The route works while money is off, because the mint
     happens before go-live.
     - **Validation.** A malformed body is refused with 400. At render:
       - the stored screenshot's hash must match;
-      - `readAt` must be later than `mintStartedAt`;
+      - `readAt` must be later than the mint start the **server** recorded when the
+        mint phase began (never a value from the file itself);
       - `boundTo.designationEpoch` must be current;
       - `keyFingerprint` must equal the SHA-256 of the stored key, computed inside
         `withKey`.
@@ -533,7 +534,7 @@ today's vault sync copies the whole vault to every online peer.
 - **One key per project: the go-live fence.** Google projects can hold many live API
   keys. So go-live (and any transfer) requires a browser-read artifact of the project's
   key list showing **exactly one** key with Generative Language API access. It must be
-  the new key, matched by its key-ID suffix, which is recorded as `keyGeneration`.
+  the new key, identified by its `providerKeyId` and fingerprint (`keyGeneration`, below).
   - **`keyGeneration` is checked against the real key.** `keyGeneration` is the key's
     SHA-256 fingerprint, recorded at mint, alongside Google's `providerKeyId`. The key
     reader computes the stored value's fingerprint inside `withKey` (never logged) and
@@ -850,10 +851,11 @@ worked, which is why the fallback exists.
 - **Unknown fences.** If no peer can be reached, or the echo cannot be evaluated, the
   result is `unknown`, and unknown fences.
 - **Single-machine agent.** No peers are registered, so it trivially self-confirms.
-- **Designation conflicts** count only claims naming a **different** machine whose
-  `keyGeneration` is backed by a recorded one-key artifact.
-  - A newer backed generation means the holder **freezes itself** and notifies
-    (security class).
+- **Designation conflicts** count only claims naming a **different** machine whose key
+  is backed by a recorded one-key artifact.
+  - A backed claim with a newer `designationEpoch` means the holder **freezes itself**
+    and notifies (security class). The fingerprint identifies the key; the epoch orders
+    the claims.
   - An older or unbacked claim is only a quiet "stale entry" signal.
   - Every healthy peer echoes the holder's own designation, and that is never a
     conflict.
@@ -883,9 +885,8 @@ a **fresh go-live** on the new machine, using the same `gemini-payg-setup` plan 
   key.
 - **The month restarts as exhausted.** The new machine's month, day and E2 share start
   exhausted, because the old holder's spend after its last published figures is
-  unknown. The plan shows the computed upper bound (last advert plus outstanding
-  reserves plus day headroom), so the operator can raise headroom by PIN with that
-  figure in view.
+  unknown. The plan shows the last advert, its age, and outstanding reserves as
+  information only. Headroom reopens only at the month reset or by a PIN restore.
 - **Fresh governed state.** The full setup struct is applied, and the proof call is
   repeated, bound to the new intent hash.
 - **No proof allowance.** The transfer month stays exhausted, the proof call included.
@@ -1087,12 +1088,13 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 
 - `releaseState` in the door policy is `armed-pending-proof` until the internal proof
   recorder sets `live`.
-- **The proof runs once.** It is one durable proof reservation bound to the applied
+- **One proof reservation at a time.** It is one durable proof reservation bound to the applied
   intent hash, with a fixed short input.
   - A repeat submission returns the recorded outcome and never makes a second paid call.
   - A confirmed no-charge refusal releases the slot for a retry.
   - An uncertain outcome keeps its booked charge. The agent may make up to 2 further
-    proof attempts, each a new booked reservation, if headroom allows. After that, the
+    proof attempts. Each is a new booked reservation that must pass the full gate,
+    including every cap. After that, the
     door stays `armed-pending-proof` with the blocker named.
   - Its thinking budget is the model's minimum.
 - The recorder is the **only** code path that can set the proof marker:
@@ -1229,7 +1231,8 @@ core budget ratchet.
   - a frozen or git-synced peer copy with a matching epoch does **not** confirm
   - an isolated holder fences at the 60s window
   - unknown fences
-  - only a one-key-backed newer `keyGeneration` naming a different machine freezes;
+  - only a one-key-backed claim with a newer `designationEpoch`, naming a different
+    machine, freezes;
     anything else only signals
   - `caps/lower` does not interrupt confirmation
   - backoff capped at 20s
@@ -1290,7 +1293,7 @@ core budget ratchet.
   `reserveId`; a reporting-write failure leaves the booking.
 - **Proposal binding:** a changed proposal file refuses render and commit with a
   new-card message.
-- **Key generation:** a vault key whose suffix differs from the committed
+- **Key generation:** a vault key whose SHA-256 fingerprint differs from the committed
   `keyGeneration` refuses.
 - **Secret check:** a credential unique to the origin is caught at the origin; one
   unique to the holder is caught at the holder.
@@ -1379,7 +1382,7 @@ core budget ratchet.
 | D10 | Invoice-drift notice (>10% and >$2, after one re-read) | **judgment-candidate** | Signal only, never moves the gate. Unmeasurable is recorded as `unmeasurable`. The agent investigates. |
 | D11 | Forward E1/E2 and stop actions to the holder vs. refuse locally | **invariant** | Exact designation match. Never a local spend. |
 | D12 | Release state: `armed-pending-proof` until (a)–(e) | **invariant** | Recorded proof artifacts; deterministic checks. |
-| D13 | Lane transfer: start the month exhausted; only a one-key-backed newer `keyGeneration` wins a conflict | **invariant** | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. |
+| D13 | Lane transfer: the month stays exhausted, the proof included; only a one-key-backed claim with a newer `designationEpoch` wins a conflict | **invariant** | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. |
 | D14 | E1 route: spec-hash match, one pass per (spec hash, round) | **invariant** (governed runaway bound) | An exact test on recorded state. Its consequence: a runaway loop cannot repeat a paid review of the same round. The money caps are the floor. |
 
 ## Frontloaded Decisions
