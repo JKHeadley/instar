@@ -29916,12 +29916,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    // Update the AutoUpdater's live config
-    if (ctx.autoUpdater) {
-      (ctx.autoUpdater as any).config.autoApply = autoApply;
-    }
+    // Update the AutoUpdater's live config. Turning it off also cancels an
+    // update a check already queued, so "off" holds from this moment.
+    const cancelledQueuedUpdate = ctx.autoUpdater
+      ? ctx.autoUpdater.setAutoApply(autoApply, 'PATCH /updates/config')
+      : false;
 
-    res.json({ autoApply, persisted: true });
+    res.json({ autoApply, persisted: true, cancelledQueuedUpdate });
   });
 
   router.post('/updates/apply', async (req, res) => {
