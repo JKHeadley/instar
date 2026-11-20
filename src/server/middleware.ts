@@ -1107,6 +1107,10 @@ export function DOC_PAGE_PATH(method: string, p: string): boolean {
   // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).
   if (method === 'POST' && p === '/docs/_link/status') return true;
   if (method === 'POST' && p === '/docs/_link/nonce') return true;
+  // A member's computer joining from a team invite, and any computer forgetting itself
+  // (member-browser-any-computer §3.3): self-authenticating, in documentJoinRoutes.ts.
+  if (method === 'GET' && (p === '/docs/_join' || p === '/docs/_join/addresses')) return true;
+  if (method === 'POST' && (p === '/docs/_join/redeem' || p === '/docs/_join/confirm' || p === '/docs/_link/forget-self')) return true;
   if (method === 'GET') return DOC_PAGE_GET.test(p);
   if (method === 'POST') return DOC_PAGE_POST.test(p);
   return false;

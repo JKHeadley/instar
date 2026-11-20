@@ -595,8 +595,14 @@ export class MobilePairingService {
     const origin = `https://${chosen.host}`;
     const m = this.codes.mint(codeTtlMs(this.deps.config.mobilePairing), cleanText(label), this.deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind }, { userId: personKey, role: 'team' });
     if (!m.ok) return { ok: false, status: 429, error: m.reason };
-    return { ok: true, link: buildPairLink(origin, m.code, this.deps.config.projectName), expiresAt: new Date(m.expiresAt).toISOString() };
+    const link = buildPairLink(origin, m.code, this.deps.config.projectName);
+    // member-browser-any-computer §3.1 step 2: the pair page offers "Use this computer instead" only
+    // when this agent can take computers (documents and the browser switch both on).
+    return { ok: true, link: this.computersCanJoin?.() ? `${link}&j=1` : link, expiresAt: new Date(m.expiresAt).toISOString() };
   }
+
+  /** Set by the server: can a member's computer join from a team invite here? (§3.1 step 2) */
+  computersCanJoin: (() => boolean) | null = null;
 
   /**
    * A conversation a team person creates is theirs, and confined from its first moment: its audience
@@ -1252,13 +1258,9 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     // §3.2 step 1 (before the code is taken, so a stray request cannot burn a real link): the
     // request arrived over local TLS on a host a link can currently be redeemed on. Step 3 below
     // then requires it to be the very host the code was minted for.
-    const reqHost = normalizeRequestHost(req.headers.host);
-    const eligible = svc.redeemHostEligible(reqHost);
-    if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !eligible) {
-      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-secure-address', 60_000, { kind: 'held', reason: 'redeem refused: not-secure-address' });
-      res.status(403).json({ error: 'Pairing only works over this agent\'s secure address.' });
-      return;
-    }
+    const arrival = redeemArrival(svc, req);
+    if (!arrival.ok) { res.status(arrival.status).json(arrival.body); return; }
+    const { reqHost, eligible } = arrival;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const publicKey = typeof body.devicePublicKey === 'string' ? body.devicePublicKey : '';
     if (!parseDevicePublicKey(publicKey)) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|bad-device-key', 60_000, { kind: 'held', reason: 'redeem refused: bad-device-key' }); res.status(400).json({ error: 'A valid device public key is required.' }); return; }
@@ -1279,35 +1281,9 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       if (!Array.isArray(body.appCaps) || !body.appCaps.includes('standing')) { res.status(426).json({ error: 'app-update-required', detail: 'Update the Instar app, then open this link again.' }); return; }
       if (!invited.userId || !svc.teamStanding(invited.userId)) { res.status(403).json({ error: 'That link has expired or was already used.' }); return; }
     }
-    if (svc.devices.pairingPaused()) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|pairing-paused', 60_000, { kind: 'held', reason: 'redeem refused: pairing-paused' }); res.status(429).json({ error: 'pairing-paused' }); return; }
-    // Take-and-delete happens synchronously inside redeem(), before any async work.
-    const r = svc.codes.redeem(body.code, token);
-    if (!r.ok) {
-      // mobile-pairing-approve §4: the same link from a second key proves it got out.
-      svc.noteLinkReused(body.code, publicKey);
-      featureEvidence.recordAtMostEvery('mobilePairing', `redeem|${r.reason}`, 60_000, { kind: 'held', reason: `redeem refused: ${r.reason}` });
-      if (r.reason === 'too-many-attempts') { res.status(429).json({ error: 'too-many-attempts' }); return; }
-      res.status(403).json({ error: 'That link has expired or was already used.' });
-      return;
-    }
-    // Pairing outcome notice §3.2: a phone used the link (same synchronous block as the take).
-    svc.outcomes?.markTaken(r.watchId);
-    // §3.2 step 3: an honest phone sends to the link's own origin. A code with no bound origin
-    // (minted before this change, in this process) keeps the old rule: the eligible host.
-    if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
-      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
-      svc.outcomes?.markOutcome(r.watchId, 'ended');
-      res.status(403).json({ error: 'That link has expired or was already used.' });
-      return;
-    }
-    // mac-qr-pairing §4: a code minted for one computer registers only that computer's key. The
-    // code is already taken, so a copied link is spent; the real computer scans a fresh QR.
-    if (r.boundKey && r.boundKey !== publicKey) {
-      featureEvidence.record('mobilePairing', { kind: 'held', reason: 'redeem refused: wrong-device', context: { routeKind: eligible.kind } });
-      svc.outcomes?.markOutcome(r.watchId, 'ended');
-      res.status(400).json({ error: 'wrong-device', detail: 'This pairing code was made for a different computer. Scan a new code.' });
-      return;
-    }
+    const taken = takePairingCode(svc, body.code, publicKey, token, reqHost, eligible);
+    if (!taken.ok) { res.status(taken.status).json(taken.body); return; }
+    const r = taken.r;
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
       created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner',
@@ -1408,6 +1384,59 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     svc.notifyOwnerPhones(device);
     res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat, ...svc.waitingFields(device) });
   });
+}
+
+/**
+ * The redeem steps every route that takes a pairing code shares (member-browser-any-computer §3.3.1):
+ * the request arrived over this agent's own secure address, on a host a link can be redeemed on.
+ * Checked before the code is touched, so a stray request never burns a real link.
+ */
+export function redeemArrival(svc: MobilePairingService, req: Request):
+  { ok: true; reqHost: string; eligible: NonNullable<ReturnType<MobilePairingService['redeemHostEligible']>> } | { ok: false; status: number; body: Record<string, unknown> } {
+  const reqHost = normalizeRequestHost(req.headers.host);
+  const eligible = svc.redeemHostEligible(reqHost);
+  if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !eligible || !reqHost) {
+    featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-secure-address', 60_000, { kind: 'held', reason: 'redeem refused: not-secure-address' });
+    return { ok: false, status: 403, body: { error: 'Pairing only works over this agent\'s secure address.' } };
+  }
+  return { ok: true, reqHost, eligible };
+}
+
+/**
+ * Take a pairing code: the pause check, take-and-delete (synchronous, before any async work), the
+ * failure count, the second-key reuse signal, the bound-origin and bound-key checks. Shared by the
+ * phone redeem and the computer join (member-browser-any-computer §3.3.1).
+ */
+export function takePairingCode(
+  svc: MobilePairingService, code: unknown, publicKey: string, token: string, reqHost: string,
+  eligible: NonNullable<ReturnType<MobilePairingService['redeemHostEligible']>>,
+): { ok: true; r: Extract<ReturnType<PairingCodeStore['redeem']>, { ok: true }> } | { ok: false; status: number; body: Record<string, unknown> } {
+  if (svc.devices.pairingPaused()) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|pairing-paused', 60_000, { kind: 'held', reason: 'redeem refused: pairing-paused' }); return { ok: false, status: 429, body: { error: 'pairing-paused' } }; }
+  const r = svc.codes.redeem(code, token);
+  if (!r.ok) {
+    // mobile-pairing-approve §4: the same link from a second key proves it got out.
+    svc.noteLinkReused(code, publicKey);
+    featureEvidence.recordAtMostEvery('mobilePairing', `redeem|${r.reason}`, 60_000, { kind: 'held', reason: `redeem refused: ${r.reason}` });
+    if (r.reason === 'too-many-attempts') return { ok: false, status: 429, body: { error: 'too-many-attempts' } };
+    return { ok: false, status: 403, body: { error: 'That link has expired or was already used.' } };
+  }
+  // Pairing outcome notice §3.2: a device used the link (same synchronous block as the take).
+  svc.outcomes?.markTaken(r.watchId);
+  // §3.2 step 3: an honest device sends to the link's own origin. A code with no bound origin
+  // (minted before this change, in this process) keeps the old rule: the eligible host.
+  if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
+    featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
+    svc.outcomes?.markOutcome(r.watchId, 'ended');
+    return { ok: false, status: 403, body: { error: 'That link has expired or was already used.' } };
+  }
+  // mac-qr-pairing §4: a code minted for one computer registers only that computer's key. The
+  // code is already taken, so a copied link is spent; the real computer scans a fresh QR.
+  if (r.boundKey && r.boundKey !== publicKey) {
+    featureEvidence.record('mobilePairing', { kind: 'held', reason: 'redeem refused: wrong-device', context: { routeKind: eligible.kind } });
+    svc.outcomes?.markOutcome(r.watchId, 'ended');
+    return { ok: false, status: 400, body: { error: 'wrong-device', detail: 'This pairing code was made for a different computer. Scan a new code.' } };
+  }
+  return { ok: true, r };
 }
 
 /**
@@ -1543,7 +1572,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!operatorOnly(req, res)) return;
     // A waiting phone may now be told "tap Approve on the pairing page" (mobile-pairing-introducer §3.4).
     svc.notePairingPageSeen();
-    const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
+    // A team device's code (a member's phone or computer) anchors that person's device: it is shown
+    // only on the owner's phone, in People (GET /mobile/team/invites/:personKey), never to a PIN
+    // session, because the agent itself can read the PIN (member-browser-any-computer §3.3.7).
+    const approvals = svc.dashboardApprovals().filter(({ device }) => device.role !== 'team').map(({ device, code, expiresAt }) => ({
       deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null, ...personFields(device, svc),
       // Display form for both formats (mobile-pairing-word-code §3.4): `KITE-4172` or `123 456`.
       code: displayCode(code), codeFormat: /^\d{6}$/.test(code) ? 'digits' : 'word', pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
@@ -1574,6 +1606,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!operatorOnly(req, res)) return;
     const id = String(req.params.id);
     if (!svc.isDashboardPending(id)) { res.status(404).json({ error: 'not-pending' }); return; }
+    // Never a member's waiting device: the PIN session can neither see nor decline it (§3.3.7).
+    if (svc.devices.get(id)?.role === 'team') { res.status(404).json({ error: 'not-pending' }); return; }
     svc.confirm.drop(id);
     svc.dropDashboardCode(id);
     let outcome: string = 'declined';
@@ -1717,6 +1751,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
     const d = svc.devices.get(p.deviceId);
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
+    // A member's computer that joined from a team invite confirms only on its own page's route,
+    // before any code is read or attempt counted (member-browser-any-computer §3.3.2).
+    if (d.joinedVia === 'team-invite') { res.status(409).json({ error: 'use-join-page', detail: 'Finish setting up this computer on its own page.' }); return; }
     if (d.status === 'active') { res.json({ status: 'active' }); return; }
     if (d.status !== 'pending') { res.status(409).json({ error: d.status }); return; }
     // A dashboard-path device (§4.4) needs no lease: its code never travelled through Telegram.

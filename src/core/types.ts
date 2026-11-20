@@ -2604,6 +2604,10 @@ export interface MachineCapacity {
   seamlessnessFlags?: {
     /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
     documentsDecisionRows?: boolean;
+    /** member-browser-any-computer §5: this build reads the computer-* team-log rows (advertised whatever the switches say). Sticky on peers while unreachable. */
+    teamLogComputerRows?: boolean;
+    /** member-browser-any-computer §3.6: this machine's own document address (its named tunnel origin), display only. */
+    documentsOrigin?: string | null;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
