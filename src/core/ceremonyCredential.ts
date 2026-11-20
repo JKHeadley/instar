@@ -193,11 +193,26 @@ function removeAside(aside: string, why: string): boolean {
   try { SafeFsExecutor.safeUnlinkSync(aside, { operation: `ceremony credential ${why}` }); return true; } catch { return false; } // @silent-fallback-ok — the caller fails closed on false
 }
 
-/** Removes the checked credential (and only it). */
-function removeChecked(stateDir: string, id: FileId | undefined, why: string, hash?: string): void {
+/** Is the checked credential (same inode) still at its path? */
+function stillAtPath(stateDir: string, id: FileId | undefined): boolean {
+  if (!id) return false;
+  try { const st = fs.lstatSync(ceremonyCredentialPath(stateDir)); return st.ino === id.ino && st.dev === id.dev; } catch (err) {
+    // @silent-fallback-ok — gone is not at its path; any other error is treated as still there (its count is kept)
+    return (err as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
+/**
+ * Removes the checked credential (and only it). Returns whether it is out of its path. Its count of wrong
+ * tries is forgotten ONLY then: a removal that failed leaves the credential usable, so its count stays
+ * (GPT review 4).
+ */
+function removeChecked(stateDir: string, id: FileId | undefined, why: string, hash?: string): boolean {
   const aside = claimIfSame(stateDir, id);
   if (aside) removeAside(aside, why);
-  if (hash) forgetTries(stateDir, hash);
+  const gone = !stillAtPath(stateDir, id);
+  if (hash && gone) forgetTries(stateDir, hash);
+  return gone;
 }
 
 /**
@@ -236,12 +251,22 @@ function spendRead(stateDir: string, r: ReadResult, presented: unknown, opts: { 
   const given = typeof presented === 'string' && presented.length <= 128 ? presented : '';
   const a = Buffer.from(sha(given), 'hex');
   const b = Buffer.from(c.hash, 'hex');
+  const counted = Math.max(c.failures, wrongTries.get(c.hash) ?? 0, persistedTries(stateDir, c.hash));
+  // A credential that already used its tries is refused whatever is presented (its removal may have failed).
+  if (counted >= CEREMONY_CREDENTIAL_MAX_FAILURES) {
+    removeChecked(stateDir, r.id, 'three wrong tries', c.hash);
+    return { ok: false, reason: 'wrong' };
+  }
   if (!given.startsWith(PREFIX) || !crypto.timingSafeEqual(a, b)) {
-    const failures = Math.max(c.failures, wrongTries.get(c.hash) ?? 0, persistedTries(stateDir, c.hash)) + 1;
+    const failures = counted + 1;
     wrongTries.set(c.hash, failures);
     // A count that cannot be kept across a restart is not kept at all: the credential is removed.
     const kept = failures < CEREMONY_CREDENTIAL_MAX_FAILURES && recordTries(stateDir, c.hash, failures);
-    if (!kept) removeChecked(stateDir, r.id, failures >= CEREMONY_CREDENTIAL_MAX_FAILURES ? 'three wrong tries' : 'wrong try (count not kept)', c.hash);
+    if (!kept) {
+      const gone = removeChecked(stateDir, r.id, failures >= CEREMONY_CREDENTIAL_MAX_FAILURES ? 'three wrong tries' : 'wrong try (count not kept)', c.hash);
+      // Neither kept nor removed: refused from now on in this process (terminal in memory).
+      if (!gone) wrongTries.set(c.hash, CEREMONY_CREDENTIAL_MAX_FAILURES);
+    }
     return { ok: false, reason: 'wrong' };
   }
   // Spent means taken: only the caller whose rename moved THIS file aside succeeds, and only once it is deleted.

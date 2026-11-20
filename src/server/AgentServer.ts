@@ -224,6 +224,7 @@ import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, reso
 import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
 import { documentsReplaceViews, publishAsDocument, safeVerdict, systemDocumentLink, type ReadablePageDeps } from '../documents/readablePages.js';
 import { createDocumentPageRoutes, notADocumentDevice, notADocumentDeviceRow } from './documentPageRoutes.js';
+import { documentDecisionRootOf } from './documentDecisionRoot.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
@@ -10970,18 +10971,11 @@ export class AgentServer {
   documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
     const svc = this.mobilePairing;
     if (!svc) return null;
-    let d = svc.devices.get(deviceId);
-    if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
-    for (let depth = 0; depth < 8 && d; depth++) {
-      // Identity A4: a home-address or at-computer phone is never a document device, so it never decides (and is never counted or pushed as a deciding phone).
-      if (isBrowserDevice(d) || d.deviceKind === 'computer' || notADocumentDevice(d)) return null;
-      const via = d.approvedVia ?? 'telegram-dm';
-      if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
-      if (via === 'telegram-dm') return 'telegram';
-      if (via === 'dashboard-pin') return this.documentAgentHasTelegramOwner() ? null : 'pin';
-      return null;
-    }
-    return null;
+    return documentDecisionRootOf({
+      device: (id) => svc.devices.get(id),
+      activeOwnerPhone: (id) => activeOwnerPhone(svc, id),
+      agentHasTelegramOwner: () => this.documentAgentHasTelegramOwner(),
+    }, deviceId);
   }
 
   private documentAgentHasTelegramOwner(): boolean {

@@ -161,6 +161,41 @@ describe('GPT review 3: the home address lifecycle', () => {
     expect(again.body.error).toBe('phone-already-paired');
   });
 
+  it('review 4, L2: a setup started while a cancel\'s close waited keeps the home address open', async () => {
+    const ctx = setup();
+    const a = await startSetup(ctx.app);
+    expect(a.status).toBe(200);
+    // Setup B's open waits at the network read; meanwhile setup A is cancelled (its close queues behind B's open).
+    const held = ctx.holdNetwork();
+    const b = startSetup(ctx.app).then((x) => x);
+    await held.reached;
+    const cancel = bearer(request(ctx.app).post(`/mobile/phone-setup/${a.body.setupId}/cancel`)).send({}).then((x) => x);
+    // Give the cancel time to reach the listener's queue before B's open finishes.
+    await new Promise((r) => setTimeout(r, 100));
+    held.release();
+    const [rb, rc] = await Promise.all([b, cancel]);
+    expect(rb.status).toBe(200);
+    expect(rc.status).toBe(200);
+    // B's QR is live: its address still answers.
+    expect(ctx.listener.listening()).toBe(true);
+    expect(ctx.listener.status().wanted).toBe(true);
+    const scanned = parseV2(rb.body.link);
+    const r = await phoneRedeem(Number(scanned.host.split(':')[1]), scanned, makeDevice());
+    expect(r.status).toBe(200);
+  });
+
+  it('review 4, L3: a number typed for a phone the registry already expired (a lease move) ends the setup', async () => {
+    const ctx = setup();
+    const s = await startSetup(ctx.app);
+    const scanned = parseV2(s.body.link);
+    const r = await phoneRedeem(Number(scanned.host.split(':')[1]), scanned, makeDevice());
+    expect(r.status).toBe(200);
+    ctx.svc.devices.expireAllPending();
+    const typed = await bearer(request(ctx.app).post(`/mobile/phone-setup/${s.body.setupId}/number`)).send({ number: r.json.number });
+    expect(typed.status).toBe(409);
+    expect(typed.body).toMatchObject({ error: 'setup-ended', reason: 'phone-expired' });
+  });
+
   it('a phone let in at the computer is told canApprove: false on an activation retry and on its status', async () => {
     const ctx = setup();
     const p = await addPhone(ctx);

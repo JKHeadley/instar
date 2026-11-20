@@ -98,8 +98,8 @@ describe('2. document devices', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/server/AgentServer.ts'), 'utf8');
     expect(src).toMatch(/if \(notADocumentDevice\(d\)\) return null;/);
     expect(src).toMatch(/if \(notADocumentDeviceRow\(act\)\) return null;/);
-    // The decision root too: such a phone is never reported, counted or pushed as a deciding phone.
-    expect(src).toMatch(/d\.deviceKind === 'computer' \|\| notADocumentDevice\(d\)\) return null;/);
+    // The decision root delegates to documentDecisionRootOf (behaviour in same-network-review-4-fixes.test.ts).
+    expect(src).toMatch(/return documentDecisionRootOf\(\{/);
   });
 });
 

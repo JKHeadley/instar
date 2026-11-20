@@ -393,6 +393,19 @@ export class SameNetworkListener {
     }
   }
 
+  /**
+   * Close the home address if nothing uses it, judged INSIDE the owner queue (GPT review 4): a close asked
+   * for while another setup's open waits its turn runs after that open, and then sees the new setup.
+   * Returns whether it closed.
+   */
+  closeIfUnused(isUnused: () => boolean): Promise<boolean> {
+    return this.serial(async () => {
+      if (!this.state.open || !isUnused()) return false;
+      await this.closeNow();
+      return true;
+    });
+  }
+
   /** The owner closed the home address. Phones paired on it can no longer reach the agent. */
   close(): Promise<void> {
     return this.serial(() => this.closeNow());

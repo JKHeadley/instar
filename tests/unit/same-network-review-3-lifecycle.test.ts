@@ -17,7 +17,7 @@ import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { SameNetworkListener } from '../../src/server/sameNetworkListener.js';
 import {
-  PhoneSetupStore, PHONE_SETUP_SIGN_WINDOW_MS, PHONE_SETUP_TTL_MS, SAME_NETWORK_REFUSED_PREFIXES, activeOwnerPhones, sameNetworkGate, signDeadline,
+  PhoneSetupStore, PHONE_SETUP_SIGN_MARGIN_MS, PHONE_SETUP_SIGN_WINDOW_MS, PHONE_SETUP_TTL_MS, SAME_NETWORK_REFUSED_PREFIXES, activeOwnerPhones, sameNetworkGate, signDeadline,
 } from '../../src/server/phoneSetupRoutes.js';
 import { FORWARDING_HEADER_PREFIXES } from '../../src/server/mobileBrowserDevices.js';
 import { PENDING_TTL_MS, type DeviceRecord } from '../../src/core/MobileDeviceKeys.js';
@@ -118,11 +118,11 @@ describe('item 3: the signing window never outlives the phone\'s pending expiry'
     clock.t += 20 * 60_000;
     expect(s.typeNumber(a.id, n)).toBe('ok');
     const deadline = signDeadline(s.get(a.id)!)!;
-    expect(deadline).toBe(5_000_000 + PENDING_TTL_MS - 1);
+    expect(deadline).toBe(5_000_000 + PENDING_TTL_MS - PHONE_SETUP_SIGN_MARGIN_MS);
     expect(deadline).toBeLessThan(clock.t + PHONE_SETUP_SIGN_WINDOW_MS);
     clock.t = deadline;
     expect(s.activation('dev-1').result).toBe('ok');
-    // The registry expires the phone at its expiresAt: no signing then.
+    // The window closes a few seconds before the registry expires the phone.
     clock.t = deadline + 1;
     expect(s.activation('dev-1')).toEqual({ result: 'ended', reason: 'sign-window-passed' });
   });

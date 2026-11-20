@@ -16,7 +16,7 @@ review-completed-at: "2026-11-19T23:30:00Z"
 cross-model-review: "GPT (codex gpt-6.2-sol, read-only) on 2026-11-20, builder #45: four blockers, all confirmed and fixed (round 4 in the convergence report); the fixes were not re-reviewed. Earlier rounds: Opus only (the Fable reviewers hit their quota, resets 2026-11-25), and a first GPT attempt was refused by OpenAI's filter."
 review-report: "reports/identity-security-piece3e-same-network-first-phone-convergence.md"
 approved: true
-approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session. Amended by builder #45 (2026-11-20: §3.1 WSL networking mode read and fail-closed bind plan; the same-network signature requirement in the auth middleware; document devices) under the same basis, after one independent Opus second pass and one outside GPT review (round 4 in the convergence report). Amended by builder #47 (2026-11-20: §4.3 signing window capped at the phone's pending expiry, and the lifecycle rules after GPT review 3) under the same basis."
+approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session. Amended by builder #45 (2026-11-20: §3.1 WSL networking mode read and fail-closed bind plan; the same-network signature requirement in the auth middleware; document devices) under the same basis, after one independent Opus second pass and one outside GPT review (round 4 in the convergence report). Amended by builder #47 (2026-11-20: §4.3 signing window capped at the phone's pending expiry, and the lifecycle rules after GPT reviews 3 and 4) under the same basis."
 ---
 
 # A new agent's first phone pairs over the same network
@@ -273,11 +273,13 @@ setup to `number-accepted`; a wrong one costs a try; three wrong end the setup a
 The phone is still pending. It then signs `POST /mobile/device/activate-at-computer {pinnedKeyHash}`
 (device-signed, so the signature covers the hash: a relay that showed its own certificate cannot carry the
 setup through, A4 point 7). It must arrive within the signing window, which ends at the EARLIER of
-15 minutes after the right number (round-3 security finding 3) and the phone's own pending expiry (30
-minutes from its redeem, `PENDING_TTL_MS`); after that the setup ends. The rule: a phone is never told it
-may sign (`signBy`) after the device registry has expired it, so a number typed late leaves only the time
-the phone still waits; a number typed after the phone's pending state lapsed ends the setup
-(`phone-expired`). (GPT review 3.) Just before the phone is let in the agent checks again: the pinned
+15 minutes after the right number (round-3 security finding 3) and five seconds before the phone's own
+pending expiry (30 minutes from its redeem, `PENDING_TTL_MS`; the margin keeps the activation's two writes,
+key ledger then registry, from straddling that expiry); the setup ends then too, whether or not the phone
+asks again. The rule: a phone is never told it may sign (`signBy`) after the device registry has expired
+it, so a number typed late leaves only the time the phone still waits. A number typed for a phone that is
+no longer pending in the registry (its expiry passed, a lease move or a restart expired it) ends the setup
+(`phone-expired`). (GPT reviews 3 and 4.) Just before the phone is let in the agent checks again: the pinned
 hash is its own (the real protection against a relay is the phone's own check before it speaks, since
 anyone on the network can read this hash from a handshake; the server check is defence in depth); this
 machine still holds the lease and pairing is not paused; no Telegram owner has appeared (if one has, the setup ends and the chat route applies,
@@ -298,9 +300,10 @@ A phone that never signs stays pending and lapses as pending devices do today: 3
 or when the lease moves (round-3 integration item; no activation note is needed, because this piece writes
 no owner-record entry: the device record is the commit point).
 
-**Lifecycle rules (GPT review 3).** A phone waiting on the home address (either approval path) keeps it
+**Lifecycle rules (GPT reviews 3 and 4).** A phone waiting on the home address (either approval path) keeps it
 open, as an active one does, until the registry expires it; closing after a cancelled or ended setup
-counts both. Whether the home port may move is asked again inside the listener's serialized open, at the
+counts both, and is judged again inside the listener's owner queue, so a setup started while that close
+waited its turn keeps the address open. Whether the home port may move is asked again inside the listener's serialized open, at the
 moment it moves, and the old listener stops taking requests in that same step (a redeem is synchronous
 from its code to its pending phone), so a phone that paired while the move waited is never stranded on
 the old port. The periodic reconcile runs in the same queue as the owner's actions. The first-phone count

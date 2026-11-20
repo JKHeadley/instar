@@ -280,3 +280,49 @@ files, one at a time: all pass. Two rig issues were found on the way and are not
 `better-sqlite3` binary did not load (rebuilt in place), and a first version of the gate's header list imported
 `FORWARDING_HEADER_PREFIXES` at module load, which an import cycle left undefined in 17 files' load order; the gate
 now keeps a literal list and a unit test checks it covers every prefix of the browser-device list. `npm run lint` clean.
+
+## Fourth outside review (GPT, codex gpt-6.2-sol, read-only, of 182e8a6c) and what changed after it
+
+Record: `winapp-work/a4/gpt-review-4-20261120T174313Z.md`. It judged N2, L1 and L4 resolved; N1, N3, L2 and L3 partly;
+named two NEW BLOCKERS; recommended not merge-ready. Each was checked against the code:
+
+1. **NEW BLOCKER, confirmed, fixed: a home-address approver disqualified an eligible deciding phone.** The phone
+   approval route lets an active owner phone approve (a Telegram-approved home phone passes `activeOwnerPhone`), and
+   the round-3 decision-root change applied `notADocumentDevice` to every ancestor, so the approved ordinary phone lost
+   `canDecide`, its push and its challenge. The root walk moved into `documentDecisionRootOf`
+   (`src/server/documentDecisionRoot.ts`, called by `AgentServer.documentDecisionRoot`); it applies the A4 check to the
+   deciding phone only and keeps the browser/computer/root checks on the chain. The source-text assertion became
+   behavioural tests (a direct home phone and an at-computer phone are refused; the home phone's child keeps
+   `telegram`). Under-block: none new; the ancestor's own approval power is the phone approval route's question.
+2. **NEW BLOCKER, confirmed, fixed: a failed counter write could erase a counted try.** When the count's write failed
+   and the removal's rename failed too, `removeChecked` still forgot the count, leaving the credential usable with a
+   fresh count. Now the count is forgotten only once the checked credential is out of its path (re-checked by inode);
+   a credential that could neither keep its count nor be removed is refused for the rest of the process; and any
+   presentation of a credential already at three counted tries is refused (and removal retried) before the comparison.
+   Residue, accepted: a count file that is unreadable or malformed reads as zero (the file is the agent user's own,
+   0600, under the key-material rule), and a credential whose count write AND removal both failed regains its tries
+   only if the server also restarts within its ten-minute life. GPT's further suggestion (seed the count at mint so a
+   missing count fails closed) changes the mint command's contract with the Windows app; not taken here.
+3. **L2 partly, fixed:** the automatic close is judged again inside the listener's owner queue
+   (`SameNetworkListener.closeIfUnused`), so a setup started while a cancel's close waited behind its open keeps the
+   address open. Test: overlapping start/cancel over HTTP.
+4. **L3 partly, fixed:** the number route checks the phone's live registry row (a lease move or restart may have
+   expired it after the redeem; it ends the setup `phone-expired`); an accepted setup now ends at its signing deadline
+   even if the phone never asks; and the deadline sits five seconds before the pending expiry so the activation's
+   ledger and registry writes (synchronous, one request) cannot straddle it. Over-block: a phone gets five seconds less
+   at the very end of its 30 minutes.
+5. **N1 partly, recorded:** a replacement `.wslconfig` that carries the old mtime still passes. Setting a file time
+   backwards needs write access to the Windows user's profile, i.e. the Windows user, who can change WSL's mode
+   anyway (and gains nothing from fooling this check). Not changed.
+
+Tests: `tests/unit/same-network-review-4-fixes.test.ts` (4) and two integration tests; each fails with the source at
+182e8a6c (checked by restoring the four source files and the old root walk).
+
+**Second pass on the round-4 fixes (independent Opus, read-only): concur on all four.** No deadlock from the queued
+close (its check is synchronous, nothing calls it from inside the queue, the activation path does not wait on it,
+`stop()` is not queued). Two non-blocking notes, accepted: (a) the in-memory refusal of a credential whose count write
+and removal both failed does not survive a restart (item 2's residue above); (b) a setup that passes its signing
+deadline unpolled reads ended, but its waiting phone is declined only on its next activation call; until then that
+phone (which can no longer be let in) keeps the home address open, at most until the registry expires it, 30 minutes
+from its redeem. Neighbours (#47, round 4): the same 207 files plus the ceremony-credential and document tests, 213
+files one at a time: all pass. `npm run lint` clean.

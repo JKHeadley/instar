@@ -52,6 +52,11 @@ export const PHONE_SETUP_TTL_MS = 30 * 60_000;
  */
 export const PHONE_SETUP_SIGN_WINDOW_MS = 15 * 60_000;
 export const PHONE_SETUP_MAX_WRONG_NUMBERS = 3;
+/**
+ * The signing window closes this long before the phone's pending expiry, so the activation's two writes
+ * (the key ledger, then the registry) never straddle the moment the registry expires the phone (GPT review 4).
+ */
+export const PHONE_SETUP_SIGN_MARGIN_MS = 5_000;
 export const ACTIVATE_AT_COMPUTER_PATH = '/mobile/device/activate-at-computer';
 export const PAIR_LINK_V2_BASE = 'https://instar.sh/pair';
 
@@ -83,13 +88,14 @@ export interface PhoneSetup {
 const sha = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
 /**
- * The last moment the phone may sign its activation: 15 minutes after the number was accepted, or the
- * last moment of its pending state (the registry expires it AT its `expiresAt`), whichever is earlier.
+ * The last moment the phone may sign its activation: 15 minutes after the number was accepted, or a few
+ * seconds before its pending state ends (the registry expires it AT its `expiresAt`), whichever is earlier.
+ * The setup itself ends then too, whether or not the phone ever asks again.
  */
 export function signDeadline(s: Pick<PhoneSetup, 'acceptedAt' | 'phoneExpiresAt'>): number | null {
   if (s.acceptedAt === undefined) return null;
   const window = s.acceptedAt + PHONE_SETUP_SIGN_WINDOW_MS;
-  return s.phoneExpiresAt === undefined ? window : Math.min(window, s.phoneExpiresAt - 1);
+  return s.phoneExpiresAt === undefined ? window : Math.min(window, s.phoneExpiresAt - PHONE_SETUP_SIGN_MARGIN_MS);
 }
 
 /** Setups in this process only: a restart voids every waiting phone, as it voids pending devices. */
@@ -110,7 +116,7 @@ export class PhoneSetupStore {
 
   get(id: string): PhoneSetup | null {
     const s = this.setups.get(id) ?? null;
-    if (s && s.state !== 'done' && s.state !== 'ended' && s.state !== 'sent-to-chat' && this.now() > s.expiresAt) { s.state = 'ended'; s.endedReason = 'expired'; }
+    if (s && s.state !== 'done' && s.state !== 'ended' && s.state !== 'sent-to-chat' && this.now() > s.expiresAt) { s.endedReason = s.state === 'number-accepted' ? 'sign-window-passed' : 'expired'; s.state = 'ended'; delete s.number; }
     return s;
   }
 
@@ -147,12 +153,13 @@ export class PhoneSetupStore {
     const t = typeof typed === 'string' ? typed.replace(/[\s-]/g, '') : '';
     if (!/^\d{6}$/.test(t)) return 'bad-format';
     // The phone's pending state already lapsed: nothing it signs can let it in any more.
-    if (s.phoneExpiresAt !== undefined && this.now() >= s.phoneExpiresAt) { s.state = 'ended'; s.endedReason = 'phone-expired'; delete s.number; return 'ended'; }
+    if (s.phoneExpiresAt !== undefined && this.now() > s.phoneExpiresAt - PHONE_SETUP_SIGN_MARGIN_MS) { s.state = 'ended'; s.endedReason = 'phone-expired'; delete s.number; return 'ended'; }
     const a = Buffer.from(sha(t)); const b = Buffer.from(sha(s.number));
     if (crypto.timingSafeEqual(a, b)) {
       s.state = 'number-accepted'; s.acceptedAt = this.now();
-      // The setup now lives exactly as long as its signing window (never past the phone's pending expiry).
-      s.expiresAt = Math.max(s.expiresAt, signDeadline(s)!);
+      // The setup now lives exactly as long as its signing window (never past the phone's pending expiry),
+      // and ends then even if the phone never asks again.
+      s.expiresAt = signDeadline(s)!;
       return 'ok';
     }
     s.wrongNumbers += 1;
@@ -325,9 +332,10 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     const ln = svc.sameNetwork;
     if (!ln || !ln.status().wanted) return;
     // A phone still waiting on the home address (another setup's, e.g. one sent to the Telegram chat)
-    // keeps it open until the registry expires it (GPT review 3).
+    // keeps it open until the registry expires it (GPT review 3). Judged again inside the listener's
+    // owner queue, so a setup started while this close waited keeps it open too (GPT review 4).
     if (homeAddressInUse(svc)) return;
-    try { await ln.close(); } catch (err) { svc.deps.reportDegradation?.('SameNetworkListener.close', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the next reconcile closes an unused address
+    try { await ln.closeIfUnused(() => !homeAddressInUse(svc)); } catch (err) { svc.deps.reportDegradation?.('SameNetworkListener.close', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the next reconcile closes an unused address
   };
   /** A setup that ended leaves no pending phone behind, and the address closes if unused. */
   const afterEnd = async (s: PhoneSetup): Promise<void> => {
@@ -455,6 +463,14 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     const s = svc.phoneSetups.get(String(req.params.id));
     if (!s) { res.status(404).json({ error: 'unknown-setup' }); return; }
     if (s.approval !== 'computer') { res.status(409).json({ error: 'confirm-in-telegram' }); return; }
+    // The phone's live record, not only the expiry noted at its redeem: a lease move or restart may have
+    // expired it since (GPT review 4). A phone no longer waiting ends the setup.
+    if (s.deviceId && s.state === 'waiting-number' && svc.devices.get(s.deviceId)?.status !== 'pending') {
+      svc.phoneSetups.end(s.id, 'phone-expired');
+      await afterEnd(s);
+      res.status(409).json({ error: 'setup-ended', reason: 'phone-expired', detail: 'This setup has ended. Start again to add your phone.' });
+      return;
+    }
     const r = svc.phoneSetups.typeNumber(s.id, (req.body as Record<string, unknown> | undefined)?.number);
     featureEvidence.record(FEATURE, { kind: r === 'ok' ? 'fired' : 'held', reason: `number at the computer: ${r}` });
     if (r === 'ok') { res.json(setupView(s)); return; }
