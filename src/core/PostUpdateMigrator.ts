@@ -125,6 +125,7 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
   INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET_V1,
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
@@ -15519,6 +15520,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       content = content.replace(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
+    }
+    // Spec stale-process-login-expired: the interactive bullet now describes the stored-login check.
+    // Replaced in place (before the key-health block anchors on it); a hand-edited copy is left alone.
+    if (content.includes(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1)) {
+      content = content.replace(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1, INTERACTIVE_LOGIN_EXPIRED_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: interactive expired-login bullet describes the stored-login check');
     }
     // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
     // rerouted-job bullet when present, else appended. Idempotent via its marker.
