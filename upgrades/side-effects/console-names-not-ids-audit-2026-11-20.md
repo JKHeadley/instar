@@ -29,7 +29,7 @@ No block/allow surface — under-block not applicable. Coverage limits: a topic 
 
 ## 3. Level-of-abstraction fit
 
-Right layer. Display wording lives in the console models that already own it, and they reuse the existing `verifiedDisplayName` and `plainReferenceText` helpers instead of adding new ID filters. The machine nickname is attached server-side, where the pool registry lives (`ctx.machinePoolRegistry.getCapacity(id).nickname`, the same lookup the placement route uses). Name learning sits in `apiCall`, the one funnel every Telegram API answer returns through, and delegates to the existing `captureTopicName`.
+Right layer. Display wording lives in the console models that already own it, and they reuse the existing `verifiedDisplayName` and `plainReferenceText` helpers instead of adding new ID filters. The machine nickname is attached server-side, where the pool registry lives (`ctx.machinePoolRegistry.getCapacity(id).nickname`, the same lookup the placement route uses). Name learning is called from `apiCall`, the one funnel every Telegram API answer returns through. The method itself sits beside `captureTopicName`, which it delegates to.
 
 ---
 

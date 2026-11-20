@@ -10,7 +10,7 @@ On 20 November 2026 the agent opened every page of the dashboard at laptop size 
 - **Work board "out of date" notes printed machine IDs.** It said "This machine may not have the newest changes from m_e8c9b243c449… yet". The server now sends the machine's nickname with that note, so it reads "…from Mama PC yet". A machine with no nickname reads as "another of your machines", never as its ID.
 - **Documents page showed "Telegram topic 145840".** It now shows the conversation's name, or "A Telegram conversation" when no machine knows the name.
 - **Notifications page showed topic numbers, machine IDs and long hex codes.** Notices now go through the same plain-words cleanup that promises already use: a conversation shows by name, a machine by nickname, and leftover codes become "a reference". The original text is still there when you hover over it. The doubled "(name unresolved)" after "a conversation" is gone.
-- **Costs page listed machines by ID.** The machine comparison now uses nicknames. A conversation with no known name shows as "A conversation whose name isn't known yet" instead of "Conversation 127504".
+- **Costs page listed machines by ID.** The machine comparison and the "Where the tokens went" breakdown now use nicknames and conversation names. A conversation with no known name shows as "A conversation whose name isn't known yet" instead of "Conversation 127504".
 - **The needs badge read "12+?".** It now reads "12+" (at least twelve). The line under it still says which places could not be checked.
 
 ## The one change below the dashboard
