@@ -216,3 +216,67 @@ could be reported `canDecide`, sent a decision push, and counted as a deciding p
 root walk now refuses such a device (wiring check in `same-network-review-2-fixes.test.ts`). Its other notes (a
 replacement `.wslconfig` carrying an old time is not caught, as before; a corrupt count file reads as zero, writable only
 by the agent's user) are accepted.
+
+## Builder #47: GPT review 3's four lifecycle blockers and its non-blocking items
+
+Tier 2 (security-sensitive: the home listener's lifecycle and the first-phone admission count). Size: 3 source files
+(`sameNetworkListener.ts`, `phoneSetupRoutes.ts`, `mobilePairingRoutes.ts`), about 130 lines; the spec's §4.3; two
+new test files (11 unit, 4 integration). One commit attempt planned; no spec review round (the spec text added states
+the rules the code already follows).
+
+1. **`mayMovePort` read before the queued open (blocker), fixed.** `openForOwner` takes `mayMovePort` as a function
+   too; the route passes one. The listener asks it at the start (early answer) and again at the move, after every wait
+   in the open; in that same synchronous step it stops the old server (which sets the bound port to none, so a redeem
+   still in flight on an old connection reads no eligible host) and stores the new port. A redeem runs synchronously
+   from taking its code to writing its pending phone, so a phone is either seen by the re-check or reaches no listener
+   on the old port. Test: integration item 1 holds the move at its network read, redeems on the old port, then
+   releases: `409 port-fixed`, the listener stays on the old port.
+2. **`closeIfUnused` counted only active phones (blocker), fixed.** It now uses `homeAddressInUse` (an open setup, or
+   a home phone active OR pending; the registry turns a lapsed pending row into `expired`, so a waiting phone counts
+   only until it expires). Test: a Telegram-path phone waiting in the chat, a later setup cancelled: the listener stays.
+3. **Signing window vs pending expiry (blocker), fixed; rule stated in spec §4.3.** The window ends at the earlier of
+   15 minutes after the number and the phone's pending expiry (`signDeadline`; the setup records the phone's
+   `expiresAt` at redeem). `signBy` reports that deadline. A number typed after the phone's pending state lapsed ends
+   the setup (`phone-expired`). Over-block: a number typed in the last minutes of the phone's 30 leaves only those
+   minutes to sign (the app signs on its next poll); before, it was told 15 minutes and then refused anyway.
+4. **Client-sent `deviceKind: 'computer'` (blocker), fixed.** `activeOwnerPhones` no longer reads it; a browser and
+   the app on the agent's own computer are excluded by server-written fields only (`client`, `localBinding`).
+   Over-block: an agent whose only owner device is a Mac paired by its own QR code now answers `phone-already-paired`
+   to a first-phone setup at the computer; that Mac is an owner device with approval power (`activeOwnerPhone` never
+   excluded computers), so it approves the new phone as any owner device does.
+
+Non-blocking items, all cheap, all fixed:
+- **Reconcile tick outside the owner queue:** the 15-second tick (and the boot reconcile) now run through the same
+  queue as open/allow/close, at most one tick waiting. An owner action no longer joins a tick that read older state.
+  Interaction: `stop()` is unchanged (it sets `stopped`, so a queued tick stops the server rather than opening it).
+- **Forwarding headers:** the gate's prefix list now includes `FORWARDING_HEADER_PREFIXES` from the browser-device
+  check (adds `CDN-Loop`, `True-Client-IP`).
+- **`checkContinue`:** the listener handles `checkContinue`, so Node no longer sends `100 Continue` before the gate;
+  `writeContinue()` is sent only for a request the gate passed.
+- **`canApprove`:** an activation retry by a phone already let in at the computer answers `{status, approvedVia:
+  'at-computer', canApprove: false}` as the first success did; `GET /mobile/device` adds `canApprove: false` for such
+  a phone (absent for every other device, so other clients see no change).
+- **Shared loopback budget in mirrored mode:** not changed. In mirrored WSL the listener binds loopback with its
+  per-address limit ON, and every caller arrives through the Windows pass-through from loopback, so the limit counts
+  them together (6 open, 40 a minute): enough for one phone's setup, and a noisy caller can crowd out the phone. This
+  is the spec's stated limit (§7 Limits, item 4); a per-caller budget needs the pass-through (3c) to enforce it or to
+  pass the caller's address, which is 3c's work, not this listener's. Recorded, not fixed.
+
+Signal vs authority: no new blocking authority. Items 1, 2 and 4 make existing refusals read live, server-owned state;
+item 3 shortens an existing window to what the device authenticator already enforced.
+Multi-machine: unchanged (machine-local by design: the home address belongs to the computer serving the agent).
+Rollback: revert this commit; no stored format changes (the setup store is in memory, `phoneExpiresAt` included).
+
+**Second pass on these fixes (independent Opus, read-only): concur on all four blockers and the non-blocking fixes.**
+It traced the redeem handler (no await between taking the code and writing the pending phone) and found no remaining
+move window; confirmed `signDeadline` (`expiresAt - 1`, refused when `now >` it) agrees with the registry's
+`expiresAt <= now` expiry; found no deadlock from the queued tick (`stop()` is not queued). It noted the refusal text
+"already has a phone" is inaccurate when the owner device is a QR-paired Mac: cosmetic, left as is.
+
+Evidence (#47): each blocker fix has a test that fails without it (checked by restoring the three source files to
+13566719: 9 of 11 unit and all 4 integration tests in the two new files failed). Neighbours: every test file that names
+a touched module or the same-network/at-computer surface, plus the repo's ratchet/lint/invariant unit tests, 207
+files, one at a time: all pass. Two rig issues were found on the way and are not product changes: this worktree's
+`better-sqlite3` binary did not load (rebuilt in place), and a first version of the gate's header list imported
+`FORWARDING_HEADER_PREFIXES` at module load, which an import cycle left undefined in 17 files' load order; the gate
+now keeps a literal list and a unit test checks it covers every prefix of the browser-device list. `npm run lint` clean.

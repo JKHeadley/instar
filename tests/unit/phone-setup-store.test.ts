@@ -53,7 +53,7 @@ describe('phone setup store', () => {
     expect(s.activation('dev-1')).toEqual({ result: 'ended', reason: 'sign-window-passed' });
   });
 
-  it('a number typed late in the setup still gets the full 15-minute signing window', () => {
+  it('a number typed late in the setup still gets the full 15-minute signing window when the phone\'s pending expiry allows it (none known here)', () => {
     const { s, clock, mk } = store();
     const a = mk();
     const n = s.attachPhone(a.id, phone, 'kh')!;

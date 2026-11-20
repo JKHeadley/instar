@@ -173,6 +173,13 @@ export function sameNetworkName(agentName: string, machineName: string): string 
   return `${slug(agentName)}-${slug(machineName)}`.slice(0, 63).replace(/-+$/, '');
 }
 
+export interface OpenForOwnerOptions {
+  port?: number;
+  /** May the stored port move? A function is asked inside the serialized open, when the port moves. */
+  mayMovePort?: boolean | (() => boolean);
+  windowsAppHandlesNetworkRule?: boolean;
+}
+
 export class SameNetworkListener {
   private server: https.Server | null = null;
   private identity: (SameNetworkIdentity & { created: boolean }) | null = null;
@@ -192,6 +199,8 @@ export class SameNetworkListener {
   /** A definite WSL mode reading: the mode cannot change while this WSL (and so this process) runs. */
   private wslModeCache: WslModeReading | null = null;
   private lastWslMode: WslModeReading | null = null;
+  /** A periodic reconcile is waiting in the owner queue. */
+  private tickQueued = false;
   /** Set by stop(): nothing opens after it, even an open already in flight. */
   private stopped = false;
   readonly name: string;
@@ -276,8 +285,12 @@ export class SameNetworkListener {
    * phone is paired on the home address, so no stored `<name>.local:<port>` breaks). An asked-for
    * port is never swapped for another: if it cannot be listened on, the open fails and the earlier
    * port is kept.
+   *
+   * `mayMovePort` may be a function: it is then asked inside this serialized open, at the moment the
+   * port moves (after every wait), so a phone that paired on the stored port while this open waited
+   * its turn is seen (GPT review 3). The old listener stops taking requests in that same step.
    */
-  openForOwner(opts: { port?: number; mayMovePort?: boolean; windowsAppHandlesNetworkRule?: boolean } = {}): Promise<OpenResult> {
+  openForOwner(opts: OpenForOwnerOptions = {}): Promise<OpenResult> {
     return this.serial(() => this.openForOwnerNow(opts));
   }
 
@@ -304,12 +317,12 @@ export class SameNetworkListener {
     return wslBindPlan(reading, nat, windowsAppHandlesNetworkRule);
   }
 
-  private async openForOwnerNow(opts: { port?: number; mayMovePort?: boolean; windowsAppHandlesNetworkRule?: boolean }): Promise<OpenResult> {
+  private async openForOwnerNow(opts: OpenForOwnerOptions): Promise<OpenResult> {
     const asked = opts.port;
     const before = this.state.port;
-    if (asked !== undefined && before !== null && asked !== before && !opts.mayMovePort) {
-      return { ok: false, reason: 'port-fixed', port: before, detail: `A phone is paired on this agent's home address at port ${before}, so its port cannot change. Use port ${before}.` };
-    }
+    const mayMove = (): boolean => (typeof opts.mayMovePort === 'function' ? opts.mayMovePort() : opts.mayMovePort === true);
+    const portFixed = (port: number): OpenResult => ({ ok: false, reason: 'port-fixed', port, detail: `A phone is paired on this agent's home address at port ${port}, so its port cannot change. Use port ${port}.` });
+    if (asked !== undefined && before !== null && asked !== before && !mayMove()) return portFixed(before);
     const obs = await this.observeNow();
     if (obs.kind === 'unknown') return { ok: false, reason: 'network-unknown', detail: `This computer cannot tell which network it is on (${obs.reason}), so the home address stays closed.` };
     const declared = opts.windowsAppHandlesNetworkRule === true;
@@ -318,9 +331,17 @@ export class SameNetworkListener {
       featureEvidence.record(FEATURE, { kind: 'held', reason: `WSL networking mode refused: ${plan.mode}` });
       return { ok: false, reason: 'wsl-networking-mode', mode: plan.mode, detail: `The home address stays closed: ${plan.reason}.` };
     }
+    // Moving: asked again now, after every wait above, and in the same synchronous step the old
+    // listener stops taking requests (a redeem is synchronous from its code to its pending phone, so a
+    // phone either paired before this check and is seen by it, or reaches no listener on the old port).
+    if (asked !== undefined && asked !== before) {
+      const stored = this.state.port;
+      if (stored !== null && stored !== asked && !mayMove()) return portFixed(stored);
+      const stopping = this.stopServer();
+      this.state.port = asked;
+      await stopping;
+    }
     if (this.wsl) this.state.windowsAppNetworkRule = declared;
-    // Moving: the reconcile below sees the bound port differ from the stored one and rebinds.
-    if (asked !== undefined && asked !== before) this.state.port = asked;
     this.allowObservation(obs);
     this.state.open = true;
     this.state.name = this.name;
@@ -390,9 +411,19 @@ export class SameNetworkListener {
   /** Boot: reopen only if the owner had asked for it and the network is an allowed one. */
   async start(): Promise<void> {
     if (this.timer || this.stopped) return;
-    this.timer = setInterval(() => { void this.reconcile(true); }, RECONCILE_MS);
+    this.timer = setInterval(() => { this.tick(); }, RECONCILE_MS);
     this.timer.unref?.();
-    await this.reconcile(true);
+    await this.serial(() => this.reconcile(true));
+  }
+
+  /**
+   * The periodic reconcile runs in the owner queue, so an owner action never joins a tick that read
+   * the state before it (GPT review 3). At most one tick waits in the queue at a time.
+   */
+  private tick(): void {
+    if (this.tickQueued || this.stopped) return;
+    this.tickQueued = true;
+    void this.serial(async () => { this.tickQueued = false; await this.reconcile(true); });
   }
 
   async stop(): Promise<void> {
@@ -485,13 +516,19 @@ export class SameNetworkListener {
     if (this.identity.created) featureEvidence.record(FEATURE, { kind: 'fired', reason: 'made a new certificate key (phones paired on an earlier key pair again)' });
     const server = https.createServer({
       key: this.identity.keyPem, cert: this.identity.certPem, minVersion: 'TLSv1.3', handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
-    }, (req, res) => {
+    });
+    const handle = (req: IncomingMessage, res: ServerResponse, expectsContinue: boolean): void => {
       res.setHeader('Cache-Control', 'no-store');
       // Marked again here (idempotent), so the mark never depends on listener order.
       markSameNetworkSocket(req.socket);
       if (!this.deps.gate(req, res)) return;
+      // `Expect: 100-continue`: the interim answer is sent only after the gate let the request through.
+      if (expectsContinue) res.writeContinue();
       this.deps.app(req, res);
-    });
+    };
+    server.on('request', (req: IncomingMessage, res: ServerResponse) => handle(req, res, false));
+    // With this listener set, Node no longer sends `100 Continue` itself before the gate has run.
+    server.on('checkContinue', (req: IncomingMessage, res: ServerResponse) => handle(req, res, true));
     server.maxConnections = SAME_NETWORK_MAX_CONNECTIONS;
     server.headersTimeout = 10_000;
     server.requestTimeout = 15_000;

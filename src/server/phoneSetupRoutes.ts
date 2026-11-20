@@ -31,7 +31,7 @@ import type { Request, Response, Router } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { SAME_NETWORK_PUBLIC_ROUTES, mayBeLocalArrival } from '../core/requestArrival.js';
 import { buildPairLink, codeTtlMs, cleanText } from '../core/MobilePairing.js';
-import { deviceKeyOf, isBrowserDevice, keyHashOf, type DeviceRecord } from '../core/MobileDeviceKeys.js';
+import { admittedAtComputer, deviceKeyOf, isBrowserDevice, keyHashOf, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { createMandatePinCheck, type MandatePinCheck } from './mandatePin.js';
 import type { PinAttemptStore } from '../core/PinAttemptStore.js';
 import { hasForwardingHeaders } from './mobileBrowserDevices.js';
@@ -44,7 +44,12 @@ import { isRequestablePort } from './sameNetworkListener.js';
 
 const FEATURE = 'mobilePairing.phoneSetup';
 export const PHONE_SETUP_TTL_MS = 30 * 60_000;
-/** After the right number, the phone has this long to sign its activation (r3 security finding 3). */
+/**
+ * After the right number, the phone has this long to sign its activation (r3 security finding 3), and
+ * never past its own pending expiry (the device registry's PENDING_TTL_MS from its redeem): the signing
+ * window ends at the EARLIER of the two, so a phone is never told it may sign after the registry has
+ * already expired it (GPT review 3).
+ */
 export const PHONE_SETUP_SIGN_WINDOW_MS = 15 * 60_000;
 export const PHONE_SETUP_MAX_WRONG_NUMBERS = 3;
 export const ACTIVATE_AT_COMPUTER_PATH = '/mobile/device/activate-at-computer';
@@ -68,12 +73,24 @@ export interface PhoneSetup {
   deviceName?: string | null;
   fingerprint?: string | null;
   keyHash?: string;
+  /** The waiting phone's pending expiry in the device registry (ms); the signing window never passes it. */
+  phoneExpiresAt?: number;
   number?: string;
   wrongNumbers: number;
   acceptedAt?: number;
 }
 
 const sha = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
+
+/**
+ * The last moment the phone may sign its activation: 15 minutes after the number was accepted, or the
+ * last moment of its pending state (the registry expires it AT its `expiresAt`), whichever is earlier.
+ */
+export function signDeadline(s: Pick<PhoneSetup, 'acceptedAt' | 'phoneExpiresAt'>): number | null {
+  if (s.acceptedAt === undefined) return null;
+  const window = s.acceptedAt + PHONE_SETUP_SIGN_WINDOW_MS;
+  return s.phoneExpiresAt === undefined ? window : Math.min(window, s.phoneExpiresAt - 1);
+}
 
 /** Setups in this process only: a restart voids every waiting phone, as it voids pending devices. */
 export class PhoneSetupStore {
@@ -111,11 +128,13 @@ export class PhoneSetupStore {
   }
 
   /** The phone redeemed: the agent issues its number (random, held here with its bindings). */
-  attachPhone(id: string, d: Pick<DeviceRecord, 'id' | 'deviceName' | 'fingerprint'>, keyHash: string): string | null {
+  attachPhone(id: string, d: Pick<DeviceRecord, 'id' | 'deviceName' | 'fingerprint'> & { expiresAt?: string }, keyHash: string): string | null {
     const s = this.get(id);
     if (!s || s.state !== 'waiting-phone') return null;
     s.state = 'waiting-number';
     s.deviceId = d.id; s.deviceName = d.deviceName ?? null; s.fingerprint = d.fingerprint ?? null; s.keyHash = keyHash;
+    const phoneExpiresAt = d.expiresAt ? Date.parse(d.expiresAt) : NaN;
+    if (Number.isFinite(phoneExpiresAt)) s.phoneExpiresAt = phoneExpiresAt;
     s.number = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
     return s.number;
   }
@@ -127,11 +146,13 @@ export class PhoneSetupStore {
     if (s.state !== 'waiting-number' || !s.number) return 'not-waiting';
     const t = typeof typed === 'string' ? typed.replace(/[\s-]/g, '') : '';
     if (!/^\d{6}$/.test(t)) return 'bad-format';
+    // The phone's pending state already lapsed: nothing it signs can let it in any more.
+    if (s.phoneExpiresAt !== undefined && this.now() >= s.phoneExpiresAt) { s.state = 'ended'; s.endedReason = 'phone-expired'; delete s.number; return 'ended'; }
     const a = Buffer.from(sha(t)); const b = Buffer.from(sha(s.number));
     if (crypto.timingSafeEqual(a, b)) {
       s.state = 'number-accepted'; s.acceptedAt = this.now();
-      // The full signing window, even when the number is typed late in the setup's life.
-      s.expiresAt = Math.max(s.expiresAt, s.acceptedAt + PHONE_SETUP_SIGN_WINDOW_MS);
+      // The setup now lives exactly as long as its signing window (never past the phone's pending expiry).
+      s.expiresAt = Math.max(s.expiresAt, signDeadline(s)!);
       return 'ok';
     }
     s.wrongNumbers += 1;
@@ -147,7 +168,7 @@ export class PhoneSetupStore {
     if (s.state === 'done') return { result: 'ended', reason: 'already-done' };
     if (s.state === 'waiting-number') return { result: 'waiting', number: s.number ?? null };
     if (s.state !== 'number-accepted' || s.acceptedAt === undefined) return { result: 'ended', reason: 'not-ready' };
-    if (this.now() - s.acceptedAt > PHONE_SETUP_SIGN_WINDOW_MS) { s.state = 'ended'; s.endedReason = 'sign-window-passed'; return { result: 'ended', reason: 'sign-window-passed' }; }
+    if (this.now() > signDeadline(s)!) { s.state = 'ended'; s.endedReason = 'sign-window-passed'; return { result: 'ended', reason: 'sign-window-passed' }; }
     return { result: 'ok', setup: s };
   }
 
@@ -180,15 +201,27 @@ export function buildPairLinkV2(p: { host: string; spkiHash: string; code: strin
   return `${PAIR_LINK_V2_BASE}#v=2&h=${encodeURIComponent(p.host)}&k=${p.spkiHash}&c=${p.code}${a ? `&a=${a}` : ''}${n ? `&n=${encodeURIComponent(n)}` : ''}`;
 }
 
-/** Does anything use the home address: an open setup, or a phone paired on it that is active or waiting? */
-export function homeAddressInUse(svc: Pick<MobilePairingService, 'devices' | 'phoneSetups'>): boolean {
-  if (svc.phoneSetups.anyOpen()) return true;
+/**
+ * Is a phone paired on the home address, active or still waiting? A waiting phone counts until the
+ * device registry expires it (its list() turns a lapsed pending row into `expired`).
+ */
+export function homeAddressHasPhone(svc: Pick<MobilePairingService, 'devices'>): boolean {
   return svc.devices.list().some((d) => d.addressKind === 'same-network' && (d.status === 'active' || d.status === 'pending'));
 }
 
-/** Owner phones already let in on this machine (not computers, browsers, or the app on the agent's own computer). */
+/** Does anything use the home address: an open setup, or a phone paired on it that is active or waiting? */
+export function homeAddressInUse(svc: Pick<MobilePairingService, 'devices' | 'phoneSetups'>): boolean {
+  return svc.phoneSetups.anyOpen() || homeAddressHasPhone(svc);
+}
+
+/**
+ * Owner devices already let in on this machine: every active owner device except a browser and the app
+ * on the agent's own computer (both told apart by fields only the server writes). The client-sent
+ * `deviceKind` is display-only and is NOT read here (GPT review 3): a phone that calls itself a computer
+ * still counts, and a computer paired by its own code is an owner device that approves new phones.
+ */
 export function activeOwnerPhones(svc: Pick<MobilePairingService, 'devices'>): DeviceRecord[] {
-  return svc.devices.list().filter((d) => d.status === 'active' && !isBrowserDevice(d) && !d.localBinding && d.deviceKind !== 'computer' && (d.role === undefined || d.role === 'owner'));
+  return svc.devices.list().filter((d) => d.status === 'active' && !isBrowserDevice(d) && !d.localBinding && (d.role === undefined || d.role === 'owner'));
 }
 
 /**
@@ -209,7 +242,12 @@ export function creatingAppOnThisMachine(svc: Pick<MobilePairingService, 'device
 const PUBLIC_ON_LISTENER = SAME_NETWORK_PUBLIC_ROUTES;
 /** Headers that carry the agent's token, a local credential, a dashboard session, or a forwarding claim. */
 const REFUSED_HEADERS = ['authorization', 'cookie', 'x-instar-step-up', 'x-instar-notify-token', 'x-instar-local-secret', 'x-instar-lifeline-secret', 'x-instar-machine-auth', 'forwarded'];
-const REFUSED_PREFIXES = ['x-forwarded-', 'x-real-ip', 'cf-', 'tailscale-', 'x-instar-mesh'];
+/**
+ * A literal list (an import of the browser-device list would be read before that module finishes loading,
+ * through an import cycle): it covers every prefix in FORWARDING_HEADER_PREFIXES, which a unit test checks.
+ */
+export const SAME_NETWORK_REFUSED_PREFIXES: ReadonlyArray<string> = ['x-forwarded-', 'forwarded', 'x-real-ip', 'true-client-ip', 'cf-', 'cdn-loop', 'tailscale-', 'x-instar-mesh'];
+const REFUSED_PREFIXES = SAME_NETWORK_REFUSED_PREFIXES;
 /** Never on this listener even for a signed request: the app on the agent's own computer and its key override. */
 const NEVER_ON_LISTENER: ReadonlyArray<RegExp> = [/^\/mobile\/local-owner-device$/, /^\/dashboard(\/|$)/, /^\/mobile\/trust\/device-acceptance(\/|$)/];
 
@@ -276,7 +314,7 @@ function setupView(s: PhoneSetup): Record<string, unknown> {
     setupId: s.id, state: s.state, address: s.address, approval: s.approval, expiresAt: new Date(s.expiresAt).toISOString(),
     ...(s.endedReason ? { endedReason: s.endedReason } : {}),
     ...(s.deviceId ? { phone: { deviceId: s.deviceId, name: s.deviceName ?? null, key: s.fingerprint ?? null, nameNote: 'The phone chose this name, so do not rely on it. Check the key matches the one your phone shows.' } } : {}),
-    ...(s.state === 'number-accepted' && s.acceptedAt ? { signBy: new Date(s.acceptedAt + PHONE_SETUP_SIGN_WINDOW_MS).toISOString() } : {}),
+    ...(s.state === 'number-accepted' && s.acceptedAt ? { signBy: new Date(signDeadline(s)!).toISOString() } : {}),
   };
 }
 
@@ -286,8 +324,9 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
   const closeIfUnused = async (): Promise<void> => {
     const ln = svc.sameNetwork;
     if (!ln || !ln.status().wanted) return;
-    if (svc.phoneSetups.anyOpen()) return;
-    if (svc.devices.list().some((d) => d.addressKind === 'same-network' && d.status === 'active')) return;
+    // A phone still waiting on the home address (another setup's, e.g. one sent to the Telegram chat)
+    // keeps it open until the registry expires it (GPT review 3).
+    if (homeAddressInUse(svc)) return;
     try { await ln.close(); } catch (err) { svc.deps.reportDegradation?.('SameNetworkListener.close', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the next reconcile closes an unused address
   };
   /** A setup that ended leaves no pending phone behind, and the address closes if unused. */
@@ -317,7 +356,9 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     const windowsAppHandlesNetworkRule = body.windowsAppHandlesNetworkRule === true;
     const telegramOwner = svc.approvalPath() === 'telegram';
     // The port may move only while no phone is paired on the home address (its stored host carries the port).
-    const mayMovePort = !svc.devices.list().some((d) => d.addressKind === 'same-network' && (d.status === 'active' || d.status === 'pending'));
+    // Asked fresh each time: here for an early answer, and again inside the listener's serialized open at
+    // the moment the port moves, since a phone can pair on the stored port while this request waits (GPT review 3).
+    const mayMovePort = (): boolean => !homeAddressHasPhone(svc);
     if (Object.prototype.hasOwnProperty.call(body, 'ceremonyCredential')) {
       // A5: the app on the agent's own computer, with the one-time credential its command made inside
       // the agent's own system, in place of the PIN. Never falls back to the PIN: any refusal here is final.
@@ -339,7 +380,7 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
       if (address === 'anywhere' && !svc.pairingOrigin()) { res.status(409).json({ error: 'stable-address-required', detail: 'This agent has no address that works away from home yet. Choose "At home only", or set up Tailscale first.' }); return; }
       if (address === 'home' && !svc.sameNetwork) { res.status(503).json({ error: 'home-address-unavailable', detail: 'This agent cannot open a home address.' }); return; }
       const storedPort = svc.sameNetwork?.status().port ?? null;
-      if (address === 'home' && askedPort !== undefined && storedPort !== null && askedPort !== storedPort && !mayMovePort) {
+      if (address === 'home' && askedPort !== undefined && storedPort !== null && askedPort !== storedPort && !mayMovePort()) {
         res.status(409).json({ error: 'port-fixed', port: storedPort, detail: `A phone is paired on this agent's home address at port ${storedPort}, so its port cannot change. Use port ${storedPort}.` });
         return;
       }
@@ -473,7 +514,8 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     if (!p || p.kind !== 'device' || !p.deviceId) { res.status(403).json({ error: 'device-signature-required' }); return; }
     const d = svc.devices.get(p.deviceId);
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
-    if (d.status === 'active') { res.json({ status: 'active' }); return; }
+    // A retry after the phone was let in answers as the first success did.
+    if (d.status === 'active') { res.json({ status: 'active', ...(admittedAtComputer(d) ? { approvedVia: 'at-computer', canApprove: false } : {}) }); return; }
     if (d.status !== 'pending') { res.status(409).json({ error: d.status }); return; }
     const a = svc.phoneSetups.activation(d.id);
     if (a.result === 'waiting') { res.status(409).json({ error: 'waiting-for-number', number: a.number, detail: 'Type this number on the agent\'s computer.' }); return; }

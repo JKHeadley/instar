@@ -1681,6 +1681,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
       ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
       ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
+      // Identity A4: a phone let in at the computer cannot approve yet (piece 3b), as its activation answered.
+      ...(admittedAtComputer(d) ? { canApprove: false } : {}),
       // A browser's setup page (dashboard-conversations-browser-device §4.2): its kind, fingerprint and window.
       ...(isBrowserDevice(d) ? { client: 'browser', fingerprint: d.fingerprint ?? null, ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}), ...(d.setupState ? { setupState: d.setupState } : {}), ...(d.activating ? { approving: true } : {}) } : {}),
       // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
