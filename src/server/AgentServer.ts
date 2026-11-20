@@ -227,7 +227,9 @@ import { createDocumentPageRoutes } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
-import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
+import { createDocumentLinkRoutes, joinedComputerStanding, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
+import { computerStandingIn, computerHomeAt, renewDue } from '../core/TeamComputers.js';
+import { createDocumentJoinRoutes, joinedEndsAt, reconcileJoinedComputers } from './documentJoinRoutes.js';
 import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
 import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
@@ -7638,10 +7640,32 @@ export class AgentServer {
         isOwnHost: pageDeps.isOwnHost,
       }));
       setDocumentScopedSend((device, routePath, rawBody) => this.documentScopedSendOk(device, routePath, rawBody));
+      // A member's computer joining from the owner's team invite (docs/specs/member-browser-any-computer.md).
+      const joinDeps = {
+        config: () => options.config, pairing: () => this.mobilePairing ?? null,
+        machineId: () => this.meshSelfId ?? null,
+        writesBlockedBy: () => this.computerWritesBlockedBy(),
+        ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? '').trim(),
+        notice: {
+          raise: (key: string, title: string, text: string) => { void this.raiseReachNotice({ conditionKey: key, title, text }); },
+          close: (key: string) => { this.closeAgentNotice(key); },
+        },
+        addresses: () => this.computerAddresses(),
+      };
+      this.app.use(createDocumentJoinRoutes(joinDeps));
       // The linked-computer expiry sweep also runs whenever team phones are reconciled (§3.6a item 3).
       if (this.mobilePairing) {
         const svc = this.mobilePairing;
-        svc.linkedBrowserSweep = () => { if (isDocumentsEnabled(options.config)) sweepLinkedBrowsers(svc, Date.now()); };
+        // The pair page offers "Use this computer instead" only when computers can join here (§3.1 step 2).
+        svc.computersCanJoin = () => isDocumentsEnabled(options.config) && svc.browserOn();
+        svc.linkedBrowserSweep = () => {
+          if (!isDocumentsEnabled(options.config)) return;
+          sweepLinkedBrowsers(svc, Date.now());
+          // A joined computer's admission finished after a crash, and computers bound to this
+          // machine's own address taken over after a rebuild (§3.3.2, §3.5).
+          try { reconcileJoinedComputers(svc, joinDeps, Date.now()); } catch (err) { svc.reportTeamFault('Documents.joinReconcile', err); } // @silent-fallback-ok — reported; the next pass retries
+          try { this.adoptJoinedComputers(); } catch (err) { svc.reportTeamFault('Documents.joinAdopt', err); } // @silent-fallback-ok — reported; the next pass retries
+        };
       }
     }
     // Sync documents between machines whether or not phones are paired (owner-only documents replicate too).
@@ -10761,17 +10785,18 @@ export class AgentServer {
     const publicKey = localKey && deviceKeyHashOf(localKey) === keyHash ? localKey : act && act.keyHash === keyHash ? act.publicKey : null;
     if (!publicKey) return null;
     const link = prefix.browserLinks.get(keyHash);
-    const client: 'phone' | 'browser' = link || (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
+    const joined = prefix.computerLinks.get(keyHash);
+    const client: 'phone' | 'browser' = link || joined || (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
     const stood = deviceStoodAt(prefix, log.state(), { keyHash, deviceId, personKey, client }, (l) => {
       // The phone's signature over the link, checked as of the link (expiry was decided by the
       // machine that accepted the row; a revoked linking phone is ordered by the team rows above).
       const phone = this.documentLedgerActivation(l.linkedByDeviceId, l.linkedByKeyHash);
       return verifyBrowserLink(l, phone, phone ? prefix.bindings.get(phone.keyHash) ?? null : null, false, Date.parse(l.linkedAt));
-    });
+    }, (kh) => computerStandingIn(log.state(), kh, Date.now()) === null);
     if (!stood) return null;
     const role = prefix.people.get(personKey)?.role;
     const guest = !!role && tierOfRole(role as never) === 'guest';
-    const mayWrite = !guest && link?.scope !== 'documents-read';
+    const mayWrite = !guest && link?.scope !== 'documents-read' && joined?.scope !== 'documents-read';
     return { status: 'ok', publicKey, role: 'person', personKey, client, mayWrite };
   }
 
@@ -10797,7 +10822,13 @@ export class AgentServer {
     if (person && person.ok && person.role === 'owner') role = 'owner';
     else if (person && person.ok && person.role === 'team' && person.userId) { role = 'person'; personKey = person.userId; }
     else if (bound === 'owner' || bound === 'owner-browser') role = 'owner';
-    else if (bound && svc.teamLog()?.state().browserLinks.has(keyHash)) {
+    else if (bound && svc.teamLog()?.state().computerLinks.has(keyHash)) {
+      // A member's computer that joined from the owner's team invite (member-browser-any-computer §3.4):
+      // standing from the replicated rows and the key ledger, only while the browser switch is on.
+      const st = joinedComputerStanding(svc, keyHash, Date.now());
+      if (!st || st.deviceId !== deviceId || !svc.browserOn()) return { status: 'revoked' };
+      role = 'person'; personKey = st.personKey;
+    } else if (bound && svc.teamLog()?.state().browserLinks.has(keyHash)) {
       // A linked computer: only as strong as the phone that linked it, checked here (§3.6a), and
       // only while the browser switch is on.
       const linkRow = svc.teamLog()!.state().browserLinks.get(keyHash)!;
@@ -10807,7 +10838,7 @@ export class AgentServer {
     } else if (bound) { role = 'person'; personKey = bound; }
     // A browser approved only with the dashboard PIN can read but never write (§3.6); a guest's linked browser reads only.
     if (local?.scope && (!linkStillValid(local, svc, Date.now()) || !svc.browserOn())) return { status: 'revoked' };
-    const scope = local?.scope ?? svc.teamLog()?.state().browserLinks.get(keyHash)?.scope;
+    const scope = local?.scope ?? svc.teamLog()?.state().browserLinks.get(keyHash)?.scope ?? svc.teamLog()?.state().computerLinks.get(keyHash)?.scope;
     // A guest's computer reads only. Decided from the person's current tier as well as the row, so
     // no machine can widen a guest's computer by rewriting its scope.
     const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
@@ -10930,6 +10961,89 @@ export class AgentServer {
   }
 
   /** A peer heard from in the last 7 days that does not read decision rows yet, by name (§6). */
+  /**
+   * The machine that holds back every computer-* team-log row (member-browser-any-computer §5): one
+   * whose last heartbeat in the last week does not say it reads them. A machine silent for longer
+   * counts as retired; an unreadable machine list fails closed. Null when every machine reads them.
+   */
+  computerWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: computer rows wait until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.teamLogComputerRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** The agent's own document addresses, this machine's first (display only, §3.6). */
+  computerAddresses(): string[] {
+    const out = new Set<string>();
+    const own = this.mobilePairing?.pairingOrigin()?.origin;
+    if (own) out.add(own.toLowerCase());
+    const reg = this.docPoolRegistry;
+    try {
+      for (const c of reg?.getCapacities() ?? []) {
+        const o = c.seamlessnessFlags?.documentsOrigin;
+        if (typeof o === 'string' && /^https:\/\/[a-z0-9.-]{1,253}(?::\d{1,5})?$/.test(o)) out.add(o);
+      }
+    } catch { /* @silent-fallback-ok — display only: the list is just shorter */ }
+    return [...out];
+  }
+
+  /** Close an attention item this server raised with raiseReachNotice (member-browser-any-computer §3.3.4). */
+  private closeAgentNotice(conditionKey: string): void {
+    const id = `agent:${conditionKey}`;
+    try {
+      if (this.telegramAdapter) void this.telegramAdapter.updateAttentionStatus(id, 'DONE', { silent: true, closedBy: 'cause-cleared' });
+      else this.localAttention?.setStatus(id, 'DONE');
+    } catch { /* @silent-fallback-ok — best-effort; an open item says only that someone was waiting */ }
+  }
+
+  /**
+   * A joined computer's signed page request verified here (§3.5): this machine is its home, so it moves
+   * the computer's end forward once a quarter of the idle window has passed, and keeps its own record's
+   * end in step with the replicated rows. Nothing is written while the pool write gate is closed.
+   */
+  private joinedComputerUsed(deviceId: string): void {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    const d = svc?.devices.get(deviceId);
+    if (!svc || !log || !d || d.joinedVia !== 'team-invite' || d.status !== 'active' || !d.browserPublicKey) return;
+    const kh = deviceKeyHashOf(d.browserPublicKey);
+    const now = Date.now();
+    const due = renewDue(log.state(), kh, now);
+    if (due?.due && this.meshSelfId && computerHomeAt(log.state(), kh) === this.meshSelfId && !this.computerWritesBlockedBy()) {
+      log.appendMachineEvents([{ type: 'computer-renew', keyHash: kh, expiresAt: due.expiresAt }]);
+    }
+    const ends = joinedEndsAt(svc, d, now);
+    if (ends) svc.devices.setLinkExpiry(d.id, ends);
+  }
+
+  /**
+   * Take over joined computers bound to this machine's own address that it holds no record for, e.g.
+   * after a rebuild with a new machine identity (§3.5). Writes one computer-adopt per computer.
+   */
+  private adoptJoinedComputers(): void {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    if (!svc || !log || log.healthState() !== 'ok' || !this.meshSelfId || this.computerWritesBlockedBy()) return;
+    const now = Date.now();
+    for (const link of log.state().computerLinks.values()) {
+      if (link.unbound || !svc.redeemHostEligible(link.host)) continue;
+      if (svc.devices.get(link.deviceId) || svc.devices.list().some((d) => d.browserPublicKey === link.browserPublicKey)) continue;
+      const st = joinedComputerStanding(svc, link.keyHash, now);
+      if (!st) continue;
+      const rec = svc.devices.adoptJoinedComputer({ deviceId: link.deviceId, browserPublicKey: link.browserPublicKey, host: link.host, userId: link.boundTo, scope: link.scope, linkedAt: link.linkedAt, linkExpiresAt: new Date(st.expiresAt).toISOString(), idleDays: link.idleDays, endsBy: link.endsBy });
+      if (rec && computerHomeAt(log.state(), link.keyHash) !== this.meshSelfId) log.appendMachineEvents([{ type: 'computer-adopt', keyHash: link.keyHash, host: link.host }]);
+    }
+  }
+
   documentDecisionWritesBlockedBy(): string | null {
     const reg = this.docPoolRegistry;
     if (!reg) return null;
@@ -11071,6 +11185,13 @@ export class AgentServer {
           ? { ok: true, role: 'owner', userId: null, name: 'Owner', telegramUserId: null }
           : { ok: true, role: 'team', userId: k.personKey, name: standing!.name, telegramUserId: null, tier: standing!.tier };
         return { person: person as never, client: k.client, publicKey: k.publicKey, approvedVia: act.approvedVia ?? null, scope: svc.teamLog()?.state().browserLinks.get(act.keyHash)?.scope ?? null };
+      },
+      // member-browser-any-computer §3.5: a joined computer in use here is renewed by its home.
+      deviceUsed: (deviceId: string) => this.joinedComputerUsed(deviceId),
+      computerEndsAt: (deviceId: string) => {
+        const svc = this.mobilePairing;
+        const d = svc?.devices.get(deviceId);
+        return svc && d ? joinedEndsAt(svc, d, Date.now()) : null;
       },
       isOwnHost: (host: string) => {
         const svc = this.mobilePairing;

@@ -143,6 +143,7 @@ const APPROVED_HOW: Record<string, string> = {
   'owner-phone': 'with Face ID on your phone',
   'dashboard-pin': 'with the dashboard PIN',
   'person-phone': 'by its owner\'s own phone',
+  'team-invite': 'from your team invite, with the code on your phone',
 };
 
 /**
@@ -546,7 +547,8 @@ export function mountBrowserDeviceRoutes(
           detail: 'A browser setup was declined in the last hour, so new browser setups are paused until then.' });
         return;
       }
-      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending')) {
+      // A member's computer waiting for the owner's code is not an owner browser setup (member-browser-any-computer §3.3).
+      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending' && !d.joinedVia)) {
         held(409, 'browser-setup-waiting', { detail: 'Another browser is already waiting for approval. Approve or decline it first.' });
         return;
       }
