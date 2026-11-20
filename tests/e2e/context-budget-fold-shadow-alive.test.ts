@@ -157,11 +157,15 @@ describe('the shadow fold runner on the production trigger path', () => {
     expect(src).toContain('ledger = () => server.getTokenLedger()');
     expect(src).toContain('issueToken: (id, t) => _memoryPrivacyWired.issueFoldProbeToken(id, t)');
     const coordBuild = src.indexOf("await import('../monitoring/foldCoordinatorBoot.js')");
-    const owner = src.indexOf('ownershipRecord: (k) => {', coordBuild);
-    expect(owner).toBeGreaterThan(coordBuild);
-    expect(owner).toBeLessThan(src.indexOf('built.coordinator.recoverPendingFolds()', coordBuild));
-    expect(src.slice(owner, owner + 800)).toContain('sessionOwnershipRegistry?.read(k)');
-    expect(src.slice(owner, owner + 800)).toContain('selfMachineId: () =>');
+    const ownerFn = src.indexOf('const foldOwnershipRecord = (k: string) => {', coordBuild);
+    expect(ownerFn).toBeGreaterThan(coordBuild);
+    expect(src.slice(ownerFn, ownerFn + 600)).toContain('sessionOwnershipRegistry?.read(k)');
+    const build = src.indexOf('const built = buildFoldCoordinator({', ownerFn);
+    const sweep = src.indexOf('built.coordinator.recoverPendingFolds()', build);
+    expect(src.slice(build, sweep)).toContain('ownershipRecord: foldOwnershipRecord');
+    expect(src.slice(build, sweep)).toContain('selfMachineId: foldSelfMachineId');
+    // The ContextBudgetSentinel reads ownership by the same rule (before this, every topic was observe-only on a pool-live agent).
+    expect(src).toContain('ownsTopic: (topicKey) => (poolLiveNow() ? poolLiveOwner(foldOwnershipRecord(topicKey), foldSelfMachineId()) : true)');
     // §10: the layer ticker skips the fold's lock windows (the internal handoff turn).
     const ticker = src.indexOf('_layerTicker = layerWiring.startTicker(');
     expect(ticker).toBeGreaterThan(0);

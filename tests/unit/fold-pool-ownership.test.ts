@@ -10,7 +10,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildFoldCoordinator } from '../../src/monitoring/foldCoordinatorBoot.js';
+import { buildFoldCoordinator, poolLiveOwner } from '../../src/monitoring/foldCoordinatorBoot.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const OP = 'tests/unit/fold-pool-ownership.test.ts';
@@ -30,6 +30,16 @@ function build(o: { record?: { ownerMachineId: string; status: string; ownership
 }
 
 const active = (owner = 'm_self', epoch = 7) => ({ ownerMachineId: owner, status: 'active', ownershipEpoch: epoch });
+
+describe('poolLiveOwner (the shared §9.3 rule)', () => {
+  it('owned only by an active record naming this machine; missing ⇒ unknown', () => {
+    expect(poolLiveOwner({ ownerMachineId: 'm1', status: 'active' }, 'm1')).toBe(true);
+    expect(poolLiveOwner({ ownerMachineId: 'm2', status: 'active' }, 'm1')).toBe(false);
+    expect(poolLiveOwner({ ownerMachineId: 'm1', status: 'transferring' }, 'm1')).toBe(false);
+    expect(poolLiveOwner(null, 'm1')).toBe('unknown');
+    expect(poolLiveOwner({ ownerMachineId: 'm1', status: 'active' }, null)).toBe('unknown');
+  });
+});
 
 describe('fold ownership with placement live', () => {
   it('an active record naming this machine, with the session here, is the owner', () => {

@@ -13913,11 +13913,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Phase 0 no fold can begin (no sentinel heartbeat yet), so
     // on a healthy agent this finds nothing.
     try {
-      const { buildFoldCoordinator } = await import('../monitoring/foldCoordinatorBoot.js');
+      const { buildFoldCoordinator, poolLiveOwner } = await import('../monitoring/foldCoordinatorBoot.js');
       const { inboundQueuePoolGateOpen: foldPoolGateOpen } = await import('../core/inboundQueueConfig.js');
       // Read LIVE on every call: a StageAdvancer move at runtime must reach the
       // retained coordinator (an owner check on a boot-time snapshot fails open).
       const livePool = () => liveConfig.get<{ enabled?: boolean; stage?: string } | undefined>('multiMachine.sessionPool', undefined);
+      // §9.3 pool-live owner inputs, read at call time. The registry is declared later in this boot (a
+      // `let` in this scope), so a call before it exists throws ReferenceError: that reads as no record
+      // ⇒ owner unknown (never act). Shared by the fold coordinator and the ContextBudgetSentinel.
+      const foldOwnershipRecord = (k: string) => {
+        try {
+          const r = sessionOwnershipRegistry?.read(k);
+          return r ? { ownerMachineId: r.ownerMachineId, status: r.status, ownershipEpoch: r.ownershipEpoch } : null;
+        } catch { return null; } // @silent-fallback-ok — registry not built yet (boot order) or unreadable: ownership unknown, nothing acts
+      };
+      const foldSelfMachineId = () => { try { return _meshSelfId ?? null; } catch { return null; } }; // @silent-fallback-ok — no mesh identity yet: ownership unknown
       const built = buildFoldCoordinator({
         stateDir: config.stateDir,
         runningTopicSessions: () => sessionManager.listRunningSessions()
@@ -13933,16 +13943,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         topicRowsPresent: (topicKey) => _topicRowCarrier?.rowsPresent(topicKey) ?? false,
         // §14: a topic folds only when its channel has a row writer that is on.
         hasRowSource: (topicId) => topicRowWriter.hasRowSource(topicId),
-        // §9.3 pool-live owner: the topic's ownership record and this machine's mesh id, read at
-        // call time. The registry is declared later in this boot (a `let` in this scope), so a call
-        // before it exists throws ReferenceError: that reads as no record ⇒ owner unknown (never act).
-        ownershipRecord: (k) => {
-          try {
-            const r = sessionOwnershipRegistry?.read(k);
-            return r ? { ownerMachineId: r.ownerMachineId, status: r.status, ownershipEpoch: r.ownershipEpoch } : null;
-          } catch { return null; } // @silent-fallback-ok — registry not built yet (boot order) or unreadable: ownership unknown, no fold acts
-        },
-        selfMachineId: () => { try { return _meshSelfId ?? null; } catch { return null; } }, // @silent-fallback-ok — no mesh identity yet: ownership unknown
+        // §9.3 pool-live owner: the topic's ownership record and this machine's mesh id (shared with the sentinel below).
+        ownershipRecord: foldOwnershipRecord,
+        selfMachineId: foldSelfMachineId,
         // No live sentinel, no fold (§7.8): read lazily, the sentinel is built after the sweep.
         sentinelHeartbeatFresh: () => _contextBudgetSentinel?.heartbeatFresh() ?? false,
         // The skew rule (§14): only a build that registered the layer kind may fold.
@@ -14145,10 +14148,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           machineId: built.holderId,
           coordinator: built.coordinator,
           store: new FoldRecordStore(config.stateDir),
-          // The coordinator's own rule (foldCoordinatorBoot): pool placement live ⇒ unknown; else the
-          // topic's host, or this machine's own record (single machine / dark pool).
-          ownsFold: (rec) => poolLiveNow() ? 'unknown' : (sessionDeps.candidates(rec.topicKey).length > 0 || rec.machineId === built.holderId),
-          ownsTopic: () => poolLiveNow() ? 'unknown' : true,
+          // The coordinator's own rule (foldCoordinatorBoot.poolLiveOwner): with placement live, the topic's
+          // active ownership record must name this machine (missing ⇒ unknown); else the host or own record.
+          ownsFold: (rec) => {
+            if (!poolLiveNow()) return sessionDeps.candidates(rec.topicKey).length > 0 || rec.machineId === built.holderId;
+            const own = poolLiveOwner(foldOwnershipRecord(rec.topicKey), foldSelfMachineId());
+            return own === true ? (sessionDeps.candidates(rec.topicKey).length > 0 || rec.machineId === built.holderId) : own;
+          },
+          ownsTopic: (topicKey) => (poolLiveNow() ? poolLiveOwner(foldOwnershipRecord(topicKey), foldSelfMachineId()) : true),
           ...sessionDeps,
           attention: sentinelAttention,
           admit: (target, opts) => sentinelHandle.admit(target, opts),

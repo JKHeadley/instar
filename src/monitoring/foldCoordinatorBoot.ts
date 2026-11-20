@@ -47,6 +47,18 @@ export interface FoldBootDeps {
   selfMachineId?: () => string | null;
 }
 
+/**
+ * §9.3 with the session pool's placement live: this machine owns a topic when
+ * the topic's ACTIVE ownership record names it. A missing record or identity
+ * is unknown (never act); placing / transferring / released is not owned.
+ * Shared by the fold coordinator and the ContextBudgetSentinel so both read
+ * ownership by one rule.
+ */
+export function poolLiveOwner(rec: { ownerMachineId: string; status: string } | null | undefined, self: string | null | undefined): boolean | 'unknown' {
+  if (!self || !rec) return 'unknown';
+  return rec.status === 'active' && rec.ownerMachineId === self;
+}
+
 export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordinator; holderId: string } {
   const { lock, holderId } = createFoldLeaseLockForAgent(d.stateDir);
   const hosts = (topicKey: string) => d.runningTopicSessions().filter((s) => s.topicKey === topicKey).length;
@@ -57,11 +69,8 @@ export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordi
         // topic's ACTIVE ownership record names. A missing record or identity
         // is unknown (fold-skipped: owner-unknown); placing / transferring /
         // released is not ownable now.
-        const self = d.selfMachineId?.() ?? null;
-        const rec = d.ownershipRecord?.(topicKey) ?? null;
-        if (!self || !rec) return 'unknown';
-        if (rec.status !== 'active') return false;
-        return rec.ownerMachineId === self && hosts(topicKey) > 0;
+        const own = poolLiveOwner(d.ownershipRecord?.(topicKey), d.selfMachineId?.());
+        return own === true ? hosts(topicKey) > 0 : own;
       }
       return hosts(topicKey) > 0;
     },
@@ -84,9 +93,7 @@ export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordi
     // ownership record names it, even after the session left (§9.3: the owner resolves its folds).
     isSweepOwner: (topicKey) => {
       if (!d.poolPlacementLive()) return true;
-      const self = d.selfMachineId?.() ?? null;
-      const rec = d.ownershipRecord?.(topicKey) ?? null;
-      return !!self && !!rec && rec.status === 'active' && rec.ownerMachineId === self;
+      return poolLiveOwner(d.ownershipRecord?.(topicKey), d.selfMachineId?.()) === true;
     },
   };
   const coordinator = new FoldCoordinator({
