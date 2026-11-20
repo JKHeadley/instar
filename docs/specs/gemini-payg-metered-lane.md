@@ -244,13 +244,23 @@ change. It is a thin HTTP client of the **local** server:
 - **The spec must be real:**
   - `specPath` must resolve inside a `docs/specs/` directory of a git checkout.
   - `specSha256` must match the file's current contents.
-  - At most **2 passes per spec hash per day** (`e1PassesPerSpecHashPerDay`, a door
-    policy field shown in the plan). A new round changes the hash; a loop on one spec
-    does not.
-  - Only passes that **settled with usage** count. A resubmitted `callId`, a
-    `settled-result-lost`, or a post-send failure does not.
-  - `specPath` must be inside a project checkout registered in the agent's project map,
-    not any git directory.
+  - **One pass per `(specSha256, round)`** (`e1PassesPerRound`, default 1, a door
+    policy field shown in the plan). A legitimate new round has a new round number; a
+    runaway loop repeats the same key. The money caps remain the floor.
+  - **The slot is reserved under the reservation lock**, alongside the dollars:
+    - released on a confirmed no-charge rejection;
+    - kept on an uncertain (provisional) outcome;
+    - a resubmitted `callId` reuses its slot.
+  - **Exceeded:** refuse `e1-pass-limit` (429, `resetsAt` = never for that key). The
+    round records the Gemini family as `unavailable: e1-pass-limit`, with no step-down
+    and no `gemini-cli` fallback.
+  - **Payload assembled at the origin.** The originating server reads the validated spec
+    file and its listed context docs, builds the review payload once, and puts its
+    digest in the forwarded request. The holder sends exactly that payload, so divergent
+    checkouts cannot change what is reviewed.
+  - `specPath` must be inside a root registered in `CartographerRootRegistry` with kind
+    `active-project-checkout` or `instar-source-checkout`. The agent's own `.dev/wt-*`
+    instar worktrees qualify, and a test uses such a path.
   - The script sends an idempotency key `(specSha256, round, run)`. The server saves the
     `callId` nonce under that key before forwarding, so a restart or timeout never mints
     a second call.
@@ -440,32 +450,42 @@ entry is handled as described above.
 8. **Never in logs.** The transport strips the header from any rethrown error. A unit
    test asserts an error's message, cause and stack never contain the key.
 
-**Pre-ship sequencing.** The key is being created **now**, before these protections
-exist. Two briefs went to `echo-topic-145625` on 2026-11-20 (13:46 and 13:55 PST):
+**The production key is minted at go-live, never before.** Pre-ship holding places do
+not work. Secret Drop entries expire in about 15 minutes and live only in memory, and
+today's vault sync copies the whole vault to every online peer.
 
-- **Where:** store the key in the vault **on the Studio only**, or leave it in Secret
-  Drop. Never in an env, shell or config file.
-- **How (no-echo transfer):** run
-  `secret-drop-retrieve.mjs <token> <field> --run -- secret-set.mjs gemini_api_key_payg`.
-  The drop's value goes straight into the vault write on stdin and is never printed to a
-  session. Never read the key off the AI Studio page into a session.
-- **If the value has passed through any session context** (stdout, a page read, a
-  screenshot), the transcript holds it, and transcripts can be copied to other machines.
-  Rotation is then **required** before go-live.
+- **A key created before ship is for the smoke test only.** It runs through the no-echo
+  pipe straight from the drop, and it is never stored in any vault.
+- **Run 2 mints the production key, after the build is running on every machine.** That
+  means the per-recipient sync filter and the `secret-get` refusal are in place.
+  - The account lane creates the key and stores it on the designated machine by the
+    no-echo transfer:
+    `secret-drop-retrieve.mjs <token> <field> --run -- secret-set.mjs gemini_api_key_payg`.
+    The value goes into the vault write on stdin and is never printed to a session.
+  - The setup struct records `noEchoTransfer: {attestedBy, at, method, sourceMessageRef}`.
+    If it is missing or in doubt, the agent mints again (FD-G23).
+  - Briefs went to `echo-topic-145625` on 2026-11-20 (13:46, 13:55, 14:05, 14:16 PST).
+    The last states this rule.
+- **One key per project: the go-live fence.** Google projects can hold many live API
+  keys. So go-live (and any transfer) requires a browser-read artifact of the project's
+  key list showing **exactly one** key with Generative Language API access. It must be
+  the new key, matched by its key-ID suffix, which is recorded as `keyGeneration`.
+  - Any other key, including an old smoke-test key or `metered_gemini_bench` if it is in
+    the same project, is revoked first.
+  - Revoking it is a precondition, not a follow-up.
 
-**Go-live precondition** (render time, §8):
+**Go-live precondition (render time, §8).**
 
-- `secret-names` on every registered peer. Names only, never values.
-- `gemini_api_key_payg` must be present on the designated machine and absent everywhere
-  else.
-- An offline peer cannot be cleared. No durable send record exists (`provisionAll` logs
-  only a count). Render waits for that peer to come online for a `secret-names` read, or
-  the agent chooses rotation (FD-G23).
-- When the key has spread, the plan offers two fixes: **purge** (`secret-purge-metered`,
-  issued by the designated holder only) or **rotation**.
-- **Honest limit:** a names-only check cannot see the same value stored under another
-  name, or a copy outside the vault. The no-echo transfer, and rotation whenever that
-  transfer is in doubt, are the real protection.
+- The key was minted **after** the per-recipient filter went live on the designated
+  machine, so it was never sendable to any peer. An offline peer is therefore cleared by
+  construction. No send record is needed, and none exists (`provisionAll` logs only a
+  count).
+- `secret-names` on every **online** peer confirms the key is absent there (names only).
+- The one-key artifact above is present.
+- **If the key turns up anywhere else** (a copy outside the vault, a value in doubt): the
+  agent revokes it and mints a fresh key (FD-G23). There is no purge path.
+- **Honest limit:** a names-only check cannot see a copy outside the vault. Minting after
+  the filter, the no-echo transfer, and the one-key read together are the protection.
 
 ### 5. The in-Instar $50/month cap (extends the money layer)
 
@@ -476,7 +496,7 @@ store, so Rule 4's "recorded governed state" is backed by a real record.
 ```
 MeteredDoorPolicy {
   perCallCeilingUsd, provisionalCeilingUsd, e2MonthSharePct, e2DayCapUsd,
-  e1PassesPerSpecHashPerDay, keyGeneration,
+  e1PassesPerRound, keyGeneration,
   meteredCallers: { callers: CallerId[], e3Components: string[] },
   throughputFloorTps: { [modelId]: number }, releaseState, designationEpoch
 }
@@ -499,11 +519,15 @@ MeteredDoorPolicy {
 - **Ledger totals** gain `committedMonthUsd` and `monthEpoch`. The month total is a
   running O(1) value. `admitOnlyUnderCaps` checks month, then day, then lifetime inside
   the existing per-key critical section, with the same strict `committed + reserve > cap`.
+- **Charged period on every row.** Each reserve row stores its charged `dayEpoch` and
+  `monthEpoch` at admission. Settle and expiry rows inherit them. A later zone change
+  applies only to new reservations, so it can never move an existing commitment out of a
+  period.
 - **Period zone.** For `gemini_api_key_payg`, the day and month are both in
   `America/Los_Angeles`, because Google's billing month and the operator's day are
   Pacific. The zone is a per-key value in the PIN record, defaulting to UTC for every
-  other key so existing behaviour is unchanged. Epochs are recomputed from row
-  timestamps during the fold, so a zone change cannot reopen headroom.
+  other key so existing behaviour is unchanged. Epochs are read from each row's stored charged period, never recomputed, so a zone
+  change cannot reopen headroom.
 
 **Limits for `gemini_api_key_payg`** (all operator-approved governed state, shown in the
 PIN plan):
@@ -586,6 +610,7 @@ PIN plan):
 - `token-count-unavailable`
 - `prompt-contains-live-secret`
 - `provisional-ceiling`
+- `e1-pass-limit`
 - `request-too-large`: a request body over 1.5 MB, refused before forwarding. That
   stays under the peer route's 2 MB parse limit (`PEER_BODY_LIMIT_BYTES`), so envelope
   overhead can never turn it into a raw 413.
@@ -607,6 +632,7 @@ unchanged.**
 | `reserves-outstanding` | 409 with `retryAfterSec` |
 | `frozen`, `not-live`, `armed-pending-proof` | 423 |
 | `not-allowlisted` | 403 |
+| `e1-pass-limit` | 429 |
 | `prompt-contains-live-secret` | 422 |
 | `token-count-unavailable`, `holder-unreachable`, `lease-liveness-unconfirmed` | 503 |
 
@@ -651,8 +677,6 @@ following verb-specific rules:
 | `metered-stop-action` | any peer to the holder | Freeze, lower, disable or share-lower. Only ever reduces money. |
 | `designation-echo` | the holder to any peer | Lease confirmation (below). Read-class. |
 | `secret-names` | the holder to any peer | Returns vault key **names** only, never values. Read-class. |
-| `ledger-tail` | any peer to a former holder | Read-only fold of that machine's metered ledger for a keyRef. Read-class. |
-| `secret-purge-metered` | the designated machine only | The receiver accepts it only from the machine its last `designation-echo` names. Before any designation exists, it accepts it only from the machine named in a pending setup struct, and the struct's hash travels with the purge. It always refuses if it is itself that machine. Deletes metered names only. |
 
 **Transport.** Each verb tries the mesh rope first. If that fails, it uses the holder's
 authenticated tunnel, carrying the **same signed envelope** to the mesh-command endpoint.
@@ -702,13 +726,11 @@ worked, which is why the fallback exists.
   - The issuing machine publishes
     `freezeRequested: { requestId, keyRef, designationEpoch }` on its `session-status`
     advert.
-  - The holder applies **any freeze request id it has not seen before**, whatever epoch
-    the issuer believed. Freezing is always the safe direction. It then lists the id in
-    its advert as `appliedFreezeRequestIds`.
-  - The issuer clears its flag once it sees its id there.
-  - A PIN unfreeze marks every request id seen so far as consumed. A replayed consumed id
-    is ignored, so a lingering flag cannot undo an unfreeze, and a genuinely new request
-    always lands.
+  - Freeze wins. The holder applies any freeze request it has not seen, acknowledges it
+    in its advert, and the issuer clears its flag.
+  - A PIN unfreeze consumes every request outstanding at that moment, so a lingering
+    flag cannot undo it.
+  - Repeated new requests from one issuer within an hour are coalesced into one notice.
   - The agent tells the operator plainly: "stop requested; the spending machine has not
     confirmed yet".
 
@@ -727,9 +749,12 @@ worked, which is why the fallback exists.
   rounds.
   - Backoff while failing is capped at 20s, a third of the window. At most one echo is
     in flight per peer, with an RPC timeout of 8s.
-  - `failoverThresholdMs` is configurable (`failoverTimeoutMinutes`, default 15), so a
-    test alone cannot pin it. A **boot check** refuses to arm the door, and raises one
-    notice, when the configured threshold is not at least 5× the window.
+  - `failoverThresholdMs` is configurable (`failoverTimeoutMinutes`, default 15). The
+    isolated holder's worst-case fence time is about 88s: the 60s window, plus the 20s
+    backoff, plus the 8s RPC timeout.
+    - A boot check (re-run when that config changes) refuses to arm when the threshold
+      is under twice that, 176s, and raises one notice.
+    - The margin covers clock jitter. Key rotation remains the real fence.
 - **Either direction.** The echo is offered both ways, so a rope that is down in one
   direction does not fence a healthy holder. The holder pushes nonces to peers, and each
   peer also pulls a fresh nonce from the holder over the holder's tunnel and posts back
@@ -745,14 +770,13 @@ worked, which is why the fallback exists.
 - **Unknown fences.** If no peer can be reached, or the echo cannot be evaluated, the
   result is `unknown`, and unknown fences.
 - **Single-machine agent.** No peers are registered, so it trivially self-confirms.
-- **Epoch conflicts** count only claims naming a **different** designated machine. Every
-  healthy peer echoes the holder's own designation, and that is never a conflict.
-  - A claim with a higher `keyGeneration`, or the same generation and an equal or higher
-    epoch, means the holder **freezes itself** and notifies (security class).
-  - A claim with a lower generation, or a lower epoch, is only a quiet "stale holder
-    entry" signal. It never freezes the legitimate holder.
-  - A reported designation counts only if it carries the PIN-commit audit row's
-    signature for its plan hash. An unsigned or inflated report is ignored and logged.
+- **Designation conflicts** count only claims naming a **different** machine whose
+  `keyGeneration` is backed by a recorded one-key artifact.
+  - A newer backed generation means the holder **freezes itself** and notifies
+    (security class).
+  - An older or unbacked claim is only a quiet "stale entry" signal.
+  - Every healthy peer echoes the holder's own designation, and that is never a
+    conflict.
 - **Transfer figures.** The committed figures for a lane transfer ride the existing
   `session-status` capacity advert (`PeerPresencePuller`, 30s, receive-clamped):
 
@@ -763,43 +787,29 @@ worked, which is why the fallback exists.
 
   They are observability inputs to a lane transfer only, never a live gate input.
 
-**Holder death and moving the lane: a fresh go-live, fenced by key rotation.** The
-parent's generic PIN reclaim is **not** used for this door. In v1, spending is pinned to
-the designated machine. If that machine dies, the lane is simply unavailable
-(`holder-unreachable`) until the lane is moved. Moving it means running the **same
-`gemini-payg-setup` go-live** on the new machine (§8), with a `transfer` block:
+**Holder death and moving the lane.** In v1, spending is pinned to the designated
+machine. If it dies, the lane is unavailable (`holder-unreachable`). Moving the lane is
+a **fresh go-live** on the new machine, using the same `gemini-payg-setup` plan with a
+`transfer` block:
 
-- **Eligibility.** Only after the old holder's mesh death (the configured
-  `failoverThresholdMs`), and refused while the alive-but-partitioned signal is present
-  (parent N-2).
-- **Key rotation is the single-winner fence.** The transfer plan requires a **new key
-  generation**:
-  - The account lane revokes the old key at Google and stores a new one on the new
-    machine only, by the no-echo method (§4).
-  - Rotation is recorded with a browser-read artifact showing the old key is gone from
-    the project's key list.
-  - Because Google accepts exactly one live key, two would-be successors cannot both
-    spend, whatever their local records say. No shared compare-and-swap medium is
-    claimed or needed.
-- **Key generation in the designation.** The designation carries `keyGeneration` (a
-  counter recorded with each rotation) alongside `designationEpoch`. The new epoch is
-  `max(every epoch observed through echoes, adverts and ledger-tail) + 1`. In any
-  conflict, the claim with the lower `keyGeneration` loses and freezes, so a revived old
-  holder always yields.
-- **Month rebase.** The old holder's spend after its last published figures is unknown.
-  - The new machine's month, day and E2 share start **as if exhausted**.
-  - **Exception:** if the old holder is reachable again, a read-only `ledger-tail` verb
-    gives its exact fold, and the rebase is `max(fold, last advert figure)`.
-  - Otherwise the lane stays closed until the next month boundary, or until the operator
-    raises headroom with a PIN `caps-adjust` plan that names the risk.
-  - Holder death should be rare, so stopping is the right default.
-- **Fresh governed state.** The transfer plan carries the complete setup struct: caps,
-  door policy, callers, shares, zone, the new epoch and key generation. It goes through
-  the same pre-gate commit and apply path as first go-live. Its proof call (checks
-  (a)+(e)) is required again, bound to the new intent hash.
-- **No auto-grab.** "Every registered machine answered" does not apply to the dead
-  holder, by design. Its exclusion is safe because of the fence, the rotation and the
-  exhausted rebase.
+- **Eligibility.** Only after the old holder's mesh death, and refused while the
+  alive-but-partitioned signal is present (parent N-2).
+- **Where it renders.** On the proposed new machine, named in the block. It never
+  renders on the dead holder.
+- **What it requires.** A newly minted key on the new machine, plus the one-key artifact
+  (§4). The old key is revoked, and its `keyGeneration` is superseded.
+- **What serializes transfers.** One account lane mints keys, and each transfer needs its
+  own operator PIN commit. With the one-key read, at most one machine can hold a working
+  key.
+- **The month restarts as exhausted.** The new machine's month, day and E2 share start
+  exhausted, because the old holder's spend after its last published figures is
+  unknown. The plan shows the computed upper bound (last advert plus outstanding
+  reserves plus day headroom), so the operator can raise headroom by PIN with that
+  figure in view.
+- **Fresh governed state.** The full setup struct is applied, and the proof call is
+  repeated, bound to the new intent hash.
+- **No auto-grab.** "Every registered machine answered" excludes the dead holder, by
+  design.
 
 ### 7. Visibility
 
@@ -822,6 +832,10 @@ with its age shown; `holderUnreachable` with last-known values) shows, for
   are pruned.
 - The ledger is retained, not pruned, so the month breakdown by caller is exact.
 - The 30-day pruning of `feature_metrics` and its UTC-day rollup cannot distort it.
+- **Provider usage capture (parent FD-21).** After the settle row is durable, the
+  holder appends Gemini's `usageMetadata` as a `provider_cost_report` record under the
+  same `reserveId`. If that reporting write fails, the booking stays intact, and the
+  failure is logged and counted.
 - `feature_metrics` still gets `attribution.door = 'gemini-api'` and
   `callId = meteredCallId = reserveId` (parent FD-11/FD-21), for the usage views.
 
@@ -893,16 +907,17 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
      preconditions.
    - The commit binds to the struct's hash, so a late tap, or a tap after a Studio
      restart, still works.
+   - The card stores the hash it was created with. If the persisted file's hash
+     differs, render and commit refuse with "the proposal changed; a new card is
+     needed". A tap never commits a struct the operator did not see.
    - The plan text is generated from the exact struct, one line per field.
    **Render-time preconditions:**
-   - **(i) The key is only on the designated machine.**
-     - `secret-names` is read on every registered peer.
-     - An offline peer cannot be cleared. There is no durable send record. Render
-       refuses and names that machine in plain words. The agent then either waits for it
-       or rotates (FD-G23).
+   - **(i) The key is only on the designated machine.** It was minted after the filter
+     went live, `secret-names` is clean on every online peer, and the one-key artifact
+     is present (§4).
    - **(ii) No conflicting designation.**
-   - **(iii) The no-echo transfer was attested.** If the value passed through any
-     session context, rotation is required first.
+   - **(iii) The no-echo transfer was attested** (the `noEchoTransfer` field). If not,
+     the agent mints again.
 3. **Commit, then restart, under that one PIN.** `POST /routing-spend/money-layer/commit`
    with the PIN writes the flag and the intent through the parent's write discipline.
    - **Restart required:** on success, the commit route itself schedules the supervised
@@ -1128,15 +1143,21 @@ core budget ratchet.
   - the caller resumes polling by `callId`
 - **E1 route:**
   - the spec path and sha must match
-  - 2 passes per hash per day
+  - one pass per (spec hash, round), reserved under the lock: 3 concurrent same-key
+    calls give 1 admitted
+  - `e1-pass-limit` posture, with no step-down and no `gemini-cli` fallback
+  - the forwarded payload digest is bound; divergent checkouts deliver the origin's
+    payload to the fake provider
   - forwarded-header ingress refused
-- **Reclaim:**
+- **Lane transfer:**
   - refused while partitioned-alive
-  - transfer requires a new `keyGeneration`, and the lower generation freezes in a conflict
+  - renders on the new machine
+  - needs a freshly minted key plus the one-key artifact
+  - only a one-key-backed newer generation wins a conflict; an unbacked claim never
+    freezes the incumbent
   - an echo naming the holder itself is never a conflict
-  - an unsigned or inflated designation report is ignored
-  - the month starts exhausted unless a `ledger-tail` fold exists
-  - `armed-pending-proof` until rotation is recorded with a browser-read artifact
+  - the month starts exhausted, with the upper bound shown
+  - a tier-2 test: a transfer renders with the old holder offline
 - **Release gate:**
   - the proof marker is refused from request input
   - the holder stamps it only for `release-proof-forward` while armed-pending-proof
@@ -1150,9 +1171,16 @@ core budget ratchet.
 - **Proof:** concurrent proof submissions and a restart after settlement still give one
   paid call.
 - **Poll:** a poll from another machine or session gets `not-yours`.
-- **Purge:** refused from a non-designated sender, and refused by the designated
-  receiver.
-- **Boot check:** a failover threshold below 5× the window refuses to arm.
+- **Key confinement:** go-live refuses without the one-key artifact, or when a second
+  key exists in the project; a key minted after the filter clears offline peers.
+- **Calendar:** a zone change with a reservation outstanding across midnight keeps its
+  charged period.
+- **Provider report:** settle, `feature_metrics` and `provider_cost_report` join on
+  `reserveId`; a reporting-write failure leaves the booking.
+- **Proposal binding:** a changed proposal file refuses render and commit with a
+  new-card message.
+- **Boot check:** a failover threshold under 176s refuses to arm, and it is re-checked
+  on config change.
 - **Pre-gate action:**
   - `gemini-payg-setup` writes only the flag plus the intent, never caps, while money is
     off
@@ -1186,7 +1214,7 @@ core budget ratchet.
 - The composite plan:
   - rendered on the designated machine, including a render requested from the other
     server
-  - the `secret-names` precondition, with an offline peer cleared or refused
+  - the `secret-names` precondition, with an offline peer cleared by mint-after-filter
   - one PIN commit, then an automatic restart
   - intent applied, state `armed-pending-proof`
   - store-version drift refuses
@@ -1227,8 +1255,8 @@ core budget ratchet.
 | D10 | Invoice-drift notice (>10% and >$2, after one re-read) | **judgment-candidate** | Signal only, never moves the gate. Unmeasurable is recorded as `unmeasurable`. The agent investigates. |
 | D11 | Forward E1/E2 and stop actions to the holder vs. refuse locally | **invariant** | Exact designation match. Never a local spend. |
 | D12 | Release state: `armed-pending-proof` until (a)–(e) | **invariant** | Recorded proof artifacts; deterministic checks. |
-| D13 | Lane transfer: start the month exhausted unless a `ledger-tail` fold exists; the lower `keyGeneration` loses any conflict | **invariant** | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. |
-| D14 | E1 route: spec-hash match, 2 passes per hash per day | **invariant** (governed runaway bound) | An exact test on recorded state. The bound is a default named in the plan. Its consequence: a loop on one spec cannot repeat a paid review more than twice a day. |
+| D13 | Lane transfer: start the month exhausted; only a one-key-backed newer `keyGeneration` wins a conflict | **invariant** | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. |
+| D14 | E1 route: spec-hash match, one pass per (spec hash, round) | **invariant** (governed runaway bound) | An exact test on recorded state. Its consequence: a runaway loop cannot repeat a paid review of the same round. The money caps are the floor. |
 
 ## Frontloaded Decisions
 
@@ -1278,16 +1306,16 @@ and all are frontloaded.
   report.
 - **FD-G22:** the readable dashboard PIN is a registered foundation item (owner Echo,
   2026-12-21). It is not fixed in this spec, and no presence record is claimed.
-- **FD-G23:** if the key has spread to another vault, the agent decides, with no
-  operator step:
-  - **purge** (from the designated machine) when the account lane attests a no-echo
-    transfer **and** every peer holding it is online;
-  - **rotation** otherwise, including whenever the value passed through any session
-    context, a copy exists outside the vault, or a peer is offline.
-
-  The agent then re-reads `secret-names` and re-renders.
-- **FD-G24:** moving the lane is a fresh go-live with a `transfer` block, fenced by key
-  rotation and `keyGeneration`. It replaces the round-2 compare-and-swap.
+- **FD-G23:** if a key's confinement is in doubt (spread, passed through a session, or
+  not attested), the agent has it revoked and a fresh one minted, with no operator step.
+  There is no purge path. Authority: the operator's 2026-11-20 approval, under which the
+  account lane creates and manages the key, covers re-minting a replacement inside the
+  same $50 grant.
+- **FD-G24:** moving the lane is a fresh go-live with a `transfer` block. It is fenced by
+  the one-key read, plus one account lane and one PIN per transfer. The month restarts
+  exhausted, with the upper bound shown.
+- **FD-G26:** the production key is minted at go-live, after the filter ships. A
+  pre-ship key is for the smoke test only.
 - **FD-G25:** plans are persisted and re-rendered when opened. The commit-triggered
   restart keeps every existing restart safeguard and disclosure.
 - **FD-G17:** account-lane work is routed to `echo-topic-145625` (brief sent 2026-11-20).
