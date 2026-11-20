@@ -8,26 +8,39 @@ project's state now lives here, in the repo, so it can't be lost the same way ag
 No secrets go in this file (it is public). Demo credentials live only in App Store Connect and the
 agent's vault.
 
-## Where it stands (2026-11-20)
+## Where it stands (2026-11-20, read from App Store Connect)
+
+**The app is through both reviews and live on the App Store.** Read on 2026-11-20 with the App
+Store Connect API (key id `VNXG92C3CN`, private key in the vault as `appstoreconnect_api_key_p8`,
+ids also stored as `appstoreconnect_api_key_id` / `appstoreconnect_issuer_id`). App id `6829320724`,
+bundle `io.sagemindai.instar`.
 
 | Step | State | Evidence |
 |---|---|---|
-| Privacy policy page | Done, live | https://instar.sh/privacy (#3160, #3167) |
+| Privacy policy page | Done, live | https://instar.sh/privacy |
 | Support page | Done, live | https://instar.sh/support |
-| External TestFlight beta review | **Passed** | Public link live since 2026-11-16: https://testflight.apple.com/join/Z5921URm |
-| App Store version submitted | Not started | |
-| Owner confirms the public listing | Not started | |
+| External TestFlight beta review | Passed | Public link: https://testflight.apple.com/join/Z5921URm |
+| App Store version 0.4.0 | READY_FOR_SALE | ASC appStoreVersions, created 2026-10-31 |
+| App Store version 0.5.0 | READY_FOR_SALE | ASC appStoreVersions, created 2026-11-16; public lookup shows 0.5.0 released 2026-11-17 |
+| Reviewer demo agent + pairing page | **Offline** | `instar-review.dawn-tunnel.dev` answers 530 (no connector) |
 
-Blockers right now (both from the outage; tracked by the post-mortem session, not the operator):
+An earlier version of this file said the App Store submission had not started. That was wrong:
+it was rebuilt from what survived the outage, before App Store Connect could be read.
 
-1. **App builds are on hold.** The iOS app source is only recovered up to build 106
-   (private repo `EchoOfDawn/instar-desktop-apps`). Nothing new is built or uploaded until that is
-   settled. A build already uploaded to App Store Connect can still be the one we submit.
-2. **The App Store Connect sign-in is gone.** No browser profile on the Studio, Laptop or Mini
-   holds the Apple ID session. Until it is back, we can't read which builds exist, what the beta
-   review was given as demo access, or the listing draft.
+### The review demo, as Apple was given it
 
-## What the App Store submission needs
+From the beta review details (`betaAppReviewDetail`; the App Store review notes are similar).
+No demo account is required. The notes send the reviewer to
+`https://instar-review.dawn-tunnel.dev/app-review/<path token>` in Safari. "Open in Instar Agents"
+offers "Pair with Demo?". The page then approves the phone by itself, or shows a code to type in
+if the app asks for one. Each link works once, and the page can be used several times.
+
+That agent ("Demo") and its page didn't survive the outage. No agent home, tunnel credential or
+note names them on the Studio, Laptop, Mini or M5 Pro. They have to be rebuilt before the next
+version goes to review. The rebuilt page should keep the same URL, so the notes Apple holds stay
+correct.
+
+## Reference: what a submission needs (kept for the next version)
 
 ### 1. App Privacy ("privacy nutrition label")
 
@@ -126,8 +139,9 @@ So a fixed link can't work. The plan:
 
 ## Next steps
 
-1. Get the App Store Connect sign-in back (post-mortem session). Then read the uploaded builds and
-   the beta review's Test Information, and record both here.
-2. Build the demo agent (separate home, no Telegram, no tools, spend cap) and its pairing desk
-   (§3). Neither needs the app source. Waits on the no-tools fence (PR #3423) for the agent part.
-3. Once the source hold lifts: screenshots, the SDK check from §1, then submit.
+1. Rebuild the review demo: a Demo agent with no tools, plus its pairing page at the same
+   `instar-review.dawn-tunnel.dev/app-review/...` address. It needs a dawn-tunnel.dev named tunnel
+   (asked the post-mortem session how those are made since the rebuild).
+2. Prove it end to end: a test phone pairs through the page and gets a chat reply.
+3. Next version (from the app rebuild, topic 145973): review notes unchanged, screenshots refreshed
+   if the UI changed.
