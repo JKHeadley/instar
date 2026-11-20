@@ -71,6 +71,9 @@ import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from '.
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { registerConversationNeighbourhoodRoutes } from './conversationNeighbourhoodRoutes.js';
+import { neighbourhoodSources } from './neighbourhoodSources.js';
+import { resolveCeilings as resolveNeighbourhoodCeilings, reachOfAudienceKey } from '../core/RelationshipIndex.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { projectTapPort } from './workProjectActions.js';
 import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
@@ -1283,6 +1286,10 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 export interface RouteContext {
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
   conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
+  /** The conversation graph's read model once its surface has built it (work-front-doors §4.3); null while off or not yet built. */
+  conversationGraphReadModel?: (() => import('../core/conversationGraphRead.js').ConversationGraphReadModel | null) | null;
+  /** Filled by createRoutes: the neighbourhood block for a conversation key, for the per-prompt route. */
+  neighbourhoodLate?: { blockFor: import('./conversationNeighbourhoodRoutes.js').NeighbourhoodBlockFor | null } | null;
   conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime | null;
   getConversationGraphDelegation?: import('./ConversationGraphDelegationManager.js').ConversationGraphDelegationGetter;
   /** Attribution paper trail; absent/null when dark. docs/specs/attribution-paper-trail.md */
@@ -3355,6 +3362,45 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
+  // ── The relationship index: the agent's scoped read of what a conversation is connected to
+  //    (docs/specs/work-front-doors.md §4). Derived on read from the stores below; dev-gated. ──
+  const neighbourhoodBlockFor = registerConversationNeighbourhoodRoutes(router, {
+    enabled: () => {
+      const boot = (ctx.config as { relationshipIndex?: { enabled?: boolean } }).relationshipIndex?.enabled;
+      let live: boolean | undefined;
+      try { live = ctx.liveConfig?.get<boolean | undefined>('relationshipIndex.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+      return resolveDevAgentGate(live ?? boot, ctx.config as { developmentAgent?: boolean });
+    },
+    ceilings: () => resolveNeighbourhoodCeilings((ctx.config as { relationshipIndex?: { maxBlockBytes?: unknown } }).relationshipIndex),
+    sources: (caller) => neighbourhoodSources({
+      graphModel: () => ctx.conversationGraphReadModel?.() ?? null,
+      telegramChatId: () => String((ctx.config.messaging?.find((row) => row.type === 'telegram' && row.enabled)?.config as { chatId?: unknown } | undefined)?.chatId ?? ''),
+      workBoard: () => ctx.workBoard?.() ?? null,
+      chiefOfStaff: () => ctx.chiefOfStaffLoop ?? null,
+      commitments: () => (ctx.commitmentTracker ? {
+        own: () => ctx.commitmentTracker!.getActive(),
+        replicas: () => ctx.commitmentReplicaStore?.allReplicas() ?? [],
+        selfId: ctx.meshSelfId ?? 'local',
+      } : null),
+      pairing: () => ctx.mobilePairingService ?? null,
+      ownerPersonKey: workBoardOwnerKey,
+      displayName: workBoardName,
+      // Who else may read the conversation through memory privacy (second-pass finding 1). A session token
+      // brings its own audience; for the bearer, the conversation's running session says, and with privacy
+      // on and no session to ask it cannot be told (the read then shows nothing and says why).
+      privacyReach: (key) => {
+        if (caller.sessionAudience !== null) return reachOfAudienceKey(caller.sessionAudience);
+        let enabled = false;
+        try { enabled = ctx.sessionManager.memoryPrivacyStatus?.().enabled === true; } catch { enabled = true; /* @silent-fallback-ok: an unreadable privacy state is treated as on, the strict direction */ }
+        if (!enabled) return 'owner';
+        const topic = /^telegram:(\d{1,20})$/.exec(key);
+        if (!topic) return 'unknown';
+        const running = ctx.sessionManager.listRunningSessions().find((sess) => sess.telegramTopicId === Number(topic[1]));
+        return reachOfAudienceKey(running?.memoryAudience ?? null);
+      },
+    }),
+  });
+  if (ctx.neighbourhoodLate) ctx.neighbourhoodLate.blockFor = neighbourhoodBlockFor;
   // The Needs-you list (docs/specs/work-front-doors.md decision 2): one read for the console, the phones and
   // the Mac app, built from Home's own sources over this server's loopback, filtered per viewer.
   const needsSelfRead = async (p: string, timeoutMs = NEEDS_READ_TIMEOUT_MS): Promise<{ status: number; body: unknown }> => {
