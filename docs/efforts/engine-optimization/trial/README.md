@@ -17,7 +17,7 @@ Decided by Justin, topic 141868, 2026-11-11 18:40 PST ("B-lite, but lets make it
 
 ## After (low effort): 2026-11-20T21:35:00Z → 2026-11-22T21:35:00Z
 
-Started 2026-11-20T21:35:00Z, when the scheduler loaded the restored bugs-overseer with `thinkingMode: "low"` (the loader's rescan after its instruction file got its YAML header). First low-effort run 22:07Z; runs every two hours at :07. Measure with `measure.py <auth-file> 2026-11-20T21:35:00Z 2026-11-22T21:35:00Z after-48h.json` on the lease holder.
+Started 2026-11-20T21:35:00Z, when the scheduler loaded the restored bugs-overseer with `thinkingMode: "low"` (the loader's rescan after its instruction file got its YAML header). The 22:07Z scheduled run never launched (`spawn-error`: the job body, 14.5 KB, exceeded the ~16 KB `tmux new-session` command-line ceiling; instar bug fb-85bd8639) and is excluded. At 22:12Z the body's 4.4 KB constitutional-assessment section was moved, wording unchanged, to `.instar/jobs/user/bugs-overseer.constitution.md`, which the job now reads at the start of each pass; the body is 10 KB. The first low-effort run that launched is the manual run at 22:09:44Z (launch record: `thinkingMode low` applied). Scheduled runs continue every two hours at :07. Measure with `measure.py <auth-file> 2026-11-20T21:35:00Z 2026-11-22T21:35:00Z after-48h.json` on the lease holder.
 
 
 Starts when `thinkingMode: "low"` is set on bugs-overseer (PR #3098 is merged). The Nov 2026 Studio rebuild lost the job and two of its scripts, so the start waits until all three are restored; the start time is recorded here when it happens (commitment CMT-2071). It runs for 48 hours, and then `measure.py` runs over that window into `after-48h.json`. Each run's launch record must show `applied: thinkingMode low`, or that run is excluded and named.
@@ -28,5 +28,6 @@ Starts when `thinkingMode: "low"` is set on bugs-overseer (PR #3098 is merged). 
 
 - This is not a controlled experiment: the two windows see different bug traffic, and the engine version may differ (the launch record names it).
 - The job itself differs between the windows. The before window ran the old Studio's bugs-overseer with its two helper scripts (`bugs-intake.mjs`, `bug-topic-close.sh`). Both scripts were lost in the Nov 2026 Studio rebuild (never committed, never synced; searched on every machine) and are being rewritten from the job instructions, so the after window runs the restored job with rewritten scripts. Some of any difference may come from the rewrite, not from the effort setting.
+- The after-window job also reads its constitutional section from a sidecar file instead of inline (see above); the text is identical, but the session loads it with one extra file read.
 - About 24 runs per side.
 - A big drop in tokens with no rise in failures supports trying low effort on more routine jobs. Anything else means stopping there.
