@@ -174,6 +174,9 @@ server behind the existing `gemini-api` metered door.**
     never set separately.
 - A client disconnect does **not** abort the upstream call. The call completes and
   settles at its actual cost. Aborting would make the bill uncertain for no saving.
+- A response whose `finishReason` is anything other than `STOP` (for example
+  `MAX_TOKENS`) is marked `incomplete`. A truncated review never folds in as a clean
+  "no findings".
 - Google's response text is untrusted output. It gets the same handling as the existing
   cross-model families' output.
 
@@ -258,9 +261,12 @@ change. It is a thin HTTP client of the **local** server:
     file and its listed context docs, builds the review payload once, and puts its
     digest in the forwarded request. The holder sends exactly that payload, so divergent
     checkouts cannot change what is reviewed.
-  - `specPath` must be inside a root registered in `CartographerRootRegistry` with kind
-    `active-project-checkout` or `instar-source-checkout`. The agent's own `.dev/wt-*`
-    instar worktrees qualify, and a test uses such a path.
+  - `realpath(specPath)` must lie under the agent home, or under the project root that
+    `CartographerRootRegistry.resolve(topicId)` reports as `canonicalPath`.
+    - The agent's `.dev/wt-*` worktrees qualify because they are under the agent home.
+      A test uses that path shape.
+    - The context docs must be ones the spec lists, under the same root. Their digest is
+      part of the bound payload.
   - The script sends an idempotency key `(specSha256, round, run)`. The server saves the
     `callId` nonce under that key before forwarding, so a restart or timeout never mints
     a second call.
@@ -274,8 +280,11 @@ change. It is a thin HTTP client of the **local** server:
 `gemini-api` and `gemini-cli` share `familyKey: gemini`, so family diversity counts
 Gemini once.
 
-- When both are available, the round runs `gemini-api` only. It needs no personal Google
-  sign-in, which fits "personal AI Pro out".
+- On this agent, the review policy **excludes `gemini-cli` entirely** (its sign-in may be
+  a personal Google account, and personal AI Pro stays out).
+- So Gemini review means `gemini-api` only. If the API is unavailable, the round records
+  Gemini `unavailable`, never a CLI fallback. A test covers an API outage with a CLI
+  signed in.
 - `crossModelReviewer` gets an explicit trusted-door entry `gemini-api`, justified by
   the code-constant first-party host. It is not added to the CLI framework list.
 
@@ -434,15 +443,18 @@ entry is handled as described above.
    - `filterSecretsForSync` gains `{ recipientMachineId, designatedMachineId }`, and
      `SecretProvisioner.provisionAll` filters **per peer** inside its loop.
    - Metered names are dropped for every recipient except the door's current
-     `designatedMachineId`. With no designation yet, they are dropped for **all**
-     recipients.
+     `designatedMachineId`.
+   - With no designation yet, or while a transfer proposal exists (until its commit
+     changes the designation), they are dropped for **all** recipients.
    - **Receive side:** `SecretShareHandler` strips and counts any metered name arriving
      at a machine that is not designated. The source of truth is the designation it last
      received by `designation-echo` (§6). Unknown means strip.
    - Tests cover each branch.
-7. **Prompts never carry live secrets.** Before `countTokens`, the full immutable request
-   (system instruction plus contents) is compared against the **exact values** of the
-   vault and the credential environment.
+7. **Prompts never carry live secrets.** The full immutable request (system instruction
+   plus contents) is compared against the **exact values** of the vault and the
+   credential environment:
+   - **at the origin**, before forwarding; the digest binds those exact bytes;
+   - **again at the holder**, against its own values, before either Google request.
    - An exact match refuses with `prompt-contains-live-secret`, which is the ruled
      secrets exception.
    - Key-shaped pattern matches (an example `AIza…` in a spec) are only a recorded
@@ -456,20 +468,46 @@ today's vault sync copies the whole vault to every online peer.
 
 - **A key created before ship is for the smoke test only.** It runs through the no-echo
   pipe straight from the drop, and it is never stored in any vault.
-- **Run 2 mints the production key, after the build is running on every machine.** That
-  means the per-recipient sync filter and the `secret-get` refusal are in place.
-  - The account lane creates the key and stores it on the designated machine by the
-    no-echo transfer:
+- **The production key is minted in Run 1's mint phase, after the build is running on
+  every machine and before the card is rendered.** "Running" means the per-recipient
+  sync filter and the `secret-get` refusal are in place.
+  - **A dedicated Google project.** The account lane creates a project used only for
+    this lane. That makes "revoke any other key" safe, and makes Google's project-level
+    spend limit meaningful.
+  - **Console to drop, without echo.** A script inside the AI Studio page copies the new
+    key from the creation dialog into the Secret Drop form. The browser tool returns
+    only ok or failed, never the value.
+  - The account lane then stores the key on the designated machine by the no-echo
+    transfer:
     `secret-drop-retrieve.mjs <token> <field> --run -- secret-set.mjs gemini_api_key_payg`.
     The value goes into the vault write on stdin and is never printed to a session.
-  - The setup struct records `noEchoTransfer: {attestedBy, at, method, sourceMessageRef}`.
-    If it is missing or in doubt, the agent mints again (FD-G23).
+  - **The handoff contract.** The account lane writes one file on the designated
+    machine, `state/gemini-payg-key-handoff.json`, through
+    `POST /routing-spend/key-handoff` (Bearer, loopback only):
+
+    ```
+    { noEchoTransfer: {attestedBy, at, method, sourceMessageRef},
+      oneKeyArtifact: {keyIdSuffix, readAt, screenshotSha256} }
+    ```
+
+    Render reads only this file. The agent arms a watcher on it, re-briefs the account
+    lane every 2 hours during waking hours, and holds an open commitment.
+  - **If nothing arrives within 24 hours,** Run 1 ends at `awaiting-key`, and the report
+    names the blocker. No card is sent.
+  - **A holder-side check.** At render, the stored key's exact value is checked against
+    the account-lane session's transcript (an exact-value scan, which is the ruled
+    secrets exception). A hit means re-mint.
   - Briefs went to `echo-topic-145625` on 2026-11-20 (13:46, 13:55, 14:05, 14:16 PST).
     The last states this rule.
 - **One key per project: the go-live fence.** Google projects can hold many live API
   keys. So go-live (and any transfer) requires a browser-read artifact of the project's
   key list showing **exactly one** key with Generative Language API access. It must be
   the new key, matched by its key-ID suffix, which is recorded as `keyGeneration`.
+  - **`keyGeneration` is checked against the real key.** The key reader computes the
+    stored value's last 4 characters, inside `withKey`, never logged, and compares them
+    with the committed `keyGeneration`.
+  - A mismatch makes the provider refuse (`key-generation-mismatch`, fail closed). So a
+    wrong key in the vault can never spend under the fence.
   - Any other key, including an old smoke-test key or `metered_gemini_bench` if it is in
     the same project, is revoked first.
   - Revoking it is a precondition, not a follow-up.
@@ -565,9 +603,12 @@ PIN plan):
    - Then the reserve row is appended:
      `input × inRate + (maxOutputTokens + thinkingBudget) × outRate`. Cached tokens are
      booked as full input (parent FD-19).
-6. **Cheap early refusal.** Preflight (step 1) also refuses at once when committed spend
-   already meets the month, day or share limit. Exhausted callers then never pay for a
-   token count or buffer a body.
+6. **Cheap early refusal.**
+   - An authenticated `callId` resubmission is looked up **first**. Its ownership and
+     digest are checked, and it returns the existing call's state, never a cap refusal.
+   - Otherwise, preflight refuses at once when committed spend already meets the month,
+     day or share limit. Exhausted callers never pay for a token count. On a forwarded
+     call, the body is already sent; the refusal saves the holder's work only.
 
 **Settle.** One commitment per `reserveId`:
 
@@ -611,6 +652,7 @@ PIN plan):
 - `prompt-contains-live-secret`
 - `provisional-ceiling`
 - `e1-pass-limit`
+- `key-generation-mismatch`
 - `request-too-large`: a request body over 1.5 MB, refused before forwarding. That
   stays under the peer route's 2 MB parse limit (`PEER_BODY_LIMIT_BYTES`), so envelope
   overhead can never turn it into a raw 413.
@@ -632,6 +674,8 @@ unchanged.**
 | `reserves-outstanding` | 409 with `retryAfterSec` |
 | `frozen`, `not-live`, `armed-pending-proof` | 423 |
 | `not-allowlisted` | 403 |
+| `callid-conflict` | 409 |
+| `peer-version`, `key-generation-mismatch` | 503 |
 | `e1-pass-limit` | 429 |
 | `prompt-contains-live-secret` | 422 |
 | `token-count-unavailable`, `holder-unreachable`, `lease-liveness-unconfirmed` | 503 |
@@ -808,6 +852,10 @@ a **fresh go-live** on the new machine, using the same `gemini-payg-setup` plan 
   figure in view.
 - **Fresh governed state.** The full setup struct is applied, and the proof call is
   repeated, bound to the new intent hash.
+- **A proof allowance.** The transfer struct reserves $0.05 of headroom for the proof
+  call alone (inside the $50), so the lane can finish activating while the month reads
+  exhausted. The same PIN can also restore headroom, up to the cap minus the shown upper
+  bound.
 - **No auto-grab.** "Every registered machine answered" excludes the dead holder, by
   design.
 
@@ -867,7 +915,8 @@ from memory.
 **Maturation rungs (Rule 72).**
 
 1. **Test agent.** A fake Google endpoint, plus a throwaway two-home pair on the Mama PC
-   with the local mesh fixture. All tiers green, plus the holder-death drill.
+   with the local mesh fixture. All tiers green, plus the holder-death drill, plus the
+   user-role setup-flow PASS.
 2. **Development agent: Echo.** Live after the PIN and the release gate.
 3. **Fleet: dark.** Echo reviews on **2026-12-21**, a commitment opened at merge. The
    evidence to graduate:
@@ -957,7 +1006,8 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 - callers:
   - reviews by Neon;
   - second opinions by Hydrogen, or Neon on request, from **any of my sessions**,
-    suggested at most $20 a month and $4 a day;
+    limited to $20 a month and $4 a day (proposed: change it before approving if you
+    want);
   - background checks: none;
   - model-checking tool: off
 - step-down from Neon to Hydrogen when Neon would not fit
@@ -976,7 +1026,15 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 
 **The run boundary.**
 
-- **Run 1** ends when the card is sent. A watcher is armed on the commit.
+- **Run 1**, in order:
+  1. build, then ship to every machine;
+  2. the user-role live test of the whole setup flow on the throwaway pair: card, plan
+     page, PIN commit, automatic restart, intent applied, `armed-pending-proof`. A
+     signed PASS is needed before Justin is asked;
+  3. the mint phase and the handoff file;
+  4. render, load the page at both viewport sizes, send the card.
+
+  Run 1 ends at the card, or at `awaiting-key`. A watcher is armed on the commit.
 - **Run 2** starts at the commit. It covers apply, `enforcementReady`, the release gate,
   live proof and the completion report.
   - The report says what "integrated with our other options" means in v1: listed with
@@ -989,9 +1047,11 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 - `releaseState` in the door policy is `armed-pending-proof` until the internal proof
   recorder sets `live`.
 - **The proof runs once.** It is one durable proof reservation bound to the applied
-  intent hash, with a fixed short input. A repeat submission returns the recorded
-  outcome and never makes a second paid call. Its thinking budget is the model's
-  minimum.
+  intent hash, with a fixed short input.
+  - A repeat submission returns the recorded outcome and never makes a second paid call.
+  - A confirmed no-charge refusal releases the slot for a retry. An uncertain outcome
+    keeps it.
+  - Its thinking budget is the model's minimum.
 - The recorder is the **only** code path that can set the proof marker:
   - The marker is refused as request input.
   - On a forwarded call, the holder stamps it **itself**, only for
@@ -1126,7 +1186,8 @@ core budget ratchet.
   - a frozen or git-synced peer copy with a matching epoch does **not** confirm
   - an isolated holder fences at the 60s window
   - unknown fences
-  - an equal or higher epoch freezes; a lower epoch only signals
+  - only a one-key-backed newer `keyGeneration` naming a different machine freezes;
+    anything else only signals
   - `caps/lower` does not interrupt confirmation
   - backoff capped at 20s
   - the window constant is below `failoverThresholdMs`
@@ -1179,6 +1240,18 @@ core budget ratchet.
   `reserveId`; a reporting-write failure leaves the booking.
 - **Proposal binding:** a changed proposal file refuses render and commit with a
   new-card message.
+- **Key generation:** a vault key whose suffix differs from the committed
+  `keyGeneration` refuses.
+- **Secret check:** a credential unique to the origin is caught at the origin; one
+  unique to the holder is caught at the holder.
+- **Dedupe first:** a lost acknowledgment on the last affordable call returns the
+  existing call, not a cap refusal.
+- **Transfer:** the sync filter drops metered names for all recipients while a proposal
+  exists; the proof allowance lets the transfer activate with the month exhausted.
+- **Review policy:** an API outage with `gemini-cli` signed in reports Gemini
+  unavailable.
+- **Truncation:** a `MAX_TOKENS` finish is marked incomplete.
+- **Setup flow:** the user-role live test is a Run 1 precondition.
 - **Boot check:** a failover threshold under 176s refuses to arm, and it is re-checked
   on config change.
 - **Pre-gate action:**
@@ -1295,8 +1368,9 @@ and all are frontloaded.
   2026-12-21, owner Echo.
 - **FD-G15:** only 100%, provisional-ceiling, conflicting-designation and drift notices
   are pushed. 50% and 80% show on the Spend tab.
-- **FD-G16:** a lane transfer requires key rotation at Google and a month rebase max(). It is
-  refused while the old holder is partitioned but alive.
+- **FD-G16:** a lane transfer requires a fresh key and the one-key read. The month
+  restarts exhausted (FD-G24). It is refused while the old holder is partitioned but
+  alive.
 - **FD-G18:** go-live is a new pre-gate action, `gemini-payg-setup` (flag plus intent
   only). The commit schedules its own restart: one PIN.
 - **FD-G19:** the lease confirmation is an active signed `designation-echo` every 10s,
@@ -1307,7 +1381,9 @@ and all are frontloaded.
 - **FD-G22:** the readable dashboard PIN is a registered foundation item (owner Echo,
   2026-12-21). It is not fixed in this spec, and no presence record is claimed.
 - **FD-G23:** if a key's confinement is in doubt (spread, passed through a session, or
-  not attested), the agent has it revoked and a fresh one minted, with no operator step.
+  not attested), the agent freezes the door and has the key revoked at once, with no
+  operator step, because halting money is the agent's. The replacement key goes live
+  through a fresh `gemini-payg-setup` commit with a new `keyGeneration`: one PIN.
   There is no purge path. Authority: the operator's 2026-11-20 approval, under which the
   account lane creates and manages the key, covers re-minting a replacement inside the
   same $50 grant.
