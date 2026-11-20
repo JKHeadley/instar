@@ -619,12 +619,9 @@ PIN plan):
    **before the key is used at all**.
 2. **Secret check** (§4.7).
 3. **Count input tokens** with `countTokens` on the exact request.
-   - If countTokens fails, the bound is the request's total UTF-8 bytes plus 512. That
-     is a strict bound for text: a text token is at least one byte, and 512 covers role
-     framing.
-   - If that bound pushes the reserve over the per-call ceiling, refuse with
-     `token-count-unavailable` (not `per-call-ceiling`), so an outage reads as an
-     outage.
+   - If countTokens fails, the call is refused with `token-count-unavailable` before
+     dispatch. There is no estimated fallback: an under-estimate near a tier boundary
+     could pick the cheaper rate for the whole request.
 4. **Select the price point** by input range first:
    - Choose the point whose `maxInputTokens` range contains the counted input, then
      resolve corrections within that tier.
@@ -660,8 +657,10 @@ PIN plan):
 
 **Bounding provisional drain.**
 
-- **Provisional ceiling:** once provisional charges in a month exceed $10, new
-  admissions refuse `provisional-ceiling`. It means something is wrong upstream, and
+- **Provisional ceiling:** checked under the reservation lock as
+  `provisional + outstanding reserves + this reserve ≤ $10`, so a burst of concurrent
+  calls cannot all turn provisional past the limit. Otherwise admission refuses
+  `provisional-ceiling`. It means something is wrong upstream, and
   stopping is cheaper than continuing.
   - **Recovery is the operator's**, because provisional amounts are sunk and reopening
     releases money. The trip raises one Work Board card with a prefilled
@@ -754,7 +753,7 @@ following verb-specific rules:
 | Verb | Direction | Rule |
 |---|---|---|
 | `metered-gemini-call` | any peer to the holder | The `op` field is one of `spec-review`, `second-opinion` or `release-proof-forward`, set by the originating server route, never by the request body. The verb carries the originating machine, the server-resolved session, `callId` and `requestSha256`. |
-| `metered-gemini-result` | the originating machine to the holder | Poll by `callId` **plus `resultToken`**: an unguessable 256-bit capability the holder returns only to the originating route at submit, which hands it only to its caller. Without the token, the result is `not-yours`. This holds between two sessions sharing the same bearer token, because session names are not proof of ownership. |
+| `metered-gemini-result` | the originating machine to the holder | Poll by `callId` **plus `resultToken`**: an unguessable 256-bit capability **generated at the origin before sending**. The origin persists it with the idempotency record and hands it only to its caller. The submit carries only its hash, which the holder binds to the reservation. A lost acknowledgment or an origin restart therefore still recovers the paid result with one charge. Without the token, the result is `not-yours`. This holds between two sessions sharing the same bearer token, because session names are not proof of ownership. |
 | `metered-stop-action` | any peer to the holder | Freeze, lower, disable or share-lower. Only ever reduces money. |
 | `designation-echo` | the holder to any peer | Lease confirmation (below). Read-class. |
 | `secret-names` | the holder to any peer | Returns vault key **names** only, never values. Read-class. |
@@ -889,19 +888,12 @@ a **fresh go-live** on the new machine, using the same `gemini-payg-setup` plan 
   figure in view.
 - **Fresh governed state.** The full setup struct is applied, and the proof call is
   repeated, bound to the new intent hash.
-- **A proof allowance, only when it fits.** The shown upper bound is:
-
-  ```
-  last advert + outstanding reserves + two days of daily guard
-  ```
-
-  Two days, because the old holder may have crossed Pacific midnight after its last
-  advert.
-  - The transfer may spend the proof call's computed maximum charge (cheapest verified
-    model, fixed short input, at most 64 output tokens, minimum thinking) **only if
-    upper bound + that charge ≤ the monthly cap**.
-  - Otherwise the transfer stays pending until the month resets, or until the operator
-    restores headroom by PIN. Nothing is ever admitted past the cap.
+- **No proof allowance.** The transfer month stays exhausted, the proof call included.
+  An advert's age has no proven bound, so no computed figure safely reopens headroom.
+  - The transfer completes at the month reset, or when the operator restores headroom
+    by PIN. The plan shows the last advert, its age, and outstanding reserves as
+    information only.
+  - Nothing is ever admitted past the cap.
 - **No auto-grab.** "Every registered machine answered" excludes the dead holder, by
   design.
 
@@ -1202,8 +1194,8 @@ core budget ratchet.
   - no key in a stack
 - **Provider:**
   - one immutable request used three times
-  - the countTokens path, and the byte fallback including the system instruction
-  - `token-count-unavailable`
+  - the countTokens path, including the system instruction
+  - `token-count-unavailable` on any countTokens failure
   - the tier refusal
   - every settle-table row
   - no retry
@@ -1282,7 +1274,14 @@ core budget ratchet.
   settle uses the reserved price-point id.
 - **Proof:** concurrent proof submissions and a restart after settlement still give one
   paid call.
-- **Poll:** a poll from another machine or session gets `not-yours`.
+- **Poll:** a poll without the `resultToken` gets `not-yours`. Two sessions share a
+  bearer token, and the second cannot read the first's result. Dropping the whole submit
+  acknowledgment and restarting the origin still recovers the result with one charge.
+- **Token count:** a countTokens failure refuses `token-count-unavailable` before
+  dispatch.
+- **Provisional:** four concurrent reserves that would together pass $10 admit only up
+  to the limit.
+- **Transfer:** stays pending with the month exhausted, proof call included.
 - **Key confinement:** go-live refuses without the one-key artifact, or when a second
   key exists in the project; a key minted after the filter clears offline peers.
 - **Calendar:** a zone change with a reservation outstanding across midnight keeps its
@@ -1298,7 +1297,8 @@ core budget ratchet.
 - **Dedupe first:** a lost acknowledgment on the last affordable call returns the
   existing call, not a cap refusal.
 - **Transfer:** the sync filter drops metered names for all recipients while a proposal
-  exists; the proof allowance lets the transfer activate with the month exhausted.
+  exists; the transfer stays pending, with the month exhausted, until the month resets
+  or a PIN restores headroom.
 - **Review policy:** an API outage with `gemini-cli` signed in reports Gemini
   unavailable.
 - **Truncation:** a `MAX_TOKENS` finish is marked incomplete.
