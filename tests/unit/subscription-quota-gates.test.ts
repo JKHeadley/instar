@@ -116,7 +116,7 @@ describe('PipeSessionSpawner — force-mode refusal from inside spawn() (S4 / Cl
   });
 
   const request = {
-    threadId: 't-force',
+    threadId: 'thread-force',
     messageText: 'quick question',
     fromFingerprint: 'abc',
     fromName: 'peer',
