@@ -120,3 +120,7 @@ After the tag, Luna (the first user, thread 1f805ef5, 2026-11-17 ~18:01 PT) chec
 ## Convergence verdict
 
 Converged at the round-6 cap (Tier 2). The last round found three build-detail design items, none about safety, security or data loss; they were applied to the spec and are disclosed above as not re-reviewed. Six accepted limits and five contested constitution flags are listed under Left behind. Spec is ready for Justin's review and approval; nothing is built before `approved: true`.
+
+## Post-convergence revision (2026-11-20, constitution check)
+
+After convergence the Standards-Conformance Gate was run on the spec before asking Justin to approve it (2026-11-19, 3:49 PM PT, 9 flags). Justin asked for the flags to be fixed before approval (2026-11-19, 3:55 PM PT). The original output was lost with the machine that ran it, so the gate was re-run three times on the unrevised draft (2026-11-20; 8, 10 and 11 flags, with the same recurring core), and one revision pass answered the union of all flags. The spec's section "Constitution check revision" maps each flag to its change. This was one honest pass, not a further multi-round convergence; the external cross-model reviewer was not re-run. The two new cheap-to-change-after tags (Luna by name; who decides graduation) were not contested by a Decision-Completeness reviewer in this pass; they are flagged for Justin to confirm or override.
