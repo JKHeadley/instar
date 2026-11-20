@@ -76,6 +76,25 @@ So a fixed link can't work. The plan:
 - **A fresh link whenever a reviewer needs one.** A small page on the demo agent, behind a
   passphrase given in the review notes, mints a new pairing link for that agent each time it is
   opened. The reviewer opens it on the review device, taps "Copy link", and pastes it into the app.
+- **Found 2026-11-20: every new phone needs an approval, and nobody will be there.** Making a link
+  (`POST /mobile/pairing-codes`) needs an approval path. With a Telegram owner, the confirmation code
+  goes to that owner's chat. Without one (and with native conversations on), the waiting phone shows
+  on the agent's dashboard pairing page, which needs the dashboard PIN. The dashboard can approve a
+  waiting phone but can't make a link. So the reviewer can't finish pairing alone, and handing
+  Apple the demo agent's dashboard PIN is out: that dashboard opens live terminals on our machine.
+- **So the demo agent gets a small "pairing desk" next to it.** It needs no instar change. A tiny
+  separate service on the demo machine holds the demo agent's token and PIN. Behind the review
+  passphrase it (1) makes a fresh link for a non-owner person on the demo agent, (2) shows it with
+  "Copy link", and (3) approves the one phone that opens that link within the link's lifetime, and
+  only that one. It's rate-limited, logs every use, and has an off switch.
+- **The reviewer must not get shell access through the chat.** A plain demo agent's conversations
+  are Claude Code sessions with tools. The member no-tools conversation (PR #3423, open, has
+  conflicts) is exactly the needed fence. The demo agent waits for it to land, or runs with a
+  tool-less framework setting, whichever is ready first. Verify by asking the demo agent to run a
+  shell command from a paired test phone; it must refuse because it has no tools, not by choice.
+- The device and pairing history from the beta review didn't survive the rebuild on this machine
+  (the oldest phone on record is from 2026-11-20). So what the beta reviewer used is only in App
+  Store Connect.
 - Find out first: what the external beta review was given (App Store Connect → TestFlight → Test
   Information). Beta review passed, so whatever demo access it used worked. Reuse it if it holds
   up for an App Store review window.
@@ -109,5 +128,6 @@ So a fixed link can't work. The plan:
 
 1. Get the App Store Connect sign-in back (post-mortem session). Then read the uploaded builds and
    the beta review's Test Information, and record both here.
-2. Build the demo agent and its fresh-link page. Neither needs the app source.
+2. Build the demo agent (separate home, no Telegram, no tools, spend cap) and its pairing desk
+   (§3). Neither needs the app source. Waits on the no-tools fence (PR #3423) for the agent part.
 3. Once the source hold lifts: screenshots, the SDK check from §1, then submit.
