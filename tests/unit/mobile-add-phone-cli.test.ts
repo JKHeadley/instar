@@ -52,7 +52,8 @@ async function agent(gets: Array<{ status: number; body: Record<string, unknown>
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'addphone-'));
   dirs.push(dir);
   fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({ projectName: 'Wintest', port, authToken: 'tok-1' }));
+  // loadConfig needs a framework binary; CI has no Claude CLI (as the e2e tests do).
+  fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({ projectName: 'Wintest', port, authToken: 'tok-1', sessions: { claudePath: '/usr/bin/echo' } }));
   return { dir, calls };
 }
 

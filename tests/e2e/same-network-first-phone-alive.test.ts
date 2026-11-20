@@ -36,7 +36,9 @@ function newDir(): string {
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
-  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'sn-e2e' }));
+  // The real CLI command below runs loadConfig, which needs a framework binary: CI has no Claude CLI, so
+  // point the configured path at a binary every runner has (as the other e2e tests do).
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'sn-e2e', sessions: { claudePath: '/usr/bin/echo' } }));
   return dir;
 }
 
