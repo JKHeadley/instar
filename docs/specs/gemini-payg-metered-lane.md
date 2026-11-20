@@ -749,7 +749,7 @@ Spend-tab plan view, where the plan was rendered (plans are bound to their machi
 |---|---|
 | (a) Wiring proof | One live call on the door's cheapest priced model (Hydrogen, ≤ 64 output tokens; empty text is fine for a thinking model) shows `door === ledger door === priced door` and a settled row. |
 | (b) Holder-death drill | Required only when the agent has more than one machine. It runs on the test-agent pair: kill the holder, observe the fence, the surviving-voice notice and lane unavailability, then PIN-reclaim. The recorder checks the live-test harness's **signed** PASS artifact (path plus hash). **Honest limit:** that artifact is produced by an agent-run harness, so this check binds the agent to a recorded, signed run. It does not prove an independent witness. |
-| (c) Reconciliation | One **real** `browser-read` record. An `unmeasurable` record does not satisfy it. |
+| (c) Reconciliation | One **real** `browser-read` record (the current month's figure is enough, even $0.00). An `unmeasurable` record does not satisfy it. |
 | (d) Prices verified | A reviewed commit sets `verified: true` on both points, citing the price and tier read on Google's page (browser read, Run 2). |
 | (e) Forward proof | On a multi-machine agent, one E1 forward from a non-designated machine (the Mama PC) completes. |
 

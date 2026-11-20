@@ -23,7 +23,7 @@ After that, Echo can always reduce or stop spending on its own, at once. Raising
 
 ## What is still unverified
 
-The exact model names and prices come from Google's announcement and from third-party pricing sites. The lane does not open for normal use until Echo has read the real prices on Google's own page, made one tiny paid test call, and checked one month-end bill reading. Very long requests are refused unless Google's price for that length has been confirmed, so a hidden long-context price can't sneak past the cap.
+The exact model names and prices come from Google's announcement and from third-party pricing sites. The lane does not open for normal use until Echo has read the real prices on Google's own page, made one tiny paid test call, and read Google's billing page once to prove the monthly cross-check works. Very long requests are refused unless Google's price for that length has been confirmed, so a hidden long-context price can't sneak past the cap.
 
 ## What changes for everyone else
 
