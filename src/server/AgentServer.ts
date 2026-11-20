@@ -1,6 +1,8 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
+import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
@@ -2009,6 +2011,23 @@ export class AgentServer {
     // SEC-118-R1: an error answer to a request whose body was never read closes the connection
     // instead of draining the rest (mounted first so every refusal is covered).
     this.app.use(closeUnreadBodyOnError());
+    // takeover-ready-pool R1 (boot claim safety): Instar's response marker on EVERY response,
+    // errors included, so a peer probing this machine can tell "this machine's Instar answered"
+    // from a tunnel edge or any other server. A fingerprint bound to the machine id, not the id.
+    {
+      let marker: string | null | undefined;
+      const markerFor = (): string | null => {
+        if (marker !== undefined && marker !== null) return marker;
+        const id = options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null;
+        marker = id ? instarMachineMarker(id) : null;
+        return marker;
+      };
+      this.app.use((_req, res, next) => {
+        const m = markerFor();
+        if (m) res.setHeader(INSTAR_MACHINE_HEADER, m);
+        next();
+      });
+    }
 
     // Middleware
     // Claim observation has a much smaller privacy/cost boundary than the

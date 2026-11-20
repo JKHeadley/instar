@@ -207,6 +207,8 @@ import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
 import { AgentServer } from '../server/AgentServer.js';
 import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
+import { resolveBootClaimSafety } from '../core/BootClaimHold.js';
+import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
@@ -5320,7 +5322,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           meshBindActive: new MachineIdentityManager(config.stateDir).hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false,
           meshBindHostOverride: config.multiMachine?.meshTransport?.bindHost,
         });
-        bootBeacon = new BootHealthBeacon(config.port, earlyBindHost);
+        // takeover-ready-pool R1: the beacon carries Instar's response marker too, so a peer
+        // probing this machine while it starts counts the 503 as Instar answering.
+        let beaconMarker: string | undefined;
+        try {
+          const beaconIdMgr = new MachineIdentityManager(config.stateDir);
+          if (beaconIdMgr.hasIdentity()) beaconMarker = instarMachineMarker(beaconIdMgr.loadIdentity().machineId);
+        } catch { beaconMarker = undefined; /* @silent-fallback-ok — without an identity there is no peer to probe this machine */ }
+        bootBeacon = new BootHealthBeacon(config.port, earlyBindHost, beaconMarker);
         await bootBeacon.start();
         console.log(pc.dim(`  Boot health beacon: listening early on ${earlyBindHost}:${config.port} (typed "starting" until ready)`));
       } catch (err) {
@@ -7227,6 +7236,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           allPeersPresumedGone: leaseLiveness.allPeersPresumedGone,
           survivorMayHold,
           acquireHeldBack,
+          // takeover-ready-pool R1 (boot claim safety, fb-2bf6ccd0-705) — read live; the
+          // preferred machine named here only decides whom a deferring machine waits for.
+          bootClaimSafety: () => resolveBootClaimSafety(config),
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
