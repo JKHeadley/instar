@@ -24,5 +24,6 @@ Starts when `thinkingMode: "low"` is set on bugs-overseer (PR #3098 is merged). 
 ## Limits
 
 - This is not a controlled experiment: the two windows see different bug traffic, and the engine version may differ (the launch record names it).
+- The job itself differs between the windows. The before window ran the old Studio's bugs-overseer with its two helper scripts (`bugs-intake.mjs`, `bug-topic-close.sh`). Both scripts were lost in the Nov 2026 Studio rebuild (never committed, never synced; searched on every machine) and are being rewritten from the job instructions, so the after window runs the restored job with rewritten scripts. Some of any difference may come from the rewrite, not from the effort setting.
 - About 24 runs per side.
 - A big drop in tokens with no rise in failures supports trying low effort on more routine jobs. Anything else means stopping there.
