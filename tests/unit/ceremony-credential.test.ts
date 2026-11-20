@@ -3,7 +3,8 @@
  * made inside the agent's own system, only its hash on disk, single use, three wrong tries, ten minutes,
  * this machine and this ceremony only, and refused from an unsafe file. Both sides of every boundary.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -140,6 +141,54 @@ describe('the one-time ceremony credential (A5)', () => {
     mint(d3);
     fs.writeFileSync(ceremonyCredentialPath(d3), '{not json', { mode: 0o600 });
     expect(spend(d3, 'icc1_x')).toEqual({ ok: false, reason: 'malformed' });
+  });
+
+  it('the open handle is what is checked and read: a second name, a FIFO or a directory is refused', () => {
+    const d = dir();
+    const { credential } = mint(d);
+    const file = ceremonyCredentialPath(d);
+    // A second name (hard link) for the file: another program could hold it, so it is refused.
+    const twin = path.join(d, 'twin.json');
+    fs.linkSync(file, twin);
+    expect(spend(d, credential)).toEqual({ ok: false, reason: 'unsafe-file' });
+    expect(fs.existsSync(file)).toBe(false);
+
+    // A FIFO at the path neither blocks the open nor counts as a credential.
+    const d2 = dir();
+    fs.mkdirSync(path.dirname(ceremonyCredentialPath(d2)), { recursive: true, mode: 0o700 });
+    execFileSync('mkfifo', ['-m', '600', ceremonyCredentialPath(d2)], { stdio: 'ignore' });
+    expect(spend(d2, 'icc1_x')).toEqual({ ok: false, reason: 'unsafe-file' });
+
+    // A directory at the path is not a credential either.
+    const d3 = dir();
+    fs.mkdirSync(ceremonyCredentialPath(d3), { recursive: true, mode: 0o700 });
+    expect(spend(d3, 'icc1_x').ok).toBe(false);
+  });
+
+  it('opens the file once and checks that handle before reading it (no path check, then path read)', () => {
+    const d = dir();
+    const { credential } = mint(d);
+    const lstat = vi.spyOn(fs, 'lstatSync');
+    const stat = vi.spyOn(fs, 'statSync');
+    const fstat = vi.spyOn(fs, 'fstatSync');
+    const readFile = vi.spyOn(fs, 'readFileSync');
+    try {
+      expect(spend(d, credential)).toEqual({ ok: true });
+      const file = ceremonyCredentialPath(d);
+      const order = (m: { mock: { calls: unknown[][]; invocationCallOrder: number[] } }, pick: (c: unknown[]) => boolean): number[] =>
+        m.mock.calls.map((c, i) => (pick(c) ? m.mock.invocationCallOrder[i] : -1)).filter((x) => x >= 0);
+      const fdReads = order(readFile, (c) => typeof c[0] === 'number');
+      const fstats = order(fstat, () => true);
+      expect(fdReads.length).toBeGreaterThan(0);
+      expect(fstats.length).toBeGreaterThan(0);
+      // The handle was checked before it was read.
+      expect(fstats[0]).toBeLessThan(fdReads[0]);
+      // Never read by path, and no path check before the read (the delete after acceptance may look at the path).
+      expect(order(readFile, (c) => c[0] === file)).toHaveLength(0);
+      expect([...order(lstat, (c) => c[0] === file), ...order(stat, (c) => c[0] === file)].filter((x) => x < fdReads[0])).toHaveLength(0);
+    } finally {
+      lstat.mockRestore(); stat.mockRestore(); fstat.mockRestore(); readFile.mockRestore();
+    }
   });
 
   it('the file is key material: never served, written, backed up or synced over HTTP', () => {

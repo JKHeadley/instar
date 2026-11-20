@@ -33,7 +33,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/phone-setup-ceremony-credential.test.ts' });
 });
 
-function setup(opts: { telegramOwner?: boolean; noPin?: boolean; app?: 'here' | 'elsewhere' | 'none' | 'no-machine' | 'two'; lease?: boolean } = {}) {
+function setup(opts: { telegramOwner?: boolean; noPin?: boolean; app?: 'here' | 'elsewhere' | 'none' | 'no-machine' | 'two'; lease?: boolean; wslMode?: 'nat' | 'mirrored' | 'other' | 'unknown' } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'icc-int-'));
   dirs.push(dir);
   // This computer's identity for the agent, as `instar init` writes it (the command mints under it).
@@ -55,8 +55,11 @@ function setup(opts: { telegramOwner?: boolean; noPin?: boolean; app?: 'here' | 
   };
   const svc = new MobilePairingService(deps);
   const listener: SameNetworkListener = new SameNetworkListener({
-    stateDir: dir, agentName: 'Wintest', machineName: 'DESKTOP-1', mainPort: MAIN, app, port: 0, bindHost: '127.0.0.1', wsl: false, announce: false,
-    observe: async () => HOME,
+    stateDir: dir, agentName: 'Wintest', machineName: 'DESKTOP-1', mainPort: MAIN, app, port: 0, announce: false,
+    ...(opts.wslMode
+      // Inside WSL: the mode as read; WSL's "NAT address" is loopback so the test binds it on any host.
+      ? { wsl: true, observe: async () => ({ kind: 'delegated' as const, observer: 'windows-app' as const }), wslMode: async () => ({ mode: opts.wslMode!, source: 'wslinfo' as const, detail: opts.wslMode! }), wslNatAddress: () => '127.0.0.1' }
+      : { wsl: false, bindHost: '127.0.0.1', observe: async () => HOME }),
     inUse: () => homeAddressInUse(svc),
     gate: sameNetworkGate({ device: (id) => svc.devices.get(id), deviceRoute: (m, p) => DEVICE_ALLOWLIST.some((r) => r.method === m && r.re.test(p)), ownHost: () => (listener.listening() ? listener.host() : null) }),
   });
@@ -271,5 +274,38 @@ describe('identity A4: the home port the app asks for', () => {
     expect(moved.status).toBe(409);
     expect(moved.body).toMatchObject({ error: 'port-fixed', port });
     expect((await post(ctx.app, { pin: PIN, port })).status).toBe(200);
+  });
+
+  it('inside WSL: a networking mode the home address cannot open on refuses before the credential is spent', async () => {
+    for (const mode of ['mirrored', 'unknown', 'other'] as const) {
+      const ctx = setup({ noPin: true, wslMode: mode });
+      mint(ctx.dir);
+      const r = await post(ctx.app, { ceremonyCredential: mint(ctx.dir), address: 'home' });
+      expect(r.status, mode).toBe(409);
+      expect(r.body).toMatchObject({ error: 'wsl-networking-mode', mode });
+      expect(spent(ctx.dir), mode).toBe(false);
+      expect(ctx.listener.listening()).toBe(false);
+    }
+  });
+
+  it('inside WSL: NAT opens; mirrored opens only on the Windows app\'s word, on loopback', async () => {
+    const nat = setup({ noPin: true, wslMode: 'nat' });
+    expect((await post(nat.app, { ceremonyCredential: mint(nat.dir), address: 'home' })).status).toBe(200);
+    expect(nat.listener.status().wslMode).toMatchObject({ mode: 'nat' });
+    const mir = setup({ noPin: true, wslMode: 'mirrored' });
+    const r = await post(mir.app, { ceremonyCredential: mint(mir.dir), address: 'home', windowsAppHandlesNetworkRule: true });
+    expect(r.status).toBe(200);
+    expect(mir.listener.status().bind).toBe('127.0.0.1');
+    // A truthy value that is not exactly true is not the app's word.
+    const strict = setup({ noPin: true, wslMode: 'mirrored' });
+    expect((await post(strict.app, { ceremonyCredential: mint(strict.dir), address: 'home', windowsAppHandlesNetworkRule: 'yes' })).body.error).toBe('wsl-networking-mode');
+  });
+
+  it('inside WSL with the PIN: mirrored without the app\'s word is refused and nothing opens', async () => {
+    const ctx = setup({ wslMode: 'mirrored' });
+    const r = await post(ctx.app, { pin: PIN, address: 'home' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('wsl-networking-mode');
+    expect(ctx.listener.status().wanted).toBe(false);
   });
 });

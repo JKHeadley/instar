@@ -48,7 +48,7 @@ import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   ConfirmationCodes, DeviceRegistry, displayCode, type ApprovedVia, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
-  type DeviceRecord, type DeviceStatus, deviceKeyOf, isBrowserDevice, keyHashOf,
+  type DeviceRecord, type DeviceStatus, admittedAtComputer, deviceKeyOf, isBrowserDevice, keyHashOf,
 } from '../core/MobileDeviceKeys.js';
 import { mirrorPrefix, requestDeviceClient } from '../core/deviceClientWording.js';
 import {
@@ -929,7 +929,7 @@ export class MobilePairingService {
   noteActivated(deviceId: string): void { this.contestOthers(deviceId); }
 
   /** Can a tap approve this phone, as far as its own row goes? */
-  approvable(d: DeviceRecord): boolean { return (d.role === undefined || d.role === 'owner') && d.admission !== 'at-computer' && !this.contested.has(d.id); }
+  approvable(d: DeviceRecord): boolean { return (d.role === undefined || d.role === 'owner') && !admittedAtComputer(d) && !this.contested.has(d.id); }
 
   /** Phones waiting on this machine. */
   waitingPhones(): DeviceRecord[] {
@@ -957,7 +957,7 @@ export class MobilePairingService {
     const d = waiting.find((x) => x.id === deviceId);
     if (!d) return 'ended';
     // Identity A4: a phone set up at the computer is let in only by the number typed there.
-    if (d.admission === 'at-computer') return 'code-only';
+    if (admittedAtComputer(d)) return 'code-only';
     // An MSP's phone is not in the owner's hand: handing over the code is what binds it to that person.
     if (d.role !== undefined && d.role !== 'owner') return 'code-only';
     if (this.contested.has(deviceId)) return 'contested';
@@ -1068,7 +1068,7 @@ export class MobilePairingService {
   /** What a waiting phone is told (spec §3.5); nothing when the feature is off. */
   waitingFields(d: DeviceRecord): Record<string, unknown> {
     // Identity A4: the only way in is the number at the agent's computer.
-    if (d.admission === 'at-computer') return { confirmWith: ['computer'], fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null };
+    if (admittedAtComputer(d)) return { confirmWith: ['computer'], fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null };
     if (!isPairingApproveEnabled(this.deps.config)) return {};
     // Only ways that can work now, easiest first (mobile-pairing-introducer §3.4).
     const introducers = this.introducers();
@@ -1789,7 +1789,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (d.status === 'active') { res.json({ status: 'active' }); return; }
     if (d.status !== 'pending') { res.status(409).json({ error: d.status }); return; }
     // Identity A4: a phone set up at the computer is let in only by the number typed there.
-    if (d.admission === 'at-computer') { res.status(409).json({ error: 'confirm-at-computer', detail: 'Type the number on your phone at the agent\'s computer.' }); return; }
+    if (admittedAtComputer(d)) { res.status(409).json({ error: 'confirm-at-computer', detail: 'Type the number on your phone at the agent\'s computer.' }); return; }
     // A dashboard-path device (§4.4) needs no lease: its code never travelled through Telegram.
     const viaDashboard = svc.isDashboardPending(d.id);
     const approvedVia = viaDashboard ? 'dashboard-pin' as const : 'telegram-dm' as const;
@@ -1896,7 +1896,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       const requester = svc.devices.get(p.deviceId);
       const person = devicePersonOf(req);
       // Identity A4: a phone let in at the computer cannot approve, and removing other devices is an owner act too.
-      if (!requester || requester.status !== 'active' || !person || person.role !== 'owner' || requester.approvedVia === 'at-computer') {
+      if (!requester || requester.status !== 'active' || !person || person.role !== 'owner' || admittedAtComputer(requester)) {
         res.status(403).json({ error: 'owner-phone-required', detail: 'Only the owner\'s phone can remove another phone.' });
         return;
       }
@@ -3025,7 +3025,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // conversations only until piece 3b gives it the mark. It may use what a browser device may use
     // (status, self-removal, conversations, media), plus its push registration, its route list and its
     // own activation; every other owner route (org acts, grants, approvals, admin) is refused.
-    if (peek?.approvedVia === 'at-computer' && !rule.browser && !AT_COMPUTER_EXTRA_ROUTES.some(([m, re]) => m === req.method && re.test(pathNorm))) {
+    if (admittedAtComputer(peek) && !rule.browser && !AT_COMPUTER_EXTRA_ROUTES.some(([m, re]) => m === req.method && re.test(pathNorm))) {
       return refuse(403, 'cannot-approve-yet');
     }
     // A member's linked computer (instar-document-viewer §3.6a) is scoped to documents: its page reads

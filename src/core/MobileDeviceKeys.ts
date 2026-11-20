@@ -283,6 +283,18 @@ export interface DeviceRecord {
   admission?: 'at-computer';
 }
 
+/**
+ * Identity A4: the ONE answer to "was this device let in at the agent's own computer (no approval
+ * power until piece 3b)". Two fields carry it: `admission` (set at redeem, while pending) and
+ * `approvedVia` (set at activation). Every check reads this function, never either field alone
+ * (tests/unit/at-computer-invariant.test.ts fails on a direct comparison elsewhere), and the store
+ * refuses an activation that would make the two disagree (applyConfirm), so a path that sets one
+ * field without the other cannot give such a device approval power.
+ */
+export function admittedAtComputer(d: Pick<DeviceRecord, 'admission' | 'approvedVia'> | null | undefined): boolean {
+  return !!d && (d.admission === 'at-computer' || d.approvedVia === 'at-computer');
+}
+
 export type BrowserEffectKind = 'revokeReplaced' | 'notice';
 export interface BrowserEffect {
   kind: BrowserEffectKind;
@@ -579,6 +591,9 @@ export class DeviceRegistry {
     // refused without declining it, and activation goes through activateBrowser (§4.1, §4.2 step 10).
     if (d.activating) return d;
     if (outcome.ok && isBrowserDevice(d)) return d;
+    // The two at-computer fields never disagree: a phone let in at the computer is activated only as
+    // 'at-computer', and 'at-computer' activates only a phone admitted that way (admittedAtComputer).
+    if (outcome.ok && (d.admission === 'at-computer') !== (outcome.approvedVia === 'at-computer')) return d;
     if (outcome.ok) {
       d.status = 'active'; d.approvedAt = outcome.approvedAt ?? new Date(this.now()).toISOString(); d.approvedVia = outcome.approvedVia ?? 'telegram-dm';
       if (outcome.approvedBy) d.approvedBy = outcome.approvedBy;

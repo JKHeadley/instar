@@ -23,7 +23,7 @@ This change gives the agent a third kind of address: **your home Wi-Fi**. If you
 
 ## What the new door can and cannot do
 
-The home door is not the dashboard. It answers only: the pairing step, a bare "I'm alive", and the requests a phone that was paired on this door signs with its own key. It refuses the dashboard, the PIN, the agent's password-like token, and anything meant for the app on the agent's own computer. Nothing that arrives through it is ever treated as "coming from this computer", even on Windows, where the forwarded traffic looks like it comes from the computer itself.
+The home door is not the dashboard. It answers only: the pairing step, a bare "I'm alive", and the requests a phone that was paired on this door signs with its own key. Every request through it other than the pairing step itself must be signed by a phone's own key, even on an agent that has no password-like token set. It refuses the dashboard, the PIN, the agent's password-like token, and anything meant for the app on the agent's own computer. Nothing that arrives through it is ever treated as "coming from this computer", even on Windows, where the forwarded traffic looks like it comes from the computer itself.
 
 It is closed until you open it at the computer. It only opens on a network you allowed. If your laptop moves to a cafe or office network that looks different, the door closes, and it stays closed until you allow the new network at the computer. After a restart it reopens by itself only on a network you already allowed.
 
@@ -39,7 +39,7 @@ New: the one-time pass for the app (the command `instar mobile ceremony-credenti
 - It cannot approve risky actions yet. That is the next piece of the identity work.
 - A program already running on your computer could start this setup, because it can read what the computer can read. That was already true of the computer before this change.
 - A network deliberately made to look like your home network would reopen the door, but only the narrow door described above.
-- On Windows, the Instar app has to pass the home connection through to the agent's Linux system and ask Windows once for permission. That app part is the next app piece, not this one. The live test found that the agent inside Linux must listen on Linux's own private network address, not on its "this computer only" address, because Windows cannot reach the latter; this change does that.
+- On Windows, the Instar app has to pass the home connection through to the agent's Linux system and ask Windows once for permission. That app part is the next app piece, not this one. The live test found that the agent inside Linux must listen on Linux's own private network address, not on its "this computer only" address, because Windows cannot reach the latter; this change does that. It does so only after asking Linux-on-Windows (WSL) which network setting it actually uses, instead of guessing from the address. In the usual setting, the private address is reachable only from the PC, so that is safe. In the other common setting ("mirrored"), Linux shares the PC's own home-network address, so listening there would put the door straight onto the Wi-Fi without its per-caller limits; there the door stays shut unless the Windows app says it is guarding the connection, and even then the agent listens only on its "this computer only" address and keeps its own limits on. If the setting cannot be read, the door stays shut.
 
 ## What you need to decide
 

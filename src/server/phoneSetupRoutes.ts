@@ -29,7 +29,7 @@ import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Request, Response, Router } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
-import { mayBeLocalArrival } from '../core/requestArrival.js';
+import { SAME_NETWORK_PUBLIC_ROUTES, mayBeLocalArrival } from '../core/requestArrival.js';
 import { buildPairLink, codeTtlMs, cleanText } from '../core/MobilePairing.js';
 import { deviceKeyOf, isBrowserDevice, keyHashOf, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { createMandatePinCheck, type MandatePinCheck } from './mandatePin.js';
@@ -206,10 +206,7 @@ export function creatingAppOnThisMachine(svc: Pick<MobilePairingService, 'device
 
 // --- The gate in front of the same-network listener (A4 point 2) -------------------------------
 
-const PUBLIC_ON_LISTENER: ReadonlyArray<[string, RegExp]> = [
-  ['POST', /^\/mobile\/pairing-codes\/redeem$/],
-  ['GET', /^\/mobile\/pairing-codes\/ping$/],
-];
+const PUBLIC_ON_LISTENER = SAME_NETWORK_PUBLIC_ROUTES;
 /** Headers that carry the agent's token, a local credential, a dashboard session, or a forwarding claim. */
 const REFUSED_HEADERS = ['authorization', 'cookie', 'x-instar-step-up', 'x-instar-notify-token', 'x-instar-local-secret', 'x-instar-lifeline-secret', 'x-instar-machine-auth', 'forwarded'];
 const REFUSED_PREFIXES = ['x-forwarded-', 'x-real-ip', 'cf-', 'tailscale-', 'x-instar-mesh'];
@@ -316,6 +313,8 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
       return;
     }
     const askedPort = body.port as number | undefined;
+    // Inside WSL: the Windows app says it enforces the network rule itself (needed only in mirrored mode).
+    const windowsAppHandlesNetworkRule = body.windowsAppHandlesNetworkRule === true;
     const telegramOwner = svc.approvalPath() === 'telegram';
     // The port may move only while no phone is paired on the home address (its stored host carries the port).
     const mayMovePort = !svc.devices.list().some((d) => d.addressKind === 'same-network' && (d.status === 'active' || d.status === 'pending'));
@@ -344,6 +343,11 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
         res.status(409).json({ error: 'port-fixed', port: storedPort, detail: `A phone is paired on this agent's home address at port ${storedPort}, so its port cannot change. Use port ${storedPort}.` });
         return;
       }
+      // Inside WSL, a networking mode the home address cannot open on is known before the credential is spent.
+      if (address === 'home') {
+        const plan = await svc.sameNetwork!.wslPlan(windowsAppHandlesNetworkRule);
+        if (plan && !plan.ok) { res.status(409).json({ error: 'wsl-networking-mode', mode: plan.mode, detail: `The home address stays closed: ${plan.reason}.` }); return; }
+      }
       const spent = spendCeremonyCredential(svc.deps.stateDir, body.ceremonyCredential, { scope: 'phone-setup', machineId: ownMachineId(svc.deps.stateDir) });
       if (!spent.ok) { refuse(403, 'ceremony-credential-refused', `This one-time credential cannot be used (${spent.reason}). Make a new one and try again.`); return; }
       featureEvidence.record(FEATURE, { kind: 'fired', reason: 'ceremony credential spent by the app on this computer' });
@@ -366,8 +370,8 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     if (address === 'home') {
       const ln = svc.sameNetwork;
       if (!ln) { res.status(503).json({ error: 'home-address-unavailable', detail: 'This agent cannot open a home address.' }); return; }
-      const opened = await ln.openForOwner(askedPort !== undefined ? { port: askedPort, mayMovePort } : {});
-      if (!opened.ok) { res.status(409).json({ error: opened.reason, detail: opened.detail, ...(opened.port !== undefined ? { port: opened.port } : {}) }); return; }
+      const opened = await ln.openForOwner({ ...(askedPort !== undefined ? { port: askedPort, mayMovePort } : {}), windowsAppHandlesNetworkRule });
+      if (!opened.ok) { res.status(409).json({ error: opened.reason, detail: opened.detail, ...(opened.port !== undefined ? { port: opened.port } : {}), ...(opened.mode ? { mode: opened.mode } : {}) }); return; }
       const st = opened.status;
       if (!st.host || !st.spkiHash) { res.status(500).json({ error: 'home-address-unavailable' }); return; }
       host = st.host; kind = 'same-network'; spkiHash = st.spkiHash; hints = st.hints.map((h) => `${h}:${st.port}`);
@@ -432,10 +436,12 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     res.json(setupView(s));
   });
 
-  router.get('/mobile/same-network', (req: Request, res: Response) => {
+  router.get('/mobile/same-network', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!localOnly(req, res)) return;
     const ln = svc.sameNetwork;
+    // Inside WSL, read the networking mode now, so the app sees it before it opens anything.
+    if (ln) await ln.wslPlan(false);
     res.json(ln ? ln.status() : { wanted: false, listening: false, available: false });
   });
 
@@ -509,6 +515,9 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     if (activeOwnerPhones(svc).length > 0) { end(409, 'phone-already-paired', 'This agent already has a phone. Approve new phones from that phone.'); return; }
     const key = deviceKeyOf(d);
     if (setup.keyHash && (!key || keyHashOf(key) !== setup.keyHash)) { end(409, 'wrong-device', 'This setup was for another phone.'); return; }
+    // Only a phone admitted at the computer is let in this way (the store refuses a mismatch too); checked
+    // before the key ledger records anything.
+    if (d.admission !== 'at-computer') { end(409, 'not-at-computer', 'This phone was not added at the computer.'); return; } // at-computer-ratchet-ok: the admission field itself is the precondition here
     const approvedAt = new Date().toISOString();
     if (svc.keyLedger) {
       try { svc.keyLedger.recordActivation(d, 'at-computer', approvedAt); } catch (err) {

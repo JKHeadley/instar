@@ -16,7 +16,7 @@ review-completed-at: "2026-11-19T23:30:00Z"
 cross-model-review: "none: the Fable reviewers hit their quota (resets 2026-11-25); two Opus rounds (security + integration, then a resolution check). The round-2 fixes were tested but not re-reviewed by a third round"
 review-report: "reports/identity-security-piece3e-same-network-first-phone-convergence.md"
 approved: true
-approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session."
+approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session. Amended by builder #45 (2026-11-20: §3.1 WSL networking mode read and fail-closed bind plan; the same-network signature requirement in the auth middleware; document devices) under the same basis, after one independent Opus second pass and one outside GPT review (round 4 in the convergence report)."
 ---
 
 # A new agent's first phone pairs over the same network
@@ -84,9 +84,28 @@ address, not to loopback: **a change from A4's text, found live** (2026-11-19, W
 mode): a listener on WSL's loopback is not reachable from Windows at all (only the main port, bound to
 every address, was), so the pass-through would have nothing to forward to. WSL's NAT address is reachable
 from the PC and not from the LAN, which keeps A4's rule that the pass-through is the only way in from the
-network. It is accepted only when provably NAT mode (the address and the router both in 172.16.0.0/12 and
-in one network); otherwise (mirrored mode, unreadable) the listener stays closed. The app reads the bound
-address from `GET /mobile/same-network` (`bind`) to point its pass-through at it.
+network. NAT mode is READ, never inferred from the address range (builder #45: a mirrored WSL on a
+172.16-31.x home network has the same shape, and binding its LAN address with the per-address limit off
+would have skipped both protections). The reading, in order of trust (`readWslNetworkingMode`): WSL 1
+(no virtual network) is never NAT; `wslinfo --networking-mode` where it exists (WSL 2.0+) is authoritative;
+otherwise the Windows user's `.wslconfig` (`[wsl2] networkingMode`, or the older `[experimental]` key) read
+through `/mnt/c` with the profile folder from interop, else WSL 2's default, NAT, when the file is there and
+names no mode; a `.wslconfig` changed after WSL started (or within 10 minutes before, for clock drift) reads as
+unknown, and so does a missing `.wslconfig` when `wslinfo` cannot answer (a file removed after a mirrored WSL
+started leaves no trace). VirtioProxy's other name, `consomme`, and any other value read as unknown (closed). The bind plan (`wslBindPlan`) fails closed:
+- NAT, read, with WSL's own NAT address (shape-checked as before): bind it; the per-address limit is the
+  pass-through's (every caller arrives from its one address).
+- mirrored: closed (`409 wsl-networking-mode`), unless the Windows app says it enforces the network rule
+  (`windowsAppHandlesNetworkRule: true` in `POST /mobile/phone-setup`, stored with the wish and forgotten
+  on close). Then it binds loopback (shared with Windows in mirrored mode, never the LAN) and the
+  per-address limit STAYS ON here.
+- anything else (unknown, WSL 1, virtioproxy, none, bridged): closed, whatever the app says.
+The refusal comes before anything is recorded and, on the A5 path, before the credential is spent.
+The auth middleware judges a request that arrived on this listener first, whatever else is configured (an agent
+with no token included): the pairing redeem and ping pass unsigned (one list shared with the gate); anything else
+needs a verified device signature. A home phone or a phone let in at the computer is never a document device.
+`GET /mobile/same-network` reports the reading (`wslMode`). The app reads the bound address from
+`GET /mobile/same-network` (`bind`) to point its pass-through at it.
 
 Port: the stored port; else the port the caller asks for (`port` in `POST /mobile/phone-setup`, `--port` in
 the terminal); else the default, main port + 20000 (4040 -> 24040; 24040 when that would pass 32767), with
@@ -414,7 +433,9 @@ says the fresh check is the same for both addresses.
    listener. What it reaches is the gate's narrow surface.
 3. Inside WSL the network rule and the per-address limit are the Windows pass-through's (3c). Without the
    app, the listener on WSL's NAT address is reachable only from the PC itself (and from other WSL systems on it).
-4. WSL mirrored network mode is not supported yet: the listener stays closed there (no provable NAT address).
+4. WSL mirrored network mode opens only on the Windows app's word that it enforces the network rule, and then
+   only on loopback with the per-address limit on. In a mirrored WSL every caller reaches loopback through
+   the pass-through, so that limit counts them together (6 open, 40 a minute): enough for one phone's setup.
 5. A phone paired at home reaches the agent only on that network, and needs a second pairing for an
    address that works from outside (A4 point 10).
 6. The first phone let in here cannot approve until 3b.

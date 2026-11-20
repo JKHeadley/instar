@@ -56,3 +56,20 @@ integration) read the code, A4/A5's text and the spec. No blocker.
   native Windows (refused by design, now stated).
 
 The round-3 fixes have tests but were not re-reviewed. No cross-model round.
+
+## Round 4 (builder #45): WSL networking mode, review leads, and the first outside (GPT) review
+
+Scope: the review leads from the first outside-review attempt (which OpenAI refused) — the WSL NAT range guess (MAJOR),
+the two at-computer fields, the credential file read, the port-move race — then one outside review.
+
+- One independent Opus second pass on the four fixes: concur, five MINOR. Four fixed (ledger written only for an
+  at-computer admission; a 10-minute clock margin on the `.wslconfig` fallback; the ratchet narrowed and quote-agnostic;
+  the status reads the WSL mode before any open); one accepted (mirrored mode shares one loopback budget, in §4 limits).
+- One cross-model round: codex `gpt-6.2-sol`, read-only, neutral correctness prompt, not refused
+  (winapp-work/a4/gpt-review-2-20261120T121900Z.md). Four BLOCKERS, all confirmed against the code and fixed with tests that fail
+  without them: device routes on the home listener without a signature when no agent token is configured; document
+  devices did not carry the home/at-computer distinction; a missing `.wslconfig` read as NAT; the mint command could race
+  the spend's path-based write and removal. One MAJOR fixed (approval pushes to an at-computer iPhone). The other
+  MAJOR and MINOR leads are listed in the side-effects artifact for the identity session, unverified.
+
+The round-4 fixes after the GPT review were not re-reviewed.

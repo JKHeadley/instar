@@ -33,12 +33,28 @@ import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { ownLoopbackHost } from './documentLinkRoutes.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { admittedAtComputer, type ApprovedVia, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { NO_NOTE, decisionPath, decisionLine } from '../documents/originCheck.js';
 import { peersUpdating, decisionAnswer } from './documentRoutes.js';
 import { decisionMessageRequestId } from '../documents/decisions.js';
 import { REQUEST_ID_PATTERN } from '../core/MobileChatRequests.js';
 
 /** The CSP every document page response carries (§3.6). */
+/**
+ * Identity A4: devices that are never document devices. A phone paired on the home address works only
+ * on that listener, which serves no document page; a phone let in at the computer has no approval power
+ * until piece 3b, and a document decision is one. Read by the production device lookup (AgentServer
+ * `documentPageDeps().device`), for a local record and for a replicated ledger activation row.
+ */
+export function notADocumentDevice(d: Pick<DeviceRecord, 'addressKind' | 'admission' | 'approvedVia'>): boolean {
+  return d.addressKind === 'same-network' || admittedAtComputer(d);
+}
+
+/** The same rule from a replicated activation row: its `approvedVia`, and a home host (`<name>.local:<port>`, the only hosts that end that way). */
+export function notADocumentDeviceRow(row: { approvedVia?: string | null; host?: string | null }): boolean {
+  return admittedAtComputer({ approvedVia: (row.approvedVia ?? undefined) as ApprovedVia | undefined }) || /\.local:\d+$/i.test(String(row.host ?? ''));
+}
+
 export const DOC_PAGE_CSP = [
   "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:", "connect-src 'self'",
   "form-action 'none'", "frame-ancestors 'none'", "base-uri 'none'", "require-trusted-types-for 'script'",

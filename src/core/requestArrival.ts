@@ -49,3 +49,20 @@ export function arrivalOf(req: { socket?: unknown } | null | undefined): Arrival
 export function mayBeLocalArrival(req: { socket?: unknown } | null | undefined): boolean {
   return arrivalOf(req) === 'main';
 }
+
+/**
+ * The routes the same-network listener serves to a caller with no device signature: the pairing
+ * redeem and its ping (each carries its own one-time code). One list for the listener's gate and the
+ * auth middleware, so the two cannot drift.
+ */
+export const SAME_NETWORK_PUBLIC_ROUTES: ReadonlyArray<readonly [string, RegExp]> = [
+  ['POST', /^\/mobile\/pairing-codes\/redeem$/],
+  ['GET', /^\/mobile\/pairing-codes\/ping$/],
+];
+
+/** Whether `method path` is one of SAME_NETWORK_PUBLIC_ROUTES (path compared lower-case, without a trailing slash). */
+export function isSameNetworkPublicRoute(method: string, path: string): boolean {
+  const m = String(method ?? '').toUpperCase();
+  const p = (String(path ?? '/').split('?')[0].toLowerCase().replace(/\/+$/, '') || '/');
+  return SAME_NETWORK_PUBLIC_ROUTES.some(([rm, re]) => rm === m && re.test(p));
+}

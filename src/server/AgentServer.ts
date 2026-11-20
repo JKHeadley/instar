@@ -223,7 +223,7 @@ import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
 import { documentsReplaceViews, publishAsDocument, safeVerdict, systemDocumentLink, type ReadablePageDeps } from '../documents/readablePages.js';
-import { createDocumentPageRoutes } from './documentPageRoutes.js';
+import { createDocumentPageRoutes, notADocumentDevice, notADocumentDeviceRow } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
@@ -10780,10 +10780,10 @@ export class AgentServer {
   }
 
   /** A device's activation from the replicated key ledger: the one for this key, else its newest live key. */
-  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; client?: 'browser' } | null {
+  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; host?: string; client?: 'browser' } | null {
     const ledger = this.mobilePairing?.keyLedger;
     if (!ledger) return null;
-    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; client?: 'browser' } | null = null;
+    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; host?: string; client?: 'browser' } | null = null;
     for (const r of ledger.rows()) {
       if (r.type !== 'activation' || r.deviceId !== deviceId) continue;
       if (keyHash ? r.keyHash !== keyHash : ledger.isRevoked(r.keyHash, deviceId)) continue;
@@ -11110,6 +11110,10 @@ export class AgentServer {
         const d = svc.devices.get(deviceId);
         if (d) {
           if (d.status !== 'active') return null;
+          // Identity A4: a phone paired on the home address works only on that listener (no document
+          // page there), and a phone let in at the computer has no approval power until piece 3b (a
+          // document decision is one). Neither is a document device.
+          if (notADocumentDevice(d)) return null;
           // A member's linked computer is valid only while its link is (expiry, the linking phone).
           if (d.scope && (!linkStillValid(d, svc, Date.now()) || !svc.browserOn())) return null;
           const key = deviceKeyOf(d) ?? null;
@@ -11122,6 +11126,9 @@ export class AgentServer {
         // reads and writes work on any awake machine, nothing needs re-approval after a lease move).
         const act = this.documentLedgerActivation(deviceId);
         if (!act) return null;
+        // The same rule from the replicated row: let in at the computer, or paired on a home address
+        // (`<name>.local:<port>`, the only hosts that end that way).
+        if (notADocumentDeviceRow(act)) return null;
         const k = this.documentDeviceKey(deviceId, act.keyHash);
         if (k.status !== 'ok' || k.role === 'unknown') return null;
         const standing = k.role === 'person' && k.personKey ? svc.teamStanding(k.personKey) : null;

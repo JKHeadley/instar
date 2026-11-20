@@ -86,33 +86,89 @@ export function mintCeremonyCredential(stateDir: string, opts: { scope: Ceremony
   return { credential, expiresAt };
 }
 
-function read(stateDir: string): { ok: true; c: StoredCredential } | { ok: false; reason: 'none' | 'unreadable' | 'unsafe-file' | 'malformed' } {
+interface FileId { ino: number; dev: number }
+
+function read(stateDir: string): { ok: true; c: StoredCredential; id: FileId } | { ok: false; reason: 'none' | 'unreadable' | 'unsafe-file' | 'malformed'; id?: FileId } {
   const file = ceremonyCredentialPath(stateDir);
-  let st: fs.Stats;
-  try { st = fs.lstatSync(file); } catch (err) {
-    return { ok: false, reason: (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'none' : 'unreadable' }; // @silent-fallback-ok — no file is no credential; anything else refuses
+  // Opened once, and the OPEN handle is checked before any byte is read, so the file checked is the
+  // file read (no window between a path check and a path read). O_NOFOLLOW refuses a link at the last
+  // path part; O_NONBLOCK keeps a FIFO planted at the path from blocking the open.
+  let fd: number;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)); } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // @silent-fallback-ok — no file is no credential; a link (ELOOP) is an unsafe file; anything else refuses
+    return { ok: false, reason: code === 'ENOENT' ? 'none' : code === 'ELOOP' ? 'unsafe-file' : 'unreadable' };
   }
-  // Only a regular file that only the agent's own user can read or write. A link, or a file another
-  // user could have written, is never a credential.
-  if (!st.isFile() || (st.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) return { ok: false, reason: 'unsafe-file' };
   try {
-    const c = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<StoredCredential>;
-    if (c.version !== 1 || typeof c.hash !== 'string' || !/^[0-9a-f]{64}$/.test(c.hash) || typeof c.machineId !== 'string' || !c.machineId
-      || typeof c.expiresAt !== 'string' || !Number.isFinite(Date.parse(c.expiresAt)) || typeof c.scope !== 'string') return { ok: false, reason: 'malformed' };
-    return { ok: true, c: { version: 1, scope: c.scope as CeremonyScope, hash: c.hash, machineId: c.machineId, createdAt: String(c.createdAt ?? ''), expiresAt: c.expiresAt, failures: typeof c.failures === 'number' ? c.failures : 0 } };
-  } catch { return { ok: false, reason: 'malformed' }; } // @silent-fallback-ok — an unparseable file is no credential (refused)
+    const st = fs.fstatSync(fd);
+    // Only a regular file with one name, that only the agent's own user can read or write. A link, a
+    // second name for another file, or a file another user could have written is never a credential.
+    const id: FileId = { ino: st.ino, dev: st.dev };
+    if (!st.isFile() || st.nlink !== 1 || (st.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) return { ok: false, reason: 'unsafe-file', id };
+    if (st.size > 4096) return { ok: false, reason: 'malformed', id };
+    let text: string;
+    try { text = fs.readFileSync(fd, 'utf-8'); } catch { return { ok: false, reason: 'unreadable' }; } // @silent-fallback-ok — an unreadable handle refuses
+    try {
+      const c = JSON.parse(text) as Partial<StoredCredential>;
+      if (c.version !== 1 || typeof c.hash !== 'string' || !/^[0-9a-f]{64}$/.test(c.hash) || typeof c.machineId !== 'string' || !c.machineId
+        || typeof c.expiresAt !== 'string' || !Number.isFinite(Date.parse(c.expiresAt)) || typeof c.scope !== 'string') return { ok: false, reason: 'malformed', id };
+      return { ok: true, id, c: { version: 1, scope: c.scope as CeremonyScope, hash: c.hash, machineId: c.machineId, createdAt: String(c.createdAt ?? ''), expiresAt: c.expiresAt, failures: typeof c.failures === 'number' ? c.failures : 0 } };
+    } catch { return { ok: false, reason: 'malformed', id }; } // @silent-fallback-ok — an unparseable file is no credential (refused)
+  } finally {
+    try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only handle; nothing to report */ }
+  }
 }
 
 /**
- * Checks a presented credential and, when it is right, spends it (deletes the file) before returning.
- * Fails closed: no file, an unsafe or unparseable file, another machine's, another ceremony's, a lapsed
- * one, or a wrong one is refused. A wrong one costs a try (the third deletes it); a lapsed, unsafe,
- * unparseable or other machine's file is deleted. Synchronous from read to delete.
+ * Wrong tries, by credential hash, in this process (the server is the only spender). Kept in memory so
+ * a counted try never writes the credential file, which the mint command may be replacing at the same
+ * moment. A restart forgets the count; the secret is 256 bits and lives ten minutes.
+ */
+const wrongTries = new Map<string, number>();
+
+/**
+ * Takes the credential file out of its path ONLY if it is still the file that was checked (same inode),
+ * by renaming it aside: one rename succeeds, so two spenders cannot both take it, and a newer credential
+ * minted meanwhile is put back untouched. Returns the aside path to delete, or null when the file at the
+ * path is no longer the one checked (or is gone).
+ */
+function claimIfSame(stateDir: string, id: FileId | undefined): string | null {
+  if (!id) return null;
+  const file = ceremonyCredentialPath(stateDir);
+  const aside = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.claimed`;
+  try { fs.renameSync(file, aside); } catch { return null; } // @silent-fallback-ok — gone already (another spender took it): not ours to remove
+  let same = false;
+  try { const st = fs.lstatSync(aside); same = st.ino === id.ino && st.dev === id.dev; } catch { same = false; } // @silent-fallback-ok — unreadable aside is treated as not ours and put back below
+  if (same) return aside;
+  // A newer credential: back where it was, unless an even newer one is there now (link refuses to overwrite).
+  try { fs.linkSync(aside, file); } catch { /* @silent-fallback-ok — a newer one is already in place; this one is dropped below */ }
+  removeAside(aside, 'put back (a newer credential)');
+  return null;
+}
+
+function removeAside(aside: string, why: string): boolean {
+  try { SafeFsExecutor.safeUnlinkSync(aside, { operation: `ceremony credential ${why}` }); return true; } catch { return false; } // @silent-fallback-ok — the caller fails closed on false
+}
+
+/** Removes the checked credential (and only it). */
+function removeChecked(stateDir: string, id: FileId | undefined, why: string, hash?: string): void {
+  const aside = claimIfSame(stateDir, id);
+  if (aside) removeAside(aside, why);
+  if (hash) wrongTries.delete(hash);
+}
+
+/**
+ * Checks a presented credential and, when it is right, spends it (takes it out of its path, then
+ * deletes it) before returning. Fails closed: no file, an unsafe or unparseable file, another machine's,
+ * another ceremony's, a lapsed one, or a wrong one is refused. A wrong one costs a try (the third
+ * removes it); a lapsed, unsafe, unparseable or other machine's file is removed. Every removal acts only
+ * on the file that was checked (a credential minted meanwhile is never removed or overwritten), and a
+ * spend succeeds only for the one caller whose rename took the file.
  */
 export function spendCeremonyCredential(stateDir: string, presented: unknown, opts: { scope: CeremonyScope; machineId: string | null; now?: number }): { ok: true } | { ok: false; reason: CeremonyRefusal } {
   const r = read(stateDir);
   if (!r.ok) {
-    if (r.reason === 'unsafe-file' || r.reason === 'malformed') removeCeremonyCredential(stateDir, `refused (${r.reason})`);
+    if (r.reason === 'unsafe-file' || r.reason === 'malformed') removeChecked(stateDir, r.id, `refused (${r.reason})`);
     return { ok: false, reason: r.reason };
   }
   const c = r.c;
@@ -122,26 +178,24 @@ export function spendCeremonyCredential(stateDir: string, presented: unknown, op
   const created = Date.parse(c.createdAt);
   const expires = Date.parse(c.expiresAt);
   if (!Number.isFinite(created) || expires - created > CEREMONY_CREDENTIAL_TTL_MS || now > expires || now < created - CLOCK_ALLOWANCE_MS) {
-    removeCeremonyCredential(stateDir, 'lapsed'); return { ok: false, reason: 'expired' };
+    removeChecked(stateDir, r.id, 'lapsed', c.hash); return { ok: false, reason: 'expired' };
   }
-  if (!opts.machineId || c.machineId !== opts.machineId) { removeCeremonyCredential(stateDir, 'refused (another machine)'); return { ok: false, reason: 'wrong-machine' }; }
+  if (!opts.machineId || c.machineId !== opts.machineId) { removeChecked(stateDir, r.id, 'refused (another machine)', c.hash); return { ok: false, reason: 'wrong-machine' }; }
   // Another ceremony's credential is left for that ceremony.
   if (c.scope !== opts.scope) return { ok: false, reason: 'wrong-scope' };
   const given = typeof presented === 'string' && presented.length <= 128 ? presented : '';
   const a = Buffer.from(sha(given), 'hex');
   const b = Buffer.from(c.hash, 'hex');
   if (!given.startsWith(PREFIX) || !crypto.timingSafeEqual(a, b)) {
-    const failures = c.failures + 1;
-    // Only the credential that was checked: if a new one was made meanwhile, it is left untouched.
-    const still = read(stateDir);
-    if (still.ok && still.c.hash === c.hash) {
-      if (failures >= CEREMONY_CREDENTIAL_MAX_FAILURES) removeCeremonyCredential(stateDir, 'three wrong tries');
-      else writeAtomic0600(ceremonyCredentialPath(stateDir), { ...c, failures });
-    }
+    const failures = Math.max(c.failures, wrongTries.get(c.hash) ?? 0) + 1;
+    wrongTries.set(c.hash, failures);
+    if (failures >= CEREMONY_CREDENTIAL_MAX_FAILURES) removeChecked(stateDir, r.id, 'three wrong tries', c.hash);
     return { ok: false, reason: 'wrong' };
   }
-  removeCeremonyCredential(stateDir, 'spent');
-  // Spent means gone: if the delete did not happen, the credential is not accepted.
-  if (fs.existsSync(ceremonyCredentialPath(stateDir))) return { ok: false, reason: 'unreadable' };
+  // Spent means taken: only the caller whose rename moved THIS file aside succeeds, and only once it is deleted.
+  const aside = claimIfSame(stateDir, r.id);
+  if (!aside) return { ok: false, reason: 'none' };
+  wrongTries.delete(c.hash);
+  if (!removeAside(aside, 'spent')) return { ok: false, reason: 'unreadable' };
   return { ok: true };
 }

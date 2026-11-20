@@ -16,9 +16,13 @@
  * after a restart or a network change it reopens by itself only on a network observably the same
  * as an allowed one, and otherwise stays closed until the owner allows the network at the computer.
  *
- * Inside WSL it binds to WSL's own NAT address, which only the PC itself can reach: the Windows app's
- * pass-through is the only way to it from the network, and that pass-through observes the PC's
- * networks and limits each caller address. (WSL's loopback is not reachable from Windows; measured.)
+ * Inside WSL the networking mode is READ (wslinfo, else the Windows user's .wslconfig), never guessed
+ * from an address range (src/core/SameNetworkNetwork.ts wslBindPlan). In NAT mode it binds to WSL's own
+ * NAT address, which only the PC itself can reach: the Windows app's pass-through is the only way to it
+ * from the network, and that pass-through observes the PC's networks and limits each caller address.
+ * (WSL's loopback is not reachable from Windows in NAT mode; measured.) In mirrored mode WSL shares the
+ * PC's addresses, so it stays closed unless the Windows app said it handles the network rule; then it
+ * binds loopback and still limits each caller address itself. Any other or unknown mode: closed.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -31,7 +35,10 @@ import type { Socket } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import { markSameNetworkSocket } from '../core/requestArrival.js';
 import { loadOrCreateSameNetworkIdentity, type SameNetworkIdentity } from '../core/SameNetworkCert.js';
-import { addressHints, isWsl, networkIdOf, observeNetwork, wslNatAddress, type NetworkObservation, type ObservedNetwork } from '../core/SameNetworkNetwork.js';
+import {
+  addressHints, isWsl, networkIdOf, observeNetwork, readWslNetworkingMode, wslBindPlan, wslNatAddress,
+  type NetworkObservation, type ObservedNetwork, type WslBindPlan, type WslModeReading,
+} from '../core/SameNetworkNetwork.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { isFetchBlockedPort } from '../core/AgentRegistry.js';
 
@@ -93,9 +100,14 @@ export interface SameNetworkStateFile {
   name?: string;
   allowed: AllowedNetwork[];
   openedAt?: string;
+  /**
+   * Inside WSL: the Windows app said, when the owner opened the address, that it enforces the network
+   * rule itself. Needed only in mirrored mode (and even then the per-address limit stays on here).
+   */
+  windowsAppNetworkRule?: boolean;
 }
 
-export type HeldReason = 'network-unknown' | 'network-not-allowed' | 'port-unavailable' | null;
+export type HeldReason = 'network-unknown' | 'network-not-allowed' | 'port-unavailable' | 'wsl-networking-mode' | null;
 
 export interface SameNetworkStatus {
   wanted: boolean;
@@ -110,10 +122,16 @@ export interface SameNetworkStatus {
   bind: string | null;
   spkiHash: string | null;
   observer: 'agent' | 'windows-app';
+  /** Inside WSL: the networking mode as read, and where it was read from. Null outside WSL or before a read. */
+  wslMode: WslModeReading | null;
   network: ObservedNetwork | null;
   hints: string[];
   allowed: AllowedNetwork[];
 }
+
+export type OpenResult =
+  | { ok: true; status: SameNetworkStatus }
+  | { ok: false; reason: 'network-unknown' | 'port-unavailable' | 'port-fixed' | 'wsl-networking-mode'; detail: string; port?: number; mode?: string };
 
 export interface SameNetworkListenerDeps {
   stateDir: string;
@@ -131,8 +149,10 @@ export interface SameNetworkListenerDeps {
   port?: number;
   /** Override the bind address (tests: 127.0.0.1). */
   bindHost?: string;
-  /** Inside WSL, the address to bind (default: WSL's own NAT address, read live). */
-  wslBindAddress?: () => string | null;
+  /** Inside WSL, the networking mode (default: readWslNetworkingMode). */
+  wslMode?: () => Promise<WslModeReading>;
+  /** Inside WSL, WSL's own NAT address (default: read live from the route table; a shape check only). */
+  wslNatAddress?: () => string | null;
   announce?: boolean;
   /**
    * Whether anything uses the home address: an open setup, or a phone paired on it (active or
@@ -165,6 +185,13 @@ export class SameNetworkListener {
   private boundHost: string | null = null;
   private readonly perAddress = new Map<string, { open: number; times: number[] }>();
   private reconciling: Promise<void> | null = null;
+  /** Owner actions (open, allow, close) run one at a time, in the order asked. */
+  private ownerQueue: Promise<unknown> = Promise.resolve();
+  /** Whether this listener limits each caller address itself (decided with the bind). */
+  private limitPerAddress = true;
+  /** A definite WSL mode reading: the mode cannot change while this WSL (and so this process) runs. */
+  private wslModeCache: WslModeReading | null = null;
+  private lastWslMode: WslModeReading | null = null;
   /** Set by stop(): nothing opens after it, even an open already in flight. */
   private stopped = false;
   readonly name: string;
@@ -184,7 +211,8 @@ export class SameNetworkListener {
       const raw = JSON.parse(fs.readFileSync(this.file(), 'utf8')) as Partial<SameNetworkStateFile>;
       if (raw && raw.version === 1 && Array.isArray(raw.allowed)) {
         return { version: 1, open: raw.open === true, port: typeof raw.port === 'number' ? raw.port : null,
-          ...(typeof raw.name === 'string' && /^[a-z0-9-]{1,63}$/.test(raw.name) ? { name: raw.name } : {}), allowed: raw.allowed.filter((a) => a && typeof a.id === 'string').slice(0, 16), ...(raw.openedAt ? { openedAt: raw.openedAt } : {}) };
+          ...(typeof raw.name === 'string' && /^[a-z0-9-]{1,63}$/.test(raw.name) ? { name: raw.name } : {}), allowed: raw.allowed.filter((a) => a && typeof a.id === 'string').slice(0, 16), ...(raw.openedAt ? { openedAt: raw.openedAt } : {}),
+          ...(raw.windowsAppNetworkRule === true ? { windowsAppNetworkRule: true } : {}) };
       }
     } catch {
       // @silent-fallback-ok — no state file means the listener was never asked for: closed, the safe default.
@@ -219,7 +247,7 @@ export class SameNetworkListener {
     return {
       wanted: this.state.open, listening: this.listening(), held: this.state.open ? this.held : null,
       host: this.host(), name: this.name, port: this.boundPort ?? this.state.port, preferredPort: this.preferredPort(), bind: this.boundHost,
-      spkiHash: this.spkiHash(), observer: this.wsl ? 'windows-app' : 'agent',
+      spkiHash: this.spkiHash(), observer: this.wsl ? 'windows-app' : 'agent', wslMode: this.wsl ? this.lastWslMode : null,
       network: obs?.kind === 'observed' ? obs.network : null,
       hints: this.wsl ? [] : addressHints(), allowed: this.state.allowed.map((a) => ({ ...a })),
     };
@@ -249,7 +277,34 @@ export class SameNetworkListener {
    * port is never swapped for another: if it cannot be listened on, the open fails and the earlier
    * port is kept.
    */
-  async openForOwner(opts: { port?: number; mayMovePort?: boolean } = {}): Promise<{ ok: true; status: SameNetworkStatus } | { ok: false; reason: 'network-unknown' | 'port-unavailable' | 'port-fixed'; detail: string; port?: number }> {
+  openForOwner(opts: { port?: number; mayMovePort?: boolean; windowsAppHandlesNetworkRule?: boolean } = {}): Promise<OpenResult> {
+    return this.serial(() => this.openForOwnerNow(opts));
+  }
+
+  /** Run an owner action after every one asked before it has finished (a failed one does not block the next). */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.ownerQueue.then(fn, fn);
+    this.ownerQueue = run.catch(() => { /* @silent-fallback-ok — the caller of this action gets its error; the queue only orders */ });
+    return run;
+  }
+
+  /**
+   * Inside WSL, whether the home address could open now, and where it would bind. Read before anything
+   * is recorded or spent. Outside WSL (or with a test bind override) there is nothing to refuse here.
+   */
+  async wslPlan(windowsAppHandlesNetworkRule: boolean): Promise<WslBindPlan | null> {
+    if (!this.wsl || this.deps.bindHost) return null;
+    let reading = this.wslModeCache;
+    if (!reading) {
+      reading = await (this.deps.wslMode ?? (() => readWslNetworkingMode()))();
+      if (reading.mode !== 'unknown') this.wslModeCache = reading;
+    }
+    this.lastWslMode = reading;
+    const nat = reading.mode === 'nat' ? this.wslNat() : null;
+    return wslBindPlan(reading, nat, windowsAppHandlesNetworkRule);
+  }
+
+  private async openForOwnerNow(opts: { port?: number; mayMovePort?: boolean; windowsAppHandlesNetworkRule?: boolean }): Promise<OpenResult> {
     const asked = opts.port;
     const before = this.state.port;
     if (asked !== undefined && before !== null && asked !== before && !opts.mayMovePort) {
@@ -257,6 +312,13 @@ export class SameNetworkListener {
     }
     const obs = await this.observeNow();
     if (obs.kind === 'unknown') return { ok: false, reason: 'network-unknown', detail: `This computer cannot tell which network it is on (${obs.reason}), so the home address stays closed.` };
+    const declared = opts.windowsAppHandlesNetworkRule === true;
+    const plan = await this.wslPlan(declared);
+    if (plan && !plan.ok) {
+      featureEvidence.record(FEATURE, { kind: 'held', reason: `WSL networking mode refused: ${plan.mode}` });
+      return { ok: false, reason: 'wsl-networking-mode', mode: plan.mode, detail: `The home address stays closed: ${plan.reason}.` };
+    }
+    if (this.wsl) this.state.windowsAppNetworkRule = declared;
     // Moving: the reconcile below sees the bound port differ from the stored one and rebinds.
     if (asked !== undefined && asked !== before) this.state.port = asked;
     this.allowObservation(obs);
@@ -284,7 +346,11 @@ export class SameNetworkListener {
   }
 
   /** The owner allowed the current network at the computer (one tap, after the fresh check). */
-  async allowCurrentNetwork(): Promise<{ ok: boolean; status: SameNetworkStatus; detail?: string }> {
+  allowCurrentNetwork(): Promise<{ ok: boolean; status: SameNetworkStatus; detail?: string }> {
+    return this.serial(() => this.allowCurrentNetworkNow());
+  }
+
+  private async allowCurrentNetworkNow(): Promise<{ ok: boolean; status: SameNetworkStatus; detail?: string }> {
     const obs = await this.observeNow();
     if (obs.kind === 'unknown') return { ok: false, status: this.status(), detail: 'This computer cannot tell which network it is on.' };
     this.allowObservation(obs);
@@ -307,8 +373,13 @@ export class SameNetworkListener {
   }
 
   /** The owner closed the home address. Phones paired on it can no longer reach the agent. */
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    return this.serial(() => this.closeNow());
+  }
+
+  private async closeNow(): Promise<void> {
     this.state.open = false;
+    delete this.state.windowsAppNetworkRule;
     this.writeState();
     if (this.reconciling) await this.reconciling.catch(() => { /* @silent-fallback-ok — closing below either way */ });
     await this.stopServer();
@@ -340,6 +411,7 @@ export class SameNetworkListener {
           // Nothing uses the home address (a setup ended, a restart dropped it, the only home phone
           // was removed): close it, so it is never open with nothing behind it.
           this.state.open = false;
+          delete this.state.windowsAppNetworkRule;
           this.writeState();
           featureEvidence.record(FEATURE, { kind: 'fired', reason: 'closed: nothing uses the home address' });
         }
@@ -351,15 +423,27 @@ export class SameNetworkListener {
           await this.stopServer();
           return;
         }
-        const bind = this.deps.bindHost ?? (obs.kind === 'observed' ? obs.network.address : this.wslBind());
-        if (!bind) {
-          // WSL outside NAT mode (mirrored, or unreadable): no address only the PC can reach, so closed.
-          this.held = 'network-unknown';
-          await this.stopServer();
-          return;
+        let bind: string | null; let limit: boolean;
+        if (this.deps.bindHost) {
+          // A test override. Loopback there has one caller address (the test), so no per-address limit.
+          bind = this.deps.bindHost; limit = bind !== '127.0.0.1';
+        } else if (this.wsl) {
+          const plan = await this.wslPlan(this.state.windowsAppNetworkRule === true);
+          if (!plan || !plan.ok) {
+            // Not provably NAT, or mirrored without the Windows app's word: closed.
+            this.held = 'wsl-networking-mode';
+            if (this.listening()) featureEvidence.record(FEATURE, { kind: 'held', reason: 'closed: WSL networking mode' });
+            await this.stopServer();
+            return;
+          }
+          bind = plan.bind; limit = plan.perAddressLimit;
+        } else {
+          bind = obs.kind === 'observed' ? obs.network.address : null; limit = true;
         }
-        if (this.listening() && this.boundHost === bind && (this.state.port === null || this.boundPort === this.state.port)) { this.held = null; return; }
+        if (!bind) { this.held = 'network-unknown'; await this.stopServer(); return; }
+        if (this.listening() && this.boundHost === bind && this.limitPerAddress === limit && (this.state.port === null || this.boundPort === this.state.port)) { this.held = null; return; }
         await this.stopServer();
+        this.limitPerAddress = limit;
         const ok = await this.startServer(bind);
         this.held = ok ? null : 'port-unavailable';
       } catch (err) {
@@ -373,14 +457,16 @@ export class SameNetworkListener {
     return this.reconciling;
   }
 
-  private wslBind(): string | null {
-    if (this.deps.wslBindAddress) return this.deps.wslBindAddress();
-    try { return wslNatAddress(fs.readFileSync('/proc/net/route', 'utf8'), os.networkInterfaces()); } catch { return null; } // @silent-fallback-ok — unreadable means not provably NAT: the listener stays closed
+  private wslNat(): string | null {
+    if (this.deps.wslNatAddress) return this.deps.wslNatAddress();
+    try { return wslNatAddress(fs.readFileSync('/proc/net/route', 'utf8'), os.networkInterfaces()); } catch { return null; } // @silent-fallback-ok — unreadable means no NAT address: the listener stays closed
   }
 
-  private perAddressOk(addr: string): boolean {
-    // Inside WSL every caller arrives from loopback through the pass-through, which limits each address itself.
-    if (this.wsl || this.boundHost === '127.0.0.1') return true; // one caller address: the pass-through limits each real caller
+  /** Whether a new connection from `addr` is let through the per-address limit (where this listener applies it). */
+  perAddressOk(addr: string): boolean {
+    // Only where the bind plan says another program limits each real caller (WSL NAT: every caller
+    // arrives from the pass-through's one address), or a test's loopback override. Never in mirrored mode.
+    if (!this.limitPerAddress) return true;
     const t = this.now();
     // Forget addresses with nothing open and nothing in the last minute, so the map stays small.
     if (this.perAddress.size > 256) for (const [k, v] of this.perAddress) if (v.open === 0 && v.times.every((x) => t - x >= 60_000)) this.perAddress.delete(k);
