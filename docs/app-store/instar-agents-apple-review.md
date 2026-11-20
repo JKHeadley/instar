@@ -22,7 +22,7 @@ bundle `io.sagemindai.instar`.
 | External TestFlight beta review | Passed | Public link: https://testflight.apple.com/join/Z5921URm |
 | App Store version 0.4.0 | READY_FOR_SALE | ASC appStoreVersions, created 2026-10-31 |
 | App Store version 0.5.0 | READY_FOR_SALE | ASC appStoreVersions, created 2026-11-16; public lookup shows 0.5.0 released 2026-11-17 |
-| Reviewer demo agent + pairing page | **Offline** | `instar-review.dawn-tunnel.dev` answers 530 (no connector) |
+| Reviewer demo agent + pairing page | Rebuilt 2026-11-20, in service | Same address Apple holds; proven with a test phone (pair, auto-approve, chat; shell and email requests refused) |
 
 An earlier version of this file said the App Store submission had not started. That was wrong:
 it was rebuilt from what survived the outage, before App Store Connect could be read.
@@ -35,10 +35,11 @@ No demo account is required. The notes send the reviewer to
 offers "Pair with Demo?". The page then approves the phone by itself, or shows a code to type in
 if the app asks for one. Each link works once, and the page can be used several times.
 
-That agent ("Demo") and its page didn't survive the outage. No agent home, tunnel credential or
-note names them on the Studio, Laptop, Mini or M5 Pro. They have to be rebuilt before the next
-version goes to review. The rebuilt page should keep the same URL, so the notes Apple holds stay
-correct.
+The original agent ("Demo") and its page were lost with the Studio. They were rebuilt on
+2026-11-20 on the Mac mini at the same address, so the notes Apple holds stay correct. How it's built, where
+it runs, its chat-only fence and the test that proves it are all in the private app repo,
+`EchoOfDawn/instar-desktop-apps`, branch `ops/app-review-demo`, folder `ops/app-review-demo/`
+(`README.md` first). It's also listed in the agent's test-fixtures file.
 
 ## Reference: what a submission needs (kept for the next version)
 
@@ -139,9 +140,5 @@ So a fixed link can't work. The plan:
 
 ## Next steps
 
-1. Rebuild the review demo: a Demo agent with no tools, plus its pairing page at the same
-   `instar-review.dawn-tunnel.dev/app-review/...` address. It needs a dawn-tunnel.dev named tunnel
-   (asked the post-mortem session how those are made since the rebuild).
-2. Prove it end to end: a test phone pairs through the page and gets a chat reply.
-3. Next version (from the app rebuild, topic 145973): review notes unchanged, screenshots refreshed
-   if the UI changed.
+1. Next version (from the app rebuild, topic 145973): keep the review notes unchanged, refresh
+   screenshots if the UI changed, and run the demo proof (`fake-phone.mjs`) before submitting.
