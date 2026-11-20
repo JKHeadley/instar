@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "accounts-missing-machine-cells",
+  "sessionId": "97ab092d-3809-42ab-a5c2-c09c9738a749",
+  "timestamp": "2026-11-20T20:46:43.457Z",
+  "artifactPath": "upgrades/side-effects/accounts-missing-machine-cells.md",
+  "artifactSha256": "b13db5211d9870396b1ec4532e806d736557f72dcc6eff4120863d4592c26497",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-accounts.test.ts",
+    "upgrades/next/accounts-missing-machine-cells.md",
+    "upgrades/side-effects/accounts-missing-machine-cells.eli16.md",
+    "upgrades/side-effects/accounts-missing-machine-cells.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard view-model and one button reusing an existing PIN-gated route; no state, config, migration or authority; a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/accounts-missing-machine-cells.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-missing-machine-cells.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
