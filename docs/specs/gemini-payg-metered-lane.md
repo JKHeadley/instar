@@ -2,7 +2,10 @@
 title: "Gemini pay-per-use lane — a named, capped, metered Gemini API door (Neon + Hydrogen)"
 slug: "gemini-payg-metered-lane"
 author: "echo"
-status: "draft"
+status: "approved"
+approved: true
+approved-by: "echo (build-decision owner session echo-topic-145625, topic 145625, 2026-11-20; agent approval under Rule 82 — not a constitution or protected-list change). Operator decision, verbatim (Justin, 2026-11-20 13:26 PST, topic 145625): 'please proceed with the path that is the most cost-effective for us that you have recommended and let's set a $50 cap for now and integrate Gemini with our other options for models, including Gemini neon and Gemini hydrogen'. Money release stays the operator's separate PIN commit (§8)."
+constitution-check: "POST /spec/conformance-check, run in 6 heading-split parts (<21k chars each, 102 standards per part), 2026-11-20T22:34:52Z–22:36:31Z: 10/10/13/7/10/6 possible-violation flags, 0 judged real conflicts. Families: Rule 4/86 ruled money+secrets exceptions read as matcher authority; Judgment-Within-Floors on operator-approved governed numbers; already-stated honest limits (shared bearer, readable PIN FD-G22). Build folds: attribution pointer in plan text; FD-G27 reader inventory for openrouter/groq bench keys before the secret-get refusal."
 parent-spec: "docs/specs/routing-control-room-spend-alerts.md"
 parent-principle: "Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One"
 eli16-overview: "docs/specs/gemini-payg-metered-lane.eli16.md"
