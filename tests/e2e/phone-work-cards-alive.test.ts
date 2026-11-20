@@ -133,7 +133,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(b.status, JSON.stringify(b.body)).toBe(403); expect(b.body.error).toBe('device-signature-required');
 
       // An agent card: the phone opens it alone and gets the board's card.
-      const agentCard = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false });
+      const agentCard = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false, recommendation: 'Venue A: closest to everyone.', whyYou: 'Only you know who is coming.' });
       expect(agentCard.status).toBe(201);
       const one = await send(app, owner, 'GET', `/mobile/work-board/cards/${agentCard.body.cardId}`);
       expect(one.status, JSON.stringify(one.body)).toBe(200);

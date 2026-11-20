@@ -91,6 +91,12 @@ Concur with the review: every create goes through the existing owner-phone write
 
 ---
 
+## Update after merging main (2026-11-20)
+
+Main now refuses an agent-written card that has no `recommendation` or `whyYou` (work-board-cards-appear §2, `WorkBoardService.askFieldsRefusal`). The e2e fixture's agent card in `tests/e2e/phone-work-cards-alive.test.ts` was written before that rule, so CI read a 400 where it expected 201. The fixture now carries both fields, as every agent card must. This is a test-only change: no runtime file changed, no decision point is touched, and none of the answers above change.
+
+---
+
 ## Evidence pointers
 
 - `tests/unit/phone-work-cards.test.ts`, `tests/integration/phone-work-cards.test.ts`, `tests/e2e/phone-work-cards-alive.test.ts`, `tests/unit/work-board-wiring.test.ts`, `tests/integration/team-access-status-table.test.ts`.
