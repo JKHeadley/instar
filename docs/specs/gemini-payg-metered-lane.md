@@ -358,8 +358,10 @@ narrowing is not silent).
   refused with `outside-verified-tier`. That refusal is a scope limit, not a guess.
 - If Google publishes a long-context rate (for example, above 200k tokens), it lands as
   a second point.
-- Until then, `maxInputTokens` is the lowest disclosed tier threshold, or 200,000 if
-  none is disclosed. So the gate never prices a request at a rate that might not apply.
+- **No assumed coverage.** A model with no verified point and range is refused
+  (`outside-verified-tier` or `unknown-price`). There is no assumed 200,000-token
+  coverage. The single release-proof call, which uses a fixed tiny input, is the only
+  call ever priced from an unverified point, at `conservativeMax`.
 
 **Verification.**
 
@@ -370,6 +372,11 @@ narrowing is not silent).
 - `conservativeMax` is `{ in: 6.00, out: 30.00 }`, twice Neon's list price.
 - Because the release gate requires verified prices (§8 (d)), unverified prices are only
   ever used for the single release-proof call.
+
+**Stale points.** For this door, once a point is past its 45-day freshness window it
+refuses (`stale-price-fail-closed`) rather than booking at a multiple. A multiple of an
+unverified price is not a provider ceiling. Run 2's price read, repeated by the monthly
+reconciliation job, refreshes the points.
 
 **Manifest metadata.** Points use the 45-day freshness convention (`freshnessSlaDays: 45`,
 `staleMode: book-conservative-max`). Points land by reviewed git commit, the sanctioned
@@ -500,11 +507,19 @@ today's vault sync copies the whole vault to every online peer.
     { noEchoTransfer: {attestedBy, at, method, sourceMessageRef},
       oneKeyArtifact: {providerKeyId, keyFingerprint, readAt, screenshotPath,
                        screenshotSha256},
+      googleSpendLimit: {kind: "hard-cap" | "budget-alert-only", amountUsd, readAt,
+                         screenshotPath, screenshotSha256},
       boundTo: {designationEpoch} }
     ```
 
     Render reads only this file. The route works while money is off, because the mint
     happens before go-live.
+    - **Google's own limit, evidenced.** `googleSpendLimit` records which control
+      Google actually applies to the dedicated project and its amount (at most $50).
+      Instar's booked-spend cap is the authority. Google's control is the second wall,
+      and the plan text names which kind it is. If Google offers only budget alerts, the
+      text says so plainly: "Google will warn but not stop at $50; Instar's own cap is
+      what stops spending." A missing record means `awaiting-key`.
     - **Validation.** A malformed body is refused with 400. At render:
       - the stored screenshot's hash must match;
       - `readAt` must be later than the mint start the **server** recorded when the
@@ -600,8 +615,12 @@ MeteredDoorPolicy {
 - **Period zone.** For `gemini_api_key_payg`, the day and month are both in
   `America/Los_Angeles`, because Google's billing month and the operator's day are
   Pacific. The zone is a per-key value in the PIN record, defaulting to UTC for every
-  other key so existing behaviour is unchanged. Epochs are read from each row's stored charged period, never recomputed, so a zone
-  change cannot reopen headroom.
+  other key so existing behaviour is unchanged.
+  - **The zone is fixed once the door goes live.** Changing it would let a reservation
+    near midnight on a month's last day land in a fresh month. It can change only
+    through a new go-live, and only applied at a boundary where both calendars have
+    closed the charged period.
+  - Each row stores its charged period, which is never recomputed.
 
 **Limits for `gemini_api_key_payg`** (all operator-approved governed state, shown in the
 PIN plan):
@@ -885,7 +904,12 @@ a **fresh go-live** on the new machine, using the same `gemini-payg-setup` plan 
   key.
 - **The month restarts as exhausted.** The new machine's month, day and E2 share start
   exhausted, because the old holder's spend after its last published figures is
-  unknown. The plan shows the last advert, its age, and outstanding reserves as
+  unknown.
+  - The new holder records this as an idempotent `transfer-adjustment` row in its own
+    ledger. Its cost equals the remaining monthly headroom, so the month reads full. It is
+    bound to the intent hash and the charged day and month.
+  - A full rebuild from rows therefore keeps the month closed. It never relies on a
+    totals file. The plan shows the last advert, its age, and outstanding reserves as
   information only. Headroom reopens only at the month reset or by a PIN restore.
 - **Fresh governed state.** The full setup struct is applied, and the proof call is
   repeated, bound to the new intent hash.
@@ -1558,8 +1582,9 @@ on. They are fixes for the build to pick up in passing, or accepted limits.
 - **`secret-get.mjs` list.** Generate its literal list from `METERED_SECRET_NAMES` at
   build time, instead of keeping a hand copy pinned by a drift test.
 - **Index for used review slots.** Keep the used `(specSha256, round)` keys and the
-  idempotency-key store in an indexed set beside the ledger totals, expiring after the
-  poll deadline plus one day.
+  idempotency-key store in an indexed cache beside the ledger totals. A cache miss
+  consults the retained ledger, so a consumed slot never resets after eviction or a
+  restart.
 - **Retention.** `provider_cost_report` rows follow the parent table's retention (400
   days). Holder-local history stays on an old holder after a transfer; this is accepted.
 - **Repeated freeze requests.** A peer that keeps minting new freeze-request ids can
