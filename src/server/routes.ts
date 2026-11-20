@@ -133,6 +133,7 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
@@ -9691,8 +9692,17 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   // context-budget-layered-summaries §7.6: chunk (C) and range (C2) records of
   // one conversation, with sizes, status and each span's archive state.
-  // Bearer-only (memory-session tokens are refused: not on the session guard's
-  // allowlist), bounded, paginated; 503 while the layers are off.
+  // Bearer, or a fold-probe memory-session token for this topic only (§10 shadow
+  // answerer; the session guard admits no other memory session), bounded,
+  // paginated; 503 while the layers are off.
+  /** A memory-session caller may read only its own topic's chunks (defence in depth beside the guard). */
+  const chunkCallerAllowed = (res: ExpressResponse, topicKey: string): boolean => {
+    const ms = res.locals.memorySession as { placeKey?: string | null } | undefined;
+    if (!ms) return true;
+    if (ms.placeKey === `${FOLD_PROBE_PLACE_PREFIX}${topicKey}`) return true;
+    res.status(403).json({ error: 'not-available-to-this-session' });
+    return false;
+  };
   router.get('/topic/:id/chunks', (req, res) => {
     if (!ctx.contextLayers) {
       res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
@@ -9700,6 +9710,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const topicKey = String(req.params.id);
     if (!isSafeChunkTopic(topicKey)) { res.status(400).json({ error: 'invalid topic id' }); return; }
+    if (!chunkCallerAllowed(res, topicKey)) return;
     const kindQ = typeof req.query.kind === 'string' ? req.query.kind : 'all';
     if (!['all', 'chunk', 'c2'].includes(kindQ)) { res.status(400).json({ error: 'kind must be all, chunk or c2' }); return; }
     const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
@@ -9715,6 +9726,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const topicKey = String(req.params.id);
     const key = String(req.params.k);
     if (!isSafeChunkTopic(topicKey) || !isSafeChunkKey(key)) { res.status(400).json({ error: 'invalid topic id or chunk key' }); return; }
+    if (!chunkCallerAllowed(res, topicKey)) return;
     const r = readChunk(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, key);
     if (!r) { res.status(404).json({ error: 'no such chunk' }); return; }
     res.json(r);
