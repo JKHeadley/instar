@@ -15,7 +15,10 @@ Decided by Justin, topic 141868, 2026-11-11 18:40 PST ("B-lite, but lets make it
 - 21 of the 24 matched a transcript. The other 3 each had two candidates, so they stay unmatched.
 - 25.7M tokens in total. The mean is 1.22M per matched run and the median is 1.12M.
 
-## After (low effort)
+## After (low effort): 2026-11-20T21:35:00Z → 2026-11-22T21:35:00Z
+
+Started 2026-11-20T21:35:00Z, when the scheduler loaded the restored bugs-overseer with `thinkingMode: "low"` (the loader's rescan after its instruction file got its YAML header). First low-effort run 22:07Z; runs every two hours at :07. Measure with `measure.py <auth-file> 2026-11-20T21:35:00Z 2026-11-22T21:35:00Z after-48h.json` on the lease holder.
+
 
 Starts when `thinkingMode: "low"` is set on bugs-overseer (PR #3098 is merged). The Nov 2026 Studio rebuild lost the job and two of its scripts, so the start waits until all three are restored; the start time is recorded here when it happens (commitment CMT-2071). It runs for 48 hours, and then `measure.py` runs over that window into `after-48h.json`. Each run's launch record must show `applied: thinkingMode low`, or that run is excluded and named.
 
