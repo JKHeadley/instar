@@ -2537,6 +2537,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}\/destinations$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    // The phone tree (work-front-doors stage 2; hierarchy v3 §7.4): owner only, like roots and nodes. A member keeps the flat list.
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/tree$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/(pending|changes\/[a-z0-9_.:%-]{8,480})$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'POST', re: /^\/mobile\/conversation-graph\/forget-header\/(discover|ensure)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/erasures\/[A-Za-z0-9_-]{8,160}$/, statuses: active, ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
