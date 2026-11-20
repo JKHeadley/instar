@@ -13,9 +13,12 @@ import {deriveGraphErasureIdentity} from './ConversationGraphOperation.js';
 import {verifyGraphSourceObservationCoreSource,type SignedGraphSourceOperation} from './ConversationGraphSourceInventory.js';
 import { verifyGraphDelegationCoreSource, type SignedGraphDelegationSource } from './ConversationGraphDelegation.js';
 import { verifyRemoteGraphDelegationCoreSource, type SignedRemoteGraphDelegationSource } from './ConversationGraphDelegationRemote.js';
+import { verifyCosTreeImportCoreSource, type CosTreeImportSource } from './ConversationGraphCosTreeImport.js';
 
 export const GRAPH_AUTHORIZATION_DOMAIN = 'graph-authorization-receipt-v1';
-export type GraphAuthenticationMethod = 'owner-device' | 'owner-dashboard' | 'owner-callback' | 'dispatch' | 'source-observation';
+/** `cos-tree-import`: the Chief of Staff tree import (work-front-doors §3.1). Builds before it refuse it, which is why
+ * the importer runs only when every graph member advertises it (ConversationGraphCosTreeImport.cosTreeImportGate). */
+export type GraphAuthenticationMethod = 'owner-device' | 'owner-dashboard' | 'owner-callback' | 'dispatch' | 'source-observation' | 'cos-tree-import';
 
 export interface GraphAuthorizationReceipt {
   v: 1; agentId: string; eventId: string; coreHash: string;
@@ -31,6 +34,8 @@ export interface GraphAuthorizationProof {
   originalLease: LeaseRecord;
   sourceObservation?: SignedGraphSourceOperation;
   dispatchSource?: SignedGraphDelegationSource | SignedRemoteGraphDelegationSource;
+  /** The tree record and project mapping an import-tier placement was made from (`cos-tree-import` only). */
+  importSource?: CosTreeImportSource;
 }
 export type GraphProofVerdict = { ok: true } | { ok: false; reason: string };
 
@@ -50,9 +55,9 @@ export function verifyGraphAuthorization(packet: GraphOperationPacket, core: unk
     if(!sameGraphErasureIdentity(packet.erasureIdentity,deriveGraphErasureIdentity(packet.coreType,core)))return denied('erasure-identity-core-mismatch');
     if(packet.controlHash!==canonicalHash({v:1,coreType:packet.coreType,core,authorizationProof:proof}))return denied('control-capsule-mismatch');
     const r = proof?.receipt;
-    if (!proof || Object.keys(proof).some((key) => !['receipt', 'membership', 'lease', 'originalLease', 'dispatchSource', 'sourceObservation'].includes(key))) return denied('malformed-proof');
+    if (!proof || Object.keys(proof).some((key) => !['receipt', 'membership', 'lease', 'originalLease', 'dispatchSource', 'sourceObservation', 'importSource'].includes(key))) return denied('malformed-proof');
     if (!r || r.v !== 1 || !opaque(r.actorPrincipal) || !opaque(r.receiptId) || !iso(r.acceptedAt)
-      || !['owner-device', 'owner-dashboard', 'owner-callback', 'dispatch', 'source-observation'].includes(r.authenticationMethod)) return denied('malformed-authorization');
+      || !['owner-device', 'owner-dashboard', 'owner-callback', 'dispatch', 'source-observation', 'cos-tree-import'].includes(r.authenticationMethod)) return denied('malformed-authorization');
     if (Object.keys(r).sort().join(',') !== ['v', 'agentId', 'eventId', 'coreHash', 'actorPrincipal', 'authenticationMethod',
       'receiptId', 'membershipEpoch', 'leaseEpoch', 'idempotencyKey', 'writerId', 'fencedLeaseHash', 'acceptedAt', 'signature'].sort().join(',')) return denied('malformed-authorization');
     const ref = c.receipt as { kind?: unknown; id?: unknown } | undefined;
@@ -62,6 +67,7 @@ export function verifyGraphAuthorization(packet: GraphOperationPacket, core: unk
     if (r.authenticationMethod === 'dispatch'
       ? packet.coreType!=='graph-event'||c.authority !== 'delegation' || ref?.kind !== 'dispatch-record'
       : r.authenticationMethod==='source-observation'?packet.coreType!=='source-observation'||c.authority!=='source'||ref?.kind!=='source-observation-record'
+      : r.authenticationMethod==='cos-tree-import'?packet.coreType!=='graph-event'||c.authority!=='import'||ref?.kind!=='import-record'
       : packet.coreType==='source-observation'||c.authority !== 'owner' || ref?.kind !== 'owner-proof') return denied('receipt-authority-mismatch');
     if (r.agentId !== packet.agentId || r.eventId !== packet.eventId || r.coreHash !== packet.coreHash
       || r.idempotencyKey !== packet.idempotencyKey || r.membershipEpoch !== packet.membershipEpoch
@@ -78,6 +84,9 @@ export function verifyGraphAuthorization(packet: GraphOperationPacket, core: unk
     if(r.authenticationMethod!=='source-observation'&&proof.sourceObservation!==undefined)return denied('unexpected-source-observation');
     if(r.authenticationMethod==='source-observation'&&(!proof.sourceObservation||!verifyGraphSourceObservationCoreSource(core,proof.sourceObservation,proof.membership,packet.writerId)))return denied('source-observation-invalid');
     if (r.authenticationMethod !== 'dispatch' && proof.dispatchSource !== undefined) return denied('unexpected-dispatch-source');
+    if (r.authenticationMethod !== 'cos-tree-import' && proof.importSource !== undefined) return denied('unexpected-import-source');
+    // The core must be exactly the import event its carried tree record yields, written by this writer.
+    if (r.authenticationMethod === 'cos-tree-import' && !verifyCosTreeImportCoreSource(core, proof.importSource, packet.agentId, packet.writerId, packet.leaseEpoch)) return denied('import-source-invalid');
     if (r.authenticationMethod === 'dispatch') {
       const source = proof.dispatchSource;
       const valid = source?.kind === 'remote-delegation-source'

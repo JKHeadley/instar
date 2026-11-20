@@ -246,6 +246,9 @@ export function validateGraphEvent(raw: unknown): GraphEvent | null {
     if ((e.relation ?? null) !== relation) return null;
     // Delegation may only place a worker conversation under its coordinating conversation (§3.2).
     if (authority === 'delegation' && relation !== 'delegates-to') return null;
+    // Import (the Chief of Staff tree, work-front-doors §3.1) may only put a conversation directly under an
+    // effort, as a FIRST placement: it never replaces anything, so it can never displace an existing one.
+    if (authority === 'import' && (relation !== 'coordinates' || replaces.length !== 0)) return null;
     return { ...base, op: 'set-primary-placement', parent, relation, replacesPlacementEventIds: replaces };
   }
   if (e.op === 'set-front-door') {

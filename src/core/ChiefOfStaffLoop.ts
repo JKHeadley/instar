@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
   buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
-  type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
+  type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, foldTreeRecords, type TreeNode, type TreeRecord, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { composePauseAsk, type OwnerPauseSource } from './cosOwnerPauseSource.js';
 import type { ChiefOfStaffActionProtocol, CosProtocolOutcome } from './ChiefOfStaffActionProtocol.js';
@@ -532,6 +532,13 @@ export class ChiefOfStaffLoop {
   /** §1.4: the tree (parent link per conversation) for the app list and the console. Empty when the union is unreadable. */
   tree(): Map<string, TreeNode> {
     try { return foldTreeState(this.unionMemo()); } catch { /* @silent-fallback-ok: an unreadable union draws no tree; the loop health shows lastError on its next tick */ return new Map(); }
+  }
+
+  /** The live tree records with the HLC and origin of each winning write (the graph import, work-front-doors §3.1).
+   *  Null when the union is unreadable, so a caller can tell "no tree" from "could not read it". Read fresh, not memoized:
+   *  the importer re-checks a record under the graph lock just before it writes. */
+  treeRecords(): TreeRecord[] | null {
+    try { return foldTreeRecords(this.d.journal.loadUnion()); } catch { /* @silent-fallback-ok: an unreadable union imports nothing; the importer reports tree-unreadable */ return null; }
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
