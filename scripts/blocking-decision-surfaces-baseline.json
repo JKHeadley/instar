@@ -18,7 +18,7 @@
   "population": "src/templates/**/*.{sh,js,mjs}",
   "censusRef": "docs/audits/phase-b/f10-triage.md",
   "seededAt": "2026-08-06",
-  "blockingCeiling": 12,
+  "blockingCeiling": 13,
   "blocking": [
     {
       "path": "src/templates/hooks/build-stop-hook.sh",
@@ -67,6 +67,10 @@
     {
       "path": "src/templates/scripts/whatsapp-reply.sh",
       "decision": "blocks send on server tone-gate denial"
+    },
+    {
+      "path": "src/templates/scripts/secret-get.mjs",
+      "decision": "refuses metered (pay-per-use) vault names, exit 3, before vault resolution (gemini-payg-metered-lane §4.2; secrets ruled exception, Rule 86). The name list is pinned to src/core/meteredSecrets.ts METERED_SECRET_NAMES by a template-drift test."
     }
   ],
   "nonBlocking": [
@@ -184,11 +188,6 @@
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
       "sha256": "18bde3905bcde5d8fb23ca660048ac3a2a97f2c5981d374722111efee19c2dad",
       "reason": "Re-declared 2026-11-17 (secret-drop-self-mint-hardening + secret-drops-machine-local): supports safe #N field selection and reports/retries refused consume. No message or session blocking authority; browser handoff refusal stays scoped to the requested operation."
-    },
-    {
-      "path": "src/templates/scripts/secret-get.mjs",
-      "sha256": "7525d0bfb60d452ec60fa6f1e929655a2d022efa5c0906811ac595c77365c2ea",
-      "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
     },
     {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",
