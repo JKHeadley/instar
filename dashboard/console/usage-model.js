@@ -160,7 +160,7 @@ export function buildCacheRate(seriesRes) {
 }
 
 /** 5b. Machine comparison from the summary. */
-export function buildMachines(summaryRes, nameOf = (id) => id) {
+export function buildMachines(summaryRes, nameOf = () => 'A machine with no name yet') {
   if (!summaryRes || !summaryRes.ok) return { ok: false, why: summaryRes ? summaryRes.reason : 'no answer' };
   const rows = (summaryRes.data.machines || []).map((m) => ({
     id: m.machineId, label: `${nameOf(m.machineId)}${m.self ? ' (this one)' : ''}`, tokens: m.tokens.total, usd: m.equivUsd,

@@ -91,6 +91,12 @@ describe('usage model', () => {
     expect(m.rows.map((r) => [r.label, r.stateWord])).toEqual([['Studio (this one)', ''], ['Laptop', 'not reached']]);
   });
 
+  it('machines: without a name a machine never shows its id', () => {
+    const m = buildMachines(summary({ machines: [{ machineId: 'm_4cbc0d4a0c557cf7e221882f9b42518f', self: true, ...fig(10, 1), pull: null }] }));
+    expect(m.rows[0].label).toBe('A machine with no name yet (this one)');
+    expect(m.rows[0].label).not.toMatch(/m_4cbc/);
+  });
+
   it('coverage: attributed, priced and complete shares, and every unknown in words', () => {
     const c = buildCoverage(ok({ shares: { unattributed: 0.25, unpriced: 0.1, nullTokenCalls: 0.02 }, notRead: [{ source: 'pi session files', reason: 'no reader yet' }],
       pairs: { disputedTokens: 2000 }, counters: { invocations_dropped: 3 }, unpricedModels: { 'mystery-1': 50 } }));

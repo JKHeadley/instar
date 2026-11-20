@@ -12,7 +12,7 @@ import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, m
 import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
-  LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
+  LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, machineWords, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   cardBrief, CHECK_LOOK, statusChip, waitingWords, tileAsk, rankActions, chatLines, messagesPathOf,
@@ -314,7 +314,7 @@ function openCard(card, refresh) {
   const brief = cardBrief(card);
   const warn = [];
   if (card.mayHaveBeenHandedOver) warn.push(note('This may already have been handed over. Read its conversation before asking the agent to carry on.'));
-  if (card.mayHaveChangedOn) warn.push(note(`This card may have changed on ${card.mayHaveChangedOn}, and this machine has not caught up yet.`));
+  if (card.mayHaveChangedOn) warn.push(note(`This card may have changed on ${machineWords(card.mayHaveChangedOnName, card.mayHaveChangedOn)}, and this machine has not caught up yet.`));
   if (card.unreadable) warn.push(note('Part of this card could not be read, so what is shown may be incomplete.'));
   if (card.repliedAfterQuestion) warn.push(note('You replied; the agent has not updated the card.'));
   if (card.capacity) warn.push(note(capacityWords(card.capacity)));

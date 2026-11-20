@@ -45,7 +45,8 @@ export function stripModel(res, { expanded = false } = {}) {
     show: true,
     // warning-path: row
     state: count > 0 ? (items.some((i) => i.tone === 'bad') ? 'bad' : 'attn') : 'unknown',
-    badge: `${count}${complete ? '' : '+?'}`,
+    // "12+" when some place could not be checked: at least that many (the line under it names what was missed).
+    badge: `${count}${complete ? '' : '+'}`,
     incomplete: !complete,
     title: count > 0 ? `Needs you · ${count}` : 'Nothing found so far',
     rows,
@@ -121,7 +122,7 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
     if (failure) controls.push(button(failure === 'stale' ? 'Reload current list' : 'Try again',
       () => load(failure === 'stale' ? { cursor: null, start: 0 } : retryTarget)));
     host.replaceChildren(el('div', { class: 'needs-head' }, heading,
-      el('span', { class: 'needs-badge', 'aria-label': m.incomplete ? `${m.badge} or more` : m.badge, text: m.badge })),
+      el('span', { class: 'needs-badge', 'aria-label': m.incomplete ? `${String(m.badge).replace(/\+$/, '')} or more` : m.badge, text: m.badge })),
       ...(m.rows.length ? [rows] : []), ...controls,
       ...(m.line ? [el('p', { class: 'needs-line', text: failure === 'stale' ? 'The needs list changed. Reload to see its current items.' : m.line })] : []));
   };
