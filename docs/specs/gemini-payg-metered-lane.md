@@ -162,10 +162,16 @@ server behind the existing `gemini-api` metered door.**
   - E1 review: 16,384 output plus 8,192 thinking.
   - E2: 4,096 output plus 2,048 thinking.
   - A caller-supplied size is clamped so that the reserve fits the per-call ceiling (§5).
-- HTTP timeouts:
-  - E1 Neon: 300s.
-  - E2: 120s.
-  - countTokens: 15s.
+- **HTTP timeouts are derived, not guessed.** A post-send timeout costs money (a
+  provisional charge, §5), so the timeout must outlast a healthy call.
+  - Formula: `timeout = 30s + reservedOutputTokens ÷ throughputFloor`.
+  - `throughputFloor` defaults to 40 tokens/s until the Run 2 proof measures each model.
+    After that, it is half the measured median rate, recorded on the door's policy
+    record (§5).
+  - Outer bound: 900s.
+  - countTokens (metadata only, no money at risk): 15s.
+  - The poll deadline (§6) and the restart drain (§5) are derived from the same value,
+    never set separately.
 - A client disconnect does **not** abort the upstream call. The call completes and
   settles at its actual cost. Aborting would make the bill uncertain for no saving.
 - Google's response text is untrusted output. It gets the same handling as the existing
@@ -222,15 +228,33 @@ passing this check, so a future caller or a refactor cannot bypass it.
 
 **How E1 reaches the server.** The spec-converge script (`cross-model-review.mjs`) runs
 in its own process. It **never constructs `GeminiApiProvider`**. Its `gemini-api` family
-is a thin HTTP client of the **local** server:
+is a registry entry in `dist/core/crossModelReviewer.js`, so the script itself does not
+change. It is a thin HTTP client of the **local** server:
 
-- It calls `POST /intelligence/gemini/review` on localhost with the agent token.
+- It calls `POST /intelligence/gemini/review` on localhost with the agent token, plus
+  `{specPath, specSha256, round}`.
 - That route stamps `caller: spec-review` server-side and admits through the chokepoint,
   or forwards it (§6).
 - So the ledger has one writer, and the key has one reader.
 
-**Reviewer family accounting.** `gemini-api` and `gemini-cli` share the family key
-`gemini`, so family diversity counts Gemini once.
+**Guarding the E1 route** (so it cannot be used to get around E2's limits):
+
+- **Ingress:** the same rule as E2 (below).
+- **Session:** server-resolved, as for E2.
+- **The spec must be real:**
+  - `specPath` must resolve inside a `docs/specs/` directory of a git checkout.
+  - `specSha256` must match the file's current contents.
+  - At most **2 passes per spec hash per day**. A new round changes the hash; a loop on
+    one spec does not.
+- **Run id:** each row records `run: <specPath>@<sha8>#<round>`, so the per-caller
+  breakdown shows any misuse.
+- **Honest limit:** every session on this agent holds the same token and could
+  impersonate a review run. This route bounds a runaway; it is not a defence against a
+  malicious session, which could equally read the vault (§4.2).
+
+**Reviewer family accounting.** Registry entries gain a new field, `familyKey`.
+`gemini-api` and `gemini-cli` share `familyKey: gemini`, so family diversity counts
+Gemini once.
 
 - When both are available, the round runs `gemini-api` only. It needs no personal Google
   sign-in, which fits "personal AI Pro out".
@@ -243,14 +267,20 @@ is a thin HTTP client of the **local** server:
 - **Caller session** comes from the server's own session record. The route resolves the
   authenticated origin (the `X-Instar-Session` header checked against the live session
   registry). An unverifiable name is recorded as `self-reported:<name>`.
-- **Accepted only from loopback, or from a signed mesh forward.** A request arriving
-  through tunnel ingress is refused 403, so a leaked token used over the tunnel cannot
-  spend.
-- **Concurrency:** at most 2 E2 calls in flight per agent. The third gets 429
-  `e2-busy`. It is not queued.
-- **E2 share:** E2 may commit at most **40% of the month ($20)** and **$4 a day**. Both
-  are stored in the PIN record and shown in the plan. This keeps at least $30 a month
-  for reviews, the approved purpose, however a looping session behaves.
+- **Accepted only from loopback, or from a signed mesh forward.**
+  - Cloudflared and funnel connect from loopback too, so the check uses the existing
+    forwarded-header helpers: `hasForwardingHeaders` + `isLoopbackPeer` (as in
+    `mobileBrowserDevices.ts` and `documentLinkRoutes.ts`).
+  - A request carrying forwarding headers is refused 403.
+- **No concurrency cap.** Reservations already bound the money: the shares, the per-call
+  ceiling and the gate. A third fully reserved call costs nothing extra in risk, so a
+  count limit would be a cap with no consequence behind it.
+- **E2 share, proposed default:** E2 may commit at most **40% of the month ($20)** and
+  **$4 a day**. These are fields on the door policy (§5), counted on the holder,
+  presented in the plan text as a suggestion the operator can change.
+  - Basis: the approved report says Neon "would then be reserved … for the jobs where it
+    earns its place, such as the third voice in a cross-model review". Keeping $30 for
+    reviews follows that recommendation.
 
 **Changes to existing routing:**
 
@@ -375,7 +405,8 @@ in `DEFAULT_METERED_CAPS` (in the monthly shape, §5) and in `knownKeyRefs`.
      `designatedMachineId`. With no designation yet, they are dropped for **all**
      recipients.
    - **Receive side:** `SecretShareHandler` strips and counts any metered name arriving
-     at a machine that is not designated.
+     at a machine that is not designated. The source of truth is the designation it last
+     received by `designation-echo` (§6). Unknown means strip.
    - Tests cover each branch.
 7. **Prompts never carry live secrets.** Before `countTokens`, the full immutable request
    (system instruction plus contents) is compared against the **exact values** of the
@@ -388,21 +419,49 @@ in `DEFAULT_METERED_CAPS` (in the monthly shape, §5) and in `knownKeyRefs`.
    test asserts an error's message, cause and stack never contain the key.
 
 **Pre-ship sequencing.** The key is being created **now**, before these protections
-exist. Two steps cover this:
+exist. Two briefs went to `echo-topic-145625` on 2026-11-20 (13:46 and 13:55 PST):
 
-- A brief was sent to `echo-topic-145625` (2026-11-20 13:46 PST). It asks for the key to
-  be stored in the vault **on the Studio only**, or left in Secret Drop. It must never go
-  in an env, shell or config file.
-- **Go-live precondition:** the composite plan (§8) queries every registered peer for its
-  vault key **names** (never values). Go-live refuses unless `gemini_api_key_payg` is
-  present on the designated machine and absent everywhere else.
-  - An unreachable peer counts as unknown, and unknown refuses.
-  - When the key has spread, the plan offers two fixes: **purge** (a signed mesh command
-    `secret-purge-metered`, which deletes metered names on non-designated peers), or
-    **rotation** (the account lane issues a new key to the Studio and revokes the old
-    one).
+- **Where:** store the key in the vault **on the Studio only**, or leave it in Secret
+  Drop. Never in an env, shell or config file.
+- **How (no-echo transfer):** run
+  `secret-drop-retrieve.mjs <token> <field> --run -- secret-set.mjs gemini_api_key_payg`.
+  The drop's value goes straight into the vault write on stdin and is never printed to a
+  session. Never read the key off the AI Studio page into a session.
+- **If the value has passed through any session context** (stdout, a page read, a
+  screenshot), the transcript holds it, and transcripts can be copied to other machines.
+  Rotation is then **required** before go-live.
+
+**Go-live precondition** (render time, §8):
+
+- `secret-names` on every registered peer. Names only, never values.
+- `gemini_api_key_payg` must be present on the designated machine and absent everywhere
+  else.
+- An offline peer is cleared only by the holder's send record plus the account lane's
+  attestation of where the key was stored.
+- When the key has spread, the plan offers two fixes: **purge** (`secret-purge-metered`,
+  issued by the designated holder only) or **rotation**.
+- **Honest limit:** a names-only check cannot see the same value stored under another
+  name, or a copy outside the vault. The no-echo transfer, and rotation whenever that
+  transfer is in doubt, are the real protection.
 
 ### 5. The in-Instar $50/month cap (extends the money layer)
+
+**Where the governed values live.** Every limit below is a field in the PIN-only caps
+store, so Rule 4's "recorded governed state" is backed by a real record.
+`RoutingSpendCapsStore` gains a per-door record:
+
+```
+MeteredDoorPolicy {
+  perCallCeilingUsd, provisionalCeilingUsd, e2MonthSharePct, e2DayCapUsd,
+  meteredCallers: { callers: CallerId[], e3Components: string[] },
+  throughputFloorTps: { [modelId]: number }, releaseState, designationEpoch
+}
+```
+
+- These fields travel in the go-live intent struct, the apply step, the plan text and
+  the lower route.
+- `throughputFloorTps` is the only field the agent writes without the PIN, and only from
+  a measured Run 2 proof. Raising it shortens timeouts; it releases no money.
 
 **Period model.**
 
@@ -464,11 +523,21 @@ PIN plan):
 **Bounding provisional drain.**
 
 - **Provisional ceiling:** once provisional charges in a month exceed $10, new
-  admissions refuse `provisional-ceiling` and one notice is sent. This is
-  `class: recoverable`, with self-heal being the breaker plus the next month boundary.
-  It means something is wrong upstream, and stopping is cheaper than continuing.
-- **Restart drain:** the agent's own restart path waits up to 300s for in-flight metered
-  calls (`settlingCount`) before restarting.
+  admissions refuse `provisional-ceiling`. It means something is wrong upstream, and
+  stopping is cheaper than continuing.
+  - **Recovery is the operator's**, because provisional amounts are sunk and reopening
+    releases money. The trip raises one Work Board card with a prefilled
+    `caps-adjust` plan to reset or raise the ceiling, committed by PIN.
+  - If the reconciliation read (§7) shows Google billed less, the card says so with the
+    figure. The read itself never moves the gate.
+  - Otherwise the lane reopens at the next month boundary.
+- **Restart drain:** the agent's own restart path:
+  1. stops admitting new metered calls and forwarded submits;
+  2. waits for in-flight calls (`settlingCount`) up to the largest remaining derived
+     timeout (outer bound 900s);
+  3. then restarts.
+- **`AdmitRequest.maxOutputTokens`** carries output plus thinking, because the gate
+  prices that field alone.
 - **No retries:** the provider never retries automatically. A caller retry is a new
   reservation, except forwarded calls, which are idempotent by `callId` (§6).
 
@@ -481,6 +550,10 @@ PIN plan):
 - `token-count-unavailable`
 - `prompt-contains-live-secret`
 - `provisional-ceiling`
+- `request-too-large`: a request body over 1.5 MB, refused before forwarding. That
+  stays under the peer route's 2 MB parse limit (`PEER_BODY_LIMIT_BYTES`), so envelope
+  overhead can never turn it into a raw 413.
+- `callid-conflict`
 - `e2-share-exceeded`
 - `reserves-outstanding`: returned when committed spend plus reserve breaches the cap
   but settled spend plus this reserve would not, so the caller should retry shortly.
@@ -493,7 +566,8 @@ unchanged.**
 
 | Reasons | Status |
 |---|---|
-| `cap-exceeded`, `e2-share-exceeded` | 402, with `period: day\|month`, `settledUsd`, `outstandingUsd`, `capUsd`, `resetsAt` |
+| `cap-exceeded`, `e2-share-exceeded`, `per-call-ceiling`, `provisional-ceiling` | 402, with `period: day\|month\|call\|provisional`, `settledUsd`, `outstandingUsd`, `capUsd`, `resetsAt` |
+| `outside-verified-tier`, `unknown-price`, `request-too-large` | 422 |
 | `reserves-outstanding` | 409 with `retryAfterSec` |
 | `frozen`, `not-live`, `armed-pending-proof` | 423 |
 | `not-allowlisted` | 403 |
@@ -526,95 +600,141 @@ agent.**
 
 - Only the machine named as `designatedMachineId` in the door's `GoLiveRecord`. For
   Echo, that is the Studio, which holds the Telegram lease and the feedback-factory
-  state. It is shown in the plan.
+  state. The plan names it.
 - Every other machine refuses locally with `no-cap-slice`.
+
+**New signed mesh verbs.** They are added to the `MeshRpc` registry with a version
+floor, alongside the existing mutating peer verbs (`commitment-mutate`,
+`email-send-forward`). RBAC means a registered peer plus `verifyEnvelope`, and the
+following verb-specific rules:
+
+| Verb | Direction | Rule |
+|---|---|---|
+| `metered-gemini-call` | any peer to the holder | The `op` field is one of `spec-review`, `second-opinion` or `release-proof-forward`, set by the originating server route, never by the request body. The verb carries the originating machine, the server-resolved session, `callId` and `requestSha256`. |
+| `metered-gemini-result` | any peer to the holder | Poll by `callId`. Read-class. |
+| `metered-stop-action` | any peer to the holder | Freeze, lower, disable or share-lower. Only ever reduces money. |
+| `designation-echo` | the holder to any peer | Lease confirmation (below). Read-class. |
+| `secret-names` | the holder to any peer | Returns vault key **names** only, never values. Read-class. |
+| `ledger-tail` | any peer to a former holder | Read-only fold of that machine's metered ledger for a keyRef. Read-class. |
+| `secret-purge-metered` | the designated holder only | The receiver refuses if its own record says it is designated. Deletes metered names only. |
+
+**Transport.** Each verb tries the mesh rope first. If that fails, it uses the holder's
+authenticated tunnel, carrying the **same signed envelope** to the mesh-command endpoint.
+That endpoint is separate from the E2 route, so the E2 route's forwarded-header refusal
+does not apply to it. The route that last worked is kept for the next call.
+
+Agent memory records the Mama PC→Studio rope at "machine unreachable" while the tunnel
+worked, which is why the fallback exists.
 
 **Forwarding E1 and E2 from other machines.**
 
-- **The check order on a non-designated machine:** E1 and E2 forward **whether or not
-  that machine's own money layer is on**. Forwarding needs only the published
-  designation (below), never local money state. The same holds for
-  `GET /routing-spend/caps`, which proxies to the holder.
-- **Transport:** a new **signed mesh command**, `metered-gemini-call`, with a version
-  floor.
-  - The caller id is fixed by the command's `op` field (`spec-review` or
-    `second-opinion`), set by the originating server route, never by the request body.
-  - It carries the originating machine and the server-resolved session.
-  - **Submit then poll:**
-    - The holder returns a `callId` at once, and the caller polls
-      `metered-gemini-result` until a final state or 360s.
-    - `callId` is the caller-generated idempotency key, so the holder deduplicates on
-      it. A retried submit returns the existing call; it never makes a second
-      reservation.
-  - Body limit: 2 MB.
-- **Route fallback.** Agent memory records the Mama PC→Studio mesh relay at "machine
-  unreachable" while the Studio tunnel worked. The command therefore tries the mesh
-  rope first, then the holder's authenticated tunnel, carrying the **same signed
-  envelope**.
-- **Failure states:**
-  - A peer below the version floor gets `peer-version`.
-  - An unreachable holder gets `holder-unreachable`.
-  - Nothing ever falls back to a local spend.
-- **E3 is never forwarded.** Its positions off the holder are skipped (`no-cap-slice`,
-  so the chain advances). Background classification gets no cross-machine latency.
+- **Independent of local money state.** On a non-designated machine, E1 and E2 forward
+  whether or not that machine's money layer is on. Forwarding needs only the published
+  designation. `GET /routing-spend/caps` proxies the same way.
+- **Submit, then poll, durable and idempotent.**
+  1. The caller computes `callId = sha256(originMachine, session, requestSha256, nonce)`.
+     A retry of the **same** request reuses the same `callId`. The local route returns
+     the `callId` on any timeout, so the script resumes polling instead of resubmitting.
+  2. The holder writes `callId` and `requestSha256` onto the ledger **reserve row**, so
+     deduplication survives a holder restart, since it is folded from the ledger.
+     - A resubmitted `callId` returns the existing call's state. It never makes a second
+       reservation.
+     - The same `callId` with a different `requestSha256` refuses `callid-conflict`, so
+       one session can never receive another's result.
+  3. The holder keeps results for 30 minutes, under a 64 MB in-memory cap with the
+     oldest evicted first. After eviction, or across a holder restart, a poll returns the
+     terminal state `settled-result-lost`, with the booked cost. It **never re-dispatches**.
+  4. Polling backs off from 2s to 10s. The poll deadline is the call's derived timeout
+     (§1) plus 60s. Past the deadline, the caller records `holder-timeout` with the
+     `callId`, and a later poll can still collect the result.
+- **Request limit:** 1.5 MB (`request-too-large`, refused before forwarding).
+- **Failure states.** A peer below the version floor gives `peer-version`; an unreachable
+  holder gives `holder-unreachable`. Nothing ever falls back to a local spend.
+- **E3 is never forwarded.** Off the holder its positions are skipped (`no-cap-slice`,
+  so the chain advances).
 
 **Stop actions reach the spender.**
 
-- Freeze, `caps/lower`, `callers/disable` and share-lowering issued on any machine are
-  **forwarded to the holder** by the same signed command (`op: stop-action`). The agent
-  reports "stopped" only after the holder confirms the write.
-- **If the holder is unreachable,** the issuing machine publishes a `freezeRequested`
-  flag for the keyRef on its heartbeat (freeze-wins, parent S-F5). The holder honours
-  any peer's flag the moment it sees it. The agent tells the operator plainly: "stop
-  requested; the spending machine has not confirmed yet".
+- Freeze, `caps/lower`, `callers/disable` and share-lowering issued on any machine go to
+  the holder by `metered-stop-action`. The agent says "stopped" only after the holder
+  confirms the write.
+- **If the holder is unreachable:**
+  - The issuing machine publishes
+    `freezeRequested: { requestId, keyRef, designationEpoch }` on its `session-status`
+    advert.
+  - The holder applies any request whose `designationEpoch` equals its own, then lists
+    the applied `requestId` in its own advert as `appliedFreezeRequestIds`.
+  - The issuer clears its flag once it sees its id there.
+  - A PIN unfreeze bumps `designationEpoch`, so stale or replayed flags from an older
+    epoch are ignored. Unfreezing therefore cannot be undone by a lingering flag.
+  - The agent tells the operator plainly: "stop requested; the spending machine has not
+    confirmed yet".
 
-**Designation and lease liveness** (replacing the `poolOn ? null` stub, and inheriting
-parent N-2 unchanged).
+**Lease liveness** (replacing the `poolOn ? null` stub, and inheriting parent N-2).
 
-- **Published designation.** The holder publishes on the pool machine-registry
-  heartbeat:
+- **Active, fresh echo.**
+  - Every 10s, the holder sends `designation-echo { keyRef, designationEpoch, nonce }` to
+    each peer. The nonce is fresh each time.
+  - A peer answers with a signed echo of that nonce, plus any designation it has seen for
+    the keyRef.
+  - A confirmation counts only when an echo of a nonce issued **in the current window**
+    arrives back, timed by the holder's own clock on receipt. Peer timestamps and
+    git-synced registry copies never count.
+  - `leaseConfirmedAgoMs` is the age of the last such confirmation.
+- **The window.** The gate keeps `LEASE_LIVENESS_WINDOW_MS = 60s`, which is six echo
+  rounds.
+  - Backoff while failing is capped at 20s, a third of the window.
+  - A named constant pins it, and a unit test asserts it stays strictly below the mesh
+    failover threshold that makes reclaim eligible (`failoverThresholdMs`, 15 minutes).
+  - An isolated holder fences itself to $0 within 60s, long before any reclaim can be
+    offered.
+- **What does not reset confirmation.** `caps/lower` bumps the gate's `leaseEpoch` (slice
+  fencing). It does **not** bump `designationEpoch`, so lowering never interrupts
+  confirmation.
+- **Unknown fences.** If no peer can be reached, or the echo cannot be evaluated, the
+  result is `unknown`, and unknown fences.
+- **Single-machine agent.** No peers are registered, so it trivially self-confirms.
+- **Epoch conflicts:**
+  - A peer reporting a designation for the keyRef at an epoch **equal to or higher
+    than** the holder's own means the holder **freezes itself** and notifies (security
+    class).
+  - A **lower-epoch** claim (a dead former holder's leftover entry) is only a quiet
+    "stale holder entry" signal. It never freezes the legitimate new holder.
+- **Reclaim figures.** The committed figures for reclaim ride the existing
+  `session-status` capacity advert (`PeerPresencePuller`, 30s, receive-clamped):
 
   ```
-  { keyRef, designatedMachineId, epoch, monthEpoch, committedMonthUsd, committedDayUsd,
-    outstandingReserveUsd, provisionalMonthUsd, frozen }
+  { monthEpoch, committedMonthUsd, committedDayUsd, outstandingReserveUsd,
+    provisionalMonthUsd, e2MonthUsd }
   ```
 
-  The reserved `PROBE_DOOR` is **never** published and never counted in conflict
-  checks.
-- **Positive re-confirmation.**
-  - `leaseConfirmedAgoMs` is the age of the holder's last **positive** confirmation. A
-    confirmation counts only when at least one peer's heartbeat **echoes** the holder's
-    current `{keyRef, epoch}` (each machine mirrors the designations it has seen) and no
-    peer publishes a conflicting designation.
-  - The check runs every 20s, with exponential backoff to at most 60s while failing.
-  - The gate's `LEASE_LIVENESS_WINDOW_MS` (60s) is pinned **strictly shorter** than the
-    mesh-death threshold that makes a reclaim eligible.
-  - An isolated holder therefore fences itself to $0 before any reclaim can be offered.
-    The cost is a pause during a network blip, which is acceptable for a non-critical
-    lane.
-- **If the registry cannot be read:** the result is `unknown`, and unknown fences.
-- **Single-machine agent:** no peers are registered, so it trivially self-confirms (it
-  is the pool).
-- **Conflicting designation:** a holder seeing a conflicting designation (another
-  machine claiming the same keyRef at any epoch) **freezes** at once and notifies
-  (security class).
+  They are observability inputs to reclaim only, never a live gate input.
 
 **Holder death and reclaim.** This uses the parent's PIN-gated reclaim, extended:
 
-- **Eligibility:** only after the mesh-death threshold, and **refused while the
-  alive-but-partitioned signal is present** (parent N-2: the old holder's git-synced
-  heartbeat still advancing while its ropes are down).
-- **Month rebase:** the new holder's month starts at
-  `max(the last heartbeat-carried committedMonthUsd + outstandingReserveUsd, an
-  operator-attested figure)`. The plan shows both with their ages. This extends the
-  parent's rebase `max()` to the month dimension.
+- **Eligibility.** Only after `failoverThresholdMs`, and **refused while the
+  alive-but-partitioned signal is present** (parent N-2).
+- **Epoch claim by compare-and-swap.** Reclaim writes `designationEpoch = old + 1` with a
+  compare-and-swap on the epoch the new holder last observed. Two would-be successors
+  cannot both win.
+- **Month rebase.** Unless a durable record bounds the old holder's spend after its last
+  published figures, that spend is unknown.
+  - The new holder therefore starts the month (and the day and E2 share) **as if
+    exhausted**: `committedMonthUsd = monthlyCapUsd`.
+  - The lane stays closed until the next month boundary, or until the operator raises the
+    headroom with a PIN `caps-adjust` plan that names the risk.
+  - **Exception:** if the old holder comes back, the new holder can read its ledger
+    through a read-only `ledger-tail` verb (registered peers, read-class). The rebase is
+    then `max(that ledger's fold, the last advert figure)`.
+  - Holder death should be rare, so stopping is the right default.
 - **Key rotation is a required reclaim step.** The account lane revokes the old key at
-  Google and issues a new key, provisioned on the new holder only. Until rotation is
-  recorded, the new holder's door stays `armed-pending-proof`. Rotation is the physical
-  fence: a stale vault copy on a revived old holder is dead at Google.
+  Google and issues a new key, stored on the new holder by the no-echo method (§4).
+  - Rotation is recorded only with a browser-read artifact showing the old key is no
+    longer in the project's key list.
+  - Until then, the new holder stays `armed-pending-proof`.
 - **No auto-grab.** "Every registered machine answered" does not apply to reclaim, by
   design: the old holder is the one not answering. Its exclusion is safe only because of
-  the fence and the rotation above.
+  the fence, the compare-and-swap epoch, the exhausted rebase and the rotation.
 
 ### 7. Visibility
 
@@ -630,7 +750,11 @@ with its age shown; `holderUnreachable` with last-known values) shows, for
 
 **Per-caller breakdown comes from the money ledger, not the reporting table.**
 
-- Booking rows gain `component` and `caller` fields.
+- Booking rows gain `component`, `caller`, `run` (E1), `callId`, `requestSha256` and
+  `tier` fields.
+- The parent's daily reporting rollup gains a `tier` dimension, so two days with equal
+  token totals but different request sizes keep their different costs after raw rows
+  are pruned.
 - The ledger is retained, not pruned, so the month breakdown by caller is exact.
 - The 30-day pruning of `feature_metrics` and its UTC-day rollup cannot distort it.
 - `feature_metrics` still gets `attribution.door = 'gemini-api'` and
@@ -665,109 +789,143 @@ from memory.
 
 1. **Test agent.** A fake Google endpoint, plus a throwaway two-home pair on the Mama PC
    with the local mesh fixture. All tiers green, plus the holder-death drill.
-2. **Development agent: Echo.** Live after the PIN and the release gate. Soak until
-   2026-12-21.
-3. **Fleet: dark.** Echo reviews fleet enablement on **2026-12-21**, with evidence:
-   month booked against invoice drift, refusal-reason counts, and forward success rate.
-   This is tracked as a commitment opened at merge.
+2. **Development agent: Echo.** Live after the PIN and the release gate.
+3. **Fleet: dark.** Echo reviews on **2026-12-21**, a commitment opened at merge. The
+   evidence to graduate:
+   - one month booked, with invoice drift under 10%;
+   - zero conflicting-designation events;
+   - forward success rate at least 95%;
+   - no `settled-result-lost` that was billed twice.
+
+   Missing evidence means it stays dark, and the review records why.
 
 **Fleet defaults.**
 
 - `routingSpend.money.enabled` stays off fleet-wide (`DARK_GATE_EXCLUSIONS`,
   action-bearing).
-- No config default is added; absence means unchanged.
+- No config default is added.
 - With money off and no designation published, E1 reports
   `unavailable: money-layer-off`, and E2 returns 503.
 
-**The composite go-live plan (one PIN entry).** Today the money layer is built only at
-boot, so there is no caps store to commit against before the restart (integration
-review). The plan is therefore a **pending-intent** commit:
+**Go-live: one PIN entry, by a new pre-gate action.** Today the money layer is built
+only at boot. The enable surface's closed pre-gate list (`MONEY_LAYER_PREGATE_ACTIONS`)
+lets a PIN commit flip only the enable flag while money is off, and its restart is
+separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes three things:
 
-1. **Render.** The agent asks for `POST /routing-spend/plan-money-layer` with
-   `kind: gemini-payg-setup`.
-   - This route works with money off (the enable surface's routes all do).
-   - Rendering is **forwarded to the designated machine** and performed by its server.
-     The text is generated from the exact struct to be committed, with one line per
-     field, and the PIN commit binds to the struct's hash.
-   - The precondition checks run at render time: the key on the designated machine
-     only, every peer answered, and no conflicting designation.
-2. **Commit.** `POST /routing-spend/money-layer/commit` with the PIN, on the Studio.
-   Using the parent's write discipline, it writes:
-   - the enable-store flag
-   - a **pending-setup intent** file, `state/money-pending-setup.json`, holding the
-     struct and its hash
-3. **Apply at boot.** On the next boot, the money-layer constructor applies the intent
-   into the caps store in one locked write before serving: caps, go-live as
-   `armed-pending-proof`, callers, shares and zone.
-   - It deletes the intent only after the caps write has been fsync'd.
-   - Applying is idempotent by intent hash.
-   - A crash between the two steps re-applies on the next boot.
-4. **Restart.** The agent restarts through the enable surface's own PIN-free path for an
-   already-committed enable. It does not create a second PIN step: the PIN in step 2
-   already authorized the money change, and a restart releases no money.
-   - If that route still requires the restart nonce plus PIN, the commit response
-     returns the nonce, and the restart is called within the nonce's lifetime.
-   - The build verifies which applies, and tests it.
+1. **A new pre-gate action, `gemini-payg-setup`, added to `MONEY_LAYER_PREGATE_ACTIONS`.**
+   - **What it writes:** the enable flag plus one **pending-setup intent** file,
+     `state/money-pending-setup.json`, holding the setup struct and its hash.
+   - **What it never writes:** the caps store, while money is off.
+   - This keeps the enable surface's invariant: no caps write while money is off. The
+     caps are written by the money-layer constructor, under money on. The amendment to
+     that spec's action list is made explicitly in the same PR.
+2. **Render.** `renderPlan('gemini-payg-setup')` runs on the designated machine. A
+   request from another machine is forwarded there. The plan text is generated from the
+   exact struct, one line per field, and the commit binds to the struct's hash.
+   **Render-time preconditions:**
+   - **(i) The key is only on the designated machine.**
+     - `secret-names` is read on every registered peer.
+     - A peer that is offline is cleared only if the holder's own `provisionAll` send
+       record shows the name was never sent to it **and** the account lane's attestation
+       (§4) names where the key was stored.
+     - Otherwise render refuses, naming that machine in plain words.
+   - **(ii) No conflicting designation.**
+   - **(iii) The no-echo transfer was attested.** If the value passed through any
+     session context, rotation is required first.
+3. **Commit, then restart, under that one PIN.** `POST /routing-spend/money-layer/commit`
+   with the PIN writes the flag and the intent through the parent's write discipline.
+   - **Restart required:** on success, the commit route itself schedules the supervised
+     restart about 5s later. The PIN already authorized this plan hash, and the dashboard
+     no longer asks for a second "Restart with PIN" for this action.
+   - **No restart needed:** if money is already `enforcing` on the Studio, the intent is
+     applied immediately by the running caps store.
+4. **Apply.** At boot (or immediately, if money is on), the constructor applies the
+   intent in one locked write before serving:
+   - caps
+   - `GoLiveRecord` with `releaseState: armed-pending-proof`
+   - the `MeteredDoorPolicy`
+   - the zone
+
+   It deletes the intent only after that write has been fsync'd. Applying is idempotent
+   by intent hash, and it also checks the hash against the commit's audit row. **If
+   applying fails** (validation or disk), the server boots with this door frozen, raises
+   one notice, and never crash-loops.
 
 **The plan text lists every committed field in plain words:**
 
 - the money layer on for this machine
-- $50 per month, $10 per day (Pacific), and $2.50 per call
+- $50 per month and $10 per day (Pacific calendar), $2.50 per call, and a $10 limit on
+  uncertain charges
 - the designated machine (the Studio)
-- callers: reviews by Neon; second opinions by Hydrogen, or Neon on request, from **any
-  of my sessions**, at most $20 a month and $4 a day; background checks none;
-  model-checking tool off
+- callers:
+  - reviews by Neon;
+  - second opinions by Hydrogen, or Neon on request, from **any of my sessions**,
+    suggested at most $20 a month and $4 a day;
+  - background checks: none;
+  - model-checking tool: off
 - step-down from Neon to Hydrogen when Neon would not fit
-- the two models, with "prices unverified until the first test call"
+- the two models, with "prices unverified until checked on Google's page"
 - that Justin's personal Google account is not used
 - that conversations cannot run on Gemini in this version
 - that the agent can stop or reduce spending at any time without asking, but cannot
   raise any limit or add a caller without him
 
-**Delivery.** One Work Board card with an Approve control. It links to the **Studio's**
-Spend-tab plan view, where the plan was rendered (plans are bound to their machine).
+**Delivery.**
+
+- One Work Board card with an Approve control, linking to the **Studio's** Spend-tab
+  plan view.
+- Before sending, the agent loads that page at 390x844 and 1280x728 and reads the first
+  screen.
 
 **The run boundary.**
 
-- **Run 1** ends when the plan is rendered and the card is sent. A watcher is armed on
-  the commit.
-- **Run 2** starts when the commit is recorded. It covers restart, `enforcementReady`,
-  the release gate, live proof and the completion report. The report states the session
-  exclusion and how to ask for it later.
+- **Run 1** ends when the card is sent. A watcher is armed on the commit.
+- **Run 2** starts at the commit. It covers apply, `enforcementReady`, the release gate,
+  live proof and the completion report.
+  - The report says what "integrated with our other options" means in v1: listed with
+    the other models and callable for reviews and second opinions, not usable as a
+    conversation's engine.
+  - It also says how to ask for that.
 
 **Release gate (parent FD-11, now in code).**
 
-- `setGoLive` writes `armed-pending-proof`. Only the proof recorder, an internal code
-  path, sets `live`.
-- The `release-proof` marker is set **only** by that internal path. It is refused as
-  request input, exactly like `PROBE_DOOR` is today.
-- **`PROBE_DOOR` is exempt** from the release state, so `enforcementReady` keeps
-  working.
-- `live` requires all of the following:
+- `releaseState` in the door policy is `armed-pending-proof` until the internal proof
+  recorder sets `live`.
+- The recorder is the **only** code path that can set the proof marker:
+  - The marker is refused as request input.
+  - On a forwarded call, the holder stamps it **itself**, only for
+    `op: release-proof-forward`, only while `armed-pending-proof`, only on the cheapest
+    verified model, at no more than 64 output tokens, and only bound to the applied
+    intent hash.
+- **`PROBE_DOOR` is unaffected.** `runCapGateProbe` calls `gate.admit` directly and never
+  passes through the caller or release checks, so `enforcementReady` keeps working. The
+  claim is therefore precise: no **caller-facing** path reaches the gate without these
+  checks. The probe's admit request gains the new required fields with the probe's
+  reserved values.
 
-| Check | Requirement |
-|---|---|
-| (a) Wiring proof | One live call on the door's cheapest priced model (Hydrogen, ≤ 64 output tokens; empty text is fine for a thinking model) shows `door === ledger door === priced door` and a settled row. |
-| (b) Holder-death drill | Required only when the agent has more than one machine. It runs on the test-agent pair: kill the holder, observe the fence, the surviving-voice notice and lane unavailability, then PIN-reclaim. The recorder checks the live-test harness's **signed** PASS artifact (path plus hash). **Honest limit:** that artifact is produced by an agent-run harness, so this check binds the agent to a recorded, signed run. It does not prove an independent witness. |
-| (c) Reconciliation | One **real** `browser-read` record (the current month's figure is enough, even $0.00). An `unmeasurable` record does not satisfy it. |
-| (d) Prices verified | A reviewed commit sets `verified: true` on both points, citing the price and tier read on Google's page (browser read, Run 2). |
-| (e) Forward proof | On a multi-machine agent, one E1 forward from a non-designated machine (the Mama PC) completes. |
+**Release checks, in order:**
 
-**If a release check cannot be met,** the door stays `armed-pending-proof`, and the
-completion report names the exact blocker. The agent never relaxes a check.
+| # | Check | How it is met |
+|---|---|---|
+| 1 | (d) Prices verified | Run 2 reads Google's price page for both models (the account lane's browser profile, read-only). A reviewed commit sets `verified: true` and `maxInputTokens`, citing what was read. |
+| 2 | (a)+(e) One proof call | Through the real path: on a multi-machine agent, Run 2 calls `POST /routing-spend/release-proof` **on the Mama PC**, which sends `release-proof-forward`. On a single-machine agent it is local. The holder admits it, Hydrogen answers, and the settled row shows `door === ledger door === priced door`. That one row satisfies both the wiring check and the forward check. |
+| 3 | (c) Reconciliation | One real `browser-read` record. The current month's figure is enough, even $0.00; `unmeasurable` does not count. |
+| 4 | (b) Holder-death drill | Multi-machine agents only, run on the test-agent pair. The recorder checks the live-test harness's **signed** PASS artifact (path plus hash). **Honest limit:** that binds the agent to a recorded, signed run. It is not an independent witness. |
 
-**Every metered door inherits the general rule** ("the smallest bounded call on the
-door's cheapest priced model", with (b) and (e) only on multi-machine agents). There are
-no other armed doors today.
+- If a check cannot be met, the door stays `armed-pending-proof`, and the completion
+  report names the exact blocker. The agent never relaxes a check.
+- Every metered door inherits the general rule (the smallest bounded proof on its
+  cheapest verified model; (b) and (e) only on multi-machine agents). No other door is
+  armed today.
 
 **Backups and rollback.**
 
-- Money state (caps, ledger, intent, reconciliation) stays deliberately **excluded from
-  backups**: restoring an older ledger would reopen spent headroom.
-- Rollback order: **freeze** (Bearer, instant), then disarm (Bearer), then revert.
-  Reverting leaves optional fields that the older validator ignores. If it rejects them,
-  the door stays frozen, which is the safe direction. A test pins the older-validator
-  behaviour.
+- Money state (caps, door policy, ledger, intent, reconciliation) stays deliberately
+  **excluded from backups**: restoring an older ledger would reopen spent headroom.
+- Rollback order: **freeze** (Bearer, instant), then disarm, then revert.
+- After a revert, an older `validateCapsFile` meeting the new monthly-only record may
+  reject the **whole** caps file. That is acceptable only because no other door is armed
+  on any agent today: money simply stays closed, the safe direction. A test pins this.
 
 ### 9. Changing limits conversationally
 
@@ -782,9 +940,18 @@ no other armed doors today.
 - **Raising, unfreezing or adding a caller** ("raise the Gemini cap to $80"): the agent
   renders a `caps-adjust` plan on the Studio and sends one Work Board card that links to
   it and names the new figure. The PIN commit applies it.
-- The agent never treats a chat "yes" as the PIN, and never enters the PIN itself, even
-  though it is readable on disk (memory note "chat approval is not PIN authorization";
-  the PIN routes also record the human-presence surface, as the parent built).
+- The agent never treats a chat "yes" as the PIN, and never enters the PIN itself.
+- **A foundation weakness, stated rather than built over silently.** The dashboard PIN
+  is a plain config value that the agent's own sessions can read. So "only the operator
+  can release money" rests on agent discipline plus the audit row, not on a credential
+  the agent cannot hold.
+  - This weakness belongs to the parent money layer and affects every money release, not
+    just this lane.
+  - It is registered as a tracked foundation item: owner Echo, review 2026-12-21,
+    alongside the fleet review. The candidate fix is to bind money commits to a
+    person-only surface, such as the Work Board's person tap or a hashed PIN the agent
+    cannot read.
+  - This spec does not claim a human-presence record. None exists today.
 
 ### 10. Agent Awareness and Migration Parity
 
@@ -854,20 +1021,45 @@ core budget ratchet.
   - per-recipient sync filtering, the receive-side strip, and the no-designation drop-all
   - whole-vault consumers emit names only
 - **Lease:**
-  - positive confirmation needs a peer echo
-  - an isolated holder fences at the window
-  - unreadable is unknown and fences
-  - a conflicting peer causes freeze plus notify
-  - the probe door is never published
-  - backoff on failure
+  - confirmation needs a fresh nonce echo, timed on the holder's receipt
+  - a frozen or git-synced peer copy with a matching epoch does **not** confirm
+  - an isolated holder fences at the 60s window
+  - unknown fences
+  - an equal or higher epoch freezes; a lower epoch only signals
+  - `caps/lower` does not interrupt confirmation
+  - backoff capped at 20s
+  - the window constant is below `failoverThresholdMs`
+  - a healthy three-machine pool stays confirmed for 10 minutes (integration)
+- **`freezeRequested`:**
+  - applied, then acknowledged, then cleared
+  - a stale-epoch flag is ignored after a PIN unfreeze
+- **Submit and poll:**
+  - `callId` dedupe folded from the ledger after a holder restart
+  - `callid-conflict`
+  - `settled-result-lost` never re-dispatches
+  - retention eviction
+  - the caller resumes polling by `callId`
+- **E1 route:**
+  - the spec path and sha must match
+  - 2 passes per hash per day
+  - forwarded-header ingress refused
 - **Reclaim:**
   - refused while partitioned-alive
-  - month rebase max()
-  - `armed-pending-proof` until rotation is recorded
+  - compare-and-swap epoch, so two successors lose one
+  - the month starts exhausted unless a `ledger-tail` fold exists
+  - `armed-pending-proof` until rotation is recorded with a browser-read artifact
 - **Release gate:**
-  - `release-proof` is refused from request input
-  - `live` needs (a)–(e) as applicable
-  - the probe door is exempt
+  - the proof marker is refused from request input
+  - the holder stamps it only for `release-proof-forward` while armed-pending-proof
+  - one proof row satisfies (a)+(e)
+  - the check order
+  - the probe path unaffected
+- **Pre-gate action:**
+  - `gemini-payg-setup` writes only the flag plus the intent, never caps, while money is
+    off
+  - the commit schedules the restart
+  - money already enforcing means the intent applies hot
+  - a failed apply means a frozen door, a notice and no crash loop
 - **Pending-intent apply:** idempotent, survives a crash between write and delete,
   hash-bound.
 - **Plan render:** every committed field appears in the text (a property test over the
@@ -884,7 +1076,6 @@ core budget ratchet.
   - 402 at the month cap, then the day cap (with `period`)
   - 423 money-off
   - 403 from tunnel ingress
-  - 429 for a third concurrent E2 call
   - `e2-share-exceeded`
 - **Two-server mesh fixture:**
   - a forward from a non-holder **with its money layer off**
@@ -893,8 +1084,13 @@ core budget ratchet.
   - stop-action forwarding, and `freezeRequested` honoured when the holder was
     unreachable
   - the caps read proxied, plus `holderUnreachable`
-- The composite plan: render on the designated machine, PIN commit, restart, intent
-  applied, state `armed-pending-proof`. Store-version drift refuses.
+- The composite plan:
+  - rendered on the designated machine, including a render requested from the other
+    server
+  - the `secret-names` precondition, with an offline peer cleared or refused
+  - one PIN commit, then an automatic restart
+  - intent applied, state `armed-pending-proof`
+  - store-version drift refuses
 - `caps/lower` refuses an increase.
 
 **E2E (production init path, mirroring `server.ts`):**
@@ -911,9 +1107,10 @@ core budget ratchet.
 - One real `--family gemini-api` review pass on a small spec, run from the Mama PC.
 - One real E2 second-opinion request from a Telegram session, through the user-facing
   surface, with a plain-words answer.
-- One E2 request with the day guard temporarily lowered (Bearer), which returns the
-  plain cap message.
-- The guard is then restored by PIN plan, or left lowered with a note to the operator.
+- One E2 request deliberately over the verified tier, which returns the plain refusal
+  message through the same Telegram surface. Only the free countTokens call runs.
+- Operator money settings are **never** lowered for a test. The `cap-exceeded` message
+  is proven in E2E against the fake endpoint.
 
 ## Decision points touched
 
@@ -931,6 +1128,8 @@ core budget ratchet.
 | D10 | Invoice-drift notice (>10% and >$2, after one re-read) | **judgment-candidate** | Signal only, never moves the gate. Unmeasurable is recorded as `unmeasurable`. The agent investigates. |
 | D11 | Forward E1/E2 and stop actions to the holder vs. refuse locally | **invariant** | Exact designation match. Never a local spend. |
 | D12 | Release state: `armed-pending-proof` until (a)–(e) | **invariant** | Recorded proof artifacts; deterministic checks. |
+| D13 | Reclaim: start the month exhausted unless a `ledger-tail` fold exists | **invariant** | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. |
+| D14 | E1 route: spec-hash match, 2 passes per hash per day | **invariant** (governed runaway bound) | An exact test on recorded state. The bound is a default named in the plan. Its consequence: a loop on one spec cannot repeat a paid review more than twice a day. |
 
 ## Frontloaded Decisions
 
@@ -971,6 +1170,15 @@ and all are frontloaded.
   are pushed. 50% and 80% show on the Spend tab.
 - **FD-G16:** reclaim requires key rotation at Google and a month rebase max(). It is
   refused while the old holder is partitioned but alive.
+- **FD-G18:** go-live is a new pre-gate action, `gemini-payg-setup` (flag plus intent
+  only). The commit schedules its own restart: one PIN.
+- **FD-G19:** the lease confirmation is an active signed `designation-echo` every 10s,
+  with a 60s window. It is never read from git-synced or heartbeat copies.
+- **FD-G20:** reclaim starts exhausted, with a compare-and-swap epoch bump.
+- **FD-G21:** no E2 concurrency count. The E2 split is a proposed default, citing the
+  report.
+- **FD-G22:** the readable dashboard PIN is a registered foundation item (owner Echo,
+  2026-12-21). It is not fixed in this spec, and no presence record is claimed.
 - **FD-G17:** account-lane work is routed to `echo-topic-145625` (brief sent 2026-11-20).
   Rotation at reclaim and the price-page read are steps owned by Run 2 or the reclaim
   plan, done through the account lane's browser profile. The run's precondition is the
@@ -989,11 +1197,11 @@ and all are frontloaded.
   unreachable.
 - **E1, E2 and stop actions: proxied** to the holder by signed mesh command, with a
   tunnel fallback, independent of the caller machine's local money state.
-- **`freezeRequested` flag and designation echo: unified** on the heartbeat surface.
-  Freeze wins.
-- **Designation record and committed figures: unified** (published on the heartbeat),
-  used for conflict detection, positive confirmation and reclaim rebase. They are never
-  a live gate input on the holder.
+- **Designation echo: unified by active signed RPC** (`designation-echo`, every 10s).
+  It is used for positive confirmation and conflict detection.
+- **`freezeRequested` / `appliedFreezeRequestIds` and committed figures: unified** on
+  the `session-status` capacity advert (30s pull, receive-clamped). Freeze wins. The
+  figures feed reclaim only, never a live gate input.
 - **E3 positions: skipped off-holder.** No state.
 - **Metered key: machine-local to the designated machine.**
   `machine-local-justification: physical-credential-locality` — a credential on one
@@ -1013,14 +1221,11 @@ notice per month (dedupe `spend-cap:gemini_api_key_payg:month:100:<monthEpoch>`)
 
 **(b) Provisional ceiling.**
 
-- `class: recoverable`.
-- Self-heal: the breaker is already open, and the agent probes once with a countTokens
-  call (free) after 30 minutes. Remediation is to let the breaker half-open. There are
-  no money actions.
-- `max-attempts: 1`, `backoff: 30m`.
+- This is a money stop, not a recoverable degradation the agent can heal. Reopening
+  releases money, which is the operator's call. So no self-heal is claimed.
+- The notice is a Work Board card carrying the reset plan (§5). It is sent on the trip
+  tick, deferred through quiet hours.
 - Dedupe `provisional:gemini-api:<monthEpoch>`.
-- `max-notification-latency: 60m`.
-- Flapping: a second ceiling crossing in the same month escalates as critical.
 - `audit-location`: the money ledger plus `state/routing-spend-caps.log`, metadata only.
 
 **(c) Invoice drift.**
@@ -1030,7 +1235,7 @@ notice per month (dedupe `spend-cap:gemini_api_key_payg:month:100:<monthEpoch>`)
 - Dedupe `drift:gemini-api:<monthEpoch>`.
 - `audit-location`: reconciliation records.
 
-**(d) Conflicting designation.**
+**(d) Conflicting designation** (an equal or higher epoch only).
 
 - `class: security`. Notify-and-heal on the same tick: the freeze has already happened.
 - Dedupe `designation-conflict:<keyRef>:<epoch>`.
