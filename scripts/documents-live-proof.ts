@@ -59,6 +59,7 @@ import type { InstarConfig } from '../src/core/types.js';
 import { ScenarioMatrix, check, expectEqual, hostResolverRules, newRunId, sendTemplate } from './documents-live-proof-lib.js';
 
 const FEATURE_ID = 'instar-document-viewer';
+const DOC_TITLE = 'Onboarding plan';
 const AUTH = `proof-${crypto.randomBytes(8).toString('hex')}`;
 const PROJECT = 'docsproof';
 const AGENT_NAME = 'Docsproof';
@@ -157,6 +158,7 @@ interface Machine {
   dms: string[];
   delivered: Delivered[];
   sessionManager: any;
+  coordinator: MultiMachineCoordinator;
 }
 
 function machineFiles(name: 'a' | 'b') {
@@ -221,7 +223,7 @@ async function bootMachine(files: ReturnType<typeof machineFiles>, name: 'a' | '
   svc.deps.telegramOwnerPresent = () => true;
   const front = await tlsFront(port, cert);
   cleanup.push(() => front.close());
-  return { name, host, stateDir: files.stateDir, port, front: front.port, identity: files.identity, signing: files.signing, server, memoryPrivacy, dms, delivered, sessionManager };
+  return { name, host, stateDir: files.stateDir, port, front: front.port, identity: files.identity, signing: files.signing, server, memoryPrivacy, dms, delivered, sessionManager, coordinator };
 }
 
 // ── phones (throwaway P-256 keys signing as the app does) ──────────────────────────────────────
@@ -475,7 +477,7 @@ async function main(): Promise<void> {
     'Invoices go out on the first business day of each month.', '',
     'Support hours are nine to five on weekdays.', '',
   ].join('\n');
-  const TITLE = 'Onboarding plan';
+  const TITLE = DOC_TITLE;
   let docId = '';
   let v1 = '';
   const tabs: Record<string, Tab> = {};
@@ -1227,8 +1229,69 @@ async function multiMachine(M: ScenarioMatrix, A: Machine, B: Machine, svcA: any
     expectEqual(onB.status, 401, 'B refuses A\'s cookie');
   });
 
-  M.blocked({ id: 'mm-send-via-standby-follows-chat', description: 'A Send from a phone talking to a standby follows the existing chat send behaviour and its send row reaches every machine', riskCategory: 'lifecycle' },
-    'platform-error', 'Phones in this run are paired on machine A only (multi-route own names off, no second tunnel); a phone talking to the standby needs the multi-route pairing of a real phone to machine B, which the throwaway phone keys cannot get without the app.');
+  await M.run({ id: 'mm-send-via-standby-follows-chat', description: 'A Send from a phone paired with the standby follows the existing chat send behaviour (503 owner-unavailable, saved once, never dispatched on the standby, a retry is the same message), and a Send\'s signed send row reaches every machine', riskCategory: 'lifecycle' }, async (e) => {
+    // A second phone of the owner, paired with machine B (the standby) through B's real pairing routes.
+    // A pairing belongs to one machine (mobile-multi-route.md), so this is the phone that talks to the standby.
+    const ownerB = await pairOwner(B);
+    const page = await pageData(A, owner, docId);
+    const proj = projectionOfPage(page);
+    const s = proj.indexOf('Support hours');
+    const salt = crypto.randomBytes(16).toString('hex');
+    const text = 'Sent from the phone while it talked to the standby.';
+    const c = await ownerB.docpage(B, docId, 'comment', { docId, commentId: crypto.randomUUID(), onVersion: page.version.id, start: s, end: s + 'Support hours'.length, bodyHash: blobHash(salt, text) }, { blobs: [{ salt, text }] });
+    expectEqual(c.status, 201, 'owner comment');
+    const sum = await ownerB.call('GET', `/mobile/docs/${docId}/summary`);
+    e.summaryOnB = { status: sum.status, error: sum.body?.error ?? null };
+    const batchId = rid();
+    const textMsg = sendTemplate(sum.body.myOpenComments, DOC_TITLE, sum.body.version, `https://${HOSTS.a}`, docId);
+    // The conversation store replicates to every machine over the journal in production; this runner
+    // has no journal, so A's conversation events are handed to B's real replication intake.
+    const storeA = (A.server as any).appConversations?.store; const storeB = (B.server as any).appConversations?.store;
+    let copied = 0;
+    for (const f of fs.readdirSync(storeA.dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      for (const line of fs.readFileSync(path.join(storeA.dir, f), 'utf8').split('\n')) if (line.trim() && storeB.ingestReplicated(JSON.parse(line))?.appended) copied++;
+    }
+    e.conversationEventsReplicated = copied;
+    // B is the standby for this check (each throwaway machine promotes itself at boot: no heartbeat yet).
+    B.coordinator.demoteToStandby('documents proof: B is the standby for the phone send');
+    e.roles = { a: A.coordinator.role, b: B.coordinator.role };
+    const viaB = await ownerB.call('POST', `/mobile/chat/app/${shared}`, { text: textMsg, requestId: batchId });
+    e.standbyAnswer = { status: viaB.status, body: viaB.body };
+    // The chat contract on a standby (§3.8): 409 not-serving, or 503 owner-unavailable with the message
+    // saved, or a forward to the serving machine. The standby's own sessions never receive it.
+    const saved = viaB.status === 503 && viaB.body?.error === 'owner-unavailable';
+    check(saved || viaB.status === 409 || (viaB.status >= 200 && viaB.status < 300 && viaB.body?.outcome === 'forwarded'), 'the standby answers by the chat contract', { status: viaB.status, body: viaB.body });
+    await sleep(1000);
+    const onStandbySession = B.delivered.filter((d) => d.text.includes(textMsg.slice(0, 40))).length;
+    e.standbySessionDeliveries = onStandbySession;
+    expectEqual(onStandbySession, 0, 'no session on the standby received the message');
+    // No send row yet: the page and app write it only after the message is sent (fail-message-send-fails-no-send-row).
+    // The app's retry of the same Send gets the recorded answer: still one message, no second dispatch.
+    const retry = await ownerB.call('POST', `/mobile/chat/app/${shared}`, { text: textMsg, requestId: batchId });
+    e.retryAnswer = { status: retry.status, error: retry.body?.error ?? null, messageId: retry.body?.messageId ?? null };
+    expectEqual(retry.body?.messageId, viaB.body?.messageId, 'the retry is the same message');
+    const msgs = await ownerB.call('GET', `/mobile/chat/app/${shared}/messages`);
+    const same = (msgs.body?.messages ?? []).filter((m: any) => m.text === textMsg);
+    expectEqual(same.length, 1, 'exactly one stored message for the Send and its retry');
+    B.coordinator.promoteToAwake('documents proof: standby check done');
+    // Its send row reaches every machine: a Send the serving machine delivers (the owner's phone on A),
+    // then the send row on A is pulled by B over the real signed document route.
+    const sumA = await owner.call('GET', `/mobile/docs/${docId}/summary`);
+    const batchA = rid();
+    const textA = sendTemplate(sumA.body.myOpenComments, DOC_TITLE, sumA.body.version, `https://${HOSTS.a}`, docId);
+    const sentA = await owner.call('POST', `/mobile/chat/app/${shared}`, { text: textA, requestId: batchA });
+    check(sentA.status >= 200 && sentA.status < 300, 'the serving machine delivers', { status: sentA.status, body: sentA.body });
+    const srA = await owner.docpage(A, docId, 'send', { docId, batchId: batchA, commentKeysHash: sha256(canonicalJson([...sumA.body.myOpenCommentKeys].sort())), primaryRow: sumA.body.primary.primaryRow, messageRequestId: batchA });
+    expectEqual(srA.status, 201, 'send row on A');
+    const sendRows = (m: Machine) => rowsOf(m, docId).filter((r) => r.includes(batchA) && r.includes('"eventKind":"send"')).length;
+    // The puller skips a tick while its own background tick runs; pull until the row lands (bounded).
+    for (let i = 0; i < 10 && sendRows(B) === 0; i++) { await pullDocs(B); if (sendRows(B) === 0) await sleep(500); }
+    e.pullerHealthB = (B.server as any).documentPuller?.health?.() ?? null;
+    Object.assign(e, { standbyBatch: batchId, messageIds: same.map((m: any) => String(m.messageId ?? m.id)), servingBatch: batchA, sendRowsOnA: sendRows(A), sendRowsOnB: sendRows(B) });
+    expectEqual(sendRows(A), 1, 'one send row on A');
+    expectEqual(sendRows(B), 1, 'the send row reached B');
+  });
 }
 
 /** A third throwaway agent with no named tunnel (or a fleet config), for the refusal paths. */

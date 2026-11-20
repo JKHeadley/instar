@@ -12,7 +12,7 @@ Found by the Instar Documents browser live proof (topic 141469): after a passage
 
 - `src/documents/anchor.ts`: new `snapToWords(oldText, anchor, newText, start, end)`. If the original selection's start was on a word edge in the old text (not between two word characters), the new start moves left while it sits between two word characters (letters, numbers, marks, underscore), at most 64 steps. The same applies to the end, moving right. It is applied to the short-quote fuzzy result (state recomputed from the widened text) and to the long-quote head/tail result. The exact-match path is untouched.
 - `tests/unit/documents-anchor.test.ts`: 4 cases (first word kept; last word kept; a mid-word selection is not widened; determinism).
-- `scripts/documents-live-proof.ts`: the narrow tab is a narrow computer window (no `hasTouch`), since #3216 rightly gives a touchscreen phone the app offer. New scenario `hp-phone-browser-offers-the-app` (touch + isMobile at 390×844: "Open in the Instar app", no `.link-fingerprint`, zero `/docs/_link/nonce` requests). The anchors scenario reads the #3462 heading "Not in this version", accepts either deleted-passage note, and asserts "Now reads: second business day of each month".
+- `scripts/documents-live-proof.ts`: `mm-send-via-standby-follows-chat` now runs (a second owner phone paired with B through B's real pairing routes, B demoted to standby, the conversation events handed to B's real replication intake because the runner has no journal). The narrow tab is a narrow computer window (no `hasTouch`), since #3216 rightly gives a touchscreen phone the app offer. New scenario `hp-phone-browser-offers-the-app` (touch + isMobile at 390×844: "Open in the Instar app", no `.link-fingerprint`, zero `/docs/_link/nonce` requests). The anchors scenario reads the #3462 heading "Not in this version", accepts either deleted-passage note, and asserts "Now reads: second business day of each month".
 
 ## Decision-point inventory
 
@@ -52,4 +52,4 @@ Revert the commit. No state, migration or config.
 
 ## Evidence
 
-See `upgrades/next/doc-reanchor-whole-words-141469.md`: the unit test fails on main and passes with the fix; 234/234 document unit tests; browser live proof PASS 30 / FAIL 0 / BLOCKED 5 on main d9117905 plus this change.
+See `upgrades/next/doc-reanchor-whole-words-141469.md`: the unit test fails on main and passes with the fix; 234/234 document unit tests; browser live proof PASS 31 / FAIL 0 / BLOCKED 4 on main d9117905 plus this change.
