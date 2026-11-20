@@ -585,7 +585,7 @@ today's vault sync copies the whole vault to every online peer.
     wrong key in the vault can never spend under the fence.
   - Any other key, including an old smoke-test key or `metered_gemini_bench` if it is in
     the same project, is revoked first.
-  - Revoking it is a precondition, not a follow-up.
+  - Revoking it is a precondition of go-live, done before it.
 
 **Go-live precondition (render time, §8).**
 
@@ -1593,7 +1593,7 @@ notice per month (dedupe `spend-cap:gemini_api_key_payg:month:100:<monthEpoch>`)
 - This is a money stop, not a recoverable degradation the agent can heal. Reopening
   releases money, which is the operator's call. So no self-heal is claimed.
 - The notice is a Work Board card carrying the reset plan (§5). It is sent on the trip
-  tick, deferred through quiet hours.
+  tick, held until quiet hours end.
 - Dedupe `provisional:gemini-api:<monthEpoch>`.
 - `audit-location`: the money ledger plus `state/routing-spend-caps.log`, metadata only.
 
