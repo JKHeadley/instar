@@ -6,6 +6,15 @@ status: "draft"
 parent-spec: "docs/specs/routing-control-room-spend-alerts.md"
 parent-principle: "Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One"
 eli16-overview: "docs/specs/gemini-payg-metered-lane.eli16.md"
+review-convergence: "2026-11-20T22:30:28.566Z"
+review-iterations: 6
+review-completed-at: "2026-11-20T22:30:28.566Z"
+review-report: "docs/specs/reports/gemini-payg-metered-lane-convergence.md"
+cross-model-review: "codex-cli:gpt-6.2-astra"
+single-run-completable: true
+frontloaded-decisions: 26
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 # Gemini pay-per-use lane — a named, capped, metered Gemini API door
@@ -1392,22 +1401,22 @@ core budget ratchet.
 
 ## Decision points touched
 
-| # | Decision point | Class | Floor / justification |
-|---|---|---|---|
-| D1 | Admit or refuse at the month cap, freeze, live, stale/unverified price, unbounded reservation | **invariant** | Rule 4 "spend past a cap": an exact test with an irreversible miss. This is the existing gate plus the month dimension. |
-| D2 | Admit or refuse at the daily guard, per-call ceiling, E2 share, provisional ceiling | **invariant** (governed state) | Rule 4 "deterministic enforcement of recorded governed state". The values are set by the operator's PIN-committed plan, whose text lists them. They are defaults above the $50 floor that the operator approved and can change. |
-| D3 | Caller and E3 component allowlist membership | **invariant** (governed state) | Exact membership in a PIN-set list, checked at the chokepoint. |
-| D4 | Exclude gating components from E3 in v1 | **judgment-candidate**, argued exemption | A v1 scope choice. The floor (subscription fallback, Rule 118) already protects gates. The exemption from an LLM arbiter is argued: an operator-reviewable scope line, not a runtime competing-signals decision. Revisitable by a later spec. |
-| D5 | The key's named-reader lint, `secret-get` refusal, child-env strip, per-recipient sync filter | **invariant** | Secrets ruled exception (Rule 86); exact name membership. |
-| D6 | Refuse a prompt containing a **live secret value** | **invariant** | Secrets ruled exception, with an exact value match only. Shape matches are signal only. |
-| D7 | Lease positive confirmation; fence on isolation or unknown; freeze on a conflicting designation | **invariant** | Inherited parent N-2: exact epoch comparison on recorded state, with the conservative action. |
-| D8 | Book a post-send failure, or an expiry, as a provisional full charge; late settle max() | **invariant** | Money: over-booking is the safe direction, and a deterministic rule. |
-| D9 | Spec-review step-down from Neon to Hydrogen | **judgment-candidate** | Bounded actions {Neon, Hydrogen, unavailable}. Triggers only on `cap-exceeded` or `per-call-ceiling`. Arbiter: a deterministic fit test. Conservative default: `unavailable` with the exact reason. Exemption from an LLM arbiter argued: with two models it is a fit computation, not competing signals. |
-| D10 | Invoice-drift notice (>10% and >$2, after one re-read) | **judgment-candidate** | Signal only, never moves the gate. Unmeasurable is recorded as `unmeasurable`. The agent investigates. |
-| D11 | Forward E1/E2 and stop actions to the holder vs. refuse locally | **invariant** | Exact designation match. Never a local spend. |
-| D12 | Release state: `armed-pending-proof` until (a)–(e) | **invariant** | Recorded proof artifacts; deterministic checks. |
-| D13 | Lane transfer: the month stays exhausted, the proof included; only a one-key-backed claim with a newer `designationEpoch` wins a conflict | **invariant** | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. |
-| D14 | E1 route: spec-hash match, one pass per (spec hash, round) | **invariant** (governed runaway bound) | An exact test on recorded state. Its consequence: a runaway loop cannot repeat a paid review of the same round. The money caps are the floor. |
+| Decision point | Class | Floor / justification |
+|---|---|---|
+| D1: Admit or refuse at the month cap, freeze, live, stale/unverified price, unbounded reservation | invariant | Rule 4 "spend past a cap": an exact test with an irreversible miss. This is the existing gate plus the month dimension. basis: irreversible-consequence; evidence: spend past the cap is real money already billed by Google (master Rule 4 names it). |
+| D2: Admit or refuse at the daily guard, per-call ceiling, E2 share, provisional ceiling | invariant (governed state) | Rule 4 "deterministic enforcement of recorded governed state". The values are set by the operator's PIN-committed plan, whose text lists them. They are defaults above the $50 floor that the operator approved and can change. basis: external-constraint; evidence: the operator PIN-commits these values in plan text that lists each one (Rule 4, recorded governed state). |
+| D3: Caller and E3 component allowlist membership | invariant (governed state) | Exact membership in a PIN-set list, checked at the chokepoint. basis: external-constraint; evidence: the caller list is set by the operator PIN commit; widening it releases money. |
+| D4: Exclude gating components from E3 in v1 | judgment-candidate, argued exemption | A v1 scope choice. The floor (subscription fallback, Rule 118) already protects gates. The exemption from an LLM arbiter is argued: an operator-reviewable scope line, not a runtime competing-signals decision. Revisitable by a later spec. |
+| D5: The key's named-reader lint, `secret-get` refusal, child-env strip, per-recipient sync filter | invariant | Secrets ruled exception (Rule 86); exact name membership. basis: irreversible-consequence; evidence: a leaked metered key bills at full per-token rates (gemini-cli/credentials.ts), and a leak cannot be recalled. |
+| D6: Refuse a prompt containing a **live secret value** | invariant | Secrets ruled exception, with an exact value match only. Shape matches are signal only. basis: irreversible-consequence; evidence: a live secret sent to Google is in a third party's logs and cannot be recalled (Rule 4). |
+| D7: Lease positive confirmation; fence on isolation or unknown; freeze on a conflicting designation | invariant | Inherited parent N-2: exact epoch comparison on recorded state, with the conservative action. basis: irreversible-consequence; evidence: two spenders could double the $50 cap before anyone notices. |
+| D8: Book a post-send failure, or an expiry, as a provisional full charge; late settle max() | invariant | Money: over-booking is the safe direction, and a deterministic rule. basis: irreversible-consequence; evidence: under-booking an uncertain charge lets real billed spend pass the cap. |
+| D9: Spec-review step-down from Neon to Hydrogen | judgment-candidate | Bounded actions {Neon, Hydrogen, unavailable}. Triggers only on `cap-exceeded` or `per-call-ceiling`. Arbiter: a deterministic fit test. Conservative default: `unavailable` with the exact reason. Exemption from an LLM arbiter argued: with two models it is a fit computation, not competing signals. |
+| D10: Invoice-drift notice (>10% and >$2, after one re-read) | judgment-candidate | Signal only, never moves the gate. Unmeasurable is recorded as `unmeasurable`. The agent investigates. |
+| D11: Forward E1/E2 and stop actions to the holder vs. refuse locally | invariant | Exact designation match. Never a local spend. basis: irreversible-consequence; evidence: a local spend on a non-holder creates a second ledger and a second cap. |
+| D12: Release state: `armed-pending-proof` until (a)–(e) | invariant | Recorded proof artifacts; deterministic checks. basis: irreversible-consequence; evidence: an unproven wiring could spend money the ledger does not record. |
+| D13: Lane transfer: the month stays exhausted, the proof included; only a one-key-backed claim with a newer `designationEpoch` wins a conflict | invariant | Money: unknown spend is treated as spent (the safe direction). The operator can raise it by PIN. basis: irreversible-consequence; evidence: reopening headroom over unknown spend could let billed spend pass the cap. |
+| D14: E1 route: spec-hash match, one pass per (spec hash, round) | invariant (governed runaway bound) | An exact test on recorded state. Its consequence: a runaway loop cannot repeat a paid review of the same round. The money caps are the floor. basis: irreversible-consequence; evidence: each repeated paid review is real money spent for no new information. |
 
 ## Frontloaded Decisions
 
@@ -1476,6 +1485,39 @@ and all are frontloaded.
   Rotation at a transfer and the price-page read are steps owned by Run 2 or the transfer
   plan, done through the account lane's browser profile. The run's precondition is the
   key present on the Studio only.
+
+## Maturation plan
+
+- **ladder:** routingSpend.geminiPaygLane
+
+  This is a new `src/data/feature-ladders.json` entry the build adds. Its flag is
+  `routingSpend.money.enabled` plus the door's `releaseState`; disposition `ladder`,
+  final `operator-armed-per-agent`, risk `money`.
+- **test-agent-live:** On a throwaway two-home pair on the Mama PC with a fake Google
+  endpoint, everything has passed:
+  - all three test tiers;
+  - the holder-death drill;
+  - a forwarded E1 review from the non-holder;
+  - the user-role setup flow (card, plan page, PIN commit, automatic restart, intent
+    applied, `armed-pending-proof`), with a signed PASS artifact.
+- **dev-agent-live:** Echo, after Justin's single PIN commit and release checks (a)–(e)
+  on the real API: live for reviews and second opinions until 2026-12-21, read from
+  `GET /routing-spend/caps` and the reconciliation records.
+- **fleet:** dark. `routingSpend.money.enabled` stays off fleet-wide, an action-bearing
+  `DARK_GATE_EXCLUSIONS` case. Each agent's operator would arm their own door by their
+  own PIN. It never auto-enables.
+- **graduation criterion:** offering the lane beyond Echo needs all of these on Echo:
+  - one full Pacific month booked, with invoice drift under 10% against Google's
+    billing page;
+  - zero conflicting-designation events;
+  - forward success at least 95%, not counting `holder-unreachable` during known
+    machine sleep;
+  - zero double-billed `callId`s.
+
+  A month with no booked calls is not a pass.
+- **dark-window:** the fleet review is on 2026-12-21, owner Echo, tracked as a
+  commitment opened at merge. If the criterion is not met by then, the reason and a new
+  date are recorded on that commitment. It is never left dark silently.
 
 ## Multi-machine posture
 
@@ -1564,7 +1606,7 @@ brakes, unchanged.
 
 ## Open questions
 
-*(none — all resolved into Frontloaded Decisions)*
+*(none)*
 
 ## Left behind
 
