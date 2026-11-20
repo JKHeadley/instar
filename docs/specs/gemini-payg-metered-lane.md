@@ -261,8 +261,10 @@ change. It is a thin HTTP client of the **local** server:
     file and its listed context docs, builds the review payload once, and puts its
     digest in the forwarded request. The holder sends exactly that payload, so divergent
     checkouts cannot change what is reviewed.
-  - `realpath(specPath)` must lie under the agent home, or under the project root that
-    `CartographerRootRegistry.resolve(topicId)` reports as `canonicalPath`.
+  - `realpath(specPath)` must lie under the agent home, or under
+    `CartographerRootRegistry.resolve(topicId).root.report.canonicalPath` when that
+    returns `ok:true`. With `ok:false`, or when the registry is not built because
+    `cartographer.enabled` is off, only the agent home qualifies.
     - The agent's `.dev/wt-*` worktrees qualify because they are under the agent home.
       A test uses that path shape.
     - The context docs must be ones the spec lists, under the same root. Their digest is
@@ -475,8 +477,17 @@ today's vault sync copies the whole vault to every online peer.
     this lane. That makes "revoke any other key" safe, and makes Google's project-level
     spend limit meaningful.
   - **Console to drop, without echo.** A script inside the AI Studio page copies the new
-    key from the creation dialog into the Secret Drop form. The browser tool returns
-    only ok or failed, never the value.
+    key from the creation dialog into the Secret Drop form. It also computes the key's
+    SHA-256 fingerprint in the page. The browser tool returns only ok or failed, plus
+    the fingerprint, never the value.
+    - **If the script fails** (for example a page security policy blocks it): the
+      dialog is **never** read or screenshotted instead. The key is treated as in doubt
+      and revoked at once, and minting is retried, up to 3 times. After that, Run 1
+      ends at `awaiting-key` with the blocker named.
+  - **Where it runs.** The Secret Drop, the retrieve and the handoff POST all happen on
+    the designated machine (the Studio, or the new machine in a transfer). Drops live in
+    one server's memory, and the vault write and the POST are local. A browser on
+    another machine may only fill that machine's drop form, through its tunnel.
   - The account lane then stores the key on the designated machine by the no-echo
     transfer:
     `secret-drop-retrieve.mjs <token> <field> --run -- secret-set.mjs gemini_api_key_payg`.
@@ -487,25 +498,49 @@ today's vault sync copies the whole vault to every online peer.
 
     ```
     { noEchoTransfer: {attestedBy, at, method, sourceMessageRef},
-      oneKeyArtifact: {keyIdSuffix, readAt, screenshotSha256} }
+      oneKeyArtifact: {providerKeyId, keyFingerprint, readAt, screenshotPath,
+                       screenshotSha256},
+      boundTo: {designationEpoch, mintStartedAt} }
     ```
 
-    Render reads only this file. The agent arms a watcher on it, re-briefs the account
-    lane every 2 hours during waking hours, and holds an open commitment.
-  - **If nothing arrives within 24 hours,** Run 1 ends at `awaiting-key`, and the report
-    names the blocker. No card is sent.
+    Render reads only this file. The route works while money is off, because the mint
+    happens before go-live.
+    - **Validation.** A malformed body is refused with 400. At render:
+      - the stored screenshot's hash must match;
+      - `readAt` must be later than `mintStartedAt`;
+      - `boundTo.designationEpoch` must be current;
+      - `keyFingerprint` must equal the SHA-256 of the stored key, computed inside
+        `withKey`.
+
+      A malformed, stale or mismatched file means `awaiting-key`.
+    - **Lifecycle.** The file is archived when the commit succeeds, and whenever a
+      freeze or revoke happens, so an old attestation can never vouch for a new key.
+    - **Waiting.** The agent arms a watcher on the file and holds an open commitment. It
+      re-briefs the account lane by session-to-session message, never a Telegram post,
+      with backoff: 2h, then 4h, then 8h, during waking hours only.
+  - **At 24 hours with nothing**, Run 1 reports `awaiting-key` with the blocker named,
+    and no card is sent. 24 hours is a report checkpoint, not a stop: the watcher and
+    commitment stay open, and a late handoff resumes at render automatically.
   - **A holder-side check.** At render, the stored key's exact value is checked against
-    the account-lane session's transcript (an exact-value scan, which is the ruled
-    secrets exception). A hit means re-mint.
+    **every** transcript the account-lane run produced: its sessions, subagents, and the
+    browser tool's output directory. This is an exact-value scan, the ruled secrets
+    exception.
+    - A hit means re-mint.
+    - A transcript that is missing, partial or unreachable **refuses render** as a named
+      blocker. It never counts as "no hit".
   - Briefs went to `echo-topic-145625` on 2026-11-20 (13:46, 13:55, 14:05, 14:16 PST).
     The last states this rule.
 - **One key per project: the go-live fence.** Google projects can hold many live API
   keys. So go-live (and any transfer) requires a browser-read artifact of the project's
   key list showing **exactly one** key with Generative Language API access. It must be
   the new key, matched by its key-ID suffix, which is recorded as `keyGeneration`.
-  - **`keyGeneration` is checked against the real key.** The key reader computes the
-    stored value's last 4 characters, inside `withKey`, never logged, and compares them
-    with the committed `keyGeneration`.
+  - **`keyGeneration` is checked against the real key.** `keyGeneration` is the key's
+    SHA-256 fingerprint, recorded at mint, alongside Google's `providerKeyId`. The key
+    reader computes the stored value's fingerprint inside `withKey` (never logged) and
+    compares it. A fingerprint names one exact key, so it cannot collide the way a
+    suffix can.
+  - Transfers are ordered by `designationEpoch`. The fingerprint identifies the key; it
+    does not order generations.
   - A mismatch makes the provider refuse (`key-generation-mismatch`, fail closed). So a
     wrong key in the vault can never spend under the fence.
   - Any other key, including an old smoke-test key or `metered_gemini_bench` if it is in
@@ -603,9 +638,11 @@ PIN plan):
    - Then the reserve row is appended:
      `input × inRate + (maxOutputTokens + thinkingBudget) × outRate`. Cached tokens are
      booked as full input (parent FD-19).
-6. **Cheap early refusal.**
-   - An authenticated `callId` resubmission is looked up **first**. Its ownership and
-     digest are checked, and it returns the existing call's state, never a cap refusal.
+6. **Order of steps.** The dedupe lookup is **step 0**, before preflight and before the
+   policy re-read in step 5:
+   - An authenticated `callId` resubmission, with a matching `resultToken` and digest,
+     returns the existing call's state. It is never refused by a cap, a freeze or a
+     disabled caller, because the call was already admitted and paid for.
    - Otherwise, preflight refuses at once when committed spend already meets the month,
      day or share limit. Exhausted callers never pay for a token count. On a forwarded
      call, the body is already sent; the refusal saves the holder's work only.
@@ -717,7 +754,7 @@ following verb-specific rules:
 | Verb | Direction | Rule |
 |---|---|---|
 | `metered-gemini-call` | any peer to the holder | The `op` field is one of `spec-review`, `second-opinion` or `release-proof-forward`, set by the originating server route, never by the request body. The verb carries the originating machine, the server-resolved session, `callId` and `requestSha256`. |
-| `metered-gemini-result` | the originating machine to the holder | Poll by `callId`. The holder returns result text only to the originating machine and server-resolved session recorded on the reserve row. Anyone else gets `not-yours`. |
+| `metered-gemini-result` | the originating machine to the holder | Poll by `callId` **plus `resultToken`**: an unguessable 256-bit capability the holder returns only to the originating route at submit, which hands it only to its caller. Without the token, the result is `not-yours`. This holds between two sessions sharing the same bearer token, because session names are not proof of ownership. |
 | `metered-stop-action` | any peer to the holder | Freeze, lower, disable or share-lower. Only ever reduces money. |
 | `designation-echo` | the holder to any peer | Lease confirmation (below). Read-class. |
 | `secret-names` | the holder to any peer | Returns vault key **names** only, never values. Read-class. |
@@ -852,10 +889,19 @@ a **fresh go-live** on the new machine, using the same `gemini-payg-setup` plan 
   figure in view.
 - **Fresh governed state.** The full setup struct is applied, and the proof call is
   repeated, bound to the new intent hash.
-- **A proof allowance.** The transfer struct reserves $0.05 of headroom for the proof
-  call alone (inside the $50), so the lane can finish activating while the month reads
-  exhausted. The same PIN can also restore headroom, up to the cap minus the shown upper
-  bound.
+- **A proof allowance, only when it fits.** The shown upper bound is:
+
+  ```
+  last advert + outstanding reserves + two days of daily guard
+  ```
+
+  Two days, because the old holder may have crossed Pacific midnight after its last
+  advert.
+  - The transfer may spend the proof call's computed maximum charge (cheapest verified
+    model, fixed short input, at most 64 output tokens, minimum thinking) **only if
+    upper bound + that charge ≤ the monthly cap**.
+  - Otherwise the transfer stays pending until the month resets, or until the operator
+    restores headroom by PIN. Nothing is ever admitted past the cap.
 - **No auto-grab.** "Every registered machine answered" excludes the dead holder, by
   design.
 
@@ -1000,7 +1046,8 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 **The plan text lists every committed field in plain words:**
 
 - the money layer on for this machine
-- $50 per month and $10 per day (Pacific calendar), $2.50 per call, and a $10 limit on
+- $50 per month (Justin's figure); and, **proposed by the agent** and changeable before
+  approving: $10 per day (Pacific calendar), $2.50 per call, and a $10 limit on
   uncertain charges
 - the designated machine (the Studio)
 - callers:
@@ -1013,7 +1060,9 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 - step-down from Neon to Hydrogen when Neon would not fit
 - the two models, with "prices unverified until checked on Google's page"
 - that Justin's personal Google account is not used
-- that conversations cannot run on Gemini in this version
+- that conversations cannot run on Gemini in this version. This line goes on the
+  card's **first screen**, in plain words: "Gemini joins as a reviewer and a second
+  opinion. Choosing it as a conversation's engine is not in this version." 
 - that the agent can stop or reduce spending at any time without asking, but cannot
   raise any limit or add a caller without him
 
@@ -1049,8 +1098,10 @@ separately PIN-gated (`acceptRestart` → `checkPin`). So the build changes thre
 - **The proof runs once.** It is one durable proof reservation bound to the applied
   intent hash, with a fixed short input.
   - A repeat submission returns the recorded outcome and never makes a second paid call.
-  - A confirmed no-charge refusal releases the slot for a retry. An uncertain outcome
-    keeps it.
+  - A confirmed no-charge refusal releases the slot for a retry.
+  - An uncertain outcome keeps its booked charge. The agent may make up to 2 further
+    proof attempts, each a new booked reservation, if headroom allows. After that, the
+    door stays `armed-pending-proof` with the blocker named.
   - Its thinking budget is the model's minimum.
 - The recorder is the **only** code path that can set the proof marker:
   - The marker is refused as request input.
@@ -1418,6 +1469,11 @@ and all are frontloaded.
   the `session-status` capacity advert (30s pull, receive-clamped). Freeze wins. The
   figures feed a lane transfer only, never a live gate input.
 - **E3 positions: skipped off-holder.** No state.
+- **Key-handoff file (`state/gemini-payg-key-handoff.json`) and proposed-setup file:
+  machine-local to the designated machine.**
+  `machine-local-justification: physical-credential-locality` — they attest the key in
+  that machine's vault, and are meaningless anywhere else. Excluded from backups,
+  archived on commit or revoke, and cleaned up on rollback.
 - **Metered key: machine-local to the designated machine.**
   `machine-local-justification: physical-credential-locality` — a credential on one
   disk, deliberately not replicated.
