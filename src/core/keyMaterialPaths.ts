@@ -105,6 +105,12 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // temp names (`local-mcp-secret.<pid>.<rand>.tmp`) too.
   // docs/specs/threadline-mcp-local-http.md D2
   'state/local-mcp-secret',
+  // The same-network listener's TLS private key (identity A4, 0600): the key a phone at home pins.
+  // Covers the writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md
+  'state/same-network-tls.key',
+  // Whether the same-network listener is open and on which networks. Not a key, but only the owner at
+  // the computer may open the listener; a file-editor write would be a way round that from outside.
+  'state/same-network.json',
 ]);
 
 /**
@@ -134,6 +140,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
   'state/local-mcp-secret',
+  'state/same-network-tls.key',
   'state/always-available-token.json',
   'config.json',
 ]);

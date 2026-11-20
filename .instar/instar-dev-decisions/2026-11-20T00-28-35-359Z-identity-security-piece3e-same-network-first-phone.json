@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-20T00:28:35.359Z",
+  "slug": "identity-security-piece3e-same-network-first-phone",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1596,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/mobileAddPhone.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePairing.ts",
+      "src/core/SameNetworkCert.ts",
+      "src/core/SameNetworkNetwork.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/core/requestArrival.ts",
+      "src/data/awareness/same-network-first-phone.md",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobileConsoleTicket.ts",
+      "src/server/mobileLocalOwnerDevice.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileTrustApproval.ts",
+      "src/server/phoneSetupRoutes.ts",
+      "src/server/sameNetworkListener.ts"
+    ],
+    "addedLines": 1576,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

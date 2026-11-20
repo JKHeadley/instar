@@ -467,6 +467,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const host = String(req.headers.host ?? '').toLowerCase();
     const d = deps.device(deviceId);
     if (!d || !d.publicKey) return { ok: false, reason: 'unknown-device' };
+    // Identity A4: a phone paired on the same-network address signs only on that listener, which serves no document page.
+    if ((d as { addressKind?: string }).addressKind === 'same-network') return { ok: false, reason: 'unknown-device' };
     let payload: unknown;
     try { payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')); } catch { return { ok: false, reason: 'bad-payload' }; }
     // The agent's own machine (localhost) counts as an own host only for a request that really

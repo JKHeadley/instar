@@ -11,6 +11,7 @@ import { answerBodyParseError } from './bodyBudget.js';
 import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 
 const guardedResponses = new WeakSet<Response>();
 const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
@@ -438,7 +439,7 @@ export function authMiddleware(
     // internal paths to the LAN should not succeed).
     if (req.path.startsWith('/internal/')) {
       const remote = req.socket.remoteAddress;
-      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      if (!mayBeLocalArrival(req) || (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1')) {
         res.status(403).json({ error: 'Internal routes are localhost-only' });
         return;
       }

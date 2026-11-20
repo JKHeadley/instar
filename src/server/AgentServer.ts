@@ -244,7 +244,9 @@ import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { SameNetworkListener } from './sameNetworkListener.js';
+import { sameNetworkGate, homeAddressInUse } from './phoneSetupRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
 import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
@@ -1382,6 +1384,8 @@ export class AgentServer {
      * never used and the loop is not started unless a test injects these.
      */
     mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
+    /** Same-network listener overrides for tests (identity A4): network observer, port, bind address, WSL. */
+    sameNetwork?: Pick<import('./sameNetworkListener.js').SameNetworkListenerDeps, 'observe' | 'port' | 'bindHost' | 'wsl' | 'announce' | 'machineName'>;
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
     triageNurse?: StallTriageNurse;
@@ -2559,6 +2563,30 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The same-network listener for a first phone at home (identity A4): built here, closed until
+    // the owner asks at the computer; `mobilePairing.sameNetwork.enabled: false` is its kill switch.
+    if ((this.config.mobilePairing as { sameNetwork?: { enabled?: unknown } } | undefined)?.sameNetwork?.enabled !== false && this.config.stateDir) {
+      const svc = this.mobilePairing;
+      const listener: SameNetworkListener = new SameNetworkListener({
+        stateDir: this.config.stateDir,
+        agentName: String(this.config.projectName ?? 'agent'),
+        mainPort: this.config.port,
+        app: this.app,
+        gate: sameNetworkGate({
+          device: (id) => svc.devices.get(id),
+          deviceRoute: (method, pathNorm) => DEVICE_ALLOWLIST.some((r) => r.method === method && r.re.test(pathNorm)),
+          ownHost: () => (listener.listening() ? listener.host() : null),
+        }),
+        inUse: () => homeAddressInUse(svc),
+        ...(options.sameNetwork ?? {}),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'serve the agent\'s home address for a phone on the same network',
+          fallback: 'the home address stays closed', reason: err instanceof Error ? err.message : String(err),
+          impact: 'A phone added at home cannot reach the agent until the address opens again.',
+        }),
+      });
+      svc.sameNetwork = listener;
+    }
     // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
     mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
@@ -9580,6 +9608,8 @@ export class AgentServer {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
         bootReadiness().markReady();
+        // Identity A4: reopen the home address only if the owner had asked and the network is an allowed one.
+        void this.mobilePairing?.sameNetwork?.start().catch((err) => console.warn('[instar] same-network listener start failed:', err));
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {
@@ -10131,6 +10161,7 @@ export class AgentServer {
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
+    await this.mobilePairing?.sameNetwork?.stop().catch(() => { /* @silent-fallback-ok — closing a listener that is already gone */ });
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
     this.conversationEmbeddings?.feeder.stop();

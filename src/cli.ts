@@ -613,6 +613,12 @@ introducerCmd.command('remove')
   .requiredOption('--key <publicKey>', 'The introducer key to remove')
   .option('--dir <path>', 'Agent directory (default: detected)')
   .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.removeIntroducer(opts); });
+mobileCmd.command('add-phone')
+  .description("Add your first phone at this computer: same Wi-Fi, no account (asks for the dashboard PIN)")
+  .option('--anywhere', 'Use the address that works away from home (Tailscale) instead of the home address')
+  .option('--json', 'Print the setup as JSON')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileAddPhone.js'); await m.addPhone(opts); });
 introducerCmd.command('list')
   .description('List the introducers this agent trusts')
   .option('--dir <path>', 'Agent directory (default: detected)')

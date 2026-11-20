@@ -74,7 +74,8 @@ export function pingAnswer(nonce: string): string {
 const sha = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
 /** The origin a code was minted for (mobile-pairing-tailscale-origin §3.1); redeem must arrive on it. */
-export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' }
+/** `same-network`: the agent's own `<name>.local:<port>` on its same-network listener (identity A4). */
+export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' | 'same-network' }
 
 /** Who a pairing link is for (people and roles §3.2); absent ⇒ the owner. Server memory only. */
 export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' | 'team' }
