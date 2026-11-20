@@ -1541,4 +1541,38 @@ brakes, unchanged.
 
 ## Left behind
 
-*(filled by convergence)*
+Precision and long-tail items from the six convergence rounds, deliberately not iterated
+on. They are fixes for the build to pick up in passing, or accepted limits.
+
+- **E4 (doorway-scan liveness) stays off.** Moving its `budgetCapUsd` into the PIN
+  record is folded into the 2026-12-21 fleet review (owner Echo).
+- **`claim-unauthorized` to `peer-version`.** Reuse the version-aware rule in
+  `poolSignedReads.ts`, so a current peer's real denial is not labelled as an old peer.
+- **`SESSION_STATUS_ADVERT_FIELDS` and the `pullOnce` spread.** Name the new fields,
+  each with a receive clamp, and add a wiring test that each crosses the wire.
+- **Secret checks off the event loop.** The exact-value secret check takes one vault
+  snapshot per call and either yields or uses a single multi-pattern pass.
+- **`secret-get.mjs` list.** Generate its literal list from `METERED_SECRET_NAMES` at
+  build time, instead of keeping a hand copy pinned by a drift test.
+- **Index for used review slots.** Keep the used `(specSha256, round)` keys and the
+  idempotency-key store in an indexed set beside the ledger totals, expiring after the
+  poll deadline plus one day.
+- **Retention.** `provider_cost_report` rows follow the parent table's retention (400
+  days). Holder-local history stays on an old holder after a transfer; this is accepted.
+- **Repeated freeze requests.** A peer that keeps minting new freeze-request ids can
+  keep re-freezing the lane. This costs only liveness, and the requests are coalesced
+  into one notice per hour.
+- **Slack parity for E2.** E2 is a server route that sessions call, not a channel
+  feature. The live proof runs through Telegram. A Slack leg is optional.
+- **Signed designation reports.** If designation reports are ever signed, the signature
+  proves which machine sent them, not that a PIN was entered. The one-key artifact is
+  the real fence.
+- **Measuring ask burden.** The 2026-12-21 review should count Justin's PIN asks and
+  check whether the "integrate with other options" goal was met. That is evidence to
+  gather then, not a target set now.
+- **A looping round counter.** The review round number comes from the caller. A loop
+  that keeps incrementing it is bounded only by the money caps, and this is stated.
+- **Context-doc size on oversize refusals.** When an E1 review is refused for size,
+  name which context docs pushed it over the limit.
+- **The readable dashboard PIN** (FD-G22) is a foundation item of the parent money
+  layer, tracked separately.
