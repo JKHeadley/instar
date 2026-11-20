@@ -674,7 +674,7 @@ and Luna.
 
 ## Maturation plan
 
-- **ladder:** multiMachine.takeoverReadyPool
+- **ladder:** not applicable: this PR adds only the design; increment 1 (boot-claim safety) adds the multiMachine.takeoverReadyPool switches together with their ladder entry in src/data/feature-ladders.json (project takeover-ready-pool).
 - **dark-window:** none for Echo and Luna (the owner approved the change as post-mortem fix items 1–4); the fleet stays
   on today's behaviour until the graduation criterion is met.
 - **test-agent-live:** each increment on a throwaway three-machine pool, drill run by hand.
