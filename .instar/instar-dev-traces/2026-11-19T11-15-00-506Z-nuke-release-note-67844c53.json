@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "nuke-release-note",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T11:15:00.506Z",
+  "artifactPath": "upgrades/side-effects/nuke-release-note.md",
+  "artifactSha256": "1f84f41f5bf19b8a76ccf253c45253f800a9a116f9c73fed8cf71f4b8afeb5a8",
+  "coveredFiles": [
+    "upgrades/next/nuke-teardown-narrowing.md",
+    "upgrades/side-effects/nuke-release-note.eli16.md",
+    "upgrades/side-effects/nuke-release-note.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "release-note fragment only",
+  "eli16Path": "upgrades/side-effects/nuke-release-note.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/nuke-release-note.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

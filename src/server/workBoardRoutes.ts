@@ -25,6 +25,7 @@ import type { Router, Request, Response } from 'express';
 import type { WorkBoardService, WorkPrincipal, WorkBoardSettings, CardView } from '../core/WorkBoardService.js';
 import { validateSettingsPatch, transcriptLineFor, lineIdFor } from '../core/WorkBoardService.js';
 import { cardJson, boardJson, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
+import { sourceCardQuery, sourceCardsJson } from '../core/workSourceCards.js';
 import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
 import { isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
 import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
@@ -199,6 +200,19 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
   };
   deps.exposeBoardRead?.(boardRead);
   const listBoard = (req: Request, res: Response) => {
+    const source = sourceCardQuery(req.query);
+    // Keep the shared Needs-you/Projects board reader independent of public query routing.
+    if (source.kind !== 'board') {
+      const svc = gate(res); if (!svc) return;
+      const caller = deps.caller(req);
+      if (caller.kind === 'session') { res.status(403).json({ error: 'scoped-session-reads-its-own-card-only' }); return; }
+      const viewer = viewerFor(caller);
+      if (!viewer) { res.status(401).json({ error: 'unauthorized' }); return; }
+      if (!viewer.isOwner && !viewer.isAgent) { res.status(403).json({ error: 'source-cards-owner-required' }); return; }
+      if (source.kind === 'invalid') { res.status(400).json({ error: 'invalid-source-card-query' }); return; }
+      res.json({ ...sourceCardsJson(svc, viewer, source.key, source.page, deps.displayName, extraFor(svc)), behind: deps.behind() });
+      return;
+    }
     const r = boardRead(req); // the board page keeps its cut lanes
     res.status(r.status).json(r.body);
   };
@@ -392,7 +406,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
 /** The dismissal lessons as the agent reads them: the reason, who gave it, and where it came from. */
 export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => string, limit: number): Array<Record<string, unknown>> {
   return svc.dismissalLessons(limit).map((l) => ({
-    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, tapId: l.tapId, conversationKey: l.conversationKey,
+    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, ...(l.currentTitle !== undefined ? { cardTitleNow: l.currentTitle, retitledAfterClose: true } : {}), ...(l.titleUnconfirmed ? { titleUnconfirmed: true } : {}), tapId: l.tapId, conversationKey: l.conversationKey,
     by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
   }));
 }

@@ -119,7 +119,7 @@ fixed-limits: none new. The one-second recheck is a wait, not a limit on the cal
 - **fleet:** on for every Windows agent in the same release, no switch: the flag is a launch default with no page-visible automation signal and the named error replaces a wrong answer, so there is nothing to hold dark.
 - **graduation criterion:** one week of real Windows browser tasks on Echo with no blank-page read returned as page text and no `ERR page-not-rendering` on a Chrome the driver launched while the page was visible in `shot`.
 - **dark-window:** none; ships live (nothing dark to graduate).
-- **ladder:** none (no config key, revert the release to turn it off)
+- **ladder:** not applicable: no config key, revert the release to turn it off
 
 ## Frontloaded Decisions
 

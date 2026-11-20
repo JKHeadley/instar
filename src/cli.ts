@@ -562,6 +562,7 @@ addCmd
   .option('--phone-number-id <id>', 'Meta Phone Number ID (Business API)')
   .option('--access-token <token>', 'Meta access token (Business API)')
   .option('--webhook-verify-token <token>', 'Webhook verification token (Business API)')
+  .option('--app-secret <secret>', 'Meta app secret that signs webhook deliveries (Business API; or set WHATSAPP_APP_SECRET)')
   .option('--webhook-port <port>', 'Webhook port if different from server port (Business API)', parseInt)
   .action(async (opts) => {
     const { addWhatsApp } = await import('./commands/whatsapp.js');
@@ -2487,6 +2488,7 @@ program
   .option('--here', 'Remove the instar install in the current project directory (instead of a standalone agent)')
   .option('--yes', 'Skip confirmation prompts')
   .option('-d, --dir <path>', 'Project directory (with --here; defaults to cwd)')
+  .option('--also-stop <ids...>', 'Also stop these tmux session ids, which nuke listed because they match the agent\'s name but started outside every agent home')
   .action(async (name, opts) => {
     if (opts.here) {
       if (name) {
@@ -2495,7 +2497,7 @@ program
         process.exit(1);
       }
       const { nukeHere } = await import('./commands/nuke.js');
-      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes });
+      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes, alsoStop: opts.alsoStop });
       return;
     }
     if (!name) {
@@ -2505,7 +2507,7 @@ program
       process.exit(1);
     }
     const { nukeAgent } = await import('./commands/nuke.js');
-    await nukeAgent(name, { skipConfirm: opts.yes });
+    await nukeAgent(name, { skipConfirm: opts.yes, alsoStop: opts.alsoStop });
   });
 
 // ── Playbook (Context Engineering) ───────────────────────────────

@@ -105,6 +105,40 @@ describe('DocumentService', () => {
     expect(byBody['Too many?']).toBe('orphaned');
   });
 
+  it('a comment stays on the version it was made on, quotes the original text, and never jumps to unrelated words', () => {
+    const { svc } = setup();
+    const v1md = '# Plan\n\nWe ship the viewer in three steps.\n\nThe first step is the core library.\n';
+    const { id, versionId: v1 } = svc.create(sharedAgent, { title: 'Shared', markdown: v1md, primary: SHARED });
+    const t1 = projectText(v1md).text;
+    const s = t1.indexOf('three steps');
+    const { key } = svc.comment(id, mara, { onVersion: v1, start: s, end: s + 'three steps'.length, body: 'Too many?' });
+    // Version 2 drops the sentence; an unrelated section now happens to say "three steps".
+    const v2md = `# Plan\n\nWe ship the viewer soon.\n\n${'Background on vendors and budgets. '.repeat(30)}\n\n## Appendix\n\nThe fire drill has three steps for every floor.\n`;
+    const { versionId: v2 } = svc.revise(id, sharedAgent, { markdown: v2md });
+    const onLatest = svc.comments(id, sharedAgent).find((c) => c.key === key)!;
+    expect(onLatest).toMatchObject({ quote: 'three steps', anchorState: 'orphaned', onVersion: v1, onVersionLabel: 1 });
+    expect(onLatest.start).toBeUndefined();
+    // On its own version it sits exactly where it was highlighted.
+    const onOwn = svc.comments(id, sharedAgent, 'open', v1).find((c) => c.key === key)!;
+    expect(onOwn).toMatchObject({ quote: 'three steps', anchorState: 'ok', start: s, end: s + 'three steps'.length });
+    expect(svc.comments(id, sharedAgent, 'open', v2).find((c) => c.key === key)!.anchorState).toBe('orphaned');
+  });
+
+  it('an edited passage keeps the original quote and reports the new wording separately', () => {
+    const { svc } = setup();
+    const md = '# Plan\n\nThe first step is to build the core library and its storage layer.\n';
+    const { id, versionId } = svc.create(sharedAgent, { title: 'Shared', markdown: md, primary: SHARED });
+    const t = projectText(md).text;
+    const q = 'build the core library and its storage layer';
+    const s = t.indexOf(q);
+    svc.comment(id, mara, { onVersion: versionId, start: s, end: s + q.length, body: 'Scope?' });
+    svc.revise(id, sharedAgent, { markdown: md.replace('its storage layer', 'its storage layers') });
+    const c = svc.comments(id, sharedAgent)[0];
+    expect(c.quote).toBe(q);
+    if (c.anchorState === 'edited') expect(c.nowReads).toContain('storage layers');
+    else expect(c.anchorState).toBe('ok');
+  });
+
   it('replies, resolves own comments, records a Send, and compares versions', () => {
     const { svc } = setup();
     const { id, versionId } = svc.create(sharedAgent, { title: 'Shared', markdown: MD, primary: SHARED });

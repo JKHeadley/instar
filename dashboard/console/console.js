@@ -12,6 +12,7 @@ import {
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath, DOORS, doorHref, doorOf, resolveRoute, startDoor, FLEET_TILES } from './nav-model.js';
 import { mountNeedsStrip } from './needs-strip.js';
+import { mountAgentHealthNote } from './agent-health-note.js';
 import { fillPartial } from './home-model.js';
 import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
@@ -270,6 +271,7 @@ function renderShell(active) {
   const column = strip ? el('div', { class: 'main-column' }, strip, main) : main;
   const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), top, navItems(active), column);
   document.body.replaceChildren(app);
+  mountAgentHealthNote(app.querySelector('nav a[data-door="agent"]'), { get });
   if (strip) mountNeedsStrip(strip, { get, hrefFor: stripActionHref });
   applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
   fillAgentName();

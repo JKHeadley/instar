@@ -60,6 +60,13 @@ export interface BodyBudgetDeps {
   memorySessionValid?: (token: string) => boolean;
   /** The id names an active paired device. */
   activeDevice?: (deviceId: string) => boolean;
+  /**
+   * SEC-118: the method and path match a device-allowlist route that takes a body. A device id is
+   * not a secret, so its narrowed admission unlocks the large budget only where a device may send
+   * one; anywhere else the device authenticator refuses the request, so the small budget loses
+   * nothing. Absent ⇒ no device admission at all (fail closed).
+   */
+  deviceRouteTakesBody?: (method: string, path: string) => boolean;
   /** The id names an active paired machine. */
   activeMachine?: (machineId: string) => boolean;
   /** This machine's own id: never admitted by id (it is handed out in refusals). */
@@ -111,10 +118,13 @@ export function presentsCredential(req: Request, deps: BodyBudgetDeps): boolean 
     if (presented.startsWith('mps_') && deps.memorySessionValid?.(presented) === true) return true;
   }
   // A paired device: its id, its signature header and a fresh signing time (verified later on the body).
+  // The full path: under a mounted parser (app.use('/mobile/org/recover', ...)) req.path is only the rest.
+  const fullPath = req.baseUrl ? `${req.baseUrl}${req.path === '/' ? '' : req.path}` : (req.path || '/');
   const device = header(req, 'x-instar-device');
   const deviceTime = header(req, 'x-instar-device-time');
-  if (device && deviceTime && header(req, 'x-instar-device-sig') && !req.path.startsWith('/internal/')
+  if (device && deviceTime && header(req, 'x-instar-device-sig') && !fullPath.startsWith('/internal/')
     && /^\d{10,16}$/.test(deviceTime) && Math.abs(now - Number(deviceTime)) <= DEVICE_TIME_SLACK_MS
+    && deps.deviceRouteTakesBody?.(req.method, fullPath) === true
     && deps.activeDevice?.(device) === true) return true;
   // A paired machine on a machine route: the full signature header set, a fresh timestamp, never our own id.
   const machine = header(req, 'x-machine-id');
@@ -136,6 +146,47 @@ function hasBody(req: Request): boolean {
 function refuseUnread(res: Response, status: number, error: string): void {
   res.setHeader('Connection', 'close');
   res.status(status).json({ error });
+}
+
+/**
+ * SEC-118: stop reading a body the moment it passes `limitBytes`. body-parser reports an oversized
+ * body only after the whole request has arrived (it drains the stream, then calls back), so a
+ * chunked upload with no declared length was read in full before the 413. This counts bytes as
+ * they arrive and, past the limit, answers 413 at once and closes the socket when the answer is sent.
+ * A declared Content-Length over the limit is refused before a byte is read.
+ */
+export function boundedBody(limitBytes: number, parser: RequestHandler, type: string = 'application/json'): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if ((req as { _body?: boolean })._body || !hasBody(req)) { next(); return; }
+    // The parser reads only its own content type and passes others through unread; counting them
+    // here would start the stream flowing and lose the body a later parser needs.
+    if (!req.is(type)) { parser(req, res, next); return; }
+    const declared = req.headers['content-length'];
+    if (declared !== undefined) {
+      const n = Number(declared);
+      if (!Number.isFinite(n) || n > limitBytes) { res.on('finish', () => req.socket?.destroy()); refuseUnread(res, 413, 'body-too-large'); return; }
+      parser(req, res, next);
+      return;
+    }
+    let seen = 0;
+    let cut = false;
+    const onData = (chunk: Buffer | string): void => {
+      seen += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+      if (cut || seen <= limitBytes) return;
+      cut = true;
+      req.off('data', onData);
+      // Close the socket as soon as the 413 is sent: the parser may resume the stream to drain it,
+      // and only the destroyed socket stops that. Its late error finds the response already sent.
+      res.on('finish', () => req.socket?.destroy());
+      req.pause();
+      if (!res.headersSent) refuseUnread(res, 413, 'body-too-large');
+    };
+    req.on('data', onData);
+    parser(req, res, (err?: unknown) => {
+      if (cut) return; // already answered; the parser's late error is the cut stream
+      next(err as Error | undefined);
+    });
+  };
 }
 
 /**
@@ -166,15 +217,33 @@ export function credentialAwareJsonParser(deps: BodyBudgetDeps, fullLimitBytes: 
       const n = Number(declared);
       if (!Number.isFinite(n) || n > limit) { refuseUnread(res, 413, 'body-too-large'); return; }
     }
-    // No declared length: the parser stops buffering at the budget; answer at once and close,
-    // so the remaining stream is not drained.
-    (isPeer ? peer : small)(req, res, (err?: unknown) => {
+    // No declared length: count bytes as they arrive and cut the stream at the budget (SEC-118:
+    // body-parser alone reports the overflow only after draining the whole upload).
+    boundedBody(limit, isPeer ? peer : small)(req, res, (err?: unknown) => {
       if ((err as { type?: unknown } | undefined)?.type === 'entity.too.large') {
         if (!res.headersSent) refuseUnread(res, 413, 'body-too-large');
         return;
       }
       next(err as Error | undefined);
     });
+  };
+}
+
+/**
+ * SEC-118-R1: a refused request whose body was never read is not drained. When a response with an
+ * error status (4xx/5xx) finishes and the request still has unread body bytes, Node would read and
+ * discard the rest to keep the connection alive (a stranger could stream to an auth-refused route
+ * until the request timeout). This closes the socket instead. Successful responses are untouched.
+ * Mounted first, so it covers every refusal (auth gate, rate limits, route checks) in one place.
+ */
+export function closeUnreadBodyOnError(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (hasBody(req)) {
+      res.once('finish', () => {
+        if (res.statusCode >= 400 && !req.complete) req.socket?.destroy();
+      });
+    }
+    next();
   };
 }
 
@@ -206,6 +275,10 @@ export function answerBodyParseError(err: unknown, req: Request, res: Response):
     console.warn(`[server] ${req.method} /${first.slice(0, 40)}…: ${code} (${status}); repeats within a minute are not logged`);
   }
   if (res.headersSent) return true;
+  // SEC-118: a refused body is not drained. Without this, Node reads and discards the rest of an
+  // oversized (or chunked, unbounded) upload to keep the connection alive, so the refusal would
+  // still cost a full read. Closing the connection stops reading at the parser's limit.
+  if (status === 413 || code === 'body-length-mismatch' || code === 'request-aborted') res.setHeader('Connection', 'close');
   res.status(status).json({ error: code });
   return true;
 }
