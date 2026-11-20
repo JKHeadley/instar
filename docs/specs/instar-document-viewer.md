@@ -7,7 +7,7 @@ created: 2026-11-10
 status: converged
 approved: true
 approved-by: "justin (telegram topic 141469, message 141587, \"Approved\", 2026-11-10 15:19 PST)"
-parent-principle: "The Person Decides; the Agent Does the Rest (STANDARDS-REGISTRY), applied to documents as the approved text of Rule 123 directs. Rule 123: An Instar Agent Always Serves a Team (approved by Justin 2026-11-10 in topic 141014; being written into both rule books on branch echo/rule-123-team by the session in topic 141014; this build does not wait for that merge because the rule's text is approved and this spec applies it directly)"
+parent-principle: "The Person Decides; the Agent Does the Rest (STANDARDS-REGISTRY), applied to documents as An Instar Agent Always Serves a Team (STANDARDS-REGISTRY; counterpart of 2.0 Rule 123, merged in #3046) directs"
 origin: "Justin, 2026-11-10, topics 141014 and 141469"
 lessons-engaged: "P21 An Instar agent is always a multi-machine entity (unified rows by vector pull, §5); No silent degradation (size and rate drops refused out loud, §5.3); P19 No unbounded loops (peer poll, pending re-check, re-anchor and compare jobs, §5.1, §3.5); P7 LLM-supervised execution (Tier 0: these loops are deterministic, bounded and observable in GET /docs/health, no model in the loop); P17 Bounded notification surface (one push per pass through MobilePush, §4.9); P24 Never silently cut decision data (session-start overflow line, §3.7); P20 Verify the state, not its symbol (§7); Signal vs Authority (all access decisions deterministic, §6); work in other repositories has an owner (app work owned, briefed and on the completion bar, §4.5)"
 review-convergence: "2026-11-10T22:09:13.509Z"
@@ -474,7 +474,7 @@ Members and guests in the browser part are driven with throwaway device keys sig
 11. Live proof (§10), browser and app.
 12. Turn on for the fleet (§13 decision 10).
 Every step lands behind the same dark gate, so a partial landing is inert on the fleet.
-13. When Rule 123 merges (owned by the session in topic 141014), update this spec's `parent-principle` to cite the merged rule; the `/spec/conformance-check` parent check then resolves. This is tracked as a commitment in topic 141469.
+13. Done (2026-11-20): Rule 123 merged as *An Instar Agent Always Serves a Team* (#3046), and this spec's `parent-principle` now cites the merged rule.
 
 ## 12. Tests
 
