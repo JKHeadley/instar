@@ -643,7 +643,7 @@ Self-heal declaration (the shared repair loop all parts use; per-part brakes are
 
 ## Maturation plan
 
-- **ladder:** no-data-loss-on-machine-death (new maturation-ladder entry, added with increment 1)
+- **ladder:** not applicable: this PR adds only the design; increment 1 (PR #3544, owned-repository registry) adds the no-data-loss-on-machine-death switch together with its ladder entry in src/data/feature-ladders.json.
 - **test-agent-live:** each increment's E2E boots a throwaway two-machine pool and runs that increment's drill row. Increment 6 adds a mixed-version pool (one old peer).
 - **dev-agent-live:** Echo's machines. Each part is on at merge, with the D16 actions in `dryRun: true`. Those actions go live on Echo after their throwaway-pool E2E in the real-GitHub lane (D16), and the rehearsal confirms them. The first drill is a rehearsal on the Mini.
 - **fleet:** after two consecutive passing monthly drills on Echo with the increment live.
