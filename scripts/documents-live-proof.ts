@@ -294,7 +294,8 @@ type Context = import('playwright').BrowserContext;
 interface Tab { vp: Vp; ctx: Context; page: Page; consoleErrors: string[]; cspViolations: string[] }
 
 async function openTab(browser: Browser, vp: Vp): Promise<Tab> {
-  const ctx = await browser.newContext({ viewport: VIEWPORTS[vp], ignoreHTTPSErrors: true, ...(vp === 'narrow' ? { deviceScaleFactor: 3, hasTouch: true } : {}) });
+  const ctx = await browser.newContext({ viewport: VIEWPORTS[vp], ignoreHTTPSErrors: true, // The narrow tab is a narrow COMPUTER window (mouse, hover): a touchscreen phone gets the app offer instead (#3216).
+  ...(vp === 'narrow' ? { deviceScaleFactor: 3 } : {}) });
   const page = await ctx.newPage();
   const consoleErrors: string[] = []; const cspViolations: string[] = [];
   page.on('console', (m) => { if (m.type() === 'error') { consoleErrors.push(m.text()); if (/Content Security Policy|Trusted Type/i.test(m.text())) cspViolations.push(m.text()); } });
@@ -510,6 +511,22 @@ async function main(): Promise<void> {
     }
   });
 
+  await M.run({ id: 'hp-phone-browser-offers-the-app', description: 'The same link opened in a touchscreen phone browser (390×844, touch, no hover) offers "Open in the Instar app" and asks for no link code, since the phone showing a QR code could not scan it (#3216)', riskCategory: 'happy-path' }, async (e) => {
+    const ctx = await browser.newContext({ viewport: VIEWPORTS.narrow, ignoreHTTPSErrors: true, deviceScaleFactor: 3, hasTouch: true, isMobile: true });
+    cleanup.push(async () => { await ctx.close().catch(() => undefined); });
+    const page = await ctx.newPage();
+    let nonceAsked = 0;
+    page.on('request', (r) => { if (r.url().endsWith('/docs/_link/nonce')) nonceAsked += 1; });
+    await page.goto(`https://${A.host}/docs/${docId}`);
+    await page.waitForFunction(() => /Open in the Instar app/.test(document.querySelector('#doc')?.textContent ?? ''), undefined, { timeout: 20_000 });
+    const shown = ((await page.textContent('#doc')) ?? '').trim();
+    check(!(await page.$('.link-fingerprint')), 'no link code shown on the phone', { shown: shown.slice(0, 200) });
+    expectEqual(nonceAsked, 0, 'no link code requested by the phone');
+    const file = path.join(shotDir, `${String(shots.length + 1).padStart(2, '0')}-phone-offers-app-narrow-390x844.png`);
+    await page.screenshot({ path: file }); shots.push(file);
+    Object.assign(e, { shown: shown.slice(0, 200), nonceRequests: nonceAsked, screenshot: path.basename(file) });
+  });
+
   await M.run({ id: 'hp-comment-select-and-post', description: 'Mia selects a passage and comments through the page: the Comment pill at 1280×728 and the C key at 390×844; each creates exactly one comment row with the server-cut quote', riskCategory: 'happy-path' }, async (e) => {
     const wide = tabs['mia-wide']; const narrow = tabs['mia-narrow'];
     check(wide && narrow, 'both computers linked');
@@ -654,8 +671,13 @@ async function main(): Promise<void> {
     await t.page.reload(); await waitForDoc(t, TITLE);
     const sub = await pageText(t, '.threads .threads-sub');
     const notes = await pageText(t, '.threads .anchor-note');
-    check(sub.includes('Passage changed or removed'), 'orphaned section shown', { sub });
-    check(notes.includes('The passage this comment was on was removed') && notes.includes('The passage changed since this comment'), 'anchor notes shown', { notes });
+    // The heading for comments whose passage is gone (renamed in #3462: a comment stays on the version it was made on).
+    check(sub.includes('Not in this version'), 'orphaned section shown', { sub });
+    const noteHas = (w: string): boolean => notes.some((n) => n.includes(w));
+    // A removed passage reads "removed" when the comment was made on the version being read, else
+    // "isn't in the version you're reading" (#3462); the reworded one says it changed and shows the new words.
+    check((noteHas('The passage this comment was on was removed') || noteHas("This passage isn't in the version you're reading")) && noteHas('The passage changed since this comment'), 'anchor notes shown', { notes });
+    check(notes.includes('Now reads: second business day of each month'), 'the new wording is shown in whole words', { notes });
     e.screenshot = await shot(t, 'anchors');
     // Re-attach the orphaned comment to a passage of the newest version (its author, signed).
     const p2 = await pageData(A, mia, docId);
