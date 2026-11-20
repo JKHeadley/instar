@@ -33,6 +33,7 @@ import { markSameNetworkSocket } from '../core/requestArrival.js';
 import { loadOrCreateSameNetworkIdentity, type SameNetworkIdentity } from '../core/SameNetworkCert.js';
 import { addressHints, isWsl, networkIdOf, observeNetwork, wslNatAddress, type NetworkObservation, type ObservedNetwork } from '../core/SameNetworkNetwork.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { isFetchBlockedPort } from '../core/AgentRegistry.js';
 
 export const SAME_NETWORK_STATE_FILE = 'state/same-network.json';
 const FEATURE = 'mobilePairing.sameNetwork';
@@ -42,6 +43,38 @@ export const SAME_NETWORK_MAX_CONNECTIONS = 32;
 export const SAME_NETWORK_PER_ADDRESS_OPEN = 6;
 export const SAME_NETWORK_PER_ADDRESS_PER_MIN = 40;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/**
+ * The default home-network port is the main port plus this (4040 -> 24040, 4041 -> 24041, ...): one
+ * port per agent, as the main ports are. Main + 1000 (5040) was taken on every Windows 10/11 PC by
+ * Windows' Connected Devices Platform service (CDPSvc, svchost, 0.0.0.0:5040, exclusive), found live
+ * by builder #39, so the Windows pass-through could not listen there. 24040-24099 is:
+ *  - below every OS's ephemeral range (Linux 32768-60999, Windows and macOS 49152-65535), so an
+ *    outgoing connection never holds it, and Hyper-V/WSL's reserved ranges (allocated inside the
+ *    Windows dynamic range) do not cover it;
+ *  - not a default listener on Windows 10/11 (135, 139, 445, 2179, 3389, 5040, 5357, 7680, 49664+),
+ *    macOS (AirPlay 5000/7000, screen sharing 5900, rapportd 49152+) or common Linux desktops
+ *    (22, 53, 631, 5353/udp); measured on a Windows 10 PC and a Windows 11 PC on 2026-11-19;
+ *  - not a common development port (3000, 5173, 8000, 8080, ...) and not on the WHATWG fetch
+ *    bad-ports list, which a phone's web stack refuses.
+ * The caller may still ask for a specific port (the Windows app checks one is free on Windows first).
+ */
+export const SAME_NETWORK_PORT_OFFSET = 20_000;
+/** Used when main + offset would leave the range below every ephemeral range. */
+export const SAME_NETWORK_FALLBACK_PORT = 24_040;
+/** The highest default: just below Linux's ephemeral range. */
+export const SAME_NETWORK_DEFAULT_MAX = 32_767;
+
+/** The default home-network port for an agent whose main listener is on `mainPort`. */
+export function defaultSameNetworkPort(mainPort: number): number {
+  const p = mainPort + SAME_NETWORK_PORT_OFFSET;
+  return Number.isInteger(p) && p >= 1024 && p <= SAME_NETWORK_DEFAULT_MAX && !isFetchBlockedPort(p) ? p : SAME_NETWORK_FALLBACK_PORT;
+}
+
+/** A port a caller may ask for: an unprivileged TCP port that a phone's web stack will connect to. */
+export function isRequestablePort(p: unknown): p is number {
+  return typeof p === 'number' && Number.isInteger(p) && p >= 1024 && p <= 65535 && !isFetchBlockedPort(p);
+}
 const RECONCILE_MS = 15_000;
 
 export interface AllowedNetwork {
@@ -72,6 +105,8 @@ export interface SameNetworkStatus {
   host: string | null;
   name: string;
   port: number | null;
+  /** The port the next open will use: the stored one, else the default. The app checks it is free first. */
+  preferredPort: number;
   bind: string | null;
   spkiHash: string | null;
   observer: 'agent' | 'windows-app';
@@ -84,7 +119,7 @@ export interface SameNetworkListenerDeps {
   stateDir: string;
   agentName: string;
   machineName?: string;
-  /** The main listener's port; the default same-network port is this plus 1000. */
+  /** The main listener's port; the default same-network port is derived from it (defaultSameNetworkPort). */
   mainPort: number;
   /** The full app, reached only through `gate`. */
   app: (req: IncomingMessage, res: ServerResponse) => void;
@@ -92,7 +127,7 @@ export interface SameNetworkListenerDeps {
   gate: (req: IncomingMessage, res: ServerResponse) => boolean;
   observe?: () => Promise<NetworkObservation>;
   wsl?: boolean;
-  /** The first port to try when none is stored yet (tests use 0 for an OS-chosen one); default main + 1000. */
+  /** The first port to try when none is stored yet (tests use 0 for an OS-chosen one); default defaultSameNetworkPort(mainPort). */
   port?: number;
   /** Override the bind address (tests: 127.0.0.1). */
   bindHost?: string;
@@ -171,6 +206,9 @@ export class SameNetworkListener {
     return port ? `${this.name}.local:${port}` : null;
   }
 
+  /** The port the next open will use when the caller asks for none. */
+  preferredPort(): number { return this.state.port ?? this.deps.port ?? defaultSameNetworkPort(this.deps.mainPort); }
+
   /** The pinned value, available once the identity was loaded (the listener opened at least once). */
   spkiHash(): string | null { return this.identity?.spkiHash ?? null; }
 
@@ -180,7 +218,7 @@ export class SameNetworkListener {
     const obs = this.lastObservation;
     return {
       wanted: this.state.open, listening: this.listening(), held: this.state.open ? this.held : null,
-      host: this.host(), name: this.name, port: this.boundPort ?? this.state.port, bind: this.boundHost,
+      host: this.host(), name: this.name, port: this.boundPort ?? this.state.port, preferredPort: this.preferredPort(), bind: this.boundHost,
       spkiHash: this.spkiHash(), observer: this.wsl ? 'windows-app' : 'agent',
       network: obs?.kind === 'observed' ? obs.network : null,
       hints: this.wsl ? [] : addressHints(), allowed: this.state.allowed.map((a) => ({ ...a })),
@@ -204,18 +242,42 @@ export class SameNetworkListener {
    * The owner asked at the computer (the caller ran the fresh check). Allows the network this
    * computer is on now, records the wish, and opens. Refused (and nothing recorded) when the
    * network cannot be read.
+   *
+   * `port`: the caller asks for this exact port (the Windows app checked it is free on Windows). It
+   * is taken only when no port is stored yet, when it is the stored one, or when `mayMovePort` (no
+   * phone is paired on the home address, so no stored `<name>.local:<port>` breaks). An asked-for
+   * port is never swapped for another: if it cannot be listened on, the open fails and the earlier
+   * port is kept.
    */
-  async openForOwner(): Promise<{ ok: true; status: SameNetworkStatus } | { ok: false; reason: 'network-unknown' | 'port-unavailable'; detail: string }> {
+  async openForOwner(opts: { port?: number; mayMovePort?: boolean } = {}): Promise<{ ok: true; status: SameNetworkStatus } | { ok: false; reason: 'network-unknown' | 'port-unavailable' | 'port-fixed'; detail: string; port?: number }> {
+    const asked = opts.port;
+    const before = this.state.port;
+    if (asked !== undefined && before !== null && asked !== before && !opts.mayMovePort) {
+      return { ok: false, reason: 'port-fixed', port: before, detail: `A phone is paired on this agent's home address at port ${before}, so its port cannot change. Use port ${before}.` };
+    }
     const obs = await this.observeNow();
     if (obs.kind === 'unknown') return { ok: false, reason: 'network-unknown', detail: `This computer cannot tell which network it is on (${obs.reason}), so the home address stays closed.` };
+    // Moving: the reconcile below sees the bound port differ from the stored one and rebinds.
+    if (asked !== undefined && asked !== before) this.state.port = asked;
     this.allowObservation(obs);
     this.state.open = true;
     this.state.name = this.name;
     this.state.openedAt = new Date(this.now()).toISOString();
     this.writeState();
     await this.reconcile();
-    if (!this.listening()) {
-      return { ok: false, reason: 'port-unavailable', detail: 'The home address could not start on this computer. Another program may be using its port.' };
+    // A reconcile already running when this began (the 15-second tick) is the one joined above, and it
+    // may have read the earlier wish or bound the earlier port (and stored it back). Settle once more.
+    if (asked !== undefined && this.state.port !== asked) { this.state.port = asked; this.writeState(); }
+    if (!this.listening() || (asked !== undefined && this.boundPort !== asked)) await this.reconcile();
+    if (!this.listening() || (asked !== undefined && this.boundPort !== asked)) {
+      if (asked !== undefined && asked !== before) {
+        // Back to the earlier port (and listening on it again, when one was stored).
+        this.state.port = before; this.writeState();
+        if (before !== null) await this.reconcile();
+      }
+      return { ok: false, reason: 'port-unavailable', ...(asked !== undefined ? { port: asked } : {}), detail: asked !== undefined
+        ? `The home address could not start on port ${asked} on this computer. Another program may be using it.`
+        : 'The home address could not start on this computer. Another program may be using its port.' };
     }
     featureEvidence.record(FEATURE, { kind: 'fired', reason: 'opened by the owner at the computer', context: { observer: obs.kind === 'delegated' ? 'windows-app' : 'agent' } });
     return { ok: true, status: this.status() };
@@ -296,7 +358,7 @@ export class SameNetworkListener {
           await this.stopServer();
           return;
         }
-        if (this.listening() && this.boundHost === bind) { this.held = null; return; }
+        if (this.listening() && this.boundHost === bind && (this.state.port === null || this.boundPort === this.state.port)) { this.held = null; return; }
         await this.stopServer();
         const ok = await this.startServer(bind);
         this.held = ok ? null : 'port-unavailable';
@@ -358,7 +420,7 @@ export class SameNetworkListener {
     // No live socket upgrades on this listener.
     server.on('upgrade', (_req: IncomingMessage, socket: Socket) => { socket.destroy(); });
     server.on('tlsClientError', () => { /* @silent-fallback-ok — a failed handshake is a closed socket, nothing to report per caller */ });
-    const want = this.state.port ?? this.deps.port ?? (this.deps.mainPort + 1000);
+    const want = this.state.port ?? this.deps.port ?? defaultSameNetworkPort(this.deps.mainPort);
     const listenOn = (port: number): Promise<number | null> => new Promise((resolve) => {
       const onErr = (): void => { server.removeListener('listening', onOk); resolve(null); };
       const onOk = (): void => { server.removeListener('error', onErr); const a = server.address(); resolve(a && typeof a === 'object' ? a.port : null); };
@@ -385,6 +447,7 @@ export class SameNetworkListener {
     const s = this.server;
     this.server = null;
     this.boundHost = null;
+    this.boundPort = null;
     this.perAddress.clear();
     if (!s) return;
     await new Promise<void>((resolve) => {

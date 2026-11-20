@@ -18,6 +18,9 @@ import type { InstarConfig } from '../../src/core/types.js';
 import type { NetworkObservation } from '../../src/core/SameNetworkNetwork.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { pinnedRequest, signedHeaders } from '../helpers/pinnedPhone.js';
+import { ceremonyCredential } from '../../src/commands/mobileCeremonyCredential.js';
+import { ceremonyCredentialPath } from '../../src/core/ceremonyCredential.js';
+import { defaultSameNetworkPort } from '../../src/server/sameNetworkListener.js';
 
 const PIN = '731904';
 const HOME: NetworkObservation = { kind: 'observed', network: { iface: 'eth0', router: '192.168.7.1', address: '192.168.7.40', range: '192.168.7.0/24' } };
@@ -103,6 +106,40 @@ describe('identity A4 — same-network first phone, production wiring', () => {
     expect(again.mobilePairing!.sameNetwork!.host()).toBe(host);
     const me2 = await pinnedRequest({ port, pin, method: 'GET', path: '/mobile/device', headers: signedHeaders(dev, String(r.json.deviceId), host, 'GET', '/mobile/device') });
     expect(me2.status).toBe(200);
+  });
+
+  it('A5: the app on the agent\'s own computer adds the first phone with the one-time credential its command makes, without the PIN', async () => {
+    const dir = newDir();
+    const stateDir = path.join(dir, '.instar');
+    // This computer's identity for the agent, as `instar init` writes it.
+    fs.mkdirSync(path.join(stateDir, 'machine'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'machine', 'identity.json'), JSON.stringify({ machineId: 'm_e2e' }));
+    const server = await boot(dir);
+    const svc = server.mobilePairing!;
+    const app = server.getApp();
+    // The preferred port is reported before anything opens (production default unless a test port is set).
+    expect((await bearer(request(app).get('/mobile/same-network'))).body.preferredPort).toBe(0);
+    expect(defaultSameNetworkPort(4040)).toBe(24_040);
+    // The Instar app the installer enrolled on this computer (its one-time ticket).
+    expect(svc.devices.createActiveLocalOwner({ id: 'app-e2e', publicKey: makeDevice().publicKey, host: '127.0.0.1:0', label: 'Instar', machineId: 'm_e2e', approvedAt: new Date().toISOString() }).ok).toBe(true);
+    // The app's command, run inside the agent's own system: the real CLI entry.
+    const printed: string[] = [];
+    const log = console.log;
+    console.log = (line: unknown) => { printed.push(String(line)); };
+    try { ceremonyCredential({ dir, json: true }); } finally { console.log = log; }
+    const made = JSON.parse(printed[0]!) as { credential: string; for: string };
+    expect(made.for).toBe('phone-setup');
+    expect(fs.existsSync(ceremonyCredentialPath(stateDir))).toBe(true);
+    // A credential is never accepted through a forwarded request.
+    const fwd = await bearer(request(app).post('/mobile/phone-setup')).set('Host', '127.0.0.1:0').set('X-Forwarded-For', '198.51.100.4').send({ ceremonyCredential: made.credential });
+    expect(fwd.status).toBe(403);
+    const s = await bearer(request(app).post('/mobile/phone-setup')).set('Host', '127.0.0.1:0').send({ ceremonyCredential: made.credential });
+    expect(s.status).toBe(200);
+    expect(s.body.linkVersion).toBe(2);
+    expect(fs.existsSync(ceremonyCredentialPath(stateDir))).toBe(false);
+    expect(svc.sameNetwork!.listening()).toBe(true);
+    // Spent: the same credential opens nothing again.
+    expect((await bearer(request(app).post('/mobile/phone-setup')).set('Host', '127.0.0.1:0').send({ ceremonyCredential: made.credential })).status).toBe(403);
   });
 
   it('a second machine of the agent that was not asked keeps its listener closed', async () => {

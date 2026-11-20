@@ -11,7 +11,7 @@
 import readline from 'node:readline';
 import { loadConfig } from '../core/Config.js';
 
-interface AddPhoneOptions { dir?: string; anywhere?: boolean; json?: boolean }
+interface AddPhoneOptions { dir?: string; anywhere?: boolean; json?: boolean; port?: number }
 
 function ask(question: string, hidden: boolean): Promise<string> {
   return new Promise((resolve) => {
@@ -43,7 +43,7 @@ export async function addPhone(opts: AddPhoneOptions): Promise<void> {
   // (which other programs on the computer could read from the process list).
   const pin = process.stdin.isTTY ? await ask('Your dashboard PIN: ', true) : await firstLine();
   if (!pin) { console.error('Run this in a terminal on the agent\'s computer: it asks for your dashboard PIN.'); process.exitCode = 1; return; }
-  const start = await call('POST', '/mobile/phone-setup', { pin, address: opts.anywhere ? 'anywhere' : 'home' });
+  const start = await call('POST', '/mobile/phone-setup', { pin, address: opts.anywhere ? 'anywhere' : 'home', ...(opts.port !== undefined ? { port: opts.port } : {}) });
   if (start.status !== 200) {
     console.error(String(start.json.detail ?? start.json.error ?? `The agent answered ${start.status}.`));
     process.exitCode = 1;

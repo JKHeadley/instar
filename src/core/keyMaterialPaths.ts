@@ -111,6 +111,10 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // Whether the same-network listener is open and on which networks. Not a key, but only the owner at
   // the computer may open the listener; a file-editor write would be a way round that from outside.
   'state/same-network.json',
+  // The app's one-time ceremony credential (identity A5, 0600, its hash only). Never written over HTTP:
+  // a file-editor write would mint a credential from outside the agent's own system. Covers the
+  // writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md §4.6
+  'state/ceremony-credential.json',
 ]);
 
 /**
@@ -141,6 +145,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'state/lifeline-ingress-secret',
   'state/local-mcp-secret',
   'state/same-network-tls.key',
+  'state/ceremony-credential.json',
   'state/always-available-token.json',
   'config.json',
 ]);

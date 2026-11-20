@@ -11,12 +11,12 @@ parent-spec: "install-experience.md §6 'Same network' and frontloaded decisions
 depends-on: "mobile pairing (mobile-pairing-link, mobile-native-conversations §4.4), the device-key registry and ledger"
 lessons-engaged: "a-dark-guard-is-worse-than-no-guard, a-filtered-query-cannot-see-what-it-filters-out, verify-in-the-design-layer-not-just-code"
 review-convergence: "2026-11-19T23:30:00Z"
-review-iterations: 2
+review-iterations: 3
 review-completed-at: "2026-11-19T23:30:00Z"
 cross-model-review: "none: the Fable reviewers hit their quota (resets 2026-11-25); two Opus rounds (security + integration, then a resolution check). The round-2 fixes were tested but not re-reviewed by a third round"
 review-report: "reports/identity-security-piece3e-same-network-first-phone-convergence.md"
 approved: true
-approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened."
+approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session."
 ---
 
 # A new agent's first phone pairs over the same network
@@ -49,6 +49,9 @@ Built here, in the agent:
    issues and the owner types at the computer, the phone's signed activation (§4).
 8. The terminal surface, `instar mobile add-phone` (§4.4), and the agent-awareness entry.
 9. The name announcement on macOS (`dns-sd`) and Linux (`avahi-publish`, where present) (§3.7).
+10. The home port the caller asks for, and a default that is free on Windows, macOS and Linux (§3.1;
+    builder #40, after #39 found 5040 taken on every Windows 10/11 PC).
+11. The A5 one-time ceremony credential, for the "Add your phone" setup only (§4.6; builder #40).
 
 Not built here, and owned elsewhere in the identity build order (owner-identity-merged §12, rows 6 and 7):
 
@@ -59,8 +62,8 @@ Not built here, and owned elsewhere in the identity build order (owner-identity-
 - The apps: the Windows/Linux/Mac app's "Add your phone" screen that shows the link as a QR code and
   takes the number (A5), the Windows pass-through with its firewall prompt, the iPhone/Android app's
   pinning and v2 scan: piece **3c**. <!-- tracked: topic 144636 (identity build order row 7, piece 3c) -->
-- The A5 one-time ceremony credential for the app: piece **3b** defines it (A5 condition 1). Until it
-  exists the local surface is the agent's own token from this computer plus the PIN (§4.1).
+- The A5 one-time ceremony credential for the recovery screens and for the step that grants the mark:
+  piece **3b** extends §4.6 to them (A5 condition 1). Here it opens the first-phone setup only.
   <!-- tracked: topic 144636 (identity build order row 6, piece 3b) -->
 
 ## 3. The same-network listener
@@ -85,8 +88,25 @@ network. It is accepted only when provably NAT mode (the address and the router 
 in one network); otherwise (mirrored mode, unreadable) the listener stays closed. The app reads the bound
 address from `GET /mobile/same-network` (`bind`) to point its pass-through at it.
 
-Port: the stored port, or main port + 1000 on first open (an OS-chosen port if that is taken); after the
-first open the port never moves, because the Windows pass-through forwards to one fixed port.
+Port: the stored port; else the port the caller asks for (`port` in `POST /mobile/phone-setup`, `--port` in
+the terminal); else the default, main port + 20000 (4040 -> 24040; 24040 when that would pass 32767), with
+an OS-chosen port if the default is taken on first open. **A change from the first build** (builder #40):
+the first default, main + 1000, is 5040 for most agents, and 5040 is held exclusively on 0.0.0.0 by Windows'
+Connected Devices Platform service (CDPSvc) on every Windows 10/11 PC (found live by builder #39; measured
+again on a Windows 10 and a Windows 11 PC on 2026-11-19), so the Windows pass-through could not listen there.
+Why 24040-24099: below every ephemeral range (Linux 32768-60999, Windows and macOS 49152-65535), so no
+outgoing connection holds it and Hyper-V/WSL's reserved ranges (allocated inside the Windows dynamic range)
+do not cover it; no default listener on Windows 10/11, macOS or common Linux desktops uses it; it is not a
+common development port; and it is not on the WHATWG fetch bad-ports list. Main + 1000 is also the port the
+Telegram lifeline registers under. `GET /mobile/same-network` reports `preferredPort`, the port the next open
+uses, so the Windows app can check it is free on Windows before Windows' permission prompt, and ask for
+another if not.
+
+An asked-for port (1024-65535, not a fetch-blocked port, not the main port, `home` only, else `422 bad-port`) is used exactly:
+it is never swapped for another, and if it cannot be listened on the open fails (`409 port-unavailable`)
+and the earlier port is kept and listened on again. A phone stores and signs `<name>.local:<port>`, so the
+stored port moves to an asked-for one only while no phone is paired on the home address (active or
+waiting); otherwise the answer is `409 port-fixed` with the port to use.
 
 It never stays open with nothing behind it: at boot and on every 15-second tick, when no setup is open
 and no phone paired on it is active or waiting, it closes itself and forgets the wish. A cancelled,
@@ -187,14 +207,16 @@ hash decides. The QR's address hints (`a=`) are hints, never trusted.
 
 ### 4.1 The local surface and the fresh check
 
-`POST /mobile/phone-setup {pin, address: 'home'|'anywhere'}` on the main listener, behind the bearer
+`POST /mobile/phone-setup {pin | ceremonyCredential, address: 'home'|'anywhere', port?}` on the main listener, behind the bearer
 token, and only when `fromThisComputer(req)`: the main listener, a loopback peer, no forwarding header.
 So a token holder reaching the agent through a tunnel or Tailscale serve (which arrive from loopback
 with forwarding headers) cannot start a setup. A session or program on the computer can (A4 limit 1).
 
 The fresh check comes before any code is shown: the dashboard PIN, through `createMandatePinCheck` with the
 dashboard's durable `PinAttemptStore` (5 tries per 5 minutes per address, surviving a restart). With no PIN set, the route refuses with `pin-required` and the
-surface asks the owner to set one: the check is never skipped (round-3 security finding 6a).
+surface asks the owner to set one: the check is never skipped (round-3 security finding 6a). The app on the
+agent's own computer may present the A5 ceremony credential instead (§4.6); a request that carries the
+`ceremonyCredential` field is judged on it alone and never falls back to the PIN.
 
 Refused when: an owner phone is already active on this machine and there is no Telegram owner (only the
 first phone is set up at the computer; later phones are approved from that phone); this machine does not
@@ -268,6 +290,73 @@ prints the link for the Instar app, waits for the phone, shows its name and key,
 digits. It talks only to this computer's agent over loopback. Ctrl+C or its own timeout cancels the
 setup. A QR code is drawn by the apps (3c); the terminal prints the link.
 
+### 4.6 The app's one-time ceremony credential (A5)
+
+**The problem.** An agent made by the Windows or Linux app gets a dashboard PIN made at random that nobody is
+told (builder #39 had to read it from the agent's config to type it). The owner cannot pass §4.1's PIN check.
+A5 lets the Instar app on the agent's own computer be the local surface, with "a one-time credential for each
+ceremony, made inside the agent's own system", "modelled on the one-time local link", where "no address and no
+stored key is the credential", "only on the computer whose app was enrolled there by the one-time ticket".
+
+**The credential** (`src/core/ceremonyCredential.ts`, `src/commands/mobileCeremonyCredential.ts`):
+- **Made** only by `instar mobile ceremony-credential [--for phone-setup] [--json]`, run as the agent's own user
+  inside its own system (on Windows, the app's command inside WSL, the way it already calls the agent). The
+  command writes `state/ceremony-credential.json` (0600, folder 0700) directly; no route mints one. The file is
+  key material (§3.2's list): never served, written, backed up or synced over HTTP, so a file-editor write cannot
+  mint one from outside. It refuses when run as another user or when this computer's machine id is unreadable.
+- **What it is:** 32 random bytes, `icc1_` + base64url. Only its SHA-256 is on disk, with the ceremony
+  (`phone-setup`), the machine id it was made under, the time it lapses and a count of wrong tries. The
+  credential itself is printed once, for the app to use at once; the app never writes it to disk.
+- **Spent** by the first accepted presentation (the file is deleted before the setup goes on, and if the delete
+  did not happen it is not accepted). Three wrong presentations delete it (a wrong try is counted only against the
+  credential that was checked, never written over a newer one). It lapses 10 minutes after it is made; a stored
+  lapse time further out than that, or a made-at time more than a minute in the future, is treated as lapsed.
+  A new one replaces the old one. Checking is synchronous from read to delete, so two requests cannot both spend it.
+- **Refused, fail closed:** no file; a file that is a link, not the agent user's, or readable by anyone else
+  (deleted); an unparseable file (deleted); made under another machine id, or this machine's id unknown
+  (deleted); another ceremony's (left); lapsed (deleted); a wrong value (a try spent). Linux and macOS only (where
+  agents run, including inside WSL): on native Windows file modes read as 0666, so every credential is refused
+  there, which is intended; do not loosen the check for Windows.
+
+**Where it is accepted** (all of these, checked in this order, before the credential is spent; any refusal
+is final and the PIN is never tried):
+1. `fromThisComputer`: the main listener, a loopback peer, no forwarding header (§4.1), and the bearer token.
+   The same-network listener has no such route (its gate answers 404).
+2. No Telegram owner: the credential is for the path where the number is typed at the computer (A5: "show the
+   setup code and take the phone's number"). With a Telegram owner the PIN path and the chat apply.
+3. The Host is exactly `127.0.0.1:<main port>`, as the app's own enrolment requires (`sameMacHost`).
+4. The app the installer enrolled on this computer exists (A5 condition 2): exactly one active `local-install`
+   computer record whose `localBinding.machineId` is this machine's id (the id the enrolment route bound it with:
+   the mesh id, else the agent's identity file). None, one bound to another machine, one with no machine id, or
+   more than one: refused (`no-app-on-this-computer`), as A5 says "where there is more than one, or none can be
+   told apart, there is no exception".
+5. No owner phone is active on the agent (the first phone only, as §4.1): `phone-already-paired`.
+6. This machine holds the lease: `not-lease-holder`.
+7. What is known before the setup runs: pairing not paused; for `anywhere`, an outside address exists; for `home`,
+   the listener exists and an asked-for port is not one a paired phone holds (`port-fixed`).
+8. The credential itself, against the machine id in the agent's own identity file (the source the command
+   minted it under): `ceremony-credential-refused` with the reason.
+
+What it opens: one first-phone setup, exactly as the PIN does (the waiting phone, the number typed at the
+computer, the phone's signed activation). It does not open the number route, cancel or status (they need only
+the token from this computer, as before), the network allow route, recovery, or anything else.
+
+**Why this is no weaker than the PIN.** The credential is made by running a command as the agent's user. Every
+party that can do that can already read the PIN from the agent's config and the token beside it (A4 limit 1,
+A5 "Why this is no weaker"). What the credential adds is that the app needs no secret the owner must know, and
+that no network request, no address and no stored key can stand in for it.
+
+**Choices made where A5 is silent (for the identity session).** (a) Telegram owners: refused, the more
+restrictive reading of "take the phone's number". **This leaves a dead end the identity session must decide:** an
+app-made agent whose owner later connected Telegram has a PIN nobody was told, so neither the credential nor the PIN
+path is open to that owner at the computer (the reviewer's MAJOR 2). The one-line alternative is to accept the
+credential with `approval: 'telegram'` (the chat still confirms). (b) The enrolled-app check binds to the machine, not to the
+app's device key: the minting command cannot know which program runs it, so a key check would prove nothing
+more; the machine check is A5 condition 2 as written. (c) An enrolled record with no machine id is refused
+rather than taken to be the app. (d) A credential is spent even when the setup then fails on a later step
+(network unknown, port taken); the app makes a new one. (e) "Anywhere" without Telegram also accepts it, as A4
+says the fresh check is the same for both addresses.
+
 ## 5. Decision points touched
 
 - The redeem's eligibility now has a third kind of address, decided by the listener a request arrived on
@@ -276,6 +365,9 @@ setup. A QR code is drawn by the apps (3c); the terminal prints the link.
 - The device authenticator gains a branch that only refuses (a same-network device off its listener, or
   another device on it).
 - The gate is an allow-list floor in front of a new listener; it adds no authority anywhere else.
+- The ceremony credential is a second way through §4.1's fresh check: an enumerated floor (exact secret, exact
+  host, exact machine, exact record), only ever refusing more than the PIN path, never a judgment.
+- The asked-for port is a value the owner's surface supplies; it decides nothing about who is let in.
 - `at-computer` is a new admission value. It grants an owner phone for conversations only (§4.3): no
   approval right, no owner admin route.
 
@@ -302,6 +394,15 @@ setup. A QR code is drawn by the apps (3c); the terminal prints the link.
 - End to end: through `AgentServer` and `start()`: absent before "Add your phone", alive after it to an
   active phone over real TLS, back after a restart with the same address and key; a second machine that
   was not asked keeps its listener closed.
+- Builder #40: unit `ceremony-credential` (11: single use, hash only on disk, 0600, replace, three wrong tries,
+  the 10-minute boundary both sides, a stored lapse beyond its life, machine, ceremony, unsafe files, key material)
+  and `same-network-port` (9: a move joining a stale reconcile,
+  the default and its fallback boundary, the requestable range both sides, exact port, a taken port never
+  swapped, `port-fixed`, a failed move keeps the earlier port); integration `phone-setup-ceremony-credential`
+  (12: end to end with no PIN set, single use, refusals known first leave it unspent, two app records, fail closed with a right PIN beside a wrong credential, forwarded /
+  wrong Host / home listener refused without spending it, no app / app on another machine / no machine id,
+  another machine's credential, Telegram owner, not the lease holder, exact port in the link, bad ports,
+  `port-fixed` with a waiting phone); e2e: the real CLI command's credential through `AgentServer.start()`.
 - Live: a test agent made by the Windows app on the Windows 11 test VM, paired by a stand-in phone on the
   same network (`/home/echo/winapp-work/a4/live.txt`).
 
@@ -319,7 +420,12 @@ setup. A QR code is drawn by the apps (3c); the terminal prints the link.
 6. The first phone let in here cannot approve until 3b.
 7. After a network change the listener keeps its old address for up to 15 seconds, until the next
    reconcile. Two equal default routes read as an unknown network (closed).
-8. The ratchet test reads a line and the three above it; a split address test is caught only by the
+8. The ceremony credential is only as strong as the agent's own user account (§4.6): a program that can run a
+   command as that user (on Windows, any program in the owner's Windows login, through WSL) can make one, as it
+   can read the PIN. A5's limit, unchanged.
+9. If the mesh's machine id and the agent's own identity file ever disagree, the credential is refused
+   (wrong machine): fail closed, the app says so, and the terminal's PIN path still works.
+10. The ratchet test reads a line and the three above it; a split address test is caught only by the
    `sn:` address rewrite.
 
 ## 8. Multi-machine posture

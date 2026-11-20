@@ -37,6 +37,10 @@ import type { PinAttemptStore } from '../core/PinAttemptStore.js';
 import { hasForwardingHeaders } from './mobileBrowserDevices.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
+import { spendCeremonyCredential } from '../core/ceremonyCredential.js';
+import { ownMachineId } from '../core/localOwnerTicket.js';
+import { sameMacHost } from './mobileLocalOwnerDevice.js';
+import { isRequestablePort } from './sameNetworkListener.js';
 
 const FEATURE = 'mobilePairing.phoneSetup';
 export const PHONE_SETUP_TTL_MS = 30 * 60_000;
@@ -187,6 +191,19 @@ export function activeOwnerPhones(svc: Pick<MobilePairingService, 'devices'>): D
   return svc.devices.list().filter((d) => d.status === 'active' && !isBrowserDevice(d) && !d.localBinding && d.deviceKind !== 'computer' && (d.role === undefined || d.role === 'owner'));
 }
 
+/**
+ * The Instar app that the agent's own installer enrolled on THIS computer (A5 condition 2): an active
+ * `local-install` computer record bound to this machine's id. A record with no machine id, or one bound
+ * to another machine, is not it.
+ */
+export function creatingAppOnThisMachine(svc: Pick<MobilePairingService, 'devices'>, machineId: string | null): DeviceRecord | null {
+  if (!machineId) return null;
+  const apps = svc.devices.list().filter((d) => d.status === 'active' && d.approvedVia === 'local-install' && d.deviceKind === 'computer'
+    && !!d.localBinding && d.localBinding.machineId === machineId);
+  // Exactly one: where more than one could be it, none is taken to be it (A5).
+  return apps.length === 1 ? apps[0]! : null;
+}
+
 // --- The gate in front of the same-network listener (A4 point 2) -------------------------------
 
 const PUBLIC_ON_LISTENER: ReadonlyArray<[string, RegExp]> = [
@@ -291,12 +308,51 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     res.setHeader('Cache-Control', 'no-store');
     if (!localOnly(req, res)) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    // The fresh check comes before any code is shown (A4 step 1). With no PIN set, the check is
-    // never skipped: the owner sets one first (r3 security finding 6a).
-    if (!svc.deps.config.dashboardPin) { res.status(409).json({ error: 'pin-required', detail: 'Set your dashboard PIN first. It is asked for before a phone is added at this computer.' }); return; }
-    if (!pinCheck(req, res, { message: 'Type your dashboard PIN to add a phone at this computer.' })) return;
     const address = body.address === 'anywhere' ? 'anywhere' : 'home';
+    // An asked-for home port (the Windows app checks it is free on Windows first). Checked before
+    // anything is spent.
+    if (body.port !== undefined && (address !== 'home' || !isRequestablePort(body.port) || body.port === Number(svc.deps.config.port))) {
+      res.status(422).json({ error: 'bad-port', detail: 'A port may be asked for the home address only: a whole number from 1024 to 65535 that web browsers allow.' });
+      return;
+    }
+    const askedPort = body.port as number | undefined;
     const telegramOwner = svc.approvalPath() === 'telegram';
+    // The port may move only while no phone is paired on the home address (its stored host carries the port).
+    const mayMovePort = !svc.devices.list().some((d) => d.addressKind === 'same-network' && (d.status === 'active' || d.status === 'pending'));
+    if (Object.prototype.hasOwnProperty.call(body, 'ceremonyCredential')) {
+      // A5: the app on the agent's own computer, with the one-time credential its command made inside
+      // the agent's own system, in place of the PIN. Never falls back to the PIN: any refusal here is final.
+      const refuse = (status: number, error: string, detail: string): void => {
+        featureEvidence.record(FEATURE, { kind: 'held', reason: `ceremony credential refused: ${error}` });
+        res.status(status).json({ error, detail });
+      };
+      // Only where the typed number is the confirmation (A5: "show the code and take the number").
+      if (telegramOwner) { refuse(409, 'ceremony-credential-not-for-chat-owner', 'This agent has a Telegram owner chat. Add your phone with your dashboard PIN, and confirm it in that chat.'); return; }
+      // The agent's own loopback address and port, exactly, as the app's own enrolment uses.
+      if (!sameMacHost(req, Number(svc.deps.config.port))) { refuse(403, 'ceremony-credential-refused', 'This credential works only from the agent\'s own computer.'); return; }
+      // The enrolment bound the app to the id the enrolment route uses; the credential was made under the
+      // agent's own identity file, which is what the command reads. Each is checked against its own source.
+      if (!creatingAppOnThisMachine(svc, svc.deps.selfMachineId ?? ownMachineId(svc.deps.stateDir))) { refuse(403, 'no-app-on-this-computer', 'Only the Instar app that created this agent on this computer can add a phone without the PIN.'); return; }
+      if (activeOwnerPhones(svc).length > 0) { refuse(409, 'phone-already-paired', 'This agent already has a phone. To add a different phone here, remove that one first (from the phone itself, or on the dashboard\'s Phones page), then add the new one.'); return; }
+      if (!svc.holdsLease()) { refuse(409, 'not-lease-holder', 'Add your first phone at the computer that is serving this agent right now.'); return; }
+      // Refusals that can be known now come before the credential is spent.
+      if (svc.devices.pairingPaused()) { res.status(429).json({ error: 'pairing-paused' }); return; }
+      if (address === 'anywhere' && !svc.pairingOrigin()) { res.status(409).json({ error: 'stable-address-required', detail: 'This agent has no address that works away from home yet. Choose "At home only", or set up Tailscale first.' }); return; }
+      if (address === 'home' && !svc.sameNetwork) { res.status(503).json({ error: 'home-address-unavailable', detail: 'This agent cannot open a home address.' }); return; }
+      const storedPort = svc.sameNetwork?.status().port ?? null;
+      if (address === 'home' && askedPort !== undefined && storedPort !== null && askedPort !== storedPort && !mayMovePort) {
+        res.status(409).json({ error: 'port-fixed', port: storedPort, detail: `A phone is paired on this agent's home address at port ${storedPort}, so its port cannot change. Use port ${storedPort}.` });
+        return;
+      }
+      const spent = spendCeremonyCredential(svc.deps.stateDir, body.ceremonyCredential, { scope: 'phone-setup', machineId: ownMachineId(svc.deps.stateDir) });
+      if (!spent.ok) { refuse(403, 'ceremony-credential-refused', `This one-time credential cannot be used (${spent.reason}). Make a new one and try again.`); return; }
+      featureEvidence.record(FEATURE, { kind: 'fired', reason: 'ceremony credential spent by the app on this computer' });
+    } else {
+      // The fresh check comes before any code is shown (A4 step 1). With no PIN set, the check is
+      // never skipped: the owner sets one first (r3 security finding 6a).
+      if (!svc.deps.config.dashboardPin) { res.status(409).json({ error: 'pin-required', detail: 'Set your dashboard PIN first. It is asked for before a phone is added at this computer.' }); return; }
+      if (!pinCheck(req, res, { message: 'Type your dashboard PIN to add a phone at this computer.' })) return;
+    }
     if (!telegramOwner && activeOwnerPhones(svc).length > 0) {
       res.status(409).json({ error: 'phone-already-paired', detail: 'This agent already has a phone. To add a different phone here, remove that one first (from the phone itself, or on the dashboard\'s Phones page), then add the new one.' });
       return;
@@ -310,8 +366,8 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     if (address === 'home') {
       const ln = svc.sameNetwork;
       if (!ln) { res.status(503).json({ error: 'home-address-unavailable', detail: 'This agent cannot open a home address.' }); return; }
-      const opened = await ln.openForOwner();
-      if (!opened.ok) { res.status(409).json({ error: opened.reason, detail: opened.detail }); return; }
+      const opened = await ln.openForOwner(askedPort !== undefined ? { port: askedPort, mayMovePort } : {});
+      if (!opened.ok) { res.status(409).json({ error: opened.reason, detail: opened.detail, ...(opened.port !== undefined ? { port: opened.port } : {}) }); return; }
       const st = opened.status;
       if (!st.host || !st.spkiHash) { res.status(500).json({ error: 'home-address-unavailable' }); return; }
       host = st.host; kind = 'same-network'; spkiHash = st.spkiHash; hints = st.hints.map((h) => `${h}:${st.port}`);

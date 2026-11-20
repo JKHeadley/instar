@@ -39,3 +39,20 @@ The live proof on the Windows 11 VM found that a listener bound to WSL's loopbac
 forwarded only the wildcard-bound main port), so A4's "inside WSL bind to loopback only" leaves the pass-through nothing
 to forward to. Changed: inside WSL the listener binds to WSL's own NAT address, only when provably NAT mode, and stays
 closed otherwise. Tested (unit, and live end to end) but not reviewed by a reviewer; the identity session should read it.
+
+## Round 3 (builder #40): the home port and A5's ceremony credential
+
+Scope: §3.1 (default port main + 20000, an asked-for port, `port-fixed`) and §4.6 (the one-time ceremony credential),
+both found necessary by the Windows app's live proof (builder #39). One independent Opus reviewer (security +
+integration) read the code, A4/A5's text and the spec. No blocker.
+
+- MAJOR: a port move that joined a running reconcile could report and keep the earlier port. Fixed (settle once more),
+  with a white-box test that fails without the fix.
+- MAJOR: a Telegram owner of an app-made agent has no way through at the computer (credential refused for Telegram
+  owners; the PIN was never told). Not changed: raised to the identity session as an explicit decision (§4.6 choice a).
+- Minors fixed and tested: refusals known in advance now come before the credential is spent; a wrong try is never
+  written over a newer credential; a stored lapse time is capped at the credential's life; exactly one enrolled-app
+  record is required; the main port cannot be asked for. Answered without change: paused phones (no such status) and
+  native Windows (refused by design, now stated).
+
+The round-3 fixes have tests but were not re-reviewed. No cross-model round.
