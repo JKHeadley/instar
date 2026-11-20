@@ -14,6 +14,7 @@ import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 import { contextNeeds } from './context-model.js';
 import { workBoardNeedRows } from './work-model.js';
+import { repoNeedRows, REPOS_READ } from './repos-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -85,6 +86,11 @@ export const NEED_SOURCES = [
   // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
     rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
+  // Work that exists on only one machine (no-data-loss-on-machine-death.md §1.4): a repository with no remote, or
+  // unpushed work past the grace window. One row per machine per kind. 503 = the registry is off here = nothing waiting.
+  { id: 'repos', page: 'capacity/repos', reads: { repos: REPOS_READ },
+    // warning-path: inline
+    rows: ({ repos }) => { const rows = repoNeedRows(repos); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href, r.refs), tone: r.kind === 'unknown' ? 'unknown' : 'bad' })); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => {
       if (agentOwnedStop(watcher.data)) return []; // the agent releases this itself; the page still shows it

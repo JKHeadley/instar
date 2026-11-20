@@ -36,6 +36,7 @@ const stampNotification = notificationStamper('src/server/routes.ts');
 const stampPromiseNotice = notificationStamper('src/server/routes.ts', 'promise-notice');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
+import { mountOwnedRepoRoutes, type OwnedRepoRouteDeps } from './ownedRepoRoutes.js';
 import { mountOwnerRecordRoutes, type OwnerRecordRouteDeps } from './ownerRecordRoutes.js';
 import { jobReportChoice } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope, requireTelegramDelivery, isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
@@ -2143,6 +2144,7 @@ export interface RouteContext {
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
   /** Disk Steward (docs/specs/disk-steward.md); null when turned off. Read lazily. */
   diskSteward?: (() => DiskStewardRouteDeps | null) | null;
+  ownedRepos?: (() => OwnedRepoRouteDeps | null) | null;
   ownerRecord?: (() => OwnerRecordRouteDeps | null) | null;
   /** Work Board (docs/specs/work-board-asks.md): the runtime, null while off. Read lazily. */
   workBoard?: (() => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null) | null;
@@ -3293,6 +3295,7 @@ export function createRoutes(ctx: RouteContext): Router {
   }
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
+  mountOwnedRepoRoutes(router, () => ctx.ownedRepos?.() ?? null);
   mountOwnerRecordRoutes(router, () => ctx.ownerRecord?.() ?? null);
   // ── Work Board, phase 1 (docs/specs/work-board-asks.md §4/§7) ──
   const workBoardOwnerKey = (): string | null => {
