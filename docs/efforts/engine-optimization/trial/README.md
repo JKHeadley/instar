@@ -17,7 +17,9 @@ Decided by Justin, topic 141868, 2026-11-11 18:40 PST ("B-lite, but lets make it
 
 ## After (low effort)
 
-Starts when PR #3098 is merged and `thinkingMode: "low"` is set on bugs-overseer. It runs for 48 hours, and then `measure.py` runs over that window into `after-48h.json`. Each run's launch record must show `applied: thinkingMode low`, or that run is excluded and named.
+Starts when `thinkingMode: "low"` is set on bugs-overseer (PR #3098 is merged). The Nov 2026 Studio rebuild lost the job and two of its scripts, so the start waits until all three are restored; the start time is recorded here when it happens (commitment CMT-2071). It runs for 48 hours, and then `measure.py` runs over that window into `after-48h.json`. Each run's launch record must show `applied: thinkingMode low`, or that run is excluded and named.
+
+`measure.py` now reads from `localhost:4042`; run it on the lease holder (the Studio's address changed in the rebuild).
 
 ## Limits
 

@@ -5,7 +5,7 @@ fb-1ef45b3a-3f5). Usage: measure.py <auth-file> <from-iso> <to-iso> <out.json>""
 import json, sys, urllib.request, datetime
 auth, frm, to, out = sys.argv[1:5]
 H = {'Authorization': 'Bearer ' + open(auth).read().strip()}
-BASE = 'http://192.168.87.47:4042'
+BASE = 'http://localhost:4042'
 def get(p):
     return json.load(urllib.request.urlopen(urllib.request.Request(BASE + p, headers=H), timeout=60))
 ts = lambda s: datetime.datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp() * 1000
