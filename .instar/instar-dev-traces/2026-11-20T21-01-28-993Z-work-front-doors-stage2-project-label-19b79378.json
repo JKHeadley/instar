@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2-project-label",
+  "sessionId": "33ab20e3-ca27-4318-9d29-2c351adfc1db",
+  "timestamp": "2026-11-20T21:01:28.993Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2-project-label.md",
+  "artifactSha256": "061b01d657fbd7af70c4f5e8f4be59480914c1cdcf3a7020cb2f5334fad1b04d",
+  "coveredFiles": [
+    "dashboard/console/conversations-model.js",
+    "dashboard/console/conversations.js",
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "src/core/workBoardViews.ts",
+    "src/data/awareness/work-projects.md",
+    "src/server/routes.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/unit/project-label.test.ts",
+    "upgrades/next/work-front-doors-stage2-project-label.md",
+    "upgrades/side-effects/work-front-doors-stage2-project-label.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "display label on existing reads; owner-only field; revert fully undoes",
+  "eli16Path": "docs/specs/work-front-doors.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-front-doors-stage2-project-label.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

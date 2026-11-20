@@ -23,6 +23,32 @@ function itemModel(item) {
 
 function validPath(p) { return p && encodeNodeRef(p.ref) && typeof p.title === 'string'; }
 
+/** A graph conversation ref as the shared conversation key (`telegram:<topic>`, `app:<key>`); null otherwise. */
+export function graphConversationKey(ref) {
+  if (!ref || ref.kind !== 'conversation') return null;
+  if (ref.platform === 'telegram' && Number.isSafeInteger(ref.topicId) && ref.topicId > 0) return `telegram:${ref.topicId}`;
+  if (ref.platform === 'app' && typeof ref.conversationKey === 'string' && ref.conversationKey) return `app:${ref.conversationKey}`;
+  return null;
+}
+
+/**
+ * Is this effort a project the Chief of Staff tracks (work-front-doors §3.1: "the effort is the Project")?
+ * The same rule as the Chats page's Projects section: its front door first, then any conversation directly in it,
+ * is a tracked project's conversation. `tracked` is chats-model trackedProjects(): Map(key → project), or null when
+ * the projects could not be read. Returns the project, false when it is a plain group, or null when it cannot tell.
+ */
+export function projectForEffort(node, children, tracked) {
+  if (!node || node.kind !== 'effort') return false;
+  if (!tracked) return null;
+  const refs = [node.frontDoor, ...(Array.isArray(children) ? children : []).filter((c) => c && c.kind === 'conversation').map((c) => c.ref)];
+  for (const ref of refs) {
+    const key = graphConversationKey(ref);
+    const p = key ? tracked.get(key) : null;
+    if (p) return p;
+  }
+  return false;
+}
+
 /** Typed response refs become opaque URL tokens ONLY at the route boundary. */
 export function encodeNodeRef(ref) {
   if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return null;

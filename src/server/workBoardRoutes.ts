@@ -71,6 +71,8 @@ export interface WorkBoardRouteDeps {
   /** Persist a settings change (live config); returns false on failure. */
   saveSettings: (patch: Record<string, unknown>) => boolean;
   log?: (event: string, detail: Record<string, unknown>) => void;
+  /** The name of the project a card's projectKey names (the Chief of Staff's title), or null. Absent: names are not shown. */
+  projectTitle?: (projectKey: string) => string | null;
   /** Receives the board read (as a status and body) so the Needs-you read can ask it as the same caller. */
   exposeBoardRead?: (read: (req: Request, opts?: { full?: boolean }) => { status: number; body: unknown }) => void;
   /**
@@ -162,6 +164,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
     brokenAttachments: deps.brokenAttachments(v),
     phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
+    projectTitle: v.card.projectKey ? deps.projectTitle?.(v.card.projectKey) ?? null : null,
   });
 
   /** Visible to this viewer? The owner and the agent see every card; others need read access to its conversation. */

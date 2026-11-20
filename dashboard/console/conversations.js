@@ -1,7 +1,8 @@
 // Native console Conversations. Owner-only reads use the existing PIN proof.
 // UI is a projection consumer: no inferred grouping, routing, or decision state.
 import { el, pageHead, setKids, note, askPin, operatorSession, forgetOperatorSession, arrivalScrollPosition } from './ui.js';
-import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope, localOnlyWords } from './conversations-model.js';
+import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope, localOnlyWords, projectForEffort } from './conversations-model.js';
+import { trackedProjects, projectHref } from './chats-model.js';
 import { mountPending } from './conversation-pending.js';
 import { correctionControls } from './conversation-corrections.js';
 import { effortActionControls } from './conversation-effort-actions.js';
@@ -206,12 +207,21 @@ export async function renderConversations(main, ctx) {
     const model = nodeModel(result.data);
     if (!model.ok) { failure(main, { status: 0 }, retry); return; }
     const node = model.node;
+    // An effort the Chief of Staff tracks is a Project (work-front-doors §3.1); the same rule as the Chats page.
+    // Unreadable projects leave the label unsaid rather than calling a project a group.
+    let project = false;
+    if (node.kind === 'effort') {
+      const pr = await read('/work/projects', controller.signal);
+      if (!current()) return;
+      project = projectForEffort(node, model.children, pr.ok ? trackedProjects(pr.data) : null);
+    }
     const origin = visits.get(key)?.origin || href({ view: state.view, q: state.q });
     const syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:model.sync});
     const body = el('div', { class: 'conversations-page' },
       nav(state.q && !origin.includes('node=') ? 'Back to results' : 'Back', origin),
-      pageHead({ eyebrow: 'Conversations', headline: node.title }),
-      syncLine);
+      pageHead({ eyebrow: project ? 'Project' : 'Conversations', headline: node.title }),
+      syncLine,
+      project ? el('p', { class: 'card-line conversation-project' }, el('a', { class: 'btn-quiet btn-inline', href: projectHref(project.key), text: 'Open project on the Work page' })) : null);
     // Original history leads. No generated digest substitutes for the source.
     if (node.kind === 'conversation' && node.source) {
       setKids(main, body);
@@ -285,7 +295,7 @@ export async function renderConversations(main, ctx) {
         }))));
     }
     const details = el('details', { class: 'conversation-details' }, el('summary', { text: 'More' }));
-    const role = new Map([['effort', 'Group'], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
+    const role = new Map([['effort', project ? 'Project' : project === false ? 'Group' : null], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
     if (role) details.append(el('p', { class: 'need-sub', text: role }));
     if (node.openUrl) {
       const label = node.platform === 'telegram' ? 'Open in Telegram' : node.platform === 'slack' ? 'Open in Slack' : 'Open conversation';
