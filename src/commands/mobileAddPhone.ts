@@ -11,7 +11,10 @@
 import readline from 'node:readline';
 import { loadConfig } from '../core/Config.js';
 
-interface AddPhoneOptions { dir?: string; anywhere?: boolean; json?: boolean; port?: number }
+/** The agent no longer knows the setup (it restarted, which ends every setup in progress). */
+const LOST_SETUP = 'The agent restarted, which ended this setup. Run this again to add your phone.';
+
+interface AddPhoneOptions { dir?: string; anywhere?: boolean; json?: boolean; port?: number; /** Poll interval (tests only; 2 s otherwise). */ pollMs?: number }
 
 function ask(question: string, hidden: boolean): Promise<string> {
   return new Promise((resolve) => {
@@ -31,10 +34,12 @@ async function firstLine(): Promise<string> {
 
 export async function addPhone(opts: AddPhoneOptions): Promise<void> {
   const config = loadConfig(opts.dir);
+  const pollMs = opts.pollMs ?? 2_000;
   const base = `http://127.0.0.1:${config.port}`;
   const headers = { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-AgentId': String(config.projectName ?? ''), 'Content-Type': 'application/json' };
   const call = async (method: string, p: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> }> => {
-    const r = await fetch(`${base}${p}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
+    let r: Response;
+    try { r = await fetch(`${base}${p}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) }); } catch { return { status: 0, json: { error: 'The agent is not answering on this computer (it may be restarting).' } }; } // @silent-fallback-ok — status 0 is reported by the caller; a poll simply asks again
     let json: Record<string, unknown> = {};
     try { json = await r.json() as Record<string, unknown>; } catch { /* @silent-fallback-ok — an empty answer is reported by its status below */ }
     return { status: r.status, json };
@@ -65,6 +70,7 @@ export async function addPhone(opts: AddPhoneOptions): Promise<void> {
   for (;;) {
     if (Date.now() > deadline) { await cancel(); console.error('The setup timed out. Run this again to add your phone.'); process.exitCode = 1; return; }
     const s = await call('GET', `/mobile/phone-setup/${setupId}`);
+    if (s.status === 404) { finished = true; console.error(LOST_SETUP); process.exitCode = 1; return; }
     if (s.json.state === 'ended') { console.error(`The setup ended (${String(s.json.endedReason ?? 'ended')}). Run this again to add your phone.`); process.exitCode = 1; return; }
     if (s.json.state === 'waiting-number') {
       const phone = (s.json.phone ?? {}) as Record<string, unknown>;
@@ -78,12 +84,18 @@ export async function addPhone(opts: AddPhoneOptions): Promise<void> {
       if (r.status === 409) { process.exitCode = 1; return; }
       continue;
     }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
+  // 450 polls of 2 s: the 15-minute signing window.
   for (let i = 0; i < 450; i++) {
     const s = await call('GET', `/mobile/phone-setup/${setupId}`);
+    if (s.status === 404) { finished = true; console.error(LOST_SETUP); process.exitCode = 1; return; }
     if (s.json.state === 'done') { finished = true; console.log('Your phone is added. It works on this network; it cannot approve risky actions yet.'); return; }
     if (s.json.state === 'ended') { console.error(`The setup ended (${String(s.json.endedReason ?? 'ended')}).`); process.exitCode = 1; return; }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
+  // The phone never finished within its signing window: not added (GPT review 5: this used to exit 0).
+  await cancel();
+  console.error('Your phone did not finish in time, so it was not added. Run this again to add your phone.');
+  process.exitCode = 1;
 }

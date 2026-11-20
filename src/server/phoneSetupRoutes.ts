@@ -101,6 +101,12 @@ export function signDeadline(s: Pick<PhoneSetup, 'acceptedAt' | 'phoneExpiresAt'
 /** Setups in this process only: a restart voids every waiting phone, as it voids pending devices. */
 export class PhoneSetupStore {
   private readonly setups = new Map<string, PhoneSetup>();
+  /**
+   * Called once when a setup lapses on time (its window or its signing deadline passed), in the same step
+   * that marks it ended. The routes decline its waiting phone there (GPT review 5): a lapse is noticed by
+   * any read (the listener's 15-second use check included), so the phone never outlives its setup.
+   */
+  onLapse: ((s: PhoneSetup) => void) | null = null;
   constructor(private readonly now: () => number = Date.now) {}
 
   create(row: Omit<PhoneSetup, 'id' | 'createdAt' | 'expiresAt' | 'state' | 'wrongNumbers' | 'codeHash'> & { code: string }): PhoneSetup {
@@ -116,7 +122,10 @@ export class PhoneSetupStore {
 
   get(id: string): PhoneSetup | null {
     const s = this.setups.get(id) ?? null;
-    if (s && s.state !== 'done' && s.state !== 'ended' && s.state !== 'sent-to-chat' && this.now() > s.expiresAt) { s.endedReason = s.state === 'number-accepted' ? 'sign-window-passed' : 'expired'; s.state = 'ended'; delete s.number; }
+    if (s && s.state !== 'done' && s.state !== 'ended' && s.state !== 'sent-to-chat' && this.now() > s.expiresAt) {
+      s.endedReason = s.state === 'number-accepted' ? 'sign-window-passed' : 'expired'; s.state = 'ended'; delete s.number;
+      this.onLapse?.(s);
+    }
     return s;
   }
 
@@ -337,11 +346,20 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     if (homeAddressInUse(svc)) return;
     try { await ln.closeIfUnused(() => !homeAddressInUse(svc)); } catch (err) { svc.deps.reportDegradation?.('SameNetworkListener.close', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the next reconcile closes an unused address
   };
+  /** A setup that ended leaves no pending phone behind. */
+  const declineWaitingPhone = (s: PhoneSetup): void => {
+    if (s.deviceId) { try { const d = svc.devices.get(s.deviceId); if (d?.status === 'pending') svc.devices.decline(s.deviceId); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } } // @silent-fallback-ok — reported; an at-computer pending phone has no other way in and lapses on its own
+  };
   /** A setup that ended leaves no pending phone behind, and the address closes if unused. */
   const afterEnd = async (s: PhoneSetup): Promise<void> => {
-    if (s.deviceId) { try { const d = svc.devices.get(s.deviceId); if (d?.status === 'pending') svc.devices.decline(s.deviceId); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } } // @silent-fallback-ok — reported; an at-computer pending phone has no other way in and lapses on its own
+    declineWaitingPhone(s);
     await closeIfUnused();
   };
+  // A setup that lapses on time (no route ended it) declines its waiting phone in the same step, so a
+  // retry after the signing window can move the port and the address closes on the next use check
+  // (GPT review 5). Only at-computer setups: a Telegram setup's phone waits on the chat, not on it.
+  // E2E-PAIRING: EXEMPT — no new route; lifecycle inside existing routes, covered over HTTP by tests/integration/same-network-review-3-lifecycle.test.ts, and the routes stay alive in tests/e2e/same-network-first-phone-alive.test.ts (run, passing).
+  svc.phoneSetups.onLapse = (s) => { if (s.approval === 'computer') declineWaitingPhone(s); };
   const localOnly = (req: Request, res: Response): boolean => {
     if (!svc.enabled()) { res.status(503).json({ error: 'Phone pairing is off on this agent.' }); return false; }
     if (!fromThisComputer(req)) { res.status(403).json({ error: 'at-the-computer-only', detail: 'A phone is added at the agent\'s own computer.' }); return false; }
@@ -351,6 +369,9 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
   router.post('/mobile/phone-setup', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!localOnly(req, res)) return;
+    // Notice any setup that lapsed since the last read first, so its waiting phone is declined before
+    // the port and first-phone checks below read the registry (GPT review 5).
+    svc.phoneSetups.openSetups();
     const body = (req.body ?? {}) as Record<string, unknown>;
     const address = body.address === 'anywhere' ? 'anywhere' : 'home';
     // An asked-for home port (the Windows app checks it is free on Windows first). Checked before

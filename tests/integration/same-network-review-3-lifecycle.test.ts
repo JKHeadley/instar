@@ -196,6 +196,38 @@ describe('GPT review 3: the home address lifecycle', () => {
     expect(typed.body).toMatchObject({ error: 'setup-ended', reason: 'phone-expired' });
   });
 
+  it('review 5: a setup whose signing window passed unpolled declines its phone, so a retry may move the port', async () => {
+    const ctx = setup();
+    const s = await startSetup(ctx.app);
+    const scanned = parseV2(s.body.link);
+    const oldPort = Number(scanned.host.split(':')[1]);
+    const r = await phoneRedeem(oldPort, scanned, makeDevice());
+    expect(r.status).toBe(200);
+    const deviceId = String(r.json.deviceId);
+    expect((await bearer(request(ctx.app).post(`/mobile/phone-setup/${s.body.setupId}/number`)).send({ number: r.json.number })).status).toBe(200);
+    // The phone lost the Wi-Fi after the number; its signing window passes without it asking again.
+    ctx.svc.phoneSetups.get(String(s.body.setupId))!.expiresAt = Date.now() - 1;
+    // The owner tries again on another port at once (before any 15-second use check): the lapsed setup's
+    // phone is declined first, so it no longer holds the old port.
+    const newPort = await freePort();
+    const again = await startSetup(ctx.app, { pin: PIN, port: newPort });
+    expect(again.status).toBe(200);
+    expect(ctx.listener.status().port).toBe(newPort);
+    expect(ctx.svc.devices.get(deviceId)!.status).toBe('declined');
+  });
+
+  it('review 5: the listener\'s use check notices a lapsed signing window and declines the phone in that step', async () => {
+    const ctx = setup();
+    const s = await startSetup(ctx.app);
+    const scanned = parseV2(s.body.link);
+    const r = await phoneRedeem(Number(scanned.host.split(':')[1]), scanned, makeDevice());
+    expect(r.status).toBe(200);
+    expect((await bearer(request(ctx.app).post(`/mobile/phone-setup/${s.body.setupId}/number`)).send({ number: r.json.number })).status).toBe(200);
+    ctx.svc.phoneSetups.get(String(s.body.setupId))!.expiresAt = Date.now() - 1;
+    expect(homeAddressInUse(ctx.svc)).toBe(false);
+    expect(ctx.svc.devices.get(String(r.json.deviceId))!.status).toBe('declined');
+  });
+
   it('a phone let in at the computer is told canApprove: false on an activation retry and on its status', async () => {
     const ctx = setup();
     const p = await addPhone(ctx);

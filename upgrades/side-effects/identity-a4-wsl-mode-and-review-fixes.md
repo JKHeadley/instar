@@ -326,3 +326,59 @@ deadline unpolled reads ended, but its waiting phone is declined only on its nex
 phone (which can no longer be let in) keeps the home address open, at most until the registry expires it, 30 minutes
 from its redeem. Neighbours (#47, round 4): the same 207 files plus the ceremony-credential and document tests, 213
 files one at a time: all pass. `npm run lint` clean.
+
+## Fifth outside review (GPT, codex gpt-6.2-sol, read-only, of a9ac2b90) and what changed after it
+
+Record: `winapp-work/a4/gpt-review-5-20261120T182806Z.md`. Asked this round to rate each finding as reachable in real use
+on a home Windows PC, or constructed only (a precise race, an injected failure, local write access). It judged R1 and R3
+resolved, R2 and R4 partly (their residue rated constructed-only), named three findings reachable in real use and four
+EDGE items, and recommended not merge-ready. Stopping rule for this round: 80/20, fix only confirmed reachable blockers.
+
+1. **Reachable, confirmed, fixed: a setup whose signing window passed unpolled left its phone pending.** Round 4 made the
+   setup end at its signing deadline on any read, but nothing declined its waiting phone then; the replacement setup's
+   cleanup (`openSetups()`) no longer saw the lapsed setup, so the phone stayed `pending` up to its 30-minute registry
+   expiry, held the home address open, and made a retry on another port answer `port-fixed`. Real path: the phone loses
+   Wi-Fi after the number and the owner retries 15 minutes later. Now `PhoneSetupStore.onLapse` runs in the same step that
+   marks a setup lapsed (any read, so also the listener's 15-second use check), and the routes decline an at-computer
+   setup's waiting phone there (`decline` leaves a phone already activating alone). Test (integration, review-3
+   lifecycle file): a lapsed signing window declines the phone, the use check reads unused, and a retry on another port
+   gets 200. Over-block: none (a lapsed setup can no longer let its phone in).
+2. **Reachable, confirmed, fixed (predates a9ac2b90): `instar mobile add-phone` polled a setup lost on restart.** A restart
+   ends every setup (in memory), so the status route answers `404 unknown-setup`; the command kept polling for 30
+   minutes, and after the number its last loop could run out and exit 0 with no phone added. Now a 404 in either loop
+   says the agent restarted and exits 1, and an exhausted last loop cancels the setup, says the phone was not added, and
+   exits 1. Test: `tests/unit/mobile-add-phone-cli.test.ts` (3, a stand-in agent over loopback). The poll interval is an
+   option for the test only (2 s otherwise).
+3. **Reachable, confirmed, NOT changed: an app-made agent whose owner later connects Telegram cannot add a first phone
+   at the computer.** This is #40's A5 choice 2, already raised as "Decision needed" for the identity session (accept the
+   credential with `approval: 'telegram'`, or keep refusing). It is a design choice, not a code defect, so it is left to
+   that decision.
+
+EDGE items, recorded and not changed (each rated constructed-only by GPT, and checked here):
+- **R2: a restart can restore a refused ceremony credential.** Needs a counter-write failure AND a failed removal rename
+  (or a crash between the third wrong try and the removal), then a restart inside the credential's ten-minute life. An
+  ordinary restart keeps the persisted count or the removal. Already accepted in round 4's residue.
+- **R4: the activation's ledger append can finish after the pending deadline,** leaving the ledger and registry split.
+  Needs a synchronous `fsync` to stall across the 5-second margin left at the end of the phone's 30 minutes; the phone's
+  next activation call answers from the registry, and the owner starts again.
+- **R4: an unreadable device registry ends a valid setup as `phone-expired`.** Needs a registry read or parse failure
+  (I/O fault, local damage); the whole pairing surface is down in that case anyway, and the setup can be started again.
+- **R3 test: the 100 ms wait does not prove the cancel's close queued before B's open finished.** If B finishes first,
+  the cancel sees B's setup and the test passes on either code. A scheduling race in the test, not in the product; the
+  round-4 fix itself was traced by the second pass. Left as is; a hook to signal "queued" would be test-only plumbing in
+  the listener.
+
+**Second pass on the round-5 fixes (independent Opus, read-only).** Concur on the CLI fix, on re-entrancy (the setup is
+marked ended before `onLapse` runs; `decline` only reads and writes the registry), on a phone mid-activation (nothing
+between `activation()` and `applyConfirm` reads a setup; `decline` leaves an activating phone alone) and on Telegram
+setups (filtered by approval; `sent-to-chat` never lapses). Two concerns, both fixed here:
+(1) the start route read `mayMovePort` before anything had read the lapsed setup, so a retry inside the 15 seconds
+before the listener's next use check still got `port-fixed`, and the first test hid this by calling the use check
+itself. The start route now reads the open setups first (declining any lapsed one's phone), and the test retries with no
+use check in between; a second test covers the use check on its own. (2) Older, outside the findings: a poll that met the
+agent down mid-restart threw out of the command; `call()` now answers status 0 and the poll asks again.
+
+Tests: each fix fails without it (checked by restoring the source: the 3 CLI tests time out; removing the start route's
+read fails the retry test; removing the fetch catch fails the restart-poll test). `tsc --noEmit` and `npm run lint`
+clean. Neighbours: every test file naming the phone-setup routes, the add-phone command or the same-network surface,
+plus the repo's ratchet/silent-fallback/invariant tests, one file at a time.
