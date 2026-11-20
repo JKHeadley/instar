@@ -219,7 +219,7 @@ import {
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
-import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
+import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 import { IMPORTED_HISTORY_PROJECT_PATH, IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
@@ -3348,6 +3348,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAccountActionSafetySkill(result);
+    this.migrateNormalChromeWindowsBlankPageNote(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -7359,6 +7360,55 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/normal-chrome-browser/SKILL.md (account-action safety)');
     } catch (err) {
       result.errors.push(`account-action safety skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Add the Windows blank-page note (ERR page-not-rendering, the occlusion fix; spec
+   * normal-chrome-windows-occlusion) once to an installed /normal-chrome-browser skill that lacks it:
+   * the note before the Linux section heading (appended if that heading is gone), its row in the recovery
+   * quick list and the flag sentence in the `launch` row (each only when its anchor is still there), edits
+   * kept, in the file's own line endings. An untouched copy of the previous shipped text ends byte-identical
+   * to a fresh install (tested against tests/fixtures/skills/normal-chrome-browser-v3.md). Runs after migrateNormalChromeBrowserSkill, so a copy that step replaced
+   * whole already carries the note and is left alone.
+   * Idempotent on the note's heading; scoped to the built-in skill; a missing file is left to
+   * installBuiltinSkills.
+   */
+  private migrateNormalChromeWindowsBlankPageNote(result: MigrationResult): void {
+    const file = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+    try {
+      if (!fs.existsSync(file)) return;
+      const current = fs.readFileSync(file, 'utf8');
+      if (!current.includes('name: normal-chrome-browser') || current.includes(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)) return;
+      const crlf = current.includes('\r\n');
+      const lf = crlf ? current.replace(/\r\n/g, '\n') : current;
+      // Three guarded edits, each placed where the shipped text has it, so an untouched copy of the previous
+      // shipped text (tests/fixtures/skills/normal-chrome-browser-v3.md) ends byte-identical to a fresh install
+      // and an edited copy keeps every edit.
+      // 1. The note, at the end of the Windows section (just before the Linux section heading), or at the end
+      //    of the file when that heading is gone; one blank line before it, the original gap after it.
+      const linuxAt = lf.indexOf('\n' + NORMAL_CHROME_BROWSER_SKILL_MARKER);
+      let next: string;
+      if (linuxAt >= 0) {
+        const before = lf.slice(0, linuxAt + 1).replace(/\n+$/, '');
+        const gap = lf.slice(before.length, linuxAt + 1);
+        next = before + '\n\n' + NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE + gap.slice(1) + lf.slice(linuxAt + 1);
+      } else {
+        next = lf.replace(/\n*$/, '') + '\n\n' + NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE;
+      }
+      // 2. The recovery quick list row, just above the existing "page document not found" row.
+      const rowAt = next.indexOf('\n' + NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR);
+      if (rowAt >= 0 && !next.includes(NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)) {
+        next = next.slice(0, rowAt + 1) + NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW + '\n' + next.slice(rowAt + 1);
+      }
+      // 3. The flag sentence in the Windows `launch` row.
+      if (!next.includes(NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE) && next.includes(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR)) {
+        next = next.replace(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR + NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE);
+      }
+      fs.writeFileSync(file, crlf ? next.replace(/\n/g, '\r\n') : next);
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (Windows blank-page note: ERR page-not-rendering and the occlusion fix)');
+    } catch (err) {
+      result.errors.push(`skills/normal-chrome-browser/SKILL.md blank-page note: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
