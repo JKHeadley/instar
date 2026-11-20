@@ -198,6 +198,9 @@ describe('peer works through restart (integration, real HTTP)', () => {
     expect(once).not.toContain(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE);
     expect(run().upgraded).not.toContain(label);
     expect(fs.readFileSync(claudeMd, 'utf-8')).toBe(once);
-    expect(once.split(SETTING).length - 1).toBe(1);
+    // The peer line is written once. The setting is also named in the feature notes (the awareness
+    // entry local-verify-main-on-peers), which every update rebuilds, so the line is what is counted.
+    expect(once.split(LOCAL_VERIFY_PEERS_CLAUDEMD_LINE).length - 1).toBe(1);
+    expect(once).toContain(SETTING);
   });
 });
