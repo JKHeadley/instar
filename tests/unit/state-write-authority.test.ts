@@ -98,6 +98,30 @@ describe('validateWriteToken', () => {
     expect(result.error).toContain('Invalid or revoked');
   });
 
+  it('SEC-123: compares in constant time, never with plain equality', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../src/core/StateWriteAuthority.ts'), 'utf-8');
+    const body = src.slice(src.indexOf('export function validateWriteToken'), src.indexOf('// ── Operation Authorization'));
+    expect(body).toContain('timingSafeEqual');
+    expect(body).not.toMatch(/\.token\s*===/);
+  });
+
+  it('SEC-123: a token differing only in its last character is refused', () => {
+    const near = storedTokens[0].token.slice(0, -1) + (storedTokens[0].token.endsWith('b') ? 'c' : 'b');
+    expect(validateWriteToken(near, storedTokens).valid).toBe(false);
+  });
+
+  it('SEC-123: malformed stored entries and a non-array store are skipped, not thrown on', () => {
+    const messy = [null, { machineId: 'x' }, ...storedTokens] as unknown as WriteToken[];
+    expect(validateWriteToken(storedTokens[0].token, messy).machineId).toBe('machine-a');
+    expect(validateWriteToken('any', { not: 'an array' } as unknown as WriteToken[]).valid).toBe(false);
+  });
+
+  it('SEC-123: a revoked copy listed before a live copy of the same token still validates', () => {
+    const live = storedTokens[0];
+    const tokens = [{ ...live, machineId: 'old', revoked: true }, live];
+    expect(validateWriteToken(live.token, tokens).machineId).toBe('machine-a');
+  });
+
   it('rejects with empty stored tokens', () => {
     const result = validateWriteToken('any-token', []);
     expect(result.valid).toBe(false);
