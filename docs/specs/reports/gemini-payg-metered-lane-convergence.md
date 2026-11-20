@@ -271,6 +271,15 @@ items. All five were folded in the conservative direction (commit `1c13f75a5`):
 - **Google's own limit.** It is evidenced in the handoff (`hard-cap` or
   `budget-alert-only`) and named honestly in the plan text.
 
+**Late inputs, folded in without further review** (from the account lane, 14:15–14:19
+PST):
+
+- The smoke test confirmed both model ids and the AI Studio prices. The long-context
+  tier is still unreported.
+- The bench key has spent about $48 against a displayed $40 cap, through a path outside
+  the money layer. This is FD-G27: the build must find that reader and move it under the
+  gate in the same release as the `secret-get` refusal.
+
 **Honest status.** Every codex pass at this spec size has found new narrow items. The
 loop stops here by the round-cap rule, not because a pass came back clean. These last
 folds were not re-reviewed by a further pass. The builder should run its own review of

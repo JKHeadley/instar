@@ -359,6 +359,18 @@ narrowing is not silent).
 | `neon` | `gemini-4-neon` | 3.00 | 15.00 | Google announcement 18 Nov 2026, cited in the approved report. Not yet checked on Google's price page. |
 | `hydrogen` | `gemini-4-hydrogen` | 1.50 | 7.50 | Third-party pricing sites only (apidog, tokencost, layer3labs, Nov 2026). The id was live-probed via the API on 2026-11-15 (doorway manifest note). |
 
+**Smoke test, 2026-11-20 14:16 PST** (account lane; record at
+`.instar/state/gemini-payg-setup-2026-11-20.json` on the Mama PC):
+
+- **Ids confirmed:** `models/gemini-4-neon` and `models/gemini-4-hydrogen` both answered.
+- **Prices read on Google's AI Studio pricing page** (undated): Neon $3/$15 and Hydrogen
+  $1.50/$7.50 per million tokens, thinking billed as output, Batch/Flex at half price.
+- **Usage sample:** Neon 34 in / 5 out / 57 thinking; Hydrogen 34 in / 5 out / 23
+  thinking. Thinking is a large share of short calls, which the reserve formula
+  already covers.
+- **Long-context tier: not reported.** Release check (d) therefore still has to read the
+  tier on the page. Until it does, nothing above the verified range is admitted.
+
 **Tiers in the manifest schema.**
 
 - Each price point gains `maxInputTokens`: the largest request input that this point's
@@ -1481,6 +1493,20 @@ and all are frontloaded.
   pre-ship key is for the smoke test only.
 - **FD-G25:** plans are persisted and re-rendered when opened. The commit-triggered
   restart keeps every existing restart safeguard and disclosure.
+- **FD-G27: existing metered spend outside the gate.** The bench key
+  (`metered_gemini_bench`, project "instar echo") spent about $48 in the 28 days to
+  2026-11-20, against a displayed $40 lifetime cap.
+  - That cap cannot have been enforced, because no Instar code calls the gate. So a
+    paid-call path exists outside the money layer. Its reader is not in the instar
+    repo or the Mama PC agent home; it is probably a job or script on the Studio.
+  - **Before the release** that makes `secret-get` refuse `metered_*` names, the build
+    finds that reader. It moves it onto `admitMeteredCall` under the bench key's own
+    caps (made monthly), or stops it. Exempting it is never an option.
+  - The same release ships both changes, so the bench does not break silently, and its
+    spend becomes visible and capped.
+  - The bench stays in its own project, under its own cap, separate from this lane's
+    $50. Google's experimental $50 project cap on "instar echo" stays as its second
+    wall.
 - **FD-G17:** account-lane work is routed to `echo-topic-145625` (brief sent 2026-11-20).
   Rotation at a transfer and the price-page read are steps owned by Run 2 or the transfer
   plan, done through the account lane's browser profile. The run's precondition is the
