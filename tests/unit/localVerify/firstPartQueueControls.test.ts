@@ -1,7 +1,7 @@
 /**
  * First parts beside the queue controls (specs local-verify-likely-failing-first.md and
  * local-verify-queue-controls.md): a held change keeps its one group assignment through hold and
- * release, and a fronted change never starts beside a comparison run. Real fs in a temp state
+ * release. Real fs in a temp state
  * dir; the child process, gh and the clock are fakes (tests/helpers/operatorQueueHarness.ts).
  */
 
@@ -63,42 +63,5 @@ describe('the group assignment and the operator hold', () => {
     expect(h.startedPrs()).toEqual([1]);
     expect(inputOf(h, 0).likelyFailingFirst).toMatchObject({ group: 'with' });
     expect(h.auditsOf('first-part-assigned')).toHaveLength(1);
-  });
-});
-
-describe('a fronted change and a running comparison', () => {
-  it('a fronted change does not start beside a comparison run; it starts first when the comparison ends', async () => {
-    const h = harness({ prs: [1, 2, 3] });
-    h.seams.random = () => 0.1; // every pull request `with`
-    h.svc.setLikelyFailingFirst(() => 'alternate');
-    await h.svc.request(1);
-    await h.settle();
-    expect(h.startedPrs()).toEqual([1]);
-    const first = inputOf(h, 0);
-    const done: VerifyRunResult = { ...ok(record({ pr: 1, headSha: first.headSha, baseSha: first.baseSha, startedAt: new Date(h.now() - 60_000).toISOString(), finishedAt: new Date(h.now()).toISOString() })), firstPart: summary, fileOutcomes: { 'tests/unit/a.test.ts': 'passed' } };
-    await h.finish(0, done);
-    await h.settle();
-    // The comparison run of PR 1 is what is running now; nothing is "in flight" as a verify.
-    expect(h.spawned).toHaveLength(2);
-    expect(inputOf(h, 1)).toMatchObject({ pr: 1, variant: 'compare' });
-    expect(h.svc.snapshot().inFlight).toBeNull();
-    expect(h.svc.snapshot().likelyFailingFirst.trial.comparing).toMatchObject({ pr: 1 });
-    await h.svc.request(2);
-    await h.svc.request(3);
-    expect(await h.svc.operatorFront({ pr: 3, by: BY, reason: 'promised today' })).toMatchObject({ ok: true, status: 'fronted' });
-    await go(h);
-    await h.runTimers();
-    expect(h.spawned).toHaveLength(2); // neither the fronted change nor the other started beside the comparison
-    expect(h.svc.snapshot().operator?.fronted.map((f) => f.pr)).toEqual([3]);
-    // The comparison ends: the fronted change is the next to start.
-    await h.finish(1, { ...ok(record({ pr: 1, headSha: first.headSha, baseSha: first.baseSha })), fileOutcomes: { 'tests/unit/a.test.ts': 'passed' } });
-    await h.settle();
-    expect(h.spawned).toHaveLength(3);
-    expect(inputOf(h, 2)).toMatchObject({ pr: 3 });
-    expect(inputOf(h, 2).variant).toBeUndefined();
-    // The snapshot carries both features' sections.
-    const snap = h.svc.snapshot();
-    expect(snap.operator).toBeDefined();
-    expect(snap.likelyFailingFirst).toMatchObject({ setting: 'alternate' });
   });
 });

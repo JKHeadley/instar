@@ -12,6 +12,7 @@ import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -46,6 +47,8 @@ async function boot() {
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
+  // Capacity is full, but this ordinary wait requires no person to intervene.
+  sessionManager.getCachedRunningSessions = () => ({count:1,sessions:[]});
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel });
   servers.push(server);
@@ -64,6 +67,15 @@ describe('Needs-you read — production wiring', () => {
     closers.push(listener);
     config.port = (listener.address() as { port: number }).port;
 
+    // Seed the production attention store before the first read populates the owner cache.
+    const attention = new LocalAttentionItems(config.stateDir);
+    for (let n = 1; n <= 105; n++) {
+      expect(attention.raise({
+        id: `desktop-${n}`, title: `Review desktop request ${n}`, summary: 'Review the request on the Desktop page.',
+        category: 'desktop', priority: 'HIGH', source: 'agent',
+      })).toBe(true);
+    }
+
     const first = await auth(request(app).get('/needs'));
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body).toMatchObject({ schemaVersion: 1, viewer: { role: 'owner' }, agent: { name: 'needs-e2e' } });
@@ -77,6 +89,11 @@ describe('Needs-you read — production wiring', () => {
     // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
     // "could not check", even when its 503 also says "not initialized".
     expect(first.body.couldNotCheck).not.toContain('plans');
+    const health = await auth(request(app).get('/mobile/health-issues'));
+    expect(health.status).toBe(200);
+    expect(health.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false}));
+    expect(first.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
+    expect(first.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
     // Each thing once (work-board-cards-appear §3, amended 2026-11-18): an item that IS its card opens the card and
     // keeps its own conversation in alsoOpens, and no card stands behind two items.
     const cardIds: string[] = [];
@@ -115,9 +132,35 @@ describe('Needs-you read — production wiring', () => {
     const phone = await send('GET', '/mobile/needs');
     expect(phone.status, JSON.stringify(phone.body)).toBe(200);
     expect(phone.body.viewer.role).toBe('owner');
+    expect(phone.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
+    expect(phone.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
     expect(phone.body.sources.map((s: { id: string }) => s.id)).toEqual(first.body.sources.map((s: { id: string }) => s.id));
     // The phone still cannot reach the raw sources it was built from.
     expect((await send('GET', '/green-pr-automerge')).status).toBe(403);
+
+    // Each caller obtains its own continuation through the public route and opens it
+    // through the same authenticated entry point. The two pages cover every seeded need.
+    for (const [firstPage, next] of [
+      [first.body, (cursor: string) => auth(request(app).get('/needs?cursor=' + encodeURIComponent(cursor)))],
+      [phone.body, (cursor: string) => send('GET', '/mobile/needs?cursor=' + encodeURIComponent(cursor))],
+    ] as const) {
+      expect(firstPage.items).toHaveLength(100);
+      expect(firstPage.continuation.start).toBe(0);
+      expect(typeof firstPage.continuation.nextCursor).toBe('string');
+      const more = await next(firstPage.continuation.nextCursor);
+      expect(more.status).toBe(200);
+      expect(more.body.continuation.start).toBe(100);
+      const all = [...firstPage.items, ...more.body.items];
+      expect(new Set(all.map(i => i.id)).size).toBe(all.length);
+      expect(all.filter(i => i.title.startsWith('Review desktop request '))).toHaveLength(105);
+      const desktop = more.body.items.find((i: { title: string }) => i.title.startsWith('Review desktop request '));
+      expect(desktop?.action).toMatchObject({ kind: 'href', href: expect.stringMatching(/^\/dashboard\/desktop\.html(?:\?|$)/) });
+    }
+    // A closed item changes the current list before the owner's first-page cache expires.
+    expect(attention.setStatus('desktop-1', 'DONE')).toBeDefined();
+    const stale = await send('GET', '/mobile/needs?cursor=' + encodeURIComponent(phone.body.continuation.nextCursor));
+    expect(stale.status).toBe(409);
+    expect(stale.body.items).toBeUndefined();
 
     // The canary's synthetic row exists only for its own single-use nonce: a guessed one adds nothing.
     const guessed = await auth(request(app).get('/needs?canary=cguess'));

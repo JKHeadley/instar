@@ -159,7 +159,7 @@ describe('first parts lifecycle (production wiring)', () => {
     svc.shutdown();
   });
 
-  it('a config without a setter still wires the reader; the brake then rests on the trial state file', async () => {
+  it('a config without a setter still wires the reader; a cost limit reports the unavailable writer', async () => {
     const { home, stateDir } = sourceCheckout();
     const svc = buildLocalVerifyService({
       config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',

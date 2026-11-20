@@ -178,14 +178,16 @@ export function holdReminderDue(h: Pick<OperatorHold, 'at' | 'until' | 'reminded
  * Why this process started, for the `boot` audit row: the reason of the restart request that
  * was consumed just before it, or `unknown`. A request already named by an earlier `boot` row
  * (`lastBootRestartAt`) is not this start's reason (the server died and came back by itself),
- * and neither is one consumed long ago.
+ * and neither is one consumed long ago. When a request explains the start, the row also says
+ * whether it was a planned restart and whether it bypassed the holds, as the request wrote them
+ * (left out when the request wrote neither, or was recorded before those fields existed).
  */
 export function bootReason(
-  last: { at: string; reason: string | null; requestedBy: string | null } | null,
+  last: { at: string; reason: string | null; requestedBy: string | null; plannedRestart?: boolean | null; bypassHolds?: boolean | null } | null,
   lastBootRestartAt: string | null,
   now: number,
   maxAgeMs: number = 15 * 60_000,
-): { reason: string; requestedBy?: string; restartAt?: string } {
+): { reason: string; requestedBy?: string; restartAt?: string; plannedRestart?: boolean; bypassHolds?: boolean } {
   if (!last || typeof last.at !== 'string') return { reason: 'unknown' };
   const at = Date.parse(last.at);
   if (!Number.isFinite(at) || at > now + 5_000 || now - at > maxAgeMs || last.at === lastBootRestartAt) return { reason: 'unknown' };
@@ -193,6 +195,8 @@ export function bootReason(
     reason: last.reason && last.reason.trim() ? last.reason.trim().slice(0, 200) : 'unknown',
     ...(last.requestedBy ? { requestedBy: last.requestedBy.slice(0, 200) } : {}),
     restartAt: last.at,
+    ...(typeof last.plannedRestart === 'boolean' ? { plannedRestart: last.plannedRestart } : {}),
+    ...(typeof last.bypassHolds === 'boolean' ? { bypassHolds: last.bypassHolds } : {}),
   };
 }
 

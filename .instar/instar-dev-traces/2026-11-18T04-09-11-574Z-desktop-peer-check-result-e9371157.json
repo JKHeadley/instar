@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "desktop-peer-check-result",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T04:09:11.574Z",
+  "artifactPath": "upgrades/side-effects/desktop-peer-check-result.md",
+  "artifactSha256": "1a3b5db2b04a2f9ca1305f503b65b278ce4491cf8db717b5597fdfd47574c916",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-mesh-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/desktop-ended-reason.test.ts",
+    "tests/unit/desktop-video-viewer.test.ts",
+    "upgrades/next/desktop-peer-check-result.md",
+    "upgrades/side-effects/desktop-peer-check-result.eli16.md",
+    "upgrades/side-effects/desktop-peer-check-result.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The machine picker uses the existing readiness and identity gates. The change reports check failures and manages its existing retry control.",
+  "eli16Path": "upgrades/side-effects/desktop-peer-check-result.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-peer-check-result.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/desktop-routes.test.ts",
+      "howCaught": "The route fixture rejects a peer probe, checks its reason, then returns a ready peer and verifies the stale reason cleared."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2471
+    ],
+    "notes": "The mesh rollout returned a definitive not-ready explanation for exceptions. The picker also hid the retry control when another host answered."
+  }
+}

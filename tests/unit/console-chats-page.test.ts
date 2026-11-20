@@ -6,6 +6,7 @@
  * answered "unknown"; text from the server is rendered as text, never markup.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { JSDOM } from 'jsdom';
 import crypto from 'node:crypto';
 import { verifyDeviceRequest, ReplayGuard, parseDevicePublicKey } from '../../src/core/MobileDeviceKeys.js';
@@ -59,7 +60,29 @@ let dom: JSDOM;
 let calls: Call[];
 const flush = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
+// Each boot() imports a fresh console module, and closing the JSDOM window does not stop
+// it: a request it started (signing on Node's crypto thread pool, a fake IndexedDB step, a
+// poll timer) can resume during a LATER test and call the global fetch, which by then is
+// that later test's mock, adding calls to its counts. On a loaded CI shard signing is slow
+// enough for this to happen; alone the file passed. Every boot runs under its own async
+// context, so all work a page starts carries its boot's number, and the mock refuses (never
+// answers, never records) a call from an earlier boot. Work the test body itself starts,
+// such as a click, carries no number and is the current page's.
+const bootContext = new AsyncLocalStorage<number>();
+let bootGeneration = 0;
+const pageChannels = new Set<BroadcastChannel>();
+const RealBroadcastChannel = globalThis.BroadcastChannel;
+if (RealBroadcastChannel) {
+  // Node's BroadcastChannel outlives the window too: an earlier page would keep hearing this one.
+  globalThis.BroadcastChannel = class extends RealBroadcastChannel { constructor(name: string) { super(name); pageChannels.add(this); } } as typeof BroadcastChannel;
+}
+
 async function boot(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash = '#/work/chats', idb = fakeIndexedDB()) {
+  const generation = ++bootGeneration;
+  return bootContext.run(generation, () => bootPage(handler, hash, idb));
+}
+
+async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>) {
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
@@ -67,6 +90,8 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
   dom.window.localStorage.setItem('instar_token', 'tok');
   calls = [];
   g.fetch = async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
+    const owner = bootContext.getStore();
+    if (owner !== undefined && owner !== bootGeneration) return new Promise<Response>(() => { /* an earlier test's page: never answered */ });
     const c: Call = { url, method: init.method || 'GET', headers: init.headers || {}, body: typeof init.body === 'string' ? init.body : undefined };
     calls.push(c);
     const base: Record<string, unknown> = {
@@ -81,7 +106,11 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
   return { doc: dom.window.document, idb };
 }
 
-afterEach(() => { dom?.window.close(); });
+afterEach(() => {
+  for (const c of pageChannels) { try { c.close(); } catch { /* already closed */ } }
+  pageChannels.clear();
+  dom?.window.close();
+});
 
 const STATUS = { enabled: true, machineId: 'm1', nickname: 'Studio', serverTime: Date.now(), approvalPath: 'dashboard', approveEnabled: true, telegramSend: true, limits: { maxFiles: 10, maxMessageBytes: 64 << 20, maxFileBytes: 50 << 20, chunkBytes: 1 << 20 } };
 const UUID = '3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b';

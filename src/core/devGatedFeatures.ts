@@ -155,6 +155,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Takes LESS action, not more — it removes blocking authority rather than adding it, and is self-limiting: the advisory disposition is withdrawn back to a block whenever the override could not be recorded. No external action, no spend, and the rollback is a config flag.',
   },
   {
+    name: 'toneGateWaitingAskLinks',
+    configPath: 'toneGate.waitingAskLinks.enabled',
+    description:
+      'Outbound rule B26: a reply that refers to something the agent is waiting on the person for is handed back unless it carries the link to the ask and a plain restatement with the settling reply.',
+    justification:
+      'An advisory nudge only: a reasoned override always sends, so it can delay a message but never hold or drop it. It reads local facts (link shapes, the local message log, the local Work Board) inside a 750 ms allowance, makes no external call and writes no state; the rollback is this flag.',
+  },
+  {
     name: 'feedbackFactoryDrain',
     configPath: 'feedbackFactory.drain.enabled',
     description: 'Canonical feedback readiness/outbox drain cadence.',

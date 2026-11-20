@@ -167,9 +167,13 @@ export function segmentBlock(block, ranges) {
   return out;
 }
 
-/** Comment ranges to highlight: only on the latest version, only placed and open comments. */
+/**
+ * Comment ranges to highlight on the version being read: open comments the server placed on it.
+ * A comment sits where it was made on its own version; on another version the server places it
+ * only where the same passage clearly still is.
+ */
 export function highlightRanges(page) {
-  if (!page || !page.version || !page.version.latest) return [];
+  if (!page || !page.version) return [];
   return (page.comments || [])
     .filter((c) => !c.resolved && c.anchorState !== 'orphaned' && Number.isInteger(c.start) && Number.isInteger(c.end) && c.end > c.start)
     .map((c) => ({ key: c.key, start: c.start, end: c.end }));
@@ -253,9 +257,14 @@ export function versionWords(page) {
   return i >= 0 ? `Version ${i + 1} of ${list.length}` : `Version ${page.version.label}`;
 }
 
-export function anchorNote(state) {
-  if (state === 'edited') return 'The passage changed since this comment';
-  if (state === 'orphaned') return 'The passage this comment was on was removed';
+/** The note under a comment's quote, for the version being read (`c` is the comment). */
+export function anchorNote(state, c, page) {
+  const label = c && c.onVersionLabel != null ? c.onVersionLabel : null;
+  const other = !!(c && page && page.version && c.onVersion && c.onVersion !== page.version.id);
+  const made = other && label !== null ? `Made on version ${label}. ` : '';
+  if (state === 'edited') return `${made}The passage changed since this comment`;
+  if (state === 'orphaned') return other ? `${made}This passage isn't in the version you're reading` : 'The passage this comment was on was removed';
+  if (other && label !== null) return `Made on version ${label}`;
   return null;
 }
 

@@ -263,7 +263,7 @@ export interface MobileConversationRouteDeps {
    */
   slackConversations?: () => Array<{ id: number; title: string | null; lastActivity: string | null; lastPreview: string | null }> | null;
   /** The inbound classifier (pause / stop decisions after persist). */
-  sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
+  sentinel?: { decideInboundDisposition(message: string, topicId?: number, messageKey?: string): Promise<{ disposition: string }> } | null;
   /** The pool fan-out (`?scope=pool`, §4.8). Absent ⇒ a pool read is this machine alone. */
   pool?: PoolReadCtx | null;
   /** The agent's current origin display bits (message-origin-all-platforms §5). Absent ⇒ all on. */
@@ -1051,7 +1051,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     if (deps.sentinel && classifiedText) {
       try {
-        const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias);
+        const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias, `app:${key}:${messageId}`);
         if (d.disposition === 'kill' || d.disposition === 'pause') {
           if (!(await urgentRoute(d.disposition === 'kill' ? 'stop' : 'pause', d.disposition === 'kill' ? 'sentinel-kill' : 'sentinel-pause'))) return;
           s.noteEmergency(key);

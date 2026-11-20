@@ -533,3 +533,20 @@ describe('native console Conversations', () => {
     expect([...main.querySelectorAll('a')].find(a=>a.textContent==='Back to results')?.getAttribute('href')).toBe('#/work/conversations?view=all&q=worker');
   });
 });
+
+it('mounts source cards beside the original history after owner unlock', async () => {
+  const ref={kind:'conversation',platform:'telegram',chatId:'-1001',topicId:42};
+  const token=Buffer.from(JSON.stringify({chatId:'-1001',kind:'conversation',platform:'telegram',topicId:42})).toString('base64url');
+  const {main,requests}=await boot('#/work/conversations?node='+token,url=>{
+    if(url.includes('/messages?'))return {body:{messages:[{messageId:1,text:'Choose the launch date',timestamp:'2026-11-17T12:00:00Z',fromUser:true}]}};
+    if(url.startsWith('/conversation-graph/nodes/'))return {body:{node:{ref,title:'Website launch',source:{platform:'telegram',conversationId:42}},partial:false,children:{items:[]}}};
+    if(url.startsWith('/work-board?'))return {body:{cards:[{id:'wc_1234567890abcdef',title:'Choose the launch date',needLine:'Yours to do',source:{conversationKey:'telegram:42',messageId:'1'}}],total:1,nextPage:null,newestHlc:{physical:1,logical:0,node:'m'},sourceRevision:'a'.repeat(64),behind:null}};
+    if(url==='/conversation-graph/pending')return {body:{items:[],total:0,nextOffset:null}};
+    return {status:404,body:{}};
+  });
+  expect(main.querySelector('.conversation-transcript')?.textContent).toContain('Choose the launch date');
+  const tile=main.querySelector('.conversation-source-cards a');expect(tile?.textContent).toContain('Choose the launch date');
+  expect(tile?.getAttribute('href')).toBe('#/work/board?card=wc_1234567890abcdef');
+  const read=requests.find(r=>r.url.startsWith('/work-board?'));expect(read?.headers['X-Instar-Operator-Session']).toBe('human-proof');
+  expect(read?.url).toContain('sourceConversationKey=telegram%3A42');
+});
