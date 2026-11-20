@@ -238,7 +238,7 @@ import { PostUpdateMigrator, SLACK_MENTIONS_SESSION_LINE } from '../core/PostUpd
 import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
 import { TopicMemory, SESSION_HISTORY_MESSAGE_CHARS } from '../memory/TopicMemory.js';
-import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../memory/topicRowWriter.js';
+import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows, writeTelegramLogRow } from '../memory/topicRowWriter.js';
 import { TopicRowCarrier, TopicRowPullCoordinator, rowCarrierEnabled, slackSyntheticTopicId, ROW_PULL_TIMEOUT_MS } from '../memory/topicRowCarrier.js';
 import { TopicRowWatermarkStore } from '../memory/topicRowWatermark.js';
 import { SemanticMemory } from '../memory/SemanticMemory.js';
@@ -10536,7 +10536,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             // A real Telegram id goes through the key rule (§14); anything else
             // keeps the legacy insert unchanged.
             if (Number.isSafeInteger(entry.messageId) && entry.messageId > 0) {
-              topicRowWriter.writeRow({ channel: 'telegram', nativeId: entry.messageId }, body);
+              // A local live delivery supersedes a restored copy of the same message (topic-history-import spec).
+              writeTelegramLogRow(topicRowWriter, tm, entry.messageId, body);
             } else {
               tm.insertMessage({ ...body, messageId: entry.messageId });
             }
