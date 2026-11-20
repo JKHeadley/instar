@@ -456,6 +456,33 @@ export class FoldCoordinator {
     this.o.store.dropSidecar(rec.topicKey, rec.foldId);
   }
 
+  /**
+   * Runtime reconcile of a STALE record (§9.3 Fencing: "the new owner's
+   * ownership sweep reconciles the durable fold record"): this machine's own
+   * pre-point-of-no-return record whose lock ceiling has passed (no step can
+   * still be running under it) is closed `aborted`, settling every carrier. It
+   * runs at call time (the runner calls it before each fold), so it works on a
+   * pool-live agent where the boot sweep ran before ownership was readable.
+   * Gated on the sweep-owner rule (this machine owns the topic, or on a single
+   * machine / dark pool hosts it); the ownership epoch is NOT required to
+   * match, because a record stranded by an epoch change is exactly the case,
+   * and only a record this machine wrote, and only pre-PNR, is ever touched.
+   */
+  reconcileStale(topicKey: string, olderThanMs: number): FoldRecord[] {
+    const closed: FoldRecord[] = [];
+    if (this.o.preconditions.isSweepOwner?.(topicKey) !== true) return closed;
+    for (const rec of this.o.store.list(topicKey)) {
+      if (!PRE_PNR_STATES.has(rec.state) || rec.machineId !== this.o.machineId) continue;
+      if (this.now() - rec.updatedAt < olderThanMs) continue;
+      const next: FoldRecord = { ...rec, state: 'aborted', seq: rec.seq + 1, updatedAt: this.now(), reason: `reconciled-stale:${rec.state}` };
+      this.o.store.put(next);
+      this.emit({ type: 'transition', record: next, from: rec.state });
+      this.settle(next, { judgePreempted: false });
+      closed.push(next);
+    }
+    return closed;
+  }
+
   /** Record staged store writes in the sidecar (lists never live in the record). */
   addStaged(topicKey: string, foldId: string, entries: string[]): void {
     const s = this.o.store.getSidecar(topicKey, foldId);

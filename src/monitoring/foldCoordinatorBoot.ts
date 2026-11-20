@@ -37,6 +37,14 @@ export interface FoldBootDeps {
   /** Is the replicated layer kind registered on this build (the §14 skew rule)? Absent ⇒ false. */
   layerKindPresent?: () => boolean;
   onEvent?: (e: FoldEvent) => void;
+  /**
+   * §9.3 pool-live owner: the topic's ownership record, read at call time (the
+   * server builds the registry later in boot). Absent, or null for a topic ⇒
+   * ownership unknown while placement is live (never act).
+   */
+  ownershipRecord?: (topicKey: string) => { ownerMachineId: string; status: string; ownershipEpoch: number } | null;
+  /** This machine's mesh identity; null ⇒ ownership unknowable while placement is live. */
+  selfMachineId?: () => string | null;
 }
 
 export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordinator; holderId: string } {
@@ -44,7 +52,17 @@ export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordi
   const hosts = (topicKey: string) => d.runningTopicSessions().filter((s) => s.topicKey === topicKey).length;
   const preconditions: FoldPreconditions = {
     isOwner: (topicKey) => {
-      if (d.poolPlacementLive()) return 'unknown'; // ownership records are not consulted yet: never act
+      if (d.poolPlacementLive()) {
+        // §9.3: with placement live the owner is the host AND the machine the
+        // topic's ACTIVE ownership record names. A missing record or identity
+        // is unknown (fold-skipped: owner-unknown); placing / transferring /
+        // released is not ownable now.
+        const self = d.selfMachineId?.() ?? null;
+        const rec = d.ownershipRecord?.(topicKey) ?? null;
+        if (!self || !rec) return 'unknown';
+        if (rec.status !== 'active') return false;
+        return rec.ownerMachineId === self && hosts(topicKey) > 0;
+      }
       return hosts(topicKey) > 0;
     },
     sentinelHeartbeatFresh: () => d.sentinelHeartbeatFresh?.() ?? false,
@@ -62,14 +80,22 @@ export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordi
     topicRowsPresent: (topicKey) => d.topicRowsPresent(topicKey),
     // Single machine / dark pool: the host is the owner by default, so its own
     // crashed fold is resolved at boot even if the topic's session died with it.
-    isSweepOwner: () => !d.poolPlacementLive(),
+    // With placement live, this machine may still close ITS OWN fold record while the topic's active
+    // ownership record names it, even after the session left (§9.3: the owner resolves its folds).
+    isSweepOwner: (topicKey) => {
+      if (!d.poolPlacementLive()) return true;
+      const self = d.selfMachineId?.() ?? null;
+      const rec = d.ownershipRecord?.(topicKey) ?? null;
+      return !!self && !!rec && rec.status === 'active' && rec.ownerMachineId === self;
+    },
   };
   const coordinator = new FoldCoordinator({
     store: new FoldRecordStore(d.stateDir),
     lock,
     machineId: holderId,
     preconditions,
-    ownerEpoch: () => null, // pool placement dark ⇒ no ownership record (§9.3)
+    // §9.3 fencing: with placement live, the ownership record's epoch; dark ⇒ no record (null).
+    ownerEpoch: (topicKey) => (d.poolPlacementLive() ? (d.ownershipRecord?.(topicKey)?.ownershipEpoch ?? null) : null),
     carriers: defaultFoldCarriers(d.stateDir),
     ...(d.onEvent ? { onEvent: d.onEvent } : {}),
   });
