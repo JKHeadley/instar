@@ -181,7 +181,10 @@ describe('skill-learning routes — WIRED into the production server (dead-code 
   });
 
   it('routes.ts keeps its checkMandatePin signature and delegates to the shared mandatePin.ts gate', () => {
-    expect(routesSrc).toContain("import { createMandatePinCheck } from './mandatePin.js';");
+    // identity-security-piece1c: routes.ts also imports the verdict form of the same gate.
+    expect(routesSrc).toMatch(/import \{[^}]*\bcreateMandatePinCheck\b[^}]*\} from '\.\/mandatePin\.js';/);
+    // …and keys it on the signed-in caller (ownerPinSource.ts), not the socket address.
+    expect(routesSrc).toMatch(/const requireMandatePin = createMandatePinCheck\(\{[^;]*pinSource: \(req, fwd\) => signedInPinSource\(/);
     expect(routesSrc).toMatch(/function checkMandatePin\(req: import\('express'\)\.Request, res: import\('express'\)\.Response, pinOverride\?: string\): boolean \{\s*return requireMandatePin\(req, res, \{ pinOverride \}\);/);
     // The old inline implementation is gone (one gate, not two).
     expect(routesSrc).not.toContain('const mandatePinAttempts = new Map');
