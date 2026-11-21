@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-21T19:28:35.167Z",
+  "slug": "identity-security-piece2d-fence-lease-routing",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/meshVerbFenceClass.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "2d adds no self-triggered loop: lease takeover is an input to the existing acquire tick, bounded by a fixed per-day budget; the owner notice is 2c registered one"
+  },
+  "verdict": "blocked"
+}
