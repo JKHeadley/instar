@@ -15,6 +15,7 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
+import { reportVoiceUnreadable } from '../../src/core/VoiceTranscription.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -218,6 +219,25 @@ describe('recommended services: production wiring', () => {
     const key = await request(app).post('/recommended-services/tailscale/key')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('tskey-auth-example');
     expect(key.status).toBe(409);
+  });
+
+  it('re-offers (rollout step 4) are wired but dark: with the switch off, a voice note nothing can read records nothing', async () => {
+    const { makeLedger } = boot(true, { monitoring: { promptGate: { ownerId: 42 } } });
+    makeLedger().recordNo({ service: 'voice-transcription', shutdown: 'none', reason: 'cost', origin: 'first-offer' });
+    reportVoiceUnreadable('telegram');
+    expect(makeLedger().reofferRows()).toEqual([]);
+  });
+
+  it('with recommendedServices.reoffers.enabled, the real voice-unreadable source reaches the real ledger, and the no stands', async () => {
+    const { makeLedger } = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } } });
+    makeLedger().recordNo({ service: 'voice-transcription', shutdown: 'none', reason: 'cost', origin: 'first-offer' });
+    await new Promise((r) => setTimeout(r, 5));
+    reportVoiceUnreadable('telegram');
+    reportVoiceUnreadable('telegram');
+    const rows = makeLedger().reofferRows('42');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service: 'voice-transcription', kind: 'voice-unreadable', state: 'event', evidenceRef: 'telegram' });
+    expect(makeLedger().effective('voice-transcription').choice).toBe('no');
   });
 
   it('refuses to surface a retired offer', async () => {
