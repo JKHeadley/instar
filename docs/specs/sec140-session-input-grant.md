@@ -97,7 +97,7 @@ The verified fact is that the phone's enrolled presence key signed the grant's i
 
 This fix is one of three that protect the owner's phone authority. The shared threat model is the document "What someone can do with a phone key, and what three fixes change" (Studio document fd351c3a).
 
-- **Registration states, per pairing:** `confirmed` (the presence key's registration was confirmed by the owner through a trusted channel, once SEC-142 provides that), `unconfirmed` (registered first-come), or `none` (no presence key). Until SEC-142 ships, every existing registration is `unconfirmed`, because nothing distinguishes it; SEC-142's own migration decides how existing registrations become `confirmed`, and this spec reads that state. Rules:
+- **Registration states, per pairing:** `confirmed` (the device record has `presenceConfirmedVia`, set by the pairing approval for a key sent with the pairing request, or by the owner's fingerprint comparison for a key registered earlier; spec `sec142-presence-key-confirmed.md`), `unconfirmed` (registered first-come), or `none` (no presence key). Every key registered before SEC-142 ships starts `unconfirmed`, and becomes `confirmed` only through SEC-142's fingerprint check; this spec reads that state. Rules:
   - `confirmed`: grants as above.
   - `unconfirmed`, mode `accept`: a grant may be obtained and counts as today (no worse than now, and it starts `grantSeen`); grantless typing follows the shared rule.
   - `unconfirmed`, mode `require`: **blocked** with the recovery path in the controls answer ("Confirm this phone's Face ID setup from the dashboard to type from it"), because a grant from an unconfirmed key may be an attacker's.
