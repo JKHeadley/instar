@@ -128,6 +128,14 @@ export function escapeForCard(json: string): string {
 /** Telegram allows 4096 characters; the card must fit whole. */
 export const MAX_CARD_SUMMARY_CHARS = 3000;
 
+/**
+ * The revision a config-patch card is bound to: the patched sections of the settings file AND the
+ * machine (SEC-162). A card applied on another machine, after the lease moved, never matches.
+ */
+export function configRevisionFor(machineId: string | null, file: Record<string, unknown>, patch: Record<string, unknown>): string {
+  return proposalHashOf({ machine: machineId, sections: Object.fromEntries(Object.keys(patch).sort().map((k) => [k, file[k] ?? null])) });
+}
+
 export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAccountPathRuntime {
   const sink = d.sink ?? new LocalFileTrustSink(path.join(d.stateDir, 'state', 'trust-journey.jsonl'));
   const store = new TrustJourneyStore(sink);
@@ -149,10 +157,10 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
   };
   const currentProfile = (): AutonomyProfileLevel | undefined => d.autonomyManager?.getProfile();
   /** The expected revision of a config change: a hash of exactly the sections it replaces, as they are now. */
-  const configRevision = (patch: Record<string, unknown>): string => {
-    const file = readFileConfig();
-    return proposalHashOf(Object.fromEntries(Object.keys(patch).sort().map((k) => [k, file[k] ?? null])));
-  };
+  // SEC-162: the revision names this machine too. Settings are per machine, and a card is applied by
+  // whichever machine holds the lease when the owner answers; if the lease moved, the new holder's
+  // revision differs and nothing is written, even when its sections happen to match.
+  const configRevision = (patch: Record<string, unknown>): string => configRevisionFor(d.machineId ?? null, readFileConfig(), patch);
 
   const raisesOf = (c: TrustChange): string[] => {
     switch (c.kind) {
@@ -297,7 +305,14 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
     service,
     holdsLease: () => d.holdsLease(),
     bindDevices: (devices) => service.bindDevices(devices),
-    propose: (c) => service.propose(c.kind === 'config-patch' ? { ...c, basedOn: configRevision(c.patch) } : c),
+    propose: async (c) => {
+      // SEC-162: settings are per machine, and an approval is applied on the lease holder (the only
+      // machine that consumes receipts). A settings card asked elsewhere would change the wrong machine.
+      if (c.kind === 'config-patch' && !d.holdsLease()) {
+        return { status: 'other-machine', message: 'This machine does not take approvals, and an approved change would be made on the lead machine instead of this one. Ask for this change on the lead machine.' };
+      }
+      return service.propose(c.kind === 'config-patch' ? { ...c, basedOn: configRevision(c.patch) } : c);
+    },
     async ingest(r) {
       if (!service.claims(r)) return 'not-for-us';
       if (d.holdsLease()) return service.onReceipt(r);

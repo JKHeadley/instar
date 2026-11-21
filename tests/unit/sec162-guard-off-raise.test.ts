@@ -115,3 +115,42 @@ describe('SEC-162: every switch path gets the same card', () => {
     expect(src).not.toMatch(/X-Instar-Owner-Switch|ownerSwitchGrant/);
   });
 });
+
+describe('SEC-162: a settings card is only opened on the machine that applies it', () => {
+  it('a guard-off request on a machine that does not hold the lease is refused, not sent', async () => {
+    const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+    const { createTrustJourneyRuntime } = await import('../../src/core/trustJourney/TrustJourneyRuntime.js');
+    const { AdaptiveTrust } = await import('../../src/core/AdaptiveTrust.js');
+    const { SafeFsExecutor } = await import('../../src/core/SafeFsExecutor.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec162-holder-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ inputGuard: { enabled: true } }));
+      const mk = (holds: boolean) => createTrustJourneyRuntime({
+        stateDir: dir, configPath: path.join(dir, 'config.json'), runtimeConfig: {}, installationId: 'x', machineId: 'm1',
+        adaptiveTrust: new AdaptiveTrust({ stateDir: dir }), autonomyManager: null, trustRecovery: null, telegram: null, slack: null,
+        slackOwnerUserId: () => null, holdsLease: () => holds,
+      });
+      const change = { kind: 'config-patch' as const, patch: { inputGuard: { enabled: false } } };
+      expect((await mk(false).propose(change)).status).toBe('other-machine');
+      expect((await mk(true).propose(change)).status).not.toBe('other-machine'); // the holder proceeds (no approver here)
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/sec162-guard-off-raise.test.ts' });
+    }
+  });
+});
+
+describe('SEC-162: a settings card is bound to the machine that asked', () => {
+  it('the same sections on another machine give a different revision, so a moved lease applies nothing', async () => {
+    const { configRevisionFor } = await import('../../src/core/trustJourney/TrustJourneyRuntime.js');
+    const file = { inputGuard: { enabled: true } };
+    const patch = { inputGuard: { enabled: false } };
+    expect(configRevisionFor('m_a', file, patch)).toBe(configRevisionFor('m_a', { ...file }, patch));
+    expect(configRevisionFor('m_a', file, patch)).not.toBe(configRevisionFor('m_b', file, patch));
+    expect(configRevisionFor('m_a', file, patch)).not.toBe(configRevisionFor('m_a', { inputGuard: { enabled: true, action: 'block' } }, patch));
+  });
+  it('the apply step compares against this machine\'s revision', () => {
+    const src = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../../src/core/trustJourney/TrustJourneyRuntime.ts'), 'utf-8') as string;
+    expect(src).toContain('configRevisionFor(d.machineId ?? null, readFileConfig(), patch)');
+    expect(src).toContain('if (c.basedOn !== configRevision(c.patch))');
+  });
+});

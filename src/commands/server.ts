@@ -36554,7 +36554,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (mode === 'register') reg.register(slackUserId, displayName, role as never); else reg.approve(slackUserId, role as never);
         },
         holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
-        machineId: _meshSelfId ?? cjOwnMachineId ?? 'self',
+        machineId: coordinator?.identity?.machineId ?? _meshSelfId ?? cjOwnMachineId ?? 'self', // SEC-162: the lease's own id first, so a settings card's machine binding never falls back to a shared placeholder when the mesh step failed
         legacyImport: await (async () => {
           const { configuredMcpServers, operationLogServices } = await import('../core/trustJourney/legacyImport.js');
           const ext = (config as { externalOperations?: { enabled?: boolean; services?: Record<string, unknown>; readOnlyServices?: string[] } }).externalOperations;

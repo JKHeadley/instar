@@ -119,7 +119,10 @@ export type ProposeResult =
   | { status: 'awaiting-acceptance' | 'sent'; requestId: string; code: string; expiresAt: string; deduped?: boolean; via?: 'chat' | 'device' }
   | { status: 'undelivered'; message: string }
   | { status: 'not-recorded'; message: string }
-  | { status: 'too-large' | 'too-many-open'; message: string };
+  | { status: 'too-large' | 'too-many-open'; message: string }
+  /** SEC-162: a settings change asked on a machine that does not hold the lease. An approval is
+   *  consumed and applied on the holder, so it would change the holder's settings, not this machine's. */
+  | { status: 'other-machine'; message: string };
 
 /** The card's change lines may not exceed this (the card must fit whole in one message). */
 export const MAX_CARD_SUMMARY = 3000;

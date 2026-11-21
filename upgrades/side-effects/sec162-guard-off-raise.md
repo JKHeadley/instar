@@ -3,7 +3,7 @@
 In plain words: until now, anyone holding the agent's API token could switch off a safety guard through the settings API. That covers any monitoring guard, the input guard and the response review. The check for loosening changes only looked at external operations and evolution autonomy. Now switching a guard off is a loosening like those: it is refused with the existing `operator-approval-required` answer, and the owner approves it through the existing trust request and approval card. Switching a guard on stays free.
 
 Tier 1. Size:
-- 3 source files: `src/core/TrustRaiseGuard.ts`, `src/server/routes.ts`, `src/core/trustJourney/TrustJourneyRuntime.ts`
+- 5 source files: `src/core/TrustRaiseGuard.ts`, `src/server/routes.ts`, `src/core/trustJourney/TrustJourneyRuntime.ts`, `src/core/trustJourney/AccountPathService.ts`, `src/commands/server.ts`
 - 1 awareness entry
 - 1 new unit test file
 - integration cases in two files
@@ -40,6 +40,7 @@ Tier 1. Size:
   - the self-action governor's emergency switch, which keeps its own PIN check
 
 ## Known limits
+- **Settings cards open only on the lead machine.** Settings are per machine, and an approval is consumed and applied only on the machine that holds the lease, which writes its own settings file. Before this change, a settings card asked on another machine would have been applied to the lead machine's settings instead. That flaw already existed for external-operations cards, and the allowlist review caught it. Now, a request asked on any other machine answers `409 other-machine` with a plain message, and no card is sent. A guard there can still be switched off at that machine's settings file by its operator. The card is also bound to the machine that opened it: its revision names the machine as well as the patched sections. So if the lease moves before the owner answers, the new holder finds a different revision and writes nothing, even when its sections match; the owner is told to ask again. The same applies to external-operations cards. Cards opened before this change fail that check once, and are asked again. The runtime takes its machine id from the lease coordinator's own identity first, so a machine that failed part of its startup does not fall back to a placeholder shared with other machines. Applying an approval on the machine that asked is left for later, tracked with the allowlist spec.
 - The definition of a guard is the `/guards` inventory, so it includes a few switches that act rather than protect, such as `greenPrAutoMerge`, the session reaper and telemetry. Turning one of those off through the API now also asks the owner. This is deliberate: one definition, the same one the guard tripwire uses. Telemetry has its own route, `POST /config/telemetry`, which is unaffected.
 - A commitment whose correction would switch a guard off is refused each time it runs. Its drift is reported again on each check until the owner approves or the commitment is closed.
 - On a Telegram-only owner, the approval card is a reply with a code, not one tap. On an owner whose paired phone is set up to approve, it is one tap with Face ID. If the owner never answers, nothing is written, and the guard stays on.
@@ -50,6 +51,7 @@ An independent reviewer worked over three rounds, reading the real code paths.
 - **Round one** found that the owner's approval card could not carry guard settings, so a guard-off change was refused with no way to approve it. Fixed with `APPROVABLE_CONFIG_PATCH_KEYS`. It also found the dry-run, observe-only and input-guard weakenings, which are now judged.
 - **Round two** refused a draft pass-through for the owner's phone, against `docs/specs/trust-journey.md` decision 4. It was removed.
 - **Round three:** concur. Nothing from the grant remains, and the docs match the code.
+- **Rounds four and five**, after the allowlist review found the wrong-machine flaw, checked the lead-only rule and the machine-bound revision, and concurred. The hardening the reviewer suggested, the coordinator's id first, is applied.
 
 The Chief of Staff agreed that every guard-off path gets the card, including the extra tap on the owner's phone (2026-11-21).
 
