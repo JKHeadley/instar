@@ -262,13 +262,18 @@ export function mountApproverGrantRoutes(router: Router, svc: MobilePairingServi
     if (!activeOwnerPhone(svc, deviceId) && !(svc.devices.get(deviceId)?.status === 'active')) { res.status(403).json({ error: 'owner-device-required' }); return; }
     const env = approverClaimEnv();
     const st = env?.store.state() ?? null;
-    const live = new Set(liveOwnerKeys(svc).map((k) => k.publicKey));
+    const liveKeys = liveOwnerKeys(svc);
+    const live = new Set(liveKeys.map((k) => k.publicKey));
+    const keyIdOf = new Map(liveKeys.map((k) => [k.publicKey, k.keyId]));
     const holders: Array<Record<string, unknown>> = [];
     const devices = svc.devices.list().filter((d) => d.status === 'active');
     for (const d of devices) {
       if (!mayApprove(svc, d.id)) continue;
       const k = heldPresenceKeys(svc).find((h) => h.deviceId === d.id)?.key;
-      holders.push({ deviceId: d.id, name: d.label ?? d.deviceName ?? 'Device', fingerprint: d.fingerprint ?? null, via: k && live.has(k) ? 'record' : 'kept', self: d.id === deviceId });
+      // keyId (an owner-record key) is what revoke/draft takes; a kept device has none and can't be removed this way.
+      // E2E-PAIRING: EXEMPT — one added field on an existing route, pinned by the 3a claim unit test; the live run uses the stand-in owner chat (card wc_491e135547ea8388).
+      const inRecord = !!k && live.has(k);
+      holders.push({ deviceId: d.id, name: d.label ?? d.deviceName ?? 'Device', fingerprint: d.fingerprint ?? null, via: inRecord ? 'record' : 'kept', ...(inRecord ? { keyId: keyIdOf.get(k!) } : {}), self: d.id === deviceId });
     }
     // Owner keys held by no device here belong to another machine's devices.
     const here = new Set(heldPresenceKeys(svc).map((h) => h.key));

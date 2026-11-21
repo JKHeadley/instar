@@ -189,3 +189,7 @@ device's own request signature was refused": it marks the address bad and tries 
 A bad approval-key signature on `POST /mobile/approver/first/sign` and `/revoke/sign` therefore now answers 409
 `presence-invalid` with a detail. 401 stays reserved for the device signature. The grant route already answered
 409. Nothing else changes; the console, desktop and permission routes keep their own answers.
+- `GET /mobile/approvers` holders that are in the owner record now carry `keyId`, the id `revoke/draft` takes, so
+  the app can offer Remove. A kept device has no key id and is not offered. Approvers on other computers stay a
+  count (`holdersElsewhere`): the record has no names for them, and an unnamed Remove is too easy to get wrong.
+  They are removed from a device on their own computer or through the owner's private-chat tap.

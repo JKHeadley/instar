@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T20:50:08.177Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3a-approver-in-owner-record.md",
+  "artifactSha256": "c0e8bb1e5b021c19ec9bfa0304e6a05746c0176ae8a0f60f8225848065172915",
+  "specPath": "docs/specs/identity-security-piece3a-approver-in-owner-record.md",
+  "coveredFiles": [
+    "src/server/mobileApproverGrant.ts",
+    "tests/unit/identity-piece3a-approver-claim.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "app contract: holders carry the keyId revoke/draft takes",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}
