@@ -12,6 +12,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 
 describe('Health endpoint auth gating', () => {
   let project: TempProject;
@@ -61,6 +62,7 @@ describe('Health endpoint auth gating', () => {
 
   afterAll(() => {
     project.cleanup();
+    DegradationReporter.resetForTesting(); // SEC-130 case reports into the shared singleton
   });
 
   it('returns basic info without auth header', async () => {
@@ -102,5 +104,30 @@ describe('Health endpoint auth gating', () => {
       .set('Authorization', 'Basic dXNlcjpwYXNz');
     expect(res.status).toBe(200);
     expect(res.body.project).toBeUndefined();
+  });
+
+  it('SEC-130: degradation text and LLM reliability are only shown to an authenticated caller', async () => {
+    DegradationReporter.getInstance().report({
+      feature: 'Sec130Probe',
+      primary: 'probe primary',
+      fallback: 'probe fallback',
+      reason: 'probe reason at /Users/someone/secret-path',
+      impact: 'probe impact naming /Users/someone/secret-path',
+    });
+    const anon = await request(app).get('/health');
+    expect(anon.status).toBe(200);
+    expect(anon.body.status).toBe('degraded');
+    expect(anon.body.degradations).toBeGreaterThan(0);
+    expect(anon.body.degradationSummary).toBeUndefined();
+    expect(anon.body.llmReliability).toBeUndefined();
+    expect(JSON.stringify(anon.body)).not.toContain('secret-path');
+
+    const wrong = await request(app).get('/health').set('Authorization', 'Bearer wrong-token');
+    expect(wrong.body.degradationSummary).toBeUndefined();
+
+    const authed = await request(app).get('/health').set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(authed.status).toBe(200);
+    expect(Array.isArray(authed.body.degradationSummary)).toBe(true);
+    expect(authed.body.degradationSummary.length).toBe(authed.body.degradations);
   });
 });
