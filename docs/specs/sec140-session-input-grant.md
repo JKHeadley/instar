@@ -1,0 +1,164 @@
+---
+title: "Typing into a session from the phone needs Face ID once every few minutes"
+slug: sec140-session-input-grant
+author: Echo
+tier: 2
+status: draft
+eli16-overview: sec140-session-input-grant.eli16.md
+parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
+sibling-principles: "Security Fixes Keep the Experience Whole; No Single Device Lockout; Judgment Within Floors"
+parent-spec: "mobile-session-terminal (phone typing into sessions), mobile-native-permissions (presence-signed session controls)"
+decision-source: "Chief of Staff, 2026-11-21 06:12Z: SEC-140 rated medium-high; stage it (server accepts grants first, apps adopt, then enforcement); a ~5-minute grant must keep ordinary conversation smooth; the failure case tells the person what to do; spec-converge plus the constitution check; app half with echo-instar-apple-app-rebuild, Android via the Chief of Staff"
+security-ledger: "SEC-140 (medium-high)"
+approved: false
+---
+# Typing into a session from the phone needs Face ID once every few minutes
+
+## Problem statement
+
+The phone can type into any running session, press keys (Enter, y/n, Ctrl-C) and drop files into it. Today those three routes (`POST /sessions/:name/input`, `/key`, `/attachments` in `src/server/mobileSessionTerminalRoutes.ts`) accept a request signed by the phone's **device key** alone. The device key is a Secure Enclave key that signs without the person: it proves the phone, not the person holding it.
+
+Sessions run with full access to the machine, so typing into one is running code on it. The same phone needs its **presence key** (Secure Enclave, signs only after Face ID, Touch ID or the passcode) to close or move a session, unlock the desktop or reveal the PIN, but not to type a command. Typing is the weakest path to the most power. Whoever can make the phone sign while it is unlocked (malware or a jailbreak on the phone, a lost phone that is unlocked or gets unlocked, a coerced unlock) can run commands on every machine the phone reaches: the machine it talks to directly, and through the relay hop every peer with `allowRemoteInput` on.
+
+What already holds and is kept: per-request device signatures (±60 s, revocation checked), replay protection (durable for input and keys), owner-only routes, per-device and per-machine rate limits.
+
+Not in scope: the console ticket (already presence-gated), session controls (already presence-gated), the Bearer-token API (an agent-token holder already has full control of a machine; see Relay hop).
+
+Also not in scope, and recorded as its own security ledger item: owner chat from the phone (`POST /mobile/chat/...`) is accepted on the device key alone and reaches the same full-access agent. It differs from typing in kind: it arrives as a message the agent reads and judges, tagged as from the phone, with no raw terminal, shell escapes, y/n keys or Ctrl-C. So SEC-140 closes raw, judgment-free input into a session; it does not close every way a stolen device key can ask the agent to act.
+
+## Proposed design
+
+### 1. A session-input grant
+
+- **Challenge:** `POST /mobile/sessions/input-grant/challenge` (device-signed, owner phone) returns a 32-byte challenge bound to that device and the signed host, single use, 60 seconds, from a `BoundSecretStore` like the console ticket's (at most 4 per device, 64 in total).
+- **Grant:** `POST /mobile/sessions/input-grant {challenge, signature}`. The phone signs `instar-session-input-grant-v1\n<deviceId>\n<host>\n<challenge>` with its presence key; the server checks it with `verifyPresenceSignature` against the device's enrolled presence key. On success it returns a random 32-byte grant and its expiry. Only the SHA-256 of the grant is kept, in memory, bound to the device id on this machine. The challenge is bound to the signed host; the grant is not, so a phone that moves between the home network name and the tunnel name keeps its grant (every typing request still carries the device signature, accepted only over local TLS on the machine's own names).
+- **Use:** the three typing routes accept header `X-Instar-Session-Grant: <grant>`. A grant is valid only for the device that obtained it, on the machine that issued it. The header is outside the device signature but useless without that device's signature; it is never written to audit rows, logs or error reports.
+- **Switch and routes:** the two grant routes exist when the machine's `available` setting is true (Multi-machine posture) and accept the same transports as the typing routes. They and `DELETE /mobile/sessions/input-grant` (ends every grant this device holds on this machine) are added to `DEVICE_ALLOWLIST` as owner-only, phone-only (no browser keys), with their own rate bucket. A test ends a grant through production authentication and shows the next send needs a new one.
+- **What it proves:** that the person confirmed with Face ID (or the passcode) when the grant was issued. It authorizes a window of typing; individual messages inside the window carry no separate proof. The app must create a fresh `LAContext` for every grant it requests, never reusing an already-authenticated one (the parent spec's rule for confirmations, mobile-native-permissions §2, §3.6), so each grant costs a real Face ID check.
+- **Lifetime, so a conversation stays smooth:** a grant lasts **5 minutes since it was last used**, and never more than **30 minutes since it was issued**. Someone typing back and forth is asked for Face ID at most once every 30 minutes; a phone put down for 5 minutes asks again. The owner can change both; see Decision points.
+- **Ends early on:** device revoked, owner role removed, the phone asking to end it (`DELETE /mobile/sessions/input-grant`), server restart (grants live in memory, so a restart costs one Face ID). Never written to disk, never replicated.
+- **Not a dashboard-PIN gate:** unlike the owner-presence gate, a PIN is not required; the presence key is the proof. A device with no enrolled presence key cannot obtain a grant.
+
+### 2. Staged enforcement
+
+One setting, `mobile.sessionInputGrant.mode`, with three values. Every value accepts a valid grant.
+
+- **`accept`** (the default at merge): a request without a grant is still allowed, **except from a device that has used a grant before** (`grantSeen`, set the first time a grant is accepted; see Multi-machine posture). From then on that device's typing needs a grant. So the person's own phone is protected from the first time its updated app uses a grant, and a stolen device key from that phone cannot skip back to the old path. Devices whose app never asked keep today's behaviour.
+- **`require`:** every typing request needs a grant. Devices that cannot obtain one (no presence key: today's Android, older iPhone builds) are refused with the message in section 4.
+- **`off`:** today's behaviour exactly (rollback).
+
+**Exposure during the window:** while the mode is `accept`, a device whose app has never used a grant (an iPhone on an older build, every Android phone) keeps today's device-key-only typing. The person's updated iPhone is covered from its first grant.
+
+**Keeping the window visible (Close the Loop):** at merge a commitment is opened on the security ledger row: "SEC-140 enforcement window open: N owner devices still type without a grant". The weekly maturation review re-raises it with two counts per machine: owner-device pairings the write gate would currently **allow** without a grant (the remaining permission, from the same rule function), and grantless typing actually seen in the last 7 days. It closes only when the first count is zero on every machine, or the owner records acceptance of the named remaining pairings (for example Android until its Phase 3) with a re-review date. Quiet weeks alone never close it. Android's Phase 3 date is asked of the Chief of Staff at merge and written into the commitment.
+
+**What turns on `require`:** a one-tap owner decision, offered when, on every machine, every owner phone that typed there in the last 14 days has obtained a grant on that same machine. Readiness is a separate per-machine record, `grantUsedHere` (set only by a grant issued on this machine), distinct from `grantSeen`, which can arrive from another machine's row and drives enforcement only, or on a date the owner sets. The offer lists any pair not yet seen using a grant there, and lists pairings with no enrolled presence key as an open enrollment risk: under `require` they are refused today, but if their app later enrolls a key first-come (What the grant does not prove), a device-key holder could enroll one instead. Counting such a pairing as protected needs owner-confirmed enrollment (its own ledger item). It is never flipped automatically, because it can lock a device out of typing (No Single Device Lockout). Until Android ships a presence key (its Phase 3), the offer says plainly that Android phones would lose typing.
+
+### 3. Telling the app
+
+- `GET /mobile/sessions/controls` `typing` block gains the `grant` object below (`outcome`, `mode`, `available`, `expiresAt`). The app uses the field's presence to know the server supports grants, and the routes in section 1 exist only on servers that report it.
+- **One rule, three outcomes, used by both the controls answer and the write gate.** For a typing request from a device on this machine:
+  - **allow** when the mode is `off`, or the mode is `accept` and the device is not `grantSeen`;
+  - otherwise (mode `require`, or `accept` with `grantSeen`): **grant-required** when `available` is true (a request without a valid grant gets 428), and **blocked** when `available` is false (403 `session-input-unavailable`, no prompt, message: "Typing from this phone needs Face ID, which isn't set up on this computer right now. Type from the dashboard, or ask me to turn it back on.").
+
+  A `grantSeen` phone therefore never falls back to grantless typing because a machine's presence features were turned off; the owner can clear the phone (accept mode) if they want that. The controls answer reports the outcome as `grant: { outcome: 'allow'|'grant-required'|'blocked', mode, available, expiresAt? }`; an older server has no `grant` field and the app types as today. Tests cover each outcome and a change of `available` after a phone has used its first grant.
+
+- **When the grant route answers `presence-key-missing`** (this machine has no Face ID key for the phone yet, for example a phone protected through another machine), the app sets up its Face ID key on this machine through the existing presence-key route (same transports), then obtains a grant and resends once. The "pair the phone again" text is used only when that setup is refused with `presence-key-set` (a different key is already enrolled here). This first-come setup carries the enrollment risk named in What the grant does not prove.
+- **The app obtains a grant whenever the outcome is `grant-required`, and also whenever `available` is true and the mode is not `off`** (so the first grant happens on the first send and per-device protection starts), on its first send and whenever its grant has expired, without waiting for a refusal. On `blocked` it does not prompt and shows the server's text. That is what makes the per-device protection start: the first accepted grant writes `grant-seen`. A test starts from a clean pairing, sends once (a grant is obtained first), then shows a grantless second send is refused.
+- An older server has no `grant` field; the app keeps typing as today.
+- A peer's support for the relay hop is read the same way it reads `inputAllowed` today (`GET /mobile/sessions/relay/:name/state` gains `grantChecked: true`), only for display: the grant is checked on the machine the phone talks to (section 5).
+
+### 4. When a grant is missing or expired
+
+The typing routes answer `428 { error: 'session-input-grant-required', message, expired: boolean }` (428 Precondition Required, not 401, which apps read as "this phone is not recognised"). An updated app handles it as below. An older app that is refused (only in `require`, or after a downgrade) treats it as a failed send; it may show a generic error rather than these texts, which is stated in the `require` offer. The app half confirms how shipped builds display a 428.
+- The app treats it as "ask for Face ID, then send again": it shows the system Face ID prompt, obtains a grant and resends the same text once. The person sees one Face ID prompt and their message goes through.
+- If Face ID is cancelled or fails, the message stays in the input box, unsent, with the server's text: "To type into this session, confirm it's you with Face ID. Your message is still here; tap Send to try again."
+- A `grantSeen` device that can no longer obtain a grant (its Face ID key is gone, or the app was downgraded) gets: "This phone was set up to confirm typing with Face ID, but it can't do that now. Update the app, or pair the phone again. You can still type from the dashboard." In `accept` mode the owner can also turn the requirement off for that one phone from the dashboard's device list (in `require` it stays required).
+- A device with no presence key gets: "Typing into sessions from this phone needs Face ID or a passcode. Open the app's security settings to set it up, or type from the dashboard." (Android today: "Typing into sessions isn't available on this phone yet.")
+
+### 5. The relay hop
+
+The phone always talks to one machine (A). For a session on another machine (B), A relays the typing with the agent token, and B checks only that token. B cannot check a grant: presence keys are machine-local and not replicated, and a token holder can already type into B's sessions through B's own `POST /sessions/:name/input` (Bearer API, `routes.ts:13287`). So **the grant is checked on A before A relays**, under the same mode rules. B's `allowRemoteInput` switch is unchanged. Moving the hop to a signed machine-to-machine command would not stop a token holder, so it is out of scope.
+
+### 6. Refusal, retry and replay
+
+The grant check runs first, before the replay record is consulted or written and before any terminal effect or relay. A refused request (428) therefore has no effect and consumes nothing. The app's retry after Face ID is a new device-signed request (new time, new signature), so it is a new replay digest and is accepted once. **The app retries automatically only after a definite 428** (the parent spec's lost-answer rule, mobile-native-permissions §3.6). On a timeout or a lost connection it cannot know whether the text or key reached the session, so it does not resend: it shows "I couldn't confirm this was sent. Check the session before sending it again." and keeps the draft. Tests: expiry then retry, for text, a key (Enter) and an attachment; each produces exactly one effect, and replaying the accepted retry is refused.
+
+### 7. Attachments replay
+
+Attachments get the durable replay record that input and keys already have, so a captured attachment request cannot be replayed after a restart.
+
+## What the grant does not prove
+
+The verified fact is that the phone's enrolled presence key signed the grant's issuance challenge. That this followed a fresh Face ID or passcode check depends on the genuine app creating a fresh `LAContext` for it (§1); the server cannot observe the prompt. That key is enrolled first-come: the phone's own device key plus proof of holding the new key, and once set it cannot be replaced without pairing the phone again (`mobileConsoleTicket.ts`, the presence-key route). So for a phone whose app enrolled its Face ID key (the iPhone app does this after pairing), a stolen device key cannot mint grants. For a phone that never enrolled one (Android today), someone holding its device key could enroll their own key and then mint grants. This is the same first-come limit the console sign-in already has, and closing it belongs to enrollment (for example, enrolling the Face ID key during pairing), not to this spec. It is recorded on the security ledger as its own item. In `accept` mode such a phone is no worse off than today.
+
+## Experience cost and the search for a loss-free fix
+
+- **What a person notices, in the default `accept` mode:** on an updated iPhone, one Face ID prompt before typing after 5 idle minutes, and at most one per 30 minutes of active conversation. The message they typed is never lost: it is sent right after Face ID, or stays in the box. On Android and older iPhone builds nothing changes. That is the whole cost of the shipped default.
+- **The loss in `require` mode** (Android and not-yet-updated phones lose typing until they support the grant) is not shipped. It is the owner's decision, offered only on evidence (section 2), and its offer states the loss.
+- **Loss-free alternatives considered:**
+  - *Device key alone, plus phone-side checks* (the app refuses typing on phones without a passcode, as the apps now do): protects against a phone with no lock, not against malware on an unlocked phone or an unlocked stolen phone. Not sufficient: the server still accepts a request the person never confirmed.
+  - *Presence-sign every request:* proves presence each time but costs a Face ID per message, a larger loss than the grant.
+  - *Grant tied to the phone's unlock state* (valid only while the phone stays unlocked since a Face ID): iOS does not give the server a verifiable unlock state; the app could only claim it, which proves nothing to the server.
+  - *No server-checkable signal exists between those:* every proof the server can check that a person is present is a presence-key signature. The grant is the cheapest way to use one: one signature covers a stretch of conversation.
+- So the shipped default has a small, bounded cost (one Face ID per stretch of typing), the cost is the minimum any server-checkable presence proof requires, and the larger loss (`require`) is left to the owner.
+
+## Decision points touched
+
+| Decision point | Classification | Basis |
+|---|---|---|
+| A typing request without a valid grant is refused whenever the shared rule's outcome is `grant-required` or `blocked` (mode `require`, or `accept` with `grantSeen`) | invariant | basis: irreversible-consequence; evidence: typing runs commands with full machine access, which cannot be undone; a valid presence signature is the only proof the person is there. |
+| Grant lifetime (defaults 5 minutes idle, 30 minutes absolute) | judgment-candidate | floor (invariant): a grant never survives a restart, a revocation or a role change, is memory-only, and every grant costs a fresh presence signature; arbiter: the owner, who sets `idleMinutes` and `maxMinutes` (any positive values, `maxMinutes` at least `idleMinutes`) by how they use the phone, with the change shown in the dashboard and audited; fallback: the defaults. The defaults are a judgment: 30 minutes keeps a working stretch to one Face ID, 5 minutes idle sits under a phone's usual auto-lock. Counterexamples considered: a multi-hour remote session from a phone (owner raises both), a shared device (owner lowers both). |
+| Mode `accept` to `require` | judgment-candidate | floor: never automatic; arbiter: the owner's one tap, offered on evidence (every recently active phone-machine pair has used a grant on that machine) or on a set date; fallback: stay in `accept`. |
+| Per-device enforcement after first grant (`grantSeen`) | judgment-candidate | floor: a `grantSeen` device's grantless typing is refused (downgrade by a stolen device key is the attack this closes); arbiter: the owner, who can clear `grantSeen` for one phone from the dashboard's device list (signed-in owner, PIN-confirmed action, audited), and re-pairing a phone starts a fresh record without it; fallback: refuse, with the recovery path in the message. Lockout cases considered: the phone's Face ID key is lost (passcode or Face ID removed, key deleted) or the app is downgraded. The phone is then refused typing, not anything else, and the refusal says how to recover (section 4); the owner can type from the dashboard meanwhile. |
+| Grant checked on the machine the phone talks to, not on the relay target | invariant | basis: external-constraint; evidence: presence keys are machine-local; the relay target already trusts the agent token fully. |
+
+## Multi-machine posture
+
+- **Grants:** machine-local. machine-local-justification: physical-credential-locality (a grant is a bearer secret minted on the machine the phone talks to against a presence key enrolled only there; the relay target never sees it, section 5).
+- **`grantSeen`:** one answer per machine, the local device record's `grantSeen`, which records the set of `grant-seen` row ids it reflects. The device-key ledger (`src/core/MobileDeviceKeyLedger.ts`, present where the machine has a signing identity, replicated where native conversations are on) carries the changes between machines:
+  - **Order on the first grant:** the local flag is written durably first; the grant is issued only after that write succeeds (if it fails: 503, no grant). Then the ledger row is appended where a ledger exists; if that append fails the grant still stands (the local flag protects this machine), a degradation is reported, and the append is retried. This follows the ledger's own rule of recording before acting.
+  - The first accepted grant on a machine, when no un-cleared row of its own exists, writes a `grant-seen` row `{type:'grant-seen', keyHash, deviceId, epoch, seenAt, machineId, signerKeyHash, sig}` and adds its id to the local flag. `epoch` is part of the row id, so protecting a phone again after a clear yields a new row instead of a dropped duplicate (the build extends `ledgerRowId`, the replicated store's known-field list and its timestamp choice for `epoch`, `seenAt`, `clearedAt`).
+  - **Ingest keeps the local flag current:** a verified `grant-seen` row for a device this machine knows (same key hash) adds its id to the local flag, on ingest and at boot.
+  - **Clearing** (owner's dashboard action, `accept` mode only) writes a signed `grant-seen-cleared` row naming the exact row ids it clears. Every machine that ingests it removes those ids from its local flag; the flag is set while any id remains. A grant used later writes a new-epoch row no clear names, so protection comes back only through a real grant, never through a boot backfill. Delivery order does not matter and a replayed old clear changes nothing. Tests: both delivery orders, a replayed clear, clear on A then restart B (still cleared on both), clear then a new grant (protected again).
+  - **The ledger being unreadable** does not change the answer: the local flag is used, and the read failure is reported as a degradation. Where no ledger exists (a single machine without a signing identity), the local flag still protects that machine, and the agent reports once that protection does not travel between machines.
+  - **Enforced only where a grant can be obtained:** `available` is a machine setting, not a property of a request: true when presence-key enrollment is on for the machine (console sign-in, owner presence or native conversations enabled). The grant routes accept exactly the transports the typing routes accept, so any request that can type can also obtain a grant. Where `available` is false, grantless typing is allowed as today and the controls answer says so; under `require`, such a machine is listed in the offer as a blocker.
+- **The mode setting:** per machine, in config. The owner decision in section 2 applies it on every machine in the pool through the existing config-apply path, and the agent reports which machines are in which mode.
+
+## Frontloaded Decisions
+
+- Grant over a per-message Face ID: per-message Face ID would make conversation from the phone tiring (Chief of Staff). Cheap to change after: no, it is the app contract.
+- Defaults 5 minutes idle / 30 minutes absolute. Cheap to change after: yes, a setting.
+- Default mode at merge `accept`, with per-device enforcement. Cheap to change after: yes, a setting.
+- No PIN requirement for the grant. Not cheap: it is part of what the app shows.
+
+## Migration
+
+- Device records gain optional `grantSeen`. The device-key ledger gains two row types, `grant-seen` and `grant-seen-cleared`, validated like activation rows; older machines ignore unknown row types (verify in build: the replication reader must skip, not reject, an unknown type).
+- Config gains `mobile.sessionInputGrant.mode` (absent = `accept`), `idleMinutes` (default 5), `maxMinutes` (default 30, never below `idleMinutes`). Read with defaults; no `migrateConfig()` step needed.
+- Shipped apps: unchanged behaviour until they adopt grants (no `grant` field handling = today's flow).
+
+## Observability
+
+Per machine, in the signed-in `GET /mobile/sessions/controls` owner view and the security audit file `mobile-session-input.jsonl`: grants issued, typing requests with a grant, without a grant (allowed in `accept`), refused for a missing or expired grant, by device. These show when every active device uses grants (the evidence for the `require` offer) and whether people are being refused.
+
+## Rollout and maturation
+
+- **Test-agent rung:** e2e with the real server: grant issued against an enrolled presence key, input accepted with it, refused without it for a `grantSeen` device and in `require`, refused after the idle and absolute limits, refused after revocation, relay hop refused on A without a grant.
+- **Development-agent rung:** Echo runs `accept` from merge; the iPhone app build that adopts grants (echo-instar-apple-app-rebuild) is used for a week. Evidence: grants issued and used, zero refusals of the owner's updated phone outside expired-grant retries, the audit counts.
+- **Fleet:** the default stays `accept`; `require` is the owner's decision per section 2.
+
+## Rollback
+
+Set the mode to `off`, or revert. Grants are memory-only; the `grant-seen` ledger rows persist and are ignored in `off`.
+
+## Tests
+
+- Unit: grant store (grant bound to device on this machine, challenge bound to device and host, single-use challenge, idle and absolute expiry, ends on revoke and role change, hashes only); typing routes in each mode with and without a grant, with `grantSeen` and without; wrong device's grant refused; expired grant answer carries `expired: true`; attachments replay refused after a restart.
+- Integration: the full HTTP flow with a real presence key pair (P-256 software key in tests), and the relay hop refused on A without a grant.
+
+## Open questions
+
+1. App half (echo-instar-apple-app-rebuild): adopt the challenge/grant calls, the resend-once flow and the two refusal texts. Android (via the Chief of Staff): no change until its Phase 3 presence key; confirm the wording it shows.
+2. For Justin, through the Chief of Staff:
+   a. **Experience cost (Security Fixes Keep the Experience Whole).** SEC-140 is rated medium-high, not critical. The shipped default adds one Face ID prompt to an updated iPhone after 5 idle minutes and at most once per 30 minutes of typing (owner-adjustable), with the message never lost. No server-checkable alternative without a prompt exists (Experience cost section). Accept that cost for a medium-high finding, or re-rate SEC-140 critical.
+   b. **Interim window.** Accept that phones on older apps keep device-key-only typing while the mode is `accept` (section 2), with `require` offered on evidence and the window re-raised weekly.
