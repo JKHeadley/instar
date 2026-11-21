@@ -113,6 +113,7 @@ Not required.
 
 - Before the fix (src stashed): `tests/unit/update-checker-apply.test.ts` 3 new tests fail ("expected 'npm' to be '<runtime node>'", "expected '' to be '<runtime node dir>'"); `tests/unit/AgentServer-outbound-timeout.test.ts` 1 fails ("expected 30000 to be undefined"). After: 50/50 pass across both files.
 - `tests/unit/UpdateChecker.test.ts -t "explicit version pinning"` and `tests/integration/native-update-preflight.test.ts` (real CLI + real SQLite probe) pass with the fake-npm seam moved to `npmExec`.
+- Local Verify on a88b58b5d failed one e2e test, `tests/e2e/update-native-candidate-lifecycle.test.ts` ("keeps the old install and does not request a restart"): its npm fake keyed on `args[0] === 'install' | 'rebuild'` at the exec seam, and with the runtime node's `npm-cli.js` now first in args neither branch fired. Moved to the `npmExec` seam like the other two; the file passes.
 
 ---
 

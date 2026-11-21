@@ -32,7 +32,7 @@ The "apply the update now" request also gets a 15-minute time limit of its own, 
 
 **Rollback uses the same path.** Rolling back to a previous version rebuilds the same dependency; it goes through the same runtime-Node invocation, so a rollback cannot reintroduce the mismatch.
 
-**Tests pin both shapes.** One test puts a fake "other" Node first on the search path and checks that the build is invoked with the runtime Node, its folder first on the path, and the header location set. A second checks the fallback and its log line. A third checks rollback. All three fail against the previous code.
+**Tests pin both shapes.** One test puts a fake "other" Node first on the search path and checks that the build is invoked with the runtime Node, its folder first on the path, and the header location set. A second checks the fallback and its log line. A third checks rollback. All three fail against the previous code. The three existing tests that stand in for `npm` (one unit, one integration, one end-to-end through the real server) now do so at the updater's single "run npm" step, so they no longer depend on the exact command line.
 
 ## What ships when
 
