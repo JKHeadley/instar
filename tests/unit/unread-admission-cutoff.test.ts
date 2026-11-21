@@ -22,7 +22,7 @@ const KEY = '11111111-1111-4111-8111-111111111111';
 const iso = (ms: number) => new Date(ms).toISOString();
 const msg = (id: string, ms: number): BrowsedMessage => ({ eventId: id, messageId: id, role: 'agent', text: id, at: iso(ms) } as unknown as BrowsedMessage);
 
-function setup() {
+function setup(onBrowse?: () => void) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'unread-cutoff-'));
   dirs.push(dir);
   const store = new ConversationReadMarkerStore({ stateDir: dir, flushIntervalMs: 5 });
@@ -33,7 +33,7 @@ function setup() {
     store, enabled: () => true, machineId: () => 'm1', now: () => clock,
     app: {
       getConversation: () => ({ conversationKey: KEY, tombstoned: false }) as never,
-      browseMessages: () => ({ messages: [...messages], nextBefore: null }),
+      browseMessages: () => { onBrowse?.(); return { messages: [...messages], nextBefore: null }; },
       listConversations: () => ({ conversations: [], nextCursor: null }),
       eventAt: (_k: string, id: string) => messages.find((m) => m.eventId === id)?.at ?? null,
       newestIngestSeq: () => messages.length,
@@ -68,6 +68,15 @@ describe('a phone with no read position yet, while marker catch-up is pending', 
     const next = svc.rowFields(reader as never, row())!;
     expect(next.hasUnread).toBe(true);
     expect(next.unreadCount).toBe(1);
+  });
+
+  it('a conversation the activity pre-check would skip is not read for the extra count', () => {
+    let reads = 0;
+    const { svc, reader, row, setClock } = setup(() => { reads++; });
+    setClock(10_000);
+    svc.touchBaseline(reader as never); // cutoff at 10,000; the conversation's last activity is 1,000
+    expect(svc.rowFields(reader as never, row())).toMatchObject({ hasUnread: false, unreadCount: 0 });
+    expect(reads).toBe(0); // the old code would not read it either
   });
 
   it('the cutoff is dropped when syncing delivers the phone\'s baseline from another machine', () => {

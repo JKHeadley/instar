@@ -85,7 +85,9 @@ it. No second store; every reader still goes through `getTopicHistory`.
   unread-from-here line, never a saved position: the baseline is set as before, and in a conversation
   with no marker other people's messages between the cutoff and the baseline also count as unread.
   Dropped when syncing delivers the baseline; capped at 1,000 phones (tested, checked to fail against
-  the previous version). With catch-up settled at the first attempt, behavior is unchanged.
+  the previous version). The extra count runs only where the old code's activity pre-check (against
+  the cutoff) passes, so it reads a conversation's history only where the old code would also read it
+  (tested). With catch-up settled at the first attempt, behavior is unchanged.
 - Unread: a phone's first baseline is attempted exactly once, at admission, before any wait; when in
   doubt a message counts as unread (tested with and without a scan, mutation-checked). Compared with
   the old code, the baseline may now be a little earlier (by the time the page takes to build), so a

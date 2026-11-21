@@ -225,9 +225,12 @@ export class ConversationUnreadService {
    * only up to the stored baseline (later ones are counted by the ordinary walk). null when the source
    * is not available.
    */
-  private extraUnread(reader: Reader, ref: string): { count: number; more: boolean } | null {
+  private extraUnread(reader: Reader, ref: string, lastActivity: string | null): { count: number; more: boolean } | null {
     const cut = reader.viaDevice ? this.admissionCutoff.get(reader.key) : undefined;
     if (!cut || this.store.markerFor(reader.key, ref)) return { count: 0, more: false };
+    // The old code's activity pre-check, against the cutoff: nothing newer, nothing read.
+    const act = atMsOf(lastActivity);
+    if (act === null || act < cut.atMs - PRE_FILTER_MARGIN_MS) return { count: 0, more: false };
     const baseline = this.store.baselineFor(reader.key);
     const src = this.sourceRows(ref, reader);
     if (!src) return null;
@@ -271,7 +274,7 @@ export class ConversationUnreadService {
     const ref = this.refOfRow(row);
     if (!ref || !this.mayRead(reader, ref)) return null;
     const stored = this.store.storedPosition(reader.key, ref);
-    const extra = this.extraUnread(reader, ref);
+    const extra = this.extraUnread(reader, ref, row.lastActivity);
     const withExtra = (f: UnreadFields): UnreadFields => {
       if (!extra) return { ...f, hasUnread: true, unreadCount: undefined } as UnreadFields; // unknown: in doubt, unread
       if (extra.count === 0 && !extra.more) return f;

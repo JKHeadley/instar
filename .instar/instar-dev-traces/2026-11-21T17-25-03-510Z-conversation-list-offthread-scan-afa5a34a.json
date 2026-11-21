@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T17:25:03.510Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "2d816f811473c1c77fc9d297f2eb5d7ae8978fe6a04e80573195b35cac00fe92",
+  "coveredFiles": [
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "src/core/ConversationUnreadService.ts",
+    "tests/unit/unread-admission-cutoff.test.ts",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The old activity pre-check before the extra unread count, so history is read only where the old code reads it.",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
