@@ -29,7 +29,7 @@ Revert the commit. No state change.
 
 ## Second-pass review
 
-**Reviewer:** independent Claude reviewer subagent (two rounds). Round 1 raised two blocking items: the A2A live-session typing path in `server.ts` was not cleaned, and the pending first-message record kept the raw text while the match compared the cleaned text. Both are fixed here. Round 2 verdict: concur, no blocking items.
+**Reviewer:** independent Claude reviewer subagent (two rounds). Round 1 raised two blocking items: the A2A live-session typing path in `server.ts` was not cleaned, and the queued first-message record kept the raw text while the match compared the cleaned text. Both are fixed here. Round 2 verdict: concur, no blocking items.
 
 Non-blocking notes from round 2, carried forward:
 - The provider adapters' input-injection helpers type raw text but have no live delivery caller today; routing them through `sanitizeTypedText` is a follow-up so wiring them later cannot reopen this.
