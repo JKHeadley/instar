@@ -7,11 +7,15 @@
 # scripts/lint-gitleaks-allowlist-exact.mjs refuses anything else, and the
 # Secret Scan workflow runs that check before it runs gitleaks.
 #
-# Every value below is a test fixture, a documentation placeholder, an identifier
-# gitleaks misreads as a key, or a public fingerprint already committed to this
-# repository on 2026-11-21. To add one, run
+# This file has NO free text: the checker refuses it unless it is exactly what
+# `node scripts/lint-gitleaks-allowlist-exact.mjs --canonical` prints from its
+# own values (this fixed header, a fixed title and description, [extend],
+# [allowlist], the regexes). So no comment, title, blank or stray line can hold a
+# value that nothing scans. A value with a control character other than tab,
+# newline or return cannot be listed: TOML refuses it, so the file fails closed. To add an
+# exception, run
 #   node scripts/lint-gitleaks-allowlist-exact.mjs --entry <file-holding-the-exact-value>
-# and paste the printed line into the list.
+# paste the printed line into the regexes list, then run --canonical > .gitleaks.toml.
 
 title = "instar pull-request secret scan"
 
