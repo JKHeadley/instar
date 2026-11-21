@@ -1,5 +1,5 @@
 ---
-title: "A phone's Face ID key is bound when the phone is paired, and attestation is the only full fix"
+title: "A phone's Face ID key is bound when the phone is paired, and attestation is the strongest available fix"
 slug: sec142-presence-key-confirmed
 author: Echo
 tier: 2
@@ -13,7 +13,7 @@ decision-source: "Chief of Staff, 2026-11-21 07:49Z: 'SEC-142 must be fixed befo
 security-ledger: "SEC-142 (medium)"
 approved: false
 ---
-# A phone's Face ID key is bound when the phone is paired, and attestation is the only full fix
+# A phone's Face ID key is bound when the phone is paired, and attestation is the strongest available fix
 
 ## Problem statement
 
@@ -34,18 +34,28 @@ So a server-side "confirmation" cannot tell the genuine key from the attacker's 
 
 The window is wider than one moment: it is open from pairing until the genuine app registers, and again on every further machine the phone pairs with. Binding the key at pairing closes those gaps for software that arrives after pairing, at no cost to the owner:
 
-1. **The pairing request carries the presence key.** An updated app sends its presence public key and possession proof in the redeem request. The server stores it on the pending record and sets it in the same write that activates the device (`applyConfirm` and the activation path), so there is never an active device without its key or a key without activation. The redeem answer says `presenceKey: 'bound'` so the app knows not to register separately; an older server omits it and the app registers the old way.
+1. **The pairing request carries the presence key.** An updated app sends its presence public key and a possession proof in the redeem request. The proof signs `instar-presence-enroll-v2\n<sha256 of the device public key>\n<host>\n<sha256 of the pairing code>\n<presence public key>`, so it is tied to this pairing and this device key (both known before redeem). The server refuses the field when the presence key equals the device key, and accepts it only for a request that would make an owner phone (role `owner`, not `msp` or `team`, not a computer), whatever the approval channel.
+   - The **full** presence public key is stored on the pending record and set in the same write that activates the device (`applyConfirm` and the activation path).
+   - The redeem answer says `presenceKey: 'accepted'` (stored with the pending request, not yet bound). The app learns it is bound from the pairing status once activation commits (`presenceKey: 'bound'`); only then does it skip separate registration. If activation never happens, nothing is bound. An older server omits the field and the app registers the old way.
 2. **Which approvals bind it:** `telegram-dm`, `dashboard-pin`, `owner-phone` and `owner-agent`, the approvals of a phone's own pairing request. Not `at-computer` (those phones cannot hold a presence key yet), not `local-install` (no request), not `person-phone` (linked browsers, never a presence key).
-3. **A later registration on an already-paired phone is marked as such** (`presenceRegisteredVia: 'after-pairing'`), and listed in the owner's security view; a key bound at pairing shows `'pairing'`. Replacing the key through the local override sets `'local-override'`. This is a label for the owner and for the weekly review, not a trust upgrade.
-4. **Ledger and recovery:** the ledger activation row gains the presence key hash, so boot recovery after a crash between the ledger and registry writes restores the key together with the device or neither.
+3. **Each registration is labelled for the owner:** `pairing` (bound at pairing), `after-pairing` (the old route on an already-paired phone), `local-override` (replaced through the local override), and, for keys that existed before this change, `before-tracking`. A same-key re-registration (already idempotent) keeps the existing label, so a retry never rewrites history. The label is for the owner and the weekly review, not a trust upgrade.
+4. **Ledger and recovery:** the ledger activation row carries the full presence public key (it is a public key; the ledger is signed per machine), so boot recovery after a crash between the ledger and registry writes restores the key together with the device or neither. Test: restart between the two writes, then verify a presence signature with the recovered key.
 
 What this does not do: stop harmful software that is already in the app at pairing. It puts its own key in the pairing request, the owner approves the phone they meant to pair, and the key is bound.
 
-## The full fix: platform attestation (a decision for Justin)
+## The strongest available fix: platform attestation (a decision for Justin)
 
-Only the platform can prove a key was made in the phone's hardware by the genuine app: Apple's **App Attest** (DeviceCheck) and Android's **key attestation** certificate chain. With attestation at registration, the server accepts a presence key only with proof that the genuine, unmodified app created it in the Secure Enclave or keystore with presence required. That closes the window for in-app software that is not the genuine build (a tampered or repackaged app), though not for a compromise of the genuine app's own code paths, which no key check can detect.
+Attestation can prove three different things, and the platforms differ in which they prove:
 
-Costs: a dependency on Apple's attestation service (and Google's roots), a second enrolment protocol, per-app setup, and the case of a device or OS that cannot attest. The sign-in design rejected App Attest on cost for its narrower scope; the Face ID key now backs more features (console token, approvals, typing), which may change that balance. **Recommendation:** ship the timing-gap fix now; decide attestation with Justin as its own spec, since it changes the app contract on both platforms.
+| Property | iPhone (App Attest) | Android (key attestation) |
+|---|---|---|
+| **App identity:** the request comes from the genuine, unmodified app on a real device | Yes, for the App Attest key's own assertions | Yes, the attestation record names the app's package and signing certificate |
+| **Key provenance:** this particular presence public key was produced by that genuine app | Yes, if the app signs an App Attest assertion over the presence public key's bytes at registration | Yes, the presence key itself carries an attestation certificate chain |
+| **Authentication policy:** the presence key cannot sign without Face ID or the passcode | **No.** The `.userPresence` policy on the separate presence key stays a claim by the app | Yes, when the attestation record shows the key requires user authentication and is hardware-backed |
+
+So on Android attestation can prove all three; on the iPhone it proves the genuine app made the key but not that the key demands Face ID, which remains the app's own promise. Either way it closes the window for a tampered or repackaged app, though not for a compromise of the genuine app's own code paths, which no key check can detect.
+
+Costs: a dependency on Apple's attestation service and Google's roots, a second enrolment protocol, per-app setup, and devices or OS versions that cannot attest. The sign-in design rejected App Attest on cost for its narrower scope; the Face ID key now backs more features (console token, approvals, typing), which may change that balance. **Recommendation:** ship the timing-gap fix now; decide attestation with Justin as its own spec, since it changes the app contract on both platforms.
 
 ## Consequence for the typing go-ahead (SEC-140)
 
@@ -65,9 +75,9 @@ Presence keys and their `presenceRegisteredVia` labels live on each machine's de
 
 ## Migration
 
-- Device records gain optional `presenceRegisteredVia` (absent = registered before this change, shown as "registered before tracking").
+- Device records gain optional `presenceRegisteredVia`. An existing key without one is shown as `before-tracking`; a record with no key has no label.
 - The redeem request gains optional `presenceKey`, `presenceProof`; the answer gains `presenceKey: 'bound'`.
-- The ledger activation row gains an optional presence-key hash.
+- The ledger activation row gains an optional full presence public key.
 
 ## Tests
 
