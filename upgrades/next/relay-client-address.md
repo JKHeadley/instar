@@ -6,6 +6,8 @@
 
 SEC-139. The relay derived every caller address from the first `x-forwarded-for` entry, which the caller writes, so per-address rate limits (sign-in attempts, messages, registry, A2A) could be bypassed by changing it on each request, and A2A thread scoping could be aimed at another caller's address. Now `resolveClientAddress` (`src/threadline/relay/clientAddress.ts`) is the single source for the WebSocket, registry and A2A paths: it trusts only the header named by `RELAY_CLIENT_IP_HEADER` (set to `fly-client-ip` in `fly.toml`), takes the right-most entry when that header is `x-forwarded-for`, requires a valid IP, folds IPv4-mapped IPv6, keys IPv6 callers by their /64 network for rate limits (one subscriber usually holds a whole /64) while A2A thread scope keeps the exact address, and otherwise uses the socket address. The relay's own per-address state is bounded too: `RelayRateLimiter` and the registry rate-limit maps delete idle keys (swept at most once a minute) and have hard ceilings: 100,000 keys for the rate limiter, dropping the least recently used first and never the global window, and 50,000 per registry map, dropping the entries whose window started earliest.
 
+The A2A bridge also allows one waiting message per conversation, so an agent reply can only go to the caller that asked; a second message before the reply gets error -32005.
+
 Self-hosted relays behind a proxy must set `RELAY_CLIENT_IP_HEADER` to the header their proxy sets; without it every caller shares the proxy's address.
 
 ## What to Tell Your User

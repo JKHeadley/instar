@@ -483,6 +483,16 @@ export class A2ABridge {
     // Map context ID to thread ID, scoped to this caller and this agent (SEC-134).
     const { threadId, isNew } = this.contextMapper.getOrCreateThreadId(`${callerAddress}\u0000${agentId}`, params.contextId || undefined);
 
+    // SEC-139: an agent reply resolves the waiting task of its thread, so one thread holds at most one
+    // waiting task. Otherwise a second caller in the same thread could receive the reply meant for
+    // the first.
+    for (const task of this.pendingTasks.values()) {
+      if (task.threadId === threadId && task.agentId === agentId) {
+        this.sendJsonRpcError(res, request.id, -32005, 'A message in this conversation is still waiting for its reply; try again when it has been answered', 409);
+        return;
+      }
+    }
+
     // Create task
     const taskId = `task-${crypto.randomUUID()}`;
 
@@ -557,6 +567,19 @@ export class A2ABridge {
       this.decrementConcurrent(agentId);
       this.sendJsonRpcError(res, request.id, -32003, 'Failed to deliver to agent', 502);
       return;
+    }
+
+    // SEC-139: a caller that disconnects before the reply frees its thread at once, so a retry with
+    // the same contextId is not refused until the timeout.
+    if (typeof (res as { on?: unknown }).on === 'function') {
+      res.on('close', () => {
+        const task = this.pendingTasks.get(taskId);
+        if (!task || res.writableEnded) return;
+        clearTimeout(task.timeout);
+        this.pendingTasks.delete(taskId);
+        this.decrementConcurrent(agentId);
+        task.resolve({ id: taskId, status: 'failed', error: { code: -32006, message: 'Caller disconnected' } });
+      });
     }
 
     // Wait for response (with timeout)
