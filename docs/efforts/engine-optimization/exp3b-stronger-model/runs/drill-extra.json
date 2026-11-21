@@ -1,0 +1,80 @@
+[
+  {
+    "repeat": 1,
+    "crashAt": "bash:1",
+    "crashed": true,
+    "resumeExit": 0,
+    "dupMessages": 0,
+    "dupEffects": 0,
+    "dedups": [
+      "unknown-refused"
+    ],
+    "resumeNote": [
+      {
+        "ts": "2026-11-21T05:58:23.116Z",
+        "pending": [
+          "bash"
+        ],
+        "tail": "assistant"
+      }
+    ],
+    "completedAfterResume": true,
+    "got": {
+      "files": true,
+      "manifest": "parts/a.txt 5\nparts/b.txt 4\nparts/c.txt 5",
+      "posts": 1
+    }
+  },
+  {
+    "repeat": 2,
+    "crashAt": "bash:1",
+    "crashed": true,
+    "resumeExit": 0,
+    "dupMessages": 0,
+    "dupEffects": 0,
+    "dedups": [
+      "unknown-refused"
+    ],
+    "resumeNote": [
+      {
+        "ts": "2026-11-21T05:58:55.316Z",
+        "pending": [
+          "bash"
+        ],
+        "tail": "assistant"
+      }
+    ],
+    "completedAfterResume": true,
+    "got": {
+      "files": true,
+      "manifest": "parts/a.txt 5\nparts/b.txt 4\nparts/c.txt 5",
+      "posts": 1
+    }
+  },
+  {
+    "repeat": 3,
+    "crashAt": "bash:1",
+    "crashed": true,
+    "resumeExit": 0,
+    "dupMessages": 0,
+    "dupEffects": 0,
+    "dedups": [
+      "unknown-refused"
+    ],
+    "resumeNote": [
+      {
+        "ts": "2026-11-21T05:59:49.073Z",
+        "pending": [
+          "bash"
+        ],
+        "tail": "assistant"
+      }
+    ],
+    "completedAfterResume": true,
+    "got": {
+      "files": true,
+      "manifest": "parts/a.txt 5\nparts/b.txt 4\nparts/c.txt 5",
+      "posts": 1
+    }
+  }
+]
