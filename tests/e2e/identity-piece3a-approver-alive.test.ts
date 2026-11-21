@@ -46,7 +46,10 @@ describe('approver mark lifecycle (production wiring)', () => {
     expect(routes).toContain('mountApproverGrantRoutes(router, svc);');
     expect(routes).toContain('mountApproverRecoveryRoutes(router, svc);'); // piece 3d
     expect(src).toContain('setOwnerRecordRecoveryHooks(recoveryHooksFor(mp));');
-    expect(src).toContain('options.telegram.approverResetHandler = (args) => approverResetCommand(mp, args);');
+    // throwaway-owner-chat: the reset command sits on every owner-chat surface (the adapter, or the stand-in).
+    expect(src).toContain('chat.approverResetHandler = (args) => approverResetCommand(mp, args);');
+    expect(src).toContain("standIn.onShutOff('recovery',");
+    expect(src).toContain("standIn.onShutOff('approver-claim',");
   });
 
   it('is alive: boot runs the migration, and the approver routes answer (not 404)', async () => {

@@ -3117,6 +3117,17 @@ export interface MultiMachineConfig {
       /** Default 45000. */
       silentSpanMs?: number;
     };
+    /**
+     * planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending, a
+     * holder's renewals carry a bounded window as their expiry and are persisted, so the lead
+     * survives its own boot; at boot a window lease is held only after a peer confirms. Rides the
+     * development-agent gate; `takeoverReadyPool.enabled: false` is the rollback.
+     */
+    plannedRestartLeaseContinuity?: {
+      enabled?: boolean;
+      /** Replaces the measured base of the window (still under the peer-enforced caps). */
+      windowMs?: number;
+    };
   };
   /**
    * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
@@ -5086,6 +5097,12 @@ export interface InstarConfig {
   users: UserProfile[];
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
+  /**
+   * Test-only fixtures (docs/specs/throwaway-owner-chat.md). `throwawayOwnerChat.enabled` asks for the
+   * stand-in owner chat; it is honoured only on a throwaway agent in a temporary folder with no owner,
+   * no messaging adapter and no other machine. Absent everywhere by default.
+   */
+  liveTest?: { throwawayOwnerChat?: { enabled?: boolean } };
   /**
    * Operator config for the outbound Messaging Tone Gate, read LIVE via the
    * gate's config getter (no restart needed). TOP-LEVEL by necessity:

@@ -76,6 +76,8 @@ export interface MachineRouteContext {
   /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
   /** A joiner on this version would not understand the team here. */
   teamJoinBlocked?: (enforcement: number) => boolean;
+  /** A reason this agent home may never be paired with another machine (a throwaway that ran the stand-in owner chat), or null. */
+  pairBlocked?: () => string | null;
   /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
   teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number> };
   /**
@@ -645,6 +647,11 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl, endpoints } = req.body ?? {};
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const joining = (req.body as { teamEnforcement?: unknown } | undefined)?.teamEnforcement;
+    const blocked = ctx.pairBlocked?.() ?? null;
+    if (blocked) {
+      res.status(409).json({ error: blocked, detail: 'This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.' });
+      return;
+    }
     if (ctx.teamJoinBlocked?.(typeof joining === 'number' ? joining : 0)) {
       res.status(409).json({ error: 'team-needs-newer-build', detail: 'This agent has team members, and this machine is on a build that does not understand them. Update it, then join again.' });
       return;

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3d-approver-recovery",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T21:29:22.857Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3d-approver-recovery.md",
+  "artifactSha256": "478841b4959b396c21b6e4a7bff6c0a0fb23e21813d4c6bdb0fb369129c1f972",
+  "specPath": "docs/specs/identity-security-piece3d-approver-recovery.md",
+  "coveredFiles": [
+    "src/commands/machine.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/ownerChatTap.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/identity-piece3a-approver-alive.test.ts",
+    "tests/integration/throwaway-owner-chat-approver.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "merge of the approved stand-in owner chat into the approved piece 3d, wiring 3a/3d into its seam exactly as both specs list; live-run branch",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

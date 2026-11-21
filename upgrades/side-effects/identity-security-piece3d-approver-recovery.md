@@ -171,3 +171,37 @@ From the Apple session's comparison of the app with the server contract:
 
 Tests: three new cases in `tests/unit/identity-piece3d-recovery-flow.test.ts`; every 3a/3d unit test and 29
 approver, pairing and team integration and e2e files pass.
+
+## Addendum: wired into the stand-in owner chat (2026-11-21)
+
+Branch `echo/identity-piece3d-standin` merges the stand-in owner chat for throwaway agents
+(`docs/specs/throwaway-owner-chat.md`, PR 3626) into piece 3d, for the live run of the approver screens in the
+iPhone simulator. It is a live-run branch, not a PR. What 3d now wires into the stand-in, as that spec lists:
+
+- `approverResetHandler` is set on every owner-chat surface present (the Telegram adapter, or the stand-in, live
+  or shut off), the same way as the Approve and Decline handlers. `OwnerChatSurface` gains it as an optional slot.
+  `mobileInboundScan` and `onHubPost` stay on Telegram only.
+- `setRecoveryChat` now sends through the owner chat read at each send: Telegram when configured, otherwise the
+  stand-in while it is live. When neither exists the send answers "not delivered" (null), where before the
+  recovery fell back to `ownerDM`, which itself went to the same owner chat or nowhere. No change on a Telegram agent.
+- 3a's and 3d's Approve and Decline branches (first-approver claim Decline, approver removal, recovery Start,
+  Never mind and Stop it) sit inside the handler loop that now serves both surfaces. 3a's own Decline words reach
+  the owner through the shared `declineTapResult` (same words as before; the adapter's inline copy was replaced
+  by the shared module in the merge).
+- Two shut-off hooks are registered on the stand-in: `approver-claim` drops a live first-approver claim, and
+  `recovery` records a stop (`by: 'stand-in-off'`, no lock) on a waiting or ready recovery of this home. On a
+  throwaway the stand-in is the only owner chat, so any such recovery was started through it. Both are
+  synchronous and idempotent. Neither runs on a real agent, which never builds the stand-in.
+
+Merge conflicts resolved: `src/commands/machine.ts` (both imports kept), `src/core/LeaseCoordinator.ts` (main's
+boot-reclaim rule 1b blocks kept, with 3d's below-fence argument on `canAcquire`), `src/messaging/TelegramAdapter.ts`
+(the shared `declineTapResult`, which carries the handler-supplied text 3a needs), `src/server/AgentServer.ts`
+(the handler loop above).
+
+Safety conditions of the stand-in are untouched: the four switch-on conditions, the loopback + master-bearer route
+gate, the shut-off sweep and the machine-pairing refusal are as merged from 3626.
+
+Tests: new `tests/integration/throwaway-owner-chat-approver.test.ts` drives, through the stand-in routes only, a
+phone paired by the stand-in's Approve tap, the 3a first-approver claim (code read from GET, typed through the phone
+route), a 3d recovery started by the stand-in `/approver_reset` command and Start tap, and the shut-off hooks
+(recovery stopped, claim dropped). The 3a e2e wiring pin now names the loop assignment and the two hooks.
