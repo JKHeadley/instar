@@ -7,8 +7,8 @@
  *   1. the real lifeline's forward carries the secret and arms the server;
  *   2. a session-shaped request (Bearer only) is refused with the typed 401;
  *   3. a lifeline running OLD code (no header) is refused, keeps the message
- *      in its durable on-disk queue, the server's restart signal makes it
- *      restart, and the restarted lifeline replays the message — delivered
+ *      in its durable on-disk queue, a restart signal (written only while
+ *      unarmed) makes it restart, and the restarted lifeline replays the message — delivered
  *      exactly once, nothing lost;
  *   4. the same button tap delivered twice by the real lifeline has one effect;
  *   5. the authed /health carries the persisted counters; the unauthenticated
@@ -218,7 +218,7 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
     expect(((await res.json()) as { error?: string }).error).not.toBe('lifeline-secret-required');
   });
 
-  it('an OLD lifeline is refused, keeps the message on disk, is told to restart, and the restarted lifeline replays it once', async () => {
+  it('an OLD lifeline is refused after arming without a restart signal, keeps the message on disk, and the restarted lifeline replays it once', async () => {
     const before = routed.length;
     restarts.length = 0;
 
@@ -243,11 +243,15 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
     expect(queued[0].replayFailures ?? 0).toBe(0);
     expect(queued[0].transientReplayFailures ?? 0).toBe(0);
 
-    // The server wrote the coordinated-restart signal (the 426 pattern)…
-    expect(readLifelineRestartSignal(stateDir)).toMatchObject({
-      requestedBy: 'server-lifeline-secret', targetVersion: serverVersion,
+    // The guard is armed, so this unverified request wrote NO restart signal:
+    // it is indistinguishable from a session using the ordinary token.
+    expect(readLifelineRestartSignal(stateDir)).toBeNull();
+    // An old lifeline still acts on a signal when one exists (written while
+    // unarmed by the boot nudge or the first unverified request).
+    writeLifelineRestartSignal({
+      stateDir, requestedBy: 'server-lifeline-secret', reason: 'lifeline-secret-required',
+      previousVersion: old.lifelineVersion, targetVersion: serverVersion,
     });
-    // …and the old lifeline's own tick acts on it.
     old.checkLifelineRestartSignal();
     expect(restarts).toEqual([{ bucket: 'plannedUpgrade', reason: 'lifeline-secret-required' }]);
 
@@ -263,8 +267,8 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
     expect(routed.length).toBe(before + 1);
   }, 40000);
 
-  it('a session cannot drive lifeline restarts: after arming the signal budget is one write a day', async () => {
-    // The refusals above already spent today's write, and the old lifeline consumed that signal.
+  it('a session cannot drive lifeline restarts: after arming an unverified request writes no signal', async () => {
+    // The old lifeline consumed the signal above; no refusal since arming has written one.
     expect(readLifelineRestartSignal(stateDir)).toBeNull();
     for (let i = 0; i < 5; i++) {
       await fetch(`${base}/internal/telegram-forward`, {
