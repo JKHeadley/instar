@@ -7,6 +7,7 @@
 import http from 'node:http';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { bootReadiness, BOOT_STATE_HEADER } from './BootReadiness.js';
+import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
 
 /**
  * BootHealthBeacon — a minimal HTTP listener that answers *during* the server's
@@ -48,6 +49,8 @@ export class BootHealthBeacon {
   constructor(
     private readonly port: number,
     private readonly host: string = '127.0.0.1',
+    /** takeover-ready-pool R1 — Instar's response marker for this machine (absent without an identity). */
+    private readonly machineMarker?: string,
   ) {}
 
   /** Bind the beacon. Resolves once it is listening. Idempotent. */
@@ -63,7 +66,7 @@ export class BootHealthBeacon {
       if (req.method === 'GET' && (url === '/health' || url === '/health/')) this.healthAnswers += 1;
       else this.notReadyAnswers += 1;
       const retryAfter = snap.retryAfterSeconds ?? 5;
-      res.writeHead(503, { 'content-type': 'application/json', 'retry-after': String(retryAfter), 'cache-control': 'no-store', [BOOT_STATE_HEADER]: 'starting' });
+      res.writeHead(503, { 'content-type': 'application/json', 'retry-after': String(retryAfter), 'cache-control': 'no-store', [BOOT_STATE_HEADER]: 'starting', ...(this.machineMarker ? { [INSTAR_MACHINE_HEADER]: this.machineMarker } : {}) });
       res.end(JSON.stringify({
         error: 'starting',
         status: 'starting',
