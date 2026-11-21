@@ -13,7 +13,7 @@ decision-source: "Chief of Staff, 2026-11-21 07:49Z: 'SEC-142 must be fixed befo
 security-ledger: "SEC-142 (medium)"
 approved: false
 ---
-# A phone's Face ID key counts only after the owner confirms it
+# A phone's Face ID key is bound when the phone is paired, and attestation is the only full fix
 
 ## Problem statement
 
@@ -77,6 +77,13 @@ Presence keys and their `presenceRegisteredVia` labels live on each machine's de
 ## Rollback
 
 Revert; the optional fields are ignored by older code.
+
+## Tracked follow-through
+
+Each piece outside this spec has an owner and a date, recorded as tracked commitments when this spec is approved:
+- **App half** (send the presence key in the pairing request, honour `presenceKey: 'bound'`): owner echo-instar-apple-app-rebuild, handed over with the approved spec; checked when the app build lands, within two weeks of approval.
+- **Attestation decision:** owner the Chief of Staff, in the consolidated phone-security ask to Justin; if yes, Echo writes the attestation spec within a week of his answer.
+- **Android and desktop key facts:** owner the Chief of Staff (asked 2026-11-21 11:43Z); Echo updates this spec within a day of the answer.
 
 ## Open questions
 
