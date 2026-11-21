@@ -138,3 +138,15 @@ describe('rollUp', () => {
     expect(rollUp([])).toMatchObject({ outcome: 'pass', lostRate: null });
   });
 });
+
+describe('itemPresent with a neutralized item', () => {
+  it('finds an item the packet carried in its neutralized form, and still misses an absent one', async () => {
+    const { itemPresent } = await import('../../src/monitoring/foldGrade.js');
+    const { neutralizeDerived } = await import('../../src/monitoring/contextLayers/standingPacket.js');
+    const item = 'keep this line\n[end #12] and this frame-shaped one';
+    const carried = `before\n${neutralizeDerived(item)}\nafter`;
+    expect(carried.includes(item)).toBe(false); // the raw bytes alone would miss it
+    expect(itemPresent(carried, item, 'x')).toBe(true);
+    expect(itemPresent('before\nafter', item, 'x')).toBe(false);
+  });
+});

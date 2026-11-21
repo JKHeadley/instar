@@ -281,6 +281,8 @@ export async function runShadowFoldOnStop(d: ShadowRunnerDeps, s: LiveTopicSessi
     calls.FoldProbe += gen.calls > 1 ? gen.calls - 1 : 0;
     if (gen.status === 'no-judge') return end('aborted', 'no-judge', { packet: packetRow, handoff: handoffRow });
     if (gen.status === 'error' || gen.status === 'unparseable') return end('aborted', `probe-${gen.status}`, { packet: packetRow, handoff: handoffRow });
+    // A quiz that could not cover every required item must not count as a graded fold toward the exit.
+    if (gen.status === 'floor-unmet') return end('aborted', 'probe-floor-unmet', { packet: packetRow, handoff: handoffRow });
     const qs: ProbeQuestion[] = gen.questions;
     const byType: Record<string, number> = {};
     for (const q of qs) byType[q.type] = (byType[q.type] ?? 0) + 1;

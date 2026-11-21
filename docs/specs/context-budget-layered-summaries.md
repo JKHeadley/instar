@@ -749,10 +749,12 @@ defined in section 10, to write one structured handoff from its full context:
   bounds (the server resolves transcript entry ranges; the model never sees
   entry ids), outcome and artifacts;
 - **still needed verbatim**: anything from those stretches to keep word for word,
-  each item with its **origin** (`user | agent | tool:<entryId>`); the verifier
+  each item with its **origin** (`user | agent | tool | tool:<entryId>`); the verifier
   accepts `user` only when the bytes match a whole operator row (6.2 binding),
   otherwise relabels `agent` and records the relabel, and `tool:<entryId>` must
-  resolve to an entry in the archived snapshot;
+  resolve to an entry in the archived snapshot. Bare `tool` is tool output with
+  no pointer, because the session never sees entry ids: it is marked as data,
+  has no lookup, and sits outside the probe's entry floor;
 - **open threads** and the next step; background work paused or still live;
 - **decisions or evolutions** it believes settled in the span, quoted.
 
@@ -1838,7 +1840,7 @@ are the rungs (13.17).
    against the harness-adapter contract (9.6): the `trackContextUsage` caller,
    the transcript-channel post-compaction producer, `UserPromptSubmit` seed
    delivery, and its verification suite run and recorded. Ends when the Codex
-   suite has a recorded result and the card has shown a week
+   suite has a recorded result and the card has shown three days
    of layer freshness within target on the dev agent and the delta comparison
    shows no rework rise.
 3. **Phase 2 — shadow folding (dev-agent-live).** The dev agent runs the live
@@ -1871,7 +1873,7 @@ revert reinstalls the previous hooks.
   sends on Slack, app and single-machine topics, the boot sweep resolving a
   restart at every fold step.
 - **dev-agent-live:** Phases 1 to 3 on Echo: layers on with freshness within
-  target for a week; ≥ 40 shadow folds with the would-be `lost` rate and cost
+  target for three days (shortened from a week by the operator, 2026-11-20, topic 141133: "Instead of a week, let's plan for a few days"); ≥ 40 shadow folds with the would-be `lost` rate and cost
   term recorded; then the build-desk pilot meeting the section 11 bar across
   ≥ 40 real folds with no unrecovered rollback and zero user-content folds.
 - **fleet:** Phase 4: default on for topic sessions on every engine whose

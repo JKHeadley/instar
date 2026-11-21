@@ -222,6 +222,19 @@ describe('runShadowFoldOnStop', () => {
     expect(states).toEqual(expect.arrayContaining([[true, 'aborted', 'reconciled-stale:prepared'], [false, 'aborted', 'shadow-graded']]));
   });
 
+  it('a quiz that cannot cover every required item is not counted as graded, and no answerer runs', async () => {
+    const h = harness();
+    const real = h.d.intelligence!;
+    const intelligence: IntelligenceProvider = { evaluate: async (prompt, opts) => {
+      if (!prompt.includes('You write held-out probe questions')) return real.evaluate(prompt, opts);
+      return JSON.stringify({ questions: [{ type: 'constraint', source: 'span', sourceRef: null, spanIndex: 0, sample: 'named', question: 'What must never be cut?', expected: 'An operator quote must never be cut.', referenceEntryIds: ['e1'] }] });
+    } };
+    const row = await runSampled({ ...h.d, intelligence });
+    expect(row).toMatchObject({ outcome: 'aborted', reason: 'probe-floor-unmet' });
+    expect(h.events.some((e) => e.startsWith('answerer-spawn'))).toBe(false);
+    expect(listStagedFoldPackets(h.stateDir)).toEqual([]);
+  });
+
   it('no model on this machine ⇒ aborted no-judge, the live session released', async () => {
     const h = harness({ noJudge: true });
     const row = await runSampled(h.d);

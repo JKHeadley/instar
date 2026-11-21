@@ -168,7 +168,7 @@ describe('buildHandoffRequest', () => {
     expect(p).toContain(`#${HANDOFF_INDEX_MAX + 5} `);
     expect(p).toContain('- Is PR #3043 merged?');
     // The schema line it asks for parses as a handoff once filled in.
-    const example = p.split('\n').pop()!.replace(/"background":"none\|paused\|live"/, '"background":"none"').replace(/"origin":"user\|agent\|tool:<entry>"/, '"origin":"agent"').replace(/"kind":"decision\|evolution"/, '"kind":"decision"');
+    const example = p.split('\n').pop()!.replace(/"background":"none\|paused\|live"/, '"background":"none"').replace(/"origin":"user\|agent\|tool"/, '"origin":"agent"').replace(/"kind":"decision\|evolution"/, '"kind":"decision"');
     expect(parseHandoff(example).ok).toBe(true);
   });
 });

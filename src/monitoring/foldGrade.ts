@@ -28,6 +28,7 @@
  * would-be outcome is recorded for the Phase 2 exit (40 shadow folds, the
  * would-be `lost` rate). The live step runner is a later phase's consumer.
  */
+import { neutralizeDerived } from './contextLayers/standingPacket.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import { boundedEnds } from '../core/boundedInput.js';
 import { fenceData, type ProbeQuestion } from './foldProbe.js';
@@ -80,7 +81,8 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
 /** Deterministic presence: the item's exact bytes, else its expected answer normalized, appear in the packet. */
 export function itemPresent(packetText: string, itemBytes: string | null | undefined, expected: string): boolean {
-  if (itemBytes && itemBytes.length > 0) return packetText.includes(itemBytes);
+  // The packet neutralizes derived text (foldPacket), so a carried item may appear in that form.
+  if (itemBytes && itemBytes.length > 0) return packetText.includes(itemBytes) || packetText.includes(neutralizeDerived(itemBytes));
   const e = norm(expected);
   return e.length >= 12 && norm(packetText).includes(e);
 }

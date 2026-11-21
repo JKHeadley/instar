@@ -4,7 +4,7 @@
  * both sides of every boundary.
  */
 import { describe, it, expect } from 'vitest';
-import { parseHandoff, verifyHandoff, HANDOFF_SCHEMA, HANDOFF_LIMITS, type Handoff, type HandoffContext } from '../../src/monitoring/foldHandoff.js';
+import { parseHandoff, verifyHandoff, buildHandoffRequest, HANDOFF_SCHEMA, HANDOFF_LIMITS, type Handoff, type HandoffContext } from '../../src/monitoring/foldHandoff.js';
 
 const OP_TEXT = 'Keep the operator words verbatim across every fold.';
 
@@ -129,5 +129,22 @@ describe('verifyHandoff', () => {
   it('a decision binds to an operator row only on an exact whole-row match', () => {
     const v = verifyHandoff(handoff({ decisions: [{ kind: 'decision', quote: 'Use the sampler.' }, { kind: 'evolution', quote: 'Use the sampler' }] }), ctx());
     expect(v.decisions.map((d) => d.boundMessageId)).toEqual([3, null]);
+  });
+});
+
+describe('buildHandoffRequest and tool provenance', () => {
+  it('never asks a session for a transcript entry id it was not given', () => {
+    const r = buildHandoffRequest({ foldId: 'f', messages: [{ messageId: 1, at: null, fromUser: true, text: 'hi' }] });
+    expect(r).toContain('"origin":"user|agent|tool"');
+    expect(r).not.toContain('tool:<entry>');
+  });
+
+  it('a bare tool origin is accepted, stays tool-origin, and needs no entry id', () => {
+    const h = handoff({ stillNeeded: [{ text: 'exit 0', origin: 'tool' }] });
+    expect(parseHandoff(JSON.stringify(h)).ok).toBe(true);
+    const v = verifyHandoff(h, ctx());
+    expect(v.ok).toBe(true);
+    expect(v.items[0]).toMatchObject({ origin: 'tool', relabelled: false });
+    expect(v.items[0].entryId).toBeUndefined();
   });
 });
