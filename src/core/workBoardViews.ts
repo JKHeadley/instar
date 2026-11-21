@@ -17,7 +17,7 @@ export interface BehindInfo { machineId: string; since: string }
 /** A stopped project app's serve card: turning the app back on comes with stage 2 (CMT-1882). */
 export const APP_STOPPED_LINE = 'Stopped by you. Turning it back on comes in a later update.';
 
-export function needLine(v: CardView, opts: { phoneOnly?: boolean; appStopped?: boolean } = {}): string {
+export function needLine(v: CardView, opts: { phoneOnly?: boolean; appStopped?: boolean; /** §9: the blocker words for THIS viewer ("Blocked by: …" or "Blocked by a card you cannot see"). */ blockedWords?: string; /** §8: the carrier's name and whether the viewer is that carrier. */ carrierName?: string; viewerIsCarrier?: boolean } = {}): string {
   const c = v.card;
   // A stopped app's serve card: no tap on it runs the app again in this build, so it says only that.
   if (opts.phoneOnly && opts.appStopped && v.status !== 'removed' && v.status !== 'archived') return APP_STOPPED_LINE;
@@ -49,7 +49,10 @@ export function needLine(v: CardView, opts: { phoneOnly?: boolean; appStopped?: 
       return `This could not be handed to the agent: ${plainParkReason(p?.closedReason ?? '')}`;
     }
     case 'waiting-on-person': return c.openQuestion?.text ?? 'The agent has a question';
-    case 'with-person': return 'Yours to do';
+    case 'with-person': return opts.viewerIsCarrier === false && opts.carrierName ? `${opts.carrierName}'s to do` : 'Yours to do';
+    // agent-work-cards-default §8/§9: the words are resolved per viewer by the caller; these are the floors.
+    case 'carrier-departed': return `${opts.carrierName ?? 'The carrier'} is no longer on the team; this card needs a new owner`;
+    case 'blocked': return opts.blockedWords ?? 'Blocked by another card';
     case 'quiet': return 'The agent has gone quiet on this';
     case 'with-agent': {
       if (c.pickupHeld) return 'The agent is working on this in the conversation that asked for it';
@@ -113,18 +116,58 @@ export function conversationRef(conversationKey: string): Record<string, string>
   return { kind: 'app', key: conversationKey, ref: `app:${conversationKey}`, messagesPath: `/mobile/chat/app/${k}/messages`, sendPath: `/mobile/chat/app/${k}` };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number }): Record<string, unknown> {
+/**
+ * Does this viewer see this card (agent-work-cards-default §8 "Who sees a card")? The owner and the agent see every card;
+ * a person sees a card when they may read its conversation under the owner's grant (`mayRead`), or they are its current
+ * carrier or its row-named requester while they stand on the team (the service's rule). The one function every surface
+ * uses, so blocker words and `refs` are resolved under the SAME access as the card itself.
+ */
+export function cardVisible(svc: WorkBoardService, v: CardView, viewer: Viewer, mayRead: ((conversationKey: string) => boolean) | null): boolean {
+  if (viewer.isAgent || viewer.isOwner) return true;
+  if (!v.card.created) return false;
+  if (mayRead?.(v.card.conversationKey)) return true;
+  return svc.roleVisible(viewer.personKey, v.card);
+}
+
+/** The words a viewer gets for one other card they may or may not read (§9): its title, or that there is a card they cannot see. */
+function otherCardFor(svc: WorkBoardService, viewer: Viewer, mayRead: ((conversationKey: string) => boolean) | null, cardId: string): { cardId: string | null; title: string | null; visible: boolean } {
+  const o = svc.view(cardId);
+  if (!o || !o.card.created || o.card.redacted || !cardVisible(svc, o, viewer, mayRead)) return { cardId: null, title: null, visible: false };
+  return { cardId, title: o.card.title, visible: true };
+}
+
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number; /** §8/§9: the viewer's conversation grant (a device), so the words of OTHER cards resolve under the viewer's own access. Absent ⇒ no grant. */ mayRead?: ((conversationKey: string) => boolean) | null }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
   const phoneOnly = extra?.phoneOnly === true;
   const appStopped = phoneOnly && svc.isStoppedAppCard(c.cardId);
   const startedAt = svc.startedAt(c.cardId);
-  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
+  const mayRead = extra?.mayRead ?? null;
+  // §9: blocker words under the viewer's own access, never the other card's title or existence when they may not read it.
+  const openLinks = c.blockedBy.filter((b) => !b.unblocked);
+  const blockedBy = openLinks.map((b) => { const o = otherCardFor(svc, viewer, mayRead, b.blockerCardId); return { linkId: b.id, cardId: o.cardId, title: o.title, at: b.at, ...(o.visible && b.note ? { note: b.note } : {}) }; });
+  const blockedTitles = blockedBy.filter((b) => b.title !== null).map((b) => b.title as string);
+  const hiddenBlockers = blockedBy.length - blockedTitles.length;
+  const blockedWords = !openLinks.length ? null : blockedTitles.length ? `Blocked by: ${blockedTitles.join('; ')}${hiddenBlockers ? ` and ${hiddenBlockers === 1 ? 'a card' : `${hiddenBlockers} cards`} you cannot see` : ''}` : hiddenBlockers === 1 ? 'Blocked by a card you cannot see' : `Blocked by ${hiddenBlockers} cards you cannot see`;
+  const carrierName = c.carrier === 'agent' ? 'the agent' : name(c.carrier.personKey);
+  const viewerIsCarrier = typeof c.carrier === 'object' && (viewer.isOwner ? c.carrier.personKey === viewer.personKey : viewer.personKey === c.carrier.personKey);
+  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped, ...(blockedWords ? { blockedWords } : {}), carrierName, viewerIsCarrier }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
   if (c.redacted) {
     return { ...base, title: `Removed by ${byName(c.redacted.by, name)}`, removed: { by: byJson(c.redacted.by, name), at: c.redacted.at, note: 'The text is hidden from every read. Its bytes stay in the journal until compaction, and a backup taken earlier still holds it.' } };
   }
   const ownerish = viewer.isOwner || viewer.isAgent;
   const pending = v.pickups.filter((p) => p.status === 'pending' || p.status === 'parked');
+  // §9 "The blocker shows what it blocks": the open dependents, each under the viewer's access.
+  const blocks = svc.blocks(c.cardId).map((id) => otherCardFor(svc, viewer, mayRead, id));
+  const blocksTitles = blocks.filter((b) => b.visible).map((b) => b.title as string);
+  const hiddenBlocks = blocks.length - blocksTitles.length;
+  const blocksLine = !blocks.length ? null : blocksTitles.length ? `Blocks: ${blocksTitles.join('; ')}${hiddenBlocks ? ` and ${hiddenBlocks === 1 ? 'a card' : `${hiddenBlocks} cards`} you cannot see` : ''}` : `Blocks ${hiddenBlocks === 1 ? 'a card' : `${hiddenBlocks} cards`} you cannot see`;
+  // Ended links, with the blocker's close-out resolved at read (the agent gets a member's done note or the owner's "Not important" verbatim).
+  const blockerHistory = c.blockedBy.filter((b) => b.unblocked).map((b) => {
+    const o = otherCardFor(svc, viewer, mayRead, b.blockerCardId);
+    const bc = o.visible ? svc.view(b.blockerCardId)?.card ?? null : null;
+    return { linkId: b.id, cardId: o.cardId, title: o.title, at: b.at, endedAt: b.unblocked!.at, reason: b.unblocked!.reason, closeAs: bc?.closeout?.as ?? (bc?.done ? 'done' : null), closeNote: bc?.closeout?.note ?? null };
+  });
   const out: Record<string, unknown> = {
     ...base,
     title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, whyYou: c.whyYou, doneWhen: c.doneWhen,
@@ -171,10 +214,17 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     lastEvidenceAt: c.evidence.length ? c.evidence[c.evidence.length - 1].at : null,
     closeoutLabel: closeoutLabel(c),
     possibleDuplicateOf: svc.possibleDuplicateOf(c.cardId),
+    // ── §8 owners, §9 blockers ──
+    carrierName,
+    blocked: c.blocked,
+    blockedBy, blockedWords, blocks: blocks.map((b) => ({ cardId: b.cardId, title: b.title })), blocksLine, blockerHistory,
+    blockerReopened: c.blockerReopened.map((r) => { const o = otherCardFor(svc, viewer, mayRead, r.blockerCardId); return { id: r.id, cardId: o.cardId, title: o.title, at: r.at, words: o.visible ? `"${o.title}", a card this one was blocked by, was reopened; nothing is blocked again` : 'a card this one was blocked by was reopened; nothing is blocked again' }; }),
+    carrierDeparted: c.carrierDeparted ? { at: c.carrierDeparted.at, words: `${carrierName} is no longer on the team; this card needs a new owner`, control: 'pass' } : null,
+    memberPassed: c.memberPassed,
   };
   // Internal references (§3): the agent and the owner read them; a member's view omits ids of cards they cannot read.
   if (ownerish) { out.source = c.source; out.projectKey = c.projectKey; out.refs = c.refs; }
-  else out.refs = c.refs.filter((r) => r.kind !== 'parent-card');
+  else out.refs = c.refs.filter((r) => r.kind !== 'parent-card' || otherCardFor(svc, viewer, mayRead, r.id).visible);
   return out;
 }
 
@@ -204,8 +254,9 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
   const lanes: Record<Lane, Array<{ v: CardView; json: Record<string, unknown> }>> = { 'waiting-on-you': [], 'with-agent': [], 'waiting-on-others': [], done: [], archived: [] };
   for (const id of svc.cardIds()) {
     const v = svc.view(id); if (!v || !v.card.created) continue;
-    if (!viewer.isAgent && !viewer.isOwner && !mayRead(v.card.conversationKey)) continue; // not visible: the card does not exist for them
-    const json = cardJson(svc, v, viewer, name, opts.extraFor?.(v));
+    // Not visible (§8 "Who sees a card"): the card does not exist for them.
+    if (!cardVisible(svc, v, viewer, mayRead)) continue;
+    const json = cardJson(svc, v, viewer, name, { mayRead, ...(opts.extraFor?.(v) ?? {}) });
     lanes[json.lane as Lane].push({ v, json });
   }
   // The lanes keep their own order; within what is shown, untouched cards come first (Luna's board, a display

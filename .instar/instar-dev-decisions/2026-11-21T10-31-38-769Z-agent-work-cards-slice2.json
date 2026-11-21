@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-21T10:31:38.769Z",
+  "slug": "agent-work-cards-slice2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 965,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WorkBoardPickupController.ts",
+      "src/core/WorkBoardRuntime.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/WorkCardStore.ts",
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/agent-work-cards-owners-blockers.md",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/memorySessionGuard.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts",
+      "src/server/workBoardTeamSeams.ts"
+    ],
+    "addedLines": 889,
+    "deletedLines": 76
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

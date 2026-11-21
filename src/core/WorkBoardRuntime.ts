@@ -11,8 +11,16 @@
 
 import {
   WorkBoardService, resolveWorkBoardSettings, lineIdFor, transcriptLineFor, noteRefusalFor, JOURNAL_BUCKET_CAPACITY,
-  type WorkBoardSettings, type CardView, type WorkPrincipal, type Refusal,
+  type WorkBoardSettings, type CardView, type WorkPrincipal, type Refusal, type TeamMembership,
 } from './WorkBoardService.js';
+
+/** agent-work-cards-default §8: the team record as the board reads it (the service's `teamMember` and the pass floor's `personMayRead`). */
+export interface WorkBoardTeamSeams {
+  /** Standing of a NON-owner key in the replicated team record (the owner's key is answered by the runtime itself). */
+  teamMember: (personKey: string) => TeamMembership;
+  /** May this person read this conversation under the owner's grant? `null` = cannot tell here. */
+  personMayRead: (personKey: string, conversationKey: string) => boolean | null;
+}
 import { WorkBoardPickupController, type DeliverOutcome } from './WorkBoardPickupController.js';
 import { WorkBoardRequestGate, type RequestGateDeps } from './WorkBoardRequestGate.js';
 import { WORK_CARD_RECORD_KIND, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
@@ -72,6 +80,8 @@ export interface WorkBoardRuntimeSeams {
   leaseHolder: () => string | null;
   now?: () => number;
   log?: (event: string, detail: Record<string, unknown>) => void;
+  /** §8: the team record (or attached later with `attachTeam`). Absent ⇒ a team of one: the owner is the only person. */
+  team?: WorkBoardTeamSeams;
 }
 
 interface Exchange { at: number; advertSeq: number | null; advertIncarnation: string | null; heldSeq: number | null; heldIncarnation: string | null }
@@ -94,11 +104,13 @@ export class WorkBoardRuntime {
   private readonly pendingNotes = new Map<string, Map<string, string>>();
   private notesSeeded = false;
   private readonly bootMs: number;
-  readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
+  readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, unblocked: 0, blockerReopened: 0, carriersDeparted: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
+  private team: WorkBoardTeamSeams | null;
 
   constructor(private readonly seams: WorkBoardRuntimeSeams) {
     this.now = seams.now ?? Date.now;
     this.bootMs = this.now();
+    this.team = seams.team ?? null;
     const settings = (): WorkBoardSettings => resolveWorkBoardSettings(seams.rawSettings());
     this.svc = new WorkBoardService({
       machineId: seams.machineId,
@@ -112,6 +124,9 @@ export class WorkBoardRuntime {
       displayName: seams.displayName,
       onLocalWrite: (cardId, type, data) => this.afterWrite(cardId, type, data, true),
       log: seams.log,
+      // §8: the owner's key is always `owner`; every other key is the team record's answer, or `not-a-member` with no record (a team of one).
+      teamMember: (k) => (k === seams.ownerPersonKey() ? 'owner' : this.team ? this.team.teamMember(k) : 'not-a-member'),
+      personMayRead: (k, ck) => this.team?.personMayRead(k, ck) ?? null,
     });
     this.svc.attachmentResolver = (conversationKey, attachmentId) => {
       const a = seams.conversation.attachment(attachmentId);
@@ -147,6 +162,53 @@ export class WorkBoardRuntime {
   }
 
   // ── agent-work-cards-default: the gate, notes and the holder's pass ────────
+
+  /** §8: the server attaches the team record once the pairing service exists (the runtime is built before it). */
+  attachTeam(team: WorkBoardTeamSeams): void { this.team = team; }
+  /** True once team seams are attached (a test rig's, or the server's); the server never overwrites attached seams. */
+  teamAttached(): boolean { return this.team !== null; }
+
+  /**
+   * §9: reconcile blocker links now (a link or a finish just landed), on the holder only, paced to the journal bucket.
+   * The route calls it after a local write; `afterWrite` calls it for a peer's record; the holder's pass runs it every tick.
+   */
+  reconcileBlockersNow(): void {
+    if (!this.started || !this.seams.enabled() || !this.holdsLease()) return;
+    if (this.reconcileBlockers(JOURNAL_BUCKET_CAPACITY) > 0) this.controller.poke();
+  }
+
+  /** §8: the team record changed on any machine (`afterTeamRows`); the holder writes `carrier-departed` for carriers no longer on it. */
+  onTeamRecordChanged(): void {
+    if (!this.started || !this.seams.enabled() || !this.holdsLease()) return;
+    if (this.reconcileDeparted(JOURNAL_BUCKET_CAPACITY) > 0) this.controller.poke();
+  }
+
+  private reconcileBlockers(max: number): number {
+    if (max <= 0) return 0;
+    let r: ReturnType<WorkBoardService['reconcileBlockers']>;
+    try { r = this.svc.reconcileBlockers(max); }
+    catch (err) { /* @silent-fallback-ok: logged; the next tick reconciles again and the cards stay as their records say */ this.seams.log?.('work-board-blocker-reconcile-failed', { error: (err as Error)?.message }); return 0; }
+    this.holderStats.unblocked += r.unblocked.length; this.holderStats.blockerReopened += r.reopened.length;
+    for (const u of r.unblocked) this.seams.log?.('work-board-unblocked', { cardId: u.cardId, blockerCardId: u.blockerCardId, reason: u.reason });
+    for (const o of r.reopened) this.seams.log?.('work-board-blocker-reopened', { cardId: o.cardId, blockerCardId: o.blockerCardId });
+    return r.unblocked.length + r.reopened.length;
+  }
+
+  private reconcileDeparted(max: number): number {
+    if (max <= 0) return 0;
+    let r: ReturnType<WorkBoardService['reconcileDepartedCarriers']>;
+    try { r = this.svc.reconcileDepartedCarriers(max); }
+    catch (err) { /* @silent-fallback-ok: logged; the next team pull or tick reconciles again */ this.seams.log?.('work-board-departed-reconcile-failed', { error: (err as Error)?.message }); return 0; }
+    this.holderStats.carriersDeparted += r.length;
+    for (const d of r) {
+      const v = this.svc.view(d.cardId); if (!v) continue;
+      const rec = this.svc.recordsOf(d.cardId).find((x) => x.id === d.recordId);
+      const line = rec ? transcriptLineFor('carrier-departed', rec.d, { name: this.seams.displayName, when: (iso) => this.when(iso), carrierName: this.seams.displayName(d.personKey) }) : null;
+      if (line) this.appendLine(v.card.conversationKey, lineIdFor(d.recordId), line);
+      this.seams.log?.('work-board-carrier-departed', { cardId: d.cardId });
+    }
+    return r.length;
+  }
 
   /** The server attaches the commitments and adapter seams once they exist; the gate then runs on every recorded request. */
   attachRequestGate(deps: Omit<RequestGateDeps, 'svc' | 'machineId' | 'now' | 'settings' | 'ownerPersonKey' | 'detectCredential' | 'writeNote' | 'caughtUpWithAllPeers'>): WorkBoardRequestGate {
@@ -244,6 +306,9 @@ export class WorkBoardRuntime {
     // 3. one hold lift, then one quiet re-pickup, each only while no work pickup is pending or in a capacity wait
     if (budget > 0 && !this.workPickupPending()) { if (this.liftOneHold()) budget--; }
     if (budget > 0 && !this.workPickupPending()) { if (this.repickupOneQuiet()) budget--; }
+    // 4. blocker reconciliation (§9: arrival, transition and boot all meet here) and departed carriers (§8), to the remaining budget
+    budget -= this.reconcileBlockers(budget);
+    budget -= this.reconcileDeparted(budget);
   }
 
   private workPickupPending(): boolean {
@@ -391,6 +456,8 @@ export class WorkBoardRuntime {
     }
     // A card created on another machine gets its conversation here too (the key is derived, so this is a no-op when present).
     for (const id of changed) if (!before.has(id)) this.ensureConversation(id);
+    // A peer's link, close, confirm, reopen, restore or pass may free or re-block a card here: reconcile ONCE per batch on the holder.
+    if (fromPeer && this.holdsLease() && union.some((u) => WorkBoardRuntime.RECONCILE_AFTER.has(String(u.data.recordType)))) this.reconcileBlockers(JOURNAL_BUCKET_CAPACITY);
     this.checkJournalGrowth();
     this.controller.poke();
   }
@@ -403,6 +470,9 @@ export class WorkBoardRuntime {
     }
     if (type === 'policy' || !local) this.controller.poke();
   }
+
+  /** The record kinds after which a peer's batch is reconciled once (§9 "in either arrival order"): a link, a close, a confirm, a reopen, a restore, a finish, a pass. */
+  private static readonly RECONCILE_AFTER: ReadonlySet<string> = new Set(['blocked-by', 'tap', 'claimed-done', 'edited']);
 
   /** A policy change that makes a waiting card workable leaves one line on each such card (§2). */
   async notePolicyChange(recordData: Record<string, unknown>, cardIdsNowWorkable: string[]): Promise<void> {

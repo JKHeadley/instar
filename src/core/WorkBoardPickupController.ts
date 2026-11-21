@@ -400,6 +400,8 @@ export class WorkBoardPickupController {
       `Work card ${cardId}: "${title}".`,
       `Cause: ${cause} — ${this.causeLine(c)}.`,
     ];
+    // agent-work-cards-default §9: what unblocked the card, resolved for the agent verbatim (it reads every card).
+    if (c.unblocked) lines.push(this.unblockedLine(v, c.unblocked));
     if (c.kind === 'answer' && c.answerOnly) lines.push('Answer only; do not start work. The card is not approved to work yet.');
     const dup = this.deps.svc.possibleDuplicateOf(cardId);
     if (dup.length) lines.push(`Possible duplicate of ${dup.join(', ')} (same request message or title in the same conversation). You decide: close one with evidence "duplicate of <card>", or keep both.`);
@@ -409,8 +411,30 @@ export class WorkBoardPickupController {
     return lines.join('\n');
   }
 
+  /** §9: the blocker that just finished, in the agent's brief: its title and the close-out words (a member's done note, the owner's "Not important"). */
+  private unblockedLine(v: CardView, u: { linkId: string; reason: string }): string {
+    const link = v.card.blockedBy.find((b) => b.id === u.linkId);
+    const b = link ? this.deps.svc.view(link.blockerCardId)?.card ?? null : null;
+    const title = b ? `"${b.title.replace(/[\r\n\t]+/g, ' ').slice(0, 300)}"` : 'a card';
+    const words = u.reason === 'cleared' ? 'the link was cleared'
+      : u.reason === 'cycle' ? 'the link closed a loop and was dropped'
+      : u.reason === 'blocker-removed' ? 'that card was removed by the team owner'
+      : b?.closeout ? `${this.deps.name((b.closeout.by as { personKey?: string }).personKey ?? '')} closed it as ${b.closeout.as === 'done' ? 'done' : 'not important'}: "${b.closeout.note.replace(/[\r\n\t]+/g, ' ').slice(0, 400)}"`
+      : u.reason === 'blocker-archived' ? 'that card was archived'
+      : b?.done ? (b.doneByAgentOwnEvidence ? 'that card was finished by the agent on its own evidence' : 'that card was finished and confirmed') : 'that card finished';
+    const more = b && u.reason !== 'cleared' && u.reason !== 'cycle' ? ` Read GET /work-board/cards/${b.cardId} for its evidence and close-out before carrying on; a "not important" close means the person did not want it done.` : '';
+    return `Unblocked: this card was blocked by ${title} — ${words}.${more}`;
+  }
+
   stopBrief(cardId: string, c: PickupCause, redacted: boolean): string {
     if (redacted) return `Work card ${cardId}: stop. This card was removed by the team owner. Stop work on it now and do not repeat or continue anything it asked for.`;
+    // §9: blocked by another card — name it, and the carrier who left the team when that is why it waits.
+    const rec = this.deps.svc.recordsOf(cardId).find((r) => r.id === c.id);
+    if (rec?.d.recordType === 'blocked-by') {
+      const b = this.deps.svc.view(String(rec.d.blockerCardId))?.card ?? null;
+      const who = b && typeof b.carrier === 'object' ? ` (carried by ${this.deps.name(b.carrier.personKey)}${b.carrierDeparted ? ', who is no longer on the team; the owner is asked to pass it' : ''})` : '';
+      return `Work card ${cardId}: pause. This card is now blocked by ${b ? `"${b.title.replace(/[\r\n\t]+/g, ' ').slice(0, 300)}" (${b.cardId})` : 'another card'}${who}. Stop work on it until that card closes; you will be handed this card again with its close-out.`;
+    }
     return `Work card ${cardId}: stop. The card is no longer ready to work (${this.causeLine(c)}). Stop work on it now; read GET /work-board/cards/${cardId} for why before doing anything else.`;
   }
 }

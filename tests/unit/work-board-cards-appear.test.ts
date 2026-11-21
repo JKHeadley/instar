@@ -50,10 +50,11 @@ describe('approval: a card a person carries that sends nothing outward needs no 
     expect(v.status).toBe('with-person');
     expect(v.card.workable).toBe(false); // nothing for the agent to start
   });
-  it('moving the carrier to the agent brings approval back before any work', () => {
+  it('moving the carrier to the agent brings approval back before any work (the person passes it; the agent cannot take it — agent-work-cards-default §8)', () => {
     const t = makeService();
     const r = t.svc.createCard(AGENT, yours); if (!r.ok) throw new Error(r.error);
-    expect(t.svc.edit(AGENT, r.cardId, { carrier: 'agent' }).ok).toBe(true);
+    expect(t.svc.edit(AGENT, r.cardId, { carrier: 'agent' })).toMatchObject({ ok: false, status: 403, error: 'agent-cannot-take-card' });
+    expect(t.svc.edit({ kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true }, r.cardId, { carrier: 'agent' }).ok).toBe(true);
     const v = t.svc.view(r.cardId)!;
     expect(v.card.approvalRequired).toBe(true);
     expect(v.status).toBe('needs-approval');

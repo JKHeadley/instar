@@ -72,8 +72,8 @@ describe('WorkBoardService — who may write what', () => {
     expect(t.svc.edit({ kind: 'session', conversationKey: a.conversationKey }, a.cardId, { recommendation: 'x' }).ok).toBe(true);
     expect(t.svc.edit({ kind: 'session', conversationKey: a.conversationKey }, b.cardId, { recommendation: 'x' })).toMatchObject({ ok: false, status: 404 });
   });
-  it('only the agent or the team owner may carry a card', () => {
-    expect(t.svc.createCard(AGENT, { ...card, carrier: { personKey: 'adriana' } })).toMatchObject({ ok: false, error: 'carrier-not-allowed' });
+  it('only the agent or a person on the team may carry a card (agent-work-cards-default §8: a team of one here)', () => {
+    expect(t.svc.createCard(AGENT, { ...card, carrier: { personKey: 'adriana' } })).toMatchObject({ ok: false, error: 'not-a-team-member' });
     expect(t.svc.createCard(AGENT, { ...card, carrier: { personKey: 'justin' } }).ok).toBe(true);
   });
   it('outward defaults to false for the agent and true for a person (agent-work-cards-default §1)', () => {

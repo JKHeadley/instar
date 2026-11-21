@@ -24,13 +24,15 @@
 import type { Router, Request, Response } from 'express';
 import type { WorkBoardService, WorkPrincipal, WorkBoardSettings, CardView } from '../core/WorkBoardService.js';
 import { validateSettingsPatch, transcriptLineFor, lineIdFor } from '../core/WorkBoardService.js';
-import { cardJson, boardJson, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
+import { cardJson, boardJson, cardVisible, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
 import { sourceCardQuery, sourceCardsJson } from '../core/workSourceCards.js';
 import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
 import { isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
 import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
 // agent-work-cards-default: POST /work-board/cards/:id/notes (agent / scoped session bound to the card or its source);
-// POST /work-board/not-started/approve and /approve-and-widen (the team owner's aggregated-row controls, PIN).
+// POST /work-board/not-started/approve and /approve-and-widen (the team owner's aggregated-row controls, PIN);
+// POST /work-board/cards/:id/asks (§9: the working session's ask for a person + the blocked-by link, one idempotent step);
+// /records kinds `blocked-by` and `unblocked` (§9); a `carrier` edit is a pass (§8), and the phone's `pass` action is one too.
 
 /**
  * How the request authenticated. `bearer` is the server token, which both the agent and the
@@ -110,6 +112,11 @@ export interface WorkBoardRouteDeps {
    * record it rests on. Absent ⇒ "Approve and widen" approves the cards and says the request could not be raised here.
    */
   proposeBoardPolicy?: (record: { approvedUnchanged: number; changed: number; declined: number; waiting: number }) => Promise<{ status: string; requestId?: string; message?: string }>;
+  /**
+   * agent-work-cards-default §9: run the holder's blocker reconciliation now (a link arrived or a blocker finished), so a
+   * one-machine flow does not wait for the tick. The holder also reconciles on every tick and at boot. Absent ⇒ tick only.
+   */
+  afterBlockerWrite?: () => void;
 }
 
 /** The card text an approval ask lives in: the fields a person reads to decide. */
@@ -182,12 +189,16 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     }
   };
 
-  const extraFor = (svc: WorkBoardService) => (v: CardView) => ({
+  /** The viewer's conversation grant (a phone's), so the words of other cards resolve under the viewer's own access (§8/§9). */
+  const grantOf = (c: ResolvedCaller): ((conversationKey: string) => boolean) | null => (c.kind === 'device' ? c.mayRead : null);
+
+  const extraFor = (svc: WorkBoardService, c?: ResolvedCaller) => (v: CardView) => ({
     behind: deps.behind(), lastWrittenOn: deps.lastWrittenOn(v), repliedAfterQuestion: deps.repliedAfterQuestion(v),
     capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
     brokenAttachments: deps.brokenAttachments(v),
     phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
     lastNote: deps.notes?.last(v.card.cardId) ?? null,
+    ...(c ? { mayRead: grantOf(c) } : {}),
   });
 
   /** A scoped session may act on a card bound as the card's own conversation OR as the card's recorded source conversation (§2). */
@@ -197,8 +208,8 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     return !!v.card.source && bindingNamesConversation(c.placeKey, v.card.source.conversationKey);
   };
 
-  /** Visible to this viewer? The owner and the agent see every card; others need read access to its conversation. */
-  const visible = (c: ResolvedCaller, viewer: Viewer, v: CardView): boolean => viewer.isAgent || viewer.isOwner || (c.kind === 'device' && c.mayRead(v.card.conversationKey));
+  /** Visible to this viewer (§8 "Who sees a card")? The owner and the agent see every card; a person by the conversation grant, or as carrier or requester. */
+  const visible = (svc: WorkBoardService, c: ResolvedCaller, viewer: Viewer, v: CardView): boolean => cardVisible(svc, v, viewer, grantOf(c));
 
   const writeLine = async (svc: WorkBoardService, cardId: string, recordId: string, type: WorkRecordType, data: Record<string, unknown>, ctx: { materialChanged?: string[]; voidedApproval?: boolean } = {}) => {
     const v = svc.view(cardId); if (!v || v.card.redacted) return;
@@ -226,7 +237,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const viewer = viewerFor(c);
     if (!viewer) return { status: 401, body: { error: 'unauthorized' } };
     const donePage = Number.parseInt(String(req.query?.donePage ?? '0'), 10) || 0;
-    const board = boardJson(svc, viewer, (ck) => c.kind === 'device' && c.mayRead(ck), deps.displayName, { softOpenCards: deps.settings().softOpenCards, donePage, extraFor: extraFor(svc), full: opts.full === true });
+    const board = boardJson(svc, viewer, (ck) => c.kind === 'device' && c.mayRead(ck), deps.displayName, { softOpenCards: deps.settings().softOpenCards, donePage, extraFor: extraFor(svc, c), full: opts.full === true });
     const ctl = deps.controller();
     // `viewer.canTap`: the team owner (a phone proves each tap with Face ID; the console with the PIN).
     return { status: 200, body: { ...board, viewer: { isOwner: viewer.isOwner || c.kind === 'bearer', canTap: viewer.isOwner || c.kind === 'bearer' }, ...(viewer.isAgent || viewer.isOwner ? { pickups: ctl?.status() ?? null } : {}), behind: deps.behind(), settings: viewer.isOwner || viewer.isAgent ? deps.settings() : undefined } };
@@ -261,8 +272,8 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const v = isCardId(id) ? svc.view(id) : null;
     if (!v || !v.card.created) { res.status(404).json({ error: 'not-found' }); return; }
     if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
-    if (!visible(c, viewer, v)) { res.status(404).json({ error: 'not-found' }); return; }
-    res.json({ card: cardJson(svc, v, viewer, deps.displayName, extraFor(svc)(v)) });
+    if (!visible(svc, c, viewer, v)) { res.status(404).json({ error: 'not-found' }); return; }
+    res.json({ card: cardJson(svc, v, viewer, deps.displayName, extraFor(svc, c)(v)) });
   });
 
   // ── writes ─────────────────────────────────────────────────────────────────
@@ -326,7 +337,8 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     }
     const { pin: _pin, kind: _k, recordType: _rt, ...rest } = body;
     const fields = (body.fields && typeof body.fields === 'object' ? body.fields : rest) as Record<string, unknown>;
-    if (p.kind === 'person' && kind !== 'edited') { res.status(403).json({ error: 'agent-only' }); return; }
+    // A person writes an edit (the owner; a member only a pass), or a blocker link on a card they carry (§9).
+    if (p.kind === 'person' && kind !== 'edited' && kind !== 'blocked-by' && kind !== 'unblocked') { res.status(403).json({ error: 'agent-only' }); return; }
     if ((kind === 'edited' || kind === 'waiting-on') && !(await specApprovalAllows(p, fields, res))) return;
     const before = svc.view(id);
     const wasApproved = !!before?.card.approvalValid;
@@ -338,10 +350,23 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
           const after = svc.view(id)!;
           const rec = svc.recordsOf(id).find((x) => x.id === r.recordId);
           const material = after.card.lastMaterialChangeFields;
-          if (rec && wasApproved && !after.card.approvalValid) await writeLine(svc, id, r.recordId, 'edited', rec.d, { materialChanged: material, voidedApproval: true });
+          // §8: a pass leaves its line; otherwise an approval voided by the edit leaves one.
+          if (rec && r.changed.includes('carrier')) await writeLine(svc, id, r.recordId, 'edited', rec.d, { materialChanged: ['carrier'] });
+          else if (rec && wasApproved && !after.card.approvalValid) await writeLine(svc, id, r.recordId, 'edited', rec.d, { materialChanged: material, voidedApproval: true });
           deps.controller()?.poke();
         }
         send(res, r); return;
+      }
+      case 'blocked-by': {
+        // §9: the link on the BLOCKED card; the holder reconciles at arrival (the blocker may already be finished).
+        const r = svc.addBlockedBy(p, id, fields as never);
+        if (r.ok) { deps.afterBlockerWrite?.(); deps.controller()?.poke(); }
+        send(res, r, r.ok && !(r as { duplicate?: boolean }).duplicate ? 201 : 200); return;
+      }
+      case 'unblocked': {
+        const r = svc.clearBlockedBy(p, id, fields as never);
+        if (r.ok) deps.controller()?.poke();
+        send(res, r, 201); return;
       }
       case 'waiting-on': {
         // agent-work-cards-default §1: waiting on a person makes an agent-work card an ask, so both ask fields must be on
@@ -356,10 +381,42 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
         if (r.ok) { const rec = svc.recordsOf(id).find((x) => x.id === r.questionId); if (rec?.d.supersedes) await writeLine(svc, id, r.questionId, 'waiting-on', rec.d); }
         send(res, r); return;
       }
-      case 'evidence': send(res, svc.addEvidence(p, id, fields as never)); return;
-      case 'claimed-done': send(res, svc.claimDone(p, id)); return;
-      default: res.status(400).json({ error: 'unknown-record-kind', allowed: ['edited', 'waiting-on', 'evidence', 'claimed-done'] });
+      case 'evidence': { const r = svc.addEvidence(p, id, fields as never); if (r.ok) deps.afterBlockerWrite?.(); send(res, r); return; }
+      case 'claimed-done': {
+        const r = svc.claimDone(p, id);
+        // A finished blocker frees what it blocked (§9): reconcile at the transition, not only on the tick.
+        if (r.ok) deps.afterBlockerWrite?.();
+        send(res, r); return;
+      }
+      default: res.status(400).json({ error: 'unknown-record-kind', allowed: ['edited', 'waiting-on', 'evidence', 'claimed-done', 'blocked-by', 'unblocked'] });
     }
+  });
+
+  // ── asks (agent-work-cards-default §9 "The working session writes the ask") ──
+  router.post('/work-board/cards/:id/asks', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const c = deps.caller(req);
+    const id = String(req.params.id);
+    if (c.kind === 'device') { res.status(403).json({ error: 'agent-only', message: 'An ask is written by the agent on a card it carries; a person passes a card instead.' }); return; }
+    if (c.kind === 'none') { res.status(401).json({ error: 'unauthorized' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.pin !== undefined) { res.status(403).json({ error: 'agent-only', message: 'An ask is the agent\'s; a person passes a card instead.' }); return; }
+    const v = isCardId(id) ? svc.view(id) : null;
+    if (!v || !v.card.created) { res.status(404).json({ error: 'not-found' }); return; }
+    // The binding is checked HERE (the guard's `place` is a path check): the parent's own conversation, or its source conversation.
+    if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
+    if (deps.phoneOnlyCard?.(id)) { res.status(403).json({ error: 'server-owned-card' }); return; }
+    const p: WorkPrincipal = c.kind === 'session' ? { kind: 'session', conversationKey: v.card.conversationKey } : { kind: 'agent' };
+    if (!(await specApprovalAllows(p, body, res))) return;
+    const r = svc.createAsk(p, id, body);
+    if (!r.ok) { send(res, r); return; }
+    try { await deps.ensureConversation(r.cardId, r.conversationKey, String(body.title ?? '')); }
+    catch (err) { /* @silent-fallback-ok: logged; the ask exists and its chat is created at the next write or boot (the key is derived) */ deps.log?.('work-board-conversation-create-failed', { cardId: r.cardId, error: (err as Error)?.message }); }
+    deps.afterBlockerWrite?.();
+    deps.controller()?.poke();
+    const ask = svc.view(r.cardId)!;
+    const viewer = viewerFor(c)!;
+    res.status(r.existed ? 200 : 201).json({ cardId: r.cardId, conversationKey: r.conversationKey, blockedByRecordId: r.blockedByRecordId, existed: r.existed, ...(r.linkNote ? { linkNote: r.linkNote } : {}), card: cardJson(svc, ask, viewer, deps.displayName), parent: cardJson(svc, svc.view(id)!, viewer, deps.displayName), ...(r.overBlockerBudget ? { overBlockerBudget: r.overBlockerBudget } : {}), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}) });
   });
 
   // ── progress notes (agent-work-cards-default §2) ───────────────────────────
@@ -537,11 +594,33 @@ export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => 
  * redact), a poke to the pickup controller. Shared by the console route (PIN) and the phone route
  * (presence signature, mounted in mobilePermissionsRoutes behind the write gate).
  */
-export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log' | 'phoneOnlyCard'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function performCardTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log' | 'phoneOnlyCard' | 'afterBlockerWrite'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
   // A tap that PERMITS something must name the title the person saw (its hash): the title is what
   // they read on screen, and an answer, a release or a Try again is bound to nothing else that shows it.
   if (!isRestrictingTap(String(body.action)) && !(typeof body.titleHash === 'string' && /^[0-9a-f]{64}$/.test(body.titleHash))) {
     return { status: 400, body: { error: 'title-hash-required', message: 'Send titleHash (the card\'s titleHash as shown) with this tap.' } };
+  }
+  const viewer: Viewer = p.kind === 'person' ? { personKey: p.personKey, isOwner: p.isOwner, isAgent: false } : { personKey: deps.ownerPersonKey(), isOwner: false, isAgent: true };
+  // §8 "Passing a card" from a phone: a `carrier` edit by the carrier or the owner, person-proven over the signed line, with
+  // its one transcript line. `to` is "agent", "owner" or a member's personKey; the service checks the team record.
+  if (body.action === 'pass') {
+    if (p.kind !== 'person') return { status: 403, body: { error: 'person-required' } };
+    const to = body.to;
+    const carrier = to === 'agent' ? 'agent' : typeof to === 'string' && to.trim() ? { personKey: to } : null;
+    if (!carrier) return { status: 400, body: { error: 'pass-to-required', message: 'Say who the card goes to (to: "agent", "owner" or a team member\'s personKey).' } };
+    if (deps.phoneOnlyCard?.(cardId)) return { status: 403, body: { error: 'server-owned-card' } };
+    const r = svc.edit(p, cardId, { carrier: to === 'owner' ? 'owner' : carrier });
+    if (!r.ok) return { status: r.status, body: { error: r.error, ...(r.detail ?? {}) } };
+    if (r.recordId) {
+      const rec = svc.recordsOf(cardId).find((x) => x.id === r.recordId);
+      const v = svc.view(cardId);
+      if (rec && v && !v.card.redacted) {
+        const line = transcriptLineFor('edited', rec.d, { name: deps.displayName, when: deps.when, materialChanged: ['carrier'] });
+        if (line) await deps.appendLine(v.card.conversationKey, lineIdFor(r.recordId), line).catch((err) => deps.log?.('work-board-line-failed', { cardId, error: (err as Error)?.message }));
+      }
+    }
+    deps.controller()?.poke();
+    return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, svc.view(cardId)!, viewer, deps.displayName, { phoneOnly: deps.phoneOnlyCard?.(cardId) === true }) } };
   }
   // A stopped project app's serve card (project-apps-sandbox §3.4): an approve here would read as
   // "running" while the app stays off, because turning it back on is a separate card not built yet
@@ -563,7 +642,12 @@ export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayNam
       }
     }
   }
+  // A close, a confirm, a reopen or a restore on a blocker changes what it blocks (§9): reconcile at the transition.
+  if (r.recordId) deps.afterBlockerWrite?.();
   deps.controller()?.poke();
   const v = svc.view(cardId)!;
-  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, { personKey: deps.ownerPersonKey(), isOwner: true, isAgent: false }, deps.displayName, { phoneOnly: deps.phoneOnlyCard?.(cardId) === true }) } };
+  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, viewer, deps.displayName, { phoneOnly: deps.phoneOnlyCard?.(cardId) === true }) } };
 }
+
+/** The owner's tap (the name the phone wiring and older tests use); every person's tap goes through `performCardTap`. */
+export const performOwnerTap = performCardTap;
