@@ -95,6 +95,7 @@ function repairedSlackRelayReadiness(config: { stateDir: string; projectDir: str
   return repairSlackReplyRelayIfStale({ projectDir: config.projectDir, stateDir: config.stateDir, config, template, warn: (m) => console.warn(`[slack-relay] ${m}`) });
 }
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
+import { scrubOutputText, credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted, aspClassifiedText, framingLabel, reconcileSignedLabel } from '../messaging/shared/signedInbound.js';
 import { markedInboundPrefix, markedHistoryLabel } from '../messaging/shared/onBehalfMarker.js';
@@ -4992,17 +4993,20 @@ function setupServerLog(stateDir: string): void {
 
   const timestamp = () => new Date().toISOString();
 
+  // SEC-164: this stream writes logs/server.log directly, not through stdout, so it is masked here too.
+  const scrubOn = credentialScrubEnabledReader(path.join(stateDir, '..'));
+  const scrubbed = (line: string) => (scrubOn() ? scrubOutputText(line) : line);
   console.log = (...args: unknown[]) => {
     origLog(...args);
-    logStream.write(`${timestamp()} [LOG] ${args.map(String).join(' ')}\n`);
+    logStream.write(scrubbed(`${timestamp()} [LOG] ${args.map(String).join(' ')}\n`));
   };
   console.warn = (...args: unknown[]) => {
     origWarn(...args);
-    logStream.write(`${timestamp()} [WARN] ${args.map(String).join(' ')}\n`);
+    logStream.write(scrubbed(`${timestamp()} [WARN] ${args.map(String).join(' ')}\n`));
   };
   console.error = (...args: unknown[]) => {
     origError(...args);
-    logStream.write(`${timestamp()} [ERROR] ${args.map(String).join(' ')}\n`);
+    logStream.write(scrubbed(`${timestamp()} [ERROR] ${args.map(String).join(' ')}\n`));
   };
 }
 
@@ -5293,6 +5297,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     console.log(`  State: ${config.stateDir}`);
     console.log();
 
+    // SEC-164: mask live credentials in the server's own output before any log captures it.
+    {
+      const { installOutputScrub, credentialScrubEnabledReader } = await import('../core/outputCredentialScrub.js');
+      installOutputScrub(credentialScrubEnabledReader(config.projectDir));
+    }
     // Set up file logging for observability
     setupServerLog(config.stateDir);
     guardProcessStdio();
