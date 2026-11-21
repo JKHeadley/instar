@@ -172,3 +172,7 @@ Non-blocking:
 ## Follow-up commit (CI green-up, 2026-11-21)
 
 After the merges with `main`, `Docs Coverage` fails on the job class (`83% < 85%`, 29 documented + 12 partial of 42) on `main` itself: the `gemini-payg-reconcile` default job template is mentioned nowhere under `site/src/content/docs`. This commit adds the same two documentation entries PRs #3524, #3591, #3597 and #3600 add (the default-jobs reference table and the routing-spend control-room page, byte-identical so the branches merge cleanly), lifting the class to 86%. Documentation only; no runtime surface.
+
+## Follow-up commit 2 (CI green-up, 2026-11-21)
+
+Local Verify tests this branch merged with `main`, and `main` has been over the no-silent-fallbacks baseline since #3603 merged (`UpdateChecker.findBundledNpmCli`, the layout probe `catch { /* not this layout */ }` within the detector window of a `return null;`). This commit merges current `main` and carries the same one-line in-brace `@silent-fallback-ok` reason PR #3529 carries (byte-identical, so the branches merge cleanly); comment only, baseline not raised.
