@@ -173,7 +173,8 @@ export class LiveConfig extends EventEmitter {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const tmpPath = `${this.configPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
       try {
-        fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2) + '\n');
+        // config.json carries credentials: the replacement file is owner-only.
+        fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2) + '\n', { mode: 0o600 });
         fs.renameSync(tmpPath, this.configPath);
       } finally {
         if(fs.existsSync(tmpPath))SafeFsExecutor.safeUnlinkSync(tmpPath,{operation:'live-config:publication-scratch'});
