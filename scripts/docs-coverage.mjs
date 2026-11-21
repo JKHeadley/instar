@@ -222,7 +222,9 @@ function findMentions(capability, docs) {
       // colon-command documented as `instar dev:profile-node` still counts (it
       // otherwise never matched — every `dev:*` command read as undocumented).
       const kebab = capability.name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
-      needles = [`instar ${capability.name}`, `instar ${kebab}`];
+      // A nested subcommand (`mobileIntroducer` -> `instar mobile introducer`) is
+      // documented with spaces, so match the spaced form too.
+      needles = [`instar ${capability.name}`, `instar ${kebab}`, `instar ${kebab.replace(/-/g, ' ')}`];
       normalize = (s) => s.replace(/:/g, '-');
       break;
     }
