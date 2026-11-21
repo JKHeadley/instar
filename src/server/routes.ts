@@ -407,7 +407,7 @@ import { CodexTaskContinuationStore, parseContinuationTasks } from '../core/Code
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
-import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { DegradationReporter, compileFeaturePattern, FEATURE_PATTERN_MAX_CHARS } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
@@ -6913,7 +6913,8 @@ export function createRoutes(ctx: RouteContext): Router {
    * events.
    *
    * Body: { feature: string }   exact-match feature name
-   *   OR: { featurePattern: string }   regex source, applied without flags
+   *   OR: { featurePattern: string }   regex source, applied without flags; limited to
+   *        128 chars of letters, digits, _ - . \\. ^ $ | (SEC-125)
    *
    * Returns: { flipped: number }   count of events actually marked
    */
@@ -6951,13 +6952,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     if (typeof featurePattern === 'string' && featurePattern.length > 0) {
-      let re: RegExp;
-      try {
-        re = new RegExp(featurePattern);
-      } catch (err) {
+      // SEC-125: only a short pattern in a backtracking-safe subset is compiled; an
+      // arbitrary caller regex could block the event loop over the stored names.
+      const re = compileFeaturePattern(featurePattern);
+      if (!re) {
         res.status(400).json({
           error: 'invalid featurePattern',
-          detail: operatorError(err, res.app?.locals?.stateDir),
+          detail: `featurePattern must be at most ${FEATURE_PATTERN_MAX_CHARS} characters of letters, digits, _ - . \\. ^ $ and |`,
         });
         return;
       }
