@@ -99,8 +99,15 @@ export async function runSecondDoorWithoutModel(deps: NoModelDoorDeps): Promise<
   if (!door) return { result: 'fail', detail: 'There is no other AI provider I know how to add.' };
   const name = DOOR_NAMES[door];
   if (!deps.stillWanted()) return { result: 'fail', detail: 'Setup was stopped.' };
-  if ((await deps.signedIn(door)) === 'signed-in' && deps.installed(door)) {
-    deps.enable(door);
+  const before = await deps.signedIn(door);
+  // The sign-in is shared by every agent this machine user runs. Only a proven signed-out door may start a new one:
+  // "unknown" is common during an outage, and a login started then could replace a working account.
+  if (before === 'unknown' && deps.installed(door)) {
+    deps.tell(`I can't tell right now whether ${name} is already signed in on this machine, so I'm not starting a new sign-in that could replace it. I'll check again later.`);
+    return { result: 'fail', detail: `${name}'s sign-in state is unknown.` };
+  }
+  if (before === 'signed-in' && deps.installed(door)) {
+    if (!deps.enable(door) && !deps.enabled().includes(door)) return { result: 'fail', detail: `${name} could not be switched on.` };
     deps.tell(`${name} was already signed in on this machine, so I've switched it on for me. You now have a second AI provider I can work on.`);
     return { result: 'pass', detail: `${name} was already signed in.` };
   }
@@ -129,7 +136,8 @@ export async function runSecondDoorWithoutModel(deps: NoModelDoorDeps): Promise<
     await deps.sleep(SIGN_IN_POLL_MS);
     if (!deps.stillWanted()) return { result: 'fail', detail: 'Setup was stopped.' };
     if ((await deps.signedIn(door)) === 'signed-in') {
-      deps.enable(door);
+      // `enable` refuses when the yes was withdrawn meanwhile; then nothing is switched on, and nothing is claimed.
+      if (!deps.enable(door) && !deps.enabled().includes(door)) return { result: 'fail', detail: `${name} signed in, but it was not switched on.` };
       deps.tell(`${name} is signed in and switched on for me. When my main provider is out, you can ask me to move a conversation onto ${name}.`);
       return { result: 'pass', detail: `${name} signed in.` };
     }
@@ -163,6 +171,11 @@ export interface NoModelTailscaleDeps {
 export async function runTailscaleWithoutModel(deps: NoModelTailscaleDeps): Promise<NoModelResult> {
   if (!deps.stillWanted()) return { result: 'fail', detail: 'Setup was stopped.' };
   let state = await deps.status();
+  // No answer is not "signed out": never start a sign-in that could change a working tailnet.
+  if (state === 'unknown') {
+    deps.tell("Tailscale didn't answer just now, so I'm not changing anything. I'll check again later.");
+    return { result: 'fail', detail: 'Tailscale state is unknown.' };
+  }
   if (state === 'running') {
     deps.tell("Tailscale was already running on this machine, so I have an address. I'll use it for the yes page from now on.");
     return { result: 'pass', detail: 'Tailscale was already running.' };
@@ -173,6 +186,10 @@ export async function runTailscaleWithoutModel(deps: NoModelTailscaleDeps): Prom
       return { result: 'fail', detail: 'Tailscale could not be installed without administrator rights.' };
     }
     state = await deps.status();
+    if (state === 'unknown') {
+      deps.tell("Tailscale didn't answer after installing, so I'm not changing anything. I'll check again later.");
+      return { result: 'fail', detail: 'Tailscale state is unknown.' };
+    }
   }
   if (state !== 'running' && !(await deps.startService())) {
     deps.tell("Tailscale is installed but its background service won't start without administrator rights, so I don't have an address yet. When one of my AI providers is back I'll work out another way.");

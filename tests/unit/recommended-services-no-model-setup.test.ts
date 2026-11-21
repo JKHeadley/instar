@@ -195,3 +195,38 @@ describe('runTailscaleWithoutModel', () => {
     expect(await runTailscaleWithoutModel(b.deps)).toEqual({ result: 'fail', detail: 'Setup was stopped.' });
   });
 });
+
+describe('review fix: nothing is claimed when the door was not switched on', () => {
+  it('a sign-in that completes after the yes was withdrawn ends in fail, with no "switched on" message', async () => {
+    let clock = 0;
+    const told: string[] = [];
+    const out = await runSecondDoorWithoutModel({
+      enabled: () => ['claude-code'], installed: () => true, oneTapSignIn: () => true, install: async () => true,
+      startSignIn: async () => ({ verificationUrl: 'https://x/device', userCode: 'ABCD-1234' }),
+      signedIn: async () => (clock > 0 ? 'signed-in' : 'signed-out'), enable: () => false,
+      tell: (t) => told.push(t), stillWanted: () => true, sleep: async (ms) => { clock += ms; }, now: () => clock,
+    });
+    expect(out.result).toBe('fail');
+    expect(told.some((t) => t.includes('switched on'))).toBe(false);
+  });
+});
+
+describe('an unknown sign-in state never starts a new sign-in', () => {
+  it('second door: unknown stops before any login', async () => {
+    let started = 0; const told: string[] = [];
+    const out = await runSecondDoorWithoutModel({
+      enabled: () => ['claude-code'], installed: () => true, oneTapSignIn: () => true, install: async () => true,
+      startSignIn: async () => { started += 1; return { verificationUrl: 'https://x/device' }; },
+      signedIn: async () => 'unknown', enable: () => true, tell: (t) => told.push(t), stillWanted: () => true, sleep: async () => undefined, now: () => 0,
+    });
+    expect(out.result).toBe('fail'); expect(started).toBe(0); expect(told[0]).toContain("can't tell");
+  });
+  it('Tailscale: unknown stops before the service or a login', async () => {
+    let touched = 0;
+    const out = await runTailscaleWithoutModel({
+      status: async () => 'unknown', install: async () => { touched += 1; return true; }, startService: async () => { touched += 1; return true; },
+      startSignIn: async () => { touched += 1; return 'https://login.tailscale.com/a/x'; }, tell: () => undefined, stillWanted: () => true, sleep: async () => undefined, now: () => 0,
+    });
+    expect(out.result).toBe('fail'); expect(touched).toBe(0);
+  });
+});

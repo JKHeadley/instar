@@ -186,6 +186,17 @@ export function eventBlock(event: ReofferRow, rows: readonly ReofferRow[], catal
   return null;
 }
 
+/** Why a reservation may no longer be sent, or null when it may. */
+export function pendingBlock(pending: ReofferRow, catalog: readonly CatalogRow[], facts: ReofferFacts): string | null {
+  if (!isProblemKind(pending.kind) || !problemServices(pending.kind).includes(pending.service)) return 'unknown-kind';
+  const row = catalog.find((r) => r.id === pending.service);
+  if (!row || !isServiceAvailable(row)) return 'unavailable';
+  const choice = facts.choice(pending.service).choice;
+  if (choice === 'no') return null;
+  if (choice === 'unset' && facts.offer(pending.service) === 'offered') return null;
+  return 'not-refused';
+}
+
 /**
  * What the lease holder does now for one owner: resend a reservation still in flight, send the oldest eligible
  * problem, or nothing. `rows` are this owner's re-offer rows. A `hold` row is skipped for now, never dropped.
@@ -193,7 +204,9 @@ export function eventBlock(event: ReofferRow, rows: readonly ReofferRow[], catal
 export function nextReoffer(rows: readonly ReofferRow[], catalog: readonly CatalogRow[], facts: ReofferFacts, nowMs: number, opts: { hold?: (row: ReofferRow) => boolean } = {}): ReofferDecision {
   const held = (r: ReofferRow): boolean => !!opts.hold?.(r);
   const { delivered, inFlight } = liveReservations(rows, nowMs);
-  const resumable = inFlight.filter((r) => !held(r));
+  // A reservation is resumed only while it still could be sent: a yes since, an unavailable service, or a kind this
+  // build doesn't know (a newer peer's row) leaves it to expire instead.
+  const resumable = inFlight.filter((r) => !held(r) && pendingBlock(r, catalog, facts) === null);
   if (resumable.length) {
     return { action: 'resume', pending: [...resumable].sort((a, b) => ms(a.at) - ms(b.at))[0]! };
   }

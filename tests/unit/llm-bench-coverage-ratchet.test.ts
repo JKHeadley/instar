@@ -74,6 +74,9 @@ const EXEMPT_BASELINE = [
   // benchmark IS the benchmark; a generic harness task would re-test it less
   // precisely. Argued in src/data/llmBenchCoverage.ts.
   'HubIntentClassifier',
+  // ReofferJudge (2026-11-20): recommended-services.md reasons 2/3; ships its own labelled bench + scorer
+  // (src/recommended/reofferJudge.ts) with an opt-in live run, and stays shadow-only until it passes.
+  'ReofferJudge',
   // Wave-2 argued exemptions (2026-07-02) — each argues a real reason in
   // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's
   // tasks-wave2/SKIPPED.md (grep-verified delegation/alias/unwired claims).

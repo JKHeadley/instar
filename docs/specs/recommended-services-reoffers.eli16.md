@@ -14,6 +14,10 @@ A fourth problem: the agent's web address (the link you use from your phone) goi
 
 A fifth problem: every AI provider the agent uses being out (out of quota or signed out) for more than half an hour, twice in a week. Then it asks once more about a second AI subscription. The hard part is what happens on a yes, because with every provider out the agent can't think, and normal setup needs an AI. So the server carries out that yes by fixed steps: it installs Codex if needed, sends the person Codex's one-tap sign-in link and code, waits up to 15 minutes, then switches Codex on and checks it. Claude's sign-in needs a code pasted back, which nothing can read without an AI, so that one waits until a provider is back. If there's no web address for the yes page yet, the agent first offers Tailscale (which gives it a private address) with a Yes button right in the chat, since that needs no page. Tailscale is also set up by fixed steps: on a Mac it installs it without administrator rights and sends Tailscale's own sign-in link. Once the yes page can be reached, the second-subscription question follows.
 
+## Asking again for a change, or after a long time (watch-only)
+
+The plan also allows asking once more when the service changes in a way that matters to you (for example, it got cheaper and you'd said no because of cost), or after a long wait (90 days after one no, 180 after two). These need judgment, so a model decides, but only inside hard limits written in code: never after three nos or three re-asks, never for a change older than your no, and never by reading your conversations, only categories like your saved reason. For now it is watch-only: it writes down what it would have done and sends nothing. It has to pass a set of test cases (find at least 8 of 10 good reasons to ask, and almost never ask when it shouldn't) before it is allowed to actually send.
+
 ## The rules, all in code
 
 - Only a no, or an offer the person never answered, can be asked about again. The problem must have happened after that no.
