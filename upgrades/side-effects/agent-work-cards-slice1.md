@@ -137,6 +137,10 @@ Verified by the reviewer against code and a fresh run (store, gate, runtime, tru
 
 ---
 
+## Docs coverage follow-up (2026-11-21)
+
+CI's Docs Coverage check failed on the PR's merge commit with `job 83% < 85%`: main had gained a job (`gemini-payg-reconcile`) since this branch's base, so the merge composition crossed the job floor that the branch alone did not. Fixed by documenting that job in `reference/default-jobs.md` and the Routing Spend page, and by documenting this slice's own additions (`WorkBoardRequestGate` in the architecture page and the class list; the notes and not-started routes and the trust request routes in the API reference), which also gives the class and route floors (both at their floor) headroom. Documentation only; no runtime change.
+
 ## Evidence pointers
 
 - `tests/unit/agent-work-cards-store.test.ts`, `tests/unit/agent-work-cards-gate.test.ts`, `tests/unit/agent-work-cards-runtime.test.ts`, `tests/unit/agent-work-cards-trust.test.ts` (50 tests)
@@ -149,3 +153,7 @@ Verified by the reviewer against code and a fresh run (store, gate, runtime, tru
 ## Class-Closure Declaration (display-only mirror)
 
 `defectClass: unbounded-self-action`, `closure: guard`, `guardEvidence: { enforcementType: ratchet, citation: tests/unit/agent-work-cards-runtime.test.ts, howCaught: the holder pass is a self-triggered controller (hold lifts, quiet re-pickups, the sweep, the note drain) that runs inside the registered work-board-pickup controller's tick; its control-loop edge is a recorded transition (hold-lifted / quiet-repickup records are the causes the existing churn brake reads), its steady-state bound is one lift and one re-pickup per tick only while no work pickup is pending, plus the daily card ceiling and the journal-bucket clamp on the sweep and the drain, and its settling brake is the churn park (a second quiet re-pickup parks and derives the quiet row, which only a person's Try again releases) together with the guards that make every holder record once-only (a lift only while pickupHeld, under the deterministic key wc:<card>:hl:once; a re-pickup keyed on the newest agent record and never while a park stands; a pointer keyed by event; enabled-at keyed by team), so no restart, takeover or new owner mints a second one; the runtime ratchet drives the pass across ticks and takeovers and pins one-per-tick, park-on-second and once-only; the registered work-board-pickup convergence ratchet (tests/unit/self-action-convergence.test.ts) covers the spawn-attempt budget the pass feeds, not the pass itself }`.
+
+## Follow-up: card read with a runtime that has no notes
+
+GitHub's unit shard found that `GET /work-board/cards/:id` answered 500 when the Work Board runtime surface had no `lastNote` method (`tests/e2e/project-apps-custom-alive.test.ts`, which uses a partial runtime). The route wiring now uses an optional call, so such a read reports no last note. This changes no decision point: it only stops a display field from failing the whole card read. Verified with that end-to-end file and the three integration files whose fixtures use the same partial surface; no full lane ran, under the Chief of Staff's targeted-tests rule for the Studio.
