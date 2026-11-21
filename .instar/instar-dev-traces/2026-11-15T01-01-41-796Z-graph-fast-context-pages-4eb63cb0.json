@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "graph-fast-context-pages",
+  "sessionId": "1cbcbeb3-33d7-4c90-84d4-4b21248dd546",
+  "timestamp": "2026-11-15T01:01:41.796Z",
+  "artifactPath": "upgrades/side-effects/graph-fast-context-pages.md",
+  "artifactSha256": "fd70946a0f0fb01ad81712a26f6d870207c120f3e8ea25e4d1fa7eb160ce67b8",
+  "coveredFiles": [
+    "docs/eli16/graph-fast-context-pages.eli16.md",
+    "tests/integration/conversation-graph-replication-contexts.test.ts",
+    "upgrades/next/graph-fast-context-pages.md",
+    "upgrades/side-effects/graph-fast-context-pages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CMT-1637 fix iteration 1, test-only: overlaps the two members' independent per-row store writes (every production call once, per-store order kept, rows sequential) and adds content-free phase timings; docs record real measurements (two required-gate timeouts with unknown cause, one 109.6 s targeted pass, phase profile, no paired baseline, 60 s goal missed). No src, assertion, timeout, row, bound or opt-in change.",
+  "eli16Path": "docs/eli16/graph-fast-context-pages.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-fast-context-pages.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "opus-independent-code-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      },
+      {
+        "name": "opus-independent-docs-review",
+        "outcome": "concern-minor-resolved",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}
