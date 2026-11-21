@@ -1,0 +1,55 @@
+== 4b16ec42-d777-4461-bd47-1114d1880a6e
+name | in_transcript | recPre | recPost | recPostFail | transcript_is_error -> count
+('Bash', False, True, False, False, None) 8
+('Bash', False, True, True, False, None) 28
+('Bash', True, True, False, False, True) 28
+('Bash', True, True, True, False, False) 38
+('Edit', True, True, False, False, True) 2
+('Poll', True, True, False, False, True) 1
+('Poll', True, True, True, False, False) 5
+('REPL', True, True, True, False, False) 7
+('Read', True, True, True, False, False) 1
+('ToolSearch', False, True, True, False, None) 2
+('Write', False, True, False, False, None) 1
+('Write', False, True, True, False, None) 5
+('Write', True, True, False, False, True) 5
+('Write', True, True, True, False, False) 7
+('mcp__*', False, True, False, False, None) 1
+('mcp__*', False, True, True, False, None) 10
+('mcp__*', True, True, False, False, True) 8
+('mcp__*', True, True, True, False, False) 14
+
+missing from transcript: ['mcp__extsvc__list_records', 'ToolSearch', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Write', 'Bash', 'Write', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Bash', 'ToolSearch', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Bash', 'Write', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'mcp__extsvc__send_email', 'Write', 'Bash', 'Bash', 'Bash', 'Bash', 'Write', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Write', 'Bash', 'mcp__extsvc__list_records', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash']
+missing PreToolUse in recorder: []
+
+succeeded calls by tool (recorder PostToolUse): {'REPL': 7, 'mcp__extsvc__list_records': 22, 'Bash': 66, 'ToolSearch': 2, 'Write': 12, 'mcp__extsvc__get_task': 2, 'Poll': 5, 'Read': 1}
+instar hook-events PostToolUse by tool: {'Bash': 37, 'mcp__extsvc__get_task': 2, 'REPL': 7, 'Poll': 5, 'Read': 1, 'Write': 7, 'mcp__extsvc__list_records': 11}
+instar hook-events other: {"('Unknown', '')": 7}
+== 749e0576-5511-44d2-98a8-94beb890c3f7
+name | in_transcript | recPre | recPost | recPostFail | transcript_is_error -> count
+('Bash', False, True, False, False, None) 28
+('Bash', False, True, True, False, None) 38
+('Bash', True, False, False, False, True) 1
+('Bash', True, True, False, False, True) 8
+('Bash', True, True, True, False, False) 28
+('Edit', False, True, False, False, None) 2
+('Poll', False, True, False, False, None) 1
+('Poll', False, True, True, False, None) 5
+('REPL', False, True, True, False, None) 7
+('Read', False, True, True, False, None) 1
+('ToolSearch', True, True, True, False, False) 2
+('Write', False, True, False, False, None) 5
+('Write', False, True, True, False, None) 7
+('Write', True, True, False, False, True) 1
+('Write', True, True, True, False, False) 5
+('mcp__*', False, True, False, False, None) 8
+('mcp__*', False, True, True, False, None) 14
+('mcp__*', True, True, False, False, True) 1
+('mcp__*', True, True, True, False, False) 10
+
+missing from transcript: ['Bash', 'Write', 'Write', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'mcp__extsvc__send_email', 'Bash', 'mcp__extsvc__list_records', 'mcp__extsvc__list_records', 'Bash', 'Poll', 'Read', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'Write', 'Bash', 'Bash', 'Bash', 'REPL', 'Bash', 'Bash', 'REPL', 'REPL', 'Bash', 'Write', 'Write', 'Edit', 'mcp__extsvc__send_email', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'REPL', 'Write', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'Poll', 'Bash', 'mcp__extsvc__publish_post', 'Edit', 'REPL', 'Bash', 'Bash', 'Poll', 'Poll', 'Bash', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'mcp__extsvc__send_email', 'mcp__extsvc__send_email', 'Bash', 'Bash', 'Bash', 'Bash', 'Write', 'Bash', 'Bash', 'mcp__extsvc__delete_records', 'mcp__extsvc__list_records', 'Write', 'Poll', 'Write', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__get_task', 'Bash', 'Bash', 'Poll', 'REPL', 'Bash', 'Bash', 'mcp__extsvc__delete_records', 'mcp__extsvc__get_task', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Bash', 'Write', 'mcp__extsvc__send_email', 'Bash', 'Bash', 'Bash', 'REPL', 'Write', 'Bash', 'Bash', 'Write', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'mcp__extsvc__list_records', 'Bash', 'Bash']
+missing PreToolUse in recorder: ['Bash']
+
+succeeded calls by tool (recorder PostToolUse): {'Bash': 66, 'Write': 12, 'mcp__extsvc__list_records': 22, 'Poll': 5, 'Read': 1, 'REPL': 7, 'ToolSearch': 2, 'mcp__extsvc__get_task': 2}
+instar hook-events PostToolUse by tool: {'ToolSearch': 1, 'Bash': 19, 'mcp__extsvc__list_records': 10, 'Write': 5}
+instar hook-events other: {"('Unknown', '')": 2}

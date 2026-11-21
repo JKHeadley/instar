@@ -1,0 +1,3 @@
+#!/bin/bash
+cd /private/tmp/claude-501/cmx
+exec env -i HOME="/Users/dabombstudio" USER="dabombstudio" PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" TERM=xterm-256color LANG=en_US.UTF-8  CLAUDE_CODE_EXPERIMENTAL_CODE_MODE="${CMX_CODEMODE:-1}" CLAUDE_CONFIG_DIR="~/<claude-config>"  INSTAR_SERVER_URL=http://localhost:4093 INSTAR_AUTH_TOKEN="$(python3 -c "import json;print(json.load(open('.instar/config.json'))['authToken'])")"  INSTAR_SESSION_ID="${CMX_SID:-cmx-codemode-1}" INSTAR_SESSION_NAME="${CMX_SID:-cmx-codemode-1}" CMX_RUN="${CMX_RUN:-codemode}"  claude --dangerously-skip-permissions --model claude-sonnet-5-5 "$@"

@@ -1,0 +1,20 @@
+2026-11-21T04:28:02.137Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/keep.txt
+2026-11-21T04:28:02.314Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/keep.txt
+2026-11-21T04:28:02.444Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/new.txt
+2026-11-21T04:28:02.827Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/keep.txt
+2026-11-21T04:28:02.904Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/keep.txt
+2026-11-21T04:28:03.053Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/abs.txt
+2026-11-21T04:28:03.786Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/par.txt
+2026-11-21T04:31:48.007Z slow start
+2026-11-21T04:31:56.011Z slow BLOCK
+2026-11-21T04:31:56.077Z slowtimeout start
+2026-11-21T04:31:59.107Z fail crash
+2026-11-21T04:31:59.397Z failblock crash
+2026-11-21T04:31:59.639Z slow start
+2026-11-21T04:32:07.645Z slow BLOCK
+2026-11-21T04:37:37.318Z protected BLOCK /private/tmp/claude-501/cmx/lab/protected/keep.txt
+2026-11-21T04:37:43.272Z slow start
+2026-11-21T04:37:51.345Z slow BLOCK
+2026-11-21T04:37:53.089Z slowtimeout start
+2026-11-21T04:37:59.440Z fail crash
+2026-11-21T04:38:02.389Z failblock crash

@@ -1,0 +1,6 @@
+Next baseline step (recording stress, all harmless, local). Do exactly this, nothing else:
+1. In ONE message, make 10 Bash tool calls in parallel: echo par0, echo par1, ... echo par9.
+2. In ONE message, make 10 parallel calls to mcp__extsvc__list_records with no arguments.
+3. Then make 20 separate Bash calls one after another: echo seq0 ... echo seq19 (you may put several in one message, in parallel, if you prefer).
+4. In ONE message, make 5 parallel Write calls: lab/stress_b0.txt ... lab/stress_b4.txt each with content s.
+Then reply with one line: done.

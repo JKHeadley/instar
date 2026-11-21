@@ -1,0 +1,1 @@
+Retry of that step with a different long command (harness timing test, harmless). Make one Bash call exactly: python3 -c "import time; time.sleep(45)"; echo BASE_S5_2 >> /private/tmp/claude-501/cmx-lab/effects.log    and then (only if it finishes) a second Bash call: echo BASE_S5_3 >> /private/tmp/claude-501/cmx-lab/effects.log
