@@ -2,6 +2,7 @@
 //   *Live-User-Channel Proof Before Done*
 
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
@@ -2221,7 +2222,8 @@ export class AgentServer {
       const raw = callerAddress(req, viaOwnNameForPin(host));
       // A loopback request that is not the machine itself and carries no own-tunnel client header is
       // unattributable (localtunnel, relays): charged to the global budget only, never to a shared key.
-      const ip = !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
+      // A same-network arrival (identity A4) is never loopback; its address is already rewritten to sn:<addr>.
+      const ip = mayBeLocalArrival(req) && !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
       const markerId = readPinMarker(req);
       return { ip, markerId, isLocalDirect, localUnmarked: isLocalDirect && !markerId };
     };
