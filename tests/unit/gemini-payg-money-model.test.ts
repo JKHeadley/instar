@@ -432,6 +432,24 @@ describe('release state (§8): armed-pending-proof', () => {
     expect((await refusal(admitMeteredCall(deps, E1({ modelId: NEON })))).reason).toBe('outside-verified-tier');
   });
 
+  it('PROBE_DOOR is unaffected by the lease self-fence: a pool holder whose echo is not yet confirmed still passes its boot probe, while the metered door self-fences', async () => {
+    // Found by the user-role live test on a real two-machine pair: the boot probe ran
+    // before the first designation echo and left the money layer probe-failed.
+    for (const leaseAgo of [null, 10 * 60_000]) {
+      const capsStore = new RoutingSpendCapsStore({ stateDir, now });
+      capsStore.ensureProbeDoor('m1');
+      capsStore.adjustCaps('t', capsStore.version(), KEY, 'google', { monthlyCapUsd: 50, dailyCapUsd: 10, periodTimeZone: LA });
+      capsStore.setGoLive('t', capsStore.version(), DOOR, { enabled: true, keyRef: KEY, designatedMachineId: 'm1' });
+      capsStore.setDoorPolicy('t', capsStore.version(), DOOR, { ...policy(), releaseState: 'armed-pending-proof' });
+      const ledger = new MeteredSpendLedger({ stateDir, now, zoneForKey: (k) => capsStore.read().caps[k]?.periodTimeZone });
+      const prices = new RoutingPriceAuthority({ projectDir, stateDir, now });
+      const gate = new MeteredSpendGate({ ledger, prices, capsStore, machineId: 'm1', leaseConfirmedAgoMs: () => leaseAgo, now });
+      const verdict = await runCapGateProbe(gate, capsStore.read());
+      expect(verdict).toMatchObject({ passed: true });
+      expect((await refusal(gate.admit(R()))).reason).toBe('lease-liveness-unconfirmed');
+    }
+  });
+
   it('PROBE_DOOR is unaffected: runCapGateProbe still passes beside a gemini door policy', async () => {
     const { gate, capsStore } = mk();
     capsStore.ensureProbeDoor('m1');

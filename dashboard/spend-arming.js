@@ -221,3 +221,87 @@ export function monthlyRowWords(caps) {
   if (caps.holderUnreachable) lines.push('The spending machine could not be reached; these are the last known figures.');
   return lines;
 }
+
+/**
+ * The Gemini pay-per-use setup plan (gemini-payg §8 "Delivery": the card links to this
+ * Spend-tab plan view).
+ *
+ * The lane shipped a card that pointed at the Spend tab, a server that renders and
+ * commits the `gemini-payg-setup` plan, and a commit route that schedules its own
+ * restart — but no screen that showed the plan or took the PIN for it. Found by the
+ * user-role live test driving the real dashboard. These helpers are that screen's
+ * pure parts; the server's words are shown verbatim and nothing is derived from a form.
+ */
+
+/** Whether the Spend tab shows the setup plan: a proposal exists here and no door is set up yet. */
+export function geminiSetupShouldRender(proposal, release) {
+  if (!proposal || proposal.present !== true) return false;
+  const st = release && release.here === true && release.evaluation ? release.evaluation.releaseState : 'not-armed';
+  return st === 'not-armed';
+}
+
+/**
+ * The commit body for the setup plan: the plan identity, the PIN and the proposal hash the
+ * plan was rendered from (so a proposal changed after rendering is refused by the server
+ * with "the proposal changed; a new card is needed"). Never a form field.
+ */
+export function geminiSetupCommitRequest(plan, pin) {
+  const p = plan || {};
+  return { planId: p.planId, nonce: p.nonce, pin, ...(typeof p.proposalHash === 'string' ? { proposalHash: p.proposalHash } : {}) };
+}
+
+/**
+ * Render the setup plan. The FIRST line of the server's text is the first-screen line
+ * ("Gemini joins as a reviewer and a second opinion. …") and is shown as the panel's
+ * lead, above everything else; the full text follows verbatim.
+ */
+export function renderGeminiSetupPlan(doc, target, plan) {
+  if (!target) return;
+  target.replaceChildren();
+  if (!plan || !plan.renderedText) {
+    target.appendChild(el(doc, 'div', 'spend-arm-note', 'No Gemini setup to approve yet.'));
+    return;
+  }
+  const lines = String(plan.renderedText).split('\n');
+  target.appendChild(el(doc, 'div', 'gp-setup-lead', lines[0]));
+  target.appendChild(el(doc, 'div', 'spend-arm-plan-label', 'Approve exactly this:'));
+  target.appendChild(el(doc, 'div', 'spend-arm-plan-text', lines.slice(1).join('\n').replace(/^\n+/, '')));
+  if (plan.expiresAt) {
+    target.appendChild(el(doc, 'div', 'spend-arm-plan-expiry', `This approval expires at ${plan.expiresAt}.`));
+  }
+}
+
+/**
+ * What the operator reads after the setup commit. The commit itself schedules the
+ * restart its plan disclosed, so the next step is never a second PIN: either the server
+ * is restarting, or the server says why it did not and when it applies.
+ */
+export function geminiSetupAfterCommit(out) {
+  const o = out || {};
+  if (o.restart && o.restart.scheduled === true) {
+    return { state: 'restarting', words: 'Approved. The agent server on this machine is restarting to apply it — no second PIN is needed. This page reloads when it is back.' };
+  }
+  if (o.appliedHot === true) return { state: 'done', words: o.message ? String(o.message) : 'Approved and applied.' };
+  return { state: 'saved', words: o.message ? String(o.message) : 'Approved and saved.' };
+}
+
+/**
+ * Plain words for a refused render or commit. Never shows a raw server code, and never
+ * says "nothing has changed" when that cannot be known (a commit whose answer was lost,
+ * or a plan another approval used up).
+ */
+export function geminiSetupRefusalWords(err, opts = {}) {
+  const m = err && err.message ? String(err.message) : '';
+  if (/proposal-changed/.test(m)) return 'The proposal changed after this was shown, so a new card is needed. Nothing was approved.';
+  if (/awaiting-key/.test(m)) return 'The Gemini key is not ready on this machine yet, so there is nothing to approve. Nothing has changed.';
+  if (/lockout|429|rate/i.test(m)) return 'Too many attempts just now. Wait a few minutes, then reload the Spend tab and try again.';
+  if (/pin/i.test(m)) return 'That PIN was not accepted. Nothing has changed.';
+  // The plan was used up, or the state moved under it, by another approval (a second
+  // tap, another device — the server answers `consumed`/`unknown-plan`, or
+  // `source-state-drift` for a second tab's own plan). Saying "nothing has changed" here
+  // would be wrong: the other approval may have applied it. Found racing two dashboard
+  // tabs in the user-role live test.
+  if (/consumed|unknown-plan|nonce|drift/i.test(m)) return 'This plan was already used — it may have just been approved from another tap or device. Reload the Spend tab to see where it stands.';
+  if (opts.duringCommit) return 'The approval could not be confirmed (the server did not answer clearly). Reload the Spend tab to see where it stands before trying again.';
+  return 'This could not be shown just now. Nothing has changed — reload the Spend tab to try again.';
+}

@@ -192,6 +192,29 @@ describe('after go-live: reduce-only routes and the forwarded release proof', ()
     return { studio, mama };
   }
 
+  it('the release view shows the lease echo: unconfirmed before the echo runs, confirmed once a peer answers it (read-only)', async () => {
+    const { studio, mama } = await liveStudio();
+    const before = await request(studio.app).get('/routing-spend/gemini-payg/release');
+    expect(before.status).toBe(200);
+    expect(before.body.lease).toEqual({ confirmedAgoMs: null, windowMs: 60_000, confirmed: false });
+    studio.lane.runtime.startEcho();
+    try {
+      let lease: { confirmedAgoMs: number | null; confirmed: boolean } | null = null;
+      for (let i = 0; i < 50 && !lease?.confirmed; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+        lease = (await request(studio.app).get('/routing-spend/gemini-payg/release')).body.lease;
+      }
+      expect(lease?.confirmed).toBe(true);
+      expect(lease?.confirmedAgoMs).toBeGreaterThanOrEqual(0);
+      expect(lease?.confirmedAgoMs).toBeLessThanOrEqual(60_000);
+    } finally {
+      studio.lane.runtime.stopEcho();
+    }
+    // The non-holder has no lease of its own to report: it names the holder instead.
+    const peer = await request(mama.app).get('/routing-spend/gemini-payg/release');
+    expect(peer.body).toEqual({ holder: STUDIO, here: false });
+  });
+
   it('caps/lower refuses an increase and accepts a decrease (also when issued on the Mama PC)', async () => {
     const { studio, mama } = await liveStudio();
     const up = await request(studio.app).post('/routing-spend/caps/lower').send({ monthlyCapUsd: 80 });
