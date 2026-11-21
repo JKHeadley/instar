@@ -372,8 +372,7 @@ operation id with a short note.
 - **fleet:** live for every agent with the next release (no switch; the behavior it replaces silently loses replies).
 - **graduation criterion:** over one week on Echo, from the store: every reply parked during a restart was sent or handed back (zero imported beacon-503 rows ending `outcome-unknown`), every retirement row was reported (`reported_at` set), zero `retirement-never-handed-back`, and zero operator-found duplicate or lost replies traced to this path.
 - **dark-window:** none — ships live; it fixes active loss.
-- **ladder:** none (no switch: ships live as a delivery fix)
-
+- **ladder:** not applicable: no switch; ships live as a delivery fix.
 ## Open questions
 
 *(none)*

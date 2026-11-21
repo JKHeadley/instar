@@ -98,3 +98,7 @@ Concur with the review. Traced against the code, not the artifact:
 - Race: the retire dead-letters the queue entries and suppresses the children atomically, so a later `claim` cannot win. `recordOperationState('held'|'admitted')` cannot resurrect a `suppressed` row, and the operator route waits on the pass single-flight.
 - Minor, non-blocking: the browser-transport recovery branch has no stale gate. `lease-not-held` holds come from the bot `authorize` path, so I found no route by which a lease-held or imported reply reaches that branch.
 - The 20 unit tests pass locally. I did not run the integration or e2e files.
+
+### Follow-up commit 2 (CI green-up, 2026-11-21)
+
+`Unit Tests (node 20, shard 4/4)` failed on the second head in `tests/unit/feature-ladders-coverage.test.ts` ("every spec that names a ladder names a real entry"), a ratchet that reached `main` after this branch was cut. The spec's line `**ladder:** none (no switch: ships live as a delivery fix)` is neither a ladder id nor the accepted `not applicable: <reason>` form; it now reads `not applicable: no switch; ships live as a delivery fix.` Wording only; the feature still ships live with no switch, as the spec and this review say.
