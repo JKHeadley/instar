@@ -69,6 +69,16 @@ export function suggestionId(memberKeys: readonly string[]): string {
   return 'sg-' + crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex').slice(0, 20);
 }
 
+/**
+ * The owner's create-effort request id for one suggestion's Accept, derived from the suggestion id
+ * (docs/specs/conversation-graph-suggestions-replicated-decisions.md): every tab and every machine sends
+ * the same request, so the owner pipeline's replicated idempotency makes one group, never two. The value is
+ * the same as `acceptRequestId(id, 'create')` in the conversation-groups-phone change.
+ */
+export function suggestionCreateRequestId(suggestionIdValue: string): string {
+  return `sga-${crypto.createHash('sha256').update(`conversation-group-accept\n${suggestionIdValue}\ncreate\n`).digest('hex').slice(0, 40)}`;
+}
+
 function clip(text: string, max: number): string {
   const flat = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
   return flat.length > max ? flat.slice(0, max - 1).trimEnd() + '…' : flat;

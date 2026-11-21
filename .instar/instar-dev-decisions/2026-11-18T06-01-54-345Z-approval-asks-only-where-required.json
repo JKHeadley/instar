@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-18T06:01:54.345Z",
+  "slug": "approval-asks-only-where-required",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 449,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "skills/instar-dev/SKILL.md",
+      "skills/spec-converge/SKILL.md",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/approvalWhereRequiredSkillText.ts",
+      "src/data/awareness/approval-only-where-required.md",
+      "src/messaging/prApprovalFact.ts",
+      "src/messaging/prLinkReviewRequest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 422,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

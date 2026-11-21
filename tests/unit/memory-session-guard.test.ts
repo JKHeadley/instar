@@ -43,3 +43,37 @@ describe('every allowed route is a real route', () => {
       expect(sources).toContain(route);
     });
 });
+
+describe('the fold-probe place (context budget §10 shadow answerer)', () => {
+  const probe: SessionTokenRecord = { sessionId: 'inst_probe', audience: { kind: 'system' }, placeKey: 'fold-probe:141133' };
+
+  it('reads its own topic\'s chunk list and chunks', () => {
+    expect(memorySessionAllows('GET', '/topic/141133/chunks', probe)).toBe(true);
+    expect(memorySessionAllows('GET', '/topic/141133/chunks/span-1', probe)).toBe(true);
+  });
+
+  it('never another topic\'s chunks', () => {
+    expect(memorySessionAllows('GET', '/topic/999/chunks', probe)).toBe(false);
+    expect(memorySessionAllows('GET', '/topic/999/chunks/span-1', probe)).toBe(false);
+  });
+
+  it.each([
+    ['POST', '/telegram/reply/141133'], ['POST', '/slack/session-reply'], ['POST', '/app/session-reply'],
+    ['POST', '/messaging/preflight'], ['POST', '/feedback'], ['POST', '/team/proposals'], ['GET', '/docs'],
+    ['GET', '/work-board/cards/wc_0123456789abcdef'], ['GET', '/identity/soul/integrity'], ['GET', '/topic/141133/user-corpus'],
+    ['POST', '/topic/141133/chunks'], ['GET', '/topic/search'],
+  ])('refuses %s %s, including routes open to any other session', (method, route) => {
+    expect(memorySessionAllows(method, route, probe)).toBe(false);
+  });
+
+  it('keeps hook plumbing, which carries no remembered content', () => {
+    expect(memorySessionAllows('POST', '/hooks/events', probe)).toBe(true);
+    expect(memorySessionAllows('GET', '/internal/stop-gate/hot-path', probe)).toBe(true);
+  });
+
+  it('no channel session reaches the chunk routes', () => {
+    expect(memorySessionAllows('GET', '/topic/141133/chunks', b)).toBe(false);
+    expect(memorySessionAllows('GET', '/topic/-100/chunks', group)).toBe(false);
+    expect(memorySessionAllows('GET', '/topic/141133/chunks', { ...group, placeKey: 'telegram:141133' })).toBe(false);
+  });
+});

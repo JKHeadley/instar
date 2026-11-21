@@ -6,6 +6,7 @@
  * answered "unknown"; text from the server is rendered as text, never markup.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { JSDOM } from 'jsdom';
 import crypto from 'node:crypto';
 import { verifyDeviceRequest, ReplayGuard, parseDevicePublicKey } from '../../src/core/MobileDeviceKeys.js';
@@ -59,7 +60,29 @@ let dom: JSDOM;
 let calls: Call[];
 const flush = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
+// Each boot() imports a fresh console module, and closing the JSDOM window does not stop
+// it: a request it started (signing on Node's crypto thread pool, a fake IndexedDB step, a
+// poll timer) can resume during a LATER test and call the global fetch, which by then is
+// that later test's mock, adding calls to its counts. On a loaded CI shard signing is slow
+// enough for this to happen; alone the file passed. Every boot runs under its own async
+// context, so all work a page starts carries its boot's number, and the mock refuses (never
+// answers, never records) a call from an earlier boot. Work the test body itself starts,
+// such as a click, carries no number and is the current page's.
+const bootContext = new AsyncLocalStorage<number>();
+let bootGeneration = 0;
+const pageChannels = new Set<BroadcastChannel>();
+const RealBroadcastChannel = globalThis.BroadcastChannel;
+if (RealBroadcastChannel) {
+  // Node's BroadcastChannel outlives the window too: an earlier page would keep hearing this one.
+  globalThis.BroadcastChannel = class extends RealBroadcastChannel { constructor(name: string) { super(name); pageChannels.add(this); } } as typeof BroadcastChannel;
+}
+
 async function boot(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash = '#/work/chats', idb = fakeIndexedDB()) {
+  const generation = ++bootGeneration;
+  return bootContext.run(generation, () => bootPage(handler, hash, idb));
+}
+
+async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>) {
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
@@ -67,6 +90,8 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
   dom.window.localStorage.setItem('instar_token', 'tok');
   calls = [];
   g.fetch = async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
+    const owner = bootContext.getStore();
+    if (owner !== undefined && owner !== bootGeneration) return new Promise<Response>(() => { /* an earlier test's page: never answered */ });
     const c: Call = { url, method: init.method || 'GET', headers: init.headers || {}, body: typeof init.body === 'string' ? init.body : undefined };
     calls.push(c);
     const base: Record<string, unknown> = {
@@ -81,7 +106,11 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
   return { doc: dom.window.document, idb };
 }
 
-afterEach(() => { dom?.window.close(); });
+afterEach(() => {
+  for (const c of pageChannels) { try { c.close(); } catch { /* already closed */ } }
+  pageChannels.clear();
+  dom?.window.close();
+});
 
 const STATUS = { enabled: true, machineId: 'm1', nickname: 'Studio', serverTime: Date.now(), approvalPath: 'dashboard', approveEnabled: true, telegramSend: true, limits: { maxFiles: 10, maxMessageBytes: 64 << 20, maxFileBytes: 50 << 20, chunkBytes: 1 << 20 } };
 const UUID = '3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b';
@@ -433,6 +462,8 @@ describe('Conversations page', () => {
     expect(head.querySelector('.chat-group-icon svg')).not.toBeNull();
     expect(head.querySelector('.chat-group-icon-project, .chat-project-status')).toBeNull();
     expect(doc.querySelector('.chat-groups-label')?.textContent).toBe('Groups');
+    // No tracked project: no "Projects" section header at all.
+    expect(doc.querySelector('.chat-projects-label')).toBeNull();
     // Owner-facing words: never "effort"; a plain group (no tracked project) never says "project".
     const words = () => [doc.querySelector('.chat-rows')!.textContent!, ...[...doc.querySelectorAll('.chat-rows [aria-label]')].map((x) => x.getAttribute('aria-label')!)].join(' ').toLowerCase();
     expect(words()).not.toContain('effort');
@@ -476,7 +507,12 @@ describe('Conversations page', () => {
     expect(proj.querySelector('.chat-group-icon-project svg')).not.toBeNull();
     expect(proj.querySelector('.chat-project-status')?.textContent).toBe('Needs you');
     expect(proj.querySelector('.chat-project-status')?.classList.contains('tone-attn')).toBe(true);
-    expect(proj.getAttribute('aria-label')).toBe('Project <b>App work</b>, Needs you, 2 conversations, 3 unread');
+    // The tracked project's own title names the row (the group was titled "<b>App work</b>").
+    expect(proj.querySelector('.chat-row-title')?.textContent).toBe('App project');
+    expect(proj.getAttribute('aria-label')).toBe('Project App project, Needs you, 2 conversations, 3 unread');
+    // Two sections, as on the iPhone: "Projects" above the project row, "Groups" above the plain one.
+    const labels = [...doc.querySelectorAll('.chat-rows > .chat-group-label, .chat-rows > .chat-effort-row')].map((x) => x.classList.contains('chat-effort-row') ? `row:${x.querySelector('.chat-row-title')!.textContent}` : x.textContent);
+    expect(labels.slice(0, 4)).toEqual(['Projects', 'row:App project', 'Groups', 'row:Misc']);
     expect(folder.classList.contains('chat-project-row')).toBe(false);
     expect(folder.querySelector('.chat-project-status, .chat-group-icon-project')).toBeNull();
     expect(folder.getAttribute('aria-label')).toBe('Group Misc, 1 conversation');
@@ -667,5 +703,56 @@ describe('card source message navigation', () => {
     await vi.waitFor(() => expect(doc.body.textContent).toContain('This conversation is not here any more.'));
     expect(doc.querySelector('.chat-bubble')).toBeNull();
     expect((doc.querySelector('.chat-source-target') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('a pasted screenshot and files dropped on the open conversation join the tray; a text paste and a link drag do not (Telegram parity M6/M7)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [], nextBefore: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const W = dom.window as unknown as { File: typeof File; Event: typeof Event };
+    const box = doc.querySelector('textarea.chat-compose') as HTMLTextAreaElement;
+    const send = doc.querySelector('button.chat-send') as HTMLButtonElement;
+    const chips = () => [...doc.querySelectorAll('.chat-file-chip')].map((n) => n.firstChild?.textContent ?? '');
+    const fire = (target: Element, type: string, key: 'clipboardData' | 'dataTransfer', data: unknown) => {
+      const ev = new W.Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, key, { value: data });
+      target.dispatchEvent(ev);
+      return ev;
+    };
+    // A text paste is left to the browser.
+    const textPaste = fire(box, 'paste', 'clipboardData', { files: [], items: [{ kind: 'string' }] });
+    expect(textPaste.defaultPrevented).toBe(false);
+    expect(chips()).toEqual([]);
+    // A screenshot paste (a nameless image.png) joins the tray under a readable name.
+    const shot = new W.File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' });
+    const imgPaste = fire(box, 'paste', 'clipboardData', { files: [shot] });
+    expect(imgPaste.defaultPrevented).toBe(true);
+    expect(chips()).toHaveLength(1);
+    expect(chips()[0]).toMatch(/^Pasted image \d\d\.\d\d\.\d\d\.png · /);
+    expect(send.disabled).toBe(false);
+    // A link drag is not ours: the drop is not taken.
+    const msgs = doc.querySelector('.chat-messages')!;
+    const linkDrop = fire(msgs, 'drop', 'dataTransfer', { types: ['text/uri-list'], files: [] });
+    expect(linkDrop.defaultPrevented).toBe(false);
+    // Files dragged over the messages light the composer, and the drop adds them.
+    fire(msgs, 'dragenter', 'dataTransfer', { types: ['Files'], files: [] });
+    expect(doc.querySelector('.chat-composer')!.classList.contains('dropping')).toBe(true);
+    const doc1 = new W.File([new Uint8Array([4])], 'notes.pdf', { type: 'application/pdf' });
+    const drop = fire(msgs, 'drop', 'dataTransfer', { types: ['Files'], files: [doc1] });
+    expect(drop.defaultPrevented).toBe(true);
+    expect(doc.querySelector('.chat-composer')!.classList.contains('dropping')).toBe(false);
+    expect(chips().map((c) => c.split(' · ')[0])).toEqual([expect.stringMatching(/^Pasted image /), 'notes.pdf']);
+    // Removing a chip keeps the other.
+    (doc.querySelector('.chat-unpick') as HTMLButtonElement).click();
+    expect(chips().map((c) => c.split(' · ')[0])).toEqual(['notes.pdf']);
   });
 });

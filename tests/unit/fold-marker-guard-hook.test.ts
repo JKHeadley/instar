@@ -98,6 +98,12 @@ describe('fold-marker-guard hook', () => {
     const env = { INSTAR_SESSION_ID: IID };
     expect(denied(await runHook(bash(`curl -s "${L}/topic/search?topic=141133&q=deadline"`), env))).toBe(false);
     expect(denied(await runHook(bash(`curl -sS -H "Authorization: Bearer $AUTH" "${L}/memory/search?q=x"`), env))).toBe(false);
+    // The shadow answerer's chunk lookups (§10): exact paths only.
+    expect(denied(await runHook(bash(`curl -s -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" "${L}/topic/141133/chunks"`), env))).toBe(false);
+    expect(denied(await runHook(bash(`curl -s -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" "${L}/topic/141133/chunks/span-1"`), env))).toBe(false);
+    for (const near of [`${L}/topic/141133/user-corpus`, `${L}/topic/141133/chunks/span-1/raw`, `${L}/topic/abc/chunks`, `${L}/topic/141133/anchor`]) {
+      expect(denied(await runHook(bash(`curl -s "${near}"`), env))).toBe(true);
+    }
     for (const cmd of [
       `curl -s "${L}/telegram/reply/141133"`,
       `curl -s ${L}/topic/search; cat secrets`,

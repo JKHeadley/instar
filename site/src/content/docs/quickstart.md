@@ -1,80 +1,51 @@
 ---
 title: Quick Start
-description: Your first five minutes with Instar.
+description: Get your first Instar agent running, with or without a terminal.
 ---
 
-## Setup
+There are two ways to start. Pick the one that fits you.
 
-Run the setup wizard:
+## Without a terminal (Mac app)
+
+1. [Download the Mac app](/#download) and move it to Applications.
+2. Open it and tap **Create my agent**. The app sets up an agent on that Mac and makes the Mac its owner device.
+3. Add your phone: install **Instar Agents** from the App Store and pair it with your agent. Then you can talk to your agent from anywhere.
+
+## From the terminal
+
+You need Node.js 20 or later and one of Claude Code, Codex or Gemini CLI signed in to your subscription. Then run:
 
 ```bash
 npx instar
 ```
 
-Follow the prompts. The wizard will ask you to:
-1. Choose a configuration (General Agent or Project Agent)
-2. Set up Telegram (create a bot, provide the token)
-3. Describe your agent's identity and your working relationship
-4. Optionally install auto-start on login
+A guided setup takes it from there. It will:
+1. Ask whether this is a general agent or an agent for the project in the current folder
+2. Connect a way to talk to it, usually a Telegram bot it helps you create. If Telegram is not an option, the agent still works from its dashboard and the Instar app
+3. Ask about your agent's identity and how you want to work together
+4. Optionally start your agent automatically when you log in
 
-## Talk to Your Agent
+## Talk to your agent
 
-Once setup completes, send a message in Telegram. Your agent will respond in its own voice.
+Send it a message from the app or from Telegram. It answers in its own voice.
 
-Try these first interactions:
+Good first things to try:
 
-- **"What can you do?"** -- The agent will describe its capabilities
-- **"Check my emails every 2 hours"** -- Watch it create a job and schedule
-- **"Remember that I prefer TypeScript over JavaScript"** -- It'll save this to MEMORY.md
-- **"What time is it?"** -- Temporal awareness in action
+- **"What can you do?"** It describes what it can do on this machine.
+- **"Check my email every two hours."** It sets up a scheduled job.
+- **"Remember that I prefer short answers."** It saves that, and still knows it next week.
+- **"What needs me?"** It reads your Needs-you list: the few things only you can decide.
 
-## Watch It Work
+## What you will see
 
-Your Telegram group becomes a living dashboard:
+- **Conversations**: one per project or topic, each with its own memory.
+- **Needs-you**: the one list of what is waiting on you, with where to act.
+- **Work**: the Work Board shows what your agent is doing and what it is waiting on.
 
-- Each **scheduled job** gets its own topic
-- The **Lifeline topic** (green icon) shows health status
-- **Interactive topics** are your conversations with the agent
-- `/new` creates a fresh topic with its own session
+Scheduled jobs run in the background, and their reports stay quiet unless you ask to see them. See the [default jobs reference](/reference/default-jobs) for what runs out of the box.
 
-## See the Infrastructure
+## Next steps
 
-```bash
-instar status               # What's running
-curl localhost:4040/health   # Server health (JSON)
-curl localhost:4040/jobs     # Scheduled jobs
-```
-
-The web dashboard (if tunnel is configured) shows sessions, jobs, relationships, and evolution in real time.
-
-## Add Capabilities
-
-```bash
-# Add email integration
-instar add email --credentials-file ./credentials.json
-
-# Add Sentry error tracking
-instar add sentry --dsn https://key@o0.ingest.sentry.io/0
-
-# Add quota tracking
-instar add quota
-```
-
-## What Happens Next
-
-With default settings, your agent ships with fourteen built-in jobs that give it a circadian rhythm of self-maintenance. A sample of what runs:
-
-- **Every 5 minutes**: Health check (Haiku) + commitment detection (Haiku)
-- **Every 4 hours**: Reflection on recent work (Opus) + evolution overdue check (Haiku)
-- **Every 6 hours**: Evolution proposal evaluate (Sonnet) and implement
-- **Every 8 hours**: Insight harvest from learnings (Sonnet)
-- **Daily**: Review stale relationships (Sonnet) + identity review
-- **On a schedule**: Five `overseer-*` jobs (development, guardian, infrastructure, learning, maintenance) that watch over different facets of the agent's life
-
-See the [default jobs reference](/reference/default-jobs) for the complete list with cron schedules and supervision tiers.
-
-## Next Steps
-
-- [The Coherence Problem](/concepts/coherence) -- Why coherence matters
-- [Job Scheduler](/features/scheduler) -- Create your own jobs
-- [Evolution System](/features/evolution) -- How your agent grows
+- [The Coherence Problem](/concepts/coherence): why an agent you can trust needs structure
+- [Job Scheduler](/features/scheduler): create your own jobs
+- [Evolution System](/features/evolution): how your agent grows

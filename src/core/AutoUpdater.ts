@@ -261,6 +261,23 @@ export class AutoUpdater {
 
     // Load persisted state (survives restarts)
     this.loadState();
+
+    // Turning auto-updates off must cancel an apply that is already queued,
+    // not only stop the NEXT check from queueing one. LiveConfig polls the
+    // config file every few seconds and emits 'change'; the coalescing timer
+    // can only exist after a tick has read updates.autoApply, so the path is
+    // always being watched by the time there is anything to cancel. The apply
+    // step re-reads the setting too (applyQueuedUpdate), so this listener is
+    // the fast path, not the only guard.
+    if (this.liveConfig && typeof (this.liveConfig as { on?: unknown }).on === 'function') {
+      // LiveConfig emits BEFORE it swaps its cache, so read the new value from
+      // the event, not through liveConfig.get(). Absent means the default (on).
+      this.liveConfig.on('change', (change: { path?: string; newValue?: unknown }) => {
+        if (change?.path !== 'updates.autoApply') return;
+        const next = typeof change.newValue === 'boolean' ? change.newValue : true;
+        if (next !== this.config.autoApply) this.setAutoApply(next, 'config file');
+      });
+    }
   }
 
   /**
@@ -417,6 +434,58 @@ export class AutoUpdater {
   }
 
   /**
+   * Turn automatic applying on or off at runtime (config file change, or
+   * PATCH /updates/config). Turning it OFF also cancels an update that a
+   * check already queued behind the coalescing delay: "off" means no
+   * automatic install from now on, including one that was waiting.
+   * A manual apply (POST /updates/apply) is unaffected.
+   *
+   * Returns true when a queued apply was cancelled.
+   */
+  setAutoApply(autoApply: boolean, source = 'runtime'): boolean {
+    if (this.config.autoApply !== autoApply) {
+      console.log(`[AutoUpdater] autoApply ${this.config.autoApply} → ${autoApply} (${source})`);
+    }
+    this.config.autoApply = autoApply;
+    return autoApply ? false : this.cancelQueuedAutoApply(source);
+  }
+
+  /** Clear an armed coalescing timer. Returns true when one was armed. */
+  private cancelQueuedAutoApply(source: string): boolean {
+    if (!this.applyTimer) return false;
+    clearTimeout(this.applyTimer);
+    this.applyTimer = null;
+    // coalescingUntil doubles as the "already told the person" marker on the
+    // auto-updates-off branch; clearing it lets the next check send the
+    // "a new version is available, auto-updates are off" notice once.
+    this.coalescingUntil = null;
+    console.log(
+      `[AutoUpdater] Auto-updates turned off (${source}) — cancelled the queued apply` +
+      `${this.pendingUpdate ? ` of v${this.pendingUpdate}` : ''}. It can still be applied by hand.`
+    );
+    this.saveState();
+    return true;
+  }
+
+  /**
+   * The automatic apply step (coalescing timer, or no-delay path). Re-reads
+   * updates.autoApply immediately before installing, and refuses when it is
+   * off, so a setting changed after the check queued the update still wins.
+   */
+  private async applyQueuedUpdate(): Promise<void> {
+    this.reloadDynamicConfig();
+    if (!this.config.autoApply) {
+      console.log(
+        `[AutoUpdater] Auto-updates are off — not applying the queued` +
+        `${this.pendingUpdate ? ` v${this.pendingUpdate}` : ' update'}.`
+      );
+      this.saveState();
+      return;
+    }
+    await this.applyPendingUpdate();
+  }
+
+  /**
    * Re-read dynamic config values from disk via LiveConfig.
    * Sessions or external edits may have changed them since startup.
    *
@@ -430,7 +499,7 @@ export class AutoUpdater {
         const diskValue = this.liveConfig.get<boolean>('updates.autoApply', true);
         if (diskValue !== this.config.autoApply) {
           console.log(`[AutoUpdater] Config changed: autoApply ${this.config.autoApply} → ${diskValue}`);
-          this.config.autoApply = diskValue;
+          this.setAutoApply(diskValue, 'config file');
         }
         const diskRestartImmediately = this.liveConfig.get<boolean>('updates.restartImmediately', false);
         if (diskRestartImmediately !== this.config.restartImmediately) {
@@ -449,7 +518,7 @@ export class AutoUpdater {
       const diskValue = raw?.updates?.autoApply;
       if (typeof diskValue === 'boolean' && diskValue !== this.config.autoApply) {
         console.log(`[AutoUpdater] Config changed on disk: autoApply ${this.config.autoApply} → ${diskValue}`);
-        this.config.autoApply = diskValue;
+        this.setAutoApply(diskValue, 'config file');
       }
       const diskRestartImmediately = raw?.updates?.restartImmediately;
       if (typeof diskRestartImmediately === 'boolean' && diskRestartImmediately !== this.config.restartImmediately) {
@@ -590,6 +659,8 @@ export class AutoUpdater {
 
       // Step 2: Auto-apply if configured
       if (!this.config.autoApply) {
+        // An apply queued while autoApply was still on must not survive here.
+        this.cancelQueuedAutoApply('check');
         this.saveState();
         // Notify with actionable instructions — don't leave the user hanging
         // Only notify once per detected version (avoid spam on every tick)
@@ -611,7 +682,7 @@ export class AutoUpdater {
       if (delayMs <= 0) {
         // No coalescing — apply immediately (legacy behavior)
         this.saveState();
-        await this.applyPendingUpdate();
+        await this.applyQueuedUpdate();
         return;
       }
 
@@ -629,7 +700,7 @@ export class AutoUpdater {
       this.applyTimer = setTimeout(async () => {
         this.applyTimer = null;
         this.coalescingUntil = null;
-        await this.applyPendingUpdate();
+        await this.applyQueuedUpdate();
       }, delayMs);
       this.applyTimer.unref(); // Don't prevent process exit
     } catch (err) {

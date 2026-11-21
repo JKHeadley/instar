@@ -57,6 +57,9 @@
   find/click/invoke search the web page only; add 'browser' to include Chrome's own UI.
   ND_CHROME_FLAGS is an allowlist: --disable-extensions, --start-maximized, --new-window,
   --window-size=W,H, --window-position=X,Y, --lang=xx. Anything else is refused (exit 1).
+  `launch` always adds --disable-features=CalculateNativeWinOcclusion so a covered window keeps
+  painting; `attach` warns when the bound Chrome lacks it, and text/find/editfields answer
+  "ERR page-not-rendering" (exit 2) when the title names a site but the page never painted.
 
   Exit codes: 0 ok; 2 target/element not found or focus check refused; 1 error.
 #>
@@ -378,11 +381,66 @@ function Get-DocumentElement($t) {
   return (Get-TargetElement $t).FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
+# --- Occlusion: a covered Chrome stops painting -----------------------------------
+# Chrome's native window occlusion tracking decides a window that other windows cover is
+# hidden and then stops rendering the page AND publishing its accessibility tree: the title
+# updates, but `shot` is blank and the page Document element never appears. Measured on
+# Windows 11 (2026-11-19): a desktop app covering most of the screen blanked every page;
+# --disable-gpu did not help; this switch did. It is a rendering setting (Chrome keeps drawing a
+# covered window), not an automation or debugging switch.
+$OcclusionFix = '--disable-features=CalculateNativeWinOcclusion'
+$OcclusionMissingWarning = 'warning: this Chrome was started without the occlusion fix, so its pages go blank while another window covers it; if text or find report ERR page-not-rendering and you started this Chrome, close it and start it again with launch'
+
+function Get-BrowserCommandLine([uint32]$bpid) {
+  try { return (Get-CimInstance Win32_Process -Filter "ProcessId=$bpid" -ErrorAction Stop).CommandLine } catch { return $null }
+}
+# True when the running browser was started with the occlusion fix (or its command line is unreadable:
+# then nothing is claimed either way).
+function Test-OcclusionFix([uint32]$bpid) {
+  $cl = Get-BrowserCommandLine $bpid
+  if ($null -eq $cl) { return $true }
+  return ($cl -match '--disable-features=\S*CalculateNativeWinOcclusion')
+}
+
+# The page title Chrome shows for the target window ("Example Domain - Google Chrome" -> "Example
+# Domain"); empty for a new tab or a blank page. Page-supplied text: control characters are dropped and
+# it is cut to 80 characters before it is quoted in a driver message. Titles are compared in English
+# (a Chrome in another interface language names its new tab differently, which can only make a
+# still-loading new tab report page-not-rendering after the one-second recheck).
+function Get-PageTitle($t) {
+  try { $n = (Get-TargetElement $t).Current.Name } catch { return '' }
+  if (-not $n) { return '' }
+  $n = ($n -replace '\s+-\s+Google Chrome.*$', '' -replace '[\x00-\x1f\x7f]', '').Trim()
+  if ($n -in @('New Tab', 'about:blank', 'Google Chrome')) { return '' }
+  if ($n.Length -gt 80) { $n = $n.Substring(0, 80) + '...' }
+  return $n
+}
+
+# The page Document element, or $null on a blank or new tab (a page still loading: the caller keeps its
+# old "page document not found"). When the title names a site, a missing document is re-checked once
+# after a second (a navigation can update the title before the new page's tree appears); still missing,
+# it fails with ERR page-not-rendering instead of letting the caller return Chrome's own UI strings or
+# an empty answer. The message names occlusion as the likely cause only when the running Chrome lacks
+# the fix; a missing document proves the page is unreadable, not why.
+function Get-PageDocument($t) {
+  $doc = Get-DocumentElement $t
+  if ($doc) { return $doc }
+  $title = Get-PageTitle $t
+  if (-not $title) { return $null }
+  Start-Sleep -Milliseconds 1000
+  $doc = Get-DocumentElement $t
+  if ($doc) { return $doc }
+  if (-not (Test-OcclusionFix $t.pid)) {
+    Fail "ERR page-not-rendering: the window title (page-supplied) is '$title' but Chrome's page document was still unavailable after a recheck, and this Chrome was started without the occlusion fix (a known cause: Chrome stops drawing a page while other windows cover it). If you started this Chrome, close it and start it again with launch (the profile's sign-in survives); otherwise read shot, or use a profile of your own. The fix applies only to a Chrome started by launch." 2
+  }
+  Fail "ERR page-not-rendering: the window title (page-supplied) is '$title' but Chrome's page document is unavailable. If the page is still loading, wait a few seconds and retry; if the window is minimized, focus it; read shot to see what Chrome shows." 2
+}
+
 # Search scope: the page Document by default, so `click Close` can't hit a tab or toolbar
 # control. Pass scope 'browser' to search Chrome's own UI (tabs, toolbar, dialogs) too.
 function Find-ByName($t, [string]$needle, [string]$scope) {
   $needleL = $needle.ToLower()
-  $root = if ($scope -eq 'browser') { Get-TargetElement $t } else { Get-DocumentElement $t }
+  $root = if ($scope -eq 'browser') { Get-TargetElement $t } else { Get-PageDocument $t }
   if (-not $root) { Fail 'page document not found (use scope "browser" for Chrome UI)' 2 }
   foreach ($el in (Walk-Elements $root)) {
     try {
@@ -401,7 +459,7 @@ function Find-ByName($t, [string]$needle, [string]$scope) {
 function Get-PageEdits($t) {
   # Walk only the page's Document subtree (same notion of "the page" as Find-ByName), so the
   # omnibox, side panel and any other Chrome UI can never get an index.
-  $doc = Get-DocumentElement $t
+  $doc = Get-PageDocument $t
   if (-not $doc) { Fail 'page document not found' 2 }
   $edits = @()
   foreach ($el in (Walk-Elements $doc)) {
@@ -437,9 +495,13 @@ switch ($Cmd) {
     # ND_CHROME_FLAGS adds flags, e.g. "--disable-extensions" for a scripted login where a
     # password-manager extension would otherwise race the form-fill.
     # PS 5.1 joins ArgumentList with spaces and does not quote, so quote paths ourselves.
+    # $OcclusionFix keeps Chrome painting (and publishing its a11y tree) while another window
+    # covers it; see the note at its definition. It is fixed here and ND_CHROME_FLAGS cannot
+    # change it (the allowlist below refuses --disable-features).
     $chromeArgs = @(
       "--user-data-dir=`"$udd`"",
       '--force-renderer-accessibility',
+      $OcclusionFix,
       '--no-first-run',
       '--no-default-browser-check'
     )
@@ -468,6 +530,9 @@ switch ($Cmd) {
     if (-not $bpid) { Fail "no running Chrome on profile: $A1" 2 }
     Save-Target $A1
     Write-Output "attached: pid=$bpid profile=$A1"
+    # A Chrome started some other way (or by an older driver) lacks the occlusion fix and goes
+    # blank whenever another window covers it. Warn; the binding itself still succeeds.
+    if (-not (Test-OcclusionFix $bpid)) { [Console]::Error.WriteLine($OcclusionMissingWarning) }
     exit 0
   }
 
@@ -541,6 +606,12 @@ switch ($Cmd) {
 
   'text' {
     $t = Get-Target
+    # A site whose page never painted would otherwise come back as Chrome's own UI strings only.
+    if (-not (Get-PageDocument $t)) {
+      # Blank or new tab (or a page still loading): there is no page text, only Chrome's own UI. Say so,
+      # so the strings below are never read as the page's content.
+      [Console]::Error.WriteLine('note: no page document (blank or new tab, or still loading); only Chrome''s own UI was read')
+    }
     $texts = New-Object System.Collections.ArrayList
     foreach ($el in (Walk-Elements (Get-TargetElement $t))) {
       try {

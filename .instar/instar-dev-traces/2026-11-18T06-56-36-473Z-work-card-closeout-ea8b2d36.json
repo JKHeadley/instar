@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "work-card-closeout",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-18T06:56:36.473Z",
+  "artifactPath": "upgrades/side-effects/work-card-closeout.md",
+  "artifactSha256": "296972e938d5f45d64af4dc3da76622f6c1fbad5c17d3108f7d86874fe505927",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "src/data/awareness/work-card-closeout.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/work-card-closeout-alive.test.ts",
+    "tests/integration/work-card-closeout-routes.test.ts",
+    "tests/unit/work-card-closeout.test.ts",
+    "upgrades/eli16/work-card-closeout.md",
+    "upgrades/next/work-card-closeout.md",
+    "upgrades/side-effects/work-card-closeout.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches the person-tap path and the phone Face ID signed line; replicated record schema change (additive, old-build safe)",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

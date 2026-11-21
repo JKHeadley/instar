@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "held-and-startup-parked-send-release",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:27:36.082Z",
+  "artifactPath": "upgrades/side-effects/held-and-startup-parked-send-release.md",
+  "artifactSha256": "160c57b35bd29895006256be4d7b2ff97422be4c3acf81457ef30b8ea89f15ce",
+  "specPath": "docs/specs/held-and-startup-parked-send-release.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/routing-spend-control-room.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "upgrades/side-effects/held-and-startup-parked-send-release.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation-only follow-up on the converged Tier-2 held-and-startup-parked-send-release spec: documents the gemini-payg-reconcile default job so the docs-coverage job floor (85%) passes; no runtime surface.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

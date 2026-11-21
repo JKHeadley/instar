@@ -51,6 +51,8 @@ export function buildTriageAuthorityProposal(input: {
   agentId: string;
   binding: { ownerMachineId: string | null; ownerEpoch: number };
   route: { framework: IntelligenceFramework; model: string | undefined } | null;
+  /** This machine's Codex CLI binary, so a codex proposal names a model it can run. */
+  codexBinaryPath?: string;
   piModel?: string;
   current: AuthorityRecord | null;
   currentMode?: 'active' | 'proposal-only';
@@ -71,7 +73,7 @@ export function buildTriageAuthorityProposal(input: {
   if (!input.agentId.trim()) blockers.push('This agent has no name configured.');
   if (!input.binding.ownerMachineId) blockers.push('No machine is configured to run the feedback drain here, so there is nothing to bind the authority to.');
   if (!Number.isSafeInteger(input.binding.ownerEpoch) || input.binding.ownerEpoch < 1) blockers.push('The drain owner epoch is not readable right now.');
-  const model = input.route ? reportedModelFor(input.route.framework, input.route.model, input.piModel) : null;
+  const model = input.route ? reportedModelFor(input.route.framework, input.route.model, input.piModel, input.codexBinaryPath) : null;
   if (!input.route || !model) blockers.push('No model is currently available to route the triage decision to, so there is nothing to approve.');
   if (!Number.isSafeInteger(envelope.maxBatch) || envelope.maxBatch < 1 || envelope.maxBatch > 50) blockers.push('Batch size must be a whole number from 1 to 50.');
   if (!Number.isSafeInteger(envelope.maxTokens) || envelope.maxTokens < 512 || envelope.maxTokens > 16_000) blockers.push('Token limit must be a whole number from 512 to 16000.');
