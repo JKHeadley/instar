@@ -4,7 +4,7 @@ import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
-import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
+import { messageTypeOf, toWireMedia, parseInboundMediaField, escapeTypedPathTags, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
 import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { buildContextLayers, contextLayersEnabled, CONTEXT_LAYERS_FEATURE_ID, type LayerEmitter } from '../monitoring/contextLayers/contextLayersBoot.js';
@@ -4193,8 +4193,17 @@ function wireWhatsAppRouting(
     const jid = msg.channel?.identifier;
     if (!jid) return;
 
-    const text = msg.content;
-    const senderName = (msg.metadata?.senderName as string) ?? undefined;
+    // SEC-149: a typed `[image:/path]` (or document, video, voice, file) from a WhatsApp sender must
+    // not reach the session as a live media tag, as on Telegram, Slack and iMessage. WhatsApp never
+    // delivers real media as a path tag here (its placeholders are `[Image]`, `[Video]` and
+    // `[Document: <sender's file name>]`), so escaping the whole text loses nothing; the document
+    // placeholder, whose file name the sender chooses, is itself made inert.
+    const text = escapeTypedPathTags(msg.content);
+    // The sender's profile name is chosen by the sender and goes into the session's tag; brackets are
+    // removed here (as SessionManager.injectWhatsAppMessage already does for live sessions), so a name
+    // like `[image:/path]` cannot become a live tag in a new session's first prompt either.
+    const rawSenderName = (msg.metadata?.senderName as string) ?? undefined;
+    const senderName = rawSenderName ? rawSenderName.replace(/[\[\]]/g, '') || undefined : undefined;
 
     const memoryPlaceKey = `whatsapp:${jid}`;
     if (!(await whatsappMemoryCheck(whatsapp, jid, msg.metadata))) return;
