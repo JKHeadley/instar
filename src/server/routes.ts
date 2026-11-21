@@ -3341,7 +3341,11 @@ export function createRoutes(ctx: RouteContext): Router {
     appendLine: async (conversationKey, lineId, text) => { ctx.workBoard?.()?.appendLine(conversationKey, lineId, text); },
     ensureConversation: async (cardId) => { ctx.workBoard?.()?.ensureConversation(cardId); },
     removeConversation: async (conversationKey) => { ctx.workBoard?.()?.removeConversation(conversationKey); },
-    behind: () => ctx.workBoard?.()?.behind() ?? null,
+    // The behind machine's nickname rides along so the page names it instead of printing its id.
+    behind: () => {
+      const b = ctx.workBoard?.()?.behind() ?? null;
+      return b ? { ...b, machineName: ctx.machinePoolRegistry?.getCapacity(b.machineId)?.nickname ?? null } : null;
+    },
     lastWrittenOn: (v) => ctx.workBoard?.()?.lastWrittenOn(v) ?? null,
     repliedAfterQuestion: (v) => ctx.workBoard?.()?.repliedAfterQuestion(v) ?? false,
     brokenAttachments: (v) => ctx.workBoard?.()?.brokenAttachments(v) ?? [],

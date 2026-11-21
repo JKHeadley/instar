@@ -7,6 +7,22 @@ import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
 // carries that card's titleHash so a tap made on an old copy of the card is refused.
 
 import { whenWords } from './mandates-model.js';
+import { verifiedDisplayName } from './display-identity.js';
+
+/** A Needs-you row's words for a card title: whole words, ending in "…" when cut (never "needs y"). */
+export const NEED_ROW_TITLE_MAX = 140;
+export function needRowTitle(title) {
+  const t = String(title || 'A work card').replace(/\s+/g, ' ').trim() || 'A work card';
+  if (t.length <= NEED_ROW_TITLE_MAX) return t;
+  const room = t.slice(0, NEED_ROW_TITLE_MAX - 1);
+  const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
+  return `${(sp >= NEED_ROW_TITLE_MAX / 3 ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '')}…`;
+}
+
+/** A machine as the person knows it: its nickname, never its id. */
+export function machineWords(name, id) {
+  return verifiedDisplayName(name, id) || 'another of your machines';
+}
 
 export { whenWords };
 
@@ -116,7 +132,7 @@ export function pickupLine(p) {
 
 export function behindLine(b) {
   if (!b || !b.machineId) return null;
-  return `This machine may not have the newest changes from ${b.machineId} yet, so a card here can be out of date.`;
+  return `This machine may not have the newest changes from ${machineWords(b.machineName, b.machineId)} yet, so a card here can be out of date.`;
 }
 
 // ── who ───────────────────────────────────────────────────────────────────
@@ -148,7 +164,7 @@ export function cardRow(card) {
   const notes = [];
   if (card.repliedAfterQuestion) notes.push('You replied; the agent has not updated the card');
   if (card.mayHaveBeenHandedOver) notes.push('This may already have been handed over');
-  if (card.mayHaveChangedOn) notes.push(`This card may have changed on ${card.mayHaveChangedOn}`);
+  if (card.mayHaveChangedOn) notes.push(`This card may have changed on ${machineWords(card.mayHaveChangedOnName, card.mayHaveChangedOn)}`);
   if (card.capacity) notes.push(capacityWords(card.capacity));
   return { key: `card:${card.id}`, main: String(card.title || 'Untitled card'), sub: String(card.needLine || ''), notes, outward: Boolean(card.outward) };
 }
@@ -518,7 +534,7 @@ export function workBoardNeedRows(wb) {
   const rest = lane.more + (lane.cards.length - shown.length);
   const rows = shown.map((c) => ({
     key: `work:${c.id}`,
-    main: String(c.title || 'A work card').slice(0, 80),
+    main: needRowTitle(c.title),
     sub: String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
     // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
