@@ -114,6 +114,7 @@ Not required.
 - Before the fix (src stashed): `tests/unit/update-checker-apply.test.ts` 3 new tests fail ("expected 'npm' to be '<runtime node>'", "expected '' to be '<runtime node dir>'"); `tests/unit/AgentServer-outbound-timeout.test.ts` 1 fails ("expected 30000 to be undefined"). After: 50/50 pass across both files.
 - `tests/unit/UpdateChecker.test.ts -t "explicit version pinning"` and `tests/integration/native-update-preflight.test.ts` (real CLI + real SQLite probe) pass with the fake-npm seam moved to `npmExec`.
 - Local Verify on a88b58b5d failed one e2e test, `tests/e2e/update-native-candidate-lifecycle.test.ts` ("keeps the old install and does not request a restart"): its npm fake keyed on `args[0] === 'install' | 'rebuild'` at the exec seam, and with the runtime node's `npm-cli.js` now first in args neither branch fired. Moved to the `npmExec` seam like the other two; the file passes.
+- Second Local Verify run (723d23427) failed `tests/unit/development-artifact-update.test.ts` ("installs a verified snapshot and executes the real validation and promotion pipeline"): deterministic 3/3 on the PR head, 1/1 pass with origin/main's sources swapped in — real, same class. That test records every exec call (it asserts on the node `-e … SELECT 1` probe too), so it stays at the `execAsync` seam and now views each call from its npm subcommand onward, tolerating the leading `npm-cli.js`. 3/3 pass after. A repo-wide sweep of tests faking npm by the literal command or `args[0]` found no further instance.
 
 ---
 
