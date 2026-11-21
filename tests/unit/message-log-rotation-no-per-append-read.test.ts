@@ -80,6 +80,35 @@ describe('message-log rotation does not read the log per append', () => {
     expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => 31 + i));
   });
 
+  it('injected: a rotation whose READ fails keeps the oldest lines an on-time rotation would have kept', () => {
+    const { logPath, log } = logger(50, 20);
+    for (let i = 0; i < 50; i++) log.append(entry(i) as never); // 50 lines: at the cap, no rotation yet
+    const realRead = fs.readFileSync.bind(fs);
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementationOnce(() => { throw new Error('simulated read failure'); });
+    log.append(entry(50) as never); // 51 lines: the on-time attempt's read fails
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockImplementation(realRead as typeof fs.readFileSync);
+    for (let i = 51; i < 80; i++) log.append(entry(i) as never); // braked: over the cap, nothing removed
+    expect(fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean)).toHaveLength(80);
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+    log.append(entry(80) as never); // the late rotation
+    const ids = fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l).messageId);
+    // On time (at 51 lines) the rotation keeps 31..50, then 51..80 follow: the oldest survivor is 31.
+    expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => 31 + i));
+  });
+
+  it('injected: when the first line count cannot be read, the next append tries again (no brake), as before', () => {
+    const { logPath, log } = logger(50, 20);
+    const realRead = fs.readFileSync.bind(fs);
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementationOnce(() => { throw new Error('simulated read failure'); });
+    log.append(entry(0) as never); // the count read fails
+    read.mockImplementation(realRead as typeof fs.readFileSync);
+    for (let i = 1; i < 51; i++) log.append(entry(i) as never); // 51 lines: rotates on time
+    const ids = fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l).messageId);
+    expect(ids).toEqual(Array.from({ length: 20 }, (_, i) => 31 + i));
+  });
+
   it('forget() makes the next check recount the file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msglog-rot-'));
     dirs.push(dir);
@@ -105,9 +134,8 @@ describe('message-log rotation does not read the log per append', () => {
     expect(c.mayExceed(p, 2)).toBe(true); // a replaced file does not inherit the brake
     const missing = new RotationLineCount();
     expect(() => missing.mayExceed(path.join(dir, 'gone'), 2)).toThrow();
-    const reads = vi.spyOn(fs, 'readFileSync');
-    expect(missing.mayExceed(path.join(dir, 'gone'), 2)).toBe(false);
-    expect(reads).not.toHaveBeenCalled();
+    // A count that could not be read is not braked: the next call reads again.
+    expect(() => missing.mayExceed(path.join(dir, 'gone'), 2)).toThrow();
   });
 
   it('after a failed attempt, the next append past one minute retries even with little traffic', () => {

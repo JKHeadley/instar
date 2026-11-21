@@ -73,6 +73,7 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 - **Shadowing:** none. The tail cache, its eviction and the unread service are unchanged; the view only replaces the file scan beneath them.
 - **Double-fire:** the load is single flight.
 - **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file, or an append onto a torn last line, causes a fresh read; a failed pass publishes nothing.
+- **Round 6 fixes (2026-11-21):** finding 2: the line where the cap was passed is recorded before a rotation attempt's reads, so a failed rotation read followed by a late rotation keeps every line an on-time rotation would have kept (the oldest survivor is the same); when the first line count itself cannot be read there is no brake, and the next append tries again as the old code did. Finding 8: switching `telegramHistoryView.enabled` off releases the background inventory wait and every request wait, which then take the old read path.
 - **Failure handling:** a rotation during handle close is re-read in the same load; a part-failed append drops and re-reads the view; a late rotation keeps every line an on-time one would have; a loading peer is reported as `loading`.
 - **Feedback loops:** none. No timer retries the load; a later request may start another pass after 5 s, doubling to 5 min.
 - The conversation-graph inventory starts after the first load, so it cannot publish a partial view.

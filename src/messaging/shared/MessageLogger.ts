@@ -283,8 +283,9 @@ export class RotationLineCount {
       return false;
     }
     if (this.count === null) {
-      try { this.count = countNewlines(fs.readFileSync(logPath)); }
-      catch (err) { this.failed(); throw err; }
+      // No brake when the count itself cannot be read: the line where the cap was passed is
+      // unknown, so the next append must try again, as the old code did.
+      this.count = countNewlines(fs.readFileSync(logPath));
     } else {
       this.count += 1;
     }
@@ -311,7 +312,13 @@ export class RotationLineCount {
    * A rotation is being attempted: unless set() reports it finished, wait ROTATION_RETRY_LINES
    * appends or ROTATION_RETRY_MS before the next full read, not one read per append.
    */
-  failed(): void { this.waitAppends = ROTATION_RETRY_LINES; this.waitUntilMs = Date.now() + ROTATION_RETRY_MS; }
+  failed(): void {
+    this.waitAppends = ROTATION_RETRY_LINES;
+    this.waitUntilMs = Date.now() + ROTATION_RETRY_MS;
+    // Record where the cap was passed BEFORE the attempt's reads, so a read that fails still
+    // leaves the boundary keepFor needs: a late rotation then keeps every line an on-time one would.
+    if (this.firstFailedAt === null && this.count !== null) this.firstFailedAt = this.count;
+  }
 
   /** The file is back under the size threshold (rotated or replaced elsewhere): start over. */
   forget(): void { this.count = null; this.waitAppends = 0; this.waitUntilMs = 0; this.firstFailedAt = null; }

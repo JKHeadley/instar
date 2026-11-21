@@ -25,7 +25,7 @@ The phone and Mac wait briefly for that first background read. If it cannot fini
 
 Two earlier versions of this fix were thrown away after outside review found they could change what the apps show.
 
-Review also found that every saved message read the whole 31 MB file just to decide whether it was due for trimming. The server now counts the lines once, keeps the count current, and reads the file only when it is actually time to trim.
+If trimming the file fails once and succeeds later, the later trim keeps every message an on-time trim would have kept, so a passing failure can never delete an old message. Review also found that every saved message read the whole 31 MB file just to decide whether it was due for trimming. The server now counts the lines once, keeps the count current, and reads the file only when it is actually time to trim.
 
 Two start-up improvements that were part of this change (the code map and the Node check) now have their own pull request, so this one covers only the conversation list, chat history and saving messages.
 

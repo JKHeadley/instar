@@ -191,6 +191,29 @@ describe('Telegram log view', () => {
     expect(adapter.isHistoryLoaded()).toBe(true);
   });
 
+  it('switching the view off during a load releases the background inventory wait and route waits', async () => {
+    let on = true;
+    adapter.setHistoryViewSwitch(() => on);
+    let release: () => void = () => undefined;
+    const real = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (...a: Parameters<typeof fs.promises.open>) => {
+      await new Promise<void>((r) => { release = r; }); // the load is held mid-flight
+      return real(...a);
+    }) as typeof fs.promises.open);
+    const inventory = adapter.whenHistoryLoaded();
+    const route = adapter.waitForHistory(60_000);
+    let inventoryStarted = false;
+    void inventory.then(() => { inventoryStarted = true; });
+    await new Promise((r) => setImmediate(r));
+    expect(inventoryStarted).toBe(false);
+    on = false;
+    expect(adapter.historyViewOn()).toBe(false);
+    await inventory;
+    expect(inventoryStarted).toBe(true);
+    expect(await route).toBe(true); // true = take the old read path now
+    release();
+  });
+
   it('a read failing part-way is discarded and braked, waiters are told, and a later request reads again', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const real = fs.promises.open.bind(fs.promises);

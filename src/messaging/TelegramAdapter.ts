@@ -4729,6 +4729,12 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.historyViewOn() && this.logView !== null;
   }
 
+  /** Wake everything waiting for the view: request waits re-check, background work starts. */
+  private releaseHistoryWaiters(): void {
+    for (const wake of this.logViewWaiters.splice(0)) wake();
+    for (const wake of this.logViewSettled.splice(0)) wake();
+  }
+
   /** Wire the off switch. Called once by the server with a live config read. */
   setHistoryViewSwitch(on: () => boolean): void {
     this.historyViewSwitch = on;
@@ -4741,7 +4747,10 @@ export class TelegramAdapter implements MessagingAdapter {
   historyViewOn(): boolean {
     let on = true;
     try { on = this.historyViewSwitch() !== false; } catch { on = true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
-    if (!on && this.logView) { this.logView = null; this.logTornTail = false; }
+    if (!on) {
+      if (this.logView) { this.logView = null; this.logTornTail = false; }
+      this.releaseHistoryWaiters(); // waiters take the old read path from here
+    }
     return on;
   }
 
@@ -4861,7 +4870,7 @@ export class TelegramAdapter implements MessagingAdapter {
     void this.loadHistory();
     if (!this.logViewBuild) return false; // the last pass failed and the next is not due yet
     return new Promise<boolean>((resolve) => {
-      const wake = (): void => { clearTimeout(timer); resolve(this.logView !== null); };
+      const wake = (): void => { clearTimeout(timer); resolve(this.logView !== null || !this.historyViewOn()); };
       const timer = setTimeout(() => {
         this.logViewWaiters = this.logViewWaiters.filter((w) => w !== wake);
         resolve(this.logView !== null);
