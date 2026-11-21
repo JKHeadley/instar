@@ -26,6 +26,7 @@ import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
 import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
+import { runTopicHistoryImport, ImportTooLargeError } from '../memory/topicHistoryImport.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -33693,6 +33694,71 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : null,
       stats: ctx.topicMemory.stats(),
     });
+  });
+
+  /**
+   * Restore recovered conversation history (docs/specs/topic-history-import.md).
+   * POST /topic/import { file?: "<path inside the state dir>", rows?: [...], source?, dryRun? }
+   *
+   * Agent bearer token only: a paired phone (owner, team or MSP) never writes
+   * history. Rows are validated against the store's own schema, deduped against
+   * the store, published as an immutable batch beside the logs (never into the
+   * live log), and merged into each topic at its message time. Idempotent: a
+   * second identical call accepts nothing.
+   */
+  router.post('/topic/import', async (req, res) => {
+    if (!ctx.topicMemory) {
+      res.status(503).json({ error: 'TopicMemory not initialized' });
+      return;
+    }
+    if (principalOf(req).kind !== 'token') {
+      res.status(403).json({ error: 'agent-token-required', reason: 'Only the agent itself can restore conversation history.' });
+      return;
+    }
+    const body = (req.body ?? {}) as { file?: unknown; rows?: unknown; source?: unknown; dryRun?: unknown };
+    let filePath: string | undefined;
+    if (body.file !== undefined) {
+      if (typeof body.file !== 'string' || !body.file.trim() || path.isAbsolute(body.file)) {
+        res.status(400).json({ error: 'file must be a path relative to the state directory' });
+        return;
+      }
+      let root: string;
+      let resolved: string;
+      try {
+        root = fs.realpathSync(ctx.config.stateDir);
+        resolved = fs.realpathSync(path.resolve(root, body.file));
+      } catch {
+        // @silent-fallback-ok — answered as a 400 naming the problem; nothing was read
+        res.status(400).json({ error: 'file not found inside the state directory' });
+        return;
+      }
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        res.status(400).json({ error: 'file must stay inside the state directory' });
+        return;
+      }
+      if (!fs.statSync(resolved).isFile()) {
+        res.status(400).json({ error: 'file is not a regular file' });
+        return;
+      }
+      filePath = resolved;
+    } else if (!Array.isArray(body.rows)) {
+      res.status(400).json({ error: 'file (string) or rows (array) required' });
+      return;
+    }
+    try {
+      const report = await runTopicHistoryImport(ctx.topicMemory, ctx.config.stateDir, {
+        ...(filePath ? { filePath } : { rows: body.rows as unknown[] }),
+        source: typeof body.source === 'string' ? body.source : undefined,
+        dryRun: body.dryRun === true,
+      });
+      res.json({ ...report, stats: ctx.topicMemory.stats() });
+    } catch (err) {
+      if (err instanceof ImportTooLargeError) {
+        res.status(413).json({ error: 'too-large', reason: operatorError(err, ctx.config.stateDir) });
+        return;
+      }
+      res.status(500).json({ error: 'import-failed', reason: operatorError(err, ctx.config.stateDir) });
+    }
   });
 
   // ── Pairing API — Multi-machine state sync (Phase 4.5) ────────

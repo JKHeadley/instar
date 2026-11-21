@@ -709,6 +709,8 @@ export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
  * degrades fail-open (advisory empty report) instead of erroring at the client.
  */
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
+/** POST /topic/import re-sequences every affected topic (topic-history-import spec); the default 30 s answers 408 mid-merge. */
+export const TOPIC_IMPORT_TIMEOUT_MS = 300_000;
 
 /**
  * Extended budget for the cutover-readiness parity-pass trigger
@@ -891,6 +893,7 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
     '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/topic/import': TOPIC_IMPORT_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
     // The import dry-run does the same full live source fetch as a parity pass
