@@ -952,6 +952,8 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** gemini-payg §6: the lane's signed transport, built with the mesh and applied to the server once it exists. */
+let _meteredLaneSend: import('../core/meteredLaneMesh.js').MeteredSend | null = null;
 /** standby-durable-forward-without-token §10 (holder side / standby side). */
 let tokenlessEvidenceRecorder: import('../messaging/telegram-origin/TokenlessForwardEvidence.js').HolderEvidenceRecorder | undefined;
 let tokenlessEvidenceOutbox: import('../messaging/telegram-origin/TokenlessForwardEvidence.js').StandbyEvidenceOutbox | null = null;
@@ -30488,6 +30490,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             _secretShareHandler = new secretSyncMod.SecretShareHandler({
               ownEncryptionPrivateKey: () => cryptoMod.createPrivateKey(meshIdMgr.loadEncryptionKey()),
               store: { set: (k, v) => secretStore.set(k, v) },
+              // gemini-payg §4.6: keep a metered key only on the designated spender (unknown ⇒ strip).
+              selfMachineId: () => _meshSelfId,
+              meteredDesignation: () => _agentServerRef?.meteredLaneRuntime?.meteredDesignation() ?? null,
               log: (m) => console.log(pc.dim(`  ${m}`)),
             });
             console.log(pc.dim('  [secret-sync] enabled — inbound handler wired'));
@@ -30879,6 +30884,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             // envelope proved the sending machine; this handler is the gate: only the holder answers, it re-checks
             // the carried topic's readers itself, and the email service runs its own guard, outbox and budget. A
             // repeated id answers the existing row.
+            // gemini-payg-metered-lane §6: the five metered-lane verbs. The runtime is the gate
+            // (holder-only call store + result token, reduce-only stop actions, names-only
+            // secret listing); an absent runtime answers lane-unavailable.
+            'metered-gemini-call': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { state: 'refused', reason: 'lane-unavailable' }),
+            'metered-gemini-result': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { state: 'unknown' }),
+            'metered-stop-action': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { ok: false, reason: 'lane-unavailable' }),
+            'designation-echo': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { error: 'lane-unavailable' }),
+            'secret-names': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { names: [] }),
+            'gemini-payg-setup-render': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { ok: false, reason: 'lane-unavailable' }),
             'email-send-forward': async (cmd) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'email-send-forward' };
               const svc = _agentServerRef?.emailService ?? null;
@@ -31294,6 +31308,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           };
           _agentServerRef?.setEmailForwarder(_emailForwardToHolder);
+          // gemini-payg-metered-lane §6: the metered lane's signed transport to its peers.
+          _meteredLaneSend = async (machineId, cmd, opts) => {
+            const url = peerUrl(machineId);
+            if (!url) throw new Error('holder-unreachable: no peer url');
+            const r = await meshClient.send({ machineId, url }, cmd as never, 0, { timeoutMs: opts?.timeoutMs ?? 15_000 });
+            // The client wraps the handler's answer; a refusal (e.g. an old peer's 403
+            // claim-unauthorized for an unknown verb) becomes an error the lane classifies.
+            if (!r.ok) throw new Error(`mesh ${r.status} ${r.reason ?? 'refused'}`);
+            return r.result;
+          };
+          _agentServerRef?.meteredLaneRuntime?.setSend(_meteredLaneSend);
           _meshSelfId = meshSelfId;
           // App media copying (mobile-native-chat-media §4.12): the replicator rides this same
           // signed transport. Peers are this agent's registered machines; online comes from the
@@ -32820,6 +32845,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   .map((m) => ({ machineId: m.machineId, nickname: machinePoolRegistry?.getCapacity(m.machineId)?.nickname ?? null }));
               const provisioner = new secretSyncMod.SecretProvisioner({
                 secretsToSync: readSecrets,
+                // gemini-payg §4.6: metered keys go only to the designated spender (none ⇒ nowhere).
+                meteredDesignation: () => _agentServerRef?.meteredLaneRuntime?.meteredDesignation() ?? null,
                 listPeers: () =>
                   onlinePeers()
                     .map((p) => {
@@ -36969,6 +36996,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // server's own store instance.
     _agentServerRef = server;
     if (_emailForwardToHolder) server.setEmailForwarder(_emailForwardToHolder);
+    // The mesh (and its lane transport) is wired before the server exists; apply it now.
+    if (_meteredLaneSend) server.meteredLaneRuntime?.setSend(_meteredLaneSend);
     // The email outbox catches up from peers' streams once the sender exists (it is built a moment after the server).
     if (replicatedPeerStreamReader && cjOwnMachineId) {
       const reader = replicatedPeerStreamReader;

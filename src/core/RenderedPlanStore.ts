@@ -38,6 +38,7 @@ export type PlanAction =
   | 'money-layer-mirror-config'
   | 'money-layer-disable'
   | 'money-layer-disable-store-only'
+  | 'gemini-payg-setup'
   // docs/specs/ecosystem-idea-pipeline.md §9: operator decisions on ideas, same machinery.
   | `ecosystem-${string}`;
 

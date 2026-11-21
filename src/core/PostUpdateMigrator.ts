@@ -10232,6 +10232,14 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
     }
 
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
+    }
+
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
     if (!content.includes('| Can I use a browser?') && content.includes('| What can I do?')) {
       const row = `| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |`;
@@ -18476,6 +18484,23 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     } catch (err) {
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Machine-load assessment helper — always overwrite (CMT-1703, spec

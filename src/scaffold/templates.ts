@@ -1437,6 +1437,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Who do I work with? | \`.instar/USER.md\` |
 | What have I learned? | \`.instar/MEMORY.md\` |
 | What jobs do I have? | \`.instar/jobs.json\` or \`GET /jobs\` |
+| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |
 ${jobCoverageGuide(port).registry.trimEnd()}
 ${jobTransferGuide(port).registry.trimEnd()}
 | Who have I interacted with? | \`GET /relationships\` |
