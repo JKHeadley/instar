@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "takeover-ready-pool-spec-greenup",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T20:20:03.959Z",
+  "artifactPath": "upgrades/side-effects/takeover-ready-pool-spec-greenup.md",
+  "artifactSha256": "5380633b51665c5dfdacd89839f38ff842090fc25d85a1fe2818a8c100b0fabd",
+  "specPath": "docs/specs/takeover-ready-pool.md",
+  "coveredFiles": [
+    "src/core/UpdateChecker.ts",
+    "upgrades/side-effects/takeover-ready-pool-spec-greenup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only follow-up on the converged Tier-2 takeover-ready-pool spec branch: one catch in UpdateChecker states its @silent-fallback-ok reason so the no-silent-fallbacks ratchet passes; main itself is over the baseline since #3603; no runtime change, baseline not raised.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
