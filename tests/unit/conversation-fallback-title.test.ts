@@ -54,7 +54,8 @@ describe('wiring: every reader of topic names gets the fallback', () => {
   const routes = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf8');
   it('the app conversation list and conversation search use topicDisplayName with the Chief of Staff titles', () => {
     expect(agentServer).toContain('projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? [])');
-    expect(agentServer).toContain('topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity');
+    // The list's rows come from buildTelegramListRows (docs/specs/main-loop-freeze-conversation-list.md).
+    expect(agentServer).toContain('displayName: (topicId, topicName) => topicDisplayName(topicId, topicName, projectTitles),');
     expect(agentServer).toContain('topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) }));');
   });
   it('the pool topic list sends fallbacks for unresolved topics, apart from verified names', () => {

@@ -78,6 +78,7 @@ export class MessageLogger {
   private keepLines: number;
   private rotationSizeThreshold: number;
   private onMessageLogged: OnMessageLoggedCallback | null = null;
+  private readonly rotationLineCount = new RotationLineCount();
 
   constructor(config: MessageLoggerConfig) {
     this.logPath = config.logPath;
@@ -224,7 +225,12 @@ export class MessageLogger {
   private maybeRotate(): void {
     try {
       const stat = fs.statSync(this.logPath);
-      if (stat.size < this.rotationSizeThreshold) return;
+      if (stat.size < this.rotationSizeThreshold) { this.rotationLineCount.forget(); return; }
+      // Only read the whole log when it may actually be over the line cap
+      // (docs/specs/main-loop-freeze-conversation-list.md): above the size threshold this used
+      // to read and split the entire file on EVERY append — a 30 MB synchronous read per message.
+      if (!this.rotationLineCount.mayExceed(this.logPath, this.maxLines)) return;
+      this.rotationLineCount.failed(); // cleared by set() below once the rotation completes
 
       const content = fs.readFileSync(this.logPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
@@ -239,9 +245,53 @@ export class MessageLogger {
           throw rotateErr;
         }
         console.log(`[message-logger] Rotated log: ${lines.length} -> ${kept.length} lines`);
+        this.rotationLineCount.set(kept.length);
+      } else {
+        this.rotationLineCount.set(lines.length);
       }
     } catch {
       // Log rotation is non-critical
     }
   }
+}
+
+/**
+ * The rotation check's memory of how many lines the log holds, so an append above the size
+ * threshold does not read the whole file to learn it (docs/specs/main-loop-freeze-conversation-list.md).
+ * Seeded by ONE byte-level newline count (no decode, no split), then advanced per append. Another
+ * writer appending to the same file only makes the count lag, which delays a rotation; the rotation
+ * itself always re-reads and re-counts the file.
+ */
+export class RotationLineCount {
+  private count: number | null = null;
+  /** After a failed rotation, the count at which the next attempt may run (a brake, not a skip). */
+  private retryAtCount = 0;
+
+  /** Called on each append above the size threshold: true when the cap may be passed. */
+  mayExceed(logPath: string, maxLines: number): boolean {
+    if (this.count === null) this.count = countNewlines(fs.readFileSync(logPath));
+    else this.count += 1;
+    return this.count > maxLines && this.count >= this.retryAtCount;
+  }
+
+  set(lines: number): void { this.count = lines; this.retryAtCount = 0; }
+
+  /**
+   * The rotation read or rename failed: wait ROTATION_RETRY_LINES more appends before the next
+   * full read, instead of re-reading the whole log on every append while the failure lasts.
+   */
+  failed(): void { this.retryAtCount = (this.count ?? 0) + ROTATION_RETRY_LINES; }
+
+  /** The file is back under the size threshold (rotated or replaced elsewhere): recount next time. */
+  forget(): void { this.count = null; }
+}
+
+/** Appends between rotation attempts after a failure: 1% of the 100 000-line cap. */
+const ROTATION_RETRY_LINES = 1_000;
+
+/** Newline bytes in a buffer — the line count of a JSONL file without decoding it. */
+export function countNewlines(buf: Buffer): number {
+  let n = 0;
+  for (let i = buf.indexOf(10); i !== -1; i = buf.indexOf(10, i + 1)) n += 1;
+  return n;
 }

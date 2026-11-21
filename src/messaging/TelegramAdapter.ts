@@ -38,7 +38,7 @@ import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
 import { SHARED_INFRA_FLAGS } from './shared/FeatureFlags.js';
 import { emergencyStopUserMessage } from './shared/emergencyStopUserMessage.js';
-import { MessageLogger, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
+import { MessageLogger, RotationLineCount, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
 import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
 import { StallDetector, type StallEvent } from './shared/StallDetector.js';
@@ -1347,6 +1347,27 @@ export class TelegramAdapter implements MessagingAdapter {
   /** One-time batch seed done (all live topics seeded in a single file pass). */
   private tailCacheSeeded = false;
   private static readonly TAIL_CACHE_LIMIT = 500;
+  /**
+   * The newest logged entry per topic — what a conversation-list row shows
+   * (docs/specs/main-loop-freeze-conversation-list.md). Built by ONE streamed,
+   * yielding pass over the log (never on the caller's turn), then kept current
+   * by every append. Survives unregisterTopic: one entry per topic is tiny, and
+   * evicting it is what made a closed topic cost a full log read on every list.
+   */
+  private topicLastEntry = new Map<number, LogEntry>();
+  private lastEntryIndexState: 'unbuilt' | 'building' | 'ready' = 'unbuilt';
+  private lastEntryIndexBuild: Promise<void> | null = null;
+  private lastEntryIndexErrorLogged = false;
+  private lastEntryIndexFailures = 0;
+  private lastEntryIndexRetryAt = 0;
+  /** Topics waiting for an async tail warm, the run in flight, and entries appended to them meanwhile. */
+  private tailWarmPending = new Set<number>();
+  private tailWarmRun: Promise<void> | null = null;
+  private tailWarmAppends = new Map<number, LogEntry[]>();
+  private tailWarmFailures = 0;
+  private tailWarmRetryAt = 0;
+  /** Legacy-path rotation check's line count (see RotationLineCount). */
+  private readonly rotationLineCount = new RotationLineCount();
 
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
@@ -4702,6 +4723,181 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.topicTailCache.get(topicId) ?? null;
   }
 
+  /**
+   * The newest logged entry for each topic, for conversation-list rows
+   * (docs/specs/main-loop-freeze-conversation-list.md). NEVER reads the message
+   * log on the caller's turn — a list of N topics used to read the whole log up
+   * to N times synchronously (the 20-30 s freezes of 2026-11-21). Answers from
+   * the in-memory tail cache and the last-entry index; while that index is still
+   * being built (one streamed, yielding pass, started here on first use)
+   * `complete` is false and a topic not yet known is simply absent, so the
+   * caller can fill it from an indexed store or show the row without a preview.
+   */
+  getTopicLastEntries(topicIds: Iterable<number>): { entries: Map<number, LogEntry>; complete: boolean } {
+    if (this.lastEntryIndexState === 'unbuilt' && Date.now() >= this.lastEntryIndexRetryAt) void this.buildLastEntryIndex();
+    const entries = new Map<number, LogEntry>();
+    for (const id of topicIds) {
+      const tail = this.topicTailCache.get(id);
+      const fromTail = tail && tail.length > 0 ? tail[tail.length - 1] : undefined;
+      const fromIndex = this.topicLastEntry.get(id);
+      const last = fromTail ?? fromIndex;
+      if (last) entries.set(id, last);
+    }
+    return { entries, complete: this.lastEntryIndexState === 'ready' };
+  }
+
+  /**
+   * Build the last-entry index with ONE streamed pass over the log. Single
+   * flight: concurrent callers share the same promise. Lines are parsed per
+   * stream chunk, so no turn of the loop holds more than one chunk's worth of
+   * parsing. An entry appended while the pass runs is already in the index and
+   * is newer than anything the pass can find, so the pass never overwrites it.
+   */
+  buildLastEntryIndex(): Promise<void> {
+    if (this.lastEntryIndexBuild) return this.lastEntryIndexBuild;
+    this.lastEntryIndexState = 'building';
+    const found = new Map<number, LogEntry>();
+    const logPath = this.messageLogPath;
+    this.lastEntryIndexBuild = (async () => {
+      let readFailed = false;
+      try {
+        const stream = fs.createReadStream(logPath, { encoding: 'utf-8' });
+        let carry = '';
+        const take = (line: string): void => {
+          if (!line) return;
+          try {
+            const entry: LogEntry = JSON.parse(line);
+            const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+            if (typeof entryTopicId === 'number') found.set(entryTopicId, entry);
+          } catch { /* @silent-fallback-ok — skip a malformed JSONL line, same as every other log reader here */ }
+        };
+        for await (const chunk of stream) {
+          const lines = (carry + (chunk as string)).split('\n');
+          carry = lines.pop() ?? '';
+          for (const line of lines) take(line);
+        }
+        take(carry);
+      } catch (err) {
+        // @silent-fallback-ok — a missing or unreadable log means no previews from
+        // it; appends still fill the index and the list stays usable.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          readFailed = true;
+          if (!this.lastEntryIndexErrorLogged) {
+            this.lastEntryIndexErrorLogged = true;
+            console.error(`[telegram] last-entry index build failed to read message log (will retry with backoff): ${err}`);
+          }
+        }
+      }
+      if (readFailed) {
+        // A partial read is discarded whole: merging it could pin a topic to an OLDER entry that
+        // a later successful pass would then skip (it fills only absent topics). Stay incomplete
+        // (callers keep filling gaps from the indexed store); the next list request retries.
+        this.lastEntryIndexState = 'unbuilt';
+        this.lastEntryIndexBuild = null;
+        this.lastEntryIndexFailures += 1;
+        this.lastEntryIndexRetryAt = Date.now() + TelegramAdapter.retryDelayMs(this.lastEntryIndexFailures);
+        return;
+      }
+      for (const [id, entry] of found) {
+        if (!this.topicLastEntry.has(id)) this.topicLastEntry.set(id, entry);
+      }
+      this.lastEntryIndexFailures = 0;
+      this.lastEntryIndexErrorLogged = false;
+      this.lastEntryIndexState = 'ready';
+    })();
+    return this.lastEntryIndexBuild;
+  }
+
+  /** Brakes on a failed background log read (No Unbounded Loops): 1 min, doubling, at most 30 min apart. */
+  private static retryDelayMs(failures: number): number {
+    return Math.min(60_000 * 2 ** Math.max(0, failures - 1), 30 * 60_000);
+  }
+
+  /**
+   * A topic's recent history from the in-memory tail ONLY, or null when the topic's tail is not
+   * loaded (docs/specs/main-loop-freeze-conversation-list.md). For callers on a request path that
+   * must never read the log synchronously — the conversation list's unread counts. Pair a null
+   * with warmTopicTails() so a later request has the answer.
+   */
+  getCachedTopicHistory(topicId: number, limit: number = 20): LogEntry[] | null {
+    if (limit > TelegramAdapter.TAIL_CACHE_LIMIT) return null;
+    const cached = this.topicTailCache.get(topicId);
+    return cached ? this.authorshipJoin.join(cached.slice(-limit)) : null;
+  }
+
+  /**
+   * Load the tails of the given topics in the background: ONE streamed pass over the log for every
+   * topic queued before it starts, more passes only for topics queued while it ran. Single flight;
+   * never overwrites a tail another path loaded first; an entry appended to a topic while it is
+   * being warmed is kept. A read that fails part-way is discarded and the next warm waits (same
+   * brakes as the last-entry index).
+   */
+  warmTopicTails(topicIds: Iterable<number>): Promise<void> {
+    for (const id of topicIds) if (!this.topicTailCache.has(id)) this.tailWarmPending.add(id);
+    if (this.tailWarmRun) return this.tailWarmRun;
+    if (this.tailWarmPending.size === 0 || Date.now() < this.tailWarmRetryAt) return Promise.resolve();
+    const logPath = this.messageLogPath;
+    this.tailWarmRun = (async () => {
+      while (this.tailWarmPending.size > 0) {
+        const batch = new Map<number, LogEntry[]>();
+        for (const id of this.tailWarmPending) if (!this.topicTailCache.has(id)) batch.set(id, []);
+        this.tailWarmPending.clear();
+        for (const id of batch.keys()) this.tailWarmAppends.set(id, []);
+        let failed = false;
+        try {
+          const stream = fs.createReadStream(logPath, { encoding: 'utf-8' });
+          let carry = '';
+          const take = (line: string): void => {
+            if (!line) return;
+            try {
+              const entry: LogEntry = JSON.parse(line);
+              const id = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+              const tail = typeof id === 'number' ? batch.get(id) : undefined;
+              if (!tail) return;
+              tail.push(entry);
+              if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+            } catch { /* @silent-fallback-ok — skip a malformed JSONL line, same as every other log reader here */ }
+          };
+          for await (const chunk of stream) {
+            const lines = (carry + (chunk as string)).split('\n');
+            carry = lines.pop() ?? '';
+            for (const line of lines) take(line);
+          }
+          take(carry);
+        } catch (err) {
+          // @silent-fallback-ok — a missing log means empty tails; any other failure leaves the
+          // batch unloaded (callers keep answering "not loaded") and brakes the next attempt.
+          if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+            failed = true;
+            console.error(`[telegram] background tail load failed to read message log (will retry with backoff): ${err}`);
+          }
+        }
+        for (const [id, tail] of batch) {
+          const appended = this.tailWarmAppends.get(id) ?? [];
+          this.tailWarmAppends.delete(id);
+          if (failed || this.topicTailCache.has(id)) continue;
+          // Lines from the shared logger carry `channelId`, not `topicId`: key them the same way.
+          const keyOf = (e: LogEntry) => this.messageLogDedupeKey({ ...e, topicId: e.topicId ?? (e as unknown as { channelId?: number }).channelId ?? null });
+          const seen = new Set(tail.map(keyOf));
+          for (const e of appended) {
+            if (seen.has(keyOf(e))) continue;
+            tail.push(e);
+            if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+          }
+          this.topicTailCache.set(id, tail);
+        }
+        if (failed) {
+          this.tailWarmFailures += 1;
+          this.tailWarmRetryAt = Date.now() + TelegramAdapter.retryDelayMs(this.tailWarmFailures);
+          this.tailWarmPending.clear();
+          break;
+        }
+        this.tailWarmFailures = 0;
+      }
+    })().finally(() => { this.tailWarmRun = null; });
+    return this.tailWarmRun;
+  }
+
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
@@ -4721,7 +4917,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.topicTailCache.set(topicId, seeded);
       return this.authorshipJoin.join(seeded.slice(-limit));
     }
-    // Oversized request (no production caller) — direct scan, leave the cache's
+    // Oversized request (the limit-1000 evidence lookups; tracked in fb-9193b40c-880) — direct scan, leave the cache's
     // "most recent TAIL_CACHE_LIMIT entries" invariant untouched.
     return this.authorshipJoin.join(this.scanLogForTopic(topicId, limit));
   }
@@ -5117,6 +5313,9 @@ export class TelegramAdapter implements MessagingAdapter {
       tail.push(entry);
       if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
     }
+    this.topicLastEntry.set(entry.topicId, entry);
+    // A topic being warmed has no tail yet: keep what arrives meanwhile so the warm cannot miss it.
+    this.tailWarmAppends.get(entry.topicId)?.push(entry);
   }
 
   /** Keep only the last 75,000 lines when log exceeds 100,000 lines.
@@ -5126,11 +5325,16 @@ export class TelegramAdapter implements MessagingAdapter {
     try {
       const stat = fs.statSync(this.messageLogPath);
       // Only check rotation when file exceeds ~20MB
-      if (stat.size < 20 * 1024 * 1024) return;
+      if (stat.size < 20 * 1024 * 1024) { this.rotationLineCount.forget(); return; }
+      // Read the whole log only when it may be over the cap, never per append
+      // (docs/specs/main-loop-freeze-conversation-list.md).
+      if (!this.rotationLineCount.mayExceed(this.messageLogPath, 100_000)) return;
+      this.rotationLineCount.failed(); // cleared by set() below once the rotation completes
 
       const content = fs.readFileSync(this.messageLogPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
-      if (lines.length > 100_000) {
+      if (lines.length <= 100_000) this.rotationLineCount.set(lines.length); // the count ran ahead: correct it
+      else {
         const kept = lines.slice(-75_000);
         const tmpPath = `${this.messageLogPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
         try {
@@ -5140,6 +5344,7 @@ export class TelegramAdapter implements MessagingAdapter {
           try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:2844' }); } catch { /* ignore */ }
           throw rotateErr;
         }
+        this.rotationLineCount.set(kept.length);
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
       }
     } catch {

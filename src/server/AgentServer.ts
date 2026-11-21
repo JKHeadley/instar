@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { buildTelegramListRows, cachedTelegramHistory } from './telegramListRows.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
@@ -7911,7 +7912,8 @@ export class AgentServer {
         machineId: () => appSvc.deps.machineId(),
         app: appSvc.store,
         telegram: telegram ? {
-          history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
+          // In-memory only; an unloaded topic is loaded in the background (main-loop-freeze-conversation-list).
+          history: cachedTelegramHistory(telegram) as unknown as (topicId: number, limit: number) => TelegramRowLike[] | null,
           version: (topicId) => telegram.getTopicContentVersion(topicId),
           exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
@@ -7978,9 +7980,17 @@ export class AgentServer {
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
-          return options.telegram!.getAllTopicMappings().map((m) => {
-          const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
+          // Never one log read per topic (docs/specs/main-loop-freeze-conversation-list.md): the newest
+          // entries come from the adapter's in-memory index, gaps from the indexed TopicMemory store.
+          return buildTelegramListRows({
+            mappings: () => options.telegram!.getAllTopicMappings(),
+            lastEntries: (ids) => options.telegram!.getTopicLastEntries(ids),
+            indexedLast: () => {
+              const tm = options.topicMemory;
+              return tm && tm.isReady() ? (topicId: number) => tm.getRecentMessages(topicId, 1)[0] : null;
+            },
+            displayName: (topicId, topicName) => topicDisplayName(topicId, topicName, projectTitles),
+            previewText: deviceTextForRow,
           });
         } : undefined,
       };

@@ -37930,8 +37930,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (process.platform === 'darwin') {
         // Always update the node symlink — primary defense against NVM/asdf switches
         try {
-          const { ensureStableNodeSymlink } = await import('./setup.js');
-          ensureStableNodeSymlink(config.projectDir);
+          const { ensureStableNodeSymlink, probeNodeNativeCompat } = await import('./setup.js');
+          // Probe each node's native-module compatibility off the event loop first; the
+          // symlink step then reads those answers instead of blocking on one spawn per node.
+          const probed = await probeNodeNativeCompat(config.projectDir).catch(() => null);
+          ensureStableNodeSymlink(config.projectDir, undefined, probed ? { nativeCompat: probed.nativeCompat, candidates: probed.candidates } : undefined);
         } catch (error) { console.warn('[recovery] Approved main bootstrap could not be preserved; recovery stays degraded:',error instanceof Error?error.message:'unavailable'); }
 
         if (!needsReinstall && autostartInstalled) {
