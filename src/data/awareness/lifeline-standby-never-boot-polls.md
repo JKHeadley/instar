@@ -1,0 +1,5 @@
+---
+title: Standby startup leaves Telegram with the lead machine
+requires: telegram
+---
+A machine set to observe-only, `multiMachine.telegramPolling: false`, or `multiMachine.pollOverride: force-mute` runs its server without collecting Telegram messages, including while the server starts slowly. An explicit `force-poll` still overrides these settings and is named in the startup log. When live lease following is supported, startup waits for the server's current positive poll intent; a timeout cannot grant ownership. Single-machine and independent-mode startup keep their normal polling behavior. A conflict-only Telegram watchdog restart leaves the agent server running for its successor to adopt; repeated forward failures retain the server restart recovery. Every lifeline exit is recorded in `logs/restart-requests.jsonl` with a server outcome of `kept`, `stopped`, or `unknown`. Only an observed server stop appears as `bootReadiness.previousRestart` on `/health`; an unknown outcome is evidence to investigate, not confirmation of a restart.
