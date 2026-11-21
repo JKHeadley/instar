@@ -43,7 +43,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-guards.test.ts' });
 });
 
-async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
+async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm?: (topicIds: number[]) => Promise<void> } = {}) {
   const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-guard-'));
   dirs.push(dir);
@@ -86,6 +86,7 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
     sentinel: { decideInboundDisposition: async () => ({ disposition: 'route-through', category: 'normal' }) },
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, listSessions: () => running, get: () => undefined },
     topicOperatorStore: { setAuthenticatedOperator: () => undefined }, conversationRegistry: registry, appConversations: svc,
+    ...(opts.historyWarm ? { telegramHistoryWarm: opts.historyWarm } : {}),
     telegram: {
       getOwnerUserId: () => 777, getTopicHistory: (id: number) => [{ text: `words in ${id}`, timestamp: new Date().toISOString() }],
       getAllTopicMappings: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, sessionName: null })),
@@ -151,6 +152,19 @@ describe('reading a Telegram topic', () => {
     const { e, mia } = await withMember();
     expect((await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`)).status).toBe(200);
     expect((await send(e, mia, 'GET', `/telegram/topics/${OTHER}/messages`)).status).toBe(404);
+  });
+
+  it('a grant removed while the first read waits on the history scan is honoured (conversation-list-offthread-scan)', async () => {
+    let duringWait: () => Promise<void> = async () => undefined;
+    const { e, owner, mia } = await withMember('use', { historyWarm: async () => { await duringWait(); } });
+    expect((await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`)).status).toBe(200);
+    duringWait = async () => {
+      const r = await send(e, owner, 'POST', '/mobile/team/grants', { events: [{ type: 'grant-remove', personKey: 'mia', ref: `telegram:${GRANTED}` }] });
+      expect(r.status).toBe(200);
+    };
+    const r = await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`);
+    expect(r.status).toBe(404);
+    expect(JSON.stringify(r.body)).not.toContain(`words in ${GRANTED}`);
   });
 
   it.each([`${OTHER}x`, `%35%31`, `${OTHER}.0`, `0${OTHER}`, ` ${OTHER}`.replace(' ', '%20')])('an altered address %s does not reach another topic', async (id) => {

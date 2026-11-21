@@ -23425,7 +23425,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // A chat opened before any list (a notification tapped right after a restart) waits on the same
     // shared off-main-thread scan as the list, so its first read does not freeze the server.
-    if (beforeMs === null && ctx.telegramHistoryWarm) { try { await ctx.telegramHistoryWarm([topicId]); } catch { /* @silent-fallback-ok — the read below runs as before */ } }
+    if (beforeMs === null && ctx.telegramHistoryWarm) {
+      try { await ctx.telegramHistoryWarm([topicId]); } catch { /* @silent-fallback-ok — the read below runs as before */ }
+      // The wait may have spanned a change to this phone's access: check it again, as the old code
+      // checked it in the same turn as the read.
+      if (ctx.mobilePairingService && !deviceMayUse(ctx.mobilePairingService, req, `telegram:${topicId}`, 'read')) {
+        res.status(404).json({ error: 'unknown-conversation' });
+        return;
+      }
+    }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
       : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).

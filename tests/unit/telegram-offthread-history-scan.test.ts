@@ -51,13 +51,13 @@ describe('off-main-thread history scan for the conversation list', () => {
   const oldRead = (topicId: number, limit = 500) => { const fresh = make(dir); extra.push(fresh); return fresh.getTopicHistory(topicId, limit); };
   const all = [...TOPICS, 424242];
 
-  /** Run `hook` just before the Nth read of the log through a FileHandle (1-based). */
+  /** Run `hook` just before the Nth read of the log through FileHandles (1-based, counted across handles). */
   const onRead = (n: number, hook: () => void | Promise<void>) => {
     const realOpen = fs.promises.open.bind(fs.promises);
+    let count = 0; // across every handle the scan opens
     return vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
       const fh = await realOpen(...args);
       const realRead = fh.read.bind(fh) as (...a: unknown[]) => Promise<{ bytesRead: number; buffer: Buffer }>;
-      let count = 0;
       (fh as unknown as { read: (...a: unknown[]) => Promise<unknown> }).read = async (...a: unknown[]) => {
         count++;
         if (count === n) await hook();
@@ -161,9 +161,9 @@ describe('off-main-thread history scan for the conversation list', () => {
 
   it('a same-length rewrite during the final check (after its bytes were re-read) saves nothing', async () => {
     const n = blocksIn();
-    // Reads: n data blocks + 1 empty read at the end, then n re-reads; hook before the LAST re-read,
-    // when block 0 has already been re-read and matched, so only the change-time check can catch it.
-    onRead(n + 1 + n, rewriteFirstLineSameLength);
+    // Reads: n data blocks (to the size seen), then n re-reads; hook before the LAST re-read, when
+    // block 0 has already been re-read and matched, so only the change-time check can catch it.
+    onRead(n + n, rewriteFirstLineSameLength);
     expect(await adapter.warmTopicTails(all)).toBe(false);
     expect(inner(adapter).topicTailCache.size).toBe(0);
   });
@@ -184,6 +184,80 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(inner(adapter).topicTailCache.get(1005)).toBe(cachedBySync);
   });
 
+  it('a live topic is filled by the same scan, and a later synchronous miss never duplicates a saved tail', async () => {
+    adapter.registerTopicSession(1004, 'live-session', 'Live topic');
+    const expected = all.map((t) => oldRead(t));
+    expect(await adapter.warmTopicTails([1001])).toBe(true);
+    expect(inner(adapter).topicTailCache.has(1004)).toBe(true); // the live topic, as the old first-miss seed fills it
+    // A synchronous read of an uncached topic must not re-run the seed over the saved tails.
+    expect(adapter.getTopicHistory(1003, 500)).toEqual(expected[2]);
+    all.forEach((t, i) => expect(adapter.getTopicHistory(t, 500)).toEqual(expected[i]));
+  });
+
+  it('a topic unregistered while the scan runs is not saved back', async () => {
+    adapter.registerTopicSession(1002, 'live-2', 'Topic two');
+    onRead(2, () => { adapter.unregisterTopic(1002); });
+    expect(await adapter.warmTopicTails([1001, 1002])).toBe(false);
+    expect(inner(adapter).topicTailCache.has(1002)).toBe(false);
+    expect(inner(adapter).topicTailCache.has(1001)).toBe(true);
+  });
+
+  it('a caller whose topics are all cached never waits on a running scan', async () => {
+    expect(await adapter.warmTopicTails([1005])).toBe(true);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    onRead(2, () => gate);
+    const slow = adapter.warmTopicTails([1001]);
+    let fastDone = false;
+    const fast = adapter.warmTopicTails([1005]).then((v) => { fastDone = true; return v; });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fastDone).toBe(true);
+    expect(await fast).toBe(true);
+    release();
+    expect(await slow).toBe(true);
+  });
+
+  it('topics asked for while a scan runs all go into the next scan together', async () => {
+    const first = adapter.warmTopicTails([1001]);
+    const others = [adapter.warmTopicTails([1003]), adapter.warmTopicTails([1004]), adapter.warmTopicTails([1003, 1005])];
+    expect(await first).toBe(true);
+    expect(await Promise.all(others)).toEqual([true, true, true]);
+    expect(inner(adapter).tailWarmScans).toBe(2);
+  });
+
+  it('on coarse change times, the re-read waits until the last change is old enough to be told apart', async () => {
+    const realStat = fs.statSync;
+    vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, o?: fs.StatSyncOptions) => {
+      const st = realStat(p, o as never) as unknown as fs.BigIntStats;
+      if (String(p) !== logPath || !(o as { bigint?: boolean } | undefined)?.bigint) return st;
+      const ms = (n: bigint) => (n / 1_000_000n) * 1_000_000n; // a file system that keeps whole milliseconds
+      return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { ctimeNs: ms(st.ctimeNs), mtimeNs: ms(st.mtimeNs) });
+    }) as typeof fs.statSync);
+    const started = Date.now();
+    expect(await adapter.warmTopicTails([1003])).toBe(true); // the log was written a moment ago
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2_000);
+    vi.restoreAllMocks();
+    expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003));
+  });
+
+  it('the handle is closed before the final check and the save', async () => {
+    const events: string[] = [];
+    const realOpen = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const fh = await realOpen(...args);
+      const realClose = fh.close.bind(fh);
+      (fh as unknown as { close: () => Promise<void> }).close = async () => { await realClose(); events.push('closed'); };
+      return fh;
+    });
+    const realStat = fs.statSync;
+    vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, o?: fs.StatSyncOptions) => {
+      if (String(p) === logPath) events.push(inner(adapter).topicTailCache.has(1003) ? 'stat-after-save' : 'stat');
+      return realStat(p, o as never);
+    }) as typeof fs.statSync);
+    expect(await adapter.warmTopicTails([1003])).toBe(true);
+    expect(events.slice(-2)).toEqual(['closed', 'stat']); // the last check runs after the close, and the save after it
+  });
+
   it('no log file: every topic caches empty, as the old read does', async () => {
     SafeFsExecutor.safeUnlinkSync(logPath, { operation: OP });
     expect(await adapter.warmTopicTails(all)).toBe(true);
@@ -198,7 +272,7 @@ describe('off-main-thread history scan for the conversation list', () => {
       const realRead = fh.read.bind(fh) as (...a: unknown[]) => Promise<{ bytesRead: number }>;
       (fh as unknown as { read: (...a: unknown[]) => Promise<unknown> }).read = async (...a: unknown[]) => {
         const r = await realRead(...a);
-        if (r.bytesRead === 0) fs.appendFileSync(logPath, JSON.stringify({ messageId: 500_000 + k++, topicId: 1003, text: 'busy', fromUser: true, timestamp: at(1), sessionName: null }) + '\n');
+        fs.appendFileSync(logPath, JSON.stringify({ messageId: 500_000 + k++, topicId: 1003, text: 'busy', fromUser: true, timestamp: at(1), sessionName: null }) + '\n');
         return r;
       };
       return fh;

@@ -11,17 +11,20 @@ The freeze fix for fb-52447f16-7d3, Option C, chosen by the Chief of Staff in pl
 log view (pull request 3602, which stays a draft). Spec: `docs/specs/conversation-list-offthread-scan.md`.
 
 **Files:**
-- `src/messaging/TelegramAdapter.ts`: `warmTopicTails` and `scanTailsOffTurn` (new, additive). The
-  old read (`getTopicHistory`, `scanLogForTopic`, `seedTailCacheFromLog`, `getTopicHistoryBefore`)
-  and the trim (`maybeRotateLog`) are byte-for-byte unchanged; `MessageLogger` is untouched.
+- `src/messaging/TelegramAdapter.ts`: `warmTopicTails`, `scanTailsOffTurn` and `noteTailEvicted`
+  (new, additive), plus one line in `unregisterTopic` that counts the eviction. The old read
+  (`getTopicHistory`, `scanLogForTopic`, `seedTailCacheFromLog`, `getTopicHistoryBefore`) and the
+  trim (`maybeRotateLog`) are byte-for-byte unchanged; `MessageLogger` is untouched.
 - `src/server/AgentServer.ts`: `routeCtx.telegramHistoryWarm` (the live off switch
   `telegramHistoryScan.offMainThread`) and the list's `telegramWarm` dependency.
 - `src/server/mobileConversationRoutes.ts`: the list awaits `telegramWarm` before its unchanged code.
-- `src/server/routes.ts`: a chat read without `before` awaits `telegramHistoryWarm([topicId])`.
+- `src/server/routes.ts`: a chat read without `before` awaits `telegramHistoryWarm([topicId])`, then
+  checks the phone's access to the topic again.
 
 **Tier:** 1 (additive, behind a live switch, a revert fully undoes it, no state written).
-**Proportion:** 4 source files, about 150 added lines; tests 4 files. One measurement round per
-design, one strict external review on the pull request.
+**Proportion:** 4 source files, about 230 added lines; tests 5 files. Real-log measurement three
+runs per variant; one strict external review, whose seven serious findings were fixed in a second
+commit (listed in the spec's Review section) and then reviewed again.
 
 ## Decision-point inventory
 
@@ -37,8 +40,9 @@ replaced file) costs a cold request the old synchronous read, which is today's b
 
 No block/allow surface. Correctness misses considered:
 - A same-length rewrite during the main read: caught by the hash re-read (tested, mutation-checked).
-- A rewrite during the re-read: caught by the change-time check (tested, mutation-checked); relies on
-  the file system moving change time on every write (stated in the spec's limits).
+- A rewrite during the re-read: caught by the change-time check (tested, mutation-checked); on a
+  file system with coarse change times the re-read waits until the last change is 2.5 s old, so a
+  later write lands on a later tick (tested, mutation-checked).
 - A same-size file renamed into place: caught by the dev/ino check (tested, mutation-checked).
 - An external process writing between the final check and the save: the save is in the same
   synchronous turn as the check; the old cache never sees external writes either, so the result
@@ -58,10 +62,13 @@ it. No second store; every reader still goes through `getTopicHistory`.
 - `rememberLoggedEntry` pushes appends only into cached topics; an uncached topic's append during a
   scan is read from the file by the scan (tested). A topic cached by another path during the scan
   keeps that copy (tested).
-- `seedTailCacheFromLog`/`tailCacheSeeded` are untouched: a later miss on a live topic still seeds
-  as before.
-- `unregisterTopic` drops a topic's cache; a scan that started earlier may save that topic again.
-  That holds the same rows the old read would load on the next read; no difference in answers.
+- `seedTailCacheFromLog` appends every disk row to any tail already cached, so it must never run
+  after this scan saved tails: while `tailCacheSeeded` is false the scan also fills every live topic
+  and sets the flag when it saves (tested, mutation-checked).
+- `unregisterTopic` drops a topic's cache and now counts the eviction; a scan that started earlier
+  does not save that topic back (tested, mutation-checked).
+- Team access: the chat read re-checks the phone's access after the wait, as the old code checked it
+  in the same turn as the read (tested in `team-access-guards`, mutation-checked).
 - The trim renames a new file into place; a scan in flight gives up and the next request scans the
   new file.
 - Pool list reads: the peer's list route awaits its own scan inside the asker's 5 s budget (see the
@@ -85,10 +92,13 @@ Nothing is persisted.
 
 ## Evidence
 
-- Unit: `tests/unit/telegram-offthread-history-scan.test.ts` — replay against a fresh adapter's old
-  read; read error, replaced file, same-size rename, same-length rewrite during the read and during
-  the re-read, append during the scan, a cache filled during the scan, no log file, a log changing
-  through every round, concurrent callers sharing one scan.
+- Unit: `tests/unit/telegram-offthread-history-scan.test.ts` (18 tests) — replay against a fresh
+  adapter's old read; read error, replaced file, same-size rename, same-length rewrite during the
+  read and during the re-read, coarse change times, append during the scan, a cache filled during
+  the scan, an unregister during the scan, the live-topic seed, cache hits never waiting, pending
+  topics batched, the close before the final check, no log file, a log changing through every
+  round, concurrent callers sharing one scan.
+- Integration: `tests/integration/team-access-guards.test.ts` — a grant removed during the wait.
 - Integration: `tests/integration/conversation-list-offthread-scan.test.ts` — list and cold chat
   through the HTTP routes, on versus off identical, off switch live, one scan for concurrent lists.
 - E2E: `tests/e2e/conversation-list-offthread-scan-alive.test.ts` — production constructor, ~25 MB

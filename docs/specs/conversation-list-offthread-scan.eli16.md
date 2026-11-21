@@ -35,7 +35,11 @@ the file. The only change is when and how the first read happens.
 - **Never half-saved.** If the file can't be read, is replaced (the trim does that), or is
   rewritten while being read, even with the same length, nothing is saved. The old read then runs
   as it always did. A re-read with a fingerprint check catches the same-length rewrite.
-- **One read at a time.** If several requests arrive together, they all wait for the same read.
+- **One read at a time.** If several requests arrive together, they all wait for the same read. A
+  request whose conversations are already in memory never waits at all.
+- **Still in step with the rest of the server.** A conversation closed while the read runs is not
+  put back, and a phone whose access to a conversation was removed while it waited is refused, just
+  as the old code would have refused it.
 - **An off switch.** One setting turns the new read off without a restart or a release, and
   everything goes back to the old way.
 

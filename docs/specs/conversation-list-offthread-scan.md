@@ -46,23 +46,36 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
    as `scanLogForTopic` does. Multi-byte characters split across block edges are joined by a
    `StringDecoder`, so the text equals a whole-file UTF-8 decode.
 2. **Off the main thread.** The file is read with `fs.promises` in awaited 64 KiB blocks; each
-   block's lines are parsed in their own turn. No turn does more than one block.
-3. **Saved only after an end-of-same-file check.** At the end of the read:
-   - `fs.statSync(path, {bigint})` must show the same `dev` and `ino` as the opened handle, and a
-     size equal to the bytes parsed (larger: more was appended, so the rest is read first;
-     smaller, or another file: give up).
+   block's lines are parsed in their own turn. No turn does more than one block. Each round reads
+   only up to the size seen when it starts, so a writer that keeps appending cannot keep a round
+   going.
+3. **Saved only after an end-of-same-file check.** At the end of each round's read:
+   - `fs.statSync(path, {bigint})` must show the same `dev` and `ino` as the first opened handle
+     (every round's handle is checked too), and a size equal to the bytes parsed (larger: more was
+     appended, so the next round reads the rest; smaller, or another file: give up).
+   - On a file system whose change times are whole milliseconds or coarser (the nanosecond part is
+     zero), the re-read starts only once the last change is 2.5 s old, so any write during the
+     re-read moves the change time. APFS and ext4 keep nanoseconds, so this wait does not occur
+     there.
    - The parsed range is read again and its SHA-256 compared with the hash of the bytes that were
      parsed. A rewrite of bytes already read, even at the same length, makes them differ.
-   - A second `statSync` must still show the same identity, size, `mtimeNs` and `ctimeNs` as the
-     first. Any write during the re-read moves the change time; an append alone starts another
-     round (read the new bytes, re-check), at most 3 rounds.
-   - Only then, in that same synchronous turn, are the rows saved, and only for topics still not
-     cached (an append to a cached topic, or a synchronous read during the scan, may have filled
-     one; that copy is kept). Local appends run on the main thread, so none can fall between the
-     check and the save.
-4. **Shared scan.** A request arriving while a scan runs waits for the same promise. A topic that
-   the running scan was not asked for gets at most one more scan of its own.
-5. **Fallback.** On a read error, an open error, a replaced or shrunk file, a hash mismatch, a
+   - The handle is closed, then a second `statSync` must still show the same identity, size,
+     `mtimeNs` and `ctimeNs` as the first. Any write during the re-read moves the change time; an
+     append alone starts another round, at most 3 rounds in all.
+   - Only then, in that same synchronous turn, are the rows saved, and the waiting request reads
+     the cache in that same turn (only promise continuations run between), so no append, trim or
+     other I/O callback falls between the check, the save and the read. Rows are saved only for
+     topics still not cached (a synchronous read during the scan may have filled one; that copy is
+     kept) and not evicted by `unregisterTopic` since the scan started (a per-topic eviction count).
+4. **Consistent with the first-miss seed.** The old code's first cache miss seeds every live
+   topic (`topicToSession`) in one pass and sets `tailCacheSeeded`; the seed appends every row on
+   disk to any tail already cached, so it must never run after this scan saved tails. While
+   `tailCacheSeeded` is false the scan also fills every live topic and, on saving, sets the flag:
+   from then on the cache holds exactly what the old seed would have produced.
+5. **Shared scan.** A request whose topics are all cached returns at once and never waits on a
+   scan. Otherwise its topics join a pending set; a request arriving while a scan runs waits for it,
+   and the next scan takes every pending topic together. Two scans at most per request.
+6. **Fallback.** On a read error, an open error, a replaced or shrunk file, a hash mismatch, a
    change during the check, or a file still changing after 3 rounds, nothing is saved, the error is
    logged, and the unchanged synchronous code reads the file exactly as before.
 
@@ -72,7 +85,9 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
   before the unchanged list code runs.
 - `GET /telegram/topics/:topicId/messages` without `before` (a chat opened before any list, for
   example a notification tapped right after a restart) awaits `warmTopicTails([topicId])` before
-  the unchanged `getTopicHistory`. The pool form of a chat read reaches the same route on the
+  the unchanged `getTopicHistory`, and then checks the phone's access to that topic again, because
+  the old code checked it in the same turn as the read and a grant may be removed during the wait.
+  The list computes its per-person visibility after the wait, as before. The pool form of a chat read reaches the same route on the
   machine that holds the topic, so it waits there too.
 
 ### Off switch
@@ -103,10 +118,13 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
   respawn-history mesh read, and any other caller that reaches an uncached topic without going
   through these two routes still read synchronously, exactly as today. The scroll-back read was
   already a single pass per page.
-- **Change time is the write detector during the re-read.** It relies on the file system's change
-  time moving on every write (nanosecond resolution on APFS and ext4). A file system with
-  one-second times could miss a same-length rewrite made during the re-read itself, in the same
-  second as the first check. The hash still catches every rewrite made during the main read.
+- **Change time is the write detector during the re-read.** Every write moves a file's change
+  time; on a file system with coarse times the settle wait above makes sure a write during the
+  re-read lands on a later tick (up to 2 s granularity). The hash catches every rewrite made
+  before the re-read starts.
+- **A stalled disk.** A request with an uncached topic waits for the scan with no deadline of its
+  own; a hung read leaves it waiting until the app's timeout, as a hung synchronous read would
+  freeze the old code. Requests whose topics are cached do not wait.
 
 ## Acceptance
 
@@ -121,6 +139,16 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
 - A production-constructed server over a ~25 MB log answers a cold list and a cold chat read with
   the longest event-loop stall under one second, measured in-test; the same test fails with the
   switch off.
+
+## Review
+
+One strict external review (Codex, read-only, prompt in the pull request) of the first commit found
+seven serious issues; all are fixed in the second commit, each with a test that fails without its fix: the first-miss seed
+duplicating saved tails (item 4), a same-length rewrite on coarse change times (the settle wait),
+publication before the handle closed (the close now precedes the final check), an unregistered
+topic saved back (the eviction count), cache hits waiting on a stalled scan, an unbounded round
+(read to the size seen), and a grant removed during the chat wait (the access re-check). The minor
+finding (topics asked during a scan going to separate scans) is fixed by the pending set.
 
 ## Rollback
 
