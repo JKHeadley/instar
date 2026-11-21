@@ -240,6 +240,19 @@ describe('recommended services: production wiring', () => {
     expect(makeLedger().effective('voice-transcription').choice).toBe('no');
   });
 
+  it('secret-lost: at start, a secret the loaded config still points at is recorded once through the real wiring; dark when off', async () => {
+    const lost = { voiceTranscription: { apiKey: { secret: true } } };
+    const off = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, ...lost });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(off.makeLedger().reofferRows()).toEqual([]);
+    const on = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } }, ...lost });
+    await new Promise((r) => setTimeout(r, 50));
+    const rows = on.makeLedger().reofferRows('42');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service: 'bitwarden', kind: 'secret-lost', state: 'event', evidenceRef: 'boot' });
+    expect(on.makeLedger().effective('bitwarden').choice).toBe('unset');
+  });
+
   it('refuses to surface a retired offer', async () => {
     const { server } = boot(true);
     const res = await request(server.getApp()).post('/features/git-backup/surface').set('Authorization', `Bearer ${AUTH}`).send({ trigger: 't' });
