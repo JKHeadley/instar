@@ -40,6 +40,10 @@ the file. The only change is when and how the first read happens.
 - **Still in step with the rest of the server.** A conversation closed while the read runs is not
   put back, and a phone whose access to a conversation was removed while it waited is refused, just
   as the old code would have refused it.
+- **Trims and half-written lines.** When the history file is trimmed while being read, the server
+  keeps what it already read, as the old code would have, and adds only what came after. If the
+  file's last line is only half written, the server lets the old read handle it straight away. A
+  read that takes longer than 3.5 seconds is abandoned and the old read answers instead.
 - **An off switch.** One setting turns the new read off without a restart or a release, and
   everything goes back to the old way.
 

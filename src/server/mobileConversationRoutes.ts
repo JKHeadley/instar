@@ -603,6 +603,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
+    // anything after the page is unread. A Bearer read without a forwarded reader gets none.
+    // The reader's first baseline is set at admission, before the wait below, as the old code set it
+    // in the same turn: a reply saved during the wait stays unread (conversation-list-offthread-scan).
+    const unread = unreadOn();
+    const reader = readerOf(req);
+    if (unread && reader) unread.touchBaseline(reader);
     // Every request, local or from another of this agent's machines, waits for the one shared scan;
     // if it saved nothing, the unchanged list below reads the file as before.
     if (deps.telegramWarm) { try { await deps.telegramWarm(); } catch { /* @silent-fallback-ok — the list below reads the file as before */ } }
@@ -622,11 +629,6 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return deviceMayUse(deps.pairing, req, String(r.id));
     }).map(shownPreview);
-    // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
-    // anything after the page is unread. A Bearer read without a forwarded reader gets none.
-    const unread = unreadOn();
-    const reader = readerOf(req);
-    if (unread && reader) unread.touchBaseline(reader);
     const self = deps.machineId();
     const strip = (r: ConversationListRow): ConversationListRow => { const { hasUnread: _h, unreadCount: _c, unreadMore: _m, readUpTo: _r, ...rest } = r; return rest; };
     const withFields = (rows: ConversationListRow[], keepPeerTelegram: boolean): ConversationListRow[] => rows.map((r) => {

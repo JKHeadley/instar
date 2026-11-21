@@ -17,14 +17,16 @@ log view (pull request 3602, which stays a draft). Spec: `docs/specs/conversatio
   trim (`maybeRotateLog`) are byte-for-byte unchanged; `MessageLogger` is untouched.
 - `src/server/AgentServer.ts`: `routeCtx.telegramHistoryWarm` (the live off switch
   `telegramHistoryScan.offMainThread`) and the list's `telegramWarm` dependency.
-- `src/server/mobileConversationRoutes.ts`: the list awaits `telegramWarm` before its unchanged code.
+- `src/server/mobileConversationRoutes.ts`: the list sets a phone's first unread baseline, then awaits
+  `telegramWarm`, before its unchanged code (the baseline line moved up, unchanged).
 - `src/server/routes.ts`: a chat read without `before` awaits `telegramHistoryWarm([topicId])`, then
   checks the phone's access to the topic again.
 
 **Tier:** 1 (additive, behind a live switch, a revert fully undoes it, no state written).
-**Proportion:** 4 source files, about 230 added lines; tests 5 files. Real-log measurement three
-runs per variant; one strict external review, whose seven serious findings were fixed in a second
-commit (listed in the spec's Review section) and then reviewed again.
+**Proportion:** 4 source files, about 400 added lines; tests 5 files. Real-log measurement three
+runs per variant; two full strict external reviews (seven serious findings each) and one narrow
+review of the third commit's fixes. The review count is out of line with a Tier-1 size because
+each round found real timing differences from the old code in a concurrent cache fill.
 
 ## Decision-point inventory
 
@@ -67,6 +69,14 @@ it. No second store; every reader still goes through `getTopicHistory`.
   and sets the flag when it saves (tested, mutation-checked).
 - `unregisterTopic` drops a topic's cache and now counts the eviction; a scan that started earlier
   does not save that topic back (tested, mutation-checked).
+- The log trim: a scan that sees the file replaced follows the trim (keeps what it read before, adds
+  the trimmed file's lines after the overlap, located by line hashes) or saves nothing (tested,
+  mutation-checked). The trim code itself is unchanged.
+- An unfinished last line: the scan defers to the old read in the caller's turn (tested,
+  mutation-checked).
+- A 3.5 s deadline keeps a stalled scan inside other machines' 5 s list budget; an abandoned scan
+  never saves (tested, mutation-checked). A failed close saves nothing (tested, mutation-checked).
+- Unread: the list's first baseline is set before the wait (tested, mutation-checked).
 - Team access: the chat read re-checks the phone's access after the wait, as the old code checked it
   in the same turn as the read (tested in `team-access-guards`, mutation-checked).
 - The trim renames a new file into place; a scan in flight gives up and the next request scans the

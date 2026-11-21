@@ -43,7 +43,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-guards.test.ts' });
 });
 
-async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm?: (topicIds: number[]) => Promise<void> } = {}) {
+async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm?: (topicIds: number[]) => Promise<void>; listWarm?: () => Promise<void>; unread?: unknown } = {}) {
   const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-guard-'));
   dirs.push(dir);
@@ -108,6 +108,8 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm
     config: config as never, pairing, service: svc, machineId: () => 'm1', listPins,
     sentinel: { decideInboundDisposition: async () => ({ disposition: spies.disposition, category: 'normal' }) } as never,
     telegramTopics: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })),
+    ...(opts.listWarm ? { telegramWarm: opts.listWarm } : {}),
+    ...(opts.unread ? { unread: opts.unread as never } : {}),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   return { app, pairing, svc, spies, dir, registry, dispatched, listPins };
@@ -152,6 +154,21 @@ describe('reading a Telegram topic', () => {
     const { e, mia } = await withMember();
     expect((await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`)).status).toBe(200);
     expect((await send(e, mia, 'GET', `/telegram/topics/${OTHER}/messages`)).status).toBe(404);
+  });
+
+  it('the list sets a phone\'s first unread baseline before it waits on the history scan (conversation-list-offthread-scan)', async () => {
+    const order: string[] = [];
+    const unread = {
+      enabled: () => true,
+      resolveReader: (r: { person: unknown; viaDevice: boolean }) => (r.viaDevice ? { key: 'owner', person: r.person, viaDevice: true } : null),
+      touchBaseline: () => { order.push('baseline'); },
+      rowFields: () => null,
+    };
+    const e = await setup({ unread, listWarm: async () => { order.push('scan'); } });
+    const owner = phone(e);
+    const r = await send(e, owner, 'GET', '/mobile/conversations');
+    expect(r.status).toBe(200);
+    expect(order).toEqual(['baseline', 'scan']); // a reply saved during the scan comes after the baseline, so it stays unread
   });
 
   it('a grant removed while the first read waits on the history scan is honoured (conversation-list-offthread-scan)', async () => {

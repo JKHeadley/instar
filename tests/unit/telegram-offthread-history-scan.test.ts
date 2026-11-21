@@ -35,8 +35,8 @@ describe('off-main-thread history scan for the conversation list', () => {
       if (round % 60 === 3) lines.push(JSON.stringify({ messageId: id++, channelId: t, text: 'shared logger row', fromUser: false, timestamp: at(id), sessionName: null }));
       if (round % 70 === 5) lines.push(JSON.stringify({ messageId: id++, channelId: String(t), text: 'string channel id: never this topic', fromUser: false, timestamp: at(id), sessionName: null }));
     }
-    // The last line has no newline: the old read parses it, so must this.
-    fs.writeFileSync(logPath, lines.join('\n') + '\n' + JSON.stringify({ messageId: id, topicId: 1002, text: 'unterminated last', fromUser: true, timestamp: at(id), sessionName: null }));
+    lines.push(JSON.stringify({ messageId: id, topicId: 1002, text: 'final row', fromUser: true, timestamp: at(id), sessionName: null }));
+    fs.writeFileSync(logPath, lines.join('\n') + '\n');
     expect(fs.statSync(logPath).size).toBeGreaterThan(4 * 64 * 1024);
     adapter = make(dir);
   });
@@ -77,7 +77,7 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(reads.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(0);
     all.forEach((t, i) => expect(adapter.getTopicHistory(t, 500)).toEqual(expected[i]));
     all.forEach((t, i) => expect(adapter.getTopicHistory(t, 3)).toEqual(expectedShort[i]));
-    expect(adapter.getTopicHistory(1002, 1)[0]).toMatchObject({ text: 'unterminated last' });
+    expect(adapter.getTopicHistory(1002, 1)[0]).toMatchObject({ text: 'final row' });
     expect(reads.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(0);
   });
 
@@ -110,7 +110,7 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003));
   });
 
-  it('a file replaced mid-scan (a rotation renames a new file into place) saves nothing', async () => {
+  it('a file replaced mid-scan by one that does not continue the log saves nothing', async () => {
     onRead(2, () => {
       const tmp = `${logPath}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify({ messageId: 1, topicId: 1001, text: 'after rotation', fromUser: true, timestamp: at(1), sessionName: null }) + '\n');
@@ -126,14 +126,14 @@ describe('off-main-thread history scan for the conversation list', () => {
     const original = fs.readFileSync(logPath, 'utf8');
     const lastRow = adapter.getTopicHistory(1002, 1)[0]; // read before the mocks; fills only 1002
     inner(adapter).topicTailCache.clear();
-    const replacement = original.replace('unterminated last', 'unterminated LAST');
+    const replacement = original.replace('final row', 'final ROW');
     expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original));
     onRead(2, () => { fs.writeFileSync(`${logPath}.tmp`, replacement); fs.renameSync(`${logPath}.tmp`, logPath); });
     expect(await adapter.warmTopicTails(all)).toBe(false);
     expect(inner(adapter).topicTailCache.size).toBe(0);
     vi.restoreAllMocks();
-    expect(lastRow).toMatchObject({ text: 'unterminated last' });
-    expect(adapter.getTopicHistory(1002, 1)[0]).toMatchObject({ text: 'unterminated LAST' });
+    expect(lastRow).toMatchObject({ text: 'final row' });
+    expect(adapter.getTopicHistory(1002, 1)[0]).toMatchObject({ text: 'final ROW' });
   });
 
   /** Rewrite the first line in place with a same-length line that names a different message. */
@@ -256,6 +256,105 @@ describe('off-main-thread history scan for the conversation list', () => {
     }) as typeof fs.statSync);
     expect(await adapter.warmTopicTails([1003])).toBe(true);
     expect(events.slice(-2)).toEqual(['closed', 'stat']); // the last check runs after the close, and the save after it
+  });
+
+  /** The trim exactly as maybeRotateLog does it: keep the newest `keep` non-empty lines, rename a new file into place. */
+  const trimLike = (keep: number) => {
+    const kept = fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).slice(-keep);
+    fs.writeFileSync(`${logPath}.trim.tmp`, kept.join('\n') + '\n');
+    fs.renameSync(`${logPath}.trim.tmp`, logPath);
+  };
+  const row = (messageId: number, topicId: number, text: string) => JSON.stringify({ messageId, topicId, text, fromUser: true, timestamp: at(messageId), sessionName: null });
+
+  it('a trim during the scan does not leave a conversation blank: the rows from before the trim are kept, and lines after it added', async () => {
+    // Topic 1003's rows are all in the part the trim drops.
+    const before = all.map((t) => oldRead(t));
+    expect(before[2].length).toBeGreaterThan(0);
+    const a1 = row(900_001, 1004, 'appended before the trim'); const a2 = row(900_002, 1005, 'appended after the trim');
+    onRead(3, () => {
+      fs.appendFileSync(logPath, a1 + '\n');
+      trimLike(400); // keeps only the newest 400 lines: topic 1003's rows are gone from the file
+      fs.appendFileSync(logPath, a2 + '\n');
+    });
+    expect(await adapter.warmTopicTails(all)).toBe(true);
+    vi.restoreAllMocks();
+    expect(oldRead(1003)).toEqual([]); // a read after the trim alone would show nothing
+    // The old code read before the trim, then each later append joined the cached tail.
+    const extra: Record<number, unknown[]> = { 1004: [JSON.parse(a1)], 1005: [JSON.parse(a2)] };
+    const ids = (rows: unknown[]) => rows.map((r) => { const e = r as { messageId: number; text: string }; return `${e.messageId}:${e.text}`; });
+    all.forEach((t, i) => expect(ids(adapter.getTopicHistory(t, 500))).toEqual(ids([...before[i], ...(extra[t] ?? [])].slice(-500))));
+    all.filter((t) => !extra[t]).forEach((t) => expect(adapter.getTopicHistory(t, 500)).toEqual(before[all.indexOf(t)]));
+  });
+
+  it('a trim that lands while the final check closes the file is followed too', async () => {
+    const before = all.map((t) => oldRead(t));
+    const realOpen = fs.promises.open.bind(fs.promises);
+    let trimmed = false;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const fh = await realOpen(...args);
+      const realClose = fh.close.bind(fh);
+      (fh as unknown as { close: () => Promise<void> }).close = async () => {
+        await realClose();
+        if (!trimmed) { trimmed = true; fs.appendFileSync(logPath, row(900_003, 1001, 'appended at the close') + '\n'); trimLike(400); }
+      };
+      return fh;
+    });
+    expect(await adapter.warmTopicTails(all)).toBe(true);
+    expect(trimmed).toBe(true);
+    expect(adapter.getTopicHistory(1003, 500)).toEqual(before[2]);
+    expect(adapter.getTopicHistory(1001, 1)[0]).toMatchObject({ text: 'appended at the close' });
+    expect(adapter.getTopicHistory(1001, 500).slice(0, -1)).toEqual(before[0].slice(1));
+  });
+
+  it('a failed close counts as a failed scan: nothing is saved', async () => {
+    const realOpen = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const fh = await realOpen(...args);
+      const realClose = fh.close.bind(fh);
+      (fh as unknown as { close: () => Promise<void> }).close = async () => { await realClose(); throw Object.assign(new Error('EIO: injected close failure'), { code: 'EIO' }); };
+      return fh;
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await adapter.warmTopicTails(all)).toBe(false);
+    expect(inner(adapter).topicTailCache.size).toBe(0);
+  });
+
+  it('a stalled scan stops at its deadline: waiters get the old read, and the scan never saves later', async () => {
+    (adapter as unknown as { tailWarmDeadlineMs: number }).tailWarmDeadlineMs = 300;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let finished!: () => void;
+    const scanDone = new Promise<void>((r) => { finished = r; });
+    onRead(2, async () => { await gate; setTimeout(finished, 200); });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const started = Date.now();
+    expect(await adapter.warmTopicTails(all)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(inner(adapter).topicTailCache.size).toBe(0);
+    release();
+    await scanDone;
+    expect(inner(adapter).topicTailCache.size).toBe(0); // the abandoned scan saved nothing
+    vi.restoreAllMocks();
+    expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003));
+  });
+
+  it('a log whose last line is unfinished is left to the old read at once, so an append during the wait hides nothing', async () => {
+    // A row written without its newline (a crash mid-write), then another append concatenates onto it.
+    fs.appendFileSync(logPath, row(910_001, 1004, 'row without newline'));
+    let appended = false;
+    const appendNow = () => {
+      if (appended) return; appended = true;
+      (adapter as unknown as { appendToLog(e: unknown): void }).appendToLog({ messageId: 910_002, topicId: 1004, text: 'the next reply', fromUser: false, timestamp: at(910_002), sessionName: null });
+    };
+    onRead(1, appendNow); // without the fix the scan reads, and this append lands in the middle of it
+    expect(await adapter.warmTopicTails([1004])).toBe(false);
+    vi.restoreAllMocks();
+    // The request's read runs now, as the old code ran it, then the append arrives.
+    const shown = adapter.getTopicHistory(1004, 500);
+    expect(shown[shown.length - 1]).toMatchObject({ text: 'row without newline' });
+    appendNow();
+    const after = adapter.getTopicHistory(1004, 500).map((r) => r.text);
+    expect(after.slice(-2)).toEqual(['row without newline', 'the next reply']);
   });
 
   it('no log file: every topic caches empty, as the old read does', async () => {
