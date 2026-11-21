@@ -126,7 +126,7 @@ describe('the pages', () => {
       { id: 'plan:plan:p1', title: 'Approve the plan', why: 'It waits on you', tone: 'attn', action: { kind: 'href', href: '#/work/plans' }, card: { id: 'wc_00112233445566aa', href: '#/work/board?card=wc_00112233445566aa', label: 'Has a card on the work board' } },
       { id: 'pr:3404', title: 'Review PR 3404', why: 'Checks passed', tone: 'attn', action: { kind: 'href', href: '#/work/prs' } },
     ];
-    mountNeedsStrip(host, { get: async () => ok({ complete: true, count: 2, items, couldNotCheck: [] }), hrefFor: (a) => a && a.href });
+    mountNeedsStrip(host, { get: async () => ok({ complete: true, count: 2, items, couldNotCheck: [] }), hrefFor: (a) => a && a.href, open: true });
     for (let i = 0; i < 4; i++) await tick();
     const lis = [...host.querySelectorAll('.needs-rows li')];
     expect(lis[0].querySelector('.needs-card-link').getAttribute('href')).toBe('#/work/board?card=wc_00112233445566aa');

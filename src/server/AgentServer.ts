@@ -3,6 +3,7 @@
 
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
+import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTitle.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
@@ -7750,6 +7751,11 @@ export class AgentServer {
         }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
+      /** topicId → the Chief of Staff's project title, read per call (a failed read just means no fallback). */
+      const cosProjectTitles = (): Map<number, string> => {
+        try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
+        catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
+      };
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
@@ -7771,10 +7777,14 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
+        telegramTopics: options.telegram ? () => {
+          // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
+          const projectTitles = cosProjectTitles();
+          return options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
-        }) : undefined,
+          return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
+          });
+        } : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
@@ -7782,7 +7792,7 @@ export class AgentServer {
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
         topicMemory: () => options.topicMemory ?? null,
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: m.topicName })) : undefined,
+        telegramTopics: options.telegram ? () => { const projectTitles = cosProjectTitles(); return options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) })); } : undefined,
         telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
           return row ? telegramRowId(row) : null;
