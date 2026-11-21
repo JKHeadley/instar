@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "feedback-triage-subcap-fresh-starvation",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T05:34:17.829Z",
+  "artifactPath": "upgrades/side-effects/feedback-triage-subcap-fresh-starvation.md",
+  "artifactSha256": "68677a4e732eff7ec213d1e86a00f3f7e6143e9c83cafe8bef4299028fdec070",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/feedback-factory-processing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation repair for the feedback triage CI gate; it changes shipped component guidance but no runtime behavior.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

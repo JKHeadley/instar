@@ -396,12 +396,19 @@ export class FeedbackTriageService {
     let observedMs = 0;
     let observedChars = 0;
     let unusableThisTick = false;
+    let skippedRetriageCap = false;
     for (const batch of batches) {
+      const retriage = batch.some((b) => b.candidate.retriage);
+      // An exhausted re-triage allowance must not consume the remaining first-time
+      // triage work: older queued rows may sort ahead of fresh reports.
+      if (retriage && this.opts.store.subcapUsed('retriage') >= RETRIAGE_SUBCAP) {
+        skippedRetriageCap = true;
+        continue;
+      }
       const remaining = deadline - this.now();
       const batchChars = batch.reduce((sum, b) => sum + b.built.chars, 0);
       const fits = unitsThatFit(remaining, observedMs, observedChars, batchChars);
       if (remaining <= 0 || fits < batchChars || (out.calls > 0 && remaining < MIN_LATER_READINESS_CALL_MS)) { out.reason ??= 'triage-time-exhausted-rest-due'; break; }
-      const retriage = batch.some((b) => b.candidate.retriage);
       /* @self-action-controller: feedback-triage-tick */
       if (!this.opts.primaryAccountAdmission) {
         if (!this.reserveCall(authority, epoch, retriage ? 'retriage' : null)) { out.reason = 'call-cap-reached'; break; }
@@ -478,6 +485,7 @@ export class FeedbackTriageService {
         if (decided) out.decided++;
       }
     }
+    if (skippedRetriageCap) out.reason ??= 'call-cap-reached';
     if (out.decided > 0 && !unusableThisTick) out.result = 'succeeded';
     else if (out.decided > 0) out.result = 'degraded';
     this.gradeQuietDecisions(epoch, clusterById);
