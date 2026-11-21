@@ -138,6 +138,23 @@ So a fixed link can't work. The plan:
   Answer the questionnaire honestly about AI-generated content.
 - The operator confirms the final listing before it goes public. This is the project's done item (c).
 
+## Before the next submission (0.5.1, rebuilt app)
+
+Everything since build 106 is rebuilt code, so don't assume the 0.5.0 review carries over.
+
+- **Prove the real app against the demo.** Done for build 123 on 2026-11-20 in a simulator: it paired
+  through the public page and completed the reviewer's chat steps 3 of 3 times, with replies confirmed
+  in the agent's transcripts. Rerun `real-build-proof.sh` (private ops folder) on the build being submitted.
+- **Privacy.** The rebuilt app has one network path that isn't a paired agent: the optional natural
+  voice download from GitHub, started only by the person's tap. The privacy policy now says so.
+  The label stays **Data Not Collected**, because no user data is sent.
+- **Add to the review notes:**
+
+> New in this version: messages can be read aloud. An optional natural voice can be downloaded in
+> the app (about 50 MB, from the open-source sherpa-onnx project on GitHub, checked against a
+> fingerprint). It contains voice data only, no executable code, and runs on the device. People can
+> also approve changes their own agent proposes, using Face ID.
+
 ## Next steps
 
 1. Next version (from the app rebuild, topic 145973): keep the review notes unchanged, refresh
