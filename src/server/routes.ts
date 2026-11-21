@@ -75,6 +75,8 @@ import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from '.
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { answerPhoneCardCreate, phoneCardPrecheck } from './phoneWorkCards.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { projectTapPort } from './workProjectActions.js';
 import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
@@ -137,6 +139,8 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
+import { readShadowFolds, summarizeShadowFolds } from '../monitoring/foldShadowLog.js';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
@@ -2133,6 +2137,8 @@ export interface RouteContext {
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  /** "Make this group a project" phone confirm (conversation-groups-phone §3), filled once the conversation graph opens. */
+  groupProjectConfirm?: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder;
   /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
   projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
   /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound sandbox. */
@@ -9691,6 +9697,21 @@ export function createRoutes(ctx: RouteContext): Router {
   // context-budget-layered-summaries §7.8/§9.1: the ContextBudgetSentinel's status —
   // its heartbeat, quarantined and torn folds, and the standing compaction canary's
   // state per machine/engine/version. Read-only; 503 when the sentinel is off.
+  // context-budget-layered-summaries §16 Phase 2: the shadow-fold record — how
+  // many shadow folds were graded toward the 40-fold exit, the would-be lost
+  // rate, and why the rest did not complete. Counts only, never words. 503 when
+  // shadow folding is off on this agent (contextBudget.fold.shadow, dev-gated).
+  router.get('/context-budget/fold-shadow', (_req, res) => {
+    let explicit: boolean | undefined;
+    try { explicit = ctx.liveConfig?.get<boolean | undefined>('contextBudget.fold.shadow', undefined); } catch { explicit = undefined; /* @silent-fallback-ok — an unreadable live value falls back to the boot value */ }
+    if (explicit === undefined) explicit = (ctx.config as { contextBudget?: { fold?: { shadow?: boolean } } }).contextBudget?.fold?.shadow;
+    if (!resolveDevAgentGate(explicit, ctx.config)) {
+      res.status(503).json({ error: 'context-budget shadow folding not enabled on this agent', enableWith: 'contextBudget.fold.shadow' });
+      return;
+    }
+    const rows = readShadowFolds(ctx.config.stateDir);
+    res.json({ ...summarizeShadowFolds(rows), recent: rows.slice(-20).reverse() });
+  });
   router.get('/context-budget/sentinel', (_req, res) => {
     if (!ctx.contextBudgetSentinel) {
       res.status(503).json({ error: 'context-budget sentinel not enabled on this agent', enableWith: 'contextBudget.sentinel.enabled' });
@@ -9710,8 +9731,17 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   // context-budget-layered-summaries §7.6: chunk (C) and range (C2) records of
   // one conversation, with sizes, status and each span's archive state.
-  // Bearer-only (memory-session tokens are refused: not on the session guard's
-  // allowlist), bounded, paginated; 503 while the layers are off.
+  // Bearer, or a fold-probe memory-session token for this topic only (§10 shadow
+  // answerer; the session guard admits no other memory session), bounded,
+  // paginated; 503 while the layers are off.
+  /** A memory-session caller may read only its own topic's chunks (defence in depth beside the guard). */
+  const chunkCallerAllowed = (res: ExpressResponse, topicKey: string): boolean => {
+    const ms = res.locals.memorySession as { placeKey?: string | null } | undefined;
+    if (!ms) return true;
+    if (ms.placeKey === `${FOLD_PROBE_PLACE_PREFIX}${topicKey}`) return true;
+    res.status(403).json({ error: 'not-available-to-this-session' });
+    return false;
+  };
   router.get('/topic/:id/chunks', (req, res) => {
     if (!ctx.contextLayers) {
       res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
@@ -9719,6 +9749,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const topicKey = String(req.params.id);
     if (!isSafeChunkTopic(topicKey)) { res.status(400).json({ error: 'invalid topic id' }); return; }
+    if (!chunkCallerAllowed(res, topicKey)) return;
     const kindQ = typeof req.query.kind === 'string' ? req.query.kind : 'all';
     if (!['all', 'chunk', 'c2'].includes(kindQ)) { res.status(400).json({ error: 'kind must be all, chunk or c2' }); return; }
     const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
@@ -9734,6 +9765,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const topicKey = String(req.params.id);
     const key = String(req.params.k);
     if (!isSafeChunkTopic(topicKey) || !isSafeChunkKey(key)) { res.status(400).json({ error: 'invalid topic id or chunk key' }); return; }
+    if (!chunkCallerAllowed(res, topicKey)) return;
     const r = readChunk(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, key);
     if (!r) { res.status(404).json({ error: 'no such chunk' }); return; }
     res.json(r);
@@ -30154,12 +30186,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    // Update the AutoUpdater's live config
-    if (ctx.autoUpdater) {
-      (ctx.autoUpdater as any).config.autoApply = autoApply;
-    }
+    // Update the AutoUpdater's live config. Turning it off also cancels an
+    // update a check already queued, so "off" holds from this moment.
+    const cancelledQueuedUpdate = ctx.autoUpdater
+      ? ctx.autoUpdater.setAutoApply(autoApply, 'PATCH /updates/config')
+      : false;
 
-    res.json({ autoApply, persisted: true });
+    res.json({ autoApply, persisted: true, cancelledQueuedUpdate });
   });
 
   router.post('/updates/apply', async (req, res) => {
@@ -42945,6 +42978,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const owner = workBoardOwnerKey();
         if (!owner) return { status: 409, body: { error: 'no-team-owner' } };
         return performOwnerTap(workBoardRouteDeps, svc, cardId, tap as unknown as Record<string, unknown>, { kind: 'person', personKey: owner, proof: 'presence', isOwner: true });
+      },
+      // "Make this group a project" (docs/specs/conversation-groups-phone.md §3): the write gate proved the owner's
+      // phone and Face ID over the draft's exact hash; the binding write is POST /chief-of-staff/projects's own.
+      ...(ctx.chiefOfStaffLoop ? { groupProjectRefusal: () => {
+        // One machine decides: the lease holder (as approve-widening), so two machines cannot bind one conversation from stale copies.
+        let holder = true;
+        try { holder = ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { holder = false; } // @silent-fallback-ok — an unreadable lease reads as not held: refuse, never bind twice
+        if (!holder) return { status: 409, body: { error: 'not-holder', detail: 'This machine is not the one deciding right now. Try again in a moment.' } };
+        if (ctx.groupProjectConfirm?.off) return { status: 503, body: { error: 'conversation-changes-off', detail: 'Changing conversations is turned off for this agent, so a group cannot become a project here.' } };
+        return null;
+      }, confirmGroupProject: (draftId: string, draftHash: string, _deviceId: string, req: import('express').Request, carried: unknown) => {
+        const confirm = ctx.groupProjectConfirm?.confirm;
+        return confirm ? confirm(req, draftId, draftHash, carried)
+          : { status: 503, body: { error: 'conversation-graph-pending', detail: 'Your conversations are still opening on this machine. Try again in a moment.' } };
+      } } : {}),
+      // Make a card from a message (docs/specs/phone-work-cards.md): the write gate proved the owner's phone and Face ID over this draft.
+      workCardCreate: {
+        precheck: (requestId, draft, req) => phoneCardPrecheck(workBoardRouteDeps, requestId, draft, () => {
+          // The rule every phone write path into a conversation uses (telegramTopicKnown; a live app conversation),
+          // then the shared conversation check for this phone's person.
+          const key = draft.source.conversationKey;
+          const known = key.startsWith('telegram:')
+            ? !!ctx.telegram && telegramTopicKnown(ctx.telegram, Number(key.slice('telegram:'.length)))
+            : !!ctx.appConversations?.liveConversation(key.slice('app:'.length));
+          const pairing = ctx.mobilePairingService;
+          return known && !!pairing && deviceMayUse(pairing, req, key, 'read');
+        }),
+        create: (requestId, draft, draftHash) => answerPhoneCardCreate(workBoardRouteDeps, requestId, draft, draftHash),
       },
       // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
       startAccountSignIn: async (accountId, machineId, req) => {

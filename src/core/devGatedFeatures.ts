@@ -74,6 +74,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
   },
   {
+    name: 'contextBudgetFoldShadow',
+    configPath: 'contextBudget.fold.shadow',
+    description: 'Context budget shadow folding (docs/specs/context-budget-layered-summaries.md §16 Phase 2): at sampled clean stops a live session writes a handoff, a packet is staged and verified, and a throwaway answerer is probed and graded; nothing is replaced; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Live effect is bounded and owned (spec decision 13): a sampled handoff turn in the live session (at most 2 asks per topic per hour, 1 in 3 clean stops), a fold hold and inbound hold for that turn\'s bound only, and one throwaway credential-free answerer per sampled fold; the live context is never replaced (contextBudget.fold.enabled stays off). shadow:false stops new shadow folds at the next check; open records are swept to aborted at boot.',
+  },
+  {
     name: 'chiefOfStaff',
     configPath: 'chiefOfStaff.enabled',
     description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',

@@ -1266,6 +1266,12 @@ export interface IntelligenceOptions {
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
   requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  /**
+   * Keep this call on one provider family: no category or nature routing and no
+   * failure swap. If that framework is unavailable the call throws; it never moves
+   * to another vendor (context-budget §9: conversation content stays on its family).
+   */
+  pinnedFramework?: IntelligenceFramework;
   /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
   launchGuard?: () => boolean;
   /** Maximum tokens for the response */

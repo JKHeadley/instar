@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cb-p2-handoff-packet",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T20:53:18.041Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-handoff-packet.md",
+  "artifactSha256": "1e2143a6f3bcd4ced817ba711bce10ccbe9948d8021b5f62c7299b9873e10eba",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/foldCarriers.ts",
+    "src/monitoring/foldHandoff.ts",
+    "src/monitoring/foldPacket.ts",
+    "tests/e2e/fold-coordinator-crash-lifecycle.test.ts",
+    "tests/integration/fold-coordinator-boot-wiring.test.ts",
+    "tests/unit/fold-handoff.test.ts",
+    "tests/unit/fold-packet.test.ts",
+    "upgrades/next/cb-p2-handoff-packet.md",
+    "upgrades/side-effects/cb-p2-handoff-packet.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice; library + one fold carrier, no live call site; compaction/fold surface so second-pass reviewed.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -24740,6 +24740,9 @@ var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var TERMINAL = ['committed', 'rolled-back', 'aborted'];
 // Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
 var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// Exact lookup paths (§7.6, §10): a topic's chunk list and one chunk. A pattern,
+// not a prefix, so the topic's other routes (user-corpus, anchor…) stay denied.
+var LOOKUP_PATHS = [/^\/topic\/-?\d{1,15}\/chunks$/, /^\/topic\/-?\d{1,15}\/chunks\/[A-Za-z0-9_.-]{1,128}$/];
 // The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
 // literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
 // backslash or quote (the character classes below exclude them).
@@ -24758,6 +24761,7 @@ function isLookupCommand(cmd, port) {
     var pre = LOOKUP_PREFIXES[i];
     if (p === pre || p.indexOf(pre + '/') === 0) return true;
   }
+  for (var j = 0; j < LOOKUP_PATHS.length; j++) if (LOOKUP_PATHS[j].test(p)) return true;
   return false;
 }
 
@@ -24773,7 +24777,7 @@ function deny(reason) {
 }
 
 if (typeof module !== 'undefined' && module.exports && require.main !== module) {
-  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES, LOOKUP_PATHS: LOOKUP_PATHS };
 } else {
   var iid = process.env.INSTAR_SESSION_ID || '';
   // No Instar session id: outside this hook's reach. Exit before reading stdin.

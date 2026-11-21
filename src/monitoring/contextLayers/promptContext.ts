@@ -482,7 +482,10 @@ export function foldSuppression(stateDir: string, topicId: number, instarSession
   }
   const store = new FoldRecordStore(stateDir);
   const topicKey = String(topicId);
-  const open = store.list(topicKey).filter((r) => !TERMINAL_STATES.has(r.state));
+  // A shadow fold in `shadow-probing` has already released the live session
+  // (§9.3 step 0): its throwaway answerer is graded off to the side, so the live
+  // session's per-prompt context must not be muted for it.
+  const open = store.list(topicKey).filter((r) => !TERMINAL_STATES.has(r.state) && r.state !== 'shadow-probing');
   if (open.some((r) => now - r.updatedAt <= FOLD_LOCK_TTL_CEILING_MS)) return { suppress: true, reason: 'fold-open' };
   if (open.length > 0) return { suppress: false, note: 'fold-stale' };
   if (store.tornRecords(topicKey).length > 0) return { suppress: false, note: 'fold-torn' };

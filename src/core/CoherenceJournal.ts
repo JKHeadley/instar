@@ -1832,6 +1832,53 @@ export class CoherenceJournal {
   }
 
   /**
+   * Read EVERY entry of a kind this writer holds: its archives (oldest first) and the current file, each in full.
+   * For rare decisions that must not infer "absent" from a partial read (conversation-groups-phone §3: "is this
+   * conversation already a project?"). `complete` is false when any file could not be read, the total passed
+   * `maxTotalBytes`, or a line other than a torn final line of the current file failed to parse. Never throws.
+   */
+  readKindComplete(kind: JournalKind, maxTotalBytes = 64 * 1024 * 1024): { entries: JournalEntry[]; complete: boolean } {
+    // Its own directory read: an unreadable directory is an incomplete read, never "no archives".
+    const listed = (): string[] | null => {
+      try {
+        const prefix = `${this.safeMachineId}.${kind}.`;
+        const re = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\.jsonl$`);
+        return (this.io.readdirSync(this.dirPath()) as string[]).filter((n) => re.test(n)).sort((a, b) => Number(re.exec(a)![1]) - Number(re.exec(b)![1]));
+      } catch { /* @silent-fallback-ok: answered as complete:false, which refuses */ return null; }
+    };
+    const archives = this.io.existsSync(this.dirPath()) ? listed() : [];
+    if (archives === null) return { entries: [], complete: false };
+    const files = [...archives.map((a) => ({ file: path.join(this.dirPath(), a), current: false })), { file: this.currentFilePath(kind), current: true }];
+    const entries: JournalEntry[] = [];
+    let complete = true, total = 0;
+    for (const f of files) {
+      if (!this.io.existsSync(f.file)) { if (!f.current) complete = false; continue; }
+      let text: string;
+      try {
+        total += this.io.statSync(f.file).size;
+        if (total > maxTotalBytes) return { entries, complete: false };
+        text = this.io.readFileSync(f.file, 'utf-8') as string;
+      } catch { /* @silent-fallback-ok: reported to the caller as complete:false, which refuses */ return { entries, complete: false }; }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        if (!ln) continue;
+        try {
+          const obj = JSON.parse(ln) as JournalEntry;
+          if (typeof obj.seq === 'number' && typeof obj.kind === 'string') { entries.push(obj); continue; }
+        } catch { /* counted below */ }
+        // A torn final line of the current file (a write in progress, or cut by a crash) is not a lost record.
+        const tornTail = f.current && i === lines.length - 1;
+        if (!tornTail) complete = false;
+      }
+    }
+    // A rotation between listing and reading would leave a whole archive unread: list again and compare.
+    const after = this.io.existsSync(this.dirPath()) ? listed() : [];
+    if (after === null || after.join('|') !== archives.join('|')) complete = false;
+    return { entries, complete };
+  }
+
+  /**
    * Tolerantly read up to `limit` most-recent entries from a kind's CURRENT
    * file via a bounded reverse tail read (per-line try/catch; corrupt lines are
    * skipped + counted). Reads at most `byteCeiling` bytes from the file end.
