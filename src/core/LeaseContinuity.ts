@@ -311,6 +311,7 @@ export class LeaseContinuityStore {
       fs.writeFileSync(tmp, JSON.stringify({ samples: samples.slice(-RESTART_BUDGET_SAMPLES) }, null, 2), { mode: 0o600 });
       fs.renameSync(tmp, this.budgetPath);
     } catch (err) {
+      // @silent-fallback-ok: logged; the budget is advisory, and a missing sample only leaves the next boot its wider default allowance
       this.log(`lease-continuity: the restart budget could not be written (${err instanceof Error ? err.message : String(err)}).`);
     }
     return { previousSlowestMs };

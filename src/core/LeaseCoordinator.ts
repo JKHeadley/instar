@@ -1723,6 +1723,7 @@ export class LeaseCoordinator {
     try {
       this.d.store.refreshWithPending?.(lease, ep.id);
     } catch (err) {
+      // @silent-fallback-ok: logged; the signed continuity file written just above carries the renewal
       this.log(`lease-continuity: the local lease store could not take the window renewal (${err instanceof Error ? err.message : String(err)}); the continuity file carries it.`);
     }
   }
@@ -1852,6 +1853,7 @@ export class LeaseCoordinator {
     try {
       file = this.d.readRequestFile();
     } catch (err) {
+      // @silent-fallback-ok: logged; false backs the poll off and the next tick reads the file again
       this.log(`lease-continuity: the restart request file could not be read (${err instanceof Error ? err.message : String(err)}); polling backs off.`);
       return false;
     }
@@ -2138,7 +2140,7 @@ export class LeaseCoordinator {
     const generation = this.relinquishGeneration;
     let confirmed: boolean;
     if (this.d.tunnel) {
-      confirmed = await this.d.tunnel.broadcast(renewed, () => this.adoptLateRenewal(renewed, generation)).catch(() => false);
+      confirmed = await this.d.tunnel.broadcast(renewed, () => this.adoptLateRenewal(renewed, generation)).catch(() => false); // @silent-fallback-ok: an unanswered broadcast is an unconfirmed renewal; the caller treats false as not renewed
       if (generation !== this.relinquishGeneration) return false;
     } else {
       confirmed = this.d.store.refresh(renewed);

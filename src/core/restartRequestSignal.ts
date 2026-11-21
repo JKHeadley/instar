@@ -79,6 +79,7 @@ export function announceRestartRequested(announce: RestartAnnounce): Promise<Res
   try {
     signed = fn(announce);
   } catch (err) {
+    // @silent-fallback-ok: handed to the caller's report() hook; null tells the caller the announce did not go out
     report(err);
     return Promise.resolve(null);
   }
