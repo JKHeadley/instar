@@ -123,8 +123,6 @@ export class MoneyLayerEnableSurface {
   private restartNonce: RestartNonceRecord | null = null;
   private lastAcceptedRestartAt = 0;
   private planRenderTimes: number[] = [];
-  private pinFailures: number[] = [];
-  private lockoutUntil = 0;
   /** The probe outcome for THIS process. Null until a probe has run — an unmeasured probe is not a pass. */
   private probeResult: { passed: boolean; failingComponent?: string } | null = null;
   private freezeRecordProvisional = false;
@@ -729,27 +727,13 @@ export class MoneyLayerEnableSurface {
    * (401 for an authority action, "limits withheld" for the inspect read).
    */
   checkPin(valid: boolean, route: string): boolean {
-    this.enforceNotLockedOut();
-    if (!valid) this.recordPinFailure(route);
+    // identity-security-piece1c: guessing limits are the route's owner-PIN verifier, per caller
+    // (signed-in budget). This surface no longer keeps one shared lockout, which let any bearer
+    // holder freeze the owner out for 15 minutes. It still audits every failed attempt.
+    if (!valid) this.auditOnly('pin-attempt-failed', 'unknown', { route });
     return valid;
   }
 
-  private enforceNotLockedOut(): void {
-    if (this.now() < this.lockoutUntil) {
-      throw new MoneyLayerRefusal(429, 'pin-lockout', `too many failed PIN attempts — locked out for another ${Math.ceil((this.lockoutUntil - this.now()) / 1000)}s`);
-    }
-  }
-
-  private recordPinFailure(route: string): void {
-    const cutoff = this.now() - this.limits.pinLockoutSeconds * 1000;
-    this.pinFailures = this.pinFailures.filter((t) => t > cutoff);
-    this.pinFailures.push(this.now());
-    this.auditOnly('pin-attempt-failed', 'unknown', { route });
-    if (this.pinFailures.length >= this.limits.pinFailuresBeforeLockout) {
-      this.lockoutUntil = this.now() + this.limits.pinLockoutSeconds * 1000;
-      this.pinFailures = [];
-    }
-  }
 }
 
 function sha256(s: string): string {
