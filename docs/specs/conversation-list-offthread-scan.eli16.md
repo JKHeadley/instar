@@ -37,6 +37,8 @@ the file. The only change is when and how the first read happens.
   as it always did. A re-read with a fingerprint check catches the same-length rewrite.
 - **One read at a time.** If several requests arrive together, they all wait for the same read. A
   request whose conversations are already in memory never waits at all.
+- **Unread stays on the safe side.** When the server is in doubt, a message counts as unread: a
+  reply shown unread when it was read is harmless, one hidden as read is not.
 - **Still in step with the rest of the server.** A conversation closed while the read runs is not
   put back, and a phone whose access to a conversation was removed while it waited is refused, just
   as the old code would have refused it.

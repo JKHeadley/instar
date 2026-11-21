@@ -43,7 +43,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-guards.test.ts' });
 });
 
-async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm?: (topicIds: number[]) => Promise<void>; listWarm?: () => Promise<void>; listWarmNeeded?: () => boolean; onTopics?: () => void; unread?: unknown } = {}) {
+async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm?: (topicIds: number[]) => Promise<void>; listWarm?: () => Promise<void>; onTopics?: () => void; unread?: unknown } = {}) {
   const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-guard-'));
   dirs.push(dir);
@@ -109,7 +109,6 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm
     sentinel: { decideInboundDisposition: async () => ({ disposition: spies.disposition, category: 'normal' }) } as never,
     telegramTopics: () => { opts.onTopics?.(); return [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })); },
     ...(opts.listWarm ? { telegramWarm: opts.listWarm } : {}),
-    ...(opts.listWarmNeeded ? { telegramWarmNeeded: opts.listWarmNeeded } : {}),
     ...(opts.unread ? { unread: opts.unread as never } : {}),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
@@ -158,23 +157,25 @@ describe('reading a Telegram topic', () => {
   });
 
   it.each([
-    { needed: true, expected: ['baseline', 'scan', 'page'] },
-    { needed: false, expected: ['scan', 'page', 'baseline'] },
-  ])('the list sets a phone\'s first unread baseline before the history scan only when it waits on one (needed: $needed)', async ({ needed, expected }) => {
+    { scans: true, expected: ['baseline', 'scan', 'page'] },
+    { scans: false, expected: ['baseline', 'page'] },
+  ])('a phone\'s first unread baseline is attempted exactly once, at admission, before any wait (scan: $scans)', async ({ scans, expected }) => {
+    // When in doubt a message counts as unread: an early baseline only makes later replies unread, and
+    // one attempt means a later attempt can never set a baseline after a reply saved during the wait.
     const order: string[] = [];
+    let attempts = 0;
     const unread = {
       enabled: () => true,
       resolveReader: (r: { person: unknown; viaDevice: boolean }) => (r.viaDevice ? { key: 'owner', person: r.person, viaDevice: true } : null),
-      touchBaseline: () => { if (!order.includes('baseline')) order.push('baseline'); },
+      touchBaseline: () => { attempts++; order.push('baseline'); },
       rowFields: () => null,
     };
-    const e = await setup({ unread, listWarm: async () => { order.push('scan'); }, listWarmNeeded: () => needed, onTopics: () => { if (!order.includes('page')) order.push('page'); } });
+    const e = await setup({ unread, ...(scans ? { listWarm: async () => { order.push('scan'); } } : {}), onTopics: () => { if (!order.includes('page')) order.push('page'); } });
     const owner = phone(e);
     const r = await send(e, owner, 'GET', '/mobile/conversations');
     expect(r.status).toBe(200);
-    // With a wait, a reply saved during it comes after the baseline (stays unread); with none, the
-    // baseline is set where the old code set it, after the page.
     expect(order).toEqual(expected);
+    expect(attempts).toBe(1);
   });
 
   it('a grant removed while the first read waits on the history scan is honoured (conversation-list-offthread-scan)', async () => {

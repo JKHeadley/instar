@@ -73,11 +73,15 @@ it. No second store; every reader still goes through `getTopicHistory`.
   runs (tested). The trim code itself is unchanged. Known limit (spec, Limits): After a log trim, a Telegram conversation whose every message lay in the trimmed part shows no messages in the app, exactly as the old code does after any restart; Option C adds no blank the old code would not show, and the scan never records such a conversation as empty. Those Telegram messages remain in the conversation memory database and search (every message is written there when sent or received, independently of the log; verified on the live Studio data: all of the last 400 log rows are present in memory), and the approved follow-up CMT-2127 can surface them in the app. Native app conversations are stored separately and are not touched by the Telegram log trim.
 - An unfinished last line: every request, joiners included, defers to the old read in its own turn
   (tested, mutation-checked).
-- One 3.5 s wait budget per request, at most one scan per request, one tracked scan at a time, and a
-  final time check before saving (tested, mutation-checked). A failed close saves nothing (tested,
+- A request's wait is capped at 3.5 s from its arrival, it never joins a scan past its limit, and it
+  stops at whichever comes first, the scan's limit or its own; one scan at a time; a stuck scan is
+  the only record kept (waiters are removed with their timers); a final time check before saving
+  (tested with a disk that never answers, mutation-checked). A failed close saves nothing (tested,
   mutation-checked).
-- Unread: the list's first baseline moves before the wait only when the list waits (tested both
-  ways, mutation-checked).
+- Unread: a phone's first baseline is attempted exactly once, at admission, before any wait; when in
+  doubt a message counts as unread (tested with and without a scan, mutation-checked). Compared with
+  the old code, the baseline may now be a little earlier (by the time the page takes to build), so a
+  reply saved in that moment shows as unread rather than read: labelled, the safe direction.
 - Team access: the chat read re-checks the phone's access after the wait, as the old code checked it
   in the same turn as the read (tested in `team-access-guards`, mutation-checked).
 - The trim renames a new file into place; a scan in flight gives up and the next request scans the

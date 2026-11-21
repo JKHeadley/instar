@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T16:31:04.679Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "3c67348aef82516b524a193a37dd2948d0cc38a54ae4849e6194f8a36956b1ba",
+  "coveredFiles": [
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "docs/specs/conversation-list-offthread-scan.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/unit/telegram-offthread-history-scan.test.ts",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow-review fixes per the Chief of Staff's ruling: request wait capped from arrival and never past the scan's limit; waiters detached; baseline attempted once at admission (unread when in doubt).",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

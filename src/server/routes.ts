@@ -1392,8 +1392,6 @@ export interface RouteContext {
   telegram: TelegramAdapter | null;
   /** Fill these topics' Telegram history cache off the main thread before a read (conversation-list-offthread-scan); absent or switched off = the old read. Never throws. */
   telegramHistoryWarm?: ((topicIds: number[]) => Promise<void>) | null;
-  /** Whether telegramHistoryWarm would wait for these topics (switched on and one is uncached). */
-  telegramHistoryWarmNeeded?: ((topicIds: number[]) => boolean) | null;
   /** Attention list kept when there is no Telegram adapter (LocalAttentionItems). */
   localAttention?: import('../core/LocalAttentionItems.js').LocalAttentionItems | null;
   relationships: RelationshipManager | null;

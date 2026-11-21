@@ -349,6 +349,56 @@ describe('off-main-thread history scan for the conversation list', () => {
     release();
   });
 
+  it('a request never joins a scan that has used up its time limit: the old read runs at once', async () => {
+    (adapter as unknown as { tailWarmDeadlineMs: number }).tailWarmDeadlineMs = 200;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    onRead(2, () => gate);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    void adapter.warmTopicTails([1001]);
+    await new Promise((r) => setTimeout(r, 300)); // the scan is stuck and past its limit
+    const started = performance.now();
+    expect(await adapter.warmTopicTails([1001])).toBe(false);
+    expect(performance.now() - started).toBeLessThan(50);
+    release();
+  });
+
+  it('a request stops waiting when the scan reaches its limit, not a full budget later', async () => {
+    (adapter as unknown as { tailWarmDeadlineMs: number }).tailWarmDeadlineMs = 800;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    onRead(2, () => gate);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    void adapter.warmTopicTails([1001]);
+    await new Promise((r) => setTimeout(r, 600)); // joins with about 200 ms of the scan's limit left
+    const started = performance.now();
+    expect(await adapter.warmTopicTails([1001])).toBe(false);
+    expect(performance.now() - started).toBeLessThan(450); // not its own 800 ms budget
+    release();
+  });
+
+  it('with a disk that never answers, waiters that time out hold nothing on the stuck scan', async () => {
+    (adapter as unknown as { tailWarmDeadlineMs: number }).tailWarmDeadlineMs = 300;
+    const realOpen = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const fh = await realOpen(...args);
+      (fh as unknown as { read: () => Promise<never> }).read = () => new Promise<never>(() => undefined); // never answers
+      return fh;
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const waiters = () => (adapter as unknown as { tailWarmWaiterCount(): number }).tailWarmWaiterCount();
+    const first = adapter.warmTopicTails([1001]);
+    const second = adapter.warmTopicTails([1003]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(waiters()).toBe(2);
+    expect(await first).toBe(false);
+    expect(await second).toBe(false);
+    expect(waiters()).toBe(0); // timed-out waiters were removed: nothing per request is held
+    for (let i = 0; i < 5; i++) expect(await adapter.warmTopicTails([1004])).toBe(false); // past its limit: no wait, nothing added
+    expect(waiters()).toBe(0);
+    expect(inner(adapter).tailWarmScans).toBe(1); // the one stuck scan is the only record kept
+  });
+
   it('a request joining a running scan checks for an unfinished last line itself, and does not wait', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });

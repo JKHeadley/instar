@@ -7150,7 +7150,6 @@ export class AgentServer {
         } catch { return true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
       };
       routeCtx.telegramHistoryWarm = async (topicIds: number[]) => { if (scanOn()) await tg.warmTopicTails(topicIds); };
-      routeCtx.telegramHistoryWarmNeeded = (topicIds: number[]) => scanOn() && tg.hasUncachedTopicTails(topicIds);
     }
     this.routeContext = routeCtx;
     routeCtx.blockerLifecycleService?.setMeasurementReaders({
@@ -8001,9 +8000,6 @@ export class AgentServer {
         // (docs/specs/conversation-list-offthread-scan.md); the same switch as the chat read.
         telegramWarm: routeCtx.telegramHistoryWarm
           ? async () => { await routeCtx.telegramHistoryWarm!(options.telegram!.getAllTopicMappings().map((m) => m.topicId)); }
-          : undefined,
-        telegramWarmNeeded: routeCtx.telegramHistoryWarmNeeded
-          ? () => routeCtx.telegramHistoryWarmNeeded!(options.telegram!.getAllTopicMappings().map((m) => m.topicId))
           : undefined,
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).

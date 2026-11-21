@@ -4705,8 +4705,12 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.topicTailCache.get(topicId) ?? null;
   }
 
-  /** The one history scan in progress for the conversation list; concurrent requests share it. */
-  private tailWarm: Promise<boolean> | null = null;
+  /**
+   * The one history scan in progress for the conversation list, held until it really ends. Requests
+   * wait through `waiters`, each removed (with its timer cleared) when it stops waiting, so a stuck
+   * scan holds nothing per request.
+   */
+  private tailWarm: { expiresAt: number; waiters: Set<() => void> } | null = null;
   /** Per topic, how many times unregisterTopic evicted its tail; a scan never saves over a newer eviction. */
   private tailEvictions = new Map<number, number>();
   /** Test seam: how many scans have started (concurrent requests must share one). */
@@ -4742,28 +4746,38 @@ export class TelegramAdapter implements MessagingAdapter {
     // Every request checks for an unfinished last line itself, before any wait, so its old read runs
     // in its own turn, exactly when the old code would have read (also when a scan is already running).
     if (this.logLastLineUnfinished()) return false;
-    // One wait budget per request, across everything it waits for. Past it, the old read answers.
-    const budget = new Promise<false>((resolve) => { const t = setTimeout(() => resolve(false), this.tailWarmDeadlineMs); t.unref?.(); });
-    if (this.tailWarm) {
-      // A scan is running (or stuck): wait for it within the budget, and never start a second one
-      // behind it. Topics it does not cover fall to the old read.
-      await Promise.race([this.tailWarm, budget]);
-      return missing().length === 0;
+    const requestEnds = performance.now() + this.tailWarmDeadlineMs; // 3.5 s from this request's arrival
+    // Never join a scan that has used up its time limit: it can no longer save, so the old read runs now.
+    if (this.tailWarm && this.tailWarm.expiresAt <= performance.now()) return false;
+    if (!this.tailWarm) {
+      const want = new Set(missing());
+      this.tailWarmScans++;
+      const scan = { expiresAt: performance.now() + this.tailWarmDeadlineMs, waiters: new Set<() => void>() };
+      this.tailWarm = scan;
+      // The slot is held until the scan really ends, so a stuck scan can never be joined by a second.
+      void this.scanTailsOffTurn(want, scan).finally(() => {
+        if (this.tailWarm === scan) this.tailWarm = null;
+        for (const wake of [...scan.waiters]) wake();
+      });
     }
-    const want = new Set(missing());
-    this.tailWarmScans++;
-    const run = { expiresAt: performance.now() + this.tailWarmDeadlineMs };
-    // The slot is held until the scan really ends, so a stuck scan can never be joined by a second.
-    this.tailWarm = this.scanTailsOffTurn(want, run).finally(() => { this.tailWarm = null; });
-    await Promise.race([this.tailWarm, budget]);
+    // Wait for the running scan (never a second one behind it) until whichever ends first: the scan's
+    // own limit (past it, it can no longer save) or this request's budget. Topics it does not cover,
+    // or a scan that saved nothing, fall to the old read.
+    const scan = this.tailWarm;
+    if (!scan) return missing().length === 0; // it already ended, in this turn
+    const waitMs = Math.min(scan.expiresAt, requestEnds) - performance.now();
+    if (waitMs <= 0) return missing().length === 0;
+    await new Promise<void>((resolve) => {
+      const done = (): void => { clearTimeout(timer); scan.waiters.delete(done); resolve(); };
+      const timer = setTimeout(done, waitMs);
+      timer.unref?.();
+      scan.waiters.add(done);
+    });
     return missing().length === 0;
   }
 
-  /** Whether any of these topics has no cached tail yet (a list or chat would wait on a scan). */
-  hasUncachedTopicTails(topicIds: Iterable<number>): boolean {
-    for (const id of topicIds) if (!this.topicTailCache.has(id)) return true;
-    return false;
-  }
+  /** Test seam: how many requests are waiting on the running scan. */
+  private tailWarmWaiterCount(): number { return this.tailWarm?.waiters.size ?? 0; }
 
   /** The log's last byte is not a newline: a writer mid-line, or a crash. Errors read as unfinished. */
   private logLastLineUnfinished(): boolean {

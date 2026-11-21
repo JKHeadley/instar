@@ -82,12 +82,15 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
    log's last byte itself before any wait (on the descriptor it opened). If it is not a newline (a
    writer mid-line, or a crash), the request does not wait and its old read runs in its own turn,
    exactly when the old code would have read. A scan that ends on an unfinished line saves nothing.
-8. **One wait budget per request, one scan at a time.** A request waits at most 3.5 s in all (inside
-   the 5 s budget another of this agent's machines gives a list read), and for at most one scan: a
-   request that finds a scan running waits for it, and topics it does not cover fall to the old
-   read; it never starts a second scan behind it. The scan slot is held until the scan really ends,
-   so a stuck scan is never joined by another. A scan also carries its own 3.5 s expiry, checked
-   before each read and again in the turn that would save, so a late scan never saves.
+8. **One wait budget per request, one scan at a time.** A request's total wait is capped at 3.5 s
+   counted from its arrival (inside the 5 s budget another of this agent's machines gives a list
+   read). It waits for at most one scan, never starts a second one behind a running one, and never
+   joins a scan that has used up its own 3.5 s limit (it runs the old read at once); a request that
+   joins a running scan stops waiting at whichever comes first, the scan's limit or its own. Topics
+   the running scan does not cover fall to the old read. The scan is held until it really ends, so
+   a stuck scan is never joined by a second, and it is the only record kept: each waiter is removed,
+   with its timer cleared, when it stops waiting. A scan checks its expiry before each read and in
+   the turn that would save, so a late scan never saves.
 9. **Fallback.** On a read error, an open error, a replaced or shrunk file, a hash mismatch, a
    change during the check, or a file still changing after 3 rounds, nothing is saved, the error is
    logged, and the unchanged synchronous code reads the file exactly as before.
@@ -100,11 +103,11 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
   example a notification tapped right after a restart) awaits `warmTopicTails([topicId])` before
   the unchanged `getTopicHistory`, and then checks the phone's access to that topic again, because
   the old code checked it in the same turn as the read and a grant may be removed during the wait.
-  The list computes its per-person visibility after the wait, as before. When the list will actually
-  wait on a scan, a phone's first unread baseline is set before the wait, as the old code set it with
-  no wait in between, so a reply saved during the wait stays unread; when it will not wait (switched
-  off, or everything cached), the baseline is set exactly where the old code set it. The pool form of a chat read reaches the same route on the
-  machine that holds the topic, so it waits there too.
+  The list computes its per-person visibility after the wait, as before. A phone's first unread
+  baseline is attempted exactly once per list request, at admission, before any wait. Rule: when in
+  doubt a message counts as unread (a reply shown unread when it was read is harmless; one hidden as
+  read is not). An attempt at admission only ever makes later replies unread, and a single attempt
+  means no later attempt can set a baseline after a reply saved during the wait.
 
 ### Off switch
 
