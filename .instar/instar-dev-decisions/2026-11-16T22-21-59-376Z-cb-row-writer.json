@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-16T22:21:59.376Z",
+  "slug": "cb-row-writer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 78,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/memory/TopicMemory.ts",
+      "src/memory/topicRowWriter.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 64,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-driven actions, not a self-triggered loop: the row writer reports a refusal at most once per message it was handed, and the app-row reconcile is a single bounded pass run at boot and on an off-to-on switch transition; nothing retries, re-drives or re-fires on its own"
+  },
+  "verdict": "blocked"
+}

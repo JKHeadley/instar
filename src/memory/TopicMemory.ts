@@ -97,6 +97,12 @@ export function coerceTopicRowOrigin(value: unknown): TopicRowOrigin | undefined
 export type KeyedInsertResult =
   /** A new row landed. */
   | { outcome: 'inserted' }
+  /**
+   * The insert was absorbed by `INSERT OR IGNORE` and NO row landed: a
+   * constraint the keyed pre-checks cannot see (NOT NULL, CHECK). Never
+   * `'inserted'` — a caller that counts a stored row must not count this one.
+   */
+  | { outcome: 'not-landed' }
   /** The same channel message was already stored (a replay); nothing changed. */
   | { outcome: 'duplicate' }
   /** A legacy row with this integer key and no channel id was adopted: its channel id was filled in. */
@@ -329,11 +335,13 @@ export interface TopicImportStats {
   collision: number;
   /** Refused: this channel message is stored under a different integer key. */
   keyMismatch: number;
+  /** The store absorbed the insert and no row landed (a constraint, not a replay). */
+  notLanded: number;
 }
 
 /** A zeroed counter set. */
 function emptyImportStats(): TopicImportStats {
-  return { imported: 0, malformed: 0, missingFields: 0, unkeyed: 0, duplicate: 0, adopted: 0, collision: 0, keyMismatch: 0 };
+  return { imported: 0, malformed: 0, missingFields: 0, unkeyed: 0, duplicate: 0, adopted: 0, collision: 0, keyMismatch: 0, notLanded: 0 };
 }
 
 /** What the most recent `rebuild()` call did, including a refusal to do anything. */
@@ -684,24 +692,39 @@ export class TopicMemory {
   /**
    * Insert a message into the database.
    * Idempotent — duplicate messageId+topicId pairs are ignored.
+   *
+   * Returns whether a NEW row landed. `INSERT OR IGNORE` absorbs a duplicate
+   * key AND every constraint the caller cannot see (NOT NULL, CHECK), and both
+   * look identical from here: zero rows written, no error. A caller that
+   * reports a stored row must read this answer rather than assume one
+   * (`insertKeyedMessage` is the caller that counts).
+   *
+   * Nothing here is caught. An unwritable or corrupt store still throws
+   * exactly as before — a failure that is LOUD must not become a counted
+   * success, which is why this reports instead of containing.
    */
-  insertMessage(msg: TopicMessage): void {
-    if (!this.db) return;
+  insertMessage(msg: TopicMessage): boolean {
+    if (!this.db) return false;
 
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(
+    const landed = stmt.run(
       msg.messageId, msg.topicId, msg.text, msg.fromUser ? 1 : 0,
       msg.timestamp, msg.sessionName,
       msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
       msg.userId ?? null, msg.privacyScope ?? 'private',
       msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
       msg.channelMessageId ?? null, msg.origin ?? null,
-    );
+    ).changes > 0;
 
-    // Update topic metadata
+    // Update topic metadata. Deliberately UNCHANGED, including that it runs
+    // for a row that did not land: it is the pre-existing behaviour, a throw
+    // from here is a throw that happens today, and `rebuildTopicMeta()`
+    // recomputes `message_count` from the messages table on every import and
+    // rebuild. Measured divergence recorded beside this fix; changing it is a
+    // separate decision, not a side effect of reporting the outcome.
     this.db.prepare(`
       INSERT INTO topic_meta (topic_id, message_count, last_activity)
       VALUES (?, 1, ?)
@@ -709,6 +732,8 @@ export class TopicMemory {
         message_count = message_count + 1,
         last_activity = excluded.last_activity
     `).run(msg.topicId, msg.timestamp);
+
+    return landed;
   }
 
   /**
@@ -720,7 +745,8 @@ export class TopicMemory {
    * channel message is `collision` (refused, the stored row untouched), so the
    * caller can count it. A legacy row with this key and no channel id is
    * adopted (its channel id filled in), so rows written before the column
-   * existed do not read as collisions.
+   * existed do not read as collisions. A write the store absorbed without
+   * landing a row is `not-landed`, read from the insert rather than assumed.
    */
   insertKeyedMessage(msg: TopicMessage & { channelMessageId: string }): KeyedInsertResult {
     const db = this.db;
@@ -759,7 +785,11 @@ export class TopicMemory {
         return { outcome: 'adopted' };
       }
       if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
-      this.insertMessage(msg);
+      // The receipt is read from the write, never assumed. The pre-checks above
+      // rule out the key clashes; anything else `INSERT OR IGNORE` absorbs
+      // (NOT NULL, CHECK) leaves zero rows and no error, and reporting that as
+      // `'inserted'` is a false receipt both counting consumers believe.
+      if (!this.insertMessage(msg)) return { outcome: 'not-landed' };
       return { outcome: 'inserted' };
     })();
   }
@@ -1407,7 +1437,15 @@ export class TopicMemory {
             case 'adopted': tally.adopted++; break;
             case 'collision': tally.collision++; break;
             case 'key-mismatch': tally.keyMismatch++; break;
+            case 'not-landed': tally.notLanded++; break;
             case 'not-ready': return tally.imported;
+            default: {
+              // A new outcome must be counted somewhere: an unhandled one would
+              // silently vanish from the tally, which is the same false report
+              // one layer up. This makes it a compile error instead.
+              const unhandled: never = r;
+              throw new Error(`unhandled keyed insert outcome: ${JSON.stringify(unhandled)}`);
+            }
           }
           break;
         }
@@ -1433,11 +1471,12 @@ export class TopicMemory {
     // Surface parse / schema problems at end of import so operators can
     // diagnose corrupted JSONL without tailing logs during the hot path.
     if (tally.malformed > 0 || tally.missingFields > 0 || tally.unkeyed > 0
-        || tally.collision > 0 || tally.keyMismatch > 0) {
+        || tally.collision > 0 || tally.keyMismatch > 0 || tally.notLanded > 0) {
       console.warn(
         `[TopicMemory] importFromJsonl(${jsonlPath}): imported=${tally.imported} ` +
         `malformed_json=${tally.malformed} missing_fields=${tally.missingFields} unkeyed=${tally.unkeyed} ` +
-        `duplicate=${tally.duplicate} adopted=${tally.adopted} collision=${tally.collision} key_mismatch=${tally.keyMismatch}`,
+        `duplicate=${tally.duplicate} adopted=${tally.adopted} collision=${tally.collision} key_mismatch=${tally.keyMismatch} ` +
+        `not_landed=${tally.notLanded}`,
       );
     }
 
@@ -1546,6 +1585,7 @@ export class TopicMemory {
         totals.adopted += st.adopted;
         totals.collision += st.collision;
         totals.keyMismatch += st.keyMismatch;
+        totals.notLanded += st.notLanded;
       }
     }
     // Recovered history (topic-history-import spec): published import batches
