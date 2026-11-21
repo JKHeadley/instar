@@ -21,7 +21,7 @@
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import {
-  SeedFetchLog, DeltaShadowLog, PromptCursorStore, PROMPT_HISTORY_LIMIT, REFETCH_WINDOW_MS, DELTA_HOOK_FEATURE_ID,
+  SeedFetchLog, DeltaShadowLog, PromptCursorStore, PROMPT_HISTORY_LIMIT, REFETCH_WINDOW_MS, DELTA_HOOK_FEATURE_ID, DELTA_DELIVERY_BUDGET_CHARS,
   boundBriefing, computePromptDelta, fitDeltaForDelivery, foldSuppression, reductionVerdict, renderPromptContextText, resolveContextEpoch,
   slimMessage, summarizeShadow, unansweredOf, type PromptMessage,
 } from '../monitoring/contextLayers/promptContext.js';
@@ -29,6 +29,12 @@ import type { CanaryReport } from '../monitoring/compactionCanary.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/**
+ * Room in the per-prompt hook's output for the briefing, the history and the neighbourhood block together: the
+ * hook trims everything to 9,000 characters (CB_FIT_PY), and its own headers and the unanswered-message footer
+ * take a few hundred more.
+ */
+const HOOK_OUTPUT_ROOM_CHARS = 8_400;
 
 export interface PromptContextDeps {
   stateDir: string;
@@ -44,6 +50,13 @@ export interface PromptContextDeps {
   messages: (topicId: number, limit: number) => Array<Record<string, unknown>> | null;
   /** Seed-shaped fetches (the briefing route and the history routes); the prompt route never records here. */
   seedFetches: SeedFetchLog;
+  /**
+   * The conversation-neighbourhood block for this topic when it CHANGED since this session last
+   * received it, else null (work-front-doors §4.3, rule 117: a running session stays current). `commit`
+   * records the delivery and is called only when the block (or, when it cannot fit, the one-line `pointer` to
+   * the route) is really put in this response. Absent when the relationship index is not wired.
+   */
+  neighbourhood?: (topicId: number, sessionKey: string) => { block: string; pointer: string; commit: () => void } | null;
   now?: () => number;
 }
 
@@ -129,9 +142,22 @@ export function createPromptContextRoutes(d: PromptContextDeps): Router {
     let raw: Array<Record<string, unknown>> | null = null;
     try { raw = d.messages(topicId, PROMPT_HISTORY_LIMIT); } catch { raw = null; /* @silent-fallback-ok — today's hook prints no history when the read fails */ }
     const messages: PromptMessage[] = (raw ?? []).slice(-PROMPT_HISTORY_LIMIT).map(slimMessage);
+    // A changed neighbourhood rides any mode once per session, but only when the whole output still fits the
+    // hook's limit with it: the hook trims to 9,000 characters, and a block it cut (or messages it cut to make
+    // room) must never be recorded as delivered. Left out now, it is offered again on the next prompt.
+    let candidate: { block: string; pointer: string; commit: () => void } | null = null;
+    try { candidate = d.neighbourhood?.(topicId, sessionId ?? instarSession ?? `topic:${topicId}`) ?? null; } catch { candidate = null; /* @silent-fallback-ok — the block is advisory and is offered again next prompt */ }
+    const blockChars = candidate?.block ? candidate.block.length + 2 : 0;
+    const withBlock = <T extends Record<string, unknown>>(body: T, renderedChars: number): T & { neighbourhood: string } => {
+      if (candidate?.block && renderedChars + blockChars <= HOOK_OUTPUT_ROOM_CHARS) { candidate.commit(); return { ...body, neighbourhood: candidate.block }; }
+      // A busy topic may never have room for the whole block: a one-line pointer to the route says it changed.
+      if (candidate?.pointer && renderedChars + candidate.pointer.length + 2 <= HOOK_OUTPUT_ROOM_CHARS) { candidate.commit(); return { ...body, neighbourhood: candidate.pointer }; }
+      return { ...body, neighbourhood: '' };
+    };
     const full = { schema: 'prompt-context/1' as const, topicId, mode: 'full' as const, briefing, messages, telegram: raw !== null };
+    const fullRendered = () => renderPromptContextText(topicId, briefing, messages).length;
 
-    if (!shadowOn) { res.json({ ...full, shadow: null }); return; }
+    if (!shadowOn) { res.json(withBlock({ ...full, shadow: null }, fullRendered())); return; }
 
     try {
       const epoch = framework === 'claude-code' ? resolveContextEpoch(d.stateDir, sessionId, topicId) : { kind: 'unseeded' as const, key: 'unseeded' as const };
@@ -151,7 +177,7 @@ export function createPromptContextRoutes(d: PromptContextDeps): Router {
       const c = d.canary();
       const verdict = reductionVerdict(switchOn, c?.report ?? null, c !== undefined);
       // Delivery: a delta over the delivery budget is not trimmed; that prompt gets the full output.
-      const sent = verdict.allowed && delta.basis !== 'unseeded-full' ? fitDeltaForDelivery(topicId, delta, briefing, unanswered) : null;
+      const sent = verdict.allowed && delta.basis !== 'unseeded-full' ? fitDeltaForDelivery(topicId, delta, briefing, unanswered, DELTA_DELIVERY_BUDGET_CHARS - blockChars) : null;
       const returnDelta = sent !== null && sent.fits;
       const nextCursor = sent ? sent.cursor : delta.nextCursor;
       if (nextCursor && !cursors.put(nextCursor)) {
@@ -176,14 +202,15 @@ export function createPromptContextRoutes(d: PromptContextDeps): Router {
       }
       const shadow = { epoch: epoch.kind, basis: delta.basis, fullChars, deltaChars, omitted: delta.omitted.length, reduction: verdict.allowed ? 'allowed' : verdict.reason };
       if (sent && sent.fits) {
-        res.json({ ...full, mode: 'delta', briefing: sent.briefingIncluded ? briefing : '', messages: sent.messages, unanswered, shadow });
+        const deltaBriefing = sent.briefingIncluded ? briefing : '';
+        res.json(withBlock({ ...full, mode: 'delta', briefing: deltaBriefing, messages: sent.messages, unanswered, shadow }, renderPromptContextText(topicId, deltaBriefing, sent.messages, { mode: 'delta', unanswered }).length));
         return;
       }
-      res.json({ ...full, shadow });
+      res.json(withBlock({ ...full, shadow }, fullChars));
     } catch (err) {
       // The shadow measurement must never cost the session its context.
       featureEvidence.record(DELTA_HOOK_FEATURE_ID, { kind: 'error', reason: `shadow measurement failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200), context: { topicId } });
-      res.json({ ...full, shadow: { error: 'measurement-failed' } });
+      res.json(withBlock({ ...full, shadow: { error: 'measurement-failed' } }, fullRendered()));
     }
   });
 

@@ -304,3 +304,21 @@ describe('conversation graph routes', () => {
     expect((await request(a).get(`/mobile/conversation-graph/nodes/${encodeRouteRef(effort(1))}?cursor=c&cursor=c`)).status).toBe(409);
   });
 });
+
+describe('one-shot node reads keep no paging snapshot (work-front-doors §4.3)', () => {
+  it('remember:false still reports a next page but stores nothing, so it can never evict a person\'s "show more"', () => {
+    const E = effort(1);
+    const kids = [1, 2, 3].map(tg);
+    const { src } = makeSource({ events: [ev('create', E), ...kids.map((c) => ev('place', c, E))], convs: kids.map(conv) });
+    const model = new ConversationGraphReadModel(src, { pageSize: 1 });
+    const store = (model as unknown as { snapshots: Map<string, unknown> }).snapshots;
+    const oneShot = model.node(owner(), E, { remember: false }).body as { children: { items: unknown[]; nextCursor: string | null } };
+    expect(oneShot.children.items).toHaveLength(1);
+    expect(oneShot.children.nextCursor).toBeTypeOf('string');
+    expect(store.size).toBe(0);
+    // The default is unchanged: a person's read keeps its snapshot so "show more" works.
+    const paged = model.node(owner(), E, {}).body as { children: { nextCursor: string } };
+    expect(store.size).toBe(1);
+    expect(model.node(owner(), E, { cursor: paged.children.nextCursor }).status).toBe(200);
+  });
+});

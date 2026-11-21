@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'relationshipIndex',
+    configPath: 'relationshipIndex.enabled',
+    description: 'The relationship index (docs/specs/work-front-doors.md §4): GET /conversation-neighbourhood answers what a conversation is connected to (its project, open cards and whose turn, related conversations, people on those cards, open promises), scoped to the conversation\'s least-privileged audience, and the session-start, compaction-recovery and per-prompt hooks inject a short labelled block from it; omitted => live on a development agent, dark on the fleet.',
+    justification: 'Read-only and derived: it writes to no store, holds no state beyond an in-memory record of which block revision each session last received, sends nothing to anyone and blocks nothing. A neighbour is shown only when every reader of the conversation may read it, and an unresolved audience shows nothing. The injected block is capped (default 1,800 bytes) inside the existing hook budget. enabled:false makes the routes answer 503 and the hooks inject nothing, with no restart of sessions needed.',
+  },
+  {
     name: 'agentSessionPlacement',
     configPath: 'multiMachine.placement.agentSessions.enabled',
     description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',

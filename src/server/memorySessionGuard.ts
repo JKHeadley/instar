@@ -86,6 +86,9 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   // check). A peer agent's place never reaches documents.
   { method: 'GET', pattern: /^\/docs(\/[^/]+(\/(data|versions|compare|comments|links))?)?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   { method: 'GET', pattern: /^\/docs\/session-context$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // The conversation neighbourhood (work-front-doors §4.3): the route derives the conversation from the
+  // session's own place and refuses any other it names. A peer agent's place never reads it.
+  { method: 'GET', pattern: /^\/conversation-neighbourhood(\/session-context)?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   { method: 'POST', pattern: /^\/docs(\/[0-9a-f-]{36}\/(versions|links|comments\/[^/]+\/replies))?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   // Document decisions (document-decisions §3.1, §3.5): the session asks and reads; the router checks
   // standing per document, and the waiting list answers owner-reach sessions only.

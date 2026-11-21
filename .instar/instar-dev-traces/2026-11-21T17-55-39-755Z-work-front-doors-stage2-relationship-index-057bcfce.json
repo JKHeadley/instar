@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2-relationship-index",
+  "sessionId": "8feee9e9-f2df-4889-82f5-a91eafc00e0b",
+  "timestamp": "2026-11-21T17:55:39.755Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2-relationship-index.md",
+  "artifactSha256": "e76cb48a7b9485894a12c3bad56ab2c9930cef4f6024852095970c8cc46b6e72",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "merge main into the relationship-index branch; conflict resolution keeping both sides",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

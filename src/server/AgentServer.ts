@@ -179,6 +179,7 @@ import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes, serveTopicIntentBriefing } from './topicIntentRoutes.js';
 import { createPromptContextRoutes } from './promptContextRoutes.js';
 import { SeedFetchLog } from '../monitoring/contextLayers/promptContext.js';
+import { NeighbourhoodDeliveries, neighbourhoodPointer } from '../core/RelationshipIndex.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
@@ -545,6 +546,11 @@ export interface LiveTestRunnerWiring {
 export class AgentServer {
   private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
+  /** The conversation graph's read model, once its surface builds it (work-front-doors §4.3). */
+  private graphReadModel: import('../core/conversationGraphRead.js').ConversationGraphReadModel | null = null;
+  /** The neighbourhood block builder createRoutes fills in, and which revision each session last received. */
+  private readonly neighbourhoodLate: { blockFor: import('./conversationNeighbourhoodRoutes.js').NeighbourhoodBlockFor | null } = { blockFor: null };
+  private readonly neighbourhoodDeliveries = new NeighbourhoodDeliveries();
   /** Project apps part 2: the known-address inputs for the frame/wrapper origin (project-apps-sandbox §3.6). */
   private projectAppOriginDeps: ProjectAppOriginDeps = { knownHttpsHosts: () => [] };
   private server: Server | null = null;
@@ -7002,6 +7008,8 @@ export class AgentServer {
       diskSteward: options.diskSteward ?? null,
       ownerRecord: options.ownerRecord ?? null,
       workBoard: options.workBoard ?? null,
+      conversationGraphReadModel: () => this.graphReadModel,
+      neighbourhoodLate: this.neighbourhoodLate,
       workBoardLate: options.workBoardLate ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
@@ -7500,6 +7508,13 @@ export class AgentServer {
       },
       messages: (topicId, limit) => (options.telegram ? options.telegram.getTopicHistory(topicId, limit) as unknown as Array<Record<string, unknown>> : null),
       seedFetches: promptSeedFetches,
+      // work-front-doors §4.3 / rule 117: a changed neighbourhood reaches a running session once.
+      neighbourhood: (topicId, sessionKey) => {
+        const r = this.neighbourhoodLate.blockFor?.(`telegram:${topicId}`) ?? null;
+        const key = `${topicId}|${sessionKey}`;
+        if (!r || !r.block || !this.neighbourhoodDeliveries.isNew(key, r.revision)) return null;
+        return { block: r.block, pointer: neighbourhoodPointer(`telegram:${topicId}`, r.revision), commit: () => this.neighbourhoodDeliveries.mark(key, r.revision) };
+      },
     }));
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
@@ -8370,7 +8385,7 @@ export class AgentServer {
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,onReadModel:model=>{this.graphReadModel=model;},
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -8381,7 +8396,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,onReadModel:model=>{this.graphReadModel=model;},
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
