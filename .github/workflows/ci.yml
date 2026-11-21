@@ -49,6 +49,18 @@ on:
 # pull request green without the tests having run on that commit. That is a safety
 # hole, so it is a separate, carefully-designed change rather than a line slipped in
 # alongside a capacity fix.
+# PULL REQUESTS SKIP THE HEAVY JOBS (2026-11-21). Local Verify runs the full unit,
+# integration and e2e suite on our own machines before anything merges, and the
+# ruleset on main requires only `instar/local-verify`. Running the same suite here
+# on every pull request asked GitHub for about twenty jobs per push against an
+# account that runs about four at once, so the publish workflow waited hours for a
+# runner. The unit shards, integration, e2e, the desktop packaging jobs and, through
+# `needs`, contract and build now run on push to main and on workflow_dispatch only.
+# Pull requests keep the fast checks Local Verify does not cover: Type Check, Repo
+# Invariants, Docs Coverage, Cartographer Freshness and Standards Enforcement Coverage.
+# A job skipped by `if:` reports as success; that is safe here only because none of
+# these jobs is a required status check. To restore the old behaviour, revert this
+# commit.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   # NEVER cancel main's post-merge run: that is the release gate and its record is
@@ -67,6 +79,9 @@ jobs:
   desktop-windows-package:
     name: Desktop Windows package
     runs-on: windows-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +171,9 @@ jobs:
   desktop-macos-package:
     name: Desktop Mac package
     runs-on: macos-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -432,6 +450,9 @@ jobs:
   unit:
     name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 60
     strategy:
       # Don't cancel other shards if one fails — we want the full picture.
@@ -477,6 +498,9 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     # 50 was cancelling green-in-progress runs: main itself was cancelled at 50 min on
     # 2026-11-10 (run 42878286348), and the conversations release adds about 15 min of
     # multi-machine graph suites. Same bound as the E2E job.
@@ -505,6 +529,9 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 70
     # Independent checkout and runner: start alongside unit shards. This
     # removes a serial CI phase without weakening the merge gate.
