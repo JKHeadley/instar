@@ -100,6 +100,11 @@ export interface RecommendedServiceRouteDeps {
   offersEnabled?: () => boolean;
   /** Rollout step 4 (`recommendedServices.reoffers.enabled`): asking again after a no when a real problem shows up. Off records and sends nothing. */
   reoffersEnabled?: () => boolean;
+  /**
+   * The `secret-lost` source: the config paths that still hold a `{ "secret": true }` placeholder after the
+   * encrypted store was merged (a secret the config refers to is missing). Read once per server start.
+   */
+  unresolvedSecrets?: () => readonly string[];
   /** Rollout step 5: when true, an existing agent's owner is admitted to the first list (migration marked complete at the offer tick). */
   existingAgentsEnabled?: () => boolean;
   /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
@@ -649,6 +654,22 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
+  // `secret-lost` (Real-problem events): a boot check, once per server start, as soon as there is a ledger and an
+  // owner to record against. A no on Bitwarden (or an unanswered offer) is what the floor then requires.
+  let secretCheckDone = false;
+  const checkSecretsOnce = (): void => {
+    if (secretCheckDone || !deps.reoffersEnabled?.() || !deps.unresolvedSecrets) return;
+    if (!deps.ledger() || deps.owner() === null) return;
+    secretCheckDone = true;
+    let missing: readonly string[];
+    try {
+      missing = deps.unresolvedSecrets();
+    } catch (err) { // @silent-fallback-ok — reported through report(); the check simply doesn't count this start
+      report('Check for missing secrets at start', err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+      return;
+    }
+    if (missing.length) handle.recordProblem('secret-lost', 'boot');
+  };
   let lastReofferAttemptAt = 0;
   let reoffering = false;
   const maybeReoffer = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
@@ -705,6 +726,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const reconcileAndOffer = async (): Promise<void> => {
     await reconcile();
     admitExistingOwner();
+    checkSecretsOnce();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
     if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());
