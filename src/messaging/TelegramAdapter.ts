@@ -25,6 +25,8 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+import crypto from 'node:crypto';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
@@ -4700,6 +4702,117 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   getCachedTopicTail(topicId: number): ReadonlyArray<{ messageId: number; timestamp: string; fromUser: boolean; sessionName: string | null }> | null {
     return this.topicTailCache.get(topicId) ?? null;
+  }
+
+  /** The one history scan in progress for the conversation list; concurrent requests share it. */
+  private tailWarm: Promise<boolean> | null = null;
+  /** Test seam: how many scans have started (concurrent requests must share one). */
+  private tailWarmScans = 0;
+  private static readonly TAIL_WARM_BLOCK_BYTES = 64 * 1024;
+  /** Rounds of "read new bytes, verify, confirm unchanged" before a busy file is left to the old read. */
+  private static readonly TAIL_WARM_MAX_ROUNDS = 3;
+
+  /**
+   * Fill the EXISTING tail cache for every given topic that is not cached yet, with the file read
+   * off the request's turn (docs/specs/conversation-list-offthread-scan.md). The rows are exactly what
+   * scanLogForTopic would cache: the same line split, the same JSON parse, the same topicId/channelId
+   * match, malformed lines skipped, the newest TAIL_CACHE_LIMIT rows per topic in file order. The file
+   * is read in awaited blocks, and the result is saved only in the turn that confirms the file is
+   * still the same file with the same bytes (same identity, size, change time, and a re-read whose
+   * hash matches the bytes parsed), so no local append can fall between the check and the save.
+   * Concurrent callers share one scan. On any failure, a replaced file, or a file still changing after
+   * TAIL_WARM_MAX_ROUNDS, nothing is saved and the unchanged synchronous code reads the file as before.
+   * Resolves true when every requested topic is cached afterwards. Never throws.
+   */
+  async warmTopicTails(topicIds: Iterable<number>): Promise<boolean> {
+    const ids = [...topicIds];
+    const missing = (): number[] => ids.filter((id) => !this.topicTailCache.has(id));
+    // A scan already running covers the topics it was asked for; a topic it did not cover (one listed
+    // since it started) gets one more scan of its own, at most.
+    if (this.tailWarm) await this.tailWarm;
+    const want = missing();
+    if (want.length === 0) return true;
+    if (!this.tailWarm) {
+      this.tailWarmScans++;
+      this.tailWarm = this.scanTailsOffTurn(new Set(want)).finally(() => { this.tailWarm = null; });
+    }
+    await this.tailWarm;
+    return missing().length === 0;
+  }
+
+  private async scanTailsOffTurn(want: Set<number>): Promise<boolean> {
+    const found = new Map<number, LogEntry[]>();
+    for (const id of want) found.set(id, []);
+    // The parse below is scanLogForTopic's, applied to every wanted topic in one pass.
+    const take = (line: string): void => {
+      if (!line) return;
+      try {
+        const entry: LogEntry = JSON.parse(line);
+        const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+        const tail = typeof entryTopicId === 'number' ? found.get(entryTopicId) : undefined;
+        if (!tail) return;
+        tail.push(entry);
+        if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+      } catch { /* @silent-fallback-ok — skip a malformed line, exactly as scanLogForTopic does */ }
+    };
+    const logPath = this.messageLogPath;
+    if (!fs.existsSync(logPath)) {
+      // No log: scanLogForTopic caches [] for each topic; so does this.
+      for (const [id, tail] of found) if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, tail);
+      return true;
+    }
+    let fh: fs.promises.FileHandle;
+    try { fh = await fs.promises.open(logPath, 'r'); }
+    catch (err) { console.error(`[telegram] off-turn history scan could not open the message log; the old read runs: ${err}`); return false; }
+    try {
+      const opened = await fh.stat({ bigint: true });
+      const block = Buffer.allocUnsafe(TelegramAdapter.TAIL_WARM_BLOCK_BYTES);
+      const decoder = new StringDecoder('utf8');
+      const parsedHash = crypto.createHash('sha256');
+      let offset = 0; let carry = '';
+      const sameFile = (s: fs.BigIntStats): boolean => s.ino === opened.ino && s.dev === opened.dev;
+      for (let round = 0; round < TelegramAdapter.TAIL_WARM_MAX_ROUNDS; round++) {
+        // 1. Read every byte not yet parsed, in awaited blocks.
+        for (;;) {
+          const { bytesRead } = await fh.read(block, 0, block.length, offset);
+          if (bytesRead === 0) break;
+          const bytes = block.subarray(0, bytesRead);
+          parsedHash.update(bytes);
+          offset += bytesRead;
+          const lines = (carry + decoder.write(bytes)).split('\n');
+          carry = lines.pop() ?? '';
+          for (const line of lines) take(line);
+        }
+        const atEnd = fs.statSync(logPath, { bigint: true });
+        if (!sameFile(atEnd) || atEnd.size < BigInt(offset)) return false; // replaced or shrunk: the old read handles it
+        if (atEnd.size !== BigInt(offset)) continue; // appended to while reading: read the rest
+        // 2. Re-read what was parsed and compare: a same-length rewrite during the read changes the bytes.
+        const verifyHash = crypto.createHash('sha256');
+        for (let at = 0; at < offset;) {
+          const { bytesRead } = await fh.read(block, 0, Math.min(block.length, offset - at), at);
+          if (bytesRead === 0) return false; // shrank under the check
+          verifyHash.update(block.subarray(0, bytesRead));
+          at += bytesRead;
+        }
+        if (!verifyHash.copy().digest().equals(parsedHash.copy().digest())) return false;
+        // 3. Nothing written since step 1 (any write moves the change time) — save in this same turn.
+        const now = fs.statSync(logPath, { bigint: true });
+        if (!sameFile(now) || now.size !== atEnd.size || now.mtimeNs !== atEnd.mtimeNs || now.ctimeNs !== atEnd.ctimeNs) {
+          if (sameFile(now) && now.size > atEnd.size) continue; // appended to during the check: another round
+          return false;
+        }
+        take(carry + decoder.end());
+        // Only topics still uncached: a synchronous read (or an append to a cached topic) may have filled one.
+        for (const [id, tail] of found) if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, tail);
+        return true;
+      }
+      return false; // still changing after every round: the old read handles it
+    } catch (err) {
+      console.error(`[telegram] off-turn history scan failed; the old read runs: ${err}`);
+      return false;
+    } finally {
+      await fh.close().catch(() => undefined); // @silent-fallback-ok — closing a read-only handle
+    }
   }
 
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {

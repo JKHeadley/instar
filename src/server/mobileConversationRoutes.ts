@@ -256,6 +256,8 @@ export interface MobileConversationRouteDeps {
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
+  /** Fill the Telegram history cache for the listed topics off the main thread before the list runs (conversation-list-offthread-scan). */
+  telegramWarm?: () => Promise<void>;
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
    * null when Slack is configured but the operator's Slack user id is unset (rows withheld, and
@@ -601,6 +603,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    // Every request, local or from another of this agent's machines, waits for the one shared scan;
+    // if it saved nothing, the unchanged list below reads the file as before.
+    if (deps.telegramWarm) { try { await deps.telegramWarm(); } catch { /* @silent-fallback-ok — the list below reads the file as before */ } }
     const local = localListPage(limit, cursor);
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only

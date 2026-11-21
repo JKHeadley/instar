@@ -7135,6 +7135,23 @@ export class AgentServer {
       intelligence: options.intelligence ?? null,
       startTime: this.startTime,
     };
+    // The conversation list and a chat's first read fill the Telegram history cache off the main
+    // thread (docs/specs/conversation-list-offthread-scan.md). Off switch, read live on every request:
+    // `telegramHistoryScan.offMainThread: false` returns both to the old synchronous read.
+    // An optional capability: an adapter without it (a stand-in in tests, an older build) keeps the old read.
+    if (options.telegram && typeof options.telegram.warmTopicTails === 'function') {
+      const tg = options.telegram;
+      routeCtx.telegramHistoryWarm = async (topicIds: number[]) => {
+        const lc = options.liveConfig;
+        let on = true;
+        try {
+          on = (lc?.get
+            ? lc.get<boolean | undefined>('telegramHistoryScan.offMainThread', undefined)
+            : (this.config as { telegramHistoryScan?: { offMainThread?: boolean } }).telegramHistoryScan?.offMainThread) !== false;
+        } catch { on = true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
+        if (on) await tg.warmTopicTails(topicIds);
+      };
+    }
     this.routeContext = routeCtx;
     routeCtx.blockerLifecycleService?.setMeasurementReaders({
       targets:()=>readMeasurementTargets(routeCtx),
@@ -7980,6 +7997,11 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
+        // Read every listed topic's history off the main thread before the list runs
+        // (docs/specs/conversation-list-offthread-scan.md); the same switch as the chat read.
+        telegramWarm: routeCtx.telegramHistoryWarm
+          ? async () => { await routeCtx.telegramHistoryWarm!(options.telegram!.getAllTopicMappings().map((m) => m.topicId)); }
+          : undefined,
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
