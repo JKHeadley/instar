@@ -93,9 +93,13 @@ function failure(main, result, retry) {
   const text = result.status === 503 ? 'Conversations is not switched on here yet.'
     : result.status === 404 ? 'This conversation is unavailable.'
       : 'Conversations could not be loaded. Try again.';
+  // Switched off here (never released on this agent): the working Chats page is offered, not a dead end.
+  const off = result.status === 503 && result.data?.code === 'conversation-graph-off';
   setKids(main, el('div', { class: 'conversations-page' },
     pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
-    note(text), el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
+    note(off ? 'This view of your conversations is not switched on here yet. Chats shows the same conversations, and you can read and reply there.' : text),
+    off ? el('a', { class: 'btn-primary btn-inline', href: '#/work/chats', text: 'Open Chats' })
+      : el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
 }
 
 function itemRow(item, state) {

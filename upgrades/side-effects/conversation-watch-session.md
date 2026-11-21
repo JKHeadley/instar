@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1. New pure module `dashboard/console/conversation-session.js` matches a conversation's source key (`telegram:<topic>` / `app:<key>`, from `make-card.js` `sourceKeyFor`) to a running or starting row of `GET /sessions?scope=pool` (by `conversationRef`, else the Telegram topic), preferring this machine's session and then the newest one. `conversations.js` shows one status line under a conversation's title with a "Watch the session" link to `#/work/sessions?s=<sessionKey>`, or a plain line saying that no session is running or that the list could not be read. Rebuilds Justin's November 14 request from topic 140618, whose first version was lost. Unit tests and a page test have been added.
+Tier 1. New pure module `dashboard/console/conversation-session.js` matches a conversation's source key (`telegram:<topic>` / `app:<key>`, from `make-card.js` `sourceKeyFor`) to a running or starting row of `GET /sessions?scope=pool` (by `conversationRef`, else the Telegram topic), preferring this machine's session and then the newest one. `conversations.js` shows one status line under a conversation's title with a "Watch the session" link to `#/work/sessions?s=<sessionKey>`, or a plain line saying that no session is running or that the list could not be read. The same line is added to the Chats conversation view (`chats.js` `loadLiveSession`, Telegram and app only). `console.js` probes `/conversation-graph/roots`: only a 503 `conversation-graph-off` marks the hierarchy off, and `nav-model.js` `doorHref` then sends the Conversations door, and the first page, to `#/work/chats` when Chats is available. An unknown answer keeps the hierarchy. The switched-off hierarchy page offers "Open Chats" instead of Try again. Rebuilds Justin's November 14 request from topic 140618, whose first version was lost. Unit tests and a page test have been added.
 
 ## Decision-point inventory
 
@@ -37,7 +37,7 @@ No competing-signals decision point.
 
 ## 5. Interactions
 
-One extra `GET /sessions?scope=pool` read when a conversation page opens. The Sessions page already polls that route. The read runs in the background and never delays the history. A 401 or 403 from it would clear the page's PIN unlock through the shared `read()` helper, the same as any other read on the page. `/sessions` accepts the dashboard's bearer, so that does not happen in normal use.
+One extra `GET /sessions?scope=pool` read when a conversation opens (on either page), and one extra `GET /conversation-graph/roots` probe when the console starts. Without the operator's PIN proof, that probe answers either the off 503 or a refusal, and never returns conversation data. Door choice: the hierarchy door previously moved off Chats because Chats showed "No conversations yet" (PR 3232). That move is kept wherever the hierarchy is on. Chats is chosen only when the hierarchy is definitely off, where the alternative was a dead end. The Sessions page already polls that route. The read runs in the background and never delays the history. A 401 or 403 from it would clear the page's PIN unlock through the shared `read()` helper, the same as any other read on the page. `/sessions` accepts the dashboard's bearer, so that does not happen in normal use.
 
 ## 6. External surfaces
 
@@ -71,7 +71,9 @@ Not required: no gate, block, session lifecycle or watchdog.
 ## Evidence pointers
 
 - `tests/unit/console-conversation-session.test.ts`: running, remote, two machines, legacy topic row, nothing running, list failure, wiring.
-- `tests/unit/console-conversations-dom.test.ts`: the page renders the link and the not-running line.
+- `tests/unit/console-conversations-dom.test.ts`: the page renders the link and the not-running line; a switched-off hierarchy offers Open Chats.
+- `tests/unit/console-front-doors.test.ts`: the door opens Chats only when the hierarchy is off and Chats is on.
+- Live on the Studio at 1280x728 and 390x844 (branch console via a local proxy): the console lands on `#/work/chats`, the sidebar door points there, and the switched-off page offers Open Chats with no horizontal overflow.
 
 ## Class-Closure Declaration (display-only mirror)
 

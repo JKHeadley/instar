@@ -64,4 +64,12 @@ describe('conversation page wiring', () => {
     expect(src).toMatch(/read\('\/sessions\?scope=pool'/);
     expect(src).toMatch(/conversationSession\(res, liveKey\)/);
   });
+
+  it('the Chats conversation view shows the same line for Telegram and app conversations, never Slack yet', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../dashboard/console/chats.js'), 'utf8');
+    expect(src).toMatch(/import \{ conversationSession \} from '\.\/conversation-session\.js'/);
+    expect(src).toMatch(/this\.loadLiveSession\(v\)/);
+    expect(src).toMatch(/if \(v\.ref\.kind !== 'telegram' && v\.ref\.kind !== 'app'\) return;/);
+    expect(src).toMatch(/conversationSession\(res, key\)/);
+  });
 });

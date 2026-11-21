@@ -10,6 +10,14 @@ When you open a Telegram or app conversation on the dashboard, a line under its 
 
 The line uses the same session list the Sessions page already reads, so the link always lands on a row that page shows. A session on another machine opens through that page's existing support for other machines. If a conversation somehow runs on two machines at once, the line says so. No new server route is added.
 
+## The Chats page gets the same line
+
+The dashboard has two conversation views. The Conversations view described above has never been switched on on any of Justin's machines, so the view people can actually use is Chats, which can already read and reply. The same "Watch the session" line now appears at the top of an open conversation in Chats too.
+
+## The Conversations door opens Chats while the other view is off
+
+Since November 16 the dashboard has opened on the Conversations view by default, so on every machine it greeted people with "Conversations is not switched on here yet." The console now asks the server whether that view is switched on. When the server says it is off, the Conversations door and the first page open Chats instead. If someone still lands on the switched-off view, it explains that Chats shows the same conversations and offers an "Open Chats" button instead of a dead end. When the view is released, or when the server's answer is unclear, the door behaves exactly as before.
+
 ## What it does not do yet
 
 Slack conversations don't get the line yet, because their sessions are matched differently. That is on the list of remaining differences from the app.
