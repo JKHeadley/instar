@@ -8094,6 +8094,50 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (!session || session.status !== 'running' || session.framework !== binding.harnessId || !session.tmuxSession) return false;
         return sessionManager.sendInput(session.tmuxSession, text);
       };
+      // held-and-startup-parked-send-release §4 — a retired reply whose author could not be told:
+      // one hub item per conversation, refreshed with the count, plain words, no reply text.
+      // Ids retired per conversation since this server started: a backlog that spans several passes
+      // keeps every id on the one item, so the agent can act on all of them.
+      const retiredTopicIds = new Map<string, { ids: Set<string>; uncertain: boolean; causes: Set<string> }>();
+      telegramOriginBoot.runtime.options.raiseRetirementItem = async input => {
+        if (!telegram) throw new Error('telegram-unavailable');
+        const key = input.topicId ?? 'none';
+        // A closed item (DONE / WONT_DO) was handled: a later retirement starts a fresh list.
+        const existing = telegram.getAttentionItem(`telegram-origin-retired:${key}`);
+        const open = !!existing && existing.status !== 'DONE' && existing.status !== 'WONT_DO';
+        // After a restart the in-memory list is gone: rebuild it from the open item itself, so its ids
+        // and its "may not have been delivered" warning are never dropped.
+        const rebuilt = open && !retiredTopicIds.has(key) ? { ids: new Set((existing!.description ?? '').match(/[A-Za-z0-9:~-]{8,}/g)?.filter(id => id !== 'Operation') ?? []),
+          uncertain: /may not have been delivered/.test(existing!.title ?? ''), causes: new Set<string>(['restored']) } : undefined;
+        const prior = open ? retiredTopicIds.get(key) ?? rebuilt : undefined;
+        const ids = new Set([...(prior?.ids ?? []), ...input.operationIds]);
+        while (ids.size > 200) ids.delete(ids.values().next().value as string);
+        const count = ids.size;
+        // Merged across passes: the warning stays if any earlier reply was uncertain, and mixed causes read generically.
+        const uncertain = (prior?.uncertain ?? false) || input.uncertain;
+        const causes = new Set([...(prior?.causes ?? []), `${input.reason}:${input.cause ?? ''}`]);
+        const where = input.topicId ? topicRef(input.topicId) : 'a conversation';
+        const why = causes.size > 1 || input.mixedCauses ? 'they waited too long to send without a check, or were stopped on request'
+          : input.reason === 'retired-by-operator' ? 'it was stopped on request'
+          : input.cause === 'parked-at-startup' ? 'it was written while the server was restarting and waited too long to send without a check'
+          : input.cause === 'queued-unsent' ? 'the server queued it without sending and it waited too long to send without a check'
+          : 'it was held while another machine was sending and waited too long to send without a check';
+        // An uncertain reply may already be with the user: the wording never says "not sent" for it
+        // and asks for a check before any resend.
+        const one = count === 1;
+        const title = uncertain ? `${one ? 'A reply' : `${count} replies`} to ${where} may not have been delivered`
+          : `${one ? 'A reply' : `${count} replies`} to ${where} ${one ? 'was' : 'were'} not sent`;
+        const ask = uncertain ? ` At least one may already have arrived, so check the conversation first; if a reply is missing, tell me and I will send it.`
+          : ` If ${one ? 'it' : 'they'} should still go out, tell me and I will send ${one ? 'it' : 'them'}.`;
+        await telegram.upsertAttentionItem({ id: `telegram-origin-retired:${key}`, category: 'telegram-origin', priority: 'NORMAL', sourceContext: 'telegram-origin-retired',
+          title,
+          summary: `${one ? 'A reply' : 'Replies'} to ${where} ${one ? 'was' : 'were'} held back: ${why}. The session that wrote ${one ? 'it' : 'them'} is no longer running.${ask}`,
+          description: `Operation ids: ${[...ids].join(', ')}.`,
+          contextTopicIds: Number.isSafeInteger(Number(input.topicId)) ? [Number(input.topicId)] : undefined });
+        retiredTopicIds.set(key, { ids, uncertain, causes });
+      };
+      const retireRuntime = telegramOriginBoot.runtime;
+      retireRuntime.options.onRetired ??= async () => { await retireRuntime.refreshHeldForward({ force: true }); };
       // §3a item 7 — one record-only item per topic while reasonless endings stay unresolved.
       const unresolvedTopicCounts = new Map<string, number>();
       telegramOriginBoot.runtime.options.syncUnresolvedTopics = async counts => {
@@ -34906,8 +34950,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return answer.ok;
                 };
               }
+              // held-and-startup-parked-send-release §4 — every retirement clears the held-topic item and
+              // resolves token-less debt, whichever path retired it.
+              runtime.options.onRetired = async ({ operationId, topicId }) => {
+                resolveHeldDebt(operationId, 'retired');
+                await clearHeldItemIfResolved(topicId);
+                await runtime.refreshHeldForward({ force: true });
+              };
               runtime.options.forwardRecovery = async (operation, row) => {
                 const outcome = await originForwardMod.recoverForwardedHold({
+                staleBound: { afterMs: originForwardMod.STALE_HELD_RELEASE_MS, retire: operationId => runtime.retireStale(operationId, 'held-lease') },
+                onHolderRetired: (operationId, reason, machineId, detail) => runtime.recordHolderRetired(operationId, reason, machineId, detail as unknown as Record<string, unknown>),
                 lease: forwardLease, prepare: forwardDeps(runtime).prepare, submit: forwardDeps(runtime).submit, audit: heldAudit, now: Date.now,
                 tokenless: !hasUsableBotToken, probe: recoveryProbe,
                 onHolderReachable: () => { flushHeldOutcomes(); return telegram.repostPendingHubPosts(); },
