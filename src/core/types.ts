@@ -2610,6 +2610,10 @@ export interface MachineCapacity {
   seamlessnessFlags?: {
     /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
     documentsDecisionRows?: boolean;
+    /** Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): this build frames a verified
+     *  agent-spawn forward as the agent's own fresh task (agent authorship, null media id).
+     *  Advertised only while topicBound placement resolves on; a peer without it is never chosen. */
+    'agent-brief@1'?: boolean;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
