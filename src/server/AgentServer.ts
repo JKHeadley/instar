@@ -1936,6 +1936,8 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1.7): GET /repos. */
+    ownedRepos?: () => import('./ownedRepoRoutes.js').OwnedRepoRouteDeps | null;
     /** identity-security piece 2b: the owner record on this machine (GET /owner-record). */
     ownerRecord?: () => import('./ownerRecordRoutes.js').OwnerRecordRouteDeps | null;
     /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
@@ -7003,6 +7005,7 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      ownedRepos: options.ownedRepos ?? null,
       ownerRecord: options.ownerRecord ?? null,
       workBoard: options.workBoard ?? null,
       workBoardLate: options.workBoardLate ?? null,
