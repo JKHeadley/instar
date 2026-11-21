@@ -124,3 +124,7 @@ The topic-id ratchet (`tests/unit/topic-ref-ratchet.test.ts`, operator rule 2026
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. The drain is a bounded retry of the store's own outbox (steady state: no timer while nothing is unsent; one batch per tick; hourly ceiling), recorded here for the self-action reader.
+
+## Follow-up commit 2 (CI green-up, 2026-11-21)
+
+`Docs Coverage` failed on the second head on the job class (`83% < 85%`, 29 documented + 12 partial of 42). The cause is not in this change: the `gemini-payg-reconcile` default job template is mentioned nowhere under `site/src/content/docs`, and `main` fails the same floor by the same number. This commit adds the same two documentation entries PRs #3597 and #3600 add (the default-jobs reference table and the routing-spend control-room page, byte-identical so the branches merge cleanly), lifting the class to 86%. Documentation only; no runtime surface.
