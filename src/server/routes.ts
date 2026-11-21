@@ -2,6 +2,8 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { projectTitlesByTopic } from './conversationFallbackTitle.js';
+import { signedInPinSource } from './ownerPinSource.js';
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { bootReadiness } from './BootReadiness.js';
@@ -119,7 +121,7 @@ import {
   type MaintenancePoolView,
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
-import { createMandatePinCheck } from './mandatePin.js';
+import { createOwnerPinVerdict, createMandatePinCheck } from './mandatePin.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
 import { createSessionPresentationResolver } from './sessionPresentation.js';
@@ -3308,7 +3310,8 @@ export function createRoutes(ctx: RouteContext): Router {
     return personKey === workBoardOwnerKey() ? appOwnerName(ctx.config) : 'someone';
   };
   if (ctx.workBoardLate) { ctx.workBoardLate.ownerPersonKey = workBoardOwnerKey; ctx.workBoardLate.displayName = workBoardName; }
-  const workBoardRequirePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
+  const workBoardRequirePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
+    pinSource: (req, fwd) => signedInPinSource(req, { agentToken: () => ctx.config.authToken }, fwd) });
   const workBoardRouteDeps: WorkBoardRouteDeps = {
     // Read live, so turning the feature off takes effect without a restart; the boot value is the fallback.
     enabled: () => {
@@ -17048,20 +17051,49 @@ export function createRoutes(ctx: RouteContext): Router {
   // The check itself lives in mandatePin.ts (createMandatePinCheck) so route modules
   // can run the same gate with a route-specific message; this closure keeps the
   // original (req, res, pinOverride?) signature for every caller in this file.
-  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
+  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
+    pinSource: (req, fwd) => signedInPinSource(req, { agentToken: () => ctx.config.authToken }, fwd) });
+  // identity-security-piece1c: the signed-in budget for routes that keep their own response shape.
+  const ownerPinVerdict = createOwnerPinVerdict({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
+    pinSource: (req, fwd) => signedInPinSource(req, { agentToken: () => ctx.config.authToken }, fwd) });
+  /** True when the PIN is right; otherwise sends `failStatus` + `failBody`, or 429 when this caller is throttled. */
+  function signedInPinOk(req: import('express').Request, res: import('express').Response, candidate: unknown, failStatus: number, failBody: Record<string, unknown>): boolean {
+    const v = ownerPinVerdict(req, candidate);
+    if (v.ok) return true;
+    if (v.reason === 'throttled') res.status(429).json({ error: 'Too many attempts. Try again later.' });
+    else res.status(failStatus).json(failBody);
+    return false;
+  }
   function checkMandatePin(req: import('express').Request, res: import('express').Response, pinOverride?: string): boolean {
     return requireMandatePin(req, res, { pinOverride });
   }
-  // The operator-PIN check for a route reachable WITHOUT the bearer token. Such a route
-  // holds the unlock route's limits too: refusal on an insecure connection, and one cap
-  // across every source address (behind a tunnel every caller shares one IP bucket).
-  function checkPublicPin(req: import('express').Request, res: import('express').Response): boolean {
+  // The operator-PIN check for a route reachable WITHOUT the bearer token
+  // (identity-security-piece1c). Never keyed on the signed-in source: a stranger is no credential.
+  //  - With `requestKey` (an approval link: a live, unguessable request id or token, checked before
+  //    this call): 5 wrong guesses per live request, durable, and the strangers' cap never refuses
+  //    it, so an owner opening the link on a phone is never locked out by guessing elsewhere. Its
+  //    wrong guesses feed a separate alert-only count.
+  //  - Without one (the email-code route): the public cap only, 20 per 5 minutes across everyone.
+  const requestPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
+    pinSource: (req) => `req:${String((req as unknown as { _pinRequestKey?: string })._pinRequestKey ?? 'none')}` });
+  const publicCapPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
+    pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
+  const PIN_ALERT_ONLY_KEY = '__pin_alert_only__';
+  function checkPublicPin(req: import('express').Request, res: import('express').Response, requestKey?: string): boolean {
     if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
-    if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) { res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return false; }
-    const ok = checkMandatePin(req, res);
-    // Only a wrong PIN counts. An empty one guesses nothing, and charging it would let one address lock out unlock.
+    if (!requestKey) return publicCapPinCheck(req, res);
+    (req as unknown as { _pinRequestKey?: string })._pinRequestKey = createHash('sha256').update(requestKey).digest('hex').slice(0, 32);
+    const ok = requestPinCheck(req, res);
     const { pin } = (req.body ?? {}) as { pin?: unknown };
-    if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
+    // Alert once per window: stop counting once the alert-only count is full.
+    if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin && ctx.pinAttemptStore && !ctx.pinAttemptStore.blocked(PIN_ALERT_ONLY_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) {
+      if (ctx.pinAttemptStore.recordFailure(PIN_ALERT_ONLY_KEY, GLOBAL_PIN_MAX_ATTEMPTS) === 0) {
+        DegradationReporter.getInstance().report({ feature: 'DashboardPin.approvalLinkGuessing',
+          primary: 'Wrong PINs are being entered on approval links', fallback: 'Each approval link allows only a few wrong PINs',
+          reason: `${GLOBAL_PIN_MAX_ATTEMPTS} wrong PINs on approval links within the window`,
+          impact: 'If this was not you, someone may be trying to guess your PIN through an approval link.' });
+      }
+    }
     return ok;
   }
 
@@ -17898,7 +17930,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // The request must exist BEFORE any PIN is checked: this route is reachable without
       // the bearer, so a PIN is only ever tested against a live, operator-visible request.
       if (!svc.peekApproval(requestId)) { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
-      if (!checkPublicPin(req, res)) return; // public-route PIN gate (insecure-connection refusal, global cap); response already sent on failure
+      if (!checkPublicPin(req, res, `mcp:${requestId}`)) return; // public-route PIN gate, per live request (identity-security-piece1c); response already sent on failure
       const result = await svc.approveByRequestId(requestId);
       if (result.status === 'unknown-request') { res.status(404).type('html').send('<p>This approval request is no longer valid (used or expired).</p>'); return; }
       const ok = result.status === 'applied';
@@ -18656,9 +18688,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       setInterval(run, 5 * 60_000).unref();
     },
     checkPin: (req, res) => checkMandatePin(req, res),
-    // Reachable with no bearer token, so it holds the unlock route's limits too: the same refusal on
-    // an insecure connection, and the same cap across every source address.
-    checkConfirmPin: (req, res) => checkPublicPin(req, res),
+    // Reachable with no bearer token: refused on an insecure connection, and limited per live
+    // confirm token (checked live before this call), so strangers cannot use it up (piece 1c).
+    checkConfirmPin: (req, res) => checkPublicPin(req, res, `recsvc:${String(req.params.id ?? '')}:${String(((req.body ?? {}) as { token?: unknown }).token ?? '')}`),
     owner: () => { const uid = callbackApprover(); return uid === undefined ? null : String(uid); },
     recordApproval: (subject, evidenceRef) => {
       if (!ctx.approvalLedger) throw new Error('approval ledger unavailable');
@@ -19188,15 +19220,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ABOVE `moneyOn()` so no future edit can accidentally fold them behind the
   // gate they exist to open.
 
-  /** Verify the operator PIN. Returns TRUE only on a match; the SURFACE owns lockout + audit. */
-  function moneyLayerPinValid(body: unknown): boolean {
-    const expected = ctx.config.dashboardPin;
-    if (!expected) return false;
-    const pin = (body as { pin?: unknown } | undefined)?.pin;
-    if (typeof pin !== 'string' || !pin) return false;
-    const ha = createHash('sha256').update(pin).digest();
-    const hb = createHash('sha256').update(expected).digest();
-    return ha.length === hb.length && timingSafeEqual(ha, hb);
+  /**
+   * Verify the operator PIN on the signed-in budget (identity-security-piece1c): this caller's own
+   * guesses are limited; nobody else's can lock it out. The SURFACE keeps the audit. A throttled
+   * caller is refused with the surface's 429 shape.
+   */
+  function moneyLayerPinValid(req: import('express').Request, body: unknown): boolean {
+    const v = ownerPinVerdict(req, (body as { pin?: unknown } | undefined)?.pin);
+    if (!v.ok && v.reason === 'throttled') throw new MoneyLayerRefusal(429, 'pin-lockout', 'too many failed PIN attempts from this caller — try again in a few minutes');
+    return v.ok;
   }
 
   /** Translate a MoneyLayerRefusal into its HTTP shape; rethrow anything else. */
@@ -19257,7 +19289,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!surface) return;
     const b = req.body ?? {};
     try {
-      const out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(b) });
+      const out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(req, b) });
       res.json(out);
     } catch (err) {
       sendMoneyLayerError(res, err);
@@ -19294,7 +19326,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const b = req.body ?? {};
     try {
       surface.acceptRestart({
-        pinValid: moneyLayerPinValid(b),
+        pinValid: moneyLayerPinValid(req, b),
         nonce: b.nonce,
         confirmationTextHash: b.confirmationTextHash,
         force: b.force === true,
@@ -19349,7 +19381,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // limits, so a locked-out caller is told, not misled.
     let withPin = false;
     try {
-      withPin = surface.checkPin(moneyLayerPinValid(req.body ?? {}), 'config-inspect');
+      withPin = surface.checkPin(moneyLayerPinValid(req, req.body ?? {}), 'config-inspect');
     } catch (err) {
       // @silent-fallback-ok: not a fallback at all — the error is RETURNED to
       // the caller (a 429 lockout, typically) and the handler stops. Nothing
@@ -22061,9 +22093,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
       }
     }
+    const unresolved = [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b);
+    // A topic no machine can name shows its bound project's title instead (kept apart from verified names,
+    // which `topics` alone carries). 2026-11-20: ~60 names were lost on every machine in the Studio rebuild.
+    let projectTitles = new Map<number, string>();
+    try { projectTitles = projectTitlesByTopic(ctx.chiefOfStaffLoop?.projectsSummary() ?? []); } catch { /* @silent-fallback-ok — a fallback title is optional */ }
+    const fallbacks = unresolved.filter((id) => projectTitles.has(id)).map((id) => ({ topicId: id, title: projectTitles.get(id)!, source: 'project' as const }));
     res.json({
       topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
-      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+      fallbacks: filterTopicsForTeam(ctx.mobilePairingService, req, fallbacks, (t) => t.topicId),
+      pool: { failed, unresolved },
     });
   });
 
@@ -34727,11 +34766,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'playwright profile registry disabled' });
       return;
     }
-    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
-    const expected = ctx.config.dashboardPin ?? '';
-    const pinOk = pin.length === expected.length && pin.length > 0
-      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
-    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    if (!signedInPinOk(req, res, req.body?.pin, 403, { error: 'operator PIN required' })) return;
     const requested = req.body?.accounts as unknown;
     const validTarget = (a: unknown): a is { profileId: string; service: string; identity: string } =>
       !!a && typeof a === 'object' && typeof (a as { profileId?: unknown }).profileId === 'string'
@@ -36016,11 +36051,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.patch('/class-reviews/:dedupeKey/outcome', (req, res) => {
     if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
-    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
-    const expected = ctx.config.dashboardPin ?? '';
-    const pinOk = pin.length === expected.length && pin.length > 0
-      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
-    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    if (!signedInPinOk(req, res, req.body?.pin, 403, { error: 'operator PIN required' })) return;
     if (refuseUnsupportedFields(res, req.body, ['pin', 'arm', 'outcome'])) return;
     const arm = req.body?.arm;
     const outcome = req.body?.outcome;
@@ -36046,10 +36077,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.patch('/class-reviews/:dedupeKey/lifecycle', (req, res) => {
     if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
-    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
-    const expected = ctx.config.dashboardPin ?? '';
-    const pinOk = pin.length === expected.length && pin.length > 0 && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
-    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    if (!signedInPinOk(req, res, req.body?.pin, 403, { error: 'operator PIN required' })) return;
     if (refuseUnsupportedFields(res, req.body, ['pin', 'action', 'supersededBy', 'reason'])) return;
     const action = req.body?.action;
     let record = null;
@@ -41800,12 +41828,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const requireReloginOperatorPin = (req: ExpressRequest, res: ExpressResponse): boolean => {
     const operatorSession = req.get('X-Instar-Operator-Session');
     if (ctx.verifyDashboardOperatorSession?.(operatorSession)) return true;
-    const supplied = typeof req.body?.pin === 'string' ? req.body.pin : '';
-    const expected = ctx.config.dashboardPin ?? '';
-    const ok = supplied.length > 0 && supplied.length === expected.length
-      && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
-    if (!ok) res.status(401).json({ error: 'Dashboard PIN required.' });
-    return ok;
+    return signedInPinOk(req, res, req.body?.pin, 401, { error: 'Dashboard PIN required.' });
   };
 
   router.post('/subscription-relogin/:episodeId/approve', async (req, res) => {
@@ -42813,14 +42836,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
-    const suppliedPin = typeof req.body?.pin === 'string' ? req.body.pin : '';
-    const expectedPin = ctx.config.dashboardPin ?? '';
-    const pinOk = suppliedPin.length === expectedPin.length && suppliedPin.length > 0 &&
-      timingSafeEqual(Buffer.from(suppliedPin), Buffer.from(expectedPin));
-    if (!pinOk) {
-      res.status(401).json({ error: 'Dashboard PIN required.' });
-      return;
-    }
+    if (!signedInPinOk(req, res, req.body?.pin, 401, { error: 'Dashboard PIN required.' })) return;
     try {
       const registrar = new SubscriptionAccountEmailRegistrar(
         ctx.subscriptionPool,
@@ -44487,8 +44503,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'Missing required fields: from, to, type, priority, subject, body' });
         return;
       }
+      // messages-reach-renamed-sessions §C: only the router creates delivery notices.
+      if (type === 'delivery-notice') {
+        res.status(400).json({ error: 'type "delivery-notice" is created by the server only' });
+        return;
+      }
       const result = await ctx.messageRouter.send(
-        from,
+        ctx.messageRouter.forceLocalSender(from),
         to,
         type as MessageType,
         priority as MessagePriority,

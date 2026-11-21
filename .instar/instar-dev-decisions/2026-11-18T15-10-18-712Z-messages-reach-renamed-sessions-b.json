@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-18T15:10:18.712Z",
+  "slug": "messages-reach-renamed-sessions-b",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/CrossMachineRelayQueue.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 589,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/messages-reach-renamed-sessions.md",
+      "src/messaging/CrossMachineRelayQueue.ts",
+      "src/messaging/DeliveryRetryManager.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/messaging/MessageStore.ts",
+      "src/messaging/types.ts",
+      "src/server/machineAuth.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/middleware.ts"
+    ],
+    "addedLines": 547,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
