@@ -80,6 +80,12 @@ Revert the PR (no config, no data migration). The new table is left in place, ha
 
 ---
 
+## Follow-up commit (CI green-up, 2026-11-21)
+
+The `Docs Coverage` check failed on the job class (`83% < 85%`, 29 documented + 12 partial of 42). The cause is not in this change: the `gemini-payg-reconcile` default job template has no mention anywhere under `site/src/content/docs`, and `main` fails the same floor by the same number (verified by running `scripts/docs-coverage.mjs --check` against an export of `origin/main`). This commit adds the job to the default-jobs reference table and to the routing-spend control-room page (two mentions = documented), lifting the class to 86%. Documentation only; no runtime surface, no decision point, no side effect beyond the docs site.
+
+---
+
 ## Second-pass review
 
 (Appended below by the independent reviewer.)
