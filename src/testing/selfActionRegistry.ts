@@ -30,6 +30,7 @@ import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/Session
 import { HUB_REPOST_MAX_ATTEMPTS, hubRepostDecision, noteAccountChangedTopic, heldExpiryReportDue, type HubRepostState } from '../messaging/telegram-origin/TokenlessNoticeBrakes.js';
 import { closeGoneEntries, type HeldDebtEntry } from '../messaging/telegram-origin/TokenlessHeldDebt.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
+import { PeerBuildLedger } from '../core/identityBuildFence.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
 import { catchUpAttemptDue, CATCH_UP_MAX_FAILURES, CATCH_UP_RETRY_MS } from '../core/ConversationUnreadService.js';
@@ -456,6 +457,31 @@ const reachSecondPersonNotice: SelfActionController = {
         if (!reachNoticeDue(steadyCount, heldAt)) return;
         sink.emit({ verb: 'notify', target: 'team:second-person' });
         heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** owner-record-fence-notice (identity-security piece 2c §4): a machine stays below the minimum build, so every
+ * 15-minute pass finds the same list. One notice per distinct list, saved in the ledger: under sustained pressure
+ * it is raised once and never repeated. */
+const ownerRecordFenceNotice: SelfActionController = {
+  id: 'owner-record-fence-notice',
+  actionVerb: 'notify',
+  models: 'src/core/ownerRecordSync.ts (maybeNotifyFence — PeerBuildLedger.noticeDue, one notice per distinct list)',
+  modelsPath: 'src/core/ownerRecordSync.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The last notified list is saved in state/owner-record/peer-builds.json, so a restart or lease move cannot reset it.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 4 * 24 * 30,
+  tickMs: 15 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const ledger = new PeerBuildLedger(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fence-notice-')), 'peer-builds.json'));
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!ledger.noticeDue(['below:m_old'])) return;
+        sink.emit({ verb: 'notify', target: 'owner:fence' });
       },
     };
   },
@@ -6183,6 +6209,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   failureCalloutInvestigation,
   attributionAuditRetry,
   reachSecondPersonNotice,
+  ownerRecordFenceNotice,
   presenceUsageNotice,
 
   jobPortableTransferPoll,
