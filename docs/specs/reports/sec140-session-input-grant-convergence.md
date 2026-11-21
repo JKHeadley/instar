@@ -1,6 +1,6 @@
 # Convergence Report — Typing into a session from the phone needs Face ID once every few minutes (SEC-140)
 
-## ⚠ Round cap reached (6 of 6, Tier 2): final fixes applied, no quiet confirming round yet
+## ⚠ Round cap passed: a confirming round (7) was run on the Chief of Staff's instruction and was not quiet
 
 The internal reviewer returned DESIGN-SOUND in round 5. The external reviewer raised five precise findings in round 6 (transport for grants, the first-grant transition, clear ordering across a restart, pending key presses, the passcode limit), all applied as specified. They have not been confirmed by another round. The constitution check on the final text: 102 standards, 0 findings.
 
@@ -29,6 +29,7 @@ The phone can type commands into the agent's sessions, and today it proves only 
 | 4 | codex 5, internal 1 | 6 | shared predicate, separate exposures, crash recovery, relay 428 mapping |
 | 5 | codex 4, internal 0 (DESIGN-SOUND) | 4 | renewed deadline, enrolment over this connection, ingress readiness, replay test |
 | 6 | codex 5 | 5 | grant transport, first-grant loss, clear ordering, key presses, passcode limit |
+| 7 (confirming, after the Studio check's six concerns and the registration/chat section) | codex 4, internal 3 | 7 | connection eligibility in the shared rule, one mode resolver (`resolveDevAgentGate`), grants still issued in `off`, fresh tap whenever Face ID interrupts a key press, per-pairing registration states, SEC-142 not a merge blocker and never lowering `grantSeen` |
 
 Standards-Conformance Gate: ran every round; final run 0 flags. Earlier runs raised Security Fixes Keep the Experience Whole (now an open question for Justin), Judgment Within Floors (the lifetime caps were removed; the owner sets them), Close the Loop (the weekly re-raise), multi-machine posture and cross-store coherence (the ledger design).
 
@@ -45,4 +46,4 @@ Also: authorise one confirming round, or accept the round-6 fixes as written.
 
 ## Convergence verdict
 
-**Not converged by the skill's rule** (round cap with the last round's fixes unconfirmed). Otherwise ready to build once the open questions are answered. The app half (echo-instar-apple-app-rebuild) and Android (via the Chief of Staff) are named in the spec.
+**Not converged by the skill's rule.** The confirming round found seven more findings, all about consistency between sections and the app contract, none a new bypass; all are applied and not yet confirmed. Final constitution check: one flag (the 30-minute default, which the spec makes owner-adjustable with its reasons). The design now depends on the registration fix (SEC-142) for full strength and on a separate chat control (SEC-143), as the threat model sets out. The app half (echo-instar-apple-app-rebuild) and Android (via the Chief of Staff) are named in the spec.
