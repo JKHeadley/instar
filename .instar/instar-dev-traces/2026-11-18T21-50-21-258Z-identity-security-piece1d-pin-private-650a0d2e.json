@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1d-pin-private",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T21:50:21.258Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1d-pin-private.md",
+  "artifactSha256": "68e733459f07ddfca01bfc6d162748bafea735f41bb08cf76449f1fbec1c125c",
+  "specPath": "docs/specs/identity-security-piece1d-pin-private.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "tests/e2e/upgrade-guide-lifecycle.test.ts",
+    "tests/unit/UpgradeNotifyManager.test.ts",
+    "tests/unit/upgrade-notify-manager.test.ts",
+    "upgrades/side-effects/identity-security-piece1d-pin-private.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A Local Verify repair on the approved 1d change: three tests updated to the approved behaviour (no PIN in the announce text) and a method-exists check so test adapter stand-ins don't throw; production behaviour unchanged.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -331,7 +331,7 @@ New stuff.
 
     // Concrete details
     expect(prompt).toContain('test.tunnel.dev');
-    expect(prompt).toContain('test-pin');
+    expect(prompt).not.toContain('test-pin'); // the PIN never goes into the announce text (identity piece 1d)
     expect(prompt).toContain('telegram-reply.sh');
   });
 

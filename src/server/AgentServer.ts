@@ -237,6 +237,8 @@ import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLive
 import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
 import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
+import { DashboardPinPrivate } from './dashboardPinPrivate.js';
+import { pickDashboardPin } from '../core/dashboardPin.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
 import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
 import { setDocumentScopedSend, deviceRouteTakesBody } from './mobilePairingRoutes.js';
@@ -1254,6 +1256,11 @@ export class AgentServer {
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
   private telegramAdapter: TelegramAdapter | null = null;
+  private dashboardPinPrivate!: DashboardPinPrivate;
+  /** identity-security-piece1d: send this machine's PIN to the owner's private chat (the owner asked). */
+  sendDashboardPinPrivately(): Promise<{ sent: boolean; reason?: string }> { return this.dashboardPinPrivate.deliver({ force: true }); }
+  /** Agent requests to send the PIN privately: at most 3 per PIN generation per hour. */
+  private pinSendRequests: { generation: string; times: number[] } = { generation: '', times: [] };
   private slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
   /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
   private agentIdentityRuntime: AgentIdentityRuntime | null = null;
@@ -2017,6 +2024,27 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    // identity-security-piece1d: the dashboard PIN reaches the owner privately, never a group.
+    this.dashboardPinPrivate = new DashboardPinPrivate({
+      stateDir: options.config.stateDir,
+      agentName: options.config.projectName,
+      machineId: () => this.meshSelfId ?? 'this-machine',
+      machineLabel: () => os.hostname().replace(/\.local$/, ''),
+      dashboardUrl: () => (options.tunnel?.url ? `${options.tunnel.url}/dashboard` : null),
+      // Read live: a rotation or "fix dashboard" writes the PIN and its new generation through LiveConfig.
+      pin: () => pickDashboardPin((options.liveConfig as LiveConfig | undefined)?.get<unknown>('dashboardPin', undefined) ?? this.config.dashboardPin, this.config.stateDir),
+      generation: () => {
+        const live = (options.liveConfig as LiveConfig | undefined)?.get<unknown>('dashboardPinGeneration', undefined);
+        const g = typeof live === 'string' && live ? live : this.config.dashboardPinGeneration;
+        return typeof g === 'string' && g ? g : 'legacy-1';
+      },
+      sendSecret: this.telegramAdapter ? (text) => this.telegramAdapter!.sendOwnerSecret(text) : null,
+      onDelivered: () => { if (typeof this.telegramAdapter?.refreshDashboardMessagePinLine === 'function') void this.telegramAdapter.refreshDashboardMessagePinLine().catch(() => {}); },
+      ownerHasOtherWayIn: () => { try { return this.mobilePairing?.ownerPhoneCanApprove() ?? false; } catch { return false; /* @silent-fallback-ok: unknown reads as no phone, the reading that keeps the owner's way in */ } },
+      isStandby: () => (options.config as { multiMachine?: { telegramPolling?: boolean } }).multiMachine?.telegramPolling === false,
+    });
+    // A hand-made adapter stand-in (tests) may lack the method; the real TelegramAdapter always has it.
+    if (typeof this.telegramAdapter?.setDashboardPinPrivacy === 'function') this.telegramAdapter.setDashboardPinPrivacy(this.dashboardPinPrivate);
     this.skillLearningSentinel = options.skillLearningSentinel ?? null;
     this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
@@ -2966,6 +2994,29 @@ export class AgentServer {
       // token type, minted only by POST /dashboard/session/step-up).
       (req: Request) => this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined),
     ));
+    // identity-security-piece1d: send this machine's dashboard PIN to the owner's private chat. Behind
+    // the auth middleware. Answers only an outcome, never the PIN, so an agent never reads it.
+    this.app.post('/dashboard/pin/send-private', (_req: Request, res: Response) => {
+      const now = Date.now();
+      const gen = this.dashboardPinPrivate.currentGeneration();
+      if (this.pinSendRequests.generation !== gen) this.pinSendRequests = { generation: gen, times: [] };
+      this.pinSendRequests.times = this.pinSendRequests.times.filter((t) => now - t < 3_600_000);
+      if (this.pinSendRequests.times.length >= 3) {
+        res.status(429).json({ sent: false, reason: 'rate-limited', note: 'The PIN was sent privately several times in the last hour; ask the owner to check their private chat with me.' });
+        return;
+      }
+      this.pinSendRequests.times.push(now);
+      void this.dashboardPinPrivate.deliver({ force: true }).then((outcome) => {
+        const note = outcome.sent
+          ? (outcome.recent ? 'Sent to the owner\'s private chat a moment ago; it is there now.' : undefined)
+          : outcome.reason === 'no-private-chat' || outcome.reason === 'no-owner'
+            ? 'Ask the owner to open a private chat with the agent\'s Telegram bot and say hi; the PIN is then sent there.'
+            : outcome.reason === 'no-private-channel'
+              ? 'This agent has no private chat with the owner; they can open the dashboard on this computer or the phone app.'
+              : 'It could not be sent just now; it will be sent at the next chance, or try again in a few minutes.';
+        res.json(note ? { ...outcome, note } : outcome);
+      }).catch(() => res.json({ sent: false, reason: 'held' }));
+    });
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
     // matching logic are the single source of truth in middleware.ts so a

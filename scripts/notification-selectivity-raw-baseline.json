@@ -5,6 +5,7 @@
   "src/messaging/TelegramAdapter.ts#sendPairingPrompt": 1,
   "src/messaging/TelegramAdapter.ts#sendToTopicDelivered": 4,
   "src/messaging/TelegramAdapter.ts#sendOwnerDMWithButton": 1,
+  "src/messaging/TelegramAdapter.ts#sendOwnerSecret": 1,
   "src/messaging/TelegramAdapter.ts#sendToOwnerDM": 1,
   "src/messaging/TelegramAdapter.ts#handleCommand": 1,
   "src/messaging/TelegramAdapter.ts#createAttentionItem": 1,

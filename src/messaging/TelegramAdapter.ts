@@ -9,6 +9,8 @@ import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDeliver
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
 /** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
+/** identity-security-piece1d: stamped ONLY by sendOwnerSecret, which sends to the configured owner's private chat. */
+const OWNER_SECRET_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-secret', sourceContext: 'owner-secret-private' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
 import { consolePageUrl } from '../server/dashboardPaths.js';
@@ -2781,6 +2783,26 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.sendToOwnerDM(text, replyToMessageId);
   }
 
+  /**
+   * identity-security-piece1d: send a message that carries the owner's own credential (the dashboard
+   * PIN) to the configured owner's PRIVATE chat, and nowhere else. Stamped owner-secret, which the
+   * quiet gate always delivers and never stores. Returns only an outcome, never echoing the text.
+   */
+  async sendOwnerSecret(text: string): Promise<{ ok: true } | { ok: false; reason: 'no-owner' | 'no-private-chat' | 'held' }> {
+    const owner = this.getOwnerUserId();
+    if (!owner) return { ok: false, reason: 'no-owner' };
+    try {
+      const result = await withNotificationEnvelope(OWNER_SECRET_ENVELOPE, () => this.apiCall('sendMessage', { chat_id: owner, text })) as { message_id?: number } | null;
+      return typeof result?.message_id === 'number' ? { ok: true } : { ok: false, reason: 'held' };
+    } catch (err) {
+      // @silent-fallback-ok: not silent — the failure is the returned outcome, recorded by the caller and retried at the next trigger
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/forbidden|\b403\b|chat not found/i.test(msg)) return { ok: false, reason: 'no-private-chat' };
+      console.warn('[telegram] owner secret send held (the text is not logged)');
+      return { ok: false, reason: 'held' };
+    }
+  }
+
   async sendToOwnerDM(text: string, replyToMessageId?: number): Promise<SendResult | null> {
     const owner = this.getOwnerUserId();
     if (!owner) {
@@ -3039,7 +3061,60 @@ export class TelegramAdapter implements MessagingAdapter {
    * Fallback: if the pinned message was deleted or doesn't exist yet, we send
    * a new one, pin it, and save its ID for future edits.
    */
+  /** identity-security-piece1d: the server's private PIN delivery, wired by the server. */
+  private pinPrivacy: {
+    deliver(opts?: { force?: boolean }): Promise<{ sent: true; machine: string } | { sent: false; reason: string }>;
+    deliveredForCurrent(): boolean;
+    groupMayCarryDigits(reason: string): boolean;
+  } | null = null;
+  private lastDashboardBroadcast: { url: string; tunnelType: 'quick' | 'named' } | null = null;
+  setDashboardPinPrivacy(p: NonNullable<TelegramAdapter['pinPrivacy']>): void { this.pinPrivacy = p; }
+  /**
+   * The configured owner wrote in their own private chat with the bot: resume a pending PIN delivery.
+   * Only the configured owner id, only their own private chat, never a forward or a bot. Called by the
+   * server's own poller and by the lifeline forward route (which proved the message came from Telegram).
+   */
+  noteOwnerPrivateMessage(m: { chatType?: string; chatId?: number | string; fromId?: number | string; isBot?: boolean; forwarded?: boolean }): void {
+    const owner = this.getOwnerUserId();
+    if (!this.pinPrivacy || !owner || owner <= 0) return;
+    if (m.chatType !== 'private' || m.isBot || m.forwarded) return;
+    if (String(m.chatId) !== String(m.fromId) || String(m.fromId) !== String(owner)) return;
+    if (this.pinPrivacy.deliveredForCurrent()) return;
+    void this.pinPrivacy.deliver().catch(() => { /* @silent-fallback-ok: an outcome is recorded; the next trigger retries */ });
+  }
+  /** Re-edit the pinned Dashboard message after a private delivery, so its digits come off at once. */
+  async refreshDashboardMessagePinLine(): Promise<void> {
+    // Wait for a broadcast already running, so a first-ever broadcast never posts and pins two messages.
+    await this.dashboardBroadcastInFlight?.catch(() => undefined);
+    if (this.lastDashboardBroadcast) await this.broadcastDashboardUrl(this.lastDashboardBroadcast.url, this.lastDashboardBroadcast.tunnelType);
+  }
+  private dashboardBroadcastInFlight: Promise<unknown> | null = null;
+  /**
+   * How the pinned message shows the PIN (identity-security-piece1d). Runs the private delivery first;
+   * never throws. 'private' = delivered privately (no digits); 'digits' = no private route at all and
+   * no other way in (today's text, so the owner is not locked out); 'ask' = anything else (no digits).
+   */
+  private async dashboardPinMode(): Promise<'private' | 'digits' | 'ask'> {
+    if (!this.pinPrivacy) return 'digits';
+    let outcome: { sent: boolean; reason?: string };
+    try {
+      outcome = await Promise.race([
+        this.pinPrivacy.deliver(),
+        new Promise<{ sent: false; reason: string }>((r) => { const t = setTimeout(() => r({ sent: false, reason: 'held' }), 10_000); t.unref?.(); }),
+      ]);
+    } catch { outcome = { sent: false, reason: 'held' }; /* @silent-fallback-ok: a failed private send is an outcome; the group message never gains digits from it */ }
+    if (outcome.sent || this.pinPrivacy.deliveredForCurrent()) return 'private';
+    return this.pinPrivacy.groupMayCarryDigits(outcome.reason ?? 'held') ? 'digits' : 'ask';
+  }
+
   async broadcastDashboardUrl(url: string, tunnelType: 'quick' | 'named'): Promise<DashboardBroadcastResult> {
+    this.lastDashboardBroadcast = { url, tunnelType };
+    const run = this.broadcastDashboardUrlOnce(url, tunnelType);
+    this.dashboardBroadcastInFlight = run;
+    try { return await run; } finally { if (this.dashboardBroadcastInFlight === run) this.dashboardBroadcastInFlight = null; }
+  }
+
+  private async broadcastDashboardUrlOnce(url: string, tunnelType: 'quick' | 'named'): Promise<DashboardBroadcastResult> {
     const topicId = this.config.dashboardTopicId;
     if (!topicId) {
       throw new Error('Dashboard topic is not configured; create or repair the Dashboard forum topic before refreshing the pinned link');
@@ -3050,8 +3125,11 @@ export class TelegramAdapter implements MessagingAdapter {
     const pin = this.resolvedDashboardPin();
     const isNamed = tunnelType === 'named';
     const warnings: string[] = [];
+    // identity-security-piece1d: the private delivery runs first, before any group edit.
+    const pinMode = await this.dashboardPinMode();
+    const bot = pinMode === 'private' || !this.pinPrivacy ? null : await this.botIdentity().catch(() => null);
 
-    const message = this.formatDashboardMessage(url, pin, isNamed);
+    const message = this.formatDashboardMessage(url, pin, isNamed, pinMode, bot?.username ?? null);
 
     // Try to edit the existing pinned message (no new message = no unread badge)
     const existingMessageId = this.loadDashboardMessageId();
@@ -3129,7 +3207,7 @@ export class TelegramAdapter implements MessagingAdapter {
     return pickDashboardPin(this.config.dashboardPin, this.stateDir);
   }
 
-  private formatDashboardMessage(url: string, pin: string | null, isNamed: boolean): string {
+  private formatDashboardMessage(url: string, pin: string | null, isNamed: boolean, pinMode: 'private' | 'digits' | 'ask' = 'digits', botUsername: string | null = null): string {
     const dashboardUrl = url + '/dashboard';
     // /dashboard opens the console; the quick links go to its own pages (a `?tab=` link would
     // open the legacy dashboard).
@@ -3141,9 +3219,15 @@ export class TelegramAdapter implements MessagingAdapter {
     // A null PIN means the value could not be resolved. NEVER substitute an
     // internal placeholder (the 2026-06-06 leak) — show an honest, actionable
     // line the user can act on instead.
-    const pinLine = pin
-      ? `PIN: \`${pin}\``
-      : `_PIN unavailable right now — ask me for your dashboard PIN and I'll send it._`;
+    // Underscores in a bot username would open Markdown italics in the legacy edit mode.
+    const privateChat = botUsername ? `t.me/${botUsername.replace(/_/g, '\\_')}` : 'a private chat with me';
+    const pinLine = pinMode === 'private'
+      ? 'PIN: sent to you in your private chat with me.'
+      : pinMode === 'ask'
+        ? `PIN: ask me in your private chat (${privateChat}); I don't post it here.`
+        : pin
+          ? `PIN: \`${pin}\`\n_To keep your PIN private, open a private chat with me (${privateChat}) and say hi. I'll send it there and take it off this message._`
+          : `_PIN unavailable right now — ask me in your private chat (${privateChat}) and I'll send it._`;
 
     if (isNamed) {
       return [
@@ -6658,6 +6742,12 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+    // identity-security-piece1d: the configured owner's own private message resumes a pending PIN delivery.
+    {
+      const raw = msg as unknown as Record<string, unknown>;
+      this.noteOwnerPrivateMessage({ chatType: msg.chat?.type, chatId: msg.chat?.id, fromId: msg.from?.id,
+        isBot: (msg.from as { is_bot?: boolean } | undefined)?.is_bot === true, forwarded: !!(raw.forward_origin || raw.forward_from || raw.forward_date) });
+    }
 
     // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
     // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
@@ -7871,6 +7961,13 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {
+    // identity-security-piece1d: an owner-secret message goes ONLY to the configured owner's private chat.
+    if (method === 'sendMessage' && notificationContext.getStore()?.category === 'owner-secret') {
+      const owner = this.getOwnerUserId();
+      if (!owner || owner <= 0 || String(params.chat_id) !== String(owner) || params.message_thread_id !== undefined) {
+        throw new Error('owner-secret refused: not the configured owner\'s private chat');
+      }
+    }
     if (method === 'sendMessage' && retryCount === 0 && this.selectivity && !this.selectivityDelegated && !this.selectivityAdmitted.getStore()) {
       const routed = await this.selectivity.route(Number(params.message_thread_id ?? 1), String(params.text ?? ''), notificationContext.getStore());
       if (routed.receipt) throw new QuietRecordedError(routed.receipt);

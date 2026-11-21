@@ -267,11 +267,12 @@ describe('UpgradeNotifyManager', () => {
       expect(prompt).toContain('https://test.trycloudflare.com/dashboard');
     });
 
-    it('includes dashboard PIN (announce branch)', () => {
+    it('never includes the dashboard PIN, and says where it goes (announce branch; identity piece 1d)', () => {
       const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
       const prompt = manager.buildPrompt(ANNOUNCE_GUIDE);
 
-      expect(prompt).toContain('123456');
+      expect(prompt).not.toContain('123456');
+      expect(prompt).toContain("goes only to the owner's private chat");
     });
 
     it('includes current version (announce branch)', () => {
