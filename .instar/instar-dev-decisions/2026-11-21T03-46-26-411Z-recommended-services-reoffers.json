@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-21T03:46:26.411Z",
+  "slug": "recommended-services-reoffers",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 120,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/BackupManager.ts",
+      "src/core/restoreMarker.ts",
+      "src/data/awareness/recommended-services-reoffers.md",
+      "src/recommended/reoffers.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 101,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

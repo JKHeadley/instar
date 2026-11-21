@@ -11,7 +11,7 @@ import type { Request, Response, Router } from 'express';
 import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger, type ReofferRow } from '../recommended/RecommendedServicesLedger.js';
-import { PROBLEM_KINDS, isDuplicateEvent, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
+import { EVENT_FRESH_MS, PROBLEM_KINDS, isDuplicateEvent, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
@@ -21,6 +21,7 @@ import { EMAIL_RECIPIENT_SECRET, normalizeRecipient, readEmailCredential, EMAIL_
 import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
 import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
+import { clearRestoreMarker, readRestoreMarker } from '../core/restoreMarker.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
@@ -105,6 +106,11 @@ export interface RecommendedServiceRouteDeps {
    * encrypted store was merged (a secret the config refers to is missing). Read once per server start.
    */
   unresolvedSecrets?: () => readonly string[];
+  /**
+   * The `state-loss-risk` source: how many other machines this agent runs on (each holds a copy of its state).
+   * With none, and no verified GitHub backup, a restore from a local snapshot means nothing exists off this machine.
+   */
+  otherMachineCount?: () => number;
   /** Rollout step 5: when true, an existing agent's owner is admitted to the first list (migration marked complete at the offer tick). */
   existingAgentsEnabled?: () => boolean;
   /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
@@ -654,21 +660,39 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
-  // `secret-lost` (Real-problem events): a boot check, once per server start, as soon as there is a ledger and an
-  // owner to record against. A no on Bitwarden (or an unanswered offer) is what the floor then requires.
-  let secretCheckDone = false;
-  const checkSecretsOnce = (): void => {
-    if (secretCheckDone || !deps.reoffersEnabled?.() || !deps.unresolvedSecrets) return;
-    if (!deps.ledger() || deps.owner() === null) return;
-    secretCheckDone = true;
-    let missing: readonly string[];
-    try {
-      missing = deps.unresolvedSecrets();
-    } catch (err) { // @silent-fallback-ok — reported through report(); the check simply doesn't count this start
-      report('Check for missing secrets at start', err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
-      return;
+  // Boot checks (Real-problem events), once per server start, as soon as there is a ledger and an owner to record
+  // against. `secret-lost`: a secret the config refers to is missing. `state-loss-risk`: this start follows a restore
+  // from a local snapshot and no copy exists off this machine. The floor then requires a no (or an unanswered offer).
+  let bootChecksDone = false;
+  const bootChecksOnce = (): void => {
+    if (bootChecksDone || !deps.ledger() || deps.owner() === null) return;
+    bootChecksDone = true;
+    const on = !!deps.reoffersEnabled?.();
+    const fail = (what: string, err: unknown): void => report(what, err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    if (on && deps.unresolvedSecrets) {
+      try {
+        if (deps.unresolvedSecrets().length) handle.recordProblem('secret-lost', 'boot');
+      } catch (err) { // @silent-fallback-ok — reported through fail(); the check simply doesn't count this start
+        fail('Check for missing secrets at start', err);
+      }
     }
-    if (missing.length) handle.recordProblem('secret-lost', 'boot');
+    // The marker is read and cleared even with the switch off, so turning it on later never digs up an old restore.
+    const marker = readRestoreMarker(deps.stateDir);
+    if (!marker) return;
+    try {
+      clearRestoreMarker(deps.stateDir);
+    } catch (err) { // @silent-fallback-ok — reported; a marker left behind is read again at most once per start, and the daily dedupe holds
+      fail('Clear the restore marker', err);
+    }
+    const nowMs = deps.now?.() ?? Date.now();
+    if (!on || nowMs - Date.parse(marker.at) >= EVENT_FRESH_MS) return;
+    try {
+      const backedUp = readSetupStates(deps.stateDir)['github-state-backup']?.verified?.result === 'pass';
+      const otherMachines = deps.otherMachineCount?.() ?? 0;
+      if (!backedUp && otherMachines === 0) handle.recordProblem('state-loss-risk', 'restore');
+    } catch (err) { // @silent-fallback-ok — reported through fail()
+      fail('Check for an off-machine copy after a restore', err);
+    }
   };
   let lastReofferAttemptAt = 0;
   let reoffering = false;
@@ -726,7 +750,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const reconcileAndOffer = async (): Promise<void> => {
     await reconcile();
     admitExistingOwner();
-    checkSecretsOnce();
+    bootChecksOnce();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
     if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());

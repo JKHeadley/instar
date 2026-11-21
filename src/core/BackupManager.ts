@@ -18,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { writeRestoreMarker } from './restoreMarker.js';
 import { mergeDefaults } from './mergeDefaults.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 
@@ -970,6 +971,14 @@ export class BackupManager {
 
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(src, dest);
+    }
+
+    // The server reads this at its next start (recommended-services.md, `state-loss-risk`). After the copy, so a
+    // marker inside the snapshot never wins. A marker that can't be written never fails the restore.
+    try {
+      writeRestoreMarker(this.stateDir, id);
+    } catch (err) {
+      console.warn(`[BackupManager] Restore marker not written: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok — the restore itself succeeded; only the follow-up check is skipped
     }
   }
 
