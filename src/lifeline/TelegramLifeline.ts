@@ -1192,10 +1192,15 @@ export class TelegramLifeline {
       const step = bootHoldStep({ heldSinceMs: this.bootPollHeldSinceMs, nowMs: now, intentShouldPoll });
       if (step === 'wait') return;
       if (step === 'expired') {
+        // The lifeline is the emergency /restart channel when the server cannot
+        // boot. Preserve its original bounded fallback for unmuted roles, never
+        // for observe-only/mute. This is emergency reachability, not a lease claim.
+        if (override === 'force-mute') return;
         if (!this.bootPollWaitReported) {
           this.bootPollWaitReported = true;
-          console.warn('[Lifeline] The boot wait elapsed without a lease opinion; Telegram polling still waits for the server to confirm ownership.');
+          console.warn('[Lifeline] No lease opinion arrived during the boot wait; this unmuted lifeline is restoring emergency Telegram polling so /restart remains reachable. This does not prove sole poll ownership.');
         }
+        this.startPollAfterFlush(stateDir, forcePoll, true);
         return;
       }
     }
@@ -1255,14 +1260,20 @@ export class TelegramLifeline {
     this.pollStartPending = false;
   }
 
-  private startPollAfterFlush(stateDir: string, forcePoll = false): void {
+  private startPollAfterFlush(stateDir: string, forcePoll = false, emergencyBootFallback = false): void {
     if (this.pollStartPending || this.polling) return;
     this.pollStartPending = true;
     const gen = ++this.pollStartGen;
     void this.flushStaleConnection().then(() => {
       if (gen !== this.pollStartGen) return; // stopped or lost the lease meanwhile
       this.pollStartPending = false;
-      if (!forcePoll && this.currentPollIntent(stateDir) !== true) return; // the flush can take a minute
+      const intent = this.currentPollIntent(stateDir); // the flush can take a minute
+      if (!forcePoll) {
+        // Ordinary starts need current positive intent. The original bounded boot
+        // fallback accepts unknown, but cannot override a fresh standby or mute.
+        if (resolvePollOverride(this.projectConfig.multiMachine) === 'force-mute') return;
+        if (intent !== true && (!emergencyBootFallback || intent === false)) return;
+      }
       this.bootPollHeldSinceMs = 0;
       this.polling = true;
       this.pollLoopId += 1;

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TelegramLifeline } from '../../src/lifeline/TelegramLifeline.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { BOOT_POLL_HOLD_MAX_MS } from '../../src/lifeline/pollDecision.js';
 import { writePollIntent } from '../../src/core/pollIntent.js';
 
 const dirs: string[] = [];
@@ -17,7 +18,7 @@ function boot(mm: Record<string, unknown>, identity = true) {
   // credential, notification or registry clients. Only Telegram network boundaries are replaced.
   const l = Object.create(TelegramLifeline.prototype) as any;
   Object.assign(l, {
-    projectConfig: { stateDir, multiMachine: mm }, polling: false, bootPollHeldSinceMs: 0,
+    projectConfig: { stateDir, multiMachine: structuredClone(mm) }, polling: false, bootPollHeldSinceMs: 0,
     pollIntentAwakeSinceMs: 0, pollStartPending: false, pollStartGen: 0, pollLoopId: 0,
     consecutive409s: 0, last409AtMs: 0, flushStaleConnection: vi.fn(async () => {}), poll: vi.fn(),
   });
@@ -35,14 +36,55 @@ describe('production lifeline polling startup composition', () => {
     const { l } = boot(mm, identity as boolean); await l.startPollingAtBoot();
     expect(l.flushStaleConnection).toHaveBeenCalledOnce(); expect(l.poll).toHaveBeenCalledOnce(); expect(l.polling).toBe(true);
   });
-  it('a coordinated boot waits past the old bound, then a legitimate positive intent starts after debounce', async () => {
+  it('a coordinated boot initially waits, then a legitimate positive intent starts after debounce', async () => {
     const { l, intent } = boot(live); await l.startPollingAtBoot();
-    vi.advanceTimersByTime(240_000); l.reconcilePolling();
+    vi.advanceTimersByTime(30_000); l.reconcilePolling();
     expect(l.flushStaleConnection).not.toHaveBeenCalled(); expect(l.polling).toBe(false);
     intent(false); l.reconcilePolling(); expect(l.polling).toBe(false);
     intent(true); l.reconcilePolling(); vi.advanceTimersByTime(20_001); l.reconcilePolling();
     await Promise.resolve(); await Promise.resolve();
     expect(l.flushStaleConnection).toHaveBeenCalledOnce(); expect(l.poll).toHaveBeenCalledOnce(); expect(l.polling).toBe(true);
+  });
+  it('an identified coordinated lifeline whose server cannot boot receives and handles /restart at the original boot bound', async () => {
+    const { l } = boot({ ...live, leaseSelfHeal: { leaseRole: 'active' } });
+    l.config = { chatId: '-123', token: 'isolated-test-token', pollIntervalMs: 2000 };
+    l.notificationInbound = new Map(); l.lastUpdateId = 0;
+    l.supervisor = { healthy: false, wakeFromSleep: vi.fn(), resetCircuitBreaker: vi.fn(), stop: vi.fn(async () => {}), start: vi.fn(async () => false) };
+    l.sendFixedNotice = vi.fn(async () => {}); l.saveOffset = vi.fn();
+    l.getUpdates = vi.fn(async () => [{ update_id: 1, message: {
+      message_id: 1, date: Date.now() / 1000, chat: { id: -123 }, from: { id: 42 },
+      message_thread_id: 7, text: '/restart',
+    } }]);
+    // Only Telegram requests and physical server control are substituted. The
+    // production poll -> processUpdate -> /restart -> lifeline handler runs.
+    l.poll = (TelegramLifeline.prototype as any).poll.bind(l);
+    await l.startPollingAtBoot();
+    await vi.advanceTimersByTimeAsync(BOOT_POLL_HOLD_MAX_MS - 1); l.reconcilePolling();
+    expect(l.getUpdates).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); l.reconcilePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(l.flushStaleConnection).toHaveBeenCalledOnce();
+    expect(l.getUpdates).toHaveBeenCalledOnce();
+    expect(l.polling).toBe(true);
+    expect(l.supervisor.stop).toHaveBeenCalledOnce();
+    expect(l.supervisor.start).toHaveBeenCalledOnce();
+    expect(l.sendFixedNotice).toHaveBeenCalledWith(7, 'Restarting server...');
+    expect(l.sendFixedNotice).toHaveBeenCalledWith(7, 'Server failed to restart.');
+    clearTimeout(l.pollTimeout);
+  });
+  it.each([{ telegramPolling: false }, { pollOverride: 'force-mute' }, { leaseSelfHeal: { leaseRole: 'observe-only' } }])('emergency boot fallback never polls a muted role (%j)', async (mute) => {
+    const { l } = boot({ ...live, ...mute }); await l.startPollingAtBoot();
+    vi.advanceTimersByTime(BOOT_POLL_HOLD_MAX_MS * 10); l.reconcilePolling(); await Promise.resolve();
+    expect(l.flushStaleConnection).not.toHaveBeenCalled(); expect(l.poll).not.toHaveBeenCalled();
+  });
+  it.each(['standby', 'mute'])('emergency fallback cancels when a fresh %s arrives during flush', async (change) => {
+    const { l, intent } = boot(live); await l.startPollingAtBoot();
+    l.flushStaleConnection.mockImplementation(async () => {
+      if (change === 'standby') intent(false);
+      else l.projectConfig.multiMachine.leaseSelfHeal = { leaseRole: 'observe-only' };
+    });
+    vi.advanceTimersByTime(BOOT_POLL_HOLD_MAX_MS); l.reconcilePolling(); await Promise.resolve(); await Promise.resolve();
+    expect(l.flushStaleConnection).toHaveBeenCalledOnce(); expect(l.poll).not.toHaveBeenCalled(); expect(l.polling).toBe(false);
   });
   it.each([false, null])('lost or unknown ownership during flush (%s) cannot become a blind start', async (nextIntent) => {
     const { l, intent } = boot(live); await l.startPollingAtBoot(); intent(true); l.reconcilePolling();

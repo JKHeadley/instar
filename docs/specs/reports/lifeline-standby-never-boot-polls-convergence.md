@@ -43,3 +43,7 @@ Tier 1, three design rounds at the cap. Earlier reviews were disproportionate be
 ## Convergence verdict
 
 Converged after the third round's two concrete corrections, with no remaining material design issue identified. Ready for the small reversible implementation; live rollout proof remains the parent repair run's responsibility.
+
+## Post-implementation availability correction
+
+A later emergency-reachability check found an omission in the narrowed implementation: indefinitely waiting for positive intent disables /restart when the server cannot boot. The Chief of Staff approved retaining the original bounded fallback for unmuted roles in message cc8267e2 at 15:43 PST. This does not add a new ownership authority. Explicit mute/observe-only and fresh false still prevent fallback, ordinary starts keep strict positive-intent checks, and the old multi-unmuted-machine contention limit is stated honestly. This focused correction does not claim an extra full convergence round or a passing full-suite run.

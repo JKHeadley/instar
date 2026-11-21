@@ -107,7 +107,7 @@ export function hasRecent409(i: { consecutive409s: number; last409AtMs: number; 
   return i.consecutive409s > 0 && i.nowMs - i.last409AtMs < RECENT_409_WINDOW_MS;
 }
 
-/** Threshold for reporting that a coordinated boot still lacks lease intent. */
+/** Original bounded wait before an unmuted lifeline restores emergency reachability. */
 export const BOOT_POLL_HOLD_MAX_MS = 180_000;
 
 /**
@@ -125,8 +125,10 @@ export function holdPollAtBoot(i: { followsLeaseEnabled: boolean; dryRun: boolea
 /**
  * What a held boot does on one reconcile. With an opinion the normal decision runs; the
  * caller ends the hold only once a poll has started or the lease says standby, so an
- * opinion that vanishes still reaches the bound. No opinion past the bound reports expired; the caller keeps waiting, because a timeout
- * cannot grant fenced ownership. Single-machine/independent startup does not arm this hold.
+ * opinion that vanishes still reaches the bound. No opinion past the bound reports expired.
+ * The caller retains the original emergency fallback for unmuted roles so /restart
+ * works without a bootable server; this is not proof of lease ownership.
+ * Single-machine/independent startup does not arm this hold.
  */
 export function bootHoldStep(i: { heldSinceMs: number; nowMs: number; intentShouldPoll: boolean | null }): 'wait' | 'release' | 'expired' {
   if (i.intentShouldPoll !== null) return 'release';
