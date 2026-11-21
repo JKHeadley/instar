@@ -1,0 +1,4 @@
+---
+title: Asking again after a no, only for a real problem
+---
+With `recommendedServices.reoffers.enabled` on (off by default), a service the person said no to, or never answered after I listed it, is offered once more only when a real problem it would fix shows up. Today that's a voice note nothing on this machine can transcribe, which re-offers voice transcription. The message says why I'm asking now, links the confirm page for a yes, and never changes the no. The rules are in code: one re-offer a day across services, then 90, 180 and 360 days before the same problem can ask again. Don't re-offer a refused service by hand outside these rules. If the person asks why I asked again, the answer is the problem named in that message.

@@ -5208,6 +5208,13 @@ export interface InstarConfig {
        */
       existingAgents?: boolean;
     };
+    /**
+     * Rollout step 4 of recommended-services.md: after a no, ask again only when a real problem shows up that the
+     * service would fix (deterministic table, cool-offs, one a day). Off by default: off records and sends nothing.
+     */
+    reoffers?: {
+      enabled?: boolean;
+    };
   };
   /**
    * Sending email to the owner (docs/specs/backup-email-sending.md). Email only works after the owner's yes and the
