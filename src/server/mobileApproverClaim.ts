@@ -193,7 +193,8 @@ export function mountApproverClaimRoutes(router: Router, svc: MobilePairingServi
     if (!shown || typeof shown !== 'object' || ownerRecordEntryId({ ...shown, sig: '' } as OwnerRecordEntry) !== draft.id) { res.status(400).json({ error: 'entry-changed', detail: 'The entry signed is not the one shown. Start again from the app.' }); return; }
     const env = approverClaimEnv()!;
     const sig = body.sig;
-    if (typeof sig !== 'string' || !verifyEntrySignature({ ...draft.entry, sig } as OwnerRecordEntry, env.agentId, claim.presenceKey, 'p256')) { res.status(401).json({ error: 'presence-invalid' }); return; }
+    if (typeof sig !== 'string' || !verifyEntrySignature({ ...draft.entry, sig } as OwnerRecordEntry, env.agentId, claim.presenceKey, 'p256')) { res.status(409).json({ error: 'presence-invalid', detail: 'That approval signature did not match this device\'s approval key. Nothing was changed.' }); return; } // 409, not 401: 401 means the device's own request signature was refused
+    // E2E-PAIRING: EXEMPT — a status-code change on an existing route, pinned by the 3a unit test; the end-to-end flow needs an owner chat and is driven on a throwaway with the stand-in owner chat (identity card wc_491e135547ea8388).
     const why = await conditions(svc, deviceId);
     if (why) { live = null; refuse(res, why); return; }
     // The record must not have moved since the entry was built: it lands on the single head it names.

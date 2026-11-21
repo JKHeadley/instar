@@ -105,7 +105,7 @@ describe('the first approver on a lone agent (§3)', () => {
     const conf = await post(c.app, p, '/mobile/approver/first/confirm', { code: codeIn(c.dms.at(-1)!.text) });
     const changed = { ...conf.body.entry, body: { ...conf.body.entry.body, label: 'Evil' } };
     expect((await post(c.app, p, '/mobile/approver/first/sign', { entry: changed, sig: p.presence.sign(conf.body.sign) })).body.error).toBe('entry-changed');
-    expect((await post(c.app, p, '/mobile/approver/first/sign', { entry: conf.body.entry, sig: makeDevice().sign(conf.body.sign) })).status).toBe(401);
+    expect((await post(c.app, p, '/mobile/approver/first/sign', { entry: conf.body.entry, sig: makeDevice().sign(conf.body.sign) })).status).toBe(409); // a bad approval signature is not a refused device signature
     expect((await post(c.app, p, '/mobile/approver/first/sign', { entry: conf.body.entry, sig: p.presence.sign(conf.body.sign) })).status).toBe(200);
     const q = c.pair();
     expect((await claim(c.app, q)).body).toMatchObject({ eligible: false, reason: 'approver-exists' });

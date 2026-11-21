@@ -234,7 +234,7 @@ export function mountApproverGrantRoutes(router: Router, svc: MobilePairingServi
     const live = liveOwnerKeys(svc);
     if (live.length <= 1 && live.some((k) => k.keyId === keyId)) { revokeDrafts.delete(keyId); res.status(409).json({ error: 'last-approver', detail: 'This is the only device that can approve changes. Add another one first.' }); return; }
     const r = env.store.ingest([{ ...draft.entry, sig: body.sig } as OwnerRecordEntry]);
-    if (!r.added.includes(draft.id)) { res.status(401).json({ error: 'presence-invalid', detail: 'The ownership record did not accept that signature.' }); return; }
+    if (!r.added.includes(draft.id)) { res.status(409).json({ error: 'presence-invalid', detail: 'The ownership record did not accept that signature.' }); return; }
     if (target) retireApprovalKey(svc.deps.stateDir, target.publicKey); // every machine also stops honouring it at its next check-in
     revokeDrafts.delete(keyId);
     // The device holding that key on this machine is removed too; other machines drop it through the record.
