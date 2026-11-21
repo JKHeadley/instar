@@ -18650,6 +18650,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   ctx.recommendedServicesRecheck = (service) => recommendedHandle.requestRecheck(service);
   // Real-problem source `voice-unreadable` (recommended-services.md, rollout step 4): records nothing while re-offers are off.
   registerVoiceUnreadableListener((evidenceRef) => recommendedHandle.recordProblem('voice-unreadable', evidenceRef));
+  // Real-problem source `address-repeatedly-down`: each outage the tunnel's own self-heal gave up on.
+  ctx.tunnel?.on('lifecycle', (e: { from: string; to: string }) => { if (e.to === 'exhausted' && e.from !== 'exhausted') recommendedHandle.recordAddressOutage(); });
   // docs/specs/backup-email-sending.md: a one-off whose email did not go reaches the session's own topic.
   ctx.emailTopicSend = async (topicId, text) => {
     if (!ctx.telegram) throw new Error('no Telegram');
