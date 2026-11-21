@@ -57,6 +57,8 @@ import {
 } from './mobileBrowserDevices.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { ownMachineId } from '../core/localOwnerTicket.js';
 import type { RouteContext } from './routes.js';
 import { MobileOwnNames, normalizeRequestHost, type TailscaleExec } from '../core/MobileOwnNames.js';
 import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
@@ -226,6 +228,56 @@ async function fetchPoolDevices(ctx: PoolCtx): Promise<{ rows: Array<Record<stri
   return { rows, failed };
 }
 
+/**
+ * Owner phones paired on the agent's OTHER machines, for the "first phone only" rule of home pairing
+ * (security review of home pairing, 2026-11-21). Device records stay on the machine that paired them,
+ * so this machine's own registry cannot answer alone. Every active machine in the registry is asked
+ * live; any one that has no address, is refused by the address guard, does not answer, or answers
+ * something unreadable is named in `unchecked`, and the caller refuses: a first phone is never set up
+ * when the agent cannot tell whether it already has one. A peer row counts unless it is plainly not an
+ * owner phone (a browser, a team or MSP person's phone, or the app enrolled on that machine's own
+ * computer); a peer too old to say so counts, so an old peer fails closed.
+ */
+export async function ownerPhonesOnOtherMachines(ctx: PoolCtx | null, stateDir: string, selfMachineId: string | null): Promise<{ count: number; unchecked: string[] }> {
+  const unchecked: string[] = [];
+  let count = 0;
+  let active: string[];
+  try {
+    active = new MachineIdentityManager(stateDir).getActiveMachines().map((m) => m.machineId).filter((id) => id !== selfMachineId);
+  } catch { // @silent-fallback-ok — not silent: an unreadable machine registry refuses the setup through `unchecked`
+    return { count: 0, unchecked: ['machine-registry-unreadable'] };
+  }
+  if (active.length === 0) return { count: 0, unchecked };
+  if (!selfMachineId) return { count: 0, unchecked: ['this-machine-id-unknown'] };
+  const peers = ctx?.resolvePeerUrls?.() ?? [];
+  const allow = (ctx?.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+  await Promise.all(active.slice(0, 16).map(async (machineId) => {
+    const p = peers.find((x) => x.machineId === machineId);
+    if (!ctx || !p || !isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { unchecked.push(machineId); return; }
+    try {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/mobile/devices', {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+      });
+      if (!r.ok) { unchecked.push(machineId); return; }
+      const text = await r.text();
+      if (Buffer.byteLength(text) > MAX_PEER_BYTES) { unchecked.push(machineId); return; }
+      const body = JSON.parse(text) as { devices?: unknown };
+      if (!Array.isArray(body.devices)) { unchecked.push(machineId); return; }
+      for (const raw of body.devices) {
+        if (!raw || typeof raw !== 'object') continue;
+        const d = raw as Record<string, unknown>;
+        if (d.status !== 'active' || d.client === 'browser' || d.localInstall === true) continue;
+        if (d.role === 'team' || d.role === 'msp') continue;
+        count += 1;
+      }
+    } catch { // @silent-fallback-ok — not silent: the machine is named in `unchecked` and the setup is refused
+      unchecked.push(machineId);
+    }
+  }));
+  if (active.length > 16) unchecked.push(...active.slice(16));
+  return { count, unchecked };
+}
+
 export function isMobilePairingEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.enabled, config);
 }
@@ -338,6 +390,10 @@ export class MobilePairingService {
   push: MobilePushService | null = null;
   /** Peer resolution for the push fan-out, set once the route context exists. */
   pushPoolCtx: PoolCtx | null = null;
+  /** Owner phones on the agent's other machines, asked live (see ownerPhonesOnOtherMachines). */
+  ownerPhonesElsewhere(): Promise<{ count: number; unchecked: string[] }> {
+    return ownerPhonesOnOtherMachines(this.pushPoolCtx, this.deps.stateDir, this.deps.selfMachineId ?? ownMachineId(this.deps.stateDir));
+  }
   /** Browser devices (dashboard-conversations-browser-device): activation, effects, recovery. */
   readonly browser: BrowserDeviceController;
   /** Pairing outcome watches (docs/specs/mobile-pairing-outcome-notice.md); null when not wired. */
@@ -1293,7 +1349,13 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     if ((sameNetworkArrival && !atComputer) || (atComputer && atComputer.state !== 'waiting-phone')) {
       // A link made at the computer is spent the moment its first phone redeems it; a second phone
       // waits for nothing (A4: "Someone photographs the QR code and scans it first").
-      if (atComputer) svc.noteLinkReused(body.code, publicKey);
+      if (atComputer) {
+        svc.noteLinkReused(body.code, publicKey);
+        // Security review of home pairing (2026-11-21): a second phone means the code got out, so the
+        // whole setup ends and the phone already waiting is turned away; the computer says why.
+        // A retry from the waiting phone itself (same key, its first reply lost) is refused but ends nothing.
+        if (atComputer.keyHash !== keyHashOf(publicKey) && svc.phoneSetups.secondPhone(atComputer.id)) featureEvidence.record('mobilePairing', { kind: 'held', reason: 'a second phone used a setup code: setup cancelled, waiting phone turned away' });
+      }
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|setup-link-used', 60_000, { kind: 'held', reason: 'redeem refused: a link made at the computer was already used' });
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
@@ -2413,6 +2475,8 @@ function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobileP
     ...(isBrowserDevice(d) ? { client: 'browser', lastSeenAt: d.lastSeenAt ?? null, ...(svc && !svc.browserOn() ? { switchedOff: true } : {}) } : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),
+    // The app enrolled on that machine's own computer: not an owner phone for another machine's first-phone rule.
+    ...(d.localBinding ? { localInstall: true } : {}),
     machine,
   };
 }
