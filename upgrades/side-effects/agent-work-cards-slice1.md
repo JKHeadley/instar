@@ -157,3 +157,7 @@ CI's Docs Coverage check failed on the PR's merge commit with `job 83% < 85%`: m
 ## Follow-up: card read with a runtime that has no notes
 
 GitHub's unit shard found that `GET /work-board/cards/:id` answered 500 when the Work Board runtime surface had no `lastNote` method (`tests/e2e/project-apps-custom-alive.test.ts`, which uses a partial runtime). The route wiring now uses an optional call, so such a read reports no last note. This changes no decision point: it only stops a display field from failing the whole card read. Verified with that end-to-end file and the three integration files whose fixtures use the same partial surface; no full lane ran, under the Chief of Staff's targeted-tests rule for the Studio.
+
+## Follow-up commit (docs wording aligned with main, 2026-11-21)
+
+Main now carries the outage fix's documentation for the `gemini-payg-reconcile` default job. This branch's own wording of the same two entries would have conflicted, so the routing-spend page and the default-jobs table are restored to main's exact text. Documentation only; no runtime change.

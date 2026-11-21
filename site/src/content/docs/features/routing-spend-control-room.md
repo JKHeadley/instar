@@ -167,6 +167,12 @@ Gemini report authoritative per-call TOKEN counts but no cheap per-call USD.
   feeds the PIN price-promotion path.
 - `GET /routing-spend/reconciliation` — the drift-record read surface; the spend summary rows
   carry `costBasis: "provider-reported"` and `providerReportedUsd` where reports exist.
+- **`gemini-payg-reconcile`** (default job, ships `enabled: false`) — the monthly invoice check
+  for the Gemini pay-per-use lane: on the 2nd of each month it reads last month's spend for the
+  lane's dedicated Google project from the billing page (read-only, through the signed-in browser
+  profile) and posts it to `POST /routing-spend/reconciliation` as a `browser-read` record, or
+  `unmeasurable` when the page cannot be read. Reporting only; it never moves a cap or the gate.
+  See the [default jobs reference](/reference/default-jobs/).
 
 ## Keeping prices current (the two refresh jobs)
 
@@ -176,10 +182,6 @@ web-research check that reads the OFFICIAL Groq and Google pricing pages with co
 parsers and a >10x plausibility clamp). Both write forward-only observations into the machine-local
 observed cache only; promoting an observed price into the reviewed canonical manifest is always the
 operator's PIN action.
-
-### The Gemini pay-per-use invoice check
-
-The Gemini pay-per-use metered lane has its own monthly cross-check, the `gemini-payg-reconcile` job (the 2nd of each month at 9am, with one re-read at 3pm, on the spending machine's Pacific clock). It reads last month's spend for the lane's dedicated Google project from the AI Studio / Cloud billing page, read-only through the lane's signed-in browser profile, and compares it with the lane's own money ledger. It reports a drift; it never spends and never changes a setting. It ships off until the lane is live on an agent.
 
 ## Amortized subscription costs (with the math shown)
 
