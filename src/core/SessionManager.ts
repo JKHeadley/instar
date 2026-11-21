@@ -4714,6 +4714,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
      */
     omitAuthEnv?: boolean;
     /**
+     * The Instar session id (INSTAR_SESSION_ID) to launch under, chosen by the caller so it can
+     * write state keyed by that id BEFORE the session's first tool call (context-budget §9.3: the
+     * fold coordinator supplies the shadow answerer's id so its fold marker exists first). Must be
+     * a safe id and must not belong to a running session. Absent → generated, as always.
+     */
+    instarSessionId?: string;
+    /**
+     * A memory-session bearer (`mps_…`, MemoryPrivacy) to hand the session as INSTAR_AUTH_TOKEN in
+     * place of the agent's own token. Requires `omitAuthEnv` (the session carries this narrow token
+     * and nothing else), and is set after the credential blanking so it is not blanked again. The
+     * server's memory-session guard decides what the token reaches. Used by the context budget's
+     * shadow answerer (§10), whose token reaches only its own topic's chunk lookups.
+     */
+    memorySessionToken?: string;
+    /**
      * A framework confinement adapter. `claude-code` is the only framework with one: the policy is a
      * `--settings` file (OS sandbox for Bash and children + permission rules), loaded with
      * `--setting-sources local` so no user or project hooks run, and no MCP servers. Any other
@@ -4776,7 +4791,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
-    const sessionId = this.generateId();
+    if (options.memorySessionToken !== undefined) {
+      if (!options.omitAuthEnv) throw new Error('memory-session-token-requires-omit-auth-env');
+      if (!/^mps_[A-Za-z0-9_-]{16,256}$/.test(options.memorySessionToken)) throw new Error('memory-session-token-invalid');
+    }
+    if (options.instarSessionId !== undefined) {
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(options.instarSessionId)) throw new Error('instar-session-id-invalid');
+      if (this.listRunningSessions().some((s) => s.id === options.instarSessionId)) throw new Error('instar-session-id-in-use');
+    }
+    const sessionId = options.instarSessionId ?? this.generateId();
     // Name by the session's own role (its job or topic), so a relaunch of the same job or
     // topic keeps its tmux name instead of being read as a different role (messages-reach-renamed-sessions §E).
     const tmuxSession = this.plannedTmuxSessionName(options.name, {
@@ -5234,6 +5257,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
         ...omitAuthEnvFlags,
+        // After the blanking: the narrow memory-session token is the session's only credential.
+        ...(options.memorySessionToken ? ['-e', `INSTAR_AUTH_TOKEN=${options.memorySessionToken}`] : []),
         ...headlessSpec.argv,
       ]), { encoding: 'utf-8' }));
 
@@ -5712,6 +5737,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
         ...confinedEnvFlags,
+        // After the blanking, as on the headless lane: the memory-session token is the only credential.
+        ...(options.memorySessionToken ? ['-e', `INSTAR_AUTH_TOKEN=${options.memorySessionToken}`] : []),
         ...launchSpec.argv,
       ]), { encoding: 'utf-8' }));
 

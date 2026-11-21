@@ -309,6 +309,14 @@ describe('MemoryPrivacy', () => {
       expect(make().sessionForToken('mps_nope')).toBeNull();
       expect(make().sessionForToken('plain-agent-token')).toBeNull();
     });
+    it('a fold-probe token is the system audience on the synthetic fold-probe place, and revokes', () => {
+      const token = make().issueFoldProbeToken('inst_probe', '141133');
+      expect(make().sessionForToken(token)).toMatchObject({ sessionId: 'inst_probe', audience: { kind: 'system' }, placeKey: 'fold-probe:141133' });
+      expect(() => make().issueFoldProbeToken('inst_probe', 'slack:D2')).toThrow(/topic id/);
+      const p = make();
+      p.revokeSessionTokens('inst_probe');
+      expect(p.sessionForToken(token)).toBeNull();
+    });
   });
 
   describe('scope folders', () => {

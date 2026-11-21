@@ -68,6 +68,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
   },
   {
+    name: 'contextBudgetFoldShadow',
+    configPath: 'contextBudget.fold.shadow',
+    description: 'Context budget shadow folding (docs/specs/context-budget-layered-summaries.md §16 Phase 2): at sampled clean stops a live session writes a handoff, a packet is staged and verified, and a throwaway answerer is probed and graded; nothing is replaced; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Live effect is bounded and owned (spec decision 13): a sampled handoff turn in the live session (at most 2 asks per topic per hour, 1 in 3 clean stops), a fold hold and inbound hold for that turn\'s bound only, and one throwaway credential-free answerer per sampled fold; the live context is never replaced (contextBudget.fold.enabled stays off). shadow:false stops new shadow folds at the next check; open records are swept to aborted at boot.',
+  },
+  {
     name: 'chiefOfStaff',
     configPath: 'chiefOfStaff.enabled',
     description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
@@ -1038,6 +1044,11 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'multiMachine.takeoverReadyPool.bootClaimSafety.enabled',
     description: 'takeover-ready-pool R1 (fb-2bf6ccd0-705): from process start until the boot hold ends, a restarted machine asks its peers before re-taking its own lapsed lease (even with a preferred machine named), never claims while the named preferred machine answers, and claims only after the preferred machine (every known peer when none is named) has been silent on 3 probes spanning 45 s; each decision is logged "boot-hold: <rule> <verdict>". takeoverReadyPool.enabled:false is the rollback.',
     justification: 'It only withholds a claim the normal rules would already allow, and only for a bounded time: a dead peer releases it after 3 silent probes over 45 s, and a wedged peer answering errors releases it after the unsigned-answer window (45 s + 3 min, capped at 10 min). It never takes a lease the normal rules would refuse, adds no new authority, sends nothing, and a single machine with no peers is unchanged. Off (explicit false, or takeoverReadyPool.enabled:false) is byte-for-byte today\'s acquisition.',
+  },  {
+    name: 'takeoverReadyPoolPlannedRestartLeaseContinuity',
+    configPath: 'multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.enabled',
+    description: 'planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending (the request file exists or an in-process writer announced one), the lease holder\'s renewals carry a bounded window (measured from its own boots; 233 s unmeasured on Echo, capped under the stale-holder and presumed-dead thresholds peers enforce) instead of the TTL, run every 10 s on a tunnel transport, and are persisted beside the lease; at boot such a window lease is held only after an identity-verified peer answer with no newer epoch, with the self-fence left "never confirmed" until then. takeoverReadyPool.enabled:false is the rollback.',
+    justification: 'It extends only a lease this machine already holds, by a renewal peers already verify and fold, for a bounded time no longer than the thresholds after which a peer would take over a silent holder; a machine that dies mid-restart holds the pool for at most that window. At boot it only withholds a hold today\'s code would grant from a local file, until a peer confirms, and a dark pool resolves on boot claim safety\'s own silence evidence. It adds no new authority, sends nothing new on the wire, and a single machine with no peers is unchanged. Off (explicit false, or takeoverReadyPool.enabled:false) is byte-for-byte today\'s renewal; the boot side keeps its rule only while a window lease is on disk.',
   },
 ];
 

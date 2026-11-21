@@ -24740,6 +24740,9 @@ var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var TERMINAL = ['committed', 'rolled-back', 'aborted'];
 // Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
 var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// Exact lookup paths (§7.6, §10): a topic's chunk list and one chunk. A pattern,
+// not a prefix, so the topic's other routes (user-corpus, anchor…) stay denied.
+var LOOKUP_PATHS = [/^\/topic\/-?\d{1,15}\/chunks$/, /^\/topic\/-?\d{1,15}\/chunks\/[A-Za-z0-9_.-]{1,128}$/];
 // The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
 // literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
 // backslash or quote (the character classes below exclude them).
@@ -24758,6 +24761,7 @@ function isLookupCommand(cmd, port) {
     var pre = LOOKUP_PREFIXES[i];
     if (p === pre || p.indexOf(pre + '/') === 0) return true;
   }
+  for (var j = 0; j < LOOKUP_PATHS.length; j++) if (LOOKUP_PATHS[j].test(p)) return true;
   return false;
 }
 
@@ -24773,7 +24777,7 @@ function deny(reason) {
 }
 
 if (typeof module !== 'undefined' && module.exports && require.main !== module) {
-  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES, LOOKUP_PATHS: LOOKUP_PATHS };
 } else {
   var iid = process.env.INSTAR_SESSION_ID || '';
   // No Instar session id: outside this hook's reach. Exit before reading stdin.
@@ -26951,13 +26955,22 @@ if (!reviewEnabled) {
     // green-pr-automerge Layer 2 (MODE-INDEPENDENT — the UnjustifiedStopGate mode
     // ships 'off', so this must act on the hot-path field BEFORE the mode gate,
     // exactly like the stated-continuation guard above). One-shot per session+PR
-    // via a tmp marker so the agent is never trapped. NO runnable merge command.
+    // via a marker under .instar/state/stop-gate-markers so the agent is never trapped. NO runnable merge command.
     if (hot && hot.greenPrBlock && hot.greenPrBlock.pr && !hot.killSwitch && !hot.compactionInFlight) {
       try {
-        const os = await import('node:os');
-        const marker = path.join(os.tmpdir(), 'instar-greenpr-block-' + encodeURIComponent(sessionId) + '-' + hot.greenPrBlock.pr);
-        if (!fs.existsSync(marker)) {
-          try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+        // SEC-131: the one-shot marker lives in the agent's own state dir (never the shared
+        // temp dir, where another local user could pre-plant the name or a symlink), and is
+        // created exclusively ('wx', 0600): an existing file or link counts as already fired
+        // and is never written through.
+        const markerDir = path.join(projectDir, '.instar', 'state', 'stop-gate-markers');
+        const marker = path.join(markerDir, 'greenpr-block-' + encodeURIComponent(sessionId) + '-' + encodeURIComponent(String(hot.greenPrBlock.pr)));
+        let firstTime = false;
+        try {
+          fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 });
+          fs.closeSync(fs.openSync(marker, 'wx', 0o600));
+          firstTime = true;
+        } catch {}
+        if (firstTime) {
           process.stdout.write(JSON.stringify({ decision: 'block', reason: 'STOP-GATE (green-pr): ' + String(hot.greenPrBlock.message) }));
           process.exit(2);
           return;

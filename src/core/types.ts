@@ -1266,6 +1266,12 @@ export interface IntelligenceOptions {
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
   requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  /**
+   * Keep this call on one provider family: no category or nature routing and no
+   * failure swap. If that framework is unavailable the call throws; it never moves
+   * to another vendor (context-budget §9: conversation content stays on its family).
+   */
+  pinnedFramework?: IntelligenceFramework;
   /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
   launchGuard?: () => boolean;
   /** Maximum tokens for the response */
@@ -3099,6 +3105,18 @@ export interface MultiMachineConfig {
   takeoverReadyPool?: {
     enabled?: boolean;
     /**
+     * stall-wake-lease-reconfirm (fb-fdb55c1c-a79): after a gap in this machine's awake clock
+     * (a long main-thread stall or a sleep, above 30% of the lease TTL by default), a claim on a
+     * lapsed-looking lease waits for evidence gathered after the gap: a full TTL awake with a pull
+     * round started after the gap and completed, or the ten-TTL chain cap. Dark: only an explicit
+     * `enabled: true` turns it on; `takeoverReadyPool.enabled: false` turns it off.
+     */
+    stallReconfirm?: {
+      enabled?: boolean;
+      /** Running time lost within one TTL that opens an episode, in ms (clamped to 1000..TTL/2). Default 30% of the lease TTL, floor 5 s. */
+      stallGapMs?: number;
+    };
+    /**
      * R1 boot claim safety (fb-2bf6ccd0-705): a restarted machine never claims from its own
      * lapsed lease before asking its peers, never claims while the named preferred machine
      * answers, and claims only after the preferred machine (every known peer when none is
@@ -3110,6 +3128,17 @@ export interface MultiMachineConfig {
       silentProbes?: number;
       /** Default 45000. */
       silentSpanMs?: number;
+    };
+    /**
+     * planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending, a
+     * holder's renewals carry a bounded window as their expiry and are persisted, so the lead
+     * survives its own boot; at boot a window lease is held only after a peer confirms. Rides the
+     * development-agent gate; `takeoverReadyPool.enabled: false` is the rollback.
+     */
+    plannedRestartLeaseContinuity?: {
+      enabled?: boolean;
+      /** Replaces the measured base of the window (still under the peer-enforced caps). */
+      windowMs?: number;
     };
   };
   /**
@@ -5102,6 +5131,8 @@ export interface InstarConfig {
      * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
      */
     waitingAskLinks?: { enabled?: boolean };
+    /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
+    siblingReach?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement

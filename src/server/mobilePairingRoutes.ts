@@ -57,6 +57,8 @@ import {
 } from './mobileBrowserDevices.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { ownMachineId } from '../core/localOwnerTicket.js';
 import type { RouteContext } from './routes.js';
 import { MobileOwnNames, normalizeRequestHost, type TailscaleExec } from '../core/MobileOwnNames.js';
 import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
@@ -226,6 +228,56 @@ async function fetchPoolDevices(ctx: PoolCtx): Promise<{ rows: Array<Record<stri
   return { rows, failed };
 }
 
+/**
+ * Owner phones paired on the agent's OTHER machines, for the "first phone only" rule of home pairing
+ * (security review of home pairing, 2026-11-21). Device records stay on the machine that paired them,
+ * so this machine's own registry cannot answer alone. Every active machine in the registry is asked
+ * live; any one that has no address, is refused by the address guard, does not answer, or answers
+ * something unreadable is named in `unchecked`, and the caller refuses: a first phone is never set up
+ * when the agent cannot tell whether it already has one. A peer row counts unless it is plainly not an
+ * owner phone (a browser, a team or MSP person's phone, or the app enrolled on that machine's own
+ * computer); a peer too old to say so counts, so an old peer fails closed.
+ */
+export async function ownerPhonesOnOtherMachines(ctx: PoolCtx | null, stateDir: string, selfMachineId: string | null): Promise<{ count: number; unchecked: string[] }> {
+  const unchecked: string[] = [];
+  let count = 0;
+  let active: string[];
+  try {
+    active = new MachineIdentityManager(stateDir).getActiveMachines().map((m) => m.machineId).filter((id) => id !== selfMachineId);
+  } catch { // @silent-fallback-ok — not silent: an unreadable machine registry refuses the setup through `unchecked`
+    return { count: 0, unchecked: ['machine-registry-unreadable'] };
+  }
+  if (active.length === 0) return { count: 0, unchecked };
+  if (!selfMachineId) return { count: 0, unchecked: ['this-machine-id-unknown'] };
+  const peers = ctx?.resolvePeerUrls?.() ?? [];
+  const allow = (ctx?.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+  await Promise.all(active.slice(0, 16).map(async (machineId) => {
+    const p = peers.find((x) => x.machineId === machineId);
+    if (!ctx || !p || !isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { unchecked.push(machineId); return; }
+    try {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/mobile/devices', {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+      });
+      if (!r.ok) { unchecked.push(machineId); return; }
+      const text = await r.text();
+      if (Buffer.byteLength(text) > MAX_PEER_BYTES) { unchecked.push(machineId); return; }
+      const body = JSON.parse(text) as { devices?: unknown };
+      if (!Array.isArray(body.devices)) { unchecked.push(machineId); return; }
+      for (const raw of body.devices) {
+        if (!raw || typeof raw !== 'object') continue;
+        const d = raw as Record<string, unknown>;
+        if (d.status !== 'active' || d.client === 'browser' || d.localInstall === true) continue;
+        if (d.role === 'team' || d.role === 'msp') continue;
+        count += 1;
+      }
+    } catch { // @silent-fallback-ok — not silent: the machine is named in `unchecked` and the setup is refused
+      unchecked.push(machineId);
+    }
+  }));
+  if (active.length > 16) unchecked.push(...active.slice(16));
+  return { count, unchecked };
+}
+
 export function isMobilePairingEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.enabled, config);
 }
@@ -338,6 +390,10 @@ export class MobilePairingService {
   push: MobilePushService | null = null;
   /** Peer resolution for the push fan-out, set once the route context exists. */
   pushPoolCtx: PoolCtx | null = null;
+  /** Owner phones on the agent's other machines, asked live (see ownerPhonesOnOtherMachines). */
+  ownerPhonesElsewhere(): Promise<{ count: number; unchecked: string[] }> {
+    return ownerPhonesOnOtherMachines(this.pushPoolCtx, this.deps.stateDir, this.deps.selfMachineId ?? ownMachineId(this.deps.stateDir));
+  }
   /** Browser devices (dashboard-conversations-browser-device): activation, effects, recovery. */
   readonly browser: BrowserDeviceController;
   /** Pairing outcome watches (docs/specs/mobile-pairing-outcome-notice.md); null when not wired. */
@@ -1293,7 +1349,13 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     if ((sameNetworkArrival && !atComputer) || (atComputer && atComputer.state !== 'waiting-phone')) {
       // A link made at the computer is spent the moment its first phone redeems it; a second phone
       // waits for nothing (A4: "Someone photographs the QR code and scans it first").
-      if (atComputer) svc.noteLinkReused(body.code, publicKey);
+      if (atComputer) {
+        svc.noteLinkReused(body.code, publicKey);
+        // Security review of home pairing (2026-11-21): a second phone means the code got out, so the
+        // whole setup ends and the phone already waiting is turned away; the computer says why.
+        // A retry from the waiting phone itself (same key, its first reply lost) is refused but ends nothing.
+        if (atComputer.keyHash !== keyHashOf(publicKey) && svc.phoneSetups.secondPhone(atComputer.id)) featureEvidence.record('mobilePairing', { kind: 'held', reason: 'a second phone used a setup code: setup cancelled, waiting phone turned away' });
+      }
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|setup-link-used', 60_000, { kind: 'held', reason: 'redeem refused: a link made at the computer was already used' });
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
@@ -2413,6 +2475,8 @@ function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobileP
     ...(isBrowserDevice(d) ? { client: 'browser', lastSeenAt: d.lastSeenAt ?? null, ...(svc && !svc.browserOn() ? { switchedOff: true } : {}) } : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),
+    // The app enrolled on that machine's own computer: not an owner phone for another machine's first-phone rule.
+    ...(d.localBinding ? { localInstall: true } : {}),
     machine,
   };
 }
@@ -2625,6 +2689,14 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/conversation-graph\/forget-header\/(discover|ensure)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/erasures\/[A-Za-z0-9_-]{8,160}$/, statuses: active, ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'POST', re: /^\/mobile\/conversation-graph\/(changes|preview|undo|forget-header)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    // Conversation groups from the phone (docs/specs/conversation-groups-phone.md): suggestions, one-call Accept,
+    // Reject, and the "make this group a project" draft. Owner phones only; the graph routes re-check the owner.
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/suggestions$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/suggestions\/refresh$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    // Accept is called again while it answers `working` (retryAfterMs 3000): its own bucket, so that never starves other graph changes.
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/suggestions\/sg-[0-9a-f]{20}\/accept$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-accept' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/suggestions\/sg-[0-9a-f]{20}\/reject$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}\/project-draft$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'POST', re: /^\/mobile\/conversation-graph\/changes\/(?:(graph-event|header-op)(:|%3a)[a-z0-9_-]{8,80}|queued(:|%3a)owner-change(:|%3a)[a-f0-9]{64})\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/health$/, statuses: active },
     { method: 'GET', re: /^\/attention$/, statuses: active },
@@ -2706,6 +2778,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/team\/activity$/, statuses: active, body: 'none', ownerOnly: true },
     // Chief of Staff §4: the owner's phone checks in (renews the operator lease); owner phones only.
     { method: 'POST', re: /^\/mobile\/chief-of-staff\/check-in$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    // "Make this group a project": the owner's Face ID confirm of one draft (conversation-groups-phone §3).
+    { method: 'POST', re: /^\/mobile\/work\/projects\/drafts\/gpd-[0-9a-f]{20}\/confirm$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'GET', re: /^\/mobile\/team\/requests$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/team\/requests\/[^/]{1,128}\/decline$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'GET', re: /^\/mobile\/team\/invites\/[^/]{1,128}$/, statuses: active, body: 'none', ownerOnly: true },
@@ -2817,6 +2891,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/work\/projects\/check$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'projects-checks' },
     { method: 'POST', re: /^\/mobile\/work\/projects\/(pause|done-item|finish)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
+    // Work cards from the owner's phone (docs/specs/phone-work-cards.md): one card (the board read's bucket), and
+    // "Make a card" from a message (Face ID over `work-card-create`, the taps' bucket). Not in TEAM_ROUTE_TIERS: owner only.
+    { method: 'GET', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
+    { method: 'POST', re: /^\/mobile\/work-board\/cards$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
     { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },

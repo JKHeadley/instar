@@ -871,6 +871,15 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
 export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
 
 /**
+ * POST /updates/apply awaits the whole install: up to three npm install (120 s) +
+ * native rebuild (60 s) attempts with 5 s and 15 s pauses, candidate validation,
+ * and the post-update migration. Under the 30 s default the middleware answered
+ * 408 while the handler kept going, and the handler's real answer was then a
+ * "Suppressed duplicate response send" (Echo Studio, 2026-11-21).
+ */
+export const UPDATE_APPLY_TIMEOUT_MS = 15 * 60_000;
+
+/**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
  * server actually wires — never a hand-rolled copy that could pass while the
@@ -907,6 +916,7 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
     '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/updates/apply': UPDATE_APPLY_TIMEOUT_MS,
     '/topic/import': TOPIC_IMPORT_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "cb-p2-benefit",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T21:47:04.241Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-benefit.md",
+  "artifactSha256": "75a2a17839425cd5558d44a8c88dbc6f94c833f599ab7384600e6ccc5d37269d",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/foldBenefit.ts",
+    "tests/unit/fold-benefit.test.ts",
+    "upgrades/next/cb-p2-benefit.md",
+    "upgrades/side-effects/cb-p2-benefit.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice; pure arithmetic, no call site.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

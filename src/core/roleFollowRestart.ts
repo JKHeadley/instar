@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { announceRestartRequested, announceRestartWithdrawn } from './restartRequestSignal.js';
 
 export const ROLE_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
 
@@ -32,6 +33,8 @@ export interface RoleRestartFiles {
   now?: () => number;
   leaseEpoch?: number;
   machineId?: string;
+  /** Re-checked after the lease wait, before the request is written: false means the role moved back and nothing is written. */
+  stillNeeded?: () => boolean;
 }
 
 function stampPath(stateDir: string): string {
@@ -87,16 +90,22 @@ export function readLastRoleRestart(stateDir: string): number | null {
  * fails, the worst case is one more restart, and after any restart the role matches boot, so
  * that cannot loop. The other order could record a restart that was never asked for.
  */
-export function requestRoleRestart(files: RoleRestartFiles, toAwake: boolean): void {
+export async function requestRoleRestart(files: RoleRestartFiles, toAwake: boolean): Promise<void> {
   const now = (files.now ?? Date.now)();
+  const requestedAt = new Date(now).toISOString();
+  const reason = toAwake ? 'this machine took the lease' : 'this machine gave up the lease';
+  // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+  // BEFORE the request is visible to either consumer. Resolves at once when nothing is signed.
+  await announceRestartRequested({ requestedBy: 'role-change', reason, requestedAt });
+  if (files.stillNeeded && !files.stillNeeded()) return; // the role moved back while the lease was secured
   const dir = path.join(files.stateDir, 'state');
   fs.mkdirSync(dir, { recursive: true });
   const flag = path.join(dir, 'restart-requested.json');
   const tmp = `${flag}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify({
-    requestedAt: new Date(now).toISOString(),
+    requestedAt,
     requestedBy: 'role-change',
-    reason: toAwake ? 'this machine took the lease' : 'this machine gave up the lease',
+    reason,
     plannedRestart: true,
     expiresAt: new Date(now + 60 * 60_000).toISOString(),
     pid: process.pid,
@@ -126,5 +135,6 @@ export function withdrawRoleRestart(files: Pick<RoleRestartFiles, 'stateDir'>, p
   }
   if (row.requestedBy !== 'role-change' || row.pid !== pid) return false;
   SafeFsExecutor.safeUnlinkSync(flag, { operation: 'src/core/roleFollowRestart.ts:withdrawRoleRestart' });
+  announceRestartWithdrawn(); // the pending-restart renewal returns to the TTL at once
   return true;
 }

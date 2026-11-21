@@ -95,3 +95,42 @@ describe('phone setup store', () => {
     expect(q.get('n')).toBe('Wintest');
   });
 });
+
+describe('PhoneSetupStore.secondPhone (security review of home pairing, 2026-11-21)', () => {
+  const dev = { id: 'dev-1', deviceName: 'Phone', fingerprint: 'AB:CD' };
+  const mk = (approval: 'computer' | 'telegram' = 'computer') => {
+    const st = new PhoneSetupStore(() => 1_000);
+    const seen: string[] = [];
+    st.onSecondPhone = (s) => { seen.push(s.id); };
+    const s = st.create({ code: 'code-1', address: 'home', host: 'h.local:1', kind: 'same-network', spkiHash: 'k', approval });
+    return { st, s, seen };
+  };
+  it('ends a setup waiting for its number, and one whose number was typed, and tells the routes', () => {
+    const a = mk();
+    const n = a.st.attachPhone(a.s.id, dev, 'kh')!;
+    expect(a.st.secondPhone(a.s.id)).toBe(true);
+    expect(a.st.get(a.s.id)!.state).toBe('ended');
+    expect(a.st.get(a.s.id)!.endedReason).toBe('second-phone');
+    expect(a.st.get(a.s.id)!.number).toBeUndefined();
+    expect(a.seen).toEqual([a.s.id]);
+    expect(a.st.activation('dev-1')).toEqual({ result: 'ended', reason: 'second-phone' });
+    const b = mk();
+    const nb = b.st.attachPhone(b.s.id, dev, 'kh')!;
+    expect(b.st.typeNumber(b.s.id, nb)).toBe('ok');
+    expect(b.st.secondPhone(b.s.id)).toBe(true);
+    expect(b.st.activation('dev-1').result).toBe('ended');
+    void n;
+  });
+  it('leaves alone a setup with no phone yet, a finished one, an ended one, and a Telegram one', () => {
+    const a = mk();
+    expect(a.st.secondPhone(a.s.id)).toBe(false);
+    a.st.attachPhone(a.s.id, dev, 'kh'); a.st.finish(a.s.id);
+    expect(a.st.secondPhone(a.s.id)).toBe(false);
+    expect(a.st.get(a.s.id)!.state).toBe('done');
+    const t = mk('telegram');
+    t.st.sentToChat(t.s.id, 'dev-1');
+    expect(t.st.secondPhone(t.s.id)).toBe(false);
+    expect(t.seen).toEqual([]);
+    expect(a.st.secondPhone('nope')).toBe(false);
+  });
+});
