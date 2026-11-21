@@ -2341,6 +2341,9 @@ export interface RouteContext {
   autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
   /** Working-set acquire kick for an explicit transfer target. */
   kickWorkingSetOnMachine?: ((machineId: string, topic: number | string) => void) | null;
+  /** Unroutable-owner release (docs/specs/unroutable-owner-release.md §4): true when the
+   *  recorded owner can never be routed to. Absent ⇒ never (today's transfer behavior). */
+  isOwnerUnroutable?: ((machineId: string) => boolean) | null;
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
@@ -28539,7 +28542,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // exactly like the router's casClaimOwnership/confirmClaim pair. The
         // entry is what the target's wsOwnerOf journal-placement fallback
         // (#930) reads after replication.
-        const casAndJournal = (action: { type: 'place'; machineId: string } | { type: 'claim'; machineId: string }, half: string): boolean => {
+        const casAndJournal = (action: { type: 'place'; machineId: string } | { type: 'claim'; machineId: string } | { type: 'force-claim'; machineId: string }, half: string): boolean => {
           const r = ctx.sessionOwnershipRegistry!.cas(action, {
             sessionKey: topicId,
             sender: self,
@@ -28559,7 +28562,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           } catch { /* observability never endangers the observed */ }
           return true;
         };
-        if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
+        // Unroutable-owner release §4: an ACTIVE/transient record owned by a machine
+        // that can never answer (revoked, or unregistered + silent) cannot cooperate
+        // in a transfer and `place` is refused on a live record — so the holder
+        // force-claims it straight to the target (one CAS, journaled like every half).
+        const curOwner = cur0?.ownerMachineId;
+        let unroutableOwner = false;
+        try {
+          unroutableOwner = !!cur0 && cur0.status !== 'released' && !!curOwner && curOwner !== target && curOwner !== self && ctx.isOwnerUnroutable?.(curOwner) === true;
+        } catch { unroutableOwner = false; /* @silent-fallback-ok — unreadable standing keeps today's transfer path */ }
+        if (unroutableOwner) {
+          placedOwnership = casAndJournal({ type: 'force-claim', machineId: target }, 'tforce');
+        } else if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
           placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
           // TOPIC-PROFILE-SPEC §5.3 acquire seam (deterministic-transfer arm):
           // when THIS machine is the transfer target, the landed tclaim is an
