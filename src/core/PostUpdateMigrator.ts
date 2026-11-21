@@ -125,6 +125,7 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
   INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET_V1,
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
@@ -2953,6 +2954,31 @@ const STATE_SYNC_DEV_GATED_STORES = [
 ] as const;
 
 /**
+ * Pure half of migrateReaperHourlyCadence: moves exactly the old 24 h default
+ * `monitoring.agentWorktreeReaper.reapIntervalMs: 86400000` to 1 h, once.
+ * Returns 'already' when the run-once marker is present (nothing changed),
+ * 'moved' when the old default was replaced, 'none' otherwise (marker added). The marker is written even when nothing moved, so
+ * a later run never overrides an operator who sets 24 h on purpose.
+ */
+export function migrateConfigReaperHourlyCadence(config: Record<string, unknown>): 'already' | 'moved' | 'none' {
+  const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+  const marker = 'reaper-hourly-cadence';
+  if (migrations.some((m) => typeof m === 'string' && m.startsWith(marker))) return 'already';
+  let moved = false;
+  const mon = config.monitoring;
+  if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+    const r = (mon as Record<string, unknown>).agentWorktreeReaper;
+    if (r && typeof r === 'object' && !Array.isArray(r) && (r as Record<string, unknown>).reapIntervalMs === 86_400_000) {
+      (r as Record<string, unknown>).reapIntervalMs = 3_600_000;
+      moved = true;
+    }
+  }
+  migrations.push(`${marker}-${new Date().toISOString()}`);
+  config._instar_migrations = migrations;
+  return moved ? 'moved' : 'none';
+}
+
+/**
  * The 7 multiMachine.stateSync.* memory stores (preferences, relationships, learnings,
  * knowledge, evolutionActions, userRegistry, topicOperator) were re-gated from
  * DARK_GATE_EXCLUSIONS (off for everyone) to the developmentAgent gate (live-on-dev,
@@ -3389,6 +3415,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateBootBeaconFleetGraduation(result);
+    this.migrateReaperHourlyCadence(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
@@ -5143,6 +5170,43 @@ export class PostUpdateMigrator {
       result.upgraded.push('boot-beacon-graduation: stripped the stale dark-default `monitoring.bootHealthBeacon.enabled: false` so the boot beacon runs (it is on for every agent now; re-add `enabled: false` to keep it off — it will not be re-stripped)');
     } else {
       result.skipped.push('boot-beacon-graduation: nothing to strip (marker set)');
+    }
+  }
+
+  // ── REAPER HOURLY CADENCE (docs/specs/reaper-removal-out-of-process.md §4) ──
+  // The worktree reaper's pass interval became 1 h. applyDefaults is add-missing-
+  // only, and existing agents persisted the old default `reapIntervalMs: 86400000`,
+  // so they would keep the 24 h cadence forever. Exactly the old default value is
+  // moved, once (run-once marker): any other value is an operator choice and kept,
+  // and a later operator-set 24 h is never touched. dryRun is left alone.
+  private migrateReaperHourlyCadence(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('reaper-hourly-cadence: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const changed = migrateConfigReaperHourlyCadence(config);
+    if (changed === 'already') {
+      result.skipped.push('reaper-hourly-cadence: already migrated');
+      return;
+    }
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (changed === 'moved') {
+      result.upgraded.push('reaper-hourly-cadence: moved monitoring.agentWorktreeReaper.reapIntervalMs from the old 24 h default to 1 h (the pass is off the main thread; removal stays dry-run unless turned on)');
+    } else {
+      result.skipped.push('reaper-hourly-cadence: no old default to move (marker set)');
     }
   }
 
@@ -10166,6 +10230,14 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n\n- **Memory privacy recovery**: when \`sandboxReady\` is false, \`GET /memory-privacy\` gives \`blocker\` and \`fix\`, the real cause in plain words, and the owner also gets a private link to the solution, with a one-time repair link when one click can fix it. Owner reports "I can't reply here yet: private memory isn't set up" → read \`fix\` and tell them exactly that. Never set \`memoryPrivacy.enabled\` false to get past it unless the owner asks: that reopens the leak.`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
+    }
+
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
     }
 
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
@@ -15530,6 +15602,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
     }
+    // Spec stale-process-login-expired: the interactive bullet now describes the stored-login check.
+    // Replaced in place (before the key-health block anchors on it); a hand-edited copy is left alone.
+    if (content.includes(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1)) {
+      content = content.replace(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1, INTERACTIVE_LOGIN_EXPIRED_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: interactive expired-login bullet describes the stored-login check');
+    }
     // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
     // rerouted-job bullet when present, else appended. Idempotent via its marker.
     if (!content.includes(INTERACTIVE_LOGIN_EXPIRED_MARKER)) {
@@ -18405,6 +18484,23 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     } catch (err) {
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Machine-load assessment helper — always overwrite (CMT-1703, spec

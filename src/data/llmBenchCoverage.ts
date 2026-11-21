@@ -1088,32 +1088,34 @@ export type NatureRoutingChains = Readonly<Record<RoutingChain, ReadonlyArray<Ch
  * Echo's real doors (no `openai-api`). Metered positions are present but resolve
  * unavailable until Increment B. An operator MAY override a chain wholesale
  * (subject to the FD4 resolve-time validation — a tracked A2.2 remainder).
+ *
+ * gemini-payg FD-G4: every METERED position (gemini-api, openrouter-api,
+ * groq-api) is REMOVED, so the default chains hold only subscription doors.
+ * Those positions had no effect while no metered door could dispatch; once a
+ * pay-per-use lane is armed they would become real-money defaults. A metered
+ * door is reached only through an explicit per-component opt-in (the door
+ * policy's E3 list), never a default chain. A unit test pins this.
  */
 export const NATURE_ROUTING_DEFAULT_CHAINS: NatureRoutingChains = {
   // Latency-sensitive quick-sort.
   FAST: [
-    { door: 'gemini-api', model: 'flash-lite', keyRef: 'metered_gemini_bench', moneyGated: true },
     { door: 'pi-cli', model: 'gpt-5.5' },
   ],
   // Background quick-sort.
   SORT: [
     { door: 'codex-cli', model: 'gpt-5.4-mini' },
     { door: 'pi-cli', model: 'gpt-5.5' },
-    { door: 'gemini-api', model: 'flash-lite', keyRef: 'metered_gemini_bench', moneyGated: true },
     { door: 'claude-code', model: 'balanced' }, // Sonnet-4.6 reserve
   ],
   // Careful judgment.
   JUDGE: [
     { door: 'pi-cli', model: 'gpt-5.5' },
     { door: 'codex-cli', model: 'gpt-5.5' },
-    { door: 'openrouter-api', model: 'gpt-5.5', keyRef: 'metered_openrouter_bench', moneyGated: true },
-    { door: 'openrouter-api', model: 'opus-4.8', keyRef: 'metered_openrouter_bench', moneyGated: true }, // clean API, NEVER CLI
     { door: 'claude-code', model: 'balanced' }, // Sonnet-4.6 reserve
   ],
   // Open-ended writing (WRITE is the sole Opus-via-CLI-exempt lane — FD4).
   WRITE: [
     { door: 'codex-cli', model: 'gpt-5.4-mini' },
-    { door: 'groq-api', model: 'gpt-oss-120B', keyRef: 'metered_groq_bench', moneyGated: true, injectionSafe: false },
     { door: 'claude-code', model: 'fast' }, // Haiku-4.5
     { door: 'claude-code', model: 'capable' }, // Opus-4.8 quality lane — allowed on WRITE (FD4)
   ],

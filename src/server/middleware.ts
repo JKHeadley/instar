@@ -709,6 +709,8 @@ export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
  * degrades fail-open (advisory empty report) instead of erroring at the client.
  */
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
+/** POST /topic/import re-sequences every affected topic (topic-history-import spec); the default 30 s answers 408 mid-merge. */
+export const TOPIC_IMPORT_TIMEOUT_MS = 300_000;
 
 /**
  * Extended budget for the cutover-readiness parity-pass trigger
@@ -734,6 +736,20 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
  * review concern #1). 75s clears the 50s remote cap + slack with margin.
  */
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
+
+/**
+ * Route budget (ms) for the Gemini pay-per-use calls (gemini-payg-metered-lane §1, §6, §8):
+ * `/intelligence/gemini` (second opinion), `/intelligence/gemini/review` and
+ * `/routing-spend/release-proof`. A paid Gemini call may take up to the transport's
+ * GEMINI_API_MAX_TIMEOUT_MS (900 s, scaled to the reserved output), and a machine that is
+ * not the spender FORWARDS and waits for the holder's answer up to that plus 60 s. Under
+ * the 30 s default the caller got a 408 while the call kept running (and, on the holder,
+ * kept being paid for), and a forwarded call to a dead holder answered 408 instead of the
+ * honest `holder-unreachable` — found by the user-role live test's holder-death drill.
+ * Kept literal here (no provider import in the middleware); a test pins it above
+ * GEMINI_API_MAX_TIMEOUT_MS + 60 s.
+ */
+export const GEMINI_PAYG_ROUTE_TIMEOUT_MS = 990_000;
 
 /**
  * The phone's session controls (docs/specs/mobile-native-session-controls.md) wait on a dashboard route
@@ -891,6 +907,7 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
     '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/topic/import': TOPIC_IMPORT_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
     // The import dry-run does the same full live source fetch as a parity pass
@@ -902,6 +919,8 @@ export function buildRequestTimeoutOverrides(opts?: {
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    '/intelligence/gemini': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+    '/routing-spend/release-proof': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
     '/mobile/sessions/move': MOBILE_SESSION_MOVE_TIMEOUT_MS,
     '/mobile/sessions/door': MOBILE_SESSION_ACTION_TIMEOUT_MS,
     '/mobile/sessions/close': MOBILE_SESSION_ACTION_TIMEOUT_MS,

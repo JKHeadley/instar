@@ -6,6 +6,26 @@ import { collectPortableJob, validatePortableBundle } from '../../src/core/JobPo
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { verifyImportedPortableJob } from '../../src/core/JobPortableIntegrity.js';
 
+// The product gives each run of its python file helper 1.8 to 3 seconds (src/core/JobPortableFs.ts).
+// On a host that is running every test lane at once, starting python3 alone can take longer, and a
+// case then fails with 'portable-filesystem-refused: spawnSync python3 ETIMEDOUT' before it reaches
+// what it is here to check (2026-11-15..19, eight verify runs; the limit itself is reported as a
+// product issue, fb-fe25893b-2ad). No case in this file is about that limit, so the real helper is
+// given a long one here. Everything else is the product's own call, unchanged: the same python3,
+// the same script, arguments, stdin bytes and output cap, so the full-size round trip and every
+// refusal the helper makes are still the real thing. A helper that hangs still fails the case.
+const HELPER_TIMEOUT_MS = 60_000;
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const spawnSync = ((command: string, args?: readonly string[], options?: { timeout?: number }) => {
+    const isPortableHelper = command === 'python3' && Array.isArray(args)
+      && typeof args[0] === 'string' && args[0].endsWith('job-portable-fs.py');
+    return (actual.spawnSync as (...a: unknown[]) => unknown)(command, args,
+      isPortableHelper && options?.timeout ? { ...options, timeout: HELPER_TIMEOUT_MS } : options);
+  }) as typeof actual.spawnSync;
+  return { ...actual, spawnSync, default: { ...actual, spawnSync } };
+});
+
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'job-portable-test-cleanup' }); });
 function fixture() {
