@@ -86,10 +86,14 @@ describe('Bitwarden setup through the routes', () => {
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/recommended-services-bitwarden.test.ts' }));
 
-  it('the page lists what would be copied, by name only, config-held secrets included', async () => {
-    const { body } = await page(app());
-    expect(body.copies).toEqual(['authToken', 'config.authToken', 'dashboardPin', 'tunnel.token']);
-    expect(JSON.stringify(body)).not.toMatch(/"A"|1234|"T"|CFG-A/);
+  it('the page counts what would be copied; the names, config-held ones included, come with the PIN (SEC-129)', async () => {
+    const a = app();
+    const { body } = await page(a);
+    expect(body.copiesCount).toBe(4);
+    expect(body.copies).toBeUndefined();
+    const names = await request(a).post(`${BASE}/confirm`).set('X-Instar-Request', '1').send({ token: body.token, pin: '1', answer: 'names' });
+    expect(names.body.copies).toEqual(['authToken', 'config.authToken', 'dashboardPin', 'tunnel.token']);
+    expect(JSON.stringify(body) + JSON.stringify(names.body)).not.toMatch(/"A"|1234|"T"|CFG-A/);
   });
 
   it('the whole job: a yes starts setup, the session logs in, stores the password, has the server write the copy, and the check passes', async () => {

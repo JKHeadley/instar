@@ -27,6 +27,7 @@ import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { deriveRowKey } from './topicRowWriter.js';
+import { reapplyImportedHistory, mergeSequence, readPublishedBatches, withTopicHistoryLock } from './topicHistoryImport.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 
 /**
@@ -71,16 +72,18 @@ export interface TopicMessage {
    */
   channelMessageId?: string;
   /**
-   * Set only on rows that reached this topic through another agent
-   * (context-budget §8): `relay` (a Threadline relay message mirrored in) or
-   * `a2a` (this agent's own agent-to-agent traffic mirrored in). Such rows are
-   * kept and labelled, and carry no operator authority. Undefined otherwise.
+   * Set only on rows that did not come from this machine's own live channel
+   * path: `relay` (a Threadline relay message mirrored in) or `a2a` (this
+   * agent's own agent-to-agent traffic mirrored in), context-budget §8; or
+   * `imported` (restored from a recovery file through POST /topic/import,
+   * topic-history-import spec). Such rows are kept and labelled, and carry no
+   * operator authority. Undefined otherwise.
    */
   origin?: TopicRowOrigin;
 }
 
 /** Row origins that mark a TopicMemory row as arriving from another agent (§8). */
-export const TOPIC_ROW_ORIGINS = ['relay', 'a2a'] as const;
+export const TOPIC_ROW_ORIGINS = ['relay', 'a2a', 'imported'] as const;
 export type TopicRowOrigin = (typeof TOPIC_ROW_ORIGINS)[number];
 
 /** A recorded origin, or undefined for anything else (an unknown value is never guessed). */
@@ -156,6 +159,8 @@ const SCHEMA_VERSION = '6';
  * not read is a log whose rows it destroys and cannot restore.
  */
 const SLACK_LOG_BASENAME = 'slack-messages.jsonl';
+/** Where imported history batches live, for log lines (topic-history-import spec). */
+const IMPORT_BATCH_DIR_LABEL = 'topic-history-imports/';
 
 /** The fields of a logged message that decide which row it becomes. */
 export interface LoggedMessageKeySource {
@@ -335,7 +340,7 @@ function emptyImportStats(): TopicImportStats {
 export interface TopicRebuildReport {
   /** True when the rebuild declined to delete: nothing could have restored it. */
   refused: boolean;
-  reason: 'no-source-log' | 'sources-hold-no-restorable-message' | null;
+  reason: 'no-source-log' | 'sources-hold-no-restorable-message' | 'import-batch-unreadable' | null;
   /** The logs the rebuild read, in order. */
   sources: string[];
   /** Rows in the store before the rebuild. */
@@ -998,7 +1003,7 @@ export class TopicMemory {
              user_id AS userId, privacy_scope AS privacyScope, forwarded,
              channel_message_id AS channelMessageId, origin
       FROM messages
-      WHERE topic_id = ? AND id > ? AND (from_user = 1 OR origin IS NOT NULL)${byMessage ? ' AND message_id = ?' : ''}
+      WHERE topic_id = ? AND id > ? AND (from_user = 1 OR origin IN ('relay', 'a2a'))${byMessage ? ' AND message_id = ?' : ''}
       ORDER BY id ASC
       LIMIT ?
     `).all(...[topicId, byMessage ? 0 : (opts.afterRowId ?? 0), ...(byMessage ? [opts.messageId] : []), bounded + 1]) as Array<Record<string, unknown>>;
@@ -1543,12 +1548,107 @@ export class TopicMemory {
         totals.keyMismatch += st.keyMismatch;
       }
     }
+    // Recovered history (topic-history-import spec): published import batches
+    // beside the logs are re-applied through the time-ordered merge, never
+    // appended, so a rebuild restores them in message-time order. On a normal
+    // boot every imported row is already present and this only reads.
+    try {
+      const re = await reapplyImportedHistory(this, path.dirname(primary));
+      if (re.restored > 0) {
+        perSource['topic-history-imports'] = re.restored;
+        total += re.restored;
+      }
+    } catch (err) {
+      // @silent-fallback-ok — logged loudly; the live logs are already replayed and the batches stay on disk for the next pass
+      console.warn(`[TopicMemory] re-applying imported topic history failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     totals.imported = total;
     // Stats for the whole run, not just the last source read: a caller that
     // reports parse errors from one file of several reports a smaller number
     // than actually occurred.
     this._lastImportStats = totals;
     return { total, perSource };
+  }
+
+  /**
+   * Replace an IMPORTED row's body with a live copy of the same message
+   * (topic-history-import spec, "live precedence"): the live path's text,
+   * sender and provenance win, and `origin` takes the live copy's own value.
+   * Touches only a row whose origin is `imported`; position (row id) is kept.
+   * Returns true when replaced.
+   */
+  supersedeImportedRow(msg: TopicMessage): boolean {
+    if (!this.db) return false;
+    const r = this.db.prepare(`
+      UPDATE messages SET text = ?, from_user = ?, timestamp = ?, session_name = ?, sender_name = ?, sender_username = ?,
+        telegram_user_id = ?, user_id = ?, forwarded = ?, origin = ?
+      WHERE topic_id = ? AND message_id = ? AND origin = 'imported'
+    `).run(
+      msg.text, msg.fromUser ? 1 : 0, msg.timestamp, msg.sessionName ?? null, msg.senderName ?? null, msg.senderUsername ?? null,
+      msg.telegramUserId ?? null, msg.userId ?? null, msg.forwarded == null ? null : (msg.forwarded ? 1 : 0), msg.origin ?? null,
+      msg.topicId, msg.messageId,
+    );
+    return r.changes > 0;
+  }
+
+  /**
+   * Re-sequence ONE topic so recovered rows sit at their message time
+   * (topic-history-import spec, "Timestamp-ordered merge").
+   *
+   * `imported` is every published imported row of the topic, present in the
+   * store or not. The store's other rows are the topic's live rows; they keep
+   * their exact relative order, and each imported row goes before the first
+   * live row whose time is strictly later (`mergeSequence`). An imported row
+   * already in the store keeps its stored copy (the store wins); one missing
+   * is inserted from the batch. When nothing is missing the topic is left
+   * untouched. Otherwise the topic's rows are removed and re-inserted in merged
+   * order inside ONE transaction, so row ids ascend in message-time order and
+   * the FTS triggers keep the search index in step. Synchronous: no live
+   * write can interleave with it.
+   */
+  mergeTopicHistory(topicId: number, imported: TopicMessage[]): { inserted: number; total: number } {
+    const db = this.db;
+    if (!db || imported.length === 0) return { inserted: 0, total: 0 };
+    const cols = 'message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin';
+    type Raw = { message_id: number; timestamp: string; [k: string]: unknown };
+    return db.transaction(() => {
+      const existing = db.prepare(`SELECT ${cols} FROM messages WHERE topic_id = ? ORDER BY id ASC`).all(topicId) as Raw[];
+      const importedKeys = new Set(imported.map((m) => m.messageId));
+      const storedByKey = new Map<number, Raw>();
+      const live: Raw[] = [];
+      for (const r of existing) {
+        if (importedKeys.has(r.message_id)) storedByKey.set(r.message_id, r);
+        else live.push(r);
+      }
+      const missing = imported.filter((m) => !storedByKey.has(m.messageId));
+      if (missing.length === 0) return { inserted: 0, total: existing.length };
+      const importedRows: Raw[] = imported.map((m) => storedByKey.get(m.messageId) ?? {
+        message_id: m.messageId, topic_id: topicId, text: m.text, from_user: m.fromUser ? 1 : 0,
+        timestamp: m.timestamp, session_name: m.sessionName ?? null,
+        sender_name: m.senderName ?? null, sender_username: m.senderUsername ?? null,
+        telegram_user_id: m.telegramUserId ?? null, user_id: m.userId ?? null,
+        privacy_scope: m.privacyScope ?? 'private',
+        forwarded: m.forwarded == null ? null : (m.forwarded ? 1 : 0),
+        channel_message_id: m.channelMessageId ?? null, origin: m.origin ?? null,
+      });
+      const merged = mergeSequence(live, importedRows.map((r) => ({ ...r, messageId: r.message_id })));
+      db.prepare('DELETE FROM messages WHERE topic_id = ?').run(topicId);
+      const insert = db.prepare(`INSERT INTO messages (${cols}) VALUES (@message_id, @topic_id, @text, @from_user, @timestamp, @session_name, @sender_name, @sender_username, @telegram_user_id, @user_id, @privacy_scope, @forwarded, @channel_message_id, @origin)`);
+      for (const m of merged) {
+        const r = m.row as Raw;
+        insert.run({
+          message_id: r.message_id, topic_id: topicId, text: r.text, from_user: r.from_user, timestamp: r.timestamp,
+          session_name: r.session_name ?? null, sender_name: r.sender_name ?? null, sender_username: r.sender_username ?? null,
+          telegram_user_id: r.telegram_user_id ?? null, user_id: r.user_id ?? null, privacy_scope: r.privacy_scope ?? 'private',
+          forwarded: r.forwarded ?? null, channel_message_id: r.channel_message_id ?? null, origin: r.origin ?? null,
+        });
+      }
+      db.prepare(`
+        INSERT OR REPLACE INTO topic_meta (topic_id, topic_name, message_count, last_activity)
+        SELECT ?, (SELECT topic_name FROM topic_meta WHERE topic_id = ?), COUNT(*), MAX(timestamp) FROM messages WHERE topic_id = ?
+      `).run(topicId, topicId, topicId);
+      return { inserted: missing.length, total: merged.length };
+    })();
   }
 
   /**
@@ -1575,11 +1675,35 @@ export class TopicMemory {
    * Summaries are kept either way: they are LLM-generated and expensive.
    */
   async rebuild(jsonlPath: string): Promise<number> {
+    // One lock with POST /topic/import (topic-history-import spec): an import's
+    // merge landing between the delete and the live replay below would place its
+    // rows among a partial live set, and the re-apply would then see them present.
+    return withTopicHistoryLock(() => this.rebuildUnlocked(jsonlPath));
+  }
+
+  private async rebuildUnlocked(jsonlPath: string): Promise<number> {
     if (!this.db) return 0;
 
     const sources = this.replayableLogs(jsonlPath);
     const existingMessages = this.countMessages();
-    const restorable = await this.countRestorable(sources);
+    // Imported history batches (topic-history-import spec). A damaged batch line is
+    // a row the rebuild could delete and never restore, so it refuses outright.
+    // Batch rows count as restorable ONLY when the store holds nothing but
+    // imported rows: with live rows present and no log to replay them, the
+    // no-source refusal below must still hold (a batch never licenses a wipe).
+    const batches = await readPublishedBatches(path.dirname(jsonlPath));
+    if (batches.unreadable > 0 && existingMessages > 0) {
+      console.warn(`[TopicMemory] rebuild REFUSED (import-batch-unreadable): ${batches.unreadable} damaged line(s) in ${IMPORT_BATCH_DIR_LABEL}. Nothing deleted.`);
+      this._lastRebuild = {
+        refused: true, reason: 'import-batch-unreadable', sources, existingMessages, restorable: 0, deleted: 0, restored: 0,
+      };
+      this._lastImportStats = emptyImportStats();
+      return 0;
+    }
+    let batchRows = 0;
+    for (const t of batches.byTopic.values()) batchRows += t.size;
+    const liveRows = (this.db.prepare("SELECT COUNT(*) AS c FROM messages WHERE origin IS NULL OR origin != 'imported'").get() as { c: number }).c;
+    const restorable = await this.countRestorable(sources) + (liveRows === 0 ? batchRows : 0);
 
     if (existingMessages > 0 && restorable === 0) {
       const reason = sources.length === 0 ? 'no-source-log' : 'sources-hold-no-restorable-message';

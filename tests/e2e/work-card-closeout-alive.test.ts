@@ -128,6 +128,10 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
       const lessons = await request(app).get('/work-board/lessons').set(auth());
       expect(lessons.status).toBe(200);
       expect(lessons.body.lessons.map((l: { reason: string; cardId: string }) => [l.reason, l.cardId])).toEqual([['We already chose last week', first]]);
+      // SEC-122: the lesson names the title that was closed; the card's close-out carries it too.
+      expect(lessons.body.lessons[0]).toMatchObject({ cardTitle: 'Pick a venue' });
+      expect(lessons.body.lessons[0].retitledAfterClose).toBeUndefined();
+      expect(closed.body.card.closeout).toMatchObject({ title: 'Pick a venue' });
 
       const b = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Book catering', need: 'Order food', doneWhen: [{ id: 'd1', text: 'Ordered' }], outward: false, recommendation: 'Order from the usual caterer.', whyYou: 'You approve the catering budget.' });
       expect(b.status).toBe(201);
@@ -145,7 +149,7 @@ describe('Work Board slice 3 E2E (feature is alive)', () => {
     const again = mkRuntime(stateDir);
     again.runtime.start();
     try {
-      expect(again.runtime.svc.view(first)!.card.closeout).toMatchObject({ as: 'not-important', note: 'We already chose last week' });
+      expect(again.runtime.svc.view(first)!.card.closeout).toMatchObject({ as: 'not-important', note: 'We already chose last week', title: 'Pick a venue' });
       expect(again.runtime.svc.view(second)!.card.closeout).toMatchObject({ as: 'done', note: 'Ordered by phone' });
       expect(again.runtime.svc.dismissalLessons().map((l) => l.cardId)).toEqual([first]);
     } finally { again.runtime.stop(); again.journal.close(); }

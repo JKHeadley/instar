@@ -4,11 +4,13 @@
   "_doc": "Canonical, human-reviewed price authority for the Routing Control Room spend view (docs/specs/routing-control-room-spend-alerts.md, Layer 1). USD per MILLION tokens, per door+model, effective-dated. APPEND-ONLY: a change or correction ADDS a point; points are never edited in place. GENERIC PUBLISHED prices only \u2014 operator-specific deals live in the machine-local overlay (.instar/routing-prices.overlay.json), never here. Written ONLY by a human path (a reviewed git commit, or \u2014 in Increment B \u2014 the PIN-gated promotion action). Every point's effectiveAt MUST be UTC-day-aligned (T00:00:00Z). In Increment A this manifest feeds the REPORTING view only; no money gate consumes it yet (the gate is Increment B).",
   "doors": {
     "gemini-api": {
+      "_doc": "gemini-payg lane (docs/specs/gemini-payg-metered-lane.md \u00a73): a stale point REFUSES (fail-closed) rather than booking at a multiple; admission needs a VERIFIED point whose maxInputTokens range covers the counted input (requireVerifiedTier). conservativeMax is twice Neon's list price and prices only the single release-proof call.",
       "freshnessSlaDays": 45,
-      "staleMode": "book-conservative-max",
+      "staleMode": "fail-closed",
+      "requireVerifiedTier": true,
       "conservativeMax": {
-        "inPerMtok": 2.0,
-        "outPerMtok": 12.0
+        "inPerMtok": 6.0,
+        "outPerMtok": 30.0
       }
     },
     "openrouter-api": {
@@ -43,6 +45,28 @@
       "effectiveAt": "2026-07-01T00:00:00Z",
       "recordedAt": "2026-07-05T00:00:00Z",
       "source": "published-generic-list",
+      "corrects": null
+    },
+    {
+      "door": "gemini-api",
+      "modelId": "gemini-4-neon",
+      "inPerMtok": 3.0,
+      "outPerMtok": 15.0,
+      "effectiveAt": "2026-11-20T00:00:00Z",
+      "recordedAt": "2026-11-20T00:00:00Z",
+      "source": "Google AI Studio pricing page, read 2026-11-20 (account-lane smoke test); thinking billed as output. UNVERIFIED until the Run 2 release check reads the page and its long-context tier.",
+      "verified": false,
+      "corrects": null
+    },
+    {
+      "door": "gemini-api",
+      "modelId": "gemini-4-hydrogen",
+      "inPerMtok": 1.5,
+      "outPerMtok": 7.5,
+      "effectiveAt": "2026-11-20T00:00:00Z",
+      "recordedAt": "2026-11-20T00:00:00Z",
+      "source": "Google AI Studio pricing page, read 2026-11-20 (account-lane smoke test); thinking billed as output. UNVERIFIED until the Run 2 release check reads the page and its long-context tier.",
+      "verified": false,
       "corrects": null
     },
     {

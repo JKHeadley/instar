@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "gemini-payg-key-confinement",
+  "sessionId": "c0c50b75-193a-4caa-8d3a-61a093d92b5c",
+  "timestamp": "2026-11-20T23:10:26.174Z",
+  "artifactPath": "upgrades/side-effects/gemini-payg-key-confinement.md",
+  "artifactSha256": "ebc0a6f9bb6e2155fbf6f36b358bd7c8374e4c8f59a2421596d86a0819213afb",
+  "specPath": "docs/specs/gemini-payg-metered-lane.md",
+  "coveredFiles": [
+    "docs/specs/gemini-payg-metered-lane.md",
+    "package.json",
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "scripts/lint-metered-secret-readers.js",
+    "src/core/Config.ts",
+    "src/core/SecretSync.ts",
+    "src/core/meteredSecrets.ts",
+    "src/templates/scripts/secret-get.mjs",
+    "tests/unit/lint-chain-completeness.test.ts",
+    "tests/unit/metered-secret-confinement.test.ts",
+    "tests/unit/providerCredentials.test.ts",
+    "upgrades/next/gemini-payg-key-confinement.md",
+    "upgrades/side-effects/gemini-payg-key-confinement.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "secrets confinement; fleet-wide script change (secret-get refusal); irreversible-miss class",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

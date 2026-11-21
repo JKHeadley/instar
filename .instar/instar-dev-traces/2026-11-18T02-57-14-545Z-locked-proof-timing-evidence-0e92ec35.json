@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "locked-proof-timing-evidence",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T02:57:14.545Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-timing-evidence.md",
+  "artifactSha256": "53ae2d80c5764e18ca603b5e0139395787bbfc871ddee63e9057772812643646",
+  "coveredFiles": [
+    "docs/builds/locked-proof-timing-evidence.md",
+    "docs/specs/locked-proof-timing-evidence.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-timing.test.ts",
+    "upgrades/next/locked-proof-timing-evidence.md",
+    "upgrades/side-effects/locked-proof-timing-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible bounded proof-harness correction; no native/product authority or persistence changes",
+  "eli16Path": "docs/specs/locked-proof-timing-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-timing-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "parent-independent",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ]
+  }
+}

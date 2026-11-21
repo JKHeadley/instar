@@ -26,6 +26,7 @@ import { buildHeadlessLaunch } from '../core/frameworkSessionLaunch.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { boundedHead, boundedTail } from '../core/boundedInput.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { THREAD_ID_RE } from './ThreadLog.js';
 
 /**
  * Bound on the joined thread history handed to the summarizer.
@@ -295,6 +296,15 @@ ${boundedTail(historyText, THREAD_SUMMARY_MAX_CHARS)}`;
 
 // ── Pipe Session Spawner ──────────────────────────────────────────────
 
+/**
+ * SEC-126: a thread id is safe to build into a tmux shell command or a file
+ * name only when it matches the canonical thread-id allowlist. That allowlist
+ * admits lowercase letters, digits and dashes only.
+ */
+export function isPipeSafeThreadId(threadId: unknown): threadId is string {
+  return typeof threadId === 'string' && THREAD_ID_RE.test(threadId);
+}
+
 export class PipeSessionSpawner {
   private config: PipeSessionConfig;
   private activeSessions: Map<string, ActivePipeSession> = new Map();
@@ -319,6 +329,13 @@ export class PipeSessionSpawner {
    * Returns true if all eligibility checks pass.
    */
   shouldUsePipeMode(request: PipeSpawnRequest): { eligible: boolean; reason?: string } {
+    // SEC-126: the thread id comes from the peer's envelope and is built into
+    // tmux shell commands and the prompt file path below. Only the canonical
+    // minted shapes (no quotes, spaces, slashes or shell syntax) may go on.
+    if (!isPipeSafeThreadId(request.threadId)) {
+      return { eligible: false, reason: 'thread id is not in the canonical thread-id format' };
+    }
+
     // Trust check
     if (request.trustLevel !== 'trusted' && request.trustLevel !== 'autonomous') {
       return { eligible: false, reason: 'trust level below threshold' };
@@ -357,6 +374,11 @@ export class PipeSessionSpawner {
    * Spawn a pipe-mode session.
    */
   async spawn(request: PipeSpawnRequest, summarizedHistory?: string): Promise<PipeSpawnResult> {
+    // SEC-126: checked again here, not only in shouldUsePipeMode, because every
+    // shell string and the prompt file path below are built from this value.
+    if (!isPipeSafeThreadId(request.threadId)) {
+      return { spawned: false, reason: 'thread id is not in the canonical thread-id format; pipe mode refused' };
+    }
     const sessionName = `pipe-${request.threadId}`;
 
     // June-15 force-mode refusal (spec Class 7, finding S4): this path shells

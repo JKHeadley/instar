@@ -456,10 +456,88 @@ export class FoldCoordinator {
     this.o.store.dropSidecar(rec.topicKey, rec.foldId);
   }
 
+  /**
+   * Runtime reconcile of a STALE record (§9.3 Fencing: "the new owner's
+   * ownership sweep reconciles the durable fold record"): this machine's own
+   * pre-point-of-no-return record whose lock ceiling has passed (no step can
+   * still be running under it) is closed `aborted`, settling every carrier. It
+   * runs at call time (the runner calls it before each fold), so it works on a
+   * pool-live agent where the boot sweep ran before ownership was readable.
+   * Gated on the sweep-owner rule (this machine owns the topic, or on a single
+   * machine / dark pool hosts it); the ownership epoch is NOT required to
+   * match, because a record stranded by an epoch change is exactly the case,
+   * and only a record this machine wrote, and only pre-PNR, is ever touched.
+   */
+  reconcileStale(topicKey: string, olderThanMs: number): FoldRecord[] {
+    const closed: FoldRecord[] = [];
+    if (this.o.preconditions.isSweepOwner?.(topicKey) !== true) return closed;
+    for (const rec of this.o.store.list(topicKey)) {
+      if (!PRE_PNR_STATES.has(rec.state) || rec.machineId !== this.o.machineId) continue;
+      if (this.now() - rec.updatedAt < olderThanMs) continue;
+      const next: FoldRecord = { ...rec, state: 'aborted', seq: rec.seq + 1, updatedAt: this.now(), reason: `reconciled-stale:${rec.state}` };
+      this.o.store.put(next);
+      this.emit({ type: 'transition', record: next, from: rec.state });
+      this.settle(next, { judgePreempted: false });
+      closed.push(next);
+    }
+    return closed;
+  }
+
   /** Record staged store writes in the sidecar (lists never live in the record). */
   addStaged(topicKey: string, foldId: string, entries: string[]): void {
     const s = this.o.store.getSidecar(topicKey, foldId);
     this.o.store.putSidecar(topicKey, foldId, { ...s, staged: [...s.staged, ...entries] });
+  }
+
+  /**
+   * Record the lock window's transcript entry bounds (§10 suppression carrier):
+   * from the handoff's injection to the lock release. Owner-only, non-terminal
+   * records only. The bounds are written to the sidecar AND appended to a
+   * durable per-topic log (`lockWindowLog`) that outlives the record's settle,
+   * because consumers that read after the fold went terminal (a shadow fold is
+   * `aborted` by design) must still skip the range.
+   */
+  setLockWindow(topicKey: string, foldId: string, bounds: { fromEntry?: string; toEntry?: string; closedAt?: number }): boolean {
+    const rec = this.o.store.get(topicKey, foldId);
+    if (!rec || TERMINAL_STATES.has(rec.state) || this.o.preconditions.isOwner(topicKey) !== true) return false;
+    const s = this.o.store.getSidecar(topicKey, foldId);
+    const lockWindow = { ...(s.lockWindow ?? {}), ...bounds };
+    this.o.store.putSidecar(topicKey, foldId, { ...s, lockWindow });
+    // False when the durable copy could not be written: the caller records it (the bounds would not outlive settle).
+    return appendLockWindow(this.o.store.dirFor(topicKey), { foldId, ...lockWindow, at: this.now() });
+  }
+
+  /**
+   * Close a lock window with a close time (§10). A close only ever NARROWS a
+   * window (the ticker ends a toEntry-less window at the first entry after it),
+   * so it is written to the durable log without the owner/terminal checks
+   * `setLockWindow` makes: a fold whose ownership moved mid-way must still be
+   * able to stop hiding later work. Only this machine's own record's fold id is
+   * accepted. Returns false when the durable write failed.
+   */
+  closeLockWindow(topicKey: string, foldId: string, closedAt: number): boolean {
+    const rec = this.o.store.get(topicKey, foldId);
+    if (!rec || rec.machineId !== this.o.machineId) return false;
+    return appendLockWindow(this.o.store.dirFor(topicKey), { foldId, closedAt, at: this.now() });
+  }
+
+  /**
+   * Renew the fold's keyed lock while a step reports progress (§9.3 step 1:
+   * "renewed while a step reports progress"). The caller names the generation
+   * it holds; refused unless the record is still the coordinator's at that
+   * generation (a quarantined record's lock belongs to the sentinel), the
+   * ownership epoch is unchanged, and the lock is held and unexpired. Same
+   * generation on success. The caller re-stamps its marker files after a
+   * renewal (§9.3), and the hard maximum per step stays the caller's bound.
+   */
+  renew(topicKey: string, foldId: string, expect: { generation: number }): boolean {
+    const rec = this.o.store.get(topicKey, foldId);
+    if (!rec || TERMINAL_STATES.has(rec.state) || rec.state === 'quarantined') return false;
+    if (rec.role !== 'coordinator' || rec.generation !== expect.generation) return false;
+    if (this.o.preconditions.isOwner(topicKey) !== true || this.o.ownerEpoch(topicKey) !== rec.ownerEpoch) return false;
+    const held = this.o.lock.adopt(topicKey, rec.generation, 'coordinator');
+    if (!held || !this.o.lock.holds(held)) return false;
+    return this.o.lock.renew(held) !== null;
   }
 
   // ── quarantine (§9.3 Quarantine) ────────────────────────────────────
@@ -561,4 +639,58 @@ export class FoldCoordinator {
     }
     return out;
   }
+}
+
+
+// ── The durable lock-window log (§10 suppression carrier) ─────────────────
+
+/** One recorded lock window: the transcript entry bounds a fold's internal turns occupy. */
+export interface LockWindowRow { foldId: string; fromEntry?: string; toEntry?: string; at: number; /** Epoch ms the window closed without a recorded toEntry (a fold that ended early): it ends at the first entry after this time. */ closedAt?: number }
+
+const LOCK_WINDOW_FILE = 'lock-windows.jsonl';
+/** Bounded: the newest rows are kept (a window older than the archive's reach no longer matters). */
+export const LOCK_WINDOW_MAX_ROWS = 500;
+
+/** Above this size the log is compacted to its newest LOCK_WINDOW_MAX_ROWS merged rows (bounded on disk, not only on read). */
+const LOCK_WINDOW_COMPACT_BYTES = 256 * 1024;
+
+/** Append one window; compact the file when it grows past the bound. Returns false when the append failed. */
+function appendLockWindow(recordsDir: string, row: LockWindowRow): boolean {
+  const file = path.join(recordsDir, LOCK_WINDOW_FILE);
+  try {
+    fs.mkdirSync(recordsDir, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+    if (fs.statSync(file).size > LOCK_WINDOW_COMPACT_BYTES) {
+      const merged = mergeLockWindows(fs.readFileSync(file, 'utf-8'));
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, merged.map((r) => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    }
+    return true;
+  } catch {
+    return false; // @silent-fallback-ok — reported by the caller (setLockWindow returns false and the runner records it); the sidecar still holds the bounds for the fold's life
+  }
+}
+
+function mergeLockWindows(raw: string): LockWindowRow[] {
+  const byFold = new Map<string, LockWindowRow>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as LockWindowRow;
+      if (typeof r.foldId === 'string') { const prev = byFold.get(r.foldId); byFold.delete(r.foldId); byFold.set(r.foldId, { ...(prev ?? {}), ...r }); }
+    } catch { /* @silent-fallback-ok — a torn line */ }
+  }
+  return [...byFold.values()].slice(-LOCK_WINDOW_MAX_ROWS);
+}
+
+/**
+ * The topic's lock windows, merged per fold (latest bounds win), newest last.
+ * Consumers (the transcript-growth ticker, TokenLedger tagging, …) skip any
+ * transcript entry inside a window.
+ */
+export function readLockWindows(stateDir: string, topicKey: string): LockWindowRow[] {
+  let raw = '';
+  try { raw = fs.readFileSync(path.join(new FoldRecordStore(stateDir).dirFor(topicKey), LOCK_WINDOW_FILE), 'utf-8'); } catch { return []; } // @silent-fallback-ok — no window recorded yet
+  return mergeLockWindows(raw);
 }

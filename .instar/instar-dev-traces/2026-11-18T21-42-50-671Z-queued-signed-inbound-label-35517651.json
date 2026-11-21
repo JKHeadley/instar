@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "queued-signed-inbound-label",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-18T21:42:50.671Z",
+  "artifactPath": "upgrades/side-effects/queued-signed-inbound-label.md",
+  "artifactSha256": "ad2940765afd653489fd207770ac4603903e1b30ce68063a1464b6f61a83109d",
+  "specPath": "docs/specs/queued-signed-inbound-label.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T15-51-21-816Z-queued-signed-inbound-label.json",
+    "docs/specs/queued-signed-inbound-label.eli16.md",
+    "docs/specs/queued-signed-inbound-label.md",
+    "docs/specs/reports/queued-signed-inbound-label-convergence.md",
+    "src/commands/server.ts",
+    "src/core/AspInboundClassifier.ts",
+    "src/core/PendingInboundStore.ts",
+    "src/core/SessionRouter.ts",
+    "src/messaging/MessageProcessingLedger.ts",
+    "src/messaging/shared/signedInbound.ts",
+    "src/server/routes.ts",
+    "tests/unit/asp-inbound-classifier-verdictFor.test.ts",
+    "tests/unit/sec106-signed-label-carry.test.ts",
+    "tests/unit/session-pool-activation-wiring.test.ts",
+    "tests/unit/signed-inbound-label.test.ts",
+    "upgrades/next/queued-signed-inbound-label.md",
+    "upgrades/side-effects/queued-signed-inbound-label.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security: a queued or forwarded agent-signed message keeps its agent label; converged and approved spec; second pass concurred. Whole-PR trace after merging main.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

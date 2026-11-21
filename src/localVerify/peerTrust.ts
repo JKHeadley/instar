@@ -32,7 +32,13 @@ export interface ArbitrationMarker { attemptId: string; peer: string; head: stri
 
 export interface PeerTrustState {
   v: 1;
-  holding: { holder: string | null; epoch: number | null } | null;
+  /**
+   * `since` (docs/specs/local-verify-peer-works-through-restart.md C.1): the first lease epoch of this
+   * unbroken holding. Set on first creation, on every reset, and on a keep that finds it missing or
+   * invalid (a record written before this field never vouches for an earlier dispatch); unchanged on an
+   * ordinary keep.
+   */
+  holding: { holder: string | null; epoch: number | null; since?: number | null } | null;
   anchor: { head: string; finishedAt: string } | null;
   notLocallyVerifiedAt: number | null;
   locallyVerified: string[];
@@ -46,9 +52,24 @@ export function emptyPeerTrust(): PeerTrustState {
   return { v: 1, holding: null, anchor: null, notLocallyVerifiedAt: null, locallyVerified: [], peerMainGreens: [], quarantine: {}, arbitration: null, durations: [] };
 }
 
-/** The lease-holder state that is reset when holding is broken (everything but the measured durations). */
+/** The lease-holder state that is reset when holding is broken (everything but the measured durations). A new holding starts at its own epoch. */
 export function resetHoldingState(s: PeerTrustState, holding: PeerTrustState['holding']): PeerTrustState {
-  return { ...emptyPeerTrust(), durations: s.durations, holding };
+  return { ...emptyPeerTrust(), durations: s.durations, holding: holding ? { ...holding, since: holding.epoch } : null };
+}
+
+/** Is `since` a usable holding start (a safe integer)? */
+export function holdingSinceValid(h: PeerTrustState['holding']): boolean {
+  return !!h && typeof h.since === 'number' && Number.isSafeInteger(h.since);
+}
+
+/**
+ * The holding record after a readable `keep` naming this machine at `epoch`: created with `since = epoch`
+ * when absent, given `since = epoch` when its `since` is missing or invalid, otherwise moved to the new
+ * epoch with `since` unchanged. Pure.
+ */
+export function keptHolding(h: PeerTrustState['holding'], self: string, epoch: number | null): NonNullable<PeerTrustState['holding']> {
+  if (!h || !holdingSinceValid(h)) return { holder: self, epoch, since: epoch };
+  return { holder: self, epoch, since: h.since };
 }
 
 export interface LeaseRead { unreadable?: boolean; holds: boolean; epoch: number | null; holder: string | null }

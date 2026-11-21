@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export const ROLE_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
 
@@ -102,4 +103,28 @@ export function requestRoleRestart(files: RoleRestartFiles, toAwake: boolean): v
   }, null, 2));
   fs.renameSync(tmp, flag);
   fs.writeFileSync(stampPath(files.stateDir), JSON.stringify({ at: now, toAwake, ...(toAwake ? { promotionId: randomUUID(), leaseEpoch: files.leaseEpoch ?? null, machineId: files.machineId ?? null } : {}) }));
+}
+
+/**
+ * Take back a role restart this process asked for and no longer needs. A planned restart can wait
+ * a long time (a running Local Verify holds it). If the role returns to what it was at boot while
+ * the request waits, the restart has nothing left to do: this process already has what its role
+ * needs. Left in place, it ran anyway, ended the verify that started next, and left the lease
+ * unrenewed for the length of a boot (seen on 2026-11-20: a machine that had the lease back ten
+ * minutes was restarted for "this machine gave up the lease").
+ *
+ * Only a request written by this process for a role change is removed: an update's request, or
+ * one from another writer, is never touched. Returns true when a request was withdrawn.
+ */
+export function withdrawRoleRestart(files: Pick<RoleRestartFiles, 'stateDir'>, pid: number = process.pid): boolean {
+  const flag = path.join(files.stateDir, 'state', 'restart-requested.json');
+  let row: { requestedBy?: unknown; pid?: unknown };
+  try {
+    row = JSON.parse(fs.readFileSync(flag, 'utf-8')) as { requestedBy?: unknown; pid?: unknown };
+  } catch {
+    return false; // @silent-fallback-ok: no request (or one being written) means nothing to withdraw
+  }
+  if (row.requestedBy !== 'role-change' || row.pid !== pid) return false;
+  SafeFsExecutor.safeUnlinkSync(flag, { operation: 'src/core/roleFollowRestart.ts:withdrawRoleRestart' });
+  return true;
 }

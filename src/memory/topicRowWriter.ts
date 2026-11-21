@@ -288,6 +288,24 @@ export class TopicRowWriter {
   }
 }
 
+/**
+ * Write one row from THIS machine's own Telegram message log (the live
+ * delivery path, `onMessageLogged`) — and, when it lands on a row an import
+ * restored, let the live copy replace the restored one (topic-history-import
+ * spec, "live precedence"). Only this path supersedes: a local Telegram
+ * delivery is the source the restored copy stood in for. Every other writer
+ * (the peer row carrier above all) goes through plain `writeRow`, where an
+ * existing label is never changed, so a carried row can never strip the
+ * `imported` label or widen a restored row's authority.
+ */
+export function writeTelegramLogRow(writer: TopicRowWriter, tm: TopicMemory, nativeId: number, body: RowBody): WriteRowResult {
+  const r = writer.writeRow({ channel: 'telegram', nativeId }, body);
+  if (r.written && r.outcome === 'duplicate' && body.origin === undefined) {
+    tm.supersedeImportedRow({ ...body, messageId: r.key.messageId, channelMessageId: r.key.channelMessageId });
+  }
+  return r;
+}
+
 /** The fields of a stored app message event the row writer reads. */
 export interface AppMessageEventLike {
   eventId: string;
