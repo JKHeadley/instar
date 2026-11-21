@@ -31414,6 +31414,27 @@ export async function startServer(options: StartOptions): Promise<void> {
               const cosRunStore = new CosRunStoreCtor(config.stateDir);
               _cosRunRecordRead = (topicId) => cosRunStore.getRecord(String(topicId));
               const cosJournal = coherenceJournal;
+              // The Chief of Staff union from a COMPLETE read of this machine's journal (every archive and the current
+              // file, in full) plus peer streams; null when the own journal could not be read completely
+              // (conversation-groups-phone §3: "already a project?" must never come from a tail read).
+              const cosLoadUnionComplete = (): Array<{ data: Record<string, unknown>; origin: string }> | null => {
+                // Write out this machine's queued records first, so a binding it made a moment ago is on disk to be seen.
+                try { cosJournal.flush(); } catch { /* @silent-fallback-ok: an unflushed queue only makes the read older; the refusal paths still hold */ }
+                const all = cosJournal.readKindComplete(storeMod.CHIEF_OF_STAFF_RECORD_KIND);
+                const peersWhole = cosPeerStreams.peerStreamsReadComplete(storeMod.CHIEF_OF_STAFF_STORE_KEY);
+                if (!all.complete || !peersWhole) {
+                  DegradationReporter.getInstance().report({ feature: 'ChiefOfStaff.completeRead', primary: 'Read every Chief of Staff record before saying a conversation is not a project',
+                    fallback: 'Refuse the phone project confirm (nothing written)', reason: !all.complete ? 'own-journal-incomplete' : 'peer-stream-incomplete',
+                    impact: 'Making a group a project from the phone refuses until the journal reads completely; the dashboard PIN route still binds', internalOnly: true });
+                  return null;
+                }
+                const own = all.entries.map((e) => ({ data: e.data as Record<string, unknown>, origin: String((e.data as Record<string, unknown>).origin ?? meshSelfId) }));
+                const peers: Array<{ data: Record<string, unknown>; origin: string }> = [];
+                for (const byOrigin of cosPeerStreams.loadAllOriginRecords(storeMod.CHIEF_OF_STAFF_STORE_KEY).values()) {
+                  for (const r of byOrigin) peers.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
+                }
+                return [...own, ...peers];
+              };
               const cosEmitter = replicatedRecordEmitter;
               const cosLease = leaseCoordinatorRef;
               const cosPeerStreams = new streamsMod.ReplicatedPeerStreamReader({ stateDir: config.stateDir, registry: replicatedKindRegistry, selfMachineId: meshSelfId, autoRebuild: true });
@@ -31440,6 +31461,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     }
                     return [...own, ...peers];
                   },
+                  loadUnionComplete: cosLoadUnionComplete,
                 },
                 lease: {
                   currentHolder: () => cosLease.currentHolder(),
@@ -31611,7 +31633,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               };
               const loop = new loopMod.ChiefOfStaffLoop({
                 now: () => Date.now(), machineId: meshSelfId, enabled: cosEnabled, holdsLease: () => cosLease.holdsLease(), config: cosCfg,
-                journal: { emit: (recordKey, build) => { const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion: () => protocol['d'].journal.loadUnion(), awaitDurable: (seq) => protocol['d'].journal.awaitDurable(seq) },
+                journal: { emit: (recordKey, build) => { const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion: () => protocol['d'].journal.loadUnion(), loadUnionComplete: cosLoadUnionComplete, awaitDurable: (seq) => protocol['d'].journal.awaitDurable(seq) },
                 verifyRenewal: (r) => { const m = String(r.machine ?? ''); const pem = meshIdMgr.getSigningPublicKeyPem(m); const canonical = `cos-renewal:${r.renewedAt}:${r.renewedVia}:${r.principal}:${m}`; return pem ? idMod.verify(canonical, String(r.machineSignature ?? ''), pem) : false; },
                 gather, judge, protocol,
                 mirrorInitiativeStatus: (id, status) => { try { (initiativeTracker as unknown as { update?: (id: string, patch: Record<string, unknown>) => unknown }).update?.(id, { status }); } catch { /* @silent-fallback-ok: the binding is the authority; the mirror retries next tick (§1.2) */ } },
