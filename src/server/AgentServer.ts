@@ -4147,6 +4147,7 @@ export class AgentServer {
                   windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000,
                   { video: resolveWindowsDesktopVideo(options.config) });
               })();
+          const desktopAudit = new DesktopAccessAudit(options.config.stateDir);
           this.directDesktopAccess = new DirectDesktopAccess(
           this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),
           { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
@@ -4167,7 +4168,7 @@ export class AgentServer {
           },
           grantId => this.desktopStreamManager?.closeGrant(grantId),
           Date.now,
-          new DesktopAccessAudit(options.config.stateDir),
+          desktopAudit,
           'pin',
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
           this.desktopLockedController,
@@ -4190,6 +4191,7 @@ export class AgentServer {
             machineLabel: label, machineId: this.meshSelfId,
             probe: () => access.probe(),
             sourceHash: () => helperRetention.currentSourceHash(),
+            recentlyUsed: () => desktopAudit.hasStartWithin(30 * 24 * 60 * 60_000),
             // An agent that cannot post must leave the notice for one that can.
             claim: () => !!telegram && helperRetention.claimNotice(),
             release: () => helperRetention.releaseNotice(),
