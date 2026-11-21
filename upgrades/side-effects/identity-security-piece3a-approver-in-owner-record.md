@@ -181,3 +181,11 @@ decision root into `src/server/documentDecisionRoot.ts`. The rebase keeps the de
 Owner-phone coordination: the presence-key route keeps this piece's own change and nothing more. SEC-142 (the
 first Face ID key accepted on the device key alone) is owned by the security session and will change that route
 next; this rebase does not attempt it.
+
+## Addendum: app contract review (2026-11-21)
+
+The Apple session compared the app's screens with the server contract. The app treats every 401 as "this
+device's own request signature was refused": it marks the address bad and tries another, then asks to pair again.
+A bad approval-key signature on `POST /mobile/approver/first/sign` and `/revoke/sign` therefore now answers 409
+`presence-invalid` with a detail. 401 stays reserved for the device signature. The grant route already answered
+409. Nothing else changes; the console, desktop and permission routes keep their own answers.
