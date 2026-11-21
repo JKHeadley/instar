@@ -140,3 +140,19 @@ The Apple app session (build 119) found that the owner's phone could not remove 
 - A `computers` array on owner reads of `GET /mobile/team/people`. A member's read is unchanged.
 
 It takes access away only, and the owner is the one who may. Over-block, under-block and interactions: none new. It reuses the forget helper (ledger revocation plus `browser-unbind`). Multi-machine: the removal replicates as before. Rollback: revert, and the app's Computers section simply stays hidden. E2E: an owner phone lists and removes a computer, and a member's phone gets 403 and no list.
+
+## Browser live proof and fix (2026-11-20)
+
+A headless Chromium proof covered seven steps against a throwaway AgentServer behind a TLS front. Steps 1 to 6 all passed:
+- the join page asks for the code and shows check letters;
+- a wrong code is explained;
+- the right code opens the document with the joined key;
+- a comment through the page UI is stored signed by the joined computer;
+- "You're set up" shows with no fragment;
+- Forget ends the computer and the page returns to the no-key screen.
+
+Step 7 failed at first: the owner's phone removed a joined computer, then the member's phone linked the same browser, and the document never opened. Two causes, both fixed here:
+- The join routes named the machine with `meshSelfId ?? null` only. With no mesh id, the joined record was stored under `join:<host>` instead of the machine id the link flow uses. The join routes now fall back to the coordinator's machine id, as the link routes do.
+- The page's `activeFor` took the first active record. It now takes the newest.
+
+A key the server refuses stays stored, because it may be refused for a passing reason such as the browser switch being off. A key linked or joined afterwards takes the machine's slot and is the newest. After the fix, all 7 steps pass with no JavaScript errors; the only console lines are the expected HTTP refusals.
