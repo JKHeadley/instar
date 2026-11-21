@@ -3105,6 +3105,18 @@ export interface MultiMachineConfig {
   takeoverReadyPool?: {
     enabled?: boolean;
     /**
+     * stall-wake-lease-reconfirm (fb-fdb55c1c-a79): after a gap in this machine's awake clock
+     * (a long main-thread stall or a sleep, above 30% of the lease TTL by default), a claim on a
+     * lapsed-looking lease waits for evidence gathered after the gap: a full TTL awake with a pull
+     * round started after the gap and completed, or the ten-TTL chain cap. Dark: only an explicit
+     * `enabled: true` turns it on; `takeoverReadyPool.enabled: false` turns it off.
+     */
+    stallReconfirm?: {
+      enabled?: boolean;
+      /** Running time lost within one TTL that opens an episode, in ms (clamped to 1000..TTL/2). Default 30% of the lease TTL, floor 5 s. */
+      stallGapMs?: number;
+    };
+    /**
      * R1 boot claim safety (fb-2bf6ccd0-705): a restarted machine never claims from its own
      * lapsed lease before asking its peers, never claims while the named preferred machine
      * answers, and claims only after the preferred machine (every known peer when none is

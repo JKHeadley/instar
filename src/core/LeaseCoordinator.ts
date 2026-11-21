@@ -1,6 +1,7 @@
 import {NativeDecommissionLeasePermit} from './NativeDecommissionLeasePermit.js';
 import {LocalLeaseStore} from './LocalLeaseStore.js';
 import {GitLeaseStore} from './GitLeaseStore.js';
+import { evaluateStallReconfirm, stallGapMsFor, awakeGapMs, lostInGapMs, lostWithinMs, AWAKE_STAMP_INTERVAL_MS, type StallReconfirmSettings, type StallReconfirmVerdict } from './StallReconfirm.js';
 /**
  * LeaseCoordinator — drives the FencedLease over the durable (git) and fast
  * (tunnel) media, and owns the lifecycle of acquisition / renewal / fencing /
@@ -218,6 +219,12 @@ export interface LeaseCoordinatorDeps {
    */
   acquireHeldBack?: () => boolean;
   /**
+   * stall-wake-lease-reconfirm (fb-fdb55c1c-a79) — read live. Off or absent keeps today's
+   * acquisition exactly. On: after a gap in this machine's awake clock, a claim on a lease
+   * another machine holds waits for evidence gathered after the gap (StallReconfirm.ts).
+   */
+  stallReconfirm?: () => StallReconfirmSettings | null;
+  /**
    * takeover-ready-pool R1 (boot claim safety, fb-2bf6ccd0-705) — read live. Off or absent
    * keeps today's acquisition exactly. On: an own-lapsed or empty lease always asks the peers
    * first, whatever survivorMayHold/soloCaptainHold/preferred say, and no claim is made until
@@ -301,6 +308,19 @@ export class LeaseCoordinator {
   private bootHoldLastLogged: string | null = null;
   /** This machine's own lease record as read at construction (before any pull): rule 1/4. */
   private readonly bootOwnRecord: { heldLast: boolean; epoch: number };
+
+  /** stall-wake-lease-reconfirm — the last awake-clock stamp (null until the switch is first read on). */
+  private awakeStamp: { wallMs: number; monoMs: number } | null = null;
+  private awakeTimer: ReturnType<typeof setInterval> | null = null;
+  /** The open stall episode: claims on another machine's lease need post-gap evidence. */
+  private stallEpisode: { openedAtMs: number; chainStartedAtMono: number; chainStartedAtMs: number; gapMs: number; heldRecorded: boolean; longHoldRecorded: boolean; lostSinceOpenMs: number; lastLostAtMs: number; extraPullAttempted: boolean } | null = null;
+  /** Start time of the latest pull round whose dials have all ended (replies folded). */
+  private lastCompletedRoundStartedAtMs = 0;
+  /** Evidence only: the last claim confirmed after a stall, to notice that holder renewing soon after. */
+  private stallClaimEvidence: { holder: string; epoch: number; atMono: number } | null = null;
+  /** Running time lost in recent gaps (within one TTL), for bursts of shorter stalls. */
+  private lostSamples: Array<{ atMs: number; lostMs: number }> = [];
+  private stallLastLogged: string | null = null;
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
@@ -508,6 +528,18 @@ export class LeaseCoordinator {
                 });
               }
               this.staleTakeoverEvidence = null;
+            }
+            if (this.stallClaimEvidence?.holder === obs.lease.holder) {
+              // stall-wake-lease-reconfirm outcome check: the holder taken over after a stall was alive.
+              const sinceMs = this.monotonicNow() - this.stallClaimEvidence.atMono;
+              if (sinceMs <= 10 * 60_000) {
+                featureEvidence.record('multiMachine.takeoverReadyPool', {
+                  kind: 'error',
+                  reason: 'stall reconfirm: suspected overlap — the holder taken over after a stall signed a newer renewal soon after',
+                  context: { holder: obs.lease.holder, takeoverEpoch: this.stallClaimEvidence.epoch, holderEpoch: obs.lease.epoch, msSinceTakeover: sinceMs },
+                });
+              }
+              this.stallClaimEvidence = null;
             }
           }
           if (obs.lease.epoch > epoch) {
@@ -776,7 +808,211 @@ export class LeaseCoordinator {
    * observedPeerLease() reflects whatever a peer just disclosed.
    */
   async pullFromPeers(): Promise<void> {
+    const startedAt = this.now();
+    this.stampAwakeIfOn();
     if (this.d.tunnel?.pullAllPeers) await this.d.tunnel.pullAllPeers();
+    // Every dial of this round has ended and its reply (if any) is folded.
+    if (startedAt > this.lastCompletedRoundStartedAtMs) this.lastCompletedRoundStartedAtMs = startedAt;
+  }
+
+  // ── stall-wake-lease-reconfirm (docs/specs/stall-wake-lease-reconfirm.md) ──
+
+  private stallReconfirmSettings(): StallReconfirmSettings | null {
+    try {
+      const s = this.d.stallReconfirm?.();
+      return s?.enabled ? s : null;
+    } catch {
+      return null; // @silent-fallback-ok: an unreadable switch keeps today's acquisition, which is the shipped default
+    }
+  }
+
+  /** Whether the stall reconfirm switch is on right now. */
+  stallReconfirmEnabled(): boolean {
+    return this.stallReconfirmSettings() !== null;
+  }
+
+  /** The open stall episode, for diagnostics and tests (null = none). */
+  stallEpisodeOpen(): { openedAtMs: number; gapMs: number } | null {
+    return this.stallEpisode ? { openedAtMs: this.stallEpisode.openedAtMs, gapMs: this.stallEpisode.gapMs } : null;
+  }
+
+  private stampAwakeIfOn(): void {
+    const s = this.stallReconfirmSettings();
+    if (s) this.stampAwake(s);
+  }
+
+  /**
+   * Stamp the awake clock; a gap above the threshold opens (or re-opens) an episode. Called on
+   * a 2 s timer and at every acquire and pull, so whichever runs first after a stall sees the
+   * gap — libuv's timer order at wake decides nothing here.
+   */
+  private stampAwake(s: StallReconfirmSettings): void {
+    const next = { wallMs: this.now(), monoMs: this.monotonicNow() };
+    const prev = this.awakeStamp;
+    this.awakeStamp = next;
+    if (!this.awakeTimer) {
+      this.awakeTimer = setInterval(() => {
+        const live = this.stallReconfirmSettings();
+        if (live) { this.stampAwake(live); return; }
+        // Switched off: stop stamping and forget the clock, so a later switch-on starts clean.
+        if (this.awakeTimer) clearInterval(this.awakeTimer);
+        this.awakeTimer = null;
+        this.awakeStamp = null;
+        this.stallEpisode = null;
+        this.lostSamples = [];
+      }, AWAKE_STAMP_INTERVAL_MS);
+      this.awakeTimer.unref?.();
+    }
+    if (!prev) return;
+    const gap = awakeGapMs(prev, next);
+    const lost = lostInGapMs(gap);
+    if (lost <= 0) { this.ageOutStallEpisode(); return; }
+    const ttl = this.fl.ttlMs;
+    this.lostSamples = this.lostSamples.filter((x) => next.wallMs - x.atMs <= ttl);
+    this.lostSamples.push({ atMs: next.wallMs, lostMs: lost });
+    // A prior episode already past rule C's conditions (judged BEFORE this loss is applied) is over
+    // in substance: a new loss starts a new chain rather than extending the old one.
+    const stale = !!this.stallEpisode && this.freshRoundCompletedSinceStall()
+      && prev.wallMs - this.stallEpisode.openedAtMs - this.stallEpisode.lostSinceOpenMs >= this.fl.ttlMs;
+    if (stale) this.stallEpisode = null;
+    if (this.stallEpisode) {
+      // A smaller loss inside an open episode: C counts awake time only, and needs a round after it.
+      this.stallEpisode.lostSinceOpenMs += lost;
+      this.stallEpisode.lastLostAtMs = next.wallMs;
+    }
+    const lostInTtl = lostWithinMs(this.lostSamples, next.wallMs, ttl);
+    const threshold = stallGapMsFor(ttl, s.stallGapMs);
+    if (lostInTtl <= threshold) return;
+    // The losses that opened this episode are spent; only new ones re-open it.
+    this.lostSamples = [];
+    // A re-open inside an open episode keeps the chain's start and its once-per-chain records, so a
+    // sustained starvation that keeps re-opening is still visible as one long hold.
+    const prior = this.stallEpisode;
+    this.stallEpisode = {
+      openedAtMs: next.wallMs,
+      chainStartedAtMono: prior?.chainStartedAtMono ?? next.monoMs,
+      chainStartedAtMs: prior?.chainStartedAtMs ?? next.wallMs,
+      gapMs: lostInTtl,
+      heldRecorded: prior?.heldRecorded ?? false,
+      longHoldRecorded: prior?.longHoldRecorded ?? false,
+      lostSinceOpenMs: 0,
+      lastLostAtMs: next.wallMs,
+      extraPullAttempted: false,
+    };
+    this.stallLastLogged = null;
+    this.log(`stall-reconfirm: opened — this machine lost ${Math.round(lostInTtl / 1000)} s of running time in the last ${Math.round(ttl / 1000)} s (largest gap ${Math.round(gap / 1000)} s; threshold ${Math.round(threshold / 1000)} s); a claim on another machine's lease now needs a fresh answer`);
+  }
+
+  /**
+   * An episode whose holder stayed live (every claim refused by canAcquire before the rule) ends
+   * quietly once rule C's conditions hold: the view is then measured on an awake clock again, and
+   * a later ordinary takeover is not mistaken for a stall-confirmed one.
+   */
+  private ageOutStallEpisode(): void {
+    const ep = this.stallEpisode;
+    if (!ep || !this.freshRoundCompletedSinceStall()) return;
+    // Only when the view shows a live lease (the holder stayed live, or this machine holds it);
+    // otherwise the claim path decides, so a claim rule C allows is recorded as stall-confirmed.
+    const v = this.effectiveView();
+    if (!v.lease || v.lease.released || this.fl.isExpired(v.lease, this.now())) return;
+    if (this.now() - ep.openedAtMs - ep.lostSinceOpenMs >= this.fl.ttlMs) this.closeStallEpisode('aged out: one lease lifetime awake with a completed pull round');
+  }
+
+  /** Stop the awake-clock timer (tests, and a coordinator being replaced). */
+  dispose(): void {
+    if (this.awakeTimer) clearInterval(this.awakeTimer);
+    this.awakeTimer = null;
+    this.awakeStamp = null;
+    this.stallEpisode = null;
+    this.lostSamples = [];
+  }
+
+  private closeStallEpisode(why: string): void {
+    if (!this.stallEpisode) return;
+    this.stallEpisode = null;
+    this.stallLastLogged = null;
+    this.log(`stall-reconfirm: closed — ${why}`);
+  }
+
+  /** A pull round that started at or after the open stall episode has completed. */
+  private freshRoundCompletedSinceStall(): boolean {
+    return !!this.stallEpisode && this.lastCompletedRoundStartedAtMs >= Math.max(this.stallEpisode.openedAtMs, this.stallEpisode.lastLostAtMs);
+  }
+
+  /**
+   * The stall rule for one claim on `lease` (held by another machine). Null = no rule applies
+   * (switch off, no episode, nothing can be asked); otherwise the verdict, logged once per change.
+   * The episode is NOT closed here: it closes only when a claim it allowed actually lands, so a
+   * CAS loss that re-evaluates against another holder is judged on that holder's own evidence.
+   */
+  private evaluateStallReconfirmNow(holderId: string, epoch: number): StallReconfirmVerdict | null {
+    const lease = { holder: holderId || '(none)', epoch };
+    const s = this.stallReconfirmSettings();
+    if (!s) return null;
+    this.stampAwake(s);
+    const ep = this.stallEpisode;
+    if (!ep) return null;
+    if (!this.canPullPeers()) {
+      // A git-only mesh: nothing can be asked over a pull, so today's rule applies.
+      this.closeStallEpisode('no pull-capable transport; today\'s rule applies');
+      return null;
+    }
+    let verdict: StallReconfirmVerdict;
+    try {
+      verdict = evaluateStallReconfirm({
+        nowMs: this.now(),
+        episodeOpenedAtMs: ep.openedAtMs,
+        ttlMs: this.fl.ttlMs,
+        holderId,
+        freshRoundCompleted: this.freshRoundCompletedSinceStall(),
+        lostSinceOpenMs: ep.lostSinceOpenMs,
+        // The chain cap on the monotonic clock: a wall-clock step cannot age it.
+        chainAwakeMs: Math.max(0, this.monotonicNow() - ep.chainStartedAtMono),
+      });
+    } catch (err) {
+      // A fault reading the evidence holds the claim (the safe side) and says why; the next tick retries.
+      verdict = { claim: false, rule: 'waiting', reason: `evidence unreadable: ${err instanceof Error ? err.message.slice(0, 120) : 'unknown'}` };
+    }
+    const key = `${lease.holder}:${verdict.rule}:${verdict.claim ? 'claim' : 'hold'}`;
+    if (key !== this.stallLastLogged) {
+      this.stallLastLogged = key;
+      this.log(`stall-reconfirm: ${verdict.claim ? 'claim allowed' : 'claim held'} (${verdict.rule}) — ${verdict.reason}`);
+    }
+    const waitedMs = Math.max(0, this.now() - ep.chainStartedAtMs);
+    if (!verdict.claim && !ep.heldRecorded) {
+      ep.heldRecorded = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'held',
+        reason: 'stall reconfirm: a claim on an aged view was held after a stall',
+        context: { holder: lease.holder, epoch: lease.epoch, lostMs: ep.gapMs },
+      });
+    }
+    if (!verdict.claim && !ep.longHoldRecorded && waitedMs > 2 * this.fl.ttlMs) {
+      // Rule C allows a claim after one TTL awake with a completed round; still holding at two
+      // means no pull round has completed since the stall, so the pool may be without a lead.
+      ep.longHoldRecorded = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'error',
+        reason: 'stall reconfirm: a claim is still held two lease lifetimes after a stall (no pull round completed, or this machine keeps stalling)',
+        context: { holder: lease.holder, epoch: lease.epoch, waitedMs, lostMs: ep.gapMs },
+      });
+    }
+    return verdict;
+  }
+
+  /** A claim the stall rule allowed has landed: record it, watch the old holder, close the episode. */
+  private noteStallConfirmedClaim(verdict: StallReconfirmVerdict, from: { holder: string; epoch: number }, epoch: number): void {
+    const ep = this.stallEpisode;
+    featureEvidence.record('multiMachine.takeoverReadyPool', {
+      kind: 'fired',
+      reason: 'stall reconfirm: a claim after a stall was confirmed by fresh evidence',
+      context: { rule: verdict.rule, holder: from.holder, fromEpoch: from.epoch, toEpoch: epoch, lostMs: ep?.gapMs ?? null, waitedMs: ep ? Math.max(0, this.now() - ep.openedAtMs) : null },
+    });
+    // The overlap watch only for another machine's lease (never this machine's own, or none).
+    if (from.holder !== this.selfMachineId && from.holder !== '(none)') {
+      this.stallClaimEvidence = { holder: from.holder, epoch, atMono: this.monotonicNow() };
+    }
+    this.closeStallEpisode(`claim confirmed (${verdict.rule}) and taken at epoch ${epoch}`);
   }
 
   /**
@@ -1047,6 +1283,8 @@ export class LeaseCoordinator {
     const legacyDead = liveness ? undefined : this.d.presumedDeadHolders({ liveness: false });
     let retries = 0;
     let askedPeers = false;
+    let askedAfterStall = false;
+    this.stampAwakeIfOn();
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const view = this.effectiveView();
@@ -1090,10 +1328,32 @@ export class LeaseCoordinator {
         await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
         continue;
       }
+      // stall-wake-lease-reconfirm: after a stall, a lapsed-looking lease (another machine's, or
+      // this machine's own, which a peer may have taken over meanwhile) is re-asked over every
+      // route before any claim; what the pull brings back lands in the view, so a live holder or
+      // a newer epoch is refused by the check above on the next pass.
+      let stallVerdict: StallReconfirmVerdict | null = null;
+      // Every view is gated while an episode is open: another machine's lease, this machine's own
+      // lapsed one, or a released / empty view (a third machine may have taken a newer epoch during
+      // the stall). There is no holder to probe for the latter two, so rule C decides.
+      stallVerdict = this.evaluateStallReconfirmNow(view.lease && !view.lease.released ? view.lease.holder : '', view.lease?.epoch ?? view.epoch);
+      if (stallVerdict && !stallVerdict.claim) {
+        // One fresh round per episode from here; afterwards the 5 s pull loop supplies them,
+        // so a starved machine nudged every tick does not double its pull rate.
+        if (!askedPeers && !askedAfterStall && this.stallEpisode && !this.stallEpisode.extraPullAttempted
+            && !this.freshRoundCompletedSinceStall() && this.canPullPeers()) {
+          askedAfterStall = true;
+          this.stallEpisode.extraPullAttempted = true;
+          await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+          continue;
+        }
+        return false;
+      }
       const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
       const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (stallVerdict?.claim) this.noteStallConfirmedClaim(stallVerdict, { holder: view.lease && !view.lease.released ? view.lease.holder : '(none)', epoch: view.epoch }, candidate.epoch);
         if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
           this.staleTakeoverEvidence = { holder: view.lease.holder, epoch: candidate.epoch, atMono: this.monotonicNow() };
           featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
