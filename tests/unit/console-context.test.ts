@@ -10,7 +10,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  buildContextPage, contextNeeds, canaryLine, readState, trialLines, topicRow, fmtBytes, STUCK_AFTER_MS,
+  buildContextPage, contextNeeds, canaryLine, readState, trialLines, practiceLines, topicRow, fmtBytes, STUCK_AFTER_MS,
 } from '../../dashboard/console/context-model.js';
 import { NEED_SOURCES, surfacedNeeds } from '../../dashboard/console/needs-model.js';
 import { combineNeeds } from '../../dashboard/console/home-model.js';
@@ -357,6 +357,30 @@ describe('navigation', () => {
   });
 });
 
+const PRACTICE = { graded: 3, exit: { needed: 40, reached: false }, lostRate: 0.04, wouldRollBack: 1, protectedLost: 0, reasons: { 'not-clean: mid-turn': 5, 'below-margin': 2, 'step-threw': 1 }, byOutcome: { graded: 3, skipped: 7, declined: 0, aborted: 1 }, recent: [] };
+
+describe('practice folds, every branch', () => {
+  it('off, absent, failed, unreadable and ok', () => {
+    expect(practiceLines(OFF).lines).toEqual(['Practice runs are switched off on this machine.']);
+    expect(practiceLines(ABSENT).state).toBe('absent');
+    expect(practiceLines(FAIL).state).toBe('failed');
+    const ok3 = practiceLines(ok(PRACTICE));
+    expect(ok3.state).toBe('ok');
+    expect(ok3.lines.map((l: any) => l.tone)).toEqual(['unknown', 'ok', 'muted', 'muted']);
+  });
+  it('a lost rate over 5% or a lost protected item reads as needing a look', () => {
+    const r = practiceLines(ok({ ...PRACTICE, lostRate: 0.2, protectedLost: 2 }));
+    expect(r.lines.filter((l: any) => l.tone === 'attn').map((l: any) => l.text)).toEqual(['In those, 20% of the quiz answers would have been lost. 1 run would have been undone.', '2 runs would have lost your own words or a decision.']);
+  });
+  it('the exit reached reads ok; no record yet reads 0 of 40', () => {
+    expect(practiceLines(ok({ ...PRACTICE, graded: 41, exit: { needed: 40, reached: true } })).lines[0]).toEqual({ tone: 'ok', text: '41 practice runs graded of the 40 needed before anything goes further.' });
+    expect(practiceLines(ok({ graded: 0, exit: { needed: 40, reached: false }, lostRate: null, reasons: {} })).lines[0].text).toBe('0 practice runs graded of the 40 needed before anything goes further.');
+  });
+  it('an older server without the record: the page has no practice block at all', () => {
+    expect(buildContextPage({ layers: ok(layers()), metrics: ok(metrics()), sentinel: ok(sentinel()), delta: ok(delta()) }).practice).toBeNull();
+  });
+});
+
 describe('the shipped page in jsdom', () => {
   async function render(reads: Record<string, unknown>) {
     const dom = new JSDOM('<!doctype html><body><main id="main"></main></body>', { url: 'http://localhost/dashboard/console/#/settings/context', pretendToBeVisual: true });
@@ -372,11 +396,26 @@ describe('the shipped page in jsdom', () => {
   }
   const R = (o: Record<string, unknown> = {}) => ({
     '/context-budget/layers': ok(layers()), '/context-budget/metrics': ok(metrics()), '/context-budget/sentinel': ok(sentinel()), '/context-budget/delta-shadow': ok(delta()),
+    '/context-budget/fold-shadow': ok(PRACTICE),
     '/telegram/topics?scope=pool': ok({ topics: [{ topicId: TOPIC, topicName: 'Build desk' }] }), ...o,
   });
-  it('reads exactly the four routes plus the topic names', async () => {
+  it('reads exactly the five routes plus the topic names', async () => {
     const { get } = await render(R());
-    expect(get.mock.calls.map((c: any[]) => c[0]).sort()).toEqual(['/context-budget/delta-shadow', '/context-budget/layers', '/context-budget/metrics', '/context-budget/sentinel', '/telegram/topics?scope=pool']);
+    expect(get.mock.calls.map((c: any[]) => c[0]).sort()).toEqual(['/context-budget/delta-shadow', '/context-budget/fold-shadow', '/context-budget/layers', '/context-budget/metrics', '/context-budget/sentinel', '/telegram/topics?scope=pool']);
+  });
+  it('the practice folds block: graded toward the exit, the would-be loss, why others did not run, in plain words', async () => {
+    const { main } = await render(R());
+    const text = main.textContent;
+    expect(text).toContain('Practice folds');
+    expect(text).toContain('3 practice runs graded of the 40 needed before anything goes further.');
+    expect(text).toContain('4% of the quiz answers would have been lost');
+    expect(text).toContain('Not run: 5 not at a calm stopping point; 2 would not have saved enough');
+    expect(text).not.toMatch(/not-clean|below-margin|step-threw|shadow-graded/);
+  });
+  it('practice folds switched off: one plain line in its block, nothing else changes', async () => {
+    const { main } = await render(R({ '/context-budget/fold-shadow': OFF }));
+    expect(main.textContent).toContain('Practice runs are switched off on this machine.');
+    expect(main.textContent).toContain('Trial: sending only what changed');
   });
   it('healthy: every section, the named conversation, and no ids, routes or config keys on screen', async () => {
     const { main } = await render(R());

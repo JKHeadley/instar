@@ -32,6 +32,7 @@ const ACK_TIMEOUT: Record<MessageType, number | null> = {
   handoff: null,
   wellness: 2,
   system: null,
+  'delivery-notice': null,
 };
 
 /** Layer 1 retry backoff schedule (seconds). Doubles after each attempt. */
@@ -51,6 +52,26 @@ export interface DeliveryRetryManagerConfig {
   agentName: string;
   /** Callback for escalation (e.g., send to Telegram) */
   onEscalate?: (envelope: MessageEnvelope, reason: string) => void;
+  /**
+   * messages-reach-renamed-sessions §B: true when the envelope is addressed to this
+   * machine (its id, 'local', or unset). Retries, the watchdog and the ACK-timeout step
+   * act only on these. Absent ⇒ every envelope (today's behaviour).
+   */
+  isLocalEnvelope?: (envelope: MessageEnvelope) => boolean;
+  /** §B: is the pinned session (name + Session.id) still the running one? */
+  isPinnedSessionLive?: (tmuxSession: string, sessionId: string) => boolean;
+  /** §C: a local envelope that was never typed reached a dead letter. Never throws. */
+  onDeadLetter?: (envelope: MessageEnvelope, reason: string) => void;
+  /**
+   * §D.6: true for an origin copy of a cross-machine message that is kept open for a
+   * late remote notice; the TTL sweep skips it.
+   */
+  holdForRemoteNotice?: (envelope: MessageEnvelope) => boolean;
+}
+
+/** A message counts as typed once it reached 'delivered' (the paste succeeded). */
+export function wasEverTyped(envelope: MessageEnvelope): boolean {
+  return envelope.delivery.transitions.some((t) => t.to === 'delivered');
 }
 
 export class DeliveryRetryManager {
@@ -194,6 +215,10 @@ export class DeliveryRetryManager {
     }
   }
 
+  private notifyDeadLetter(envelope: MessageEnvelope, reason: string): void {
+    try { this.config.onDeadLetter?.(envelope, reason); } catch { /* @silent-fallback-ok: notice is best-effort; the dead letter is recorded */ }
+  }
+
   /**
    * Inner cycle body extracted so `tick()` and `runRecoveryCycle()` share
    * one implementation under one in-flight latch.
@@ -208,12 +233,16 @@ export class DeliveryRetryManager {
     for (const envelope of inbox) {
       const phase = envelope.delivery.phase;
       const messageId = envelope.message.id;
+      const local = this.config.isLocalEnvelope ? this.config.isLocalEnvelope(envelope) : true;
 
       // ── TTL Expiry Check ──────────────────────────────────
       if (this.isExpired(envelope)) {
+        // §D.5: the relay queue ends its own envelopes after one pass.
+        if (phase === 'relaying' || (this.config.holdForRemoteNotice?.(envelope) ?? false)) continue;
         if (phase !== 'read' && phase !== 'dead-lettered' && phase !== 'failed' && phase !== 'expired') {
           await this.store.deadLetter(messageId, 'TTL expired');
           expired++;
+          if (local && !wasEverTyped(envelope)) this.notifyDeadLetter(envelope, 'TTL expired');
 
           // Escalate critical/alert to callback
           const priority = envelope.message.priority;
@@ -229,6 +258,8 @@ export class DeliveryRetryManager {
       // ── Layer 2 Retry: queued or undelivered messages ─────
       // 'undelivered' is entered by SpawnRequestManager.dispose() handoff.
       // It participates in Layer-2 retry identically to 'queued'.
+      if (!local) continue;
+
       if (phase === 'queued' || phase === 'undelivered') {
         const state = this.retryState.get(messageId) ?? {
           attempts: 0,
@@ -241,6 +272,7 @@ export class DeliveryRetryManager {
           await this.store.deadLetter(messageId, `Layer 2 max retries exceeded (${LAYER2_MAX_RETRIES})`);
           expired++;
           this.retryState.delete(messageId);
+          if (!wasEverTyped(envelope)) this.notifyDeadLetter(envelope, `not delivered after ${LAYER2_MAX_RETRIES} tries`);
           continue;
         }
 
@@ -249,8 +281,19 @@ export class DeliveryRetryManager {
           continue; // Not yet time to retry
         }
 
-        // Attempt redelivery
-        const targetSession = envelope.message.to.session;
+        // Attempt redelivery: held to the pinned session (§B), never re-resolved.
+        const targetSession = envelope.delivery.resolvedSession ?? envelope.message.to.session;
+        const pinId = envelope.delivery.resolvedSessionId;
+        if (pinId && this.config.isPinnedSessionLive && !this.config.isPinnedSessionLive(targetSession, pinId)) {
+          const now = new Date().toISOString();
+          envelope.delivery.transitions.push({ from: phase, to: 'failed', at: now, reason: 'resolved-session-ended' });
+          envelope.delivery.phase = 'failed';
+          envelope.delivery.failureReason = 'resolved-session-ended';
+          await this.store.updateEnvelope(envelope);
+          this.retryState.delete(messageId);
+          this.notifyDeadLetter(envelope, 'resolved-session-ended');
+          continue;
+        }
         const result = await this.delivery.deliverToSession(targetSession, envelope);
 
         state.attempts++;
@@ -320,7 +363,7 @@ export class DeliveryRetryManager {
         continue;
       }
 
-      const targetSession = envelope.message.to.session;
+      const targetSession = envelope.delivery.resolvedSession ?? envelope.message.to.session;
       const safety = await this.delivery.checkInjectionSafety(targetSession);
 
       // If session process changed to something unsafe (crash/restart),

@@ -271,6 +271,11 @@ export interface RelayServerConfig {
   registryDataDir?: string;
   /** Relay ID for registry entries. Default: auto-generated */
   relayId?: string;
+  /**
+   * SEC-139: the request header the front proxy sets with the caller address (for example
+   * `fly-client-ip`). Unset means no header is trusted and the socket address is used.
+   */
+  clientAddressHeader?: string;
 }
 
 export interface RelayClientConfig {

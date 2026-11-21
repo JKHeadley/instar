@@ -37,6 +37,55 @@ export interface LayerTickerDeps {
   liveSecrets?: () => readonly string[];
   now?: () => number;
   baseMs?: number;
+  /**
+   * The topic's recorded fold lock windows (§10 suppression carrier): the
+   * transcript entries a fold's internal turns occupy (the handoff request and
+   * its reply). The ticker skips them, so an internal turn never becomes the
+   * conversation's current-work awareness.
+   */
+  lockWindows?: (topicId: number) => ReadonlyArray<{ fromEntry?: string; toEntry?: string; closedAt?: number }>;
+}
+
+/**
+ * Drop the lines inside any lock window: every line AFTER the window's
+ * `fromEntry` (the last entry before the internal turn was injected) up to
+ * and including its `toEntry`. A window without a `toEntry` ends at the first
+ * line timestamped after its `closedAt` (a fold that ended early); one with
+ * neither (a fold still open) drops everything after its start. When the tail
+ * no longer holds a window's start but still holds its end, the window is
+ * open from the tail's first line. Lines without a uuid follow their window.
+ */
+export function dropLockWindows(lines: readonly string[], windows: ReadonlyArray<{ fromEntry?: string; toEntry?: string; closedAt?: number }>): string[] {
+  const ws = windows.filter((w) => (typeof w.fromEntry === 'string' && w.fromEntry.length > 0) || typeof w.toEntry === 'string');
+  if (ws.length === 0) return [...lines];
+  // The entry's own top-level uuid and timestamp (never values nested inside its content).
+  const parse = (line: string): { uuid: string | null; ts: number | null } => {
+    try {
+      const r = JSON.parse(line) as { uuid?: unknown; timestamp?: unknown };
+      const ts = typeof r.timestamp === 'string' ? Date.parse(r.timestamp) : NaN;
+      return { uuid: typeof r.uuid === 'string' ? r.uuid : null, ts: Number.isFinite(ts) ? ts : null };
+    } catch { return { uuid: null, ts: null }; } // @silent-fallback-ok — a torn line has no uuid; it follows its neighbours in or out of a window
+  };
+  const parsed = lines.map(parse);
+  const present = new Set(parsed.map((p) => p.uuid).filter((u): u is string => !!u));
+  type Open = { toEntry?: string; closedAt?: number };
+  // A window whose start scrolled out of the tail but whose end is still in it: open from the top.
+  let open: Open | null = (() => {
+    const w = ws.find((x) => x.toEntry && present.has(x.toEntry) && !(x.fromEntry && present.has(x.fromEntry)));
+    return w ? { toEntry: w.toEntry } : null;
+  })();
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const { uuid, ts } = parsed[i];
+    if (open) {
+      if (open.toEntry !== undefined) { if (uuid === open.toEntry) open = null; continue; }
+      if (open.closedAt !== undefined && ts !== null && ts > open.closedAt) { open = null; } else continue;
+    }
+    out.push(lines[i]);
+    const w = uuid ? ws.find((x) => x.fromEntry === uuid) : undefined;
+    if (w) open = { ...(w.toEntry ? { toEntry: w.toEntry } : {}), ...(w.toEntry === undefined && typeof w.closedAt === 'number' ? { closedAt: w.closedAt } : {}) };
+  }
+  return out;
 }
 
 export interface LayerTickerStatus {
@@ -118,7 +167,9 @@ export class LayerTicker {
     if (!tail) { this.st.skipped.unreadable++; return; }
     let secrets: readonly string[] = [];
     try { secrets = this.d.liveSecrets?.() ?? []; } catch { secrets = []; /* @silent-fallback-ok — the shape scrub still runs */ }
-    const digest = buildTickDigest(tail.lines, { liveSecrets: secrets });
+    let windows: ReadonlyArray<{ fromEntry?: string; toEntry?: string; closedAt?: number }> = [];
+    try { windows = this.d.lockWindows?.(s.topicId) ?? []; } catch { windows = []; /* @silent-fallback-ok — an unreadable window log means no recorded window; the fold hold kept the turn off the channel anyway */ }
+    const digest = buildTickDigest(windows.length ? dropLockWindows(tail.lines, windows) : tail.lines, { liveSecrets: secrets });
     if (!digest) { this.st.skipped.noDigest++; st.lastSize = tail.size; st.lastTickAt = now; return; }
     // Deferred, not dropped: the size is not advanced, so the next due pass retries.
     const reserve = estimateTokens(digest.text) + 2_500;

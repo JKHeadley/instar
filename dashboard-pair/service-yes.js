@@ -103,10 +103,9 @@ function page(d) {
     line('Account', d.account),
     el('section', {}, el('h2', { text: 'Whose accounts' }), el('p', { text: 'I can fully manage your own accounts, use accounts of my own, or both. That’s your choice, and you can tell me in chat.' })),
     line('If you say no', d.backup || 'There’s no backup yet.'),
-    // A service that keeps a copy of the agent's secrets names what it would copy. Names only; values never reach a page.
-    Array.isArray(d.copies) ? el('section', {}, el('h2', { text: 'What gets copied' }), el('p', { text: d.copies.length
-      ? `A copy of ${d.copies.length} stored secret${d.copies.length === 1 ? '' : 's'}, by name: ${d.copies.join(', ')}. Only the names are shown here; the values go straight from this machine to your vault.`
-      : 'Nothing yet: this agent has no stored secrets to copy. New ones are copied as they appear.' })) : null,
+    // A service that keeps a copy of the agent's secrets says how many it would copy. SEC-129: the names come only
+    // with the PIN (they are not in the page's first answer, which anyone can load). Values never reach a page.
+    typeof d.copiesCount === 'number' ? copiesSection(d, pin, error) : null,
     el('section', {}, el('h2', { text: 'After you say yes' }), el('p', { text: 'Setup is my job. I’ll only ask you for a decision, such as a payment, or a credential.' })),
     d.asksRecipient ? el('section', {}, el('h2', { text: 'Who I email' }), el('p', { text: d.recipientFixed
       ? 'Only you, at the address below. Email is set up with an account opened at your address, so it stays that address; a different one means a new setup.'
@@ -134,6 +133,42 @@ const CODE_REFUSED = {
   'code-none': 'There’s no code waiting. I’ll send a new test email.',
   'code-recipient-changed': 'The address changed since that code was sent. I’ll send a new test email.',
 };
+
+// SEC-129: the count is public; the names need the PIN typed above. Asking for them spends nothing and changes nothing.
+function copiesSection(d, pin, error) {
+  if (d.copiesCount === 0) return el('section', {}, el('h2', { text: 'What gets copied' }), el('p', { text: 'Nothing yet: this agent has no stored secrets to copy. New ones are copied as they appear.' }));
+  const text = el('p', { text: `A copy of ${d.copiesCount} stored secret${d.copiesCount === 1 ? '' : 's'}. The values go straight from this machine to your vault. To see their names first, type your PIN below and tap the button.` });
+  const showNames = el('button', { class: 'pair-link-button', type: 'button', text: 'Show their names' });
+  showNames.onclick = async () => {
+    error.textContent = '';
+    showNames.disabled = true;
+    try {
+      const r = await fetch(`/recommended-services/${encodeURIComponent(service)}/confirm`, {
+        method: 'POST', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+        body: JSON.stringify({ token: d.token, pin: pin.value, answer: 'names', reason: 'none', shutdown: false }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok && Array.isArray(body.copies)) {
+        text.textContent = body.copies.length
+          ? `A copy of ${body.copies.length} stored secret${body.copies.length === 1 ? '' : 's'}, by name: ${body.copies.join(', ')}. Only the names are shown here; the values go straight from this machine to your vault.`
+          : 'Nothing yet: this agent has no stored secrets to copy. New ones are copied as they appear.';
+        showNames.remove();
+        return;
+      }
+      error.textContent = r.status === 429 ? 'Too many tries. Wait a while, then try again.'
+        : body.error === 'insecure-connection' ? REFUSED['insecure-connection']
+        : r.status === 403 ? 'That PIN didn’t work. Type it below, then try again.'
+          : (REFUSED[body.error] || 'That didn’t work. Reload the page and try again.');
+      if (r.status === 403 && body.error !== 'insecure-connection') pin.value = '';
+    } catch {
+      error.textContent = 'This machine didn’t answer. Try again in a moment.';
+    } finally {
+      showNames.disabled = false;
+    }
+  };
+  return el('section', {}, el('h2', { text: 'What gets copied' }), text, showNames);
+}
 
 // The proof email's code (shapes A and C): the owner enters it here, with their PIN, to confirm the address is theirs.
 function codeSection() {

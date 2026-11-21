@@ -34,7 +34,8 @@ import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import type { HeartbeatManager, Heartbeat } from '../core/HeartbeatManager.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import type { MachineAuthContext, MachineAuthDeps } from './machineAuth.js';
-import { machineAuthMiddleware, ChallengeStore, signLeaseAck } from './machineAuth.js';
+import { machineAuthMiddleware, ChallengeStore, signLeaseAck, signRelayAnswer } from './machineAuth.js';
+import { RELAY_MACHINE_PATH, RELAY_MACHINE_LEGACY_PATH } from '../messaging/types.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import { PairingSessionStore } from '../core/PairingSessionStore.js';
 import { validatePairingCode } from '../core/PairingProtocol.js';
@@ -1352,29 +1353,41 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Protected by Machine-HMAC (5-header scheme). Envelope carries Ed25519 signature
   // verified by the MessageRouter.relay() method.
 
-  router.post('/api/messages/relay-machine', authMiddleware, async (req, res) => {
+  // messages-reach-renamed-sessions §D: the relay answers with a SIGNED ack or nack,
+  // bound to this machine, the message id and the request's nonce. The legacy path is
+  // a permanent machine-auth alias for older senders.
+  const relayMachineHandler = async (req: import('express').Request, res: import('express').Response) => {
     if (!ctx.messageRouter) {
       res.status(503).json({ error: 'Messaging not available' });
       return;
     }
+    const envelope = req.body;
+    const messageId: string = typeof envelope?.message?.id === 'string' ? envelope.message.id : '';
+    const reqNonce = String(req.headers['x-nonce'] ?? '');
+    const answer = (code?: string) => {
+      const a = { machineId: ctx.localMachineId, messageId, reqNonce, ...(code ? { code } : {}) };
+      return { a, sig: signRelayAnswer(a, ctx.localSigningKeyPem) };
+    };
+    if (!messageId) {
+      res.status(400).json({ error: 'Invalid envelope', code: 'relay-invalid-envelope' });
+      return;
+    }
     try {
-      const envelope = req.body;
-      if (!envelope?.message?.id) {
-        res.status(400).json({ error: 'Invalid envelope' });
+      const requestSigner = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+      const result = await ctx.messageRouter.relayFromMachine(envelope, requestSigner);
+      if (result.outcome === 'refused') {
+        const { a, sig } = answer(result.code);
+        res.status(409).json({ error: 'Relay refused', code: result.code, nack: a, sig });
         return;
       }
-
-      // Ed25519 signature verification happens inside relay() for source='machine'
-      const accepted = await ctx.messageRouter.relay(envelope, 'machine');
-      if (accepted) {
-        res.json({ ok: true });
-      } else {
-        res.status(409).json({ error: 'Relay rejected (loop, duplicate, or invalid signature)' });
-      }
+      const { a, sig } = answer();
+      res.json({ ok: true, duplicate: result.outcome === 'duplicate', ack: a, sig });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Relay failed' });
     }
-  });
+  };
+  router.post(RELAY_MACHINE_PATH, authMiddleware, relayMachineHandler);
+  router.post(RELAY_MACHINE_LEGACY_PATH, authMiddleware, relayMachineHandler);
 
   return router;
 }

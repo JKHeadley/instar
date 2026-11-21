@@ -28,7 +28,8 @@ import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 import { heldExpiryReportDue } from './TokenlessNoticeBrakes.js';
-import { definiteSessionLine, lateDeliverySessionBatch, lateLineForParseMode, lateRecoveredReplyNotice, LATE_REPLY_THRESHOLD_MS, ownerUnstatedSessionLine, uncertainSessionLine } from './SessionDeliveryNotice.js';
+import { definiteSessionLine, isStaleRelease, lateDeliverySessionBatch, lateLineForParseMode, lateRecoveredReplyNotice, LATE_REPLY_THRESHOLD_MS, ownerUnstatedSessionLine, retirementSessionLine, STALE_HELD_RELEASE_MS, uncertainSessionLine } from './SessionDeliveryNotice.js';
+import type { RetireResult, RetirementReason, RetirementRow } from './OriginStoreBackend.js';
 import type { DefiniteFailureCause } from './SessionDeliveryNotice.js';
 import { forwardExpiryArm } from './OriginForwardToHolder.js';
 import type { HeldForwardDetail } from './OriginForwardToHolder.js';
@@ -90,7 +91,7 @@ export interface TelegramOriginRuntimeOptions {
   holdsLease?: () => boolean;
   /** §4.2 — recovery of a held FORWARDED operation (execution owner ≠ self).
    * Wired by the server; absent ⇒ such rows are retained, never executed here. */
-  forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'settled' | 'retained' | 'skipped'>;
+  forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'settled' | 'retained' | 'skipped' | 'retired'>;
   /** standby-durable-forward-without-token §2 — ONE reachability check per recovery pass, before any
    * per-row reservation or attempt. `false` ⇒ every forwarded row is skipped this pass with no
    * write at all (its ladder is NOT advanced: no attempt was made). Absent ⇒ always reachable. */
@@ -109,6 +110,12 @@ export interface TelegramOriginRuntimeOptions {
   injectSessionLine?: (binding: OriginSessionBinding, text: string) => Promise<boolean> | boolean;
   /** §3a item 8 — the hub-only attention item for a reply handed back to its author (once per operation). */
   raiseHandBackItem?: (row: HeldOperationRow) => Promise<void> | void;
+  /** held-and-startup-parked-send-release §4 — the hub item for retired replies whose author
+   * could not be told (one per topic per pass, with a count). */
+  raiseRetirementItem?: (input: { topicId: string | null; count: number; cause: 'parked-at-startup' | 'queued-unsent' | 'held-lease' | null; reason: RetirementReason;
+    uncertain: boolean; operationIds: string[]; mixedCauses?: boolean }) => Promise<void> | void;
+  /** §4 — every retirement, on every path: clear the held-topic item, resolve token-less debt. */
+  onRetired?: (input: { operationId: string; topicId: string | null }) => Promise<void> | void;
   /** §3a item 7 — one record-only item per topic (`telegram-origin-unresolved:<topicId>`) while unresolved rows remain. */
   syncUnresolvedTopics?: (counts: ReadonlyMap<string, number>) => Promise<void> | void;
   onSessionDeliveryHeld?: (input: { source: 'live' | 'scan'; operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null; outOfOrder?: boolean }) => Promise<void> | void;
@@ -163,6 +170,11 @@ export class TelegramOriginRuntime {
   private closed = false;
   private lastWorkerReopenAt = 0;
   private recovering = false;
+  /** Resolves when the running recovery pass ends (the operator retire waits on it). */
+  #passDone: Promise<void> = Promise.resolve();
+  #endPass: (() => void) | null = null;
+  private beginPass(): void { this.recovering = true; this.#passDone = new Promise(resolve => { this.#endPass = resolve; }); }
+  private endPass(): void { this.recovering = false; const end = this.#endPass; this.#endPass = null; end?.(); }
   private importingLegacy = false;
   private stopNoticeIpc?: () => Promise<void>;
   private remoteNotices = new Map<string, OutageNoticeState>();
@@ -602,7 +614,7 @@ export class TelegramOriginRuntime {
   /** §3a items 7, 8 — one session line per operation, whichever carrier reaches it
    * first (`<operationId>:session-line`). Recorded only after it was injected, so a
    * line injected but not recorded is injected again; never one recorded but not sent. */
-  async sessionLine(input: { operationId: string; binding: OriginSessionBinding; text: string; key?: 'session-line' | 'late-line' | 'advisory-line' }): Promise<'sent' | 'already' | 'no-session' | 'failed'> {
+  async sessionLine(input: { operationId: string; binding: OriginSessionBinding; text: string; key?: 'session-line' | 'late-line' | 'advisory-line' | 'retire-line' }): Promise<'sent' | 'already' | 'no-session' | 'failed'> {
     const key = input.key ?? 'session-line';
     const eventId = `${input.operationId}:${key}`;
     if (await this.store.hasOperationEvent({ eventId, metric: key }).catch(() => false)) return 'already';
@@ -735,7 +747,7 @@ export class TelegramOriginRuntime {
    * `recoverHeld`, scheduling only — the holder re-runs its full gate. */
   async runForwardLadder(now = Date.now()): Promise<{ processed: number; recovered: number }> {
     if (this.closed || this.recovering || !this.options.forwardRecovery) return { processed: 0, recovered: 0 };
-    this.recovering = true;
+    this.beginPass();
     let processed = 0, recovered = 0;
     try {
       const tick: { reachable?: boolean } = {};
@@ -758,7 +770,7 @@ export class TelegramOriginRuntime {
       if (processed) await this.refreshHeldForward({ force: true });
       await this.flushLateNotes();
       return { processed, recovered };
-    } finally { this.recovering = false; }
+    } finally { this.endPass(); }
   }
   /** Existing runtime maintenance tick owns cleanup and archival; this never
    * dispatches or grants retry authority. Work is bounded and off-event-loop. */
@@ -780,6 +792,8 @@ export class TelegramOriginRuntime {
       // The fold reads operation rows, so a backlog there keeps them in place.
       if (inBudget() && !fold.more) await this.paced('purge', limit => this.store.purgeArchived({ before, limit, keepOperations }));
       if (inBudget()) await this.store.expireAudit({ before: now - auditRetentionDays(this.options.storage.auditRetentionDays) * 24 * 60 * 60_000 });
+      // held-and-startup-parked-send-release §3 — reported retirement audit rows leave with the origin audit horizon.
+      if (inBudget()) await this.store.purgeRetirements({ before: now - auditRetentionDays(this.options.storage.auditRetentionDays) * 24 * 60 * 60_000 });
       this.retentionSucceededAt = now; this.retentionUnavailable = false;
     } catch { this.retentionUnavailable = true; }
     finally { this.retentionRunning = false; }
@@ -815,7 +829,7 @@ export class TelegramOriginRuntime {
    */
   async recoverHeld(): Promise<{ processed: number; recovered: number }> {
     if (this.closed || this.recovering) return { processed: 0, recovered: 0 };
-    this.recovering = true;
+    this.beginPass();
     let processed = 0, recovered = 0;
     try {
       // Healthy workers may be holding another operation's receipt transaction.
@@ -932,11 +946,18 @@ export class TelegramOriginRuntime {
         if (candidate.admitted) {
           const audit = await this.store.getOperation(operation.record.operationId).catch(() => null);
           if (audit?.operation?.holdReason === 'lease-not-held') {
+            // §2(b) — the age check runs on the held row first, so a machine that never regains the
+            // lease still hands a stale hold back at the bound (not only at the 6-hour deadline).
+            if (await this.staleAtSendSite(operation, true)) continue;
             if (this.options.holdsLease && !this.options.holdsLease()) continue;
-            if (!await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'admitted' })) continue;
+            // held-and-startup-parked-send-release §2 — re-admission keeps the durable lease-hold marker.
+            if (!await this.store.readmitLeaseHold({ operationId: operation.record.operationId })) continue;
             this.#observedLeaseHolds.delete(operation.record.operationId);
           }
         }
+        // §2(b) — the age check at the send site, for a reply ever held for the lease or
+        // imported from the startup queue: past the bound it is retired and handed back.
+        if (await this.staleAtSendSite(operation)) continue;
         // Pre-claim holds used to re-run paid review on every recovery tick.
         // Reserve in the same durable owner before entering either review or
         // transport. Memory-held candidates pass this gate too; a missing or
@@ -989,12 +1010,13 @@ export class TelegramOriginRuntime {
         }
       }
       await this.flushLateNotes();
+      await this.reportRetirements().catch(() => undefined);
       await this.refreshHeldForward({ force: true });
       // Notice I/O cannot hold up the outbox drain. The scan is repeatable and
       // uses a cursor so an old or busy topic cannot permanently hide a loss.
       void this.reportSessionDeliveryExceptions();
       return { processed, recovered };
-    } finally { this.recovering = false; }
+    } finally { this.endPass(); }
   }
   /** Historical notice automation has no authority to resume a conversation. */
   private async withholdHistoricalDeliveryNotice(operation: OriginPreparedBotOperation): Promise<boolean> {
@@ -1093,6 +1115,124 @@ export class TelegramOriginRuntime {
     const sent = await this.sessionLine({ operationId: row.operationId, binding, text });
     if (sent === 'no-session' && definite && definite !== 'refused') await this.countOnce(row.operationId, 'definite-no-session');
   }
+  /** held-and-startup-parked-send-release §2(b) — true when the candidate was retired here instead of sent. */
+  private async staleAtSendSite(operation: OriginPreparedBotOperation, heldForLease = false): Promise<boolean> {
+    const record = operation.record, id = record.operationId;
+    const imported = record.producerKind === 'imported-legacy';
+    const memoryLease = this.service.wasLeaseHeldInMemory(id);
+    const leaseHeld = heldForLease || memoryLease || await this.store.wasLeaseHeld(id).catch(() => false);
+    if (!imported && !leaseHeld) return false;
+    const audit = await this.store.getOperation(id).catch(() => null);
+    const op = audit?.operation;
+    // Could not read the row: skip this pass rather than send a lease-held or imported reply unchecked.
+    if (!op) return true;
+    if (!isStaleRelease({ firstPreparedAt: op.firstPreparedAt ?? record.firstPreparedAt ?? null, preparedAt: op.preparedAt, holdDetail: op.holdDetail ?? null }, Date.now())) return false;
+    if (memoryLease || heldForLease) await this.store.markLeaseHeld(id).catch(() => undefined);
+    // A refused retirement is never "sent anyway": the row is left for the next pass.
+    await this.retireStale(id, imported ? 'parked-at-startup' : 'held-lease');
+    return true;
+  }
+  /** §2 — the automatic retirement (import, send site, forward recovery). Runs inside a recovery
+   * pass, so it never takes the pass single-flight; it goes straight to the store. */
+  async retireStale(operationId: string, cause: 'parked-at-startup' | 'held-lease'): Promise<RetireResult> {
+    let result: RetireResult;
+    try { result = await this.store.retireHeldOperation({ operationId, reason: 'stale-hold-handed-back', actor: 'system:stale-bound', cause }); }
+    catch { return { retired: false, refusal: 'store-unavailable' }; }
+    if (result.retired) await this.notifyRetired(operationId, result.topicId);
+    return result;
+  }
+  /** §5 — the operator's retire by id. Waits for a running recovery pass (at most 30 s) and holds
+   * the single-flight while it writes, so it never interleaves with a pass. */
+  async retireHeld(input: { operationId: string; actor: string; note?: string | null; supersededBy?: string | null }): Promise<RetireResult | { retired: false; refusal: 'recovery-busy' }> {
+    const deadline = Date.now() + 30_000;
+    while (this.recovering) {
+      const left = deadline - Date.now();
+      if (left <= 0) return { retired: false, refusal: 'recovery-busy' };
+      await Promise.race([this.#passDone, new Promise(resolve => setTimeout(resolve, Math.min(left, 1000)))]);
+    }
+    this.beginPass();
+    try {
+      const result = await this.store.retireHeldOperation({ operationId: input.operationId, reason: 'retired-by-operator', actor: input.actor,
+        note: input.note ?? null, supersededBy: input.supersededBy ?? null });
+      if (result.retired) { this.service.forgetTerminalHold(input.operationId); await this.notifyRetired(input.operationId, result.topicId); }
+      return result;
+    } finally { this.endPass(); }
+  }
+  /** §3 — the holder retired a reply this machine forwarded: end it and record the retirement in one transaction. */
+  async recordHolderRetired(operationId: string, reason: RetirementReason, machineId: string, detail: Record<string, unknown> | null): Promise<boolean> {
+    const ok = await this.store.recordHolderRetirement({ operationId, reason, holderMachineId: machineId, detail });
+    if (ok) await this.notifyRetired(operationId, (await this.store.getRetirement(operationId).catch(() => null))?.topicId ?? null);
+    return ok;
+  }
+  private async notifyRetired(operationId: string, topicId: string | null): Promise<void> {
+    this.service.forgetTerminalHold(operationId);
+    try { await this.options.onRetired?.({ operationId, topicId }); } catch { /* the held summary refresh carries it */ }
+  }
+  /** §4 — tell the author of each retired reply (session line), else one hub item per topic.
+   * Bounded: 20 due rows per pass; a failed try backs off; after 20 tries it is given up and
+   * reported through DegradationReporter, never silently dropped. */
+  async reportRetirements(now = Date.now()): Promise<number> {
+    let rows: RetirementRow[];
+    try { rows = await this.store.unreportedRetirements({ now, limit: 20 }); } catch { return 0; }
+    let reported = 0;
+    const hub = new Map<string, { rows: RetirementRow[]; uncertain: boolean }>();
+    for (const row of rows) {
+      if (this.closed) break;
+      try {
+        const audit = await this.store.getOperation(row.operationId);
+        const record = audit ? JSON.parse(audit.record.envelopeJson) as TelegramOriginRecord : null;
+        const uncertain = row.priorLastAttempt === 'outcome-unknown' || row.priorLastAttempt === 'local-sent';
+        const binding = record ? this.retirementAuthor(record) : null;
+        if (record && record.producerKind !== 'imported-legacy' && record.originMachineId !== this.options.identity.originMachineId) {
+          // A reply another machine wrote: that machine's author reads the reason through its receipt.
+          if (await this.store.markRetirementReport({ operationId: row.operationId, outcome: 'author-elsewhere', now })) { reported++; await this.notifyRetired(row.operationId, row.topicId); }
+          continue;
+        }
+        const shown = binding ? await this.originalOperationId(row.operationId) : row.operationId;
+        const text = retirementSessionLine({ operationId: shown, ageMs: row.ageMs, reason: row.reason, cause: row.cause, uncertain, actor: row.actor });
+        const sent = binding ? await this.sessionLine({ operationId: row.operationId, binding, text, key: 'retire-line' }) : 'no-session';
+        if (sent === 'sent' || sent === 'already') {
+          // Cleanup is driven from the committed row too, so a crash between the retirement and its
+          // first cleanup is healed here (every cleanup step is idempotent).
+          if (await this.store.markRetirementReport({ operationId: row.operationId, outcome: 'session-line', now })) { reported++; await this.notifyRetired(row.operationId, row.topicId); }
+          continue;
+        }
+        const key = row.topicId ?? 'none';
+        const group = hub.get(key) ?? { rows: [], uncertain: false };
+        group.rows.push(row); group.uncertain ||= uncertain;
+        // No reply text on the hub item: the hub has no per-conversation read check (the text route does).
+        hub.set(key, group);
+      } catch { await this.failRetirementReport(row, now); }
+    }
+    for (const [topicId, group] of hub) {
+      try {
+        const mixed = new Set(group.rows.map(r => `${r.reason}:${r.cause ?? ''}`)).size > 1;
+        await this.options.raiseRetirementItem?.({ topicId: topicId === 'none' ? null : topicId, count: group.rows.length, cause: group.rows[0].cause, mixedCauses: mixed,
+          reason: group.rows[0].reason, uncertain: group.uncertain, operationIds: group.rows.map(r => r.operationId) });
+        if (!this.options.raiseRetirementItem) throw new Error('retirement-item-unwired');
+        for (const row of group.rows) if (await this.store.markRetirementReport({ operationId: row.operationId, outcome: 'attention-item', now })) { reported++; await this.notifyRetired(row.operationId, row.topicId); }
+      } catch { for (const row of group.rows) await this.failRetirementReport(row, now); }
+    }
+    return reported;
+  }
+  private async failRetirementReport(row: RetirementRow, now: number): Promise<void> {
+    if (row.reportAttempts + 1 < 20) { await this.store.markRetirementReport({ operationId: row.operationId, outcome: null, now }).catch(() => false); return; }
+    await this.store.markRetirementReport({ operationId: row.operationId, outcome: 'given-up', now }).catch(() => false);
+    await this.countOnce(row.operationId, 'retirement-never-handed-back');
+    try {
+      DegradationReporter.getInstance().report({ feature: 'telegram-origin.retirement-handback', primary: 'Tell the author (or the attention list) that a held reply was not sent',
+        fallback: 'The reply stays unsent; its text and audit row remain readable by operation id',
+        reason: `hand-back for ${row.operationId} failed 20 times`, impact: 'Nobody was told that this reply was held back.' });
+    } catch { /* reporting only */ }
+  }
+  /** The retired reply's author on THIS machine: a session reply written here, or an imported row attributed to a session. */
+  private retirementAuthor(record: TelegramOriginRecord): OriginSessionBinding | null {
+    if (record.producerKind === 'imported-legacy') {
+      if (record.importedByMachineId !== this.options.identity.originMachineId || !record.sessionId) return null;
+      return { sessionId: record.sessionId, harnessId: record.harnessId ?? '' } as OriginSessionBinding;
+    }
+    return this.authorBinding(record);
+  }
   async importLegacyQueue(): Promise<number> {
     if (this.closed || this.importingLegacy || !this.options.bot.token || !this.options.bot.chatId) return 0;
     this.importingLegacy = true;
@@ -1108,7 +1248,9 @@ export class TelegramOriginRuntime {
         const attribution = await this.service.attributeLegacy(snapshot).catch(() => undefined);
         try { operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId, attribution); }
         catch (error) { console.warn(`[telegram-origin] legacy row not imported: ${error instanceof Error ? error.message : String(error)}`); continue; }
-        if (await this.store.importLegacy({ snapshot, admission: operation.admission })) imported++;
+        const result = await this.store.importLegacy({ snapshot, admission: operation.admission, staleBefore: Date.now() - STALE_HELD_RELEASE_MS });
+        if (result === 'stale-retired') { await this.notifyRetired(operation.record.operationId, Number.isSafeInteger(snapshot.topicId) ? String(snapshot.topicId) : null); continue; }
+        if (result) imported++;
       }
       return imported;
     } finally { this.importingLegacy = false; }

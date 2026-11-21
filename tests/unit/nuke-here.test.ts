@@ -46,9 +46,10 @@ vi.mock('../../src/core/Config.js', async (importOriginal) => {
 
 const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
-  for (const k of ['HOME', 'INSTAR_TEST_REGISTRY_DIR']) savedEnv[k] = process.env[k];
+  for (const k of ['HOME', 'INSTAR_TEST_REGISTRY_DIR', 'INSTAR_AUDIT_LOG_DIR']) savedEnv[k] = process.env[k];
   sandbox.home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'zz-nuke-here-home-')));
   process.env.HOME = sandbox.home;
+  process.env.INSTAR_AUDIT_LOG_DIR = path.join(sandbox.home, 'audit');
   delete process.env.INSTAR_TEST_REGISTRY_DIR;
 });
 afterEach(() => {
@@ -60,7 +61,6 @@ afterEach(() => {
 
 import {
   nukeHere,
-  classifyShadowFile,
   isInstarSourceRepo,
 } from '../../src/commands/nuke.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
@@ -129,40 +129,6 @@ describe('isInstarSourceRepo', () => {
   });
 });
 
-describe('classifyShadowFile', () => {
-  let tmp: string;
-  beforeEach(() => { tmp = mktmp('nuke-here-shadow-'); });
-  afterEach(() => { tmpRm(tmp); });
-
-  it('returns "delete" when there is no .git directory', () => {
-    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# instar-created\n');
-    expect(classifyShadowFile(tmp, 'CLAUDE.md', false)).toBe('delete');
-  });
-
-  it('returns "delete" when the file is untracked in a git repo', () => {
-    gitInit(tmp);
-    fs.writeFileSync(path.join(tmp, 'README.md'), 'seed\n');
-    gitCommitAll(tmp, 'seed');
-    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# instar-created\n');
-    expect(classifyShadowFile(tmp, 'CLAUDE.md', true)).toBe('delete');
-  });
-
-  it('returns "keep" when the file is tracked at HEAD with no working-tree diff', () => {
-    gitInit(tmp);
-    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# pre-existing project context\n');
-    gitCommitAll(tmp, 'add CLAUDE.md');
-    expect(classifyShadowFile(tmp, 'CLAUDE.md', true)).toBe('keep');
-  });
-
-  it('returns "restore" when the tracked file has a working-tree diff (instar modified)', () => {
-    gitInit(tmp);
-    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# pre-existing\n');
-    gitCommitAll(tmp, 'add CLAUDE.md');
-    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# pre-existing\n\n## instar additions\n');
-    expect(classifyShadowFile(tmp, 'CLAUDE.md', true)).toBe('restore');
-  });
-});
-
 describe('nukeHere — filesystem teardown', () => {
   let tmp: string;
   beforeEach(() => { tmp = mktmp('nuke-here-fs-'); });
@@ -196,14 +162,14 @@ describe('nukeHere — filesystem teardown', () => {
     }
   });
 
-  it('removes always-remove artifacts in a non-git project', async () => {
+  it('keeps project artifacts in a non-git project', async () => {
     seedInstall(tmp);
     fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# instar-created\n');
     await nukeHere({ dir: tmp, skipConfirm: true });
     expect(fs.existsSync(path.join(tmp, '.instar'))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, '.claude'))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, '.mcp.json'))).toBe(false);
-    expect(fs.existsSync(path.join(tmp, 'AGENTS.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, '.claude'))).toBe(true);
+    expect(fs.existsSync(path.join(tmp, '.mcp.json'))).toBe(true);
+    expect(fs.existsSync(path.join(tmp, 'AGENTS.md'))).toBe(true);
   });
 
   it('keeps a pre-existing git-tracked CLAUDE.md', async () => {
@@ -217,7 +183,7 @@ describe('nukeHere — filesystem teardown', () => {
     expect(fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf-8')).toBe('# pre-existing\n');
   });
 
-  it('restores a git-tracked CLAUDE.md that instar modified', async () => {
+  it('keeps edits to a git-tracked CLAUDE.md', async () => {
     gitInit(tmp);
     fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# pre-existing\n');
     gitCommitAll(tmp, 'seed');
@@ -225,24 +191,24 @@ describe('nukeHere — filesystem teardown', () => {
     seedInstall(tmp);
     await nukeHere({ dir: tmp, skipConfirm: true });
     expect(fs.existsSync(path.join(tmp, 'CLAUDE.md'))).toBe(true);
-    expect(fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf-8')).toBe('# pre-existing\n');
+    expect(fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf-8')).toBe('# pre-existing\n\n## instar appended\n');
   });
 
-  it('deletes an untracked CLAUDE.md (instar created)', async () => {
+  it('keeps an untracked CLAUDE.md', async () => {
     gitInit(tmp);
     fs.writeFileSync(path.join(tmp, 'README.md'), 'seed\n');
     gitCommitAll(tmp, 'seed');
     fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# instar-created\n');
     seedInstall(tmp);
     await nukeHere({ dir: tmp, skipConfirm: true });
-    expect(fs.existsSync(path.join(tmp, 'CLAUDE.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, 'CLAUDE.md'))).toBe(true);
   });
 
-  it('deletes an instar-created .gitignore in a non-git project', async () => {
+  it('keeps an instar-created .gitignore in a non-git project', async () => {
     seedInstall(tmp);
     fs.writeFileSync(path.join(tmp, '.gitignore'), '.instar/state/\n');
     await nukeHere({ dir: tmp, skipConfirm: true });
-    expect(fs.existsSync(path.join(tmp, '.gitignore'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, '.gitignore'))).toBe(true);
   });
 
   it('keeps a pre-existing git-tracked .gitignore', async () => {
@@ -256,11 +222,8 @@ describe('nukeHere — filesystem teardown', () => {
   });
 
   it('leaves NO .instar/ directory behind (audit-log carryover regression)', async () => {
-    // Repro: pre-fix, the SafeFsExecutor audit log inside .instar/audit/
-    // got recreated AFTER nuke deleted .instar/ because subsequent destructive
-    // ops wrote audit entries to the now-absent .instar/audit/ path. The fix
-    // reorders teardown so .instar is LAST and suppresses audit logging
-    // during its delete. This test pins that behavior.
+    // Suppressing audit writes for the sole .instar delete prevents its
+    // audit directory from being recreated after removal.
     seedInstall(tmp);
     fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# instar-created\n');
     fs.writeFileSync(path.join(tmp, 'GEMINI.md'), '# instar-created\n');

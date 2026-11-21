@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-18T11:33:38.868Z",
+  "slug": "identity-security-piece1c-pin-policy",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 678,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MoneyLayerEnableSurface.ts",
+      "src/core/PinAttemptStore.ts",
+      "src/core/PinThrottle.ts",
+      "src/data/awareness/pin-sign-in-paused.md",
+      "src/server/AgentServer.ts",
+      "src/server/DashboardSessionStore.ts",
+      "src/server/mandatePin.ts",
+      "src/server/ownerPinSource.ts",
+      "src/server/routes.ts",
+      "src/server/skillLearningRoutes.ts"
+    ],
+    "addedLines": 422,
+    "deletedLines": 256
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -74,6 +74,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
   },
   {
+    name: 'contextBudgetFoldShadow',
+    configPath: 'contextBudget.fold.shadow',
+    description: 'Context budget shadow folding (docs/specs/context-budget-layered-summaries.md §16 Phase 2): at sampled clean stops a live session writes a handoff, a packet is staged and verified, and a throwaway answerer is probed and graded; nothing is replaced; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Live effect is bounded and owned (spec decision 13): a sampled handoff turn in the live session (at most 2 asks per topic per hour, 1 in 3 clean stops), a fold hold and inbound hold for that turn\'s bound only, and one throwaway credential-free answerer per sampled fold; the live context is never replaced (contextBudget.fold.enabled stays off). shadow:false stops new shadow folds at the next check; open records are swept to aborted at boot.',
+  },
+  {
     name: 'chiefOfStaff',
     configPath: 'chiefOfStaff.enabled',
     description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
@@ -1038,6 +1044,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'mobilePairing.permissionActions.enabled',
     description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
     justification: 'No authority beyond the PIN-confirmed console: the action runs the console\'s own approve, deny and operator-switch code; the bearer is refused; it needs an active owner phone, a configured dashboard PIN, local TLS or loopback, the phone\'s Secure Enclave presence key and a 60-second single-use challenge naming the exact action (an approve also names the proposal\'s hash). Every write and refusal is audited. Switching it off stops the writes at once (re-checked live); the read-only lists stay. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'takeoverReadyPoolBootClaimSafety',
+    configPath: 'multiMachine.takeoverReadyPool.bootClaimSafety.enabled',
+    description: 'takeover-ready-pool R1 (fb-2bf6ccd0-705): from process start until the boot hold ends, a restarted machine asks its peers before re-taking its own lapsed lease (even with a preferred machine named), never claims while the named preferred machine answers, and claims only after the preferred machine (every known peer when none is named) has been silent on 3 probes spanning 45 s; each decision is logged "boot-hold: <rule> <verdict>". takeoverReadyPool.enabled:false is the rollback.',
+    justification: 'It only withholds a claim the normal rules would already allow, and only for a bounded time: a dead peer releases it after 3 silent probes over 45 s, and a wedged peer answering errors releases it after the unsigned-answer window (45 s + 3 min, capped at 10 min). It never takes a lease the normal rules would refuse, adds no new authority, sends nothing, and a single machine with no peers is unchanged. Off (explicit false, or takeoverReadyPool.enabled:false) is byte-for-byte today\'s acquisition.',
   },
 ];
 

@@ -26,6 +26,22 @@ import {GitLeaseStore} from './GitLeaseStore.js';
 import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import {
+  evaluateBootHold,
+  unsignedAnswerWindowMs,
+  DEFAULT_BOOT_HOLD_SETTINGS,
+  type BootHoldVerdict,
+  type PeerProbeRecord,
+} from './BootClaimHold.js';
+
+/** takeover-ready-pool R1 — the boot claim safety switch and its values, read live. */
+export interface BootClaimSafetySettings {
+  enabled: boolean;
+  /** The named preferred machine (`leaseSelfHeal.preferredAwakeMachineId`), or null. */
+  preferredMachineId: string | null;
+  silentProbes?: number;
+  silentSpanMs?: number;
+}
 
 /** Durable (git-backed) view + CAS write of the lease. */
 export interface LeaseStore {
@@ -106,6 +122,10 @@ export interface LeaseTransport {
    * superseded and fenced (holdsLease, renew and solo hold all refuse it).
    */
   higherEpochEvidence?(): number;
+  /** takeover-ready-pool R1 — per-peer probe records of lease pulls since boot. Optional. */
+  probeHistory?(): Map<string, PeerProbeRecord>;
+  /** takeover-ready-pool R1 — the peers this transport can dial (excludes self). Optional. */
+  knownPeerIds?(): string[];
 }
 
 export interface LeaseCoordinatorDeps {
@@ -197,6 +217,18 @@ export interface LeaseCoordinatorDeps {
    * its peer. It cannot tell a dead peer from a lost one, so it does not take the lease at all.
    */
   acquireHeldBack?: () => boolean;
+  /**
+   * takeover-ready-pool R1 (boot claim safety, fb-2bf6ccd0-705) — read live. Off or absent
+   * keeps today's acquisition exactly. On: an own-lapsed or empty lease always asks the peers
+   * first, whatever survivorMayHold/soloCaptainHold/preferred say, and no claim is made until
+   * the boot hold ends (BootClaimHold.ts).
+   */
+  bootClaimSafety?: () => BootClaimSafetySettings | null;
+  /**
+   * takeover-ready-pool R5 seam — a peer's published restart time (p95 ms), which bounds how
+   * long its unsigned answers count. Absent or null ⇒ the interim window.
+   */
+  peerRestartBudgetMs?: (machineId: string) => number | null;
   logger?: (msg: string) => void;
 }
 
@@ -264,9 +296,23 @@ export class LeaseCoordinator {
   /** Evidence only: the last stale-holder takeover, to notice that holder renewing soon after. */
   private staleTakeoverEvidence: { holder: string; epoch: number; atMono: number } | null = null;
 
+  /** takeover-ready-pool R1 — the boot hold, latched off once it ends (process-local). */
+  private bootHoldEnded = false;
+  private bootHoldLastLogged: string | null = null;
+  /** This machine's own lease record as read at construction (before any pull): rule 1/4. */
+  private readonly bootOwnRecord: { heldLast: boolean; epoch: number };
+
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
     this.fl = deps.lease;
+    let boot = { heldLast: false, epoch: 0 };
+    try {
+      const own = deps.store.read();
+      boot = { heldLast: own.lease?.holder === deps.lease.selfMachineId, epoch: own.epoch ?? 0 };
+    } catch {
+      // @silent-fallback-ok: an unreadable own record means epoch 0, so any peer epoch is newer and nothing is claimed from it
+    }
+    this.bootOwnRecord = boot;
     this.markRenewOk();
   }
 
@@ -878,6 +924,94 @@ export class LeaseCoordinator {
     }
   }
 
+  private bootClaimSafetySettings(): BootClaimSafetySettings | null {
+    try {
+      const s = this.d.bootClaimSafety?.();
+      return s?.enabled ? s : null;
+    } catch {
+      return null; // @silent-fallback-ok: an unreadable switch keeps today's acquisition, which is the shipped default
+    }
+  }
+
+  /** takeover-ready-pool R1 — whether the boot claim safety switch is on right now. */
+  bootClaimSafetyEnabled(): boolean {
+    return this.bootClaimSafetySettings() !== null;
+  }
+
+  /**
+   * takeover-ready-pool R1 — is the boot hold still in force? False when the switch is off or
+   * the hold has ended (it latches off for the life of the process). Evaluating it may end it.
+   */
+  bootHoldActive(): boolean {
+    const safety = this.bootClaimSafetySettings();
+    if (!safety) return false;
+    return this.evaluateBootHoldNow(safety).hold;
+  }
+
+  /**
+   * Rule 4's end evidence, from peers only: a lease a peer sent (signature, git floor and
+   * replay checked exactly as effectiveView folds it) that names a live holder or an epoch
+   * strictly newer than this machine's own boot record; or, on a store with a shared medium
+   * (a git remote), a durable epoch newer than the boot record, which only a fetch can bring
+   * since nothing is written during the hold. This machine's own copy never counts: a local
+   * file or a git store with no remote proves nothing about a peer.
+   */
+  private newerViewThanBootRecord(): boolean {
+    const boot = this.bootOwnRecord.epoch;
+    const git = this.d.store.read();
+    const obs = this.d.tunnel?.observed();
+    if (obs?.lease) {
+      const { [obs.lease.holder]: _own, ...nonceFloor } = obs.lastNonceByHolder;
+      void _own;
+      if (this.fl.acceptTunnelLease(obs.lease, git.epoch, nonceFloor).accept) {
+        const l = obs.lease;
+        if (l.epoch > boot) return true;
+        if (l.holder !== this.selfMachineId && !l.released && !this.fl.isExpired(l, this.now())) return true;
+      }
+    }
+    if (!this.d.store.hasNoSharedMedium?.() && git.epoch > boot) return true;
+    return false;
+  }
+
+  private evaluateBootHoldNow(safety: BootClaimSafetySettings): BootHoldVerdict {
+    if (this.bootHoldEnded) return { hold: false, rule: 'ended', reason: 'boot hold already ended' };
+    let verdict: BootHoldVerdict;
+    try {
+      const transport = this.d.tunnel;
+      verdict = evaluateBootHold({
+        nowMs: this.now(),
+        selfMachineId: this.selfMachineId,
+        preferredMachineId: safety.preferredMachineId,
+        knownPeers: transport?.knownPeerIds?.() ?? [],
+        probes: transport?.probeHistory?.() ?? new Map(),
+        newerViewSeen: this.newerViewThanBootRecord(),
+        windowMsFor: (id) => unsignedAnswerWindowMs(this.d.peerRestartBudgetMs?.(id) ?? null),
+        settings: {
+          silentProbes: safety.silentProbes ?? DEFAULT_BOOT_HOLD_SETTINGS.silentProbes,
+          silentSpanMs: safety.silentSpanMs ?? DEFAULT_BOOT_HOLD_SETTINGS.silentSpanMs,
+        },
+      });
+    } catch (err) {
+      // A fault reading the probes holds the claim (the safe side) and says why; the next tick retries.
+      verdict = { hold: true, rule: 'error', reason: err instanceof Error ? err.message.slice(0, 120) : 'unknown' };
+    }
+    const key = `${verdict.rule}:${verdict.hold ? 'defer' : 'end'}`;
+    if (key !== this.bootHoldLastLogged) {
+      this.bootHoldLastLogged = key;
+      this.log(`boot-hold: ${verdict.rule} ${verdict.hold ? 'defer' : 'end'} — ${verdict.reason}`
+        + (this.bootOwnRecord.heldLast ? ` (own record: held epoch ${this.bootOwnRecord.epoch} last)` : ''));
+    }
+    if (!verdict.hold) {
+      this.bootHoldEnded = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'fired',
+        reason: 'boot hold ended',
+        context: { rule: verdict.rule, reason: verdict.reason.slice(0, 160), ownHeldLast: this.bootOwnRecord.heldLast, ownEpoch: this.bootOwnRecord.epoch },
+      });
+    }
+    return verdict;
+  }
+
   private identityIneligibleLogged = false;
   private heldBackLogged = false;
 
@@ -932,7 +1066,20 @@ export class LeaseCoordinator {
       // and claiming without asking is what made a pair restart each other for good. What the
       // ask brings back lands in the view, so the check above refuses the claim on the next pass.
       const ownLapse = view.lease?.holder === this.selfMachineId;
-      if (
+      const safety = this.bootClaimSafetySettings();
+      if (safety) {
+        // takeover-ready-pool R1 rule 1: an own lapsed lease (or none) always asks the peers
+        // first. Its own lapsed lease is never permission to re-take it, and a named preferred
+        // machine no longer switches the ask off (the survivorMayHold conjunct is gone here).
+        // While the boot hold is in force every claim asks first, whoever the stale view names.
+        if (!askedPeers && (ownLapse || !view.lease || !this.bootHoldEnded) && this.canPullPeers()) {
+          askedPeers = true;
+          await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+          continue;
+        }
+        const hold = this.evaluateBootHoldNow(safety);
+        if (hold.hold) return false;
+      } else if (
         !askedPeers &&
         (ownLapse || !view.lease) &&
         ((ownLapse && this.d.soloCaptainHold?.()?.enabled) || this.d.store.hasNoSharedMedium?.()) &&
