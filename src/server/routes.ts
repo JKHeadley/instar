@@ -3355,7 +3355,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // agent-work-cards-default §2: progress notes through the runtime (conversation event first, pointer by the holder).
     notes: {
       write: (p, cardId, text, writerBinding) => { const rt = ctx.workBoard?.(); if (!rt) return { ok: false, status: 503, error: 'work-board-starting' }; return rt.writeNote(p, cardId, text, writerBinding); },
-      last: (cardId) => ctx.workBoard?.()?.lastNote(cardId) ?? null,
+      // Optional call: a card read must never fail because a runtime surface carries no notes.
+      last: (cardId) => ctx.workBoard?.()?.lastNote?.(cardId) ?? null,
     },
     // agent-work-cards-default §5: "Approve and widen" raises the board-policy request with the record it rests on.
     proposeBoardPolicy: async (record) => {
