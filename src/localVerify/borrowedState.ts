@@ -6,7 +6,7 @@
  * and the recorded decision to count. It DECIDES WHETHER A HELPER'S PASSES COUNT.
  *
  * Per helper it also holds how often the helper is asked (borrowedAsk.ts), the spot re-run rate,
- * a recorded dry-run request (the dry-run task of stage 6 consumes it) and the main-verify
+ * a recorded dry-run request (the dry-run task consumes it) and the main-verify
  * observer's rolling counters. Beside the helpers: the helper events of this machine and the ids
  * a coordinator has already told someone about (borrowedNotices.ts).
  *
@@ -38,12 +38,12 @@ export interface HelperRunSummary {
   vitestStartMs: number | null;
 }
 
-/** A recorded request to dry-run a helper. The dry-run task (stage 6 of the rework) consumes it. */
+/** A recorded request to dry-run a helper; the dry-run task (borrowedDryRun.ts) consumes it and moves its state. */
 export interface DryRunIntent {
   requestedAt: number;
   lanes: PracticeLane[];
   by: string | null;
-  state: 'requested' | 'stopped';
+  state: 'requested' | 'running' | 'done' | 'stopped';
 }
 
 /**
@@ -99,7 +99,7 @@ function parseIntent(v: unknown): DryRunIntent | null {
   if (typeof x.requestedAt !== 'number' || !Number.isSafeInteger(x.requestedAt) || x.requestedAt < 0) return null;
   if (!Array.isArray(x.lanes) || x.lanes.length < 1 || x.lanes.length > 3 || !x.lanes.every((l) => (PRACTICE_LANES as readonly unknown[]).includes(l))) return null;
   if (!(x.by === null || (typeof x.by === 'string' && x.by.length <= 200))) return null;
-  if (x.state !== 'requested' && x.state !== 'stopped') return null;
+  if (x.state !== 'requested' && x.state !== 'running' && x.state !== 'done' && x.state !== 'stopped') return null;
   return { requestedAt: x.requestedAt, lanes: [...new Set(x.lanes)], by: x.by, state: x.state };
 }
 

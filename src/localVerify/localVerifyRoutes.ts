@@ -11,7 +11,7 @@
  *   POST /local-verify/borrowed/decision { helper, lane, reason, sevenDayException?, by? }: record the
  *                                        decision to count; refused (409) when the admission rule does not hold
  *   POST /local-verify/borrowed/dry-run  { helper, lanes?, action?, by? }: record a dry-run request
- *                                        (the dry-run task that consumes it is a later stage)
+ *                                        (the dry-run task, borrowedDryRun.ts, consumes it)
  *   POST /local-verify/helper-here       the paired helper's signed "I am here"
  *   POST /local-verify/borrowed-proxy    LOOPBACK ONLY, authenticated by a running verify's attempt
  *                                        token (header X-Instar-Attempt-Token) in place of the Bearer

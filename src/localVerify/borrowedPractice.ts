@@ -435,7 +435,7 @@ export function noteTime(input: LaneRecord, now: number): Transition {
   return lapse(input, 'no-agreeing-comparison', now);
 }
 
-/** The dry run's result for a lane (stage 6 writes it): the files eligible then, and those it compared. */
+/** The dry run's result for a lane (borrowedDryRun.ts writes it): the files eligible then, those it compared, and whether it proved the lane. */
 export function recordDryRun(input: LaneRecord, r: { eligible: readonly string[]; compared: readonly string[]; eligibleDigest: string; proven?: boolean }, now: number): LaneRecord {
   const l = clone(input);
   const done = new Set(r.compared);

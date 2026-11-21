@@ -17,7 +17,7 @@ import { BorrowedShadow, type BorrowedShadowDeps } from '../../../src/localVerif
 import { parseHelperStatus, type HelperClient } from '../../../src/localVerify/borrowedClient.js';
 import { ASK_LIMITS } from '../../../src/localVerify/borrowedAsk.js';
 import { BORROWED_CANARY, BORROWED_CANARY_FILES } from '../../../src/localVerify/borrowedCanary.js';
-import type { FileCounts } from '../../../src/localVerify/laneReport.js';
+import { parseVitestJson, type FileCounts } from '../../../src/localVerify/laneReport.js';
 import { HEAD, UNIT_A, UNIT_B, UNIT_SCAN, UNIT_TMUX, helperRig, memoryTreeHash, pins, type HelperRig } from '../../helpers/borrowedHelperFixture.js';
 import { vitestReport } from '../../helpers/fakeSandboxDriver.js';
 
@@ -73,7 +73,10 @@ function setup(o: { mode?: 'off' | 'practice' | 'count'; dryRun?: boolean; clien
     sleep: (_ms, signal) => new Promise((res) => { const t = setTimeout(res, 2); signal?.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true }); }),
     random: () => 0.99,
   });
-  const end = (token: string, rec = true) => { recorded = rec; shadow.onMainRunEnd({ headSha: HEAD, runToken: token, recorded: rec, outcome: rec ? 'success' : null, cancelled: !rec }); };
+  // The main verify's own merge tree and per-file counts (the service hands both over with the end).
+  const digest = (f: string) => parseVitestJson(vitestReport(r.driver.root, { [f]: ['passed', 'passed'] }), r.driver.root, { outcomeDigest: true }).files.get(f)!.outcomeDigest!;
+  const fileCounts = Object.fromEntries([UNIT_A, UNIT_B].map((f) => [f, [2, 0, 0, 0, digest(f)] as [number, number, number, number, string]]));
+  const end = (token: string, rec = true) => { recorded = rec; shadow.onMainRunEnd({ headSha: HEAD, runToken: token, recorded: rec, outcome: rec ? 'success' : null, cancelled: !rec, ...(rec ? { mergeTree: memoryTreeHash(r.trees.files[HEAD]), fileCounts } : {}) }); };
   return { r, shadow, audits, calls, end, stateDir };
 }
 

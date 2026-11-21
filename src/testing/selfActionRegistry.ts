@@ -85,6 +85,9 @@ import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminde
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
 import { pickupBudgetLeft } from '../core/WorkBoardPickupController.js';
 import { DEFAULT_WORK_BOARD_SETTINGS } from '../core/WorkBoardService.js';
+import { askDecision, freshAsk, noteAsked, noteSkipped, type AskState } from '../localVerify/borrowedAsk.js';
+import { DRY_RUN_LIMITS } from '../localVerify/borrowedDryRun.js';
+import { untold, type HelperEvent } from '../localVerify/borrowedNotices.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -5754,6 +5757,104 @@ const heldDebtLossNotice: SelfActionController = {
  * park at the cap (a settling state); a failure park re-arms ONCE on an ownership change; nothing
  * else but a person's tap adds an attempt. Waiting for capacity is a free read and emits nothing.
  */
+/**
+ * local-verify-borrowed-helper-asking — the run machine asks its borrowed helper one 2-second status
+ * question at the start of every verify (docs/specs/local-verify-borrowed-slices-count.md, F
+ * "Asking the helper"). Pinned worst case: the helper never answers (a closed laptop) while the
+ * line verifies a change every 30 minutes, for 14 days. Brake: after 10 unanswered in a row only
+ * every 5th verify asks; after 7 days with no answer none does until the helper announces itself.
+ * The asking state lives in the practice record, so a restart keeps the brake.
+ */
+const localVerifyBorrowedHelperAsking: SelfActionController = {
+  id: 'local-verify-borrowed-helper-asking',
+  actionVerb: 'retry-helper-status',
+  models: 'src/localVerify/borrowedAsking.ts (HelperAsking.decide → askDecision; ask → noteAsked; skip → noteSkipped)',
+  modelsPath: 'src/localVerify/borrowedAsking.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) { return localVerifyBorrowedHelperAsking.makeUnderPressure(f, sink); } },
+  boundK: 80,
+  perTargetBoundK: 80,
+  ticks: 14 * 48,
+  tickMs: 30 * 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'borrowed-ask:m_laptop';
+    return { tick() {
+      sink.considered += 1;
+      const s = (f.durableState.get(key) as AskState | undefined) ?? freshAsk();
+      const d = askDecision(s, f.clock.nowMs());
+      if (d === 'stopped') return;
+      if (d === 'skip') { f.durableState.set(key, noteSkipped(s)); return; }
+      sink.emit({ verb: 'retry-helper-status', target: 'm_laptop' });
+      f.durableState.set(key, noteAsked(s, !f.targetAlwaysRejects(), f.clock.nowMs()));
+    } };
+  },
+};
+
+/**
+ * local-verify-borrowed-dry-run-resend — the dry run sends again a file the helper did not finish
+ * (it handed the slice back for its owner, or stayed silent). Pinned worst case: the helper hands
+ * back every slice forever. Brake: each file is sent at most DRY_RUN_LIMITS.maxSends times, then
+ * recorded as not answered; a restart starts the dry run over at most once per boot after the
+ * 10-minute retry gap.
+ */
+const localVerifyBorrowedDryRunResend: SelfActionController = {
+  id: 'local-verify-borrowed-dry-run-resend',
+  actionVerb: 'retry-dry-run-slice',
+  models: 'src/localVerify/borrowedDryRun.ts (runLane: pending files sent again until DRY_RUN_LIMITS.maxSends)',
+  modelsPath: 'src/localVerify/borrowedDryRun.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The send counts are per run; a restart starts the dry run over once, after the 10-minute retry gap, with the same per-file cap, and an operator stop ends it.' },
+  boundK: 10 * DRY_RUN_LIMITS.maxSends,
+  perTargetBoundK: DRY_RUN_LIMITS.maxSends,
+  ticks: 200,
+  tickMs: DRY_RUN_LIMITS.pollMs,
+  makeUnderPressure(f, sink) {
+    const files = Array.from({ length: 10 }, (_, i) => `tests/integration/f${i}.test.ts`);
+    const sends = new Map<string, number>();
+    let pending = [...files];
+    return { tick() {
+      sink.considered += 1;
+      const next: string[] = [];
+      for (const file of pending) {
+        sends.set(file, (sends.get(file) ?? 0) + 1);
+        sink.emit({ verb: 'retry-dry-run-slice', target: file });
+        // Handed back: sent again only while under the cap.
+        if (f.targetAlwaysRejects() && (sends.get(file) ?? 0) < DRY_RUN_LIMITS.maxSends) next.push(file);
+      }
+      pending = next;
+    } };
+  },
+};
+
+/**
+ * local-verify-borrowed-helper-notice — the coordinator tells each helper event (a wrong pass, a
+ * lapse, a pass that made main red) once. Pinned worst case: a peer lists the same events in every
+ * status poll forever, and the coordinator ticks every 30 seconds. Brake: the told ids are kept
+ * in the practice record, and `untold` drops every id already told, so each event is told once.
+ */
+const localVerifyBorrowedHelperNotice: SelfActionController = {
+  id: 'local-verify-borrowed-helper-notice',
+  actionVerb: 'notify-helper-event',
+  models: 'src/localVerify/BorrowedRunMachine.ts (onPeerStatus/tick → untold → tell → markTold)',
+  modelsPath: 'src/localVerify/BorrowedRunMachine.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) { return localVerifyBorrowedHelperNotice.makeUnderPressure(f, sink); } },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 200,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const events: HelperEvent[] = ['a', 'b', 'c'].map((c, i) => ({ id: c.repeat(32), at: i, runMachineId: 'm_m5', helper: 'm_winpc', lane: 'integration', kind: 'lapse', reason: 'invalid-answers', fault: true }));
+    const key = 'borrowed-told';
+    return { tick() {
+      sink.considered += 1;
+      const told = new Set((f.durableState.get(key) as string[] | undefined) ?? []);
+      for (const e of untold(events, told)) {
+        sink.emit({ verb: 'notify-helper-event', target: e.id });
+        told.add(e.id);
+      }
+      f.durableState.set(key, [...told]);
+    } };
+  },
+};
+
 const workBoardPickup: SelfActionController = {
   id: 'work-board-pickup',
   actionVerb: 'pickup-spawn',
@@ -6108,4 +6209,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   heldForwardExpiryReport,
   heldDebtLossNotice,
   workBoardPickup,
+  localVerifyBorrowedHelperAsking,
+  localVerifyBorrowedDryRunResend,
+  localVerifyBorrowedHelperNotice,
 ];

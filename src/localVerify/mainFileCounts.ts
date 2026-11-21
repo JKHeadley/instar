@@ -267,7 +267,7 @@ export class MainFileCountsStore {
     return this.write(withBaseline(cur.ok ? cur.file : { v: 1, baselines: [], pinned: [] }, b), 'green-main');
   }
 
-  /** Pin or release a baseline for a dry run (stage 6). False when the commit is not kept or no pin is free. */
+  /** Pin or release a baseline for a dry run (borrowedDryRun.ts). False when the commit is not kept or no pin is free. */
   pin(commit: string, pinned: boolean): boolean {
     const cur = this.read();
     if (!cur.ok) return false;

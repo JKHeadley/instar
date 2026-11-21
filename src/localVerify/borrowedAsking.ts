@@ -34,6 +34,7 @@ export class HelperAsking {
 
   /** Whether this verify asks the helper. A `skip` is counted (so the 5th verify asks again). */
   decide(h: HelperTarget): AskDecision {
+    /* @self-action-controller: local-verify-borrowed-helper-asking */
     const st = this.d.store.get(h.machineId);
     const d = askDecision(st.ask, this.d.now());
     if (d === 'skip') { st.ask = noteSkipped(st.ask); this.save(); }

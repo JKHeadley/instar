@@ -10,8 +10,8 @@
  *    holds no key, so this server signs, forwards, checks the answer's signature and returns it;
  *  - the baseline results file (mainFileCounts.ts) and its transfer to peers;
  *  - helper events and who is told (borrowedNotices.ts);
- *  - a recorded dry-run request (`POST /local-verify/borrowed/dry-run`), which the dry-run task of
- *    stage 6 consumes.
+ *  - a recorded dry-run request (`POST /local-verify/borrowed/dry-run`), which the dry-run task
+ *    (borrowedDryRun.ts) consumes on the next tick.
  *
  * LocalVerifyService knows this class only through the type `BorrowedRunSeam` and calls it inside
  * try/catch; nothing here is awaited by a verify. With the setting absent every method is inert.
@@ -40,6 +40,7 @@ import { BORROWED_PLAN } from './borrowedPlan.js';
 import { MAIN_FILE_COUNTS_LIMITS, parseFileCounts, parseMainFileCounts, type MainFileCountsStore } from './mainFileCounts.js';
 import type { BorrowedConfig, HelperTarget } from './helper/helperConfig.js';
 import type { BorrowedFlowResult } from './borrowedLaneFlow.js';
+import { BorrowedDryRun } from './borrowedDryRun.js';
 import {
   HELPER_ID_RE, HELPER_LIMITS, isRequestFile, parseHelperAnswer, parseHelperHere, signHelperRequest, verifyHelperAnswer, verifyHelperHere, verifyHelperStatus,
   type HelperCancelRequest, type HelperLane, type HelperLearnedRequest, type HelperSliceRequest, type HelperSliceUse, type LearnedObservation,
@@ -178,6 +179,8 @@ export interface BorrowedRunMachineDeps {
   isAncestor?: (ancestor: string, descendant: string) => Promise<boolean | null>;
   /** Wait (the failing-direction request polls the helper). */
   sleep?: (ms: number) => Promise<void>;
+  /** The commit's test files with this machine's recorded times (the dry run reads the verify clone). Absent: no dry run starts. */
+  treeFiles?: (commit: string) => Promise<Array<{ file: string; ms: number | null }>>;
   /** One row in the maturation ladder's evidence log (logs/feature-evidence.jsonl). */
   evidence?: (row: { kind: 'fired' | 'held'; reason: string; subject: string; context: Record<string, string | number | boolean | null> }) => void;
   now?: () => number;
@@ -215,8 +218,20 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
   /** Coordinator: the baseline hash each peer acknowledged, and the hash last offered with its time (a refused offer is repeated at most every 5 minutes). */
   private readonly peerBaseline = new Map<string, { hash: string | null; triedHash: string | null; triedAt: number }>();
 
+  private readonly dryRunTask: BorrowedDryRun | null;
+
   constructor(private readonly d: BorrowedRunMachineDeps) {
     this.now = d.now ?? (() => Date.now());
+    const sleep = (ms: number, signal?: AbortSignal) => (d.sleep ? d.sleep(ms) : new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+      signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+    }));
+    this.dryRunTask = d.treeFiles ? new BorrowedDryRun({
+      client: d.client, signer: d.signer, keyLookup: d.keyLookup, machineId: d.machineId, store: d.store, baseline: d.baseline,
+      treeFiles: d.treeFiles, recordDryRunResult: (h, lane, r) => this.recordDryRunResult(h, lane, r),
+      audit: (e) => this.audit(e), ...(d.evidence ? { evidence: d.evidence } : {}), now: this.now, sleep,
+    }) : null;
     this.asking = new HelperAsking({
       store: d.store, client: d.client, keyLookup: d.keyLookup, audit: (e) => this.audit(e), now: this.now,
       onStatus: (h, st) => this.onHelperStatus(h, st),
@@ -264,6 +279,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
 
   /** One notice, once: the audit row, the line's session, and the owner only in the two stated cases. */
   private tell(e: HelperEvent, history: readonly HelperEvent[]): void {
+    /* @self-action-controller: local-verify-borrowed-helper-notice */
     const w = whoIsTold(e, history);
     this.audit({ event: 'borrowed-notice', id: e.id, helper: e.helper, lane: e.lane, kind: e.kind, line: w.line, owner: w.owner, ...(w.ownerReason ? { ownerReason: w.ownerReason } : {}) });
     const text = eventText(e);
@@ -293,8 +309,8 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     this.save();
   }
 
-  /** The dry run's result for a lane (the dry-run task of stage 6 calls it). */
-  recordDryRunResult(helper: string, lane: PracticeLane, r: { eligible: readonly string[]; compared: readonly string[]; eligibleDigest: string }): void {
+  /** The dry run's result for a lane (the dry-run task calls it). */
+  recordDryRunResult(helper: string, lane: PracticeLane, r: { eligible: readonly string[]; compared: readonly string[]; eligibleDigest: string; proven?: boolean }): void {
     this.d.store.setLane(helper, lane, recordDryRun(this.d.store.lane(helper, lane, this.now()), r, this.now()));
     this.save();
   }
@@ -429,7 +445,11 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
       for (const f of w.digestDiffersBothPass) observations.push({ file: f, kind: 'digest-differs-both-pass' });
       for (const f of outcomes[lane]!.confirmedWrongPasses) observations.push({ file: f, kind: 'confirmed-wrong-pass' });
       for (const f of w.retrial) if (w.agreed.includes(f)) observations.push({ file: f, kind: 'agree' });
-      if (w.counted.length > 0) this.d.store.addCounted(helper.machineId, { pr: ctx.pr, headSha: ctx.headSha, at: this.now(), lane, files: w.counted });
+      if (w.counted.length > 0) {
+        this.d.store.addCounted(helper.machineId, { pr: ctx.pr, headSha: ctx.headSha, at: this.now(), lane, files: w.counted });
+        // One row per lane whose passes counted: the maturation ladder's "ran" measure.
+        this.audit({ event: 'borrowed-counted', pr: ctx.pr, headSha: ctx.headSha, helper: helper.machineId, lane, files: w.counted.length });
+      }
       // The file list goes in the audit row only for a verify with a hand-back, a disagreement or a discarded slice.
       const listFiles = w.takenBack > 0 || dis > 0 || w.discardedSlices > 0;
       detail[lane] = {
@@ -771,8 +791,8 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
   }
 
   /**
-   * Record a request to dry-run a helper (or to stop one). STAGE 4: only the intent is recorded;
-   * the dry-run task itself is stage 6 and consumes `dryRunIntent` from the practice record.
+   * Record a request to dry-run a helper (or to stop one). The dry-run task starts or stops on the
+   * next tick (borrowedDryRun.ts); a dry run already running keeps going on a repeated start.
    */
   dryRun(body: unknown): BorrowedHttpAnswer {
     if (this.cfg().mode === 'off') return { status: 404, body: { error: 'not found' } };
@@ -915,7 +935,9 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
       if (ctx.endedAt !== null && this.now() - ctx.endedAt > BORROWED_PROXY.endedKeepMs) { this.verifies.delete(token); void this.tellOver(ctx); }
     }
     const cfg = this.cfg();
-    if (cfg.mode === 'off') return;
+    if (cfg.mode === 'off') { this.dryRunTask?.stopAll(); return; }
+    // A requested dry run starts, a stopped one ends (never awaited).
+    try { this.dryRunTask?.tick(cfg.helpers); } catch (err) { this.audit({ event: 'borrowed-seam-error', step: 'dry-run', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }); }
     let changed = false;
     for (const h of cfg.helpers) {
       for (const lane of PRACTICE_LANES) {
@@ -943,6 +965,8 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     return {
       state: l.state,
       mayCount: mayCount(l, mode),
+      // A dry run proved the lane: files worth at least half of its time passed on the helper.
+      proven: laneProven(l),
       practiceStartedAt: new Date(l.practiceStartedAt).toISOString(),
       identity: l.identity,
       evidence: {
@@ -974,7 +998,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
           machineId: h.machineId, url: h.url,
           asking: { ...st.ask, silentSince: st.ask.silentSince === null ? null : new Date(st.ask.silentSince).toISOString() },
           spotOneIn: spotRateOneIn(st.spot), spotRaisedVerifiesLeft: st.spot.raisedVerifiesLeft,
-          dryRunIntent: st.dryRunIntent,
+          dryRunIntent: st.dryRunIntent, dryRunRunning: this.dryRunTask?.isRunning(h.machineId) ?? false,
           lanes: Object.fromEntries(PRACTICE_LANES.map((lane) => [lane, st.lanes[lane] ? this.laneInfo(st.lanes[lane] as LaneRecord, cfg.mode) : { state: 'practice', mayCount: false, evidence: null, decision: null, lapses: [], lastVerify: null }])),
         };
       }),

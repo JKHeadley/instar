@@ -722,7 +722,7 @@ export interface BorrowedWiringOpts {
   signer?: MachineSigner | null;
   keyLookup?: () => MachineKeyLookup;
   /** TEST ONLY (e2e): replace the tree-reading seams; production reads this machine's verify clone. */
-  treeSeams?: Partial<Pick<import('./BorrowedShadow.js').BorrowedShadowDeps, 'unitFiles' | 'treeReader' | 'localUnitReport'>>;
+  treeSeams?: Partial<Pick<import('./BorrowedShadow.js').BorrowedShadowDeps, 'unitFiles' | 'treeReader' | 'localUnitReport'>> & { treeFiles?: (commit: string) => Promise<Array<{ file: string; ms: number | null }>> };
   /** The serving lease: only the coordinator sends notices and keeps baseline results. Absent: a single machine (always the coordinator). */
   lease?: { holdsLease(): boolean } | null;
   /** The existing attention seam (the same hooks the service signals through). */
@@ -782,6 +782,8 @@ export async function wireBorrowedRunMachine(
     }),
     ...(o.evidence ? { evidence: o.evidence } : {}),
     ...(typeof o.port === 'number' ? { port: o.port } : {}),
+    // The dry run reads the commit's test files from this machine's verify clone.
+    treeFiles: o.treeSeams?.treeFiles ?? ((commit: string) => seams.treeTestFiles(o.agentHome, commit)),
     ...(svc.ancestry ? { isAncestor: (a: string, b: string) => svc.ancestry!(a, b) } : {}),
   });
   const shadow = new BorrowedShadow({

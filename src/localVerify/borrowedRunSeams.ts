@@ -113,6 +113,23 @@ export async function unitFilesWithDurations(agentHome: string, headSha: string)
     .map((f) => ({ file: f, ms: durations[f] }));
 }
 
+/**
+ * Every test file of a commit (any lane), with this machine's recorded per-file time when it has
+ * one (the dry run sends the files and weighs "lane proven" by these times). Read from the verify
+ * clone through the git funnel; a failed read is an error (the dry run waits and tries again).
+ */
+export async function treeTestFiles(agentHome: string, commit: string): Promise<Array<{ file: string; ms: number | null }>> {
+  const p = verifyPaths(agentHome, commit);
+  let durations: Record<string, number> = {};
+  try {
+    if (fs.statSync(p.durationsPath).size <= DURATIONS_MAX_BYTES) durations = mergeDurations(JSON.parse(fs.readFileSync(p.durationsPath, 'utf-8')), {});
+  } catch { durations = {}; } // @silent-fallback-ok: no history yet means every file counts as unknown time
+  const r = await collect(SafeGitExecutor.readStream(['ls-tree', '-r', '-z', '--full-tree', commit], gitOpts(agentHome, 'local-verify:borrowed-dry-run-ls-tree')));
+  if (r.code !== 0) throw new Error('ls-tree of the dry-run commit failed');
+  return parseLsTree(r.out).map((e) => e.path).filter((f) => f.endsWith('.test.ts') && !isBorrowedCanaryFile(f))
+    .map((f) => ({ file: f, ms: Number.isFinite(durations[f]) ? durations[f] : null }));
+}
+
 /** This machine's own unit-lane per-file counts for the head, from the run's report (kept until the next run of that head). */
 export async function localUnitReport(agentHome: string, headSha: string): Promise<ReadonlyMap<string, FileCounts> | null> {
   const p = verifyPaths(agentHome, headSha);
