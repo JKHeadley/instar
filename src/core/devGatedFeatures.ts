@@ -951,6 +951,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
   },
   {
+    name: 'credentialScrub',
+    configPath: 'security.credentialScrub.enabled',
+    description: 'SEC-164: live credentials of the outbound wall\'s kinds are masked in the server\'s and the lifeline\'s own output (stdout, stderr and logs/server.log) before they are written. Later parts add new incoming messages, transcript copies and the session-record sweeper under the same switch.',
+    justification: 'Masks only the agent\'s own log output, with the wall\'s precise provider-prefixed kinds; a false positive costs a few characters of a log line, never a message or a record another program owns. No new writes beyond the log line itself, no LLM, no spend, no outbound messages. The sweeper that rewrites other programs\' files ships later behind its own dry-run setting.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',

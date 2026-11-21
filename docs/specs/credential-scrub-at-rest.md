@@ -67,7 +67,7 @@ On the M5 Pro on 2026-11-21, a count of kinds only, never values, matched a wall
 
 ## 2. What is detected
 
-There is one shared function in `durableSecretScrub.ts`: `findWallCredentialSpans(text, options)`. It returns `{kind, start, end}` spans:
+There is one shared function, next to the wall in `outbound-credential-guard.ts`, over the patterns in `durableSecretScrub.ts`: `findWallCredentialSpans(text, options)`. It returns `{kind, start, end}` spans:
 - **Kinds.** Only `HARD_WALL_CREDENTIAL_KINDS`, the outbound wall's provider-prefixed kinds. The label-proximity kinds (`labeled-secret`, `bearer-token`, `jwt`) stay excluded, for the wall's documented reasons.
 - **Invisible characters.** The same stripping of invisible interleave characters the wall uses, with an index map, so a key with zero-width characters inside it yields its full original span.
 - **The agent's own credentials, by exact value.** This is opt-in per caller, and never used by the outbound wall. It covers only an explicit list of credential paths: the bot token, the API token and the tunnel token. Chat ids, machine ids and every other value in the secret store are never matched. The matcher holds a short prefix, the length, and a keyed hash of each value, not the value itself. A prefix match is confirmed by hashing exactly that length. A test asserts that the Telegram chat id and a machine id are never matched.
@@ -76,7 +76,7 @@ One fix to the shared patterns: the Telegram bot token pattern becomes `(?<![A-Z
 
 The sweeper, the wrapper, the copy scrub and the inbound mask all call this one function. A test asserts each does.
 
-At the source, the Telegram client's own error path stops printing its request address. The lifeline's and the server's Telegram calls log the method name only (`routes.ts`, `TelegramLifeline.ts`), so the most common source stops producing these log lines at all.
+At the source, the Telegram calls already log the method name only, never the request address (`TelegramLifeline.apiCall`, `telegram-egress.ts`). A unit test pins the direct case: no log statement in the source formats a Telegram request address inline. An address built into a variable and logged later is caught by the output wrapper instead. On the M5 Pro, the four bot-key-shaped matches in the logs on 2026-11-21 turned out to be version stamps in `notification-preferences.jsonl`, not keys. That is exactly the false positive the sweeper's dry-run review exists to catch before anything is masked.
 
 ## 3. What text is scanned, and how it is changed
 
@@ -366,7 +366,7 @@ Set `security.credentialScrub.enabled` to `false`, or `inPlace` to `dry-run`, in
   - **Detection:**
     - `findWallCredentialSpans` returns only the wall's kinds and the listed own credentials.
     - It finds a key after an escaped newline, in a Telegram address, in a PEM block inside JSON, and with zero-width characters inside it.
-    - The chat id and machine ids are never matched.
+    - Numbers such as the chat id, and short values such as the PIN, are never matched. Machine ids are never on the list, so they cannot be.
     - The wall is unchanged apart from the Telegram pattern.
     - Every caller uses this one function.
   - **Scanning:**
