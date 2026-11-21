@@ -5,7 +5,6 @@
 ## What Changed
 
 - **The conversation list no longer stalls the server.** The phone and Mac apps' conversation list used to make the agent's server re-read its whole Telegram message history once for every closed conversation, freezing it for 20-30 seconds at a time on an agent with hundreds of conversations. The server now keeps a memory copy of what that read returned, built once in the background and kept current, and the list answers from it.
-- **Saving a message no longer reads the whole history file.** Once the message file passed 20 MB, every saved message triggered a full read of it just to check whether it was due for trimming. The line count is now tracked as messages are saved; the file is read only when it is actually trimmed.
 
 ## What to Tell Your User
 
@@ -16,10 +15,9 @@
 | Capability | How to Use |
 |-----------|-----------|
 | Conversation list without server stalls | Automatic |
-| No full history read on every saved message | Automatic |
 
 ## Evidence
 
-- Unit: `tests/unit/telegram-log-view.test.ts`, `tests/unit/message-log-rotation-no-per-append-read.test.ts`.
+- Unit: `tests/unit/telegram-log-view.test.ts`, `tests/unit/message-log-rotation-matches-old-code.test.ts`.
 - Integration: `tests/integration/conversation-list-no-log-scan.test.ts` (production server + real Telegram adapter, 120 closed topics, no synchronous log read).
 - E2E: `tests/e2e/conversation-list-no-log-scan-alive.test.ts` (production `AgentServer` constructor).

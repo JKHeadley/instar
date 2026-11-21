@@ -60,8 +60,8 @@ The cache is cold after every server start and is re-emptied topic by topic as s
 and the Studio restarted repeatedly that morning. The profile spans 120 s around the 09:47Z freeze
 and its frame percentages are aggregates, so the list scan is the leading explanation (the largest
 self-time in the window, by a wide margin) rather than an isolated proof of each 20-30 s stall; the
-production outcome is judged by event-loop delay and lease renewals after release (Evidence bar). The per-append rotation read adds a steady ~31 MB read per logged message on
-top.
+production outcome is judged by event-loop delay and lease renewals after release (Evidence bar). The per-save rotation check also reads the whole log (about 87 ms per save on Echo's
+log, measured in §3b); it is kept unchanged.
 
 ## Goal
 
@@ -69,7 +69,7 @@ No request or periodic task blocks the main loop for more than about one second.
 
 1. The conversation list never reads the Telegram log synchronously on a request's turn. It waits
    (bounded) for one streamed load, then builds N rows from memory.
-3. Logging a message never reads the whole log just to decide whether to rotate.
+3. Rotation (trimming the log) is the old code, unchanged; the view follows each rotation.
 3a. The list's unread counts (the same request) never read the log synchronously either.
 5. A guard test fails if a list of N topics reads the log synchronously at all (the old code reads it
    N+1 times); the one shared asynchronous warm-up read is distinguished from that.
@@ -113,19 +113,16 @@ rules as they were and replaces only the slow step underneath them.
 Row shape, previews, order, cursors, unread counts and dividers are intended to be unchanged; the
 old-versus-new client diff on identical fixture data is the proof.
 
-### 3b. Rotation check without a per-append read
+### 3b. Rotation (trimming) is the old code, unchanged
 
-A small `RotationLineCount` (in `MessageLogger.ts`, used by both the shared logger and the legacy
-adapter path) learns the log's line count once, by counting newline bytes in the file (no decode,
-no split), then adds one per append. The whole file is read only when the count passes the
-100 000-line cap, to rotate it exactly as before, after which the count is set to the kept lines.
-If the rotation's read or rename fails, the next append tries again, exactly as the old code
-did, so every rotation happens at the same append and keeps the same lines. The count is never
-below the file's real count of non-empty lines, and is recounted after a failed append.
-Below the size threshold the count is forgotten, so a log rotated or replaced elsewhere is
-recounted. The adapter is the file's single writer (see §1), so the count tracks the file; were
-another writer ever added, the count would lag and delay a rotation, and the rotation itself
-always re-reads and re-counts.
+Three attempts to make the per-save rotation check cheaper each changed which saved lines a
+rotation keeps, or when, in some failure case. The rotation code in both logger paths is therefore
+the old code, byte for byte. The only additions are a notice after a successful rotation, which
+drops and rebuilds the log view so it follows the file: `noteLogRotated()` on the legacy path, and
+an `onRotated` callback in `MessageLogger`. Moving only the read off the main thread was rejected:
+appends would continue during the read, which changes which lines a rotation keeps.
+
+Measured on the Studio (2026-11-21): the old per-save check (stat, full synchronous read, split, filter) takes a median 87 ms and at most 136 ms on Echo's real 30.8 MB, 36,029-line log, and a median 190 ms and at most 587 ms on an 88 MB, 100,000-line log (the largest size before a trim). Echo saved about 98 messages a day over the last week, at most 8 in any one minute. Each check stays under the one-second goal, so the old trim is kept rather than changed.
 
 ### 4. Failure handling added after review
 
@@ -133,8 +130,7 @@ always re-reads and re-counts.
   never finishes with no view (that would be a blank chat).
 - An append that fails part-way drops the view and re-reads the file, so a message is never
   visible only in memory.
-- A rotation that fails is retried on the next append, as before, so it keeps exactly the lines
-  the old code keeps.
+- Rotation is the old code (§3b), so a failed rotation behaves exactly as before.
 - A peer that answers `503 conversations-loading` is reported in `pool.failed` as `loading`, not
   `off`. The pool list re-checks the view after the peers answer and before its unread and pin passes.
 - A forwarded read report waits at most 4 s, inside the sender's 5 s budget.
@@ -185,10 +181,9 @@ it only makes each machine's own answer cheap.  No notices, no URLs, no durable 
 ## Testing
 
 - Unit `tests/unit/telegram-log-view.test.ts`: answers equal a real file read; closing still evicts with no file read; appends and rotation stay correct; failed reads discarded, braked and self-retried; bounded wait; async scroll-back.
-- Unit `tests/unit/message-log-rotation-no-per-append-read.test.ts`: 200 appends above the size
-  threshold read the file once (the seed), not 200 times; rotation still happens at the cap and
-  keeps the newest lines; with failures injected into the read or the rename, the kept lines equal
-  an oracle replay of the old algorithm on the same appends and failures.
+- Unit `tests/unit/message-log-rotation-matches-old-code.test.ts`: under injected read, rename and
+  append failures and with blank or unterminated lines, the file holds exactly the lines an oracle
+  replay of the old algorithm keeps, in the same order, and each rotation notifies the view.
 - Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all topics in order; chats and scroll-back avoid synchronous log reads; unavailable history answers a retryable 503.
 - E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: production `AgentServer` and real adapter; concurrent cold requests share one load, with no synchronous log read.
 

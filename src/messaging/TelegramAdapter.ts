@@ -39,7 +39,7 @@ import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
 import { SHARED_INFRA_FLAGS } from './shared/FeatureFlags.js';
 import { emergencyStopUserMessage } from './shared/emergencyStopUserMessage.js';
-import { MessageLogger, RotationLineCount, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
+import { MessageLogger, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
 import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
 import { StallDetector, type StallEvent } from './shared/StallDetector.js';
@@ -1367,8 +1367,6 @@ export class TelegramAdapter implements MessagingAdapter {
   /** After a failed pass, no new pass starts before this time. There is no timer: a request starts it. */
   private logViewNextAttemptAt = 0;
   private logViewWaiters: Array<() => void> = [];
-  /** Legacy-path rotation check's line count (see RotationLineCount). */
-  private readonly rotationLineCount = new RotationLineCount();
 
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
@@ -5333,10 +5331,8 @@ export class TelegramAdapter implements MessagingAdapter {
       this.maybeRotateLog();
     } catch (err) {
       console.error(`[telegram] Failed to append to message log: ${err}`);
-      // It may have written part of the line: the view re-reads what the file holds, and the
-      // rotation line count is recounted.
+      // It may have written part of the line: the view re-reads what the file holds.
       this.noteLogRotated();
-      this.rotationLineCount.forget();
       DegradationReporter.getInstance().report({
         feature: 'Telegram.messageLog',
         primary: 'JSONL message log for conversation history and recovery',
@@ -5422,15 +5418,11 @@ export class TelegramAdapter implements MessagingAdapter {
     try {
       const stat = fs.statSync(this.messageLogPath);
       // Only check rotation when file exceeds ~20MB
-      if (stat.size < 20 * 1024 * 1024) { this.rotationLineCount.forget(); return; }
-      // Read the whole log only when it may be over the cap, never per append
-      // (docs/specs/main-loop-freeze-conversation-list.md).
-      if (!this.rotationLineCount.mayExceed(this.messageLogPath, 100_000)) return;
+      if (stat.size < 20 * 1024 * 1024) return;
 
       const content = fs.readFileSync(this.messageLogPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
-      if (lines.length <= 100_000) this.rotationLineCount.set(lines.length); // the count ran ahead: correct it
-      else {
+      if (lines.length > 100_000) {
         const kept = lines.slice(-75_000);
         const tmpPath = `${this.messageLogPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
         try {
@@ -5440,8 +5432,7 @@ export class TelegramAdapter implements MessagingAdapter {
           try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:2844' }); } catch { /* ignore */ }
           throw rotateErr;
         }
-        this.rotationLineCount.set(kept.length);
-        this.noteLogRotated();
+        this.noteLogRotated(); // the log view follows the file (main-loop-freeze-conversation-list)
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
       }
     } catch {

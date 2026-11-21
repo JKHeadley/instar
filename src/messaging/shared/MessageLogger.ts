@@ -80,7 +80,6 @@ export class MessageLogger {
   private keepLines: number;
   private rotationSizeThreshold: number;
   private onMessageLogged: OnMessageLoggedCallback | null = null;
-  private readonly rotationLineCount = new RotationLineCount();
   private readonly onRotated: (() => void) | null;
 
   constructor(config: MessageLoggerConfig) {
@@ -111,7 +110,6 @@ export class MessageLogger {
       fs.appendFileSync(this.logPath, JSON.stringify(entry) + '\n');
       this.maybeRotate();
     } catch (err) {
-      this.rotationLineCount.forget(); // part of the line may have reached the disk: recount
       console.error(`[message-logger] Failed to append to log: ${err}`);
       return false;
     }
@@ -230,11 +228,7 @@ export class MessageLogger {
   private maybeRotate(): void {
     try {
       const stat = fs.statSync(this.logPath);
-      if (stat.size < this.rotationSizeThreshold) { this.rotationLineCount.forget(); return; }
-      // Only read the whole log when it may actually be over the line cap
-      // (docs/specs/main-loop-freeze-conversation-list.md): above the size threshold this used
-      // to read and split the entire file on EVERY append — a 30 MB synchronous read per message.
-      if (!this.rotationLineCount.mayExceed(this.logPath, this.maxLines)) return;
+      if (stat.size < this.rotationSizeThreshold) return;
 
       const content = fs.readFileSync(this.logPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
@@ -248,59 +242,11 @@ export class MessageLogger {
           try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/shared/MessageLogger.ts:217' }); } catch { /* ignore */ }
           throw rotateErr;
         }
+        this.onRotated?.(); // e.g. the Telegram log view follows the file (main-loop-freeze-conversation-list)
         console.log(`[message-logger] Rotated log: ${lines.length} -> ${kept.length} lines`);
-        this.rotationLineCount.set(kept.length);
-        this.onRotated?.();
-      } else {
-        this.rotationLineCount.set(lines.length);
       }
     } catch {
       // Log rotation is non-critical
     }
   }
-}
-
-/**
- * The rotation check's memory of how many lines the log holds, so an append above the size
- * threshold does not read the whole file to learn it (docs/specs/main-loop-freeze-conversation-list.md).
- * Seeded by ONE byte-level newline count (no decode, no split), then advanced per append. Another
- * writer appending to the same file only makes the count lag, which delays a rotation; the rotation
- * itself always re-reads and re-counts the file.
- */
-export class RotationLineCount {
-  /**
-   * Never below the file's real count of non-empty lines (the old code's measure), so rotation
-   * never happens later than it did: an over-estimate only costs an early read, after which
-   * set() makes the count exact. There is no brake after a failed attempt: the next append tries
-   * again, exactly as the old code did, so the moments of every rotation are unchanged.
-   */
-  private count: number | null = null;
-
-  /** Called on each append above the size threshold: true when the cap may be passed. */
-  mayExceed(logPath: string, maxLines: number): boolean {
-    if (this.count === null) {
-      const buf = fs.readFileSync(logPath);
-      // A last line with no newline is still a line.
-      this.count = countNewlines(buf) + (buf.length > 0 && buf[buf.length - 1] !== 10 ? 1 : 0);
-    } else {
-      this.count += 1;
-    }
-    return this.count > maxLines;
-  }
-
-  /** The exact non-empty line count, after a full read or a rotation. */
-  set(lines: number): void { this.count = lines; }
-
-  /**
-   * Unknown: recount at the next check. Used when the file went back under the size threshold,
-   * and after an append that failed (part of it may have reached the disk).
-   */
-  forget(): void { this.count = null; }
-}
-
-/** Newline bytes in a buffer — the line count of a JSONL file without decoding it. */
-export function countNewlines(buf: Buffer): number {
-  let n = 0;
-  for (let i = buf.indexOf(10); i !== -1; i = buf.indexOf(10, i + 1)) n += 1;
-  return n;
 }
