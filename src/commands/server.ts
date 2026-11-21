@@ -352,6 +352,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { classifyLoginExpired } from '../core/LoginExpiredSignature.js';
 import * as ownerRecordWiring from '../core/ownerRecordWiring.js';
 import { unreportedRegistryDegradations } from '../awareness/registry.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
@@ -17987,6 +17988,38 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     });
     quotaPollerRef = quotaPoller;
+    // Fresh-login probe (spec stale-process-login-expired): before one session's "Login expired"
+    // screen benches an account, the stored login is tested with one contained real call. Live switch
+    // subscriptionPool.freshLoginProbe.enabled (default on); off ⇒ today's behaviour exactly.
+    const freshLoginProbeEnabled = (): boolean => liveConfig.get<unknown>('subscriptionPool.freshLoginProbe.enabled',
+      (config.subscriptionPool as { freshLoginProbe?: { enabled?: boolean } } | undefined)?.freshLoginProbe?.enabled ?? true) !== false;
+    {
+      const { buildFreshProbeScheduler } = await import('../core/freshLoginProbeWiring.js');
+      const freshProbe = buildFreshProbeScheduler({
+        stateDir: config.stateDir,
+        enabled: freshLoginProbeEnabled,
+        claudePath: () => resolveFrameworkBinaryPath({
+          framework: CLAUDE_CODE_FRAMEWORK,
+          frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+          claudePath: config.sessions.claudePath,
+          configuredFramework: config.sessions.framework,
+        }) ?? detectClaudePath(),
+        routedConfigHome: (id) => quotaPoller.routedConfigHome(id),
+        fingerprint: (id) => quotaPoller.lastCredentialFingerprint(id),
+        applyVerdict: (id, verdict) => quotaPoller.applyFreshVerdict(id, verdict),
+        onBreaker: (id) => {
+          DegradationReporter.getInstance().report({
+            feature: 'QuotaPoller.freshLoginProbe',
+            primary: 'a session showing an expired login is checked against the stored login before the account is benched',
+            fallback: "the account is benched on that session's screen alone, as before this check existed",
+            reason: `The fresh-login check for ${id} could not conclude four times in a row; it pauses for 24 hours or until that login changes`,
+            impact: 'A working account may be benched for a while if one of its sessions shows an expired login.',
+          });
+        },
+        log: (m) => console.log(m),
+      });
+      quotaPoller.setFreshProbe(freshProbe);
+    }
     // A session ended at Claude Code's "Login expired" screen is a signal to the poller, which
     // alone decides whether that corroborates needs-reauth (and so opens the sign-in repair).
     // CMT-1008: the screen is authoritative over a READABLE credential — the poller moves that
@@ -17994,14 +18027,46 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.setLoginExpiredSink((input) => {
       // A tool-result-led frame stays a sighting only (the two-session rule decides).
       if (!input.messageLed) { quotaPoller.noteCliLoginExpired(input); return; }
-      void quotaPoller.observeCliLoginExpired(input).catch((err) => console.warn(`[QuotaPoller] expired-login observation failed: ${err instanceof Error ? err.message : String(err)}`));
+      void quotaPoller.observeCliLoginExpired(input, { awaitProbeMs: 20_000 }).catch((err) => console.warn(`[QuotaPoller] expired-login observation failed: ${err instanceof Error ? err.message : String(err)}`));
     });
     // CMT-1008: an INTERACTIVE (topic) session stuck at the same screen is moved onto a signed-in
     // account through the reactive swap funnel (the one POST /subscription-pool/swap uses), after
     // the poller marks its dead login. Kill switch: subscriptionPool.loginExpiredSwap.enabled:false.
     const { InteractiveLoginExpiredRecovery } = await import('../core/InteractiveLoginExpiredRecovery.js');
     const interactiveLoginExpiredRecovery = new InteractiveLoginExpiredRecovery({
-      observe: (input) => quotaPoller.observeCliLoginExpired(input),
+      observe: (input, opts) => quotaPoller.observeCliLoginExpired(input, opts ?? {}),
+      // Spec stale-process-login-expired D4: a stale session restarts on its OWN account.
+      staleProcessEnabled: freshLoginProbeEnabled,
+      refreshInPlace: async (session) => {
+        if (!_sessionRefresh) return { ok: false, reason: 'session-refresh-not-ready' };
+        const rec = state.findSessionByTmux?.(session) as { subscriptionAccountId?: string | null } | null | undefined;
+        const accountId = rec?.subscriptionAccountId ?? null;
+        const configHome = accountId ? quotaPoller.routedConfigHome(accountId) : null;
+        if (!accountId || !configHome) return { ok: false, reason: 'session-account-unknown' };
+        try {
+          const r = await _sessionRefresh.refreshSession({ sessionName: session, reason: 'stale-login-token', fresh: false, configHome, accountId, callerClass: 'recovery' } as never) as { success?: boolean; ok?: boolean; error?: string; reason?: string };
+          const ok = r?.success === true || r?.ok === true;
+          return ok ? { ok: true } : { ok: false, reason: r?.error ?? r?.reason ?? 'refresh-refused' };
+        } catch (err) { return { ok: false, reason: err instanceof Error ? err.message : String(err) }; }
+      },
+      sessionIdentity: (session) => {
+        const rec = state.findSessionByTmux?.(session) as { claudeSessionId?: string | null; subscriptionAccountId?: string | null; startedAt?: string } | null | undefined;
+        if (!rec || !sessionManager.isSessionAlive(session)) return null;
+        return `${rec.claudeSessionId ?? ''}|${rec.subscriptionAccountId ?? ''}|${rec.startedAt ?? ''}`;
+      },
+      stillShowsExpired: (session) => {
+        const pane = sessionManager.captureOutput(session, 60) ?? '';
+        try { return classifyLoginExpired(pane).loginExpired === true; } catch { return false; } // @silent-fallback-ok: an unreadable pane is not proof of the screen
+      },
+      // Ownership: alive here AND not standing down (a stand-down means the conversation now lives on
+      // another machine; a live tmux session alone is not proof of ownership).
+      ownsConversation: (session) => {
+        if (!sessionManager.isSessionAlive(session)) return false;
+        const reg = _standDownRegistryRef();
+        if (!reg) return true;
+        try { return !reg.isEnforcing(reg.getBySession(session)); } catch { return false; } // @silent-fallback-ok: unknown ownership never dispatches a restart
+      },
+      noteContrary: (accountId) => { quotaPoller.noteFreshProbeContrary(accountId); },
       swap: async (args) => {
         if (!_quotaAwareScheduler) return { swapped: false, toAccountId: null, reason: 'scheduler-not-configured' };
         return _quotaAwareScheduler.onQuotaPressure(args);
@@ -20463,7 +20528,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         capturePane: (tmux) => sessionManager.captureOutput(tmux, 200),
         poolAccounts: () => subscriptionPool.list().map((a) => ({ id: a.id, framework: a.framework, configHome: a.configHome, status: a.status, statusCause: a.statusCause ?? null })),
         loginCheck: (id) => quotaPoller.loginCheck(id),
-        observeLoginExpired: async (configHome, tmux) => (await quotaPoller.observeCliLoginExpired({ configHome, session: tmux })).reason,
+        // Spec stale-process-login-expired D2: NeverSilent joins or starts the fresh-login probe (wait 0)
+        // and never marks while it is pending; it gets the disposition to decide whether to hold off.
+        observeLoginExpired: async (configHome, tmux) => {
+          const r = await quotaPoller.observeCliLoginExpired({ configHome, session: tmux }, { awaitProbeMs: 0, markWhilePending: false });
+          return { reason: r.reason, ...(r.probe ? { probe: r.probe } : {}) };
+        },
+        inPlaceRefreshPossible: (tmux, accountId) => interactiveLoginExpiredRecovery.inPlaceRefreshPossible(tmux, accountId),
         repairStarted: (accountId) => {
           if (!accountId || !subscriptionReloginRuntimeRef) return false;
           try {
