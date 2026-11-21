@@ -1,3 +1,4 @@
+import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
@@ -8788,7 +8789,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // actually runs; recoverPendingInjects sweeps survivors at boot.
       this.pendingInjects.record({
         tmuxSession,
-        initialMessage: effectiveInitialMessage,
+        // SEC-137: record the text exactly as rawInject will type it, so the
+        // Stage-B first-message match compares like with like.
+        initialMessage: sanitizeTypedText(effectiveInitialMessage),
         telegramTopicId: options?.telegramTopicId,
         conversationId: options?.bootstrapConversationIds?.[0] ?? options?.telegramTopicId,
         // Only a genuinely fresh Codex spawn may use the narrow offset-zero
@@ -9967,6 +9970,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // delivered verbatim; this removes only the sequence that can forge a
     // paste boundary.
     text = text.replace(/(?:\x1b\[|\x9b)20[01]~/g, '');
+    // SEC-137: no other byte in the text may act as a keystroke either. A single-line message is typed
+    // with `send-keys -l`, so `\r` would submit early and Ctrl-U would erase the sender tag. CR becomes a
+    // newline (taking the bracketed path), and remaining C0 (except tab/newline), DEL and C1 are dropped.
+    text = neutralizeTerminalControls(text);
     // Reset idle-prompt timer — this session is about to receive new input,
     // so it's not a zombie. Without this, the zombie detector can kill a session
     // that just received a message but hasn't produced output yet.
@@ -10113,7 +10120,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const exactTarget = `=${tmuxSession}:`;
     const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
     const enterPresses = framework === 'codex-cli' ? 2 : 1;
-    if (text.includes('\n')) {
+    // SEC-137: a tab typed key-by-key can trigger completion; send it inside a paste instead.
+    if (text.includes('\n') || text.includes('\t')) {
       withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], { encoding: 'utf-8', timeout: 5000 }));
       for (const chunk of chunkLiteralForTmux(text)) {
         withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), { encoding: 'utf-8', timeout: 10000 }));
