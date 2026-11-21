@@ -14,7 +14,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { presenceEnrollMessage } from '../../src/server/mobileConsoleTicket.js';
 import { mayApprove, markApproverForTest, migrateApprovers, resetApproverStateCacheForTests, tightenApproverCutoff } from '../../src/server/mobileApprover.js';
 import { keyHashOf } from '../../src/core/MobileDeviceKeys.js';
-import { resetApproverClaimForTests } from '../../src/server/mobileApproverClaim.js';
+import { declineApproverClaimTap, isApproverClaimNonce, resetApproverClaimForTests } from '../../src/server/mobileApproverClaim.js';
 import { resetApproverRevokeForTests, takeApproverRevokeTap } from '../../src/server/mobileApproverRevoke.js';
 import { resetApproverGrantForTests } from '../../src/server/mobileApproverGrant.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
@@ -297,6 +297,21 @@ describe('the approvers list the apps read (mobile-approver-mark §3.10)', () =>
     const time = String(Date.now() + (tick++ % 1000));
     return request(app).get(url).set('Host', HOST).set('X-Instar-Device', p.id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', p.dev.sign(canonicalString(p.id, HOST, 'GET', url, time, undefined)));
   }
+  it('"This wasn\'t me" on the code message is a real Decline that ends the claim', async () => {
+    const c = setup();
+    const p = c.pair();
+    expect((await claim(c.app, p)).body).toMatchObject({ eligible: true });
+    const dm = c.dms.at(-1)!;
+    const m = /^md:d:([0-9a-f]{24})$/.exec(dm.decline);
+    expect(m, dm.decline).not.toBeNull(); // the form the Telegram tap router accepts
+    expect(isApproverClaimNonce(m![1]!)).toBe(true);
+    expect(declineApproverClaimTap(m![1]!).text).toMatch(/^Stopped\./);
+    expect(isApproverClaimNonce(m![1]!)).toBe(false);
+    const conf = await post(c.app, p, '/mobile/approver/first/confirm', { code: codeIn(dm.text) });
+    expect(conf.body.error).toBe('no-claim');
+    expect(declineApproverClaimTap(m![1]!).text).toMatch(/already ended/);
+  });
+
   it('says the claim is open before any approver, then lists the approver and closes it', async () => {
     const c = setup();
     const p = c.pair();

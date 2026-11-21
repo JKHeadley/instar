@@ -193,3 +193,7 @@ A bad approval-key signature on `POST /mobile/approver/first/sign` and `/revoke/
   the app can offer Remove. A kept device has no key id and is not offered. Approvers on other computers stay a
   count (`holdersElsewhere`): the record has no names for them, and an unnamed Remove is too easy to get wrong.
   They are removed from a device on their own computer or through the owner's private-chat tap.
+- The first-approver code message's Decline button carried `approver-first-ignore:<deviceId>`, which no Telegram
+  tap handler accepts, so it did nothing (found by the stand-in owner chat, PR 3626). It now carries a 24-hex
+  `md:d:` nonce in the form the tap router accepts, and the Decline handler ends that claim at once: the code
+  stops working and nothing is granted. The message still says to ignore it if it was not you.
