@@ -129,8 +129,10 @@ export function attentionConditionKeyOf(item: Pick<AttentionLifecycleItem, 'id' 
 }
 
 // Category/source/title shapes that mean "a human must judge this": the
-// security category, an exposed or leaked credential, a rotate-this-secret ask.
-const SECURITY_RE = /security|credential-exposure|credential-leak|\bleak(?:ed|s)?\b|\bexposed\b|rotate\b.*\b(?:token|key|secret|password)/i;
+// security category, an exposed or leaked credential, a rotate-this-secret ask
+// (the secret word may sit inside a name like `github_token`, so no word
+// boundary before it), or a live grant on someone else's account.
+const SECURITY_RE = /security|credential-exposure|credential-leak|\bleak(?:ed|s)?\b|\bexpos(?:ed|ure)\b|rotate\b.*(?:token|key|secret|password)|\boauth\b|authori[sz]ation for someone else/i;
 const OPERATOR_ASKED_RE = /decision|approval|review/i;
 
 /**
