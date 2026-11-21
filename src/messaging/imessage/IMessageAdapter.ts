@@ -609,9 +609,22 @@ export class IMessageAdapter implements MessagingAdapter {
    * Requires FDA on the calling process to create the hardlinks the first
    * time; subsequent startups read through the existing hardlinks without
    * needing FDA.
+   *
+   * `messagesDir` defaults to the real `~/Library/Messages`, EXCEPT under the
+   * test runner (`VITEST` set): there it defaults to a directory inside
+   * `stateDir` that does not exist, so a test that builds an adapter without a
+   * `dbPath` never touches the machine's real Messages database. Linking that
+   * TCC-protected file can park the syscall in the kernel waiting for a Full
+   * Disk Access approval nobody answers, which froze test workers forever
+   * (Studio, 2026-11-20). A test that wants the real directory passes it.
    */
-  static ensureChatDbHardlink(stateDir: string): string {
-    const messagesDir = path.join(os.homedir(), 'Library', 'Messages');
+  /** The Messages directory the adapter links from: the real one, or (under the test runner) a never-created stand-in inside `stateDir`. */
+  static defaultMessagesDir(stateDir: string): string {
+    if (process.env.VITEST) return path.join(stateDir, 'imessage', 'test-runner-no-real-messages');
+    return path.join(os.homedir(), 'Library', 'Messages');
+  }
+
+  static ensureChatDbHardlink(stateDir: string, messagesDir: string = IMessageAdapter.defaultMessagesDir(stateDir)): string {
     const srcDb = path.join(messagesDir, 'chat.db');
     const linkDir = path.join(stateDir, 'imessage');
     const linkDb = path.join(linkDir, 'chat.db');
