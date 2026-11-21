@@ -40,6 +40,10 @@ import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } f
 import type { LeftoverPrefix, ReapOptions, ReapResult } from './leftoverReaper.js';
 import { firstPartActive, selectFirstPart, type FirstPartInput, type FirstPartLaneSummary, type FirstPartSelection, type FirstPartSummary } from './firstPart.js';
 import { validFirstPartEvidence, type FirstPartEvidence, type ObservationDetail, type FileFailure } from './firstPartReport.js';
+import {
+  BorrowedLaneFlow, admitHelperPasses, editsCheckFixtures, filesDigest, selectVerifyBaseline, FLOW_LANES, LANE_FLOW,
+  type BorrowedChildInput, type BorrowedFlowResult, type FileComparison, type FlowLane, type ProxyCall,
+} from './borrowedLaneFlow.js';
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
@@ -139,6 +143,13 @@ export interface OrchestratorSeams {
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
   unhandledErrorsReporter?(): string | null;
   /**
+   * The verify's way to its own server's borrowed-helper proxy (loopback, the attempt token, 5 s a
+   * call; any failure is no answer). Absent ⇒ a verify never asks a helper, whatever its input says.
+   */
+  borrowedProxy?(b: BorrowedChildInput): ProxyCall;
+  /** The borrowed flow's own wait between polls (real time; never the run's clock). Absent ⇒ a timer. */
+  borrowedSleep?(ms: number): Promise<void>;
+  /**
    * The TypeScript module for the skip ratchet's parser. Absent ⇒ resolved from the
    * run worktree (installed by `npm ci`), then the verifier's own install.
    */
@@ -230,6 +241,13 @@ export interface VerifyRunInput {
   likelyFailingFirst?: FirstPartInput;
   /** The setting and assignment read by the run machine before starting. */
   firstPartEvidence?: FirstPartEvidence;
+  /**
+   * PR verifies only, with a borrowed helper configured on this machine (spec
+   * local-verify-borrowed-slices-count.md, F "Where the exchange runs"): the server's port, this
+   * verify's own attempt token and the kept baseline results. Absent ⇒ the verify runs exactly as
+   * without helpers. `main` verifies ignore it.
+   */
+  borrowed?: BorrowedChildInput;
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
   deadlines?: LocalVerifyDeadlines;
@@ -301,6 +319,10 @@ export type VerifyRunResult = (
     /** Present when the run input carried `likelyFailingFirst`: the assignment, the setting, and each lane's first part as numbers. */
     firstPart?: FirstPartSummary;
     observation?: ObservationDetail;
+    /** Present when a borrowed helper took part: what it was sent, finished and how its results compared (the server alone updates the practice record). */
+    borrowed?: BorrowedFlowResult;
+    /** `main` verifies with per-file counts asked for: files that failed in their lane and failed again alone (at most 200). */
+    confirmedFailed?: string[];
   }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] }
@@ -503,6 +525,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const mainFileCounts: Record<string, [number, number, number, number, string]> = {};
   const firstMessages = new Map<string, string>();
   const rerunMessages = new Map<string, string>();
+  /** Files re-run alone that failed again (a confirmed local failure, for the helper comparison). */
+  const soloFailed = new Set<string>();
+  /** Borrowed helper (PR verifies with `input.borrowed`): the session, each local file's digest, and each lane's comparisons. */
+  let flow: BorrowedLaneFlow | null = null;
+  const localDigests = new Map<string, string>();
+  const borrowedPer: Partial<Record<FlowLane, { comparisons: Map<string, FileComparison>; counted: string[]; localFailed: Array<{ file: string; failedTests: string[]; confirmed: boolean }> }>> = {};
+  let borrowedResult: BorrowedFlowResult | null = null;
   let rerunBudget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
   const reporter = seams.unhandledErrorsReporter?.() ?? null;
   let changedForIsolation: Set<string> | null = null;
@@ -636,6 +665,29 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const inventory = computeInventory(tree.split('\n').filter(Boolean));
     expectedFiles = inventory.byLane;
 
+    // A borrowed helper (spec local-verify-borrowed-slices-count.md, F): only a PR verify whose input
+    // carries it, whose change does not edit the check slice's fixtures, and whose server answers.
+    if (input.borrowed && input.kind !== 'main' && seams.borrowedProxy && !editsCheckFixtures(changedForIsolation)) {
+      try {
+        const call = seams.borrowedProxy(input.borrowed);
+        const planFacts = await BorrowedLaneFlow.open(call);
+        if (planFacts) {
+          const sel = await selectVerifyBaseline(input.borrowed.baselines, input.baseSha, mergeCommit, async (args) => {
+            const r = await git(args, 'borrowed-baseline');
+            return { status: r.status, stdout: r.stdout };
+          });
+          const flowSleep = seams.borrowedSleep ?? ((ms: number) => new Promise<void>((r) => { const tm = setTimeout(r, ms); tm.unref?.(); }));
+          flow = new BorrowedLaneFlow(planFacts, { call, now: seams.now, sleep: flowSleep, log: seams.log }, mergeTree, sel.rows, changedForIsolation ?? new Set());
+          seams.log({ event: 'borrowed-open', helper: planFacts.helper, mode: planFacts.mode, assigned: planFacts.assigned, baseline: sel.commit, baselineRows: sel.rows.size });
+        }
+      } catch (e) {
+        // A failure here is "no helper": the lanes run as without one.
+        if (e instanceof RunError && e.step.startsWith('deadline:')) throw e;
+        flow = null;
+        seams.log({ event: 'borrowed-open-failed', detail: String(e instanceof Error ? e.message : e).slice(0, 200) });
+      }
+    }
+
     // ── 4. The lanes, all at once, inside one suite slot ──
     // One foreign-suite check, then this run takes ONE full-suite slot of the host
     // test-runner bound and holds it for every lane; each lane's vitest is a child of
@@ -679,6 +731,42 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         seams.log({ event: 'first-part-plan', lane: lane.name, files: sel.files, fromChange: sel.fromChange, fromPrevious: sel.fromPrevious, fromList: sel.fromList, partners: sel.partners, recordedMs: sel.ms });
       }
     }
+    // The helper's share, planned once for every lane before any lane starts (spec "Which lanes, and how much").
+    const borrowedShards = new Map<LaneName, string[][] | null>();
+    if (flow) {
+      try {
+        const lanesIn = LANES.map((lane) => {
+          const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
+            : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
+          const uw = input.laneShards?.unitWorkers;
+          const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
+          const files = inventory.byLane[lane.name] ?? [];
+          return {
+            lane: lane.name as FlowLane, files, procs: shards, balanced: shards === 1 || planShards(files, shards, durations) !== null,
+            firstPart: firstParts.has(lane.name), wallPerMs: lane.name === 'unit' ? LANE_FLOW.unitWallFactor / workers : 1 / shards,
+          };
+        });
+        flow.planLanes(lanesIn, durations);
+        // Counting lanes: the lane's own shard plan without the helper's files, and each shard's portion.
+        for (const l of lanesIn) {
+          const lp = flow.lanePlan(l.lane);
+          if (!lp || lp.mode !== 'count') continue;
+          const held = new Set(lp.sent);
+          const own = l.files.filter((f) => !held.has(f));
+          const shardPlan = l.procs > 1 ? planShards(own, l.procs, durations) : null;
+          if (l.procs > 1 && shardPlan === null) { flow.demote(l.lane); continue; }
+          const w = (f: string) => (Number.isFinite(durations[f]) ? durations[f] : LANE_FLOW.unknownFileMs);
+          const ownMs = shardPlan ? shardPlan.map((xs) => xs.reduce((n, f) => n + w(f), 0)) : [own.reduce((n, f) => n + w(f), 0)];
+          flow.setPortions(l.lane, ownMs, durations);
+          borrowedShards.set(l.lane as LaneName, shardPlan);
+        }
+        flow.start(Math.max(...LANES.map((l) => d.lanes[l.name])));
+      } catch (e) {
+        seams.log({ event: 'borrowed-plan-failed', detail: String(e instanceof Error ? e.message : e).slice(0, 200) });
+        await flow.stop().catch(() => undefined);
+        flow = null;
+      }
+    }
     try {
       const settled = await Promise.allSettled(LANES.map((lane) => runLane(lane)));
       const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
@@ -686,6 +774,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const s of settled) if (s.status === 'fulfilled') laneRuns.push(s.value);
     } finally {
       if (typeof releaseSlot === 'function') releaseSlot();
+      if (flow) {
+        await flow.stop().catch(() => undefined);
+        try { borrowedResult = flow.result(borrowedPer); } catch (e) { seams.log({ event: 'borrowed-result-failed', detail: String(e instanceof Error ? e.message : e).slice(0, 200) }); }
+      }
       // Keep what this run measured for the next run's shard plan (never part of a verdict).
       if (Object.keys(observed).length > 0) {
         try { seams.fs.writeFile(p.durationsPath, JSON.stringify(mergeDurations(durations, observed))); } catch { /* @silent-fallback-ok: a missed update only makes the next plan less balanced */ }
@@ -703,14 +795,20 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const restFiles = firstSet ? laneFiles.filter((f) => !firstSet.has(f)) : laneFiles;
       // A sharded lane with a plan from recorded times: the first part's files are left out before
       // the plan is made, so the shards are balanced on what remains.
-      let plan = shards > 1 ? planShards(restFiles, shards, durations) : null;
+      // A counting lane with a borrowed helper (spec local-verify-borrowed-slices-count.md, F "The plan
+      // (counting)"): the helper's files are held out of the lane's own processes, planned before
+      // any lane started, and each shard takes back what has no accepted pass when its own files end.
+      const helperPlan = flow && !first ? flow.lanePlan(lane.name as FlowLane) : null;
+      const counting = helperPlan?.mode === 'count' && borrowedShards.has(lane.name);
+      const heldOut = counting ? new Set(helperPlan!.sent) : null;
+      let plan = counting ? borrowedShards.get(lane.name) ?? null : shards > 1 ? planShards(restFiles, shards, durations) : null;
       // Fewer files left than processes: one process runs them by name (a first part is closed
       // under path overlap, so a named rest file can never match a first-part file).
       if (first && shards > 1 && plan === null && restFiles.length > 0 && restFiles.length < shards) plan = [[...restFiles].sort()];
       const procs = plan ? plan.length : shards;
       // The unit lane (one process, no file list) and a sharded lane without a plan: the first
       // part's files are excluded by name.
-      const excludes = first ? first.files.map((f) => `--exclude=${f}`) : [];
+      const excludes = first ? first.files.map((f) => `--exclude=${f}`) : heldOut && !plan ? [...heldOut].sort().map((f) => `--exclude=${f}`) : [];
       if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
       let unitWorkers: number | null = null;
@@ -791,12 +889,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
         if (text != null) {
-          try { report = parseVitestJson(text, p.runDir, wantFileCounts ? { outcomeDigest: true } : {}); } catch { report = null; }
-          if (report && wantFileCounts) {
+          const wantDigest = wantFileCounts || flow !== null;
+          try { report = parseVitestJson(text, p.runDir, wantDigest ? { outcomeDigest: true } : {}); } catch { report = null; }
+          if (report && wantDigest) {
             // The digest is taken aside and removed again, so the lane report every later step
             // reads is exactly the one it would have been without the option.
             for (const [f, c] of report.files) {
-              if (c.failed === 0 && typeof c.outcomeDigest === 'string') mainFileCounts[f] = [c.passed, c.failed, c.skipped, c.todo, c.outcomeDigest];
+              if (wantFileCounts && c.failed === 0 && typeof c.outcomeDigest === 'string') mainFileCounts[f] = [c.passed, c.failed, c.skipped, c.todo, c.outcomeDigest];
+              if (flow && typeof c.outcomeDigest === 'string') localDigests.set(f, c.outcomeDigest);
               delete c.outcomeDigest;
             }
           }
@@ -820,6 +920,76 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
         if (shardError) throw shardError.reason;
         return settledParts.map((x) => (x as PromiseFulfilledResult<Part>).value);
+      };
+      /**
+       * A counting lane's processes: each shard runs its own files, then takes back whatever in its
+       * portion has no accepted helper pass (and its spot re-runs) and runs those in a second
+       * process, under the lane's own deadline. Its exit code and unhandled errors count toward the
+       * lane exactly as the first process's do. Nothing taken back: no second process.
+       */
+      const runProcsWithTakeBack = async (): Promise<Part[]> => {
+        const settledParts = await Promise.allSettled(Array.from({ length: procs }, async (_, k): Promise<Part[]> => {
+          const key = procs > 1 ? `${lane.name}-${k + 1}` : lane.name;
+          const own = await runPart(key, [...(plan ? plan[k] : []), ...(plan ? [] : excludes)], false);
+          if (own.aborted || stopLanes.signal.aborted) return [own];
+          const back = await flow!.takeBack(lane.name as FlowLane, k);
+          if (back.files.length === 0) return [own];
+          return [own, await runPart(`${key}-back`, back.files, true)];
+        }));
+        const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
+        if (shardError) throw shardError.reason;
+        return settledParts.flatMap((x) => (x as PromiseFulfilledResult<Part[]>).value);
+      };
+      /** What the run machine ran itself in this lane, as the comparison reads it (final counts, digest, failed names). */
+      const localView = (report: ParsedLaneReport | null, ran: ReadonlySet<string> | null) => {
+        const out = new Map<string, { failed: number; digest: string | null; failedTests: readonly string[] }>();
+        if (!report) return out;
+        for (const [f, c] of report.files) {
+          if (ran && !ran.has(f)) continue;
+          out.set(f, { failed: c.failed, digest: localDigests.get(f) ?? null, failedTests: (c.failedTests ?? []).map((x) => x.name) });
+        }
+        return out;
+      };
+      /**
+       * After the lane's final local result: compare with the helper, cancel what is outstanding,
+       * and (a counting lane) admit the accepted passes, unless the verify has seen more than five
+       * disagreements, in which case one final local pass runs the files the helper passed.
+       */
+      const borrowedLaneEnd = async (report: ParsedLaneReport | null, exitCode: number | null): Promise<{ report: ParsedLaneReport | null; exitCode: number | null }> => {
+        if (!flow || !helperPlan) return { report, exitCode };
+        const fl = lane.name as FlowLane;
+        const solo = { failed: soloFailed, passed: new Set(flakyRetried.map((r) => r.file)) };
+        const comparisons = flow.compareLane(fl, localView(report, null), solo);
+        flow.noteDisagreements([...comparisons.values()].filter((c) => c === 'digest-differs-both-pass' || c === 'helper-failed-local-passed' || c === 'confirmed-wrong-pass').length);
+        await flow.laneEnded(fl);
+        let counted: string[] = [];
+        let outReport = report;
+        let outExit = exitCode;
+        if (counting && report) {
+          const accepted = flow.acceptedPasses(fl);
+          if (accepted.size > 0 && flow.massDisagreement()) {
+            // More than five disagreements: no helper result is used; one final local pass over the files it passed.
+            flow.markFinalLocalPass(fl);
+            seams.log({ event: 'borrowed-final-local-pass', lane: lane.name, files: accepted.size });
+            const fin = await runPart(`${lane.name}-final`, [...accepted.keys()].sort(), true);
+            const finReport = fin.aborted ? null : mergeParts([fin]);
+            if (!finReport) outReport = null;
+            else {
+              for (const [f, c] of finReport.files) {
+                if (outReport!.files.has(f)) { seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f, part: 'final' }); outReport = null; break; }
+                outReport!.files.set(f, c);
+              }
+              const finExit = await rerunPhase(finReport, [...accepted.keys()], fin.unhandled, combineExit([fin.status]), outReport ? [...outReport.files.values()].filter((c) => c.failed > 0).length : 0);
+              outExit = combineExit([exitCode, finExit]);
+            }
+          } else if (accepted.size > 0) {
+            counted = admitHelperPasses(report, accepted);
+            seams.log({ event: 'borrowed-counted', lane: lane.name, files: counted.length });
+          }
+        }
+        const localFailed = report ? [...report.files.entries()].filter(([f, c]) => c.failed > 0 && !counted.includes(f)).map(([f, c]) => ({ file: f, failedTests: (c.failedTests ?? []).map((x) => x.name).slice(0, 50), confirmed: soloFailed.has(f) })) : [];
+        borrowedPer[fl] = { comparisons, counted, localFailed };
+        return { report: outReport, exitCode: outExit };
       };
       // A lane's report is the union of its shards' reports; a missing shard report is a
       // missing lane report (the inventory rule then fails the run).
@@ -897,14 +1067,18 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       };
 
       if (!first) {
-        const parts = await runProcs(false);
+        const parts = counting ? await runProcsWithTakeBack() : await runProcs(false);
         if (parts.some((x) => x.aborted)) {
           seams.log({ event: 'lane-stopped-early', lane: lane.name });
+          if (flow && helperPlan) await flow.laneEnded(lane.name as FlowLane);
           return { lane: lane.name, report: null, seconds: seconds(), exitCode: null, stoppedEarly: true };
         }
-        const report = mergeParts(parts);
+        let report = mergeParts(parts);
         const unhandled = combineUnhandled(parts.map((x) => x.unhandled));
-        const exitCode = await rerunPhase(report, laneFiles, unhandled, combineExit(parts.map((x) => x.status)), 0);
+        // The isolation re-run's file list: the files this machine ran (a counting lane's accepted helper files are not run here).
+        const ranHere = counting && report ? laneFiles.filter((f) => report!.files.has(f) || !heldOut!.has(f)) : laneFiles;
+        let exitCode = await rerunPhase(report, ranHere, unhandled, combineExit(parts.map((x) => x.status)), 0);
+        if (flow && helperPlan) ({ report, exitCode } = await borrowedLaneEnd(report, exitCode));
         if (failFast && !stopLanes.signal.aborted && laneFailedFinally(report, exitCode)) {
           seams.log({ event: 'lanes-stop', after: lane.name });
           stopLanes.abort();
@@ -1077,6 +1251,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   });
   if (errorStep) record.errorStep = errorStep;
   if (input.kind === 'main') record.kind = 'main';
+  // A borrowed helper took part (it was sent files): which helper, the assignment, and per lane a count and a digest of the files sent.
+  if (borrowedResult && input.kind !== 'main') {
+    const lanesSent = FLOW_LANES.filter((l) => (borrowedResult!.sentFiles[l]?.length ?? 0) > 0);
+    if (lanesSent.length > 0) {
+      record.borrowed = {
+        helper: borrowedResult.helper, assigned: borrowedResult.assigned,
+        lanes: lanesSent.map((l) => ({ lane: l, files: borrowedResult!.sentFiles[l]!.length, filesDigest: filesDigest(borrowedResult!.sentFiles[l]!) })),
+      };
+    }
+  }
   if (input.attempt) record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
   if (preflight) record.preflight = preflight;
@@ -1108,8 +1292,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     ...(isolationRefusals ? { isolationRefusals } : {}),
     ...(input.kind === 'main' && Object.keys(flakyTestLines).length > 0 ? { flakyTestLines } : {}),
     ...(wantFileCounts ? { fileCounts: mainFileCounts } : {}),
+    ...(wantFileCounts && soloFailed.size > 0 ? { confirmedFailed: [...soloFailed].sort().slice(0, 200) } : {}),
     ...(firstPartSummary ? { firstPart: firstPartSummary } : {}),
     ...(input.kind !== 'main' ? { observation: detail } : {}),
+    ...(borrowedResult ? { borrowed: borrowedResult } : {}),
   };
 
   // ── helpers (closures over the run) ──
@@ -1254,6 +1440,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         seams.log({ event: 'isolation-rerun', lane, file, outcome, ...irLog, ...(ir ? { seconds } : {}) });
         if (!passed) {
           cleared = false;
+          // Ran alone to its end and failed again: a confirmed local failure (the helper comparison reads it).
+          if (!r.deadlineKilled) soloFailed.add(file);
           if (!ir) {
             rerunMessages.set(file, r.deadlineKilled ? 'isolation re-run hit the lane deadline' : (c?.message || `isolation re-run exit ${r.status ?? r.signal}`));
           } else if (r.deadlineKilled) {

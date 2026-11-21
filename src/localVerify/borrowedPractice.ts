@@ -5,7 +5,7 @@
  *
  * Everything here is PURE: a lane's record goes in, a new lane's record and the events it caused
  * come out. The file, the routes and the notices live elsewhere (borrowedState.ts,
- * BorrowedRunMachine.ts, borrowedNotices.ts). The verify's lane flow (stage 5 of the rework) reads
+ * BorrowedRunMachine.ts, borrowedNotices.ts). The verify's lane flow (borrowedLaneFlow.ts) reads
  * `mayCount`, `spotRateOneIn` and the helper-level state through the server; nothing here is
  * imported by the verifier's own code.
  */
@@ -112,7 +112,7 @@ export interface LaneRecord {
   /** Start of the current practice period (the first one, or the last lapse). */
   practiceStartedAt: number;
   /** Item 1. Null until a dry run recorded the files eligible then. `uncovered` shrinks with every comparison. */
-  coverage: { dryRunAt: number; eligible: number; eligibleDigest: string; uncovered: string[] } | null;
+  coverage: { dryRunAt: number; eligible: number; eligibleDigest: string; uncovered: string[]; proven?: boolean } | null;
   /** Item 2, counted from the period's start. */
   spread: { verifies: number; waiting: number };
   /** Item 3: one entry per (file, verify) where both sides failed at least one same test. */
@@ -436,13 +436,20 @@ export function noteTime(input: LaneRecord, now: number): Transition {
 }
 
 /** The dry run's result for a lane (stage 6 writes it): the files eligible then, and those it compared. */
-export function recordDryRun(input: LaneRecord, r: { eligible: readonly string[]; compared: readonly string[]; eligibleDigest: string }, now: number): LaneRecord {
+export function recordDryRun(input: LaneRecord, r: { eligible: readonly string[]; compared: readonly string[]; eligibleDigest: string; proven?: boolean }, now: number): LaneRecord {
   const l = clone(input);
   const done = new Set(r.compared);
   const eligible = [...new Set(r.eligible)].slice(0, PRACTICE_LIMITS.coverageFilesMax);
-  l.coverage = { dryRunAt: now, eligible: eligible.length, eligibleDigest: r.eligibleDigest, uncovered: eligible.filter((f) => !done.has(f)).sort() };
+  l.coverage = { dryRunAt: now, eligible: eligible.length, eligibleDigest: r.eligibleDigest, uncovered: eligible.filter((f) => !done.has(f)).sort(), ...(r.proven !== undefined ? { proven: r.proven } : {}) };
   return l;
 }
+
+/**
+ * A lane is "proven" for a helper (spec D) when its dry run finished it with files worth at least
+ * half of the lane's time passing. A dry run recorded without that figure (stage 4's route) is
+ * read as proven; no dry run is not proven. Pure.
+ */
+export const laneProven = (l: LaneRecord | null | undefined): boolean => !!l?.coverage && l.coverage.proven !== false;
 
 export type DecisionRefusal = 'already-counting' | 'suspended' | 'evidence-incomplete' | 'exception-too-early';
 
@@ -509,7 +516,8 @@ export function parseLane(v: unknown): LaneRecord | null {
   const cov = x.coverage as LaneRecord['coverage'];
   if (!(cov === null || (!!cov && typeof cov === 'object' && isCount(cov.dryRunAt) && isCount(cov.eligible, PRACTICE_LIMITS.coverageFilesMax)
     && typeof cov.eligibleDigest === 'string' && /^[0-9a-f]{64}$/.test(cov.eligibleDigest)
-    && Array.isArray(cov.uncovered) && cov.uncovered.length <= cov.eligible && cov.uncovered.every(isFile)))) return null;
+    && Array.isArray(cov.uncovered) && cov.uncovered.length <= cov.eligible && cov.uncovered.every(isFile)
+    && (cov.proven === undefined || typeof cov.proven === 'boolean')))) return null;
   const sp = x.spread as LaneRecord['spread'] | null;
   if (!sp || !isCount(sp.verifies) || !isCount(sp.waiting) || sp.waiting > sp.verifies) return null;
   if (!Array.isArray(x.failing) || x.failing.length > PRACTICE_LIMITS.failingKept

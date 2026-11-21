@@ -46,15 +46,36 @@ export interface DryRunIntent {
   state: 'requested' | 'stopped';
 }
 
+/**
+ * A verify of a waiting change in which this helper's passes counted (files that entered the lane
+ * report without a run here). Kept so a later red `main` can be traced to a helper's pass.
+ */
+export interface CountedPasses { pr: number; headSha: string; at: number; lane: PracticeLane; files: string[] }
+
 export interface HelperState {
   ask: AskState;
   spot: SpotState;
   lanes: Partial<Record<PracticeLane, LaneRecord>>;
   runs: HelperRunSummary[];
   dryRunIntent: DryRunIntent | null;
+  counted: CountedPasses[];
 }
 
-export const freshHelper = (): HelperState => ({ ask: freshAsk(), spot: { raisedVerifiesLeft: 0 }, lanes: {}, runs: [], dryRunIntent: null });
+export const freshHelper = (): HelperState => ({ ask: freshAsk(), spot: { raisedVerifiesLeft: 0 }, lanes: {}, runs: [], dryRunIntent: null, counted: [] });
+
+/** Counted-pass entries kept per helper, and files per entry. */
+export const COUNTED_LIMITS = Object.freeze({ entries: 50, files: 2_000 });
+
+function parseCounted(v: unknown): CountedPasses | null {
+  const x = v as Partial<CountedPasses> | null;
+  if (!x || typeof x !== 'object') return null;
+  if (typeof x.pr !== 'number' || !Number.isSafeInteger(x.pr) || x.pr < 1) return null;
+  if (typeof x.headSha !== 'string' || !/^[0-9a-f]{40}$/.test(x.headSha)) return null;
+  if (typeof x.at !== 'number' || !Number.isSafeInteger(x.at) || x.at < 0) return null;
+  if (!(PRACTICE_LANES as readonly unknown[]).includes(x.lane)) return null;
+  if (!Array.isArray(x.files) || x.files.length > COUNTED_LIMITS.files || !x.files.every((f) => typeof f === 'string' && f.length >= 1 && f.length <= 300)) return null;
+  return { pr: x.pr, headSha: x.headSha, at: x.at, lane: x.lane as PracticeLane, files: [...x.files] };
+}
 
 /** Measured throughput (local file-seconds per helper-second) after 5 counted runs, else null. */
 export function measuredThroughput(runs: readonly HelperRunSummary[]): number | null {
@@ -98,6 +119,7 @@ export function parseHelperState(v: unknown): HelperState {
   }
   if (Array.isArray(x.runs)) h.runs = (x.runs as HelperRunSummary[]).filter((r) => !!r && typeof r === 'object' && typeof r.at === 'number').slice(-BORROWED_STATE.keepRuns);
   h.dryRunIntent = parseIntent(x.dryRunIntent);
+  if (Array.isArray(x.counted)) h.counted = x.counted.map(parseCounted).filter((c): c is CountedPasses => c !== null).slice(-COUNTED_LIMITS.entries);
   return h;
 }
 
@@ -161,6 +183,12 @@ export class BorrowedPracticeStore {
   addRun(machineId: string, run: HelperRunSummary): void {
     const h = this.get(machineId);
     h.runs = [...h.runs, run].slice(-BORROWED_STATE.keepRuns);
+  }
+
+  /** Record a verify's counted passes (bounded). */
+  addCounted(machineId: string, c: CountedPasses): void {
+    const h = this.get(machineId);
+    h.counted = [...h.counted, { ...c, files: c.files.slice(0, COUNTED_LIMITS.files) }].slice(-COUNTED_LIMITS.entries);
   }
 
   events(): HelperEvent[] { return this.data.events.map((e) => ({ ...e })); }

@@ -117,7 +117,7 @@ describe('wireBorrowedRunMachine: real dependencies, not no-ops', () => {
     expect(w.calls[0]).toMatchObject({ url: 'http://100.64.0.9:4042/local-verify/helper-status', method: 'GET', auth: `Bearer ${AUTH}`, agent: 'echo' });
     // The signer is real: the forwarded request verifies on the helper (a real HelperService) and comes back signed.
     const prep = await w.set.seam!.proxy('1'.repeat(32), { op: 'prepare', lane: 'unit', deadlineInMs: 60_000 }, { remoteAddress: '127.0.0.1' });
-    expect(prep.body).toMatchObject({ ok: true, answer: { state: 'preparing', headSha: HEAD } });
+    expect(prep.body).toMatchObject({ ok: true, state: 'preparing' });
     expect(w.audit().find((e) => e.event === 'borrowed-assigned')).toMatchObject({ src: 'borrowed', pr: 7 });
   });
 

@@ -44,11 +44,30 @@ describe('static: no helper result can reach evaluateRun', () => {
     }
   });
 
-  it('the verifier\'s own import graph (what decides a record) contains no borrowed or helper module', () => {
+  it('the verifier\'s own import graph holds exactly the lane flow and its pure rules, and no helper or server-side module', () => {
+    // The spec (local-verify-borrowed-slices-count.md, F "Version") makes the lane-flow code part of the
+    // verifier's version. Nothing else of the borrowed path is: not the practice record, not the
+    // proxy, not the observer, not the helper side.
     const roots = VERIFIER_ROOTS.map((r) => path.join(LV, `${r}.ts`));
     const graph = localImportGraph(roots).map((f) => path.relative(ROOT, f));
     expect(graph).toContain('src/localVerify/LocalVerifyService.ts');
-    expect(graph.filter((f) => /localVerify\/(helper\/|borrowed|BorrowedShadow|mainRunObserver)/.test(f))).toEqual([]);
+    expect(graph.filter((f) => /localVerify\/(helper\/|borrowed|BorrowedShadow|BorrowedRunMachine|mainRunObserver)/.test(f)).sort()).toEqual([
+      'src/localVerify/borrowedCanary.ts', 'src/localVerify/borrowedEligibility.ts', 'src/localVerify/borrowedLaneFlow.ts', 'src/localVerify/borrowedPlan.ts',
+    ]);
+  });
+
+  it('a helper result enters a lane report through admitHelperPasses alone, and only the passes accepted at take-back', () => {
+    const flow = lex(fs.readFileSync(path.join(LV, 'borrowedLaneFlow.ts'), 'utf-8')).codeOnly;
+    // One write into a report in the whole lane-flow module, inside admitHelperPasses.
+    expect(flow.match(/\.files\.set\(/g)?.length).toBe(1);
+    const admit = flow.slice(flow.indexOf('export function admitHelperPasses'), flow.indexOf('export function laneShare'));
+    expect(admit).toContain('report.files.set(');
+    expect(admit).toMatch(/p\.failed !== 0/);
+    const orch = lex(fs.readFileSync(path.join(LV, 'orchestrator.ts'), 'utf-8')).codeOnly;
+    expect(orch.match(/admitHelperPasses\(/g)?.length).toBe(1);
+    expect(orch).toContain('counted = admitHelperPasses(report, accepted)');
+    // Accepted passes are read once, and otherwise only their names are used (the final local pass runs them here).
+    expect(orch.match(/acceptedPasses\(/g)?.length).toBe(1);
   });
 
   it('LocalVerifyService imports the observer for types only, and nothing else of the borrowed path', () => {

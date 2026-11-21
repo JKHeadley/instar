@@ -697,6 +697,8 @@ interface InFlight {
   settled?: boolean;
   /** The immutable setting and assignment used by this run. */
   runInput?: VerifyRunInput;
+  /** The borrowed helper named when this run started (a setting switched off mid-run cannot lose its record). */
+  borrowedHelper?: string | null;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -2135,6 +2137,11 @@ export class LocalVerifyService {
    * verify. Null (the setting absent, or not wired) leaves every path exactly as it was.
    */
   setBorrowedRunSeam(o: BorrowedRunSeam | null): void { this.borrowedSeam = o; }
+
+  /** Whether `ancestor` is `descendant` or an ancestor of it, by this machine's own clone (null: could not tell). The borrowed side's "pass made main red" rule reads it. */
+  ancestry(ancestor: string, descendant: string): Promise<boolean | null> {
+    return this.seams.isAncestor ? this.seams.isAncestor(ancestor, descendant).catch(() => null) : Promise.resolve(null);
+  }
 
   /** The seam for the routes (null when none is wired). */
   borrowedRunSeam(): BorrowedRunSeam | null { return this.borrowedSeam; }
@@ -4304,6 +4311,12 @@ export class LocalVerifyService {
       ...(entry.peerAttempt ? { attempt: entry.peerAttempt } : {}),
       // PR verifies with the setting on or alternate here: the first parts' inputs. Off ⇒ nothing is added.
       ...this.firstPartInput(entry),
+      // A verify of a waiting change with a borrowed helper configured here: how its child reaches the helper. Absent otherwise.
+      ...(() => {
+        if (entry.kind === 'main') return {};
+        const b = this.borrowedCall('child-input', (x) => x.childInput(token), null);
+        return b ? { borrowed: b } : {};
+      })(),
     };
     fs.writeFileSync(inputPath, JSON.stringify(input), { mode: 0o600 });
 
@@ -4369,6 +4382,7 @@ export class LocalVerifyService {
     if (entry.kind === 'main' && !entry.peerAttempt) this.notifyMainRunObserver('start', { headSha: entry.headSha, runToken: token, startedAt: intent.startedAt });
     // The server's own record of this verify for the borrowed-helper side (the loopback proxy reads the commits from it, never from the child).
     this.borrowedCall('verify-start', (b) => b.onVerifyStart({ token, kind: entry.kind === 'main' ? 'main' : 'waiting', pr: entry.pr, baseSha: entry.baseSha, headSha: entry.headSha, startedAt: intent.startedAt }), undefined);
+    mine.borrowedHelper = this.borrowedCall('helper-for', (b) => b.helperFor(token), null);
     // Queue controls, the harm detector: a start of a change that is held at that moment. The start
     // check and the dispatch check make this impossible; the row exists so the review can count zero.
     if (entry.kind !== 'main' && !entry.peerAttempt && this.operatorHeld(entry.pr)) this.audit({ event: 'operator-held-started', pr: entry.pr, headSha: entry.headSha });
@@ -4456,12 +4470,19 @@ export class LocalVerifyService {
       catch { /* An incomplete observation discloses an unavailable run input after restart. */ }
     }
     this.removeRunFiles(f);
+    // The borrowed-helper side hears what the verify's lane flow reported once the record is handled (null: no record, no helper).
+    const tellBorrowed = (outcome: 'success' | 'failure' | 'error', recorded: boolean) => this.borrowedCall('verify-result', (b) => b.onVerifyResult({
+      token: f.token, pr: f.entry.pr, headSha: f.entry.headSha, outcome,
+      flow: recorded && !f.cancelled && result?.kind === 'record' && result.borrowed ? result.borrowed : null,
+    }), undefined);
+    let borrowedOutcome: { outcome: 'success' | 'failure' | 'error'; recorded: boolean } = { outcome: 'error', recorded: false };
     for (const d of (result && 'degradations' in result && Array.isArray(result.degradations)) ? result.degradations : []) {
       try { this.seams.onDegradation?.(d); } catch { /* @silent-fallback-ok: the run log still carries the event */ }
     }
     if (f.entry.peerAttempt) {
       this.publishSuitePriority(false);
       this.finishPeerAttempt(f, result);
+      tellBorrowed(result?.kind === 'record' ? result.record.outcome : 'error', result?.kind === 'record');
       const waiters = this.idleWaiters;
       this.idleWaiters = [];
       for (const w of waiters) w();
@@ -4484,6 +4505,11 @@ export class LocalVerifyService {
         this.completeMain(this.syntheticError(f.entry, !result || result.kind === 'crash' ? 'crash' : 'invalid-record'), f.entry);
       } else {
         this.completeMain(result.record, f.entry, { reasons: result.reasons, failures: result.failures, runLog: `${f.token}.log`, flakyTestLines: result.flakyTestLines, fileCounts: result.fileCounts });
+        // A red `main`: any helper pass that counted for a change merged into it, on a file that failed here, is reported.
+        if (result.record.outcome === 'failure' && result.failures && result.failures.length > 0) {
+          const failedFiles = [...new Set(result.failures.map((x) => x.file))];
+          this.borrowedCall('main-red', (b) => b.onMainRed({ headSha: f.entry.headSha, failedFiles }), undefined);
+        }
       }
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
       const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
@@ -4504,7 +4530,8 @@ export class LocalVerifyService {
       this.retry(f.entry);
     } else {
       for (const o of result.overlaps) this.audit({ event: 'overlap', where: `before-${o.beforeLane}`, holders: o.holders });
-      const rec = this.complete(result.record, 'run');
+      const rec = this.complete(result.record, 'run', f.borrowedHelper ?? null);
+      if (rec) borrowedOutcome = { outcome: rec.outcome, recorded: true };
       if (rec && (rec.outcome !== 'success' || rec.flakyRetried)) {
         // Why it went red (or what was flaky), bounded: reasons, each failed file's first error, the flaky re-runs.
         this.audit({ event: 'run-detail', ...runDetail(rec, { ...result, runLog: `${f.token}.log` }) });
@@ -4518,10 +4545,15 @@ export class LocalVerifyService {
     // No hand-off was opened for this run (red, error, re-queued, or the line held by another
     // PR): the settling hold ends here and a waiting restart may go.
     if (settling && this.mergeHoldFile === 'settling') this.clearMergeHold();
+    if (f.entry.kind !== 'main') tellBorrowed(borrowedOutcome.outcome, borrowedOutcome.recorded);
     if (f.entry.kind === 'main' && !f.entry.peerAttempt) {
       // After completeMain: the record is written before the borrowed shadow compares anything.
       const recorded = !f.cancelled && !isVerifierMismatch(result) && result?.kind !== 'requeue';
-      this.notifyMainRunObserver('end', { headSha: f.entry.headSha, runToken: f.token, recorded, outcome: recorded ? (result?.kind === 'record' ? result.record.outcome : 'error') : null, cancelled: f.cancelled });
+      const rr = recorded && result?.kind === 'record' ? result : null;
+      this.notifyMainRunObserver('end', {
+        headSha: f.entry.headSha, runToken: f.token, recorded, outcome: recorded ? (result?.kind === 'record' ? result.record.outcome : 'error') : null, cancelled: f.cancelled,
+        ...(rr ? { mergeTree: rr.record.mergeTree } : {}), ...(rr?.fileCounts ? { fileCounts: rr.fileCounts } : {}), ...(rr?.confirmedFailed ? { confirmedFailed: rr.confirmedFailed } : {}),
+      });
     }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
@@ -4852,7 +4884,7 @@ export class LocalVerifyService {
    * Validates, appends, indexes, then derives records for queued PRs that share
    * the execution key (dedupe by merge-tree inputs).
    */
-  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer'): LocalVerifyRecord | null {
+  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer', startHelper: string | null = null): LocalVerifyRecord | null {
     const v = validateRecord(record);
     if (!v.ok || record.repo !== this.cfg.repo) {
       this.audit({ event: 'record-rejected', pr: record.pr, errors: v.ok ? ['repo'] : v.errors });
@@ -4860,7 +4892,8 @@ export class LocalVerifyService {
     }
     // The record check validates a borrowed helper's id by format; whether it is a known machine is checked here,
     // where this machine's own run is imported (a peer's record is checked in importRefusal before it gets here).
-    if (record.borrowed && source === 'run' && !this.borrowedCall('known-helper', (b) => b.knownHelper(record.borrowed!.helper), false)) {
+    // The helper named when the run started is known for its own record even if the setting was switched off since.
+    if (record.borrowed && source === 'run' && record.borrowed.helper !== startHelper && !this.borrowedCall('known-helper', (b) => b.knownHelper(record.borrowed!.helper), false)) {
       this.audit({ event: 'record-rejected', pr: record.pr, errors: ['borrowed-helper-unknown'] });
       return null;
     }

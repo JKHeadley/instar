@@ -27,14 +27,16 @@ import type { MainRunEnd, MainRunObserver, MainRunStart } from './mainRunObserve
 import { judgeEligibility, scanHitShare, type TreeReader } from './borrowedEligibility.js';
 import { BORROWED_CANARY, BORROWED_CANARY_FILES } from './borrowedCanary.js';
 import { BORROWED_PLAN, nextBudgetMs, planSlices, sendAmountMs, seededThroughput } from './borrowedPlan.js';
-import { compareShadow, type SentSlice } from './borrowedCompare.js';
+import { answerInvalid, compareShadow, type SentSlice } from './borrowedCompare.js';
+import { checkSliceRight, compareFile, sliceTrouble } from './borrowedLaneFlow.js';
+import type { LaneVerifyOutcome, PracticeLane } from './borrowedPractice.js';
 import { BorrowedPracticeStore, measuredPrepP90, measuredThroughput } from './borrowedState.js';
 import { HelperAsking } from './borrowedAsking.js';
 import type { HelperClient, HelperStatusView } from './borrowedClient.js';
 import type { BorrowedConfig, HelperTarget } from './helper/helperConfig.js';
 import {
   HELPER_LIMITS, parseHelperAnswer, signHelperRequest, verifyHelperAnswer,
-  type HelperCancelRequest, type HelperLearnedRequest, type HelperSliceRequest,
+  type HelperCancelRequest, type HelperLearnedRequest, type HelperSliceRequest, type LearnedObservation,
 } from './helper/helperProtocol.js';
 
 export interface BorrowedShadowDeps {
@@ -59,6 +61,8 @@ export interface BorrowedShadowDeps {
   store?: BorrowedPracticeStore;
   /** The asking bookkeeping, shared the same way. Absent: built here on `store`. */
   asking?: HelperAsking;
+  /** The practice record's one update path (BorrowedRunMachine.recordVerify). Absent: main verifies feed nothing. */
+  recordVerify?: (helper: string, outcomes: Partial<Record<PracticeLane, LaneVerifyOutcome>>) => void;
 }
 
 interface RunCtx {
@@ -191,7 +195,8 @@ export class BorrowedShadow implements MainRunObserver {
       ctx.unitEndAt = ctx.startedAt + BORROWED_PLAN.setupAllowanceMs + projected;
       this.lastLearned.set(h.machineId, { entries: status.learned.entries.length, incompatible: status.learned.incompatible, files: status.learned.entries.slice(0, 50).map((e) => e.file) });
       const learned = new Set(status.learned.entries.map((e) => e.file));
-      // PROVISIONAL (stage 1 of the amendment): the main-verify observer still sends the unit lane only.
+      // The main-verify observer compares the unit lane (the lane every main verify runs whole on this
+      // machine); integration and end-to-end comparisons come from verifies of waiting changes and the dry run.
       const verdicts = await judgeEligibility(files.map((f) => f.file), 'unit', this.d.treeReader(ctx.headSha), learned);
       let hits = 0;
       let deep = 0;
@@ -236,7 +241,8 @@ export class BorrowedShadow implements MainRunObserver {
     } finally {
       if (sentAnything) {
         try {
-          const c: HelperCancelRequest = { kind: 'cancel', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs };
+          // The verify is over for the helper: its outstanding slices stop and its kept tree may go.
+          const c: HelperCancelRequest = { kind: 'cancel', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, verifyOver: true };
           await this.d.client.cancel(h, this.signed(c));
         } catch (e) { this.error('cancel', h.machineId, e); }
       }
@@ -257,23 +263,30 @@ export class BorrowedShadow implements MainRunObserver {
       }
       const goodAnswer = sent.some((s) => s.answer && !s.sigRefusal);
       const outcome: 'good' | 'bad' = !transportOk || cmp.badSignatures > 0 || (sent.length > 0 && !goodAnswer && !sent.some((s) => s.refusedReason)) ? 'bad' : 'good';
-      if (end.recorded && cmp.observations.length > 0 && local && !(dryRun && end.outcome !== 'success')) {
-        try {
-          // PROVISIONAL (stage 5: the run machine's own merge-tree hash): the tree the helper says it ran.
-          // One comparison per file per request (the last one found stands).
-          const treeHash = sent.map((s) => s.answer?.treeHash).find((t): t is string => typeof t === 'string');
-          const byFile = new Map(cmp.observations.map((o) => [o.file, o]));
-          if (treeHash) {
-            const l: HelperLearnedRequest = { kind: 'learned', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, treeHash, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, observations: [...byFile.values()].slice(0, HELPER_LIMITS.maxFilesPerRequest) };
-            await this.d.client.learned(h, this.signed(l));
-          }
-        } catch (e) { this.error('learned', h.machineId, e); }
-      }
       const vs = cmp.vitestStartMs;
       const b = this.budgets.get(h.machineId) ?? { budgetMs: BORROWED_PLAN.initialBudgetMs, vitestStarts: [] };
       b.vitestStarts = [...b.vitestStarts, ...vs].slice(-20);
       b.budgetMs = nextBudgetMs(b.budgetMs, b.vitestStarts);
       this.budgets.set(h.machineId, b);
+      // The practice record: this main verify's same-tree comparisons by digest (a main verify never counts a helper's results),
+      // and the helper's learned list from the same comparisons, keyed by this machine's own merge tree.
+      if (end.recorded && local) {
+        const outcome = mainVerifyOutcome(sent, { fileCounts: end.fileCounts ?? null, report: local, confirmedFailed: new Set(end.confirmedFailed ?? []), mergeTree: end.mergeTree ?? null }, ctx.runAttemptId);
+        if (this.d.recordVerify) { try { this.d.recordVerify(h.machineId, { unit: outcome }); } catch (e) { this.error('practice', h.machineId, e); } }
+        const retrials = new Set(sent.filter((x) => x.request.retrial).flatMap((x) => x.request.files));
+        const observations: LearnedObservation[] = [
+          ...outcome.helperFailedLocalPassed.map((file) => ({ file, kind: 'helper-failed-local-passed' as const })),
+          ...outcome.digestDiffersBothPass.map((file) => ({ file, kind: 'digest-differs-both-pass' as const })),
+          ...outcome.confirmedWrongPasses.map((file) => ({ file, kind: 'confirmed-wrong-pass' as const })),
+          ...outcome.agreed.filter((f) => retrials.has(f)).map((file) => ({ file, kind: 'agree' as const })),
+        ];
+        if (observations.length > 0 && end.mergeTree) {
+          try {
+            const l: HelperLearnedRequest = { kind: 'learned', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId, treeHash: end.mergeTree, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, observations: observations.slice(0, HELPER_LIMITS.maxFilesPerRequest) };
+            await this.d.client.learned(h, this.signed(l));
+          } catch (e) { this.error('learned', h.machineId, e); }
+        }
+      }
       const counted = cmp.done > 0;
       this.store.addRun(h.machineId, { at: this.now(), counted, slicesSent: cmp.slicesSent, done: cmp.done, agree: cmp.agree, disagree: cmp.disagree.length, helperMs: cmp.helperMs, localMs: cmp.localMs, prepMs, vitestStartMs: vs.length ? vs[Math.floor(vs.length / 2)] : null });
       try { this.store.save(); } catch (e) { this.error('state', h.machineId, e); }
@@ -323,44 +336,90 @@ export class BorrowedShadow implements MainRunObserver {
     // The canary slice, at a random position: the helper is not told which slice it is.
     const pos = Math.floor((this.d.random ?? Math.random)() * (queue.length + 1));
     queue.splice(pos, 0, { files: [...BORROWED_CANARY_FILES], canary: true, retrial: false });
-    let resultSeq = 0;
+    // The queued protocol (spec "Build decisions"): every slice is sent at once and answered `queued`;
+    // the helper serves them in its own order and each slice's last signed answer comes through its status.
+    const waiting = new Map<string, { req: HelperSliceRequest; canary: boolean }>();
     for (const q of queue) {
       if (signal.aborted || this.now() >= ctx.unitEndAt) break;
-      const deadlineAt = Math.min(ctx.unitEndAt, this.now() + budgetMs * BORROWED_PLAN.longFileFactor + 30_000);
       const req: HelperSliceRequest = {
         kind: 'slice', attemptId: newId(), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: h.machineId,
         // A main verify: the base and the head are the same merged commit. Everything is compared, nothing used.
         lane: 'unit', baseSha: ctx.headSha, headSha: ctx.headSha, use: q.canary ? 'check' : 'compare',
-        files: q.files, deadlineAt, budgetMs, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, ...(q.retrial ? { retrial: true as const } : {}),
+        files: q.files, deadlineAt: ctx.unitEndAt, budgetMs, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, ...(q.retrial ? { retrial: true as const } : {}),
       };
-      // A helper queues a slice and answers at once; the slice's last signed answer comes through its status.
       const r = await this.d.client.slice(h, this.signed(req), 15_000, signal);
       if (!r) { sent.push({ request: req, canary: q.canary, answer: null, sigRefusal: null }); if (signal.aborted) break; continue; }
-      let ans = parseHelperAnswer(r.body);
-      if (ans && ans.state === 'queued') {
-        // PROVISIONAL (stage 5: the lane flow sends its slices at once and reads results as they come):
-        // this observer still sends one slice, waits for its answer, then sends the next.
-        ans = null;
-        const waitUntil = deadlineAt + 15_000;
-        while (!signal.aborted && this.now() < waitUntil) {
-          const st = await this.d.client.status(h, signal, { run: ctx.runAttemptId, since: resultSeq });
-          const hit = st?.results.map((x) => ({ seq: x.seq, a: parseHelperAnswer(x.answer) })).find((x) => x.a?.attemptId === req.attemptId);
-          if (hit?.a) { ans = hit.a; resultSeq = hit.seq; break; }
-          await this.sleep(1_000, signal);
-        }
-        if (!ans) { sent.push({ request: req, canary: q.canary, answer: null, sigRefusal: null }); if (signal.aborted) break; continue; }
-      }
+      const ans = parseHelperAnswer(r.body);
+      if (ans && ans.state === 'queued') { waiting.set(req.attemptId, { req, canary: q.canary }); continue; }
       if (!ans) {
         const reason = (r.body as { reason?: unknown } | null)?.reason;
         sent.push({ request: req, canary: q.canary, answer: null, sigRefusal: null, ...(typeof reason === 'string' ? { refusedReason: reason } : {}) });
-        if (reason === 'not-prepared' || reason === 'paused' || reason === 'helper-containment-unproven') break;
+        if (reason === 'not-prepared' || reason === 'paused' || reason === 'helper-containment-unproven' || reason === 'queue-full') break;
         continue;
       }
       sent.push({ request: req, canary: q.canary, answer: ans, sigRefusal: verifyHelperAnswer(ans, h.machineId, this.d.keyLookup(), this.now()) });
       if (ans.state === 'owner-busy') break;
-      if (ans.state === 'busy') await this.sleep(2_000, signal);
+    }
+    // Read results as they come, until every slice answered, the unit lane is projected to end, or the run ended.
+    let resultSeq = 0;
+    while (waiting.size > 0 && !signal.aborted && this.now() < ctx.unitEndAt) {
+      const st = await this.d.client.status(h, signal, { run: ctx.runAttemptId, since: resultSeq });
+      for (const x of st?.results ?? []) {
+        if (x.seq > resultSeq) resultSeq = x.seq;
+        const a = parseHelperAnswer(x.answer);
+        const w = a ? waiting.get(a.attemptId) : undefined;
+        if (!a || !w || a.state === 'queued' || a.state === 'preparing') continue;
+        waiting.delete(a.attemptId);
+        sent.push({ request: w.req, canary: w.canary, answer: a, sigRefusal: verifyHelperAnswer(a, h.machineId, this.d.keyLookup(), this.now()) });
+      }
+      if (waiting.size > 0) await this.sleep(2_000, signal);
+    }
+    for (const w of waiting.values()) sent.push({ request: w.req, canary: w.canary, answer: null, sigRefusal: null });
+  }
+}
+
+/**
+ * The practice record's view of one main verify's unit-lane comparisons (spec F "Practice"): each
+ * same-tree file compared by its digest of test names and outcomes against the run machine's final
+ * result. A main verify is always compare-only. Pure.
+ */
+export function mainVerifyOutcome(
+  sent: readonly SentSlice[], local: { fileCounts: Readonly<Record<string, [number, number, number, number, string]>> | null; report: ReadonlyMap<string, FileCounts> | null; confirmedFailed: ReadonlySet<string>; mergeTree: string | null },
+  verifyId: string,
+): LaneVerifyOutcome {
+  const o: LaneVerifyOutcome = {
+    verifyId, kind: 'main', change: null, compareOnly: true, assigned: 'compare-only', sent: 0, finished: 0,
+    agreed: [], digestDiffersBothPass: [], helperFailedLocalPassed: [], confirmedWrongPasses: [], failingAgreed: [], environmentDifferences: 0, check: null, answers: [],
+  };
+  for (const s of sent) {
+    if (s.refusedReason) continue;
+    if (!s.canary) o.sent += s.request.files.length;
+    if (!s.answer) continue;
+    const bad = answerInvalid(s) !== null || (local.mergeTree !== null && s.answer.treeHash !== null && s.answer.treeHash !== local.mergeTree);
+    o.answers.push(bad ? 'invalid' : 'valid');
+    if (bad) continue;
+    const a = s.answer;
+    const facts = a.slice ? { exitCode: a.slice.exitCode, unhandledErrors: a.slice.unhandledErrors, collected: a.slice.collected } : null;
+    const view = { valid: true, perFile: a.resultOversize ? [] : a.perFile.map((p) => ({ ...p })), slice: a.resultOversize ? null : facts };
+    if (s.canary) { if (a.state === 'done') o.check = checkSliceRight(view) ? 'right' : 'wrong'; continue; }
+    if (a.state !== 'done' && a.state !== 'handed-back' && a.state !== 'cancelled') continue;
+    if (sliceTrouble(view)) continue;
+    for (const p of view.perFile) {
+      o.finished++;
+      const row = local.fileCounts?.[p.file];
+      const rep = local.report?.get(p.file);
+      if (!row && !rep) continue;
+      const l = row ? { failed: 0, digest: row[4], failedTests: [] as string[] } : { failed: rep!.failed, digest: null, failedTests: (rep!.failedTests ?? []).map((x) => x.name) };
+      const c = compareFile(l, p, { soloFailed: local.confirmedFailed.has(p.file), passedAlone: false });
+      if (c === 'agreed') o.agreed.push(p.file);
+      else if (c === 'digest-differs-both-pass') o.digestDiffersBothPass.push(p.file);
+      else if (c === 'helper-failed-local-passed') o.helperFailedLocalPassed.push(p.file);
+      else if (c === 'confirmed-wrong-pass') o.confirmedWrongPasses.push(p.file);
+      else if (c === 'failing-agreed') o.failingAgreed.push(p.file);
+      else if (c === 'environment-difference') o.environmentDifferences++;
     }
   }
+  return o;
 }
 
 class HelperUnreachable extends Error {}

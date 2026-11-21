@@ -177,7 +177,8 @@ describe('the loopback proxy: the commits, the helper and the ids are the server
     expect(await s.call({ op: 'prepare', lane: 'unit', deadlineInMs: 60_000, headSha: evil, baseSha: evil })).toEqual({ status: 400, body: { ok: false, reason: 'invalid-request' } });
     expect(s.seen.filter((c) => c.call === 'slice').length).toBe(before);
     const ok = await s.call({ op: 'prepare', lane: 'unit', deadlineInMs: 60_000 });
-    expect(ok.body).toMatchObject({ ok: true, answer: { state: 'preparing', baseSha: HEAD, headSha: HEAD } });
+    // The child is told the state and the id only; the commits stay the server's own.
+    expect(ok.body).toMatchObject({ ok: true, state: 'preparing' });
     const sent = s.seen.filter((c) => c.call === 'slice').at(-1)!.body!;
     expect(sent).toMatchObject({ kind: 'slice', prepare: true, lane: 'unit', baseSha: HEAD, headSha: HEAD, requesterMachineId: 'm_studio', helperMachineId: 'm_laptop', files: [] });
     expect(JSON.stringify(sent)).not.toContain(evil);
@@ -219,16 +220,19 @@ describe('the loopback proxy: the commits, the helper and the ids are the server
     expect((await s.call({ op: 'prepare', lane: 'unit', deadlineInMs: 60_000 })).body).toMatchObject({ ok: true });
     for (let i = 0; i < 200 && s.r.tree()?.state !== 'ready'; i++) await new Promise((r) => setTimeout(r, 5));
     const sl = await s.call({ op: 'slice', lane: 'unit', files: [UNIT_A, UNIT_B], use: 'compare', budgetMs: 10_000, deadlineInMs: 60_000 });
-    expect(sl.body).toMatchObject({ ok: true, answer: { state: 'queued' } });
+    expect(sl.body).toMatchObject({ ok: true, state: 'queued' });
     const attemptId = (sl.body as { attemptId: string }).attemptId;
-    expect((sl.body as { answer: { attemptId: string } }).answer.attemptId).toBe(attemptId);
+    expect(attemptId).toMatch(/^[0-9a-f]{32}$/);
+    // The child gets only results this server checked (each slice's own signature, ids and file list) and the tree's state.
     const st = await s.call({ op: 'status', since: 0 });
-    expect(st.body).toMatchObject({ ok: true, status: { enabled: true } });
-    expect((st.body as { status: { sig: unknown } }).status.sig).toBeTruthy();
+    expect(st.body).toMatchObject({ ok: true, tree: { state: 'ready' } });
+    expect(Array.isArray((st.body as { results: unknown[] }).results)).toBe(true);
+    expect(JSON.stringify(st.body)).not.toContain('"sig"');
     // A cancel may name only slices this server issued for this verify.
     expect(await s.call({ op: 'cancel', attemptIds: ['9'.repeat(32)] })).toEqual({ status: 400, body: { ok: false, reason: 'unknown-slice' } });
     expect((await s.call({ op: 'cancel', attemptIds: [attemptId] })).body).toMatchObject({ ok: true });
-    expect((await s.call({ op: 'cancel', verifyOver: true })).body).toMatchObject({ ok: true });
+    // The verify's end is told by the server, never by the child.
+    expect(await s.call({ op: 'cancel', verifyOver: true })).toEqual({ status: 400, body: { ok: false, reason: 'verify-over-not-yours' } });
     // Every forwarded request carries this server's run id, never one of the caller's, and the 5-second limit.
     const runIds = new Set(s.seen.filter((c) => c.body).map((c) => c.body!.runAttemptId));
     expect(runIds.size).toBe(1);
@@ -604,7 +608,8 @@ describe('GET /local-verify: the borrowed summary', () => {
     completeEvidence(s);
     s.machine.recordVerify('m_laptop', { integration: outcome({ verifyId: 'last', sent: 40, finished: 31, agreed: [f(1)] }) });
     const info = s.machine.info() as { mode: string; countBehavesAsPractice: boolean; helpers: Array<{ machineId: string; asking: unknown; spotOneIn: number; lanes: Record<string, { state: string; mayCount: boolean; evidence: Record<string, { complete: boolean }> | null; lastVerify: unknown }> }> };
-    expect(info).toMatchObject({ mode: 'count', countBehavesAsPractice: true });
+    expect(info).toMatchObject({ mode: 'count' });
+    expect(info).not.toHaveProperty('countBehavesAsPractice');
     const lane = info.helpers[0].lanes.integration;
     expect(lane).toMatchObject({
       state: 'practice', mayCount: false,
@@ -620,5 +625,107 @@ describe('GET /local-verify: the borrowed summary', () => {
     expect(info.helpers[0].lanes.unit).toMatchObject({ state: 'practice', mayCount: false, evidence: null, lastVerify: null });
     expect(info.helpers[0]).toMatchObject({ machineId: 'm_laptop', spotOneIn: 20 });
     expect(setup({ mode: 'off' }).machine.info()).toMatchObject({ mode: 'off', helpers: [], baseline: null });
+  });
+});
+
+// ── stage 5: a verify's result, the failing direction, "a pass made main red" ──────────
+
+import { vitestReport as helperReport } from '../../helpers/fakeSandboxDriver.js';
+import type { BorrowedFlowResult, LaneOutcomeWire } from '../../../src/localVerify/borrowedLaneFlow.js';
+
+const wireLane = (over: Partial<LaneOutcomeWire> = {}): LaneOutcomeWire => ({
+  sent: 2, finished: 2, agreed: [UNIT_B], digestDiffersBothPass: [], helperFailedLocalPassed: [], confirmedWrongPasses: [], failingAgreed: [],
+  environmentDifferences: 0, check: 'right', answers: ['valid', 'valid'], counted: [UNIT_B], takenBack: 0, spot: [], late: 0, discardedSlices: 0,
+  retrial: [], localFailed: [], finalLocalPass: false, ...over,
+});
+const flowResult = (treeHash: string, lane: Partial<LaneOutcomeWire> = {}): BorrowedFlowResult => ({
+  helper: 'm_laptop', assigned: 'counting', treeHash, lanes: { unit: wireLane(lane) }, sentFiles: { unit: [UNIT_A, UNIT_B] }, disagreements: 0,
+});
+const settleSoon = async (cond: () => boolean) => { for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+describe('a verify\'s result reaches the practice record through the server alone', () => {
+  it('one update per verify, the counted passes kept, the audit row, and the helper told the verify is over', async () => {
+    const s = setup();
+    s.start();
+    await s.call({ op: 'plan' });
+    s.machine.onVerifyEnd({ token: TOKEN, recorded: true, outcome: 'success', cancelled: false });
+    // The child's token no longer opens the proxy once the child ended.
+    expect((await s.call({ op: 'plan' })).status).toBe(401);
+    s.machine.onVerifyResult({ token: TOKEN, pr: 3501, headSha: HEAD, outcome: 'success', flow: flowResult(sha('d')) });
+    await settleSoon(() => s.audits.some((a) => a.event === 'borrowed-verify'));
+    const row = s.audits.find((a) => a.event === 'borrowed-verify')!;
+    expect(row).toMatchObject({ pr: 3501, helper: 'm_laptop', outcome: 'success', lanes: { unit: { sent: 2, finished: 2, counted: 1, agreed: 1, disagreements: 0 } } });
+    // No hand-back, disagreement or discarded slice: no file list in the row.
+    expect((row.lanes as { unit: Record<string, unknown> }).unit.files).toBeUndefined();
+    expect(s.store.peekLane('m_laptop', 'unit')).toMatchObject({ spread: { verifies: 1, waiting: 1 }, last: { verifyId: TOKEN, sent: 2, finished: 2 } });
+    expect(s.store.get('m_laptop').counted).toEqual([{ pr: 3501, headSha: HEAD, at: s.r.clock.t, lane: 'unit', files: [UNIT_B] }]);
+    await settleSoon(() => s.seen.some((c) => c.call === 'cancel' && c.body?.verifyOver === true));
+    expect(s.seen.some((c) => c.call === 'cancel' && c.body?.verifyOver === true)).toBe(true);
+  });
+
+  it('no flow (no record, a crash, a requeue) changes nothing and ends the session', async () => {
+    const s = setup();
+    s.start();
+    s.machine.onVerifyEnd({ token: TOKEN, recorded: false, outcome: null, cancelled: false });
+    s.machine.onVerifyResult({ token: TOKEN, pr: 3501, headSha: HEAD, outcome: 'error', flow: null });
+    expect(s.store.peekLane('m_laptop', 'unit')).toBeNull();
+    expect(s.machine.helperFor(TOKEN)).toBeNull();
+  });
+
+  it('the failing direction: a locally failed file is sent after the record, compare-only, and a same-test failure counts for item 3', async () => {
+    const s = setup();
+    s.r.driver.slice = async (files) => ({ exitCode: 1, resultText: helperReport('/srv/slice/fake', Object.fromEntries(files.map((f) => [f, ['failed' as const]]))) });
+    // The failing-direction request polls the helper; here a poll is a few milliseconds, not 5 seconds.
+    (s.machine as unknown as { d: { sleep: (ms: number) => Promise<void> } }).d.sleep = () => new Promise((r) => setTimeout(r, 5));
+    // A dry run proved the unit lane: the server prepares the verify's tree when the verify starts.
+    s.machine.recordDryRunResult('m_laptop', 'unit', { eligible: [UNIT_A], compared: [UNIT_A], eligibleDigest: 'a'.repeat(64) });
+    s.start();
+    await s.call({ op: 'plan' });
+    for (let i = 0; i < 400 && s.r.tree()?.state !== 'ready'; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(s.audits.find((a) => a.event === 'borrowed-prepare')).toMatchObject({ lane: 'unit', state: 'preparing' });
+    const treeHash = s.r.tree()!.treeHash!;
+    s.machine.onVerifyEnd({ token: TOKEN, recorded: true, outcome: 'failure', cancelled: false });
+    s.machine.onVerifyResult({ token: TOKEN, pr: 3501, headSha: HEAD, outcome: 'failure', flow: flowResult(treeHash, { counted: [], agreed: [], localFailed: [{ file: UNIT_A, failedTests: ['t0'], confirmed: true }] }) });
+    await settleSoon(() => s.audits.some((a) => a.event === 'borrowed-verify'));
+    expect(s.audits.find((a) => a.event === 'borrowed-failing-direction-sent')).toMatchObject({ lane: 'unit', files: 1, state: 'queued' });
+    expect(s.store.peekLane('m_laptop', 'unit')!.failing.map((x) => x.file)).toEqual([UNIT_A]);
+  }, 20_000);
+});
+
+describe('a pass that made main red', () => {
+  it('a red main whose failed file a helper passed for a merged change is told to the owner, once', async () => {
+    const s = setup();
+    const isAncestor = vi.fn(async () => true);
+    (s.machine as unknown as { d: { isAncestor: typeof isAncestor } }).d.isAncestor = isAncestor;
+    s.store.addCounted('m_laptop', { pr: 3501, headSha: sha('e'), at: 1, lane: 'unit', files: [UNIT_A] });
+    s.machine.onMainRed({ headSha: sha('9'), failedFiles: [UNIT_A] });
+    await settleSoon(() => s.notices.some((n) => n.who === 'owner'));
+    expect(s.notices.find((n) => n.who === 'owner')).toMatchObject({ ownerReason: 'main-red-after-pass', event: { kind: 'main-red-after-pass', file: UNIT_A, change: '3501' } });
+    expect(isAncestor).toHaveBeenCalledWith(sha('e'), sha('9'));
+    s.machine.onMainRed({ headSha: sha('9'), failedFiles: [UNIT_A] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.notices.filter((n) => n.who === 'owner')).toHaveLength(1);
+  });
+
+  it('a change not merged into the red head, or another file, tells no one', async () => {
+    const s = setup();
+    (s.machine as unknown as { d: { isAncestor: () => Promise<boolean> } }).d.isAncestor = async () => false;
+    s.store.addCounted('m_laptop', { pr: 3501, headSha: sha('e'), at: 1, lane: 'unit', files: [UNIT_A] });
+    s.machine.onMainRed({ headSha: sha('9'), failedFiles: [UNIT_A, UNIT_B] });
+    s.machine.onMainRed({ headSha: sha('9'), failedFiles: [UNIT_B] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.notices).toEqual([]);
+  });
+});
+
+describe('what the verify child is given', () => {
+  it('the port, its own token and the kept baselines; nothing with the setting off or no port', () => {
+    const s = setup();
+    expect(s.machine.childInput(TOKEN)).toBeNull(); // no port
+    (s.machine as unknown as { d: { port: number } }).d.port = 4042;
+    expect(s.machine.childInput(TOKEN)).toEqual({ port: 4042, token: TOKEN, baselines: [] });
+    expect(s.machine.childInput('not-a-token')).toBeNull();
+    s.cfg.mode = 'off';
+    expect(s.machine.childInput(TOKEN)).toBeNull();
   });
 });

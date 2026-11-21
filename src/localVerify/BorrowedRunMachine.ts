@@ -16,13 +16,14 @@
  * LocalVerifyService knows this class only through the type `BorrowedRunSeam` and calls it inside
  * try/catch; nothing here is awaited by a verify. With the setting absent every method is inert.
  *
- * STAGE 4 OF THE REWORK: the verify's lane flow (stage 5) does not call the proxy yet, and nothing
- * feeds the practice record's evidence yet, so `count` still behaves as `practice`.
+ * The verify's lane flow (borrowedLaneFlow.ts, in the verify child) calls the proxy; its result
+ * reaches this class after the record is written (`onVerifyResult`), and only this class updates
+ * the practice record.
  */
 import crypto from 'node:crypto';
 import type { MachineKeyLookup, MachineSigner } from '../core/AppRecordSignatures.js';
 import type {
-  BorrowedGreenMain, BorrowedHttpAnswer, BorrowedPeerStatusExtras, BorrowedRouteFacts, BorrowedRunSeam, BorrowedVerifyEnd, BorrowedVerifyStart,
+  BorrowedChildFacts, BorrowedGreenMain, BorrowedHttpAnswer, BorrowedMainRed, BorrowedPeerStatusExtras, BorrowedRouteFacts, BorrowedRunSeam, BorrowedVerifyEnd, BorrowedVerifyResult, BorrowedVerifyStart,
 } from './mainRunObserver.js';
 import { drawAssignment, type BorrowedAssignment } from './borrowedAsk.js';
 import { HelperAsking } from './borrowedAsking.js';
@@ -30,16 +31,18 @@ import { statusImageIdentity, type HelperClient, type HelperStatusView } from '.
 import { laneOfTestFile, isBorrowedCanaryFile } from './borrowedEligibility.js';
 import { HELPER_EVENT_LIMITS, eventText, newEventId, parseHelperEvents, untold, whoIsTold, type HelperEvent } from './borrowedNotices.js';
 import {
-  PRACTICE_LANES, applyVerifyOutcome, evidenceProgress, mayCount, noteIdentity, noteSpotVerify, noteTime, recordDecision, recordDryRun, spotRateOneIn,
+  PRACTICE_LANES, applyVerifyOutcome, evidenceProgress, laneProven, mayCount, noteIdentity, noteSpotVerify, noteTime, recordDecision, recordDryRun, spotRateOneIn,
   coverageComplete, spreadComplete, failingDirectionComplete, checkSliceComplete, wrongPassWindowClear,
   type LaneEvent, type LaneRecord, type LaneVerifyOutcome, type PracticeLane, type Transition,
 } from './borrowedPractice.js';
-import type { BorrowedPracticeStore } from './borrowedState.js';
+import { measuredPrepP90, measuredThroughput, type BorrowedPracticeStore, type HelperRunSummary } from './borrowedState.js';
+import { BORROWED_PLAN } from './borrowedPlan.js';
 import { MAIN_FILE_COUNTS_LIMITS, parseFileCounts, parseMainFileCounts, type MainFileCountsStore } from './mainFileCounts.js';
 import type { BorrowedConfig, HelperTarget } from './helper/helperConfig.js';
+import type { BorrowedFlowResult } from './borrowedLaneFlow.js';
 import {
   HELPER_ID_RE, HELPER_LIMITS, isRequestFile, parseHelperAnswer, parseHelperHere, signHelperRequest, verifyHelperAnswer, verifyHelperHere, verifyHelperStatus,
-  type HelperCancelRequest, type HelperLane, type HelperSliceRequest, type HelperSliceUse,
+  type HelperCancelRequest, type HelperLane, type HelperLearnedRequest, type HelperSliceRequest, type HelperSliceUse, type LearnedObservation,
 } from './helper/helperProtocol.js';
 
 export const BORROWED_PROXY = Object.freeze({
@@ -51,6 +54,14 @@ export const BORROWED_PROXY = Object.freeze({
   maxDeadlineInMs: 60 * 60_000,
   /** A baseline is offered again to a peer that has not acknowledged it at most this often. */
   baselineRetryMs: 5 * 60_000,
+  /** A verify's helper session is kept this long after its child ended, for its result (then the helper is told the verify is over). */
+  endedKeepMs: 15 * 60_000,
+  /** The failing-direction request (after the record) waits at most this long for the helper's answers. */
+  failingDirectionMs: 10 * 60_000,
+  failingDirectionPollMs: 5_000,
+  /** A lane's helper share: after this many verifies in which it was sent work, it follows the finish rate. */
+  shareMeasuredAfter: 5,
+  shareMin: 0.05,
 });
 
 const LOOPBACK = /^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
@@ -134,6 +145,18 @@ export function parseProxyOp(body: unknown): ProxyOp | null {
   }
 }
 
+/**
+ * A lane's helper share (spec "Which lanes, and how much"): a quarter of its time until the helper
+ * has been sent work in 5 verifies, then half its measured finish rate (the files it finished over
+ * the files it was sent, over its last 10 such verifies), never below 5 % or above half. Pure.
+ */
+export function laneShareFromRuns(runs: readonly HelperRunSummary[]): number {
+  const sent = runs.filter((r) => r.slicesSent > 0).slice(-10);
+  if (sent.length < BORROWED_PROXY.shareMeasuredAfter) return 0.25;
+  const rate = sent.reduce((n, r) => n + Math.min(1, r.done / r.slicesSent), 0) / sent.length;
+  return Math.min(0.5, Math.max(BORROWED_PROXY.shareMin, 0.5 * rate));
+}
+
 export interface BorrowedRunMachineDeps {
   config: () => BorrowedConfig;
   store: BorrowedPracticeStore;
@@ -149,6 +172,12 @@ export interface BorrowedRunMachineDeps {
   audit(event: Record<string, unknown>): void;
   /** The existing attention seam. `line`: the session that operates the line. `owner`: the owner's topic for that machine. */
   notify?: (who: 'line' | 'owner', event: HelperEvent, text: string, ownerReason: string | null) => void;
+  /** This server's port (the verify child reaches the proxy on loopback). Absent: no verify is offered a helper. */
+  port?: number;
+  /** Whether `ancestor` is `descendant` or an ancestor of it (the "pass made main red" rule). Null: could not tell. */
+  isAncestor?: (ancestor: string, descendant: string) => Promise<boolean | null>;
+  /** Wait (the failing-direction request polls the helper). */
+  sleep?: (ms: number) => Promise<void>;
   /** One row in the maturation ladder's evidence log (logs/feature-evidence.jsonl). */
   evidence?: (row: { kind: 'fired' | 'held'; reason: string; subject: string; context: Record<string, string | number | boolean | null> }) => void;
   now?: () => number;
@@ -168,9 +197,13 @@ interface VerifyCtx {
   assigned: BorrowedAssignment | null;
   /** Resolves true when the helper answered this verify's one status request. */
   asked: Promise<boolean>;
-  /** Slice ids this server issued for the verify: a cancel may name only these. */
-  issued: Set<string>;
+  /** The helper's answer to that request (its learned list, its free workers). */
+  status: HelperStatusView | null;
+  /** Slices this server issued for the verify (a cancel may name only these), with what each named. */
+  issued: Map<string, { lane: HelperLane; files: string[]; use: HelperSliceUse }>;
   abort: AbortController;
+  /** Set when the child ended: the proxy no longer answers it; the session waits for the result. */
+  endedAt: number | null;
 }
 
 export class BorrowedRunMachine implements BorrowedRunSeam {
@@ -242,7 +275,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
   }
 
   /**
-   * What one verify showed, per lane (the lane flow of stage 5 reports it through the service; the
+   * What one verify showed, per lane (the lane flow and the main-verify observer report it; the
    * server alone updates the practice record). The spot re-run rate moves once per verify.
    */
   recordVerify(helper: string, outcomes: Partial<Record<PracticeLane, LaneVerifyOutcome>>): void {
@@ -283,7 +316,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     const helper = cfg.helpers[0];
     const ctx: VerifyCtx = {
       token: e.token, kind: e.kind, pr: e.pr, baseSha: e.baseSha, headSha: e.headSha, runAttemptId: crypto.randomBytes(16).toString('hex'),
-      helper, assigned: null, asked: Promise.resolve(false), issued: new Set(), abort: new AbortController(),
+      helper, assigned: null, asked: Promise.resolve(false), status: null, issued: new Map(), abort: new AbortController(), endedAt: null,
     };
     this.verifies.set(e.token, ctx);
     // A main verify never counts a helper's results; its asking and comparing stay in the detached observer.
@@ -293,14 +326,224 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     this.audit({ event: 'borrowed-assigned', pr: e.pr, headSha: e.headSha, baseSha: e.baseSha, helper: helper.machineId, assigned: ctx.assigned });
     const decision = this.asking.decide(helper);
     if (decision !== 'ask') return;
-    ctx.asked = this.asking.ask(helper, ctx.abort.signal).then((st) => st !== null, () => false);
+    ctx.asked = this.asking.ask(helper, ctx.abort.signal).then((st) => { ctx.status = st; return st !== null; }, () => false);
+    // Preparation starts when the verify starts (spec E), so the run machine's own set-up minutes are not wasted.
+    void ctx.asked.then((ok) => (ok ? this.prepareAtStart(ctx) : undefined)).catch((err) => this.audit({ event: 'borrowed-seam-error', step: 'prepare', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }));
+  }
+
+  /** One preparation request for the verify's tree, on the first lane a dry run proved (a helper refuses a waiting change's tree on an unproven lane). */
+  private async prepareAtStart(ctx: VerifyCtx): Promise<void> {
+    const helper = ctx.helper;
+    if (!helper || !this.d.signer || ctx.endedAt !== null) return;
+    const lane = PRACTICE_LANES.find((l) => laneProven(this.d.store.peekLane(helper.machineId, l)));
+    if (!lane) { this.audit({ event: 'borrowed-prepare-skipped', pr: ctx.pr, helper: helper.machineId, reason: 'no-proven-lane' }); return; }
+    const now = this.now();
+    const req: HelperSliceRequest = {
+      kind: 'slice', attemptId: crypto.randomBytes(16).toString('hex'), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: helper.machineId,
+      expiresAt: now + HELPER_LIMITS.requestMaxLifetimeMs, lane, baseSha: ctx.baseSha, headSha: ctx.headSha, files: [], deadlineAt: now + BORROWED_PROXY.maxDeadlineInMs, budgetMs: 1, prepare: true,
+    };
+    const r = await this.d.client.slice(helper, signHelperRequest(this.d.signer, req), BORROWED_PROXY.callTimeoutMs, ctx.abort.signal);
+    const ans = r ? parseHelperAnswer(r.body) : null;
+    this.audit({ event: 'borrowed-prepare', pr: ctx.pr, helper: helper.machineId, lane, state: ans?.state ?? (r ? `http-${r.status}` : 'no-answer'), ...(ans?.reason ? { reason: String(ans.reason).slice(0, 60) } : {}) });
   }
 
   onVerifyEnd(e: BorrowedVerifyEnd): void {
     const ctx = this.verifies.get(e.token);
     if (!ctx) return;
-    this.verifies.delete(e.token);
     ctx.abort.abort();
+    // A waiting change's session stays until its result arrives (or 15 minutes), so the failing-direction
+    // request can use the helper's kept tree; the proxy no longer answers it either way.
+    if (ctx.kind === 'main' || !ctx.helper || ctx.endedAt !== null || e.cancelled) { this.verifies.delete(e.token); if (ctx.kind !== 'main' && ctx.helper) void this.tellOver(ctx); return; }
+    ctx.endedAt = this.now();
+  }
+
+  /** Tell the helper the verify is over (its kept tree may go). Never throws. */
+  private async tellOver(ctx: VerifyCtx): Promise<void> {
+    const helper = ctx.helper;
+    if (!helper || !this.d.signer) return;
+    try {
+      const req: HelperCancelRequest = { kind: 'cancel', attemptId: crypto.randomBytes(16).toString('hex'), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: helper.machineId, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, verifyOver: true };
+      await this.d.client.cancel(helper, signHelperRequest(this.d.signer, req), undefined, BORROWED_PROXY.callTimeoutMs);
+    } catch (err) { this.audit({ event: 'borrowed-seam-error', step: 'verify-over', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }); }
+  }
+
+  /** The helper named when a verify started (so a setting switched off mid-verify cannot lose that verify's record). */
+  helperFor(token: string): string | null {
+    return this.verifies.get(token)?.helper?.machineId ?? null;
+  }
+
+  /**
+   * What the verify child is given (spec F "Where the exchange runs"): this server's port, the
+   * verify's own token, and the kept baseline results (hash-checked on read). Null with the setting
+   * off, no helper, or no port: the verify then runs exactly as without helpers.
+   */
+  childInput(token: string): BorrowedChildFacts | null {
+    const cfg = this.cfg();
+    if (cfg.mode === 'off' || cfg.helpers.length === 0 || typeof this.d.port !== 'number' || !TOKEN_RE.test(token)) return null;
+    const r = this.d.baseline.read();
+    return { port: this.d.port, token, baselines: r.ok ? r.file.baselines : [] };
+  }
+
+  // ── a verify's result (after its record is written) ─────────────────
+
+  /**
+   * The lane flow's result for a verify of a waiting change. The failing-direction request runs
+   * first, as a detached task the verify never waits for; then one practice-record update for the
+   * verify, the counted passes kept for the "pass made main red" rule, the learned-list
+   * observations, the audit row, and the helper is told the verify is over.
+   */
+  onVerifyResult(e: BorrowedVerifyResult): void {
+    const ctx = this.verifies.get(e.token);
+    if (!ctx) return;
+    const done = () => { this.verifies.delete(e.token); void this.tellOver(ctx); };
+    if (!ctx.helper || !e.flow || e.flow.helper !== ctx.helper.machineId || ctx.kind === 'main') { done(); return; }
+    const helper = ctx.helper;
+    const flow = e.flow;
+    void this.finishVerify(ctx, helper, flow, e)
+      .catch((err) => this.audit({ event: 'borrowed-seam-error', step: 'verify-result', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }))
+      .finally(done);
+  }
+
+  private async finishVerify(ctx: VerifyCtx, helper: HelperTarget, flow: BorrowedFlowResult, e: BorrowedVerifyResult): Promise<void> {
+    const extra = await this.failingDirection(ctx, helper, flow);
+    const outcomes: Partial<Record<PracticeLane, LaneVerifyOutcome>> = {};
+    let sent = 0; let finished = 0; let agree = 0; let disagree = 0;
+    const observations: LearnedObservation[] = [];
+    const detail: Record<string, unknown> = {};
+    for (const lane of PRACTICE_LANES) {
+      const w = flow.lanes[lane];
+      if (!w) continue;
+      const x = extra.get(lane) ?? { failingAgreed: [], confirmedWrongPasses: [], environmentDifferences: 0, sent: 0, finished: 0 };
+      const uniq = (a: readonly string[], b: readonly string[]) => [...new Set([...a, ...b])].sort();
+      outcomes[lane] = {
+        verifyId: ctx.token, kind: 'waiting', change: String(ctx.pr), compareOnly: ctx.assigned === 'compare-only', assigned: ctx.assigned ?? 'compare-only',
+        sent: w.sent + x.sent, finished: w.finished + x.finished,
+        agreed: w.agreed, digestDiffersBothPass: w.digestDiffersBothPass, helperFailedLocalPassed: w.helperFailedLocalPassed,
+        confirmedWrongPasses: uniq(w.confirmedWrongPasses, x.confirmedWrongPasses), failingAgreed: uniq(w.failingAgreed, x.failingAgreed),
+        environmentDifferences: w.environmentDifferences + x.environmentDifferences, check: w.check, answers: w.answers,
+      };
+      sent += w.sent; finished += w.finished; agree += w.agreed.length;
+      const dis = w.digestDiffersBothPass.length + w.helperFailedLocalPassed.length + outcomes[lane]!.confirmedWrongPasses.length;
+      disagree += dis;
+      for (const f of w.helperFailedLocalPassed) observations.push({ file: f, kind: 'helper-failed-local-passed' });
+      for (const f of w.digestDiffersBothPass) observations.push({ file: f, kind: 'digest-differs-both-pass' });
+      for (const f of outcomes[lane]!.confirmedWrongPasses) observations.push({ file: f, kind: 'confirmed-wrong-pass' });
+      for (const f of w.retrial) if (w.agreed.includes(f)) observations.push({ file: f, kind: 'agree' });
+      if (w.counted.length > 0) this.d.store.addCounted(helper.machineId, { pr: ctx.pr, headSha: ctx.headSha, at: this.now(), lane, files: w.counted });
+      // The file list goes in the audit row only for a verify with a hand-back, a disagreement or a discarded slice.
+      const listFiles = w.takenBack > 0 || dis > 0 || w.discardedSlices > 0;
+      detail[lane] = {
+        sent: w.sent, finished: w.finished, counted: w.counted.length, takenBack: w.takenBack, spot: w.spot.length, late: w.late,
+        discardedSlices: w.discardedSlices, check: w.check, finalLocalPass: w.finalLocalPass, agreed: w.agreed.length, disagreements: dis,
+        failingAgreed: outcomes[lane]!.failingAgreed.length, environmentDifferences: outcomes[lane]!.environmentDifferences,
+        ...(listFiles ? { files: (flow.sentFiles[lane] ?? []).slice(0, 200), disagreed: [...w.digestDiffersBothPass, ...w.helperFailedLocalPassed, ...outcomes[lane]!.confirmedWrongPasses].slice(0, 200) } : {}),
+      };
+    }
+    this.recordVerify(helper.machineId, outcomes);
+    // The share's finish rate reads files sent and finished (no helper or local time: throughput is measured on main verifies).
+    this.d.store.addRun(helper.machineId, { at: this.now(), counted: false, slicesSent: sent, done: finished, agree, disagree, helperMs: 0, localMs: 0, prepMs: null, vitestStartMs: null });
+    this.save();
+    this.audit({ event: 'borrowed-verify', pr: ctx.pr, headSha: ctx.headSha, helper: helper.machineId, assigned: ctx.assigned, outcome: e.outcome, treeHash: flow.treeHash, lanes: detail });
+    if (observations.length > 0 && this.d.signer) {
+      const req: HelperLearnedRequest = {
+        kind: 'learned', attemptId: crypto.randomBytes(16).toString('hex'), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: helper.machineId,
+        treeHash: flow.treeHash, expiresAt: this.now() + HELPER_LIMITS.requestMaxLifetimeMs, observations: observations.slice(0, HELPER_LIMITS.maxFilesPerRequest),
+      };
+      try { await this.d.client.learned(helper, signHelperRequest(this.d.signer, req)); }
+      catch (err) { this.audit({ event: 'borrowed-seam-error', step: 'learned', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }); }
+    }
+  }
+
+  /**
+   * Asking for the failing direction (spec F): after the record, the files whose final local result
+   * failed are sent to the helper, compare-only, on the same tree (the helper keeps it until the
+   * verify is over). Waits at most 10 minutes; nothing waits for it. Per lane: files where the
+   * helper failed at least one of the same tests, confirmed wrong passes, and environment differences.
+   */
+  private async failingDirection(ctx: VerifyCtx, helper: HelperTarget, flow: BorrowedFlowResult): Promise<Map<PracticeLane, { failingAgreed: string[]; confirmedWrongPasses: string[]; environmentDifferences: number; sent: number; finished: number }>> {
+    const out = new Map<PracticeLane, { failingAgreed: string[]; confirmedWrongPasses: string[]; environmentDifferences: number; sent: number; finished: number }>();
+    if (!this.d.signer) return out;
+    const sleep = this.d.sleep ?? ((ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); }));
+    const asked = new Map<string, { lane: PracticeLane; files: Map<string, { failedTests: string[]; confirmed: boolean }> }>();
+    for (const lane of PRACTICE_LANES) {
+      const w = flow.lanes[lane];
+      if (!w) continue;
+      const compared = new Set([...w.agreed, ...w.digestDiffersBothPass, ...w.helperFailedLocalPassed, ...w.confirmedWrongPasses, ...w.failingAgreed]);
+      const files = w.localFailed.filter((f) => !compared.has(f.file) && !isBorrowedCanaryFile(f.file) && laneOfTestFile(f.file) === lane).slice(0, 50);
+      if (files.length === 0) continue;
+      const now = this.now();
+      const req: HelperSliceRequest = {
+        kind: 'slice', attemptId: crypto.randomBytes(16).toString('hex'), runAttemptId: ctx.runAttemptId, requesterMachineId: this.d.machineId, helperMachineId: helper.machineId,
+        expiresAt: now + HELPER_LIMITS.requestMaxLifetimeMs, lane, baseSha: ctx.baseSha, headSha: ctx.headSha, files: files.map((f) => f.file),
+        deadlineAt: now + BORROWED_PROXY.failingDirectionMs, budgetMs: HELPER_LIMITS.sliceBudgetMs[lane], use: 'compare',
+      };
+      const r = await this.d.client.slice(helper, signHelperRequest(this.d.signer, req), BORROWED_PROXY.callTimeoutMs).catch(() => null);
+      const ans = r ? parseHelperAnswer(r.body) : null;
+      this.audit({ event: 'borrowed-failing-direction-sent', pr: ctx.pr, helper: helper.machineId, lane, files: files.length, state: ans?.state ?? 'no-answer' });
+      if (!ans || ans.state !== 'queued') continue;
+      ctx.issued.set(req.attemptId, { lane, files: req.files, use: 'compare' });
+      asked.set(req.attemptId, { lane, files: new Map(files.map((f) => [f.file, { failedTests: f.failedTests, confirmed: f.confirmed }])) });
+      out.set(lane, { failingAgreed: [], confirmedWrongPasses: [], environmentDifferences: 0, sent: files.length, finished: 0 });
+    }
+    const until = this.now() + BORROWED_PROXY.failingDirectionMs;
+    while (asked.size > 0 && this.now() < until) {
+      await sleep(BORROWED_PROXY.failingDirectionPollMs);
+      const st = await this.d.client.status(helper, undefined, { run: ctx.runAttemptId }, BORROWED_PROXY.callTimeoutMs).catch(() => null);
+      if (!st || !st.raw || verifyHelperStatus(st.raw, helper.machineId, this.d.keyLookup(), this.now())) continue;
+      for (const r of this.checkedResults(ctx, helper, st)) {
+        const a = asked.get(String(r.attemptId));
+        if (!a) continue;
+        if (r.state === 'queued' || r.state === 'preparing') continue;
+        asked.delete(String(r.attemptId));
+        const o = out.get(a.lane)!;
+        const perFile = (r.perFile as Array<{ file: string; tests: number; failed: number; digest: string | null; failedTests: string[] }>);
+        const slice = r.slice as { unhandledErrors?: number; exitCode?: number | null } | null;
+        // Only a valid answer on this verify's own tree; a slice error is not compared (spec "A failure from a helper is not a result" holds both ways).
+        if (r.valid !== true || r.treeHash !== flow.treeHash || !slice) continue;
+        for (const p of perFile) {
+          const local = a.files.get(p.file);
+          if (!local) continue;
+          o.finished++;
+          const helperPassed = p.tests >= 1 && p.failed === 0 && p.digest !== null;
+          if (helperPassed) { if (local.confirmed) o.confirmedWrongPasses.push(p.file); continue; }
+          if (p.tests >= 1 && p.failedTests.some((t) => local.failedTests.includes(t))) o.failingAgreed.push(p.file);
+          else o.environmentDifferences++;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * A `main` verify went red: any helper pass that counted for a change now merged into that head,
+   * on a file that failed there, is a "pass that made main red" (the owner hears). Each counted
+   * entry is reported once and then dropped.
+   */
+  onMainRed(e: BorrowedMainRed): void {
+    if (this.cfg().mode === 'off' || e.failedFiles.length === 0 || !this.d.isAncestor) return;
+    const failed = new Set(e.failedFiles);
+    void (async () => {
+      let changed = false;
+      for (const id of this.d.store.helperIds()) {
+        const h = this.d.store.get(id);
+        const keep = [];
+        for (const c of h.counted) {
+          const hit = c.files.filter((f) => failed.has(f));
+          if (hit.length === 0) { keep.push(c); continue; }
+          const merged = await this.d.isAncestor!(c.headSha, e.headSha).catch(() => null);
+          if (merged !== true) { keep.push(c); continue; }
+          changed = true;
+          for (const file of hit.slice(0, 5)) {
+            const ev: HelperEvent = { id: newEventId(), at: this.now(), runMachineId: this.d.machineId, helper: id, lane: c.lane, kind: 'main-red-after-pass', file, change: String(c.pr) };
+            this.d.store.addEvent(ev);
+            this.audit({ event: 'borrowed-helper-event', ...ev, at: new Date(ev.at).toISOString(), mainHead: e.headSha });
+            if (this.coordinator()) this.tell(ev, this.d.store.events());
+          }
+        }
+        h.counted = keep;
+      }
+      if (changed) this.save();
+    })().catch((err) => this.audit({ event: 'borrowed-seam-error', step: 'main-red', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }));
   }
 
   /** The compare-only assignment drawn for an in-flight verify of a waiting change (null: none drawn). */
@@ -314,6 +557,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     if (typeof token !== 'string' || !TOKEN_RE.test(token)) return null;
     const want = Buffer.from(token, 'utf-8');
     for (const ctx of this.verifies.values()) {
+      if (ctx.endedAt !== null) continue;
       const have = Buffer.from(ctx.token, 'utf-8');
       if (have.length === want.length && crypto.timingSafeEqual(have, want)) return ctx;
     }
@@ -354,11 +598,13 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     }
   }
 
-  private laneFacts(helper: string, mode: BorrowedConfig['mode']): Record<string, { state: string; mayCount: boolean }> {
-    const out: Record<string, { state: string; mayCount: boolean }> = {};
+  /** Per lane: its state, whether a pass may count, whether a dry run proved it, its share, and the files not yet compared on. */
+  private laneFacts(helper: string, mode: BorrowedConfig['mode']): Record<string, { state: string; mayCount: boolean; proven: boolean; share: number; uncovered: string[] }> {
+    const out: Record<string, { state: string; mayCount: boolean; proven: boolean; share: number; uncovered: string[] }> = {};
+    const share = laneShareFromRuns(this.d.store.get(helper).runs);
     for (const lane of PRACTICE_LANES) {
       const l = this.d.store.peekLane(helper, lane);
-      out[lane] = { state: l?.state ?? 'practice', mayCount: mayCount(l, mode) };
+      out[lane] = { state: l?.state ?? 'practice', mayCount: mayCount(l, mode), proven: laneProven(l), share, uncovered: l?.coverage?.uncovered ?? [] };
     }
     return out;
   }
@@ -369,9 +615,15 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     const answered = await ctx.asked;
     if (op.op === 'plan') {
       const h = this.d.store.get(helper.machineId);
+      const st = ctx.status;
+      const owner = (st?.raw as { owner?: { workersFree?: unknown } } | undefined)?.owner;
       return { status: 200, body: {
         ok: true, helper: helper.machineId, mode: cfg.mode, assigned: ctx.assigned, answered, runAttemptId: ctx.runAttemptId,
         lanes: this.laneFacts(helper.machineId, cfg.mode), spotOneIn: spotRateOneIn(h.spot),
+        learned: (st?.learned.entries ?? []).map((e) => ({ file: e.file, retrialDue: e.retrialDue === true })),
+        throughput: measuredThroughput(h.runs) ?? BORROWED_PLAN.seedRelativeShare,
+        prepMs: measuredPrepP90(h.runs) ?? BORROWED_PLAN.seedPrepMs,
+        workersFree: owner && typeof owner.workersFree === 'number' && Number.isSafeInteger(owner.workersFree) && owner.workersFree >= 0 ? owner.workersFree : null,
       } };
     }
     if (!answered) return { status: 200, body: { ok: false, reason: 'no-helper' } };
@@ -384,11 +636,14 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
       if (!st || !st.raw) return noAnswer;
       const why = verifyHelperStatus(st.raw, helper.machineId, this.d.keyLookup(), this.now());
       if (why) { this.audit({ event: 'borrowed-proxy-answer-refused', op: 'status', helper: helper.machineId, reason: why }); return noAnswer; }
-      return { status: 200, body: { ok: true, status: st.raw } };
+      // The child gets only what this server checked: each finished slice of this verify, its own signature verified.
+      return { status: 200, body: { ok: true, results: this.checkedResults(ctx, helper, st), tree: this.treeOf(ctx, st) } };
     }
 
     if (op.op === 'cancel') {
       if (op.attemptIds && !op.attemptIds.every((id) => ctx.issued.has(id))) return { status: 400, body: { ok: false, reason: 'unknown-slice' } };
+      // The verify's end is told by this server, never by the child.
+      if (op.verifyOver) return { status: 400, body: { ok: false, reason: 'verify-over-not-yours' } };
       const req: HelperCancelRequest = {
         kind: 'cancel', attemptId: crypto.randomBytes(16).toString('hex'), ...base,
         ...(op.attemptIds ? { attemptIds: op.attemptIds } : {}), ...(op.verifyOver ? { verifyOver: true as const } : {}),
@@ -426,8 +681,49 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
       this.audit({ event: 'borrowed-proxy-answer-refused', op: op.op, helper: helper.machineId, reason: sig ?? 'wrong-ids' });
       return noAnswer;
     }
-    if (op.op === 'slice') ctx.issued.add(attemptId);
-    return { status: 200, body: { ok: true, attemptId, answer: ans } };
+    if (op.op === 'slice') ctx.issued.set(attemptId, { lane: op.lane, files: [...op.files], use: use as HelperSliceUse });
+    return { status: 200, body: { ok: true, attemptId, state: ans.state, ...(ans.reason ? { reason: String(ans.reason).slice(0, 60) } : {}) } };
+  }
+
+  /** The verify's tree on the helper, as its status names it. */
+  private treeOf(ctx: VerifyCtx, st: HelperStatusView): { state: string; treeHash: string | null } {
+    const t = st.trees.find((x) => x.headSha === ctx.headSha && ((x as { baseSha?: unknown }).baseSha === undefined || (x as { baseSha?: unknown }).baseSha === ctx.baseSha));
+    if (!t) return { state: 'none', treeHash: null };
+    const treeHash = (t as { treeHash?: unknown }).treeHash;
+    return { state: t.state, treeHash: typeof treeHash === 'string' && /^[0-9a-f]{40,64}$/.test(treeHash) ? treeHash : null };
+  }
+
+  /**
+   * Every finished slice of this verify in a status answer, checked here: the slice's own
+   * signature, its ids (this verify, a slice this server issued), its lane and commits, and that it
+   * lists each requested file exactly once. A slice that fails any check is passed on as invalid
+   * with no results. Pure apart from the key lookup and the clock.
+   */
+  private checkedResults(ctx: VerifyCtx, helper: HelperTarget, st: HelperStatusView): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const r of st.results) {
+      const ans = parseHelperAnswer(r.answer);
+      if (!ans || ans.runAttemptId !== ctx.runAttemptId) continue;
+      const iss = ctx.issued.get(ans.attemptId);
+      if (!iss) continue;
+      const sig = verifyHelperAnswer(ans, helper.machineId, this.d.keyLookup(), this.now());
+      const idsOk = ans.lane === iss.lane && ans.baseSha === ctx.baseSha && ans.headSha === ctx.headSha
+        && ans.requestedFiles.length === iss.files.length && ans.requestedFiles.every((f, i) => f === iss.files[i]);
+      let filesOk = true;
+      if (ans.state === 'done' && !ans.resultOversize) {
+        const seen = new Set<string>();
+        for (const p of ans.perFile) { if (!iss.files.includes(p.file) || seen.has(p.file)) { filesOk = false; break; } seen.add(p.file); }
+        if (seen.size !== iss.files.length) filesOk = false;
+      } else if (ans.perFile.some((p) => !iss.files.includes(p.file))) filesOk = false;
+      // An oversize result is discarded for its content (no results, no slice facts), not an invalid answer.
+      const valid = !sig && idsOk && filesOk;
+      if (!valid) this.audit({ event: 'borrowed-answer-invalid', pr: ctx.pr, helper: helper.machineId, attemptId: ans.attemptId, reason: sig ?? (!idsOk ? 'ids' : 'per-file') });
+      out.push({
+        seq: r.seq, attemptId: ans.attemptId, valid, state: ans.state, treeHash: ans.treeHash,
+        perFile: valid && !ans.resultOversize ? ans.perFile : [], slice: ans.resultOversize ? null : ans.slice,
+      });
+    }
+    return out;
   }
 
   // ── the decision to count, the dry-run request, "I am here" ─────────
@@ -496,7 +792,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     h.dryRunIntent = { requestedAt: this.now(), lanes, by: typeof b.by === 'string' ? b.by : null, state: action === 'start' ? 'requested' : 'stopped' };
     try { this.d.store.save(); } catch { return { status: 503, body: { ok: false, code: 'state-unwritable' } }; }
     this.audit({ event: 'borrowed-dry-run-requested', helper: helper.machineId, lanes, action, by: h.dryRunIntent.by });
-    return { status: 202, body: { ok: true, helper: helper.machineId, intent: h.dryRunIntent, note: 'recorded; the dry-run task that consumes this request is not built yet' } };
+    return { status: 202, body: { ok: true, helper: helper.machineId, intent: h.dryRunIntent } };
   }
 
   /** The helper's signed "I am here": verified against the paired helper's machine key, it restores asking on every verify. */
@@ -614,6 +910,10 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
   // ── every tick ──────────────────────────────────────────────────────
 
   tick(): void {
+    // A session whose child ended and whose result never came (a crash, a restart of the result path): told over and dropped.
+    for (const [token, ctx] of this.verifies) {
+      if (ctx.endedAt !== null && this.now() - ctx.endedAt > BORROWED_PROXY.endedKeepMs) { this.verifies.delete(token); void this.tellOver(ctx); }
+    }
     const cfg = this.cfg();
     if (cfg.mode === 'off') return;
     let changed = false;
@@ -667,8 +967,7 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     })();
     return {
       mode: cfg.mode,
-      // Stage 4 of the rework: the verify's lane flow does not use a helper's passes yet.
-      countBehavesAsPractice: cfg.mode === 'count',
+
       helpers: cfg.helpers.map((h) => {
         const st = this.d.store.get(h.machineId);
         return {

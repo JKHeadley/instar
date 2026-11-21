@@ -8,8 +8,9 @@
  *  - Answer validity first: the answer must carry the request's attemptId, runAttemptId, lane,
  *    baseSha, headSha and exact requestedFiles, signed by the helper; its perFile lists each
  *    requested file exactly once. Otherwise `invalid-answer`, compared not at all, never fed to
- *    the learned list. (PROVISIONAL, stage 1 of the amendment: the answer's `treeHash` is not
- *    checked here yet; the lane flow of a later stage compares it with this machine's merge tree.)
+ *    the learned list. The answer's `treeHash` is compared with this machine's merge tree by the
+ *    digest comparison (BorrowedShadow.mainVerifyOutcome and the lane flow), which alone feeds the
+ *    practice record and the learned list; this count comparison fills the `borrowed-shadow` audit row.
  *  - A file agrees when its passed, failed, skipped and todo counts are equal and `collected` holds.
  *  - Slice-level problems (a nonzero exit its failed files do not explain, or unhandled errors) are
  *    judged once per slice as a `slice-error`; they do not turn passing files into disagreements.
@@ -139,8 +140,7 @@ export function compareShadow(slices: readonly SentSlice[], local: ReadonlyMap<s
       if (same(p, l)) {
         if (slice.collected) {
           out.agree++;
-          // PROVISIONAL (stage 5 replaces this count comparison with the digest comparison in the
-          // lane flow): only a trial's agreement is reported, as in the first design.
+          // The audit row's count view; the learned list is fed from the digest comparison.
           if (s.request.retrial) out.observations.push({ file: p.file, kind: 'agree' });
         } else out.uncollected++;
         continue;
@@ -149,8 +149,8 @@ export function compareShadow(slices: readonly SentSlice[], local: ReadonlyMap<s
       out.disagree.push({ file: p.file, direction });
       // Learned list: the file failed, or skipped differently, on the helper while passing locally.
       // Only from a slice that collected every file: an uncollected slice never feeds the list.
-      // PROVISIONAL mapping onto the amended kinds: the helper failed where the run machine passed,
-      // or both passed with different skips (which is a names-and-outcomes difference).
+      // The count view's mapping onto the amended kinds (audit only): the helper failed where the run
+      // machine passed, or both passed with different skips (a names-and-outcomes difference).
       if (slice.collected && l.failed === 0 && direction === 'helper-red/local-green') out.observations.push({ file: p.file, kind: 'helper-failed-local-passed' });
       else if (slice.collected && l.failed === 0 && p.failed === 0 && direction === 'skip-difference') out.observations.push({ file: p.file, kind: 'digest-differs-both-pass' });
     }

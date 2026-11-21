@@ -727,6 +727,8 @@ export interface BorrowedWiringOpts {
   lease?: { holdsLease(): boolean } | null;
   /** The existing attention seam (the same hooks the service signals through). */
   hooks?: Pick<LocalVerifyHooks, 'signal'>;
+  /** This server's port: the verify child reaches the borrowed proxy on loopback. Absent: no verify is offered a helper. */
+  port?: number;
   /** One row in the maturation ladder's evidence log; production passes the shared `featureEvidence`. */
   evidence?: (row: { kind: 'fired' | 'held'; reason: string; subject: string; context: Record<string, string | number | boolean | null> }) => void;
 }
@@ -743,7 +745,7 @@ export const BORROWED_NOTICE_KEYS = Object.freeze({ line: 'local-verify:borrowed
  * never written as a config default. Neither is awaited by a verify.
  */
 export async function wireBorrowedRunMachine(
-  svc: Pick<LocalVerifyService, 'setMainRunObserver' | 'setBorrowedRunSeam'>,
+  svc: Pick<LocalVerifyService, 'setMainRunObserver' | 'setBorrowedRunSeam'> & Partial<Pick<LocalVerifyService, 'ancestry'>>,
   o: BorrowedWiringOpts,
 ): Promise<{ shadow: import('./BorrowedShadow.js').BorrowedShadow; machine: import('./BorrowedRunMachine.js').BorrowedRunMachine }> {
   const [{ BorrowedShadow }, { BorrowedRunMachine }, { makeHelperClient }, seams, { parseBorrowedConfig }, { LOCAL_VERIFY_LIMITS }, { BorrowedPracticeStore }, { MainFileCountsStore }] = await Promise.all([
@@ -779,6 +781,8 @@ export async function wireBorrowedRunMachine(
       helper: event.helper, lane: event.lane, kind: event.kind, runMachineId: event.runMachineId, audience: who,
     }),
     ...(o.evidence ? { evidence: o.evidence } : {}),
+    ...(typeof o.port === 'number' ? { port: o.port } : {}),
+    ...(svc.ancestry ? { isAncestor: (a: string, b: string) => svc.ancestry!(a, b) } : {}),
   });
   const shadow = new BorrowedShadow({
     config, client, signer, keyLookup,
@@ -791,6 +795,8 @@ export async function wireBorrowedRunMachine(
     localUnitReport: (head) => seams.localUnitReport(o.agentHome, head),
     audit,
     store, asking: machine.helperAsking(),
+    // Main verifies' comparisons feed the same practice record, through its one update path.
+    recordVerify: (helper, outcomes) => machine.recordVerify(helper, outcomes),
     ...(o.treeSeams ?? {}),
   });
   svc.setMainRunObserver(shadow);

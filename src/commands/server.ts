@@ -27114,6 +27114,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             await wiring.wireBorrowedRunMachine(svc, {
               liveConfig, stateDir: config.stateDir, agentHome: path.dirname(config.stateDir), machineId: lvMachineId,
               authToken: String(config.authToken ?? ''), agentId: config.projectName, version: getInstarVersion(),
+              // The verify child reaches its helper through this server's loopback proxy.
+              port: config.port,
               // Only the coordinator sends helper notices and keeps baseline results; a single machine is its own coordinator.
               lease: coordinator.enabled ? { holdsLease: () => coordinator.holdsLease() } : null,
               hooks: lvHooks,

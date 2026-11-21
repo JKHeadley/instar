@@ -138,7 +138,7 @@ describe('borrowed-helper routes on a run machine (integration)', () => {
     for (const p of ['/local-verify', '/local-verify/borrowed']) {
       const g = await request(s.app).get(p).set(s.bearer);
       expect(g.status).toBe(200);
-      expect(g.body.borrowed).toMatchObject({ mode: 'count', countBehavesAsPractice: true, helpers: [{ machineId: 'm_laptop', url: HELPER_URL, spotOneIn: 20, lanes: { unit: { state: 'practice', mayCount: false }, integration: { state: 'practice', mayCount: false }, e2e: { state: 'practice', mayCount: false } } }] });
+      expect(g.body.borrowed).toMatchObject({ mode: 'count', helpers: [{ machineId: 'm_laptop', url: HELPER_URL, spotOneIn: 20, lanes: { unit: { state: 'practice', mayCount: false }, integration: { state: 'practice', mayCount: false }, e2e: { state: 'practice', mayCount: false } } }] });
     }
     expect((await request(s.app).get('/local-verify/borrowed')).status).toBe(401); // the ordinary credential
   });
@@ -213,10 +213,13 @@ describe('borrowed-helper routes on a run machine (integration)', () => {
     expect((await proxy({ op: 'prepare', lane: 'unit', deadlineInMs: 60_000, headSha: evil })).status).toBe(400);
     const prep = await proxy({ op: 'prepare', lane: 'unit', deadlineInMs: 60_000 });
     expect(prep.status).toBe(200);
-    expect(prep.body).toMatchObject({ ok: true, answer: { state: 'preparing', baseSha: HEAD, headSha: HEAD } });
+    // The child hears the state only; the commits are the server's own.
+    expect(prep.body).toMatchObject({ ok: true, state: 'preparing' });
     expect((await proxy({ op: 'slice', lane: 'unit', files: ['src/core/Config.ts'], use: 'compare', budgetMs: 10_000, deadlineInMs: 60_000 })).status).toBe(400);
     const st = await proxy({ op: 'status' });
-    expect(st.body).toMatchObject({ ok: true, status: { enabled: true } });
+    // The child gets only results this server checked, and the tree's state.
+    expect(st.body).toMatchObject({ ok: true, tree: expect.objectContaining({ state: expect.any(String) }) });
+    expect(Array.isArray((st.body as { results: unknown[] }).results)).toBe(true);
 
     // When the verify ends its token opens nothing.
     s.children[0].resolve({ status: 1, signal: null });

@@ -54,6 +54,10 @@ function recordingSeam(over: Partial<BorrowedRunSeam> = {}) {
     dryRun: () => ({ status: 202, body: {} }),
     helperHere: () => ({ status: 200, body: {} }),
     acceptPeerBaseline: (body) => { calls.push({ name: 'peer-baseline', arg: body }); return { status: 200, body: { ok: true } }; },
+    childInput: () => null,
+    helperFor: () => null,
+    onVerifyResult: (e) => { calls.push({ name: 'verify-result', arg: e }); },
+    onMainRed: (e) => { calls.push({ name: 'main-red', arg: e }); },
     ...over,
   };
   return { seam, calls };

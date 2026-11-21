@@ -22,6 +22,12 @@ export interface MainRunEnd {
   recorded: boolean;
   outcome: 'success' | 'failure' | 'error' | null;
   cancelled: boolean;
+  /** The record's merge tree (a helper's answer is compared only when it ran this tree). */
+  mergeTree?: string;
+  /** file → [passed, failed, skipped, to-do, names-and-outcomes digest] for every file that ran clean (absent: not asked). */
+  fileCounts?: Record<string, [number, number, number, number, string]>;
+  /** Files that failed in their lane and failed again alone (confirmed local failures). */
+  confirmedFailed?: string[];
 }
 
 export interface MainRunObserver {
@@ -30,6 +36,8 @@ export interface MainRunObserver {
   /** Read-only summary for `GET /local-verify` (the borrowed mode, helpers, last shadow summaries). */
   info?(): unknown;
 }
+
+import type { BorrowedChildInput, BorrowedFlowResult } from './borrowedLaneFlow.js';
 
 // ── The run machine's borrowed-helper seam (docs/specs/local-verify-borrowed-slices-count.md, F) ──
 //
@@ -86,7 +94,30 @@ export interface BorrowedPeerStatusExtras {
   helpers?: string[];
 }
 
+/** What a verify child is given to reach its helper (the run input's `borrowed`). */
+export type BorrowedChildFacts = BorrowedChildInput;
+
+/** A verify's record was written: what its lane flow reported (absent when no helper took part). */
+export interface BorrowedVerifyResult {
+  token: string;
+  pr: number;
+  headSha: string;
+  outcome: 'success' | 'failure' | 'error';
+  flow: BorrowedFlowResult | null;
+}
+
+/** A `main` verify went red: the failed test files, for the "a helper's pass made main red" rule. */
+export interface BorrowedMainRed { headSha: string; failedFiles: string[] }
+
 export interface BorrowedRunSeam {
+  /** The run input's `borrowed` for a verify of a waiting change (null: no helper offered). */
+  childInput(token: string): BorrowedChildFacts | null;
+  /** The helper named when the verify started (null: none). */
+  helperFor(token: string): string | null;
+  /** After the record is written: the lane flow's result (the server alone updates the practice record). */
+  onVerifyResult(e: BorrowedVerifyResult): void;
+  /** Coordinator: a `main` verify's record is red. */
+  onMainRed(e: BorrowedMainRed): void;
   onVerifyStart(e: BorrowedVerifyStart): void;
   onVerifyEnd(e: BorrowedVerifyEnd): void;
   /** True when a `main` verify's per-file counts are wanted (this machine or a peer has a helper). */
