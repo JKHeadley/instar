@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-18T15:27:18.359Z",
+  "slug": "identity-security-piece1g-wsl-local-link",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 177,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/dashboardOpen.ts",
+      "src/core/wslLocalPeer.ts",
+      "src/data/awareness/wsl-local-link.md",
+      "src/server/localAccessRoutes.ts"
+    ],
+    "addedLines": 173,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered action; the wslinfo probe runs at most once every 10 minutes, on a local-access request"
+  },
+  "verdict": "pass"
+}
