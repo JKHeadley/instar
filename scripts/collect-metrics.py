@@ -28,27 +28,195 @@ from pathlib import Path
 DEFAULT_STATE_DIR = os.path.expanduser("~/.instar/telemetry")
 
 SPIKE_THRESHOLD = 2.0  # Alert if current is > 2x previous
+DROP_THRESHOLD = 0.6  # Alert if the current week is below 60% of the previous week
+GAP_MIN_CONSECUTIVE = 2  # Alert on this many consecutive interior zero-download days
+
+BASELINE_LABELS = {
+    "week_prev": "the previous calendar week",
+    "prev_run": "the previous run",
+}
+
+
+PORTAL_DIR_CANDIDATES = (
+    os.environ.get("DAWN_PORTAL_DIR"),
+    "~/Projects/the-portal",
+    "~/Documents/Projects/the-portal",
+)
+
+TELEGRAM_SEND_REL = ".claude/scripts/telegram-send.py"
+
+
+def resolve_portal_dir():
+    """Locate the the-portal checkout that hosts telegram-send.py.
+
+    ~/Documents is unreliable on this machine -- reads intermittently fail with
+    EPERM since a macOS change in Oct 2026 -- and
+    ~/Documents/Projects/the-portal is now only a symlink to
+    ~/Projects/the-portal. Prefer the real path so an alert does not depend on
+    the symlink resolving, and keep the old location as a last resort.
+    """
+    for candidate in PORTAL_DIR_CANDIDATES:
+        if not candidate:
+            continue
+        path = Path(os.path.expanduser(candidate))
+        if (path / TELEGRAM_SEND_REL).exists():
+            return path
+    return None
 
 
 def send_telegram_alert(message: str) -> bool:
     """Send a Telegram alert to Justin via Dawn Server. Returns True if successful."""
+    portal_dir = resolve_portal_dir()
+    if portal_dir is None:
+        print(
+            "Warning: no the-portal checkout with "
+            f"{TELEGRAM_SEND_REL} found; alert not sent",
+            file=sys.stderr,
+        )
+        return False
     try:
         result = subprocess.run(
-            ["python3", os.path.expanduser(".claude/scripts/telegram-send.py"), message, "--silent"],
-            cwd=os.path.expanduser("~/Documents/Projects/the-portal"),
+            ["python3", str(portal_dir / TELEGRAM_SEND_REL), message, "--silent"],
+            cwd=str(portal_dir),
             capture_output=True,
             text=True,
             timeout=15,
         )
+        if result.returncode != 0:
+            print(
+                f"Warning: telegram-send exited {result.returncode}: "
+                f"{(result.stderr or '').strip()[:200]}",
+                file=sys.stderr,
+            )
         return result.returncode == 0
     except Exception as e:
         print(f"Warning: Failed to send Telegram alert: {e}", file=sys.stderr)
         return False
 
 
+def _is_number(value) -> bool:
+    """True for a real numeric metric value (bools are not metrics)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _fmt_count(value, width: int = 8) -> str:
+    """Right-align a count, tolerating a missing or non-numeric value.
+
+    npm returns None for every metric when the fetch fails (observed on
+    2026-04-16 and 2026-08-29). A ',' format spec raises on None and on the '?'
+    placeholder alike, which crashed the whole summary on exactly the runs
+    where the data was most worth looking at.
+    """
+    if _is_number(value):
+        return f"{value:>{width},}"
+    return f"{'?':>{width}}"
+
+
+def _day_kind(entry) -> str:
+    """Classify one daily_breakdown entry as 'zero', 'nonzero', or 'unknown'.
+
+    'unknown' covers a missing or non-numeric count. An unknown day is never
+    read as a zero, so a hole in the feed can never be reported as a gap.
+    """
+    downloads = entry.get("downloads") if isinstance(entry, dict) else None
+    if not _is_number(downloads):
+        return "unknown"
+    return "zero" if downloads == 0 else "nonzero"
+
+
+def find_interior_zero_runs(daily_breakdown, min_consecutive: int = GAP_MIN_CONSECUTIVE):
+    """Find runs of consecutive zero-download days that have real traffic on BOTH sides.
+
+    Only an interior run is a reporting gap. Leading zeros (the window opening
+    before npm had data) and trailing zeros (npm's normal 1-2 day publishing
+    lag) are expected and are NOT flagged -- otherwise every run would report a
+    gap for the lag alone.
+
+    Returns a list of {"start", "end", "days"} in window order.
+    """
+    days = [d for d in (daily_breakdown or []) if isinstance(d, dict)]
+    kinds = [_day_kind(d) for d in days]
+    runs = []
+    index = 0
+    while index < len(days):
+        if kinds[index] != "zero":
+            index += 1
+            continue
+        end = index
+        while end + 1 < len(days) and kinds[end + 1] == "zero":
+            end += 1
+        length = end - index + 1
+        traffic_before = "nonzero" in kinds[:index]
+        traffic_after = "nonzero" in kinds[end + 1:]
+        if length >= min_consecutive and traffic_before and traffic_after:
+            runs.append({
+                "start": days[index].get("date"),
+                "end": days[end].get("date"),
+                "days": length,
+            })
+        index = end + 1
+    return runs
+
+
+def _shift_date(date_str, days):
+    """Return the ISO date `days` away from `date_str`, or None if unparseable."""
+    try:
+        base = datetime.strptime(str(date_str), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+    return (base + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _downloads_by_date(daily_breakdown):
+    """Map date -> numeric downloads for one daily_breakdown; unknown days are left out."""
+    out = {}
+    for entry in daily_breakdown or []:
+        if isinstance(entry, dict) and entry.get("date") and _is_number(entry.get("downloads")):
+            out[entry["date"]] = entry["downloads"]
+    return out
+
+
+def _sum_window(by_date, end_date, days=7):
+    """Sum `days` consecutive dates ending at end_date; None if any day is unknown."""
+    total = 0
+    for offset in range(days):
+        value = by_date.get(_shift_date(end_date, -offset))
+        if not _is_number(value):
+            return None
+        total += value
+    return total
+
+
 def detect_significant_changes(current_snapshot: dict, state_dir: str) -> dict:
-    """Compare current metrics to previous snapshot and detect significant changes."""
+    """Compare current metrics to the previous snapshot and detect significant changes.
+
+    Detects, independently of one another:
+      - npm_gap:   GAP_MIN_CONSECUTIVE+ consecutive interior zero-download days
+      - npm_drop:  last_week below DROP_THRESHOLD x the previous run's last_week
+      - npm_spike: the end_date day above SPIKE_THRESHOLD x the calendar day before it
+      - npm_stale: npm has published nothing new since the previous run
+
+    Staleness skips only the SPIKE comparison. The drop and gap checks still
+    run, because a stalled npm pipeline is one of the things that causes a week
+    to collapse -- skipping them on stale data would hide the exact case they
+    exist to catch (observed: the 2026-10-20..23 runs are all stale).
+    """
     changes = {}
+
+    current_npm_block = current_snapshot.get("npm") or {}
+    current_end_date = current_npm_block.get("end_date")
+
+    # The gap check reads only the current snapshot, so it needs no history.
+    gap_runs = find_interior_zero_runs(current_npm_block.get("daily_breakdown"))
+    if gap_runs:
+        longest = max(gap_runs, key=lambda r: r["days"])
+        changes["npm_gap"] = {
+            "runs": gap_runs,
+            "longest_days": longest["days"],
+            "start": longest["start"],
+            "end": longest["end"],
+            "end_date": current_end_date,
+        }
 
     history_file = Path(state_dir) / "telemetry.jsonl"
     if not history_file.exists():
@@ -57,17 +225,67 @@ def detect_significant_changes(current_snapshot: dict, state_dir: str) -> dict:
     # Read last entry (previous snapshot)
     try:
         lines = history_file.read_text().strip().split("\n")
-        if not lines:
+        if not lines or not lines[0]:
             return changes
         prev_snapshot = json.loads(lines[-1])
     except (json.JSONDecodeError, IndexError):
         return changes
 
-    # Check if npm data is stale (not published for today/yesterday)
-    current_end_date = current_snapshot.get("npm", {}).get("end_date")
-    prev_end_date = prev_snapshot.get("npm", {}).get("end_date")
+    prev_npm_block = prev_snapshot.get("npm") or {}
+    prev_end_date = prev_npm_block.get("end_date")
 
-    # Skip spike detection if data hasn't changed since last run
+    # Week-over-week drop, measured against two baselines because they catch
+    # different failures:
+    #   week_prev - compute_trends' npm_week_prev: the seven calendar days
+    #               before the current week, summed by DATE. A true
+    #               week-over-week figure, and the only one that sees a
+    #               SUSTAINED slide: consecutive runs share six of their seven
+    #               days, so a steady erosion never trips a run-to-run ratio.
+    #   prev_run  - the previous run's last_week. Catches a one-run cliff.
+    # Safe to run on stale data: when npm has published nothing new the runs
+    # carry the same last_week, so the prev_run ratio is 1.0.
+    current_week = current_npm_block.get("last_week")
+    prev_week = prev_npm_block.get("last_week")
+    trends = current_snapshot.get("trends") or {}
+
+    # The week_prev baseline is a by-date window sum, so it is compared with
+    # the by-date sum of the current week (trends.npm_week_cur) when there is
+    # one; the point API's last_week can end on a different day.
+    week_cur_by_date = trends.get("npm_week_cur")
+    baselines = []
+    for name, value, current in (
+            ("week_prev", trends.get("npm_week_prev"),
+             week_cur_by_date if _is_number(week_cur_by_date) else current_week),
+            ("prev_run", prev_week, current_week)):
+        if _is_number(value) and value > 0 and _is_number(current):
+            baselines.append((name, value, current))
+
+    if baselines:
+        comparisons = {
+            name: {"previous": value, "current": current, "ratio": round(current / value, 2)}
+            for name, value, current in baselines
+        }
+        tripped = [
+            (name, value, current, current / value)
+            for name, value, current in baselines
+            if current / value < DROP_THRESHOLD
+        ]
+        if tripped:
+            # Report the steepest decline, and name which baseline it is
+            # against so the figure can be checked.
+            name, value, current, week_ratio = min(tripped, key=lambda t: t[3])
+            changes["npm_drop"] = {
+                "baseline": name,
+                "previous": value,
+                "current": current,
+                "ratio": round(week_ratio, 2),
+                "pct_change": round((week_ratio - 1) * 100, 1),
+                "comparisons": comparisons,
+                "end_date": current_end_date,
+            }
+
+    # Skip the day-over-day spike comparison when npm has not published since
+    # the previous run -- both snapshots would share the same last_day.
     if current_end_date and prev_end_date and current_end_date == prev_end_date:
         changes["npm_stale"] = {
             "end_date": current_end_date,
@@ -75,21 +293,96 @@ def detect_significant_changes(current_snapshot: dict, state_dir: str) -> dict:
         }
         return changes
 
-    # Compare npm downloads only if data is fresh
-    current_npm = current_snapshot.get("npm", {}).get("last_day")
-    prev_npm = prev_snapshot.get("npm", {}).get("last_day")
+    # Day-over-day spike, read by DATE from the current snapshot's own
+    # daily_breakdown: the end_date day against the calendar day before it.
+    # It used to compare last_day with the PREVIOUS RUN's last_day, which is
+    # the day before only when the collector ran every day. On 2026-11-02,
+    # after missed runs, it compared 11-01 (8,887) with 10-29 (4,084), alerted
+    # "Previous 24h ... +118%", and the real previous day 10-31 was 10,359 --
+    # a 14% DROP.
+    by_date = _downloads_by_date(current_npm_block.get("daily_breakdown"))
+    day_before = _shift_date(current_end_date, -1)
+    current_npm = by_date.get(current_end_date)
+    prev_npm = by_date.get(day_before)
 
-    if current_npm and prev_npm and prev_npm > 0:
+    if _is_number(current_npm) and _is_number(prev_npm) and prev_npm > 0:
         ratio = current_npm / prev_npm
         if ratio > SPIKE_THRESHOLD:
             changes["npm_spike"] = {
                 "previous": prev_npm,
+                "previous_date": day_before,
                 "current": current_npm,
+                "current_date": current_end_date,
                 "ratio": round(ratio, 2),
                 "end_date": current_end_date,
             }
 
     return changes
+
+
+def build_change_notes(changes: dict) -> list:
+    """Render detected changes as structured change notes.
+
+    Each note carries a `kind` so a consumer can route on it without parsing
+    prose, plus a `message` for the printed summary.
+    """
+    notes = []
+
+    drop = changes.get("npm_drop")
+    if drop:
+        baseline = drop.get("baseline")
+        notes.append({
+            "kind": "drop",
+            "message": (
+                f"npm weekly downloads fell {abs(drop['pct_change']):.0f}% "
+                f"({drop['previous']:,} -> {drop['current']:,})"
+                + (f" against {BASELINE_LABELS.get(baseline, baseline)}" if baseline else "")
+            ),
+            "baseline": baseline,
+            "comparisons": drop.get("comparisons"),
+            "previous": drop["previous"],
+            "current": drop["current"],
+            "ratio": drop["ratio"],
+            "pct_change": drop["pct_change"],
+        })
+
+    gap = changes.get("npm_gap")
+    if gap:
+        spans = ", ".join(
+            f"{r['start']}..{r['end']} ({r['days']}d)" for r in gap["runs"]
+        )
+        notes.append({
+            "kind": "gap",
+            "message": (
+                f"npm reported {gap['longest_days']} consecutive zero-download days "
+                f"inside the window: {spans}"
+            ),
+            "runs": gap["runs"],
+            "longest_days": gap["longest_days"],
+        })
+
+    spike = changes.get("npm_spike")
+    if spike:
+        notes.append({
+            "kind": "spike",
+            "message": (
+                f"npm daily downloads rose {(spike['ratio'] - 1) * 100:.0f}% "
+                f"({spike['previous']:,} -> {spike['current']:,})"
+            ),
+            "previous": spike["previous"],
+            "current": spike["current"],
+            "ratio": spike["ratio"],
+        })
+
+    stale = changes.get("npm_stale")
+    if stale:
+        notes.append({
+            "kind": "stale",
+            "message": stale["message"],
+            "end_date": stale["end_date"],
+        })
+
+    return notes
 
 
 def run_cmd(cmd, timeout=30):
@@ -200,41 +493,66 @@ def fetch_github_metrics():
     return metrics
 
 
-def compute_trends(state_dir):
-    """Compare current metrics to previous snapshots for trend detection."""
+def compute_trends(state_dir, current_npm=None):
+    """Compare current metrics to previous snapshots for trend detection.
+
+    npm_week_prev is measured by DATE: the sum of the seven calendar days
+    before the current week, read from the daily_breakdown of the current
+    snapshot and of recent ledger rows. It used to be the last_week of the row
+    seven ROWS back, which is a week ago only if the collector ran exactly once
+    a day. It does not (missed runs, double runs), so that baseline drifted to
+    8, 10 or more days back and drove false week-over-week claims (+177% on
+    2026-11-02 and +10.9% on 2026-11-05, against true figures that were far
+    smaller or negative). When any of the 14 days is unknown the figure is
+    None, never an approximation; npm_week_prev_unavailable says why.
+    """
     history_file = Path(state_dir) / "telemetry.jsonl"
     if not history_file.exists():
         return None
 
-    # Read last 7 entries
     lines = history_file.read_text().strip().split("\n")
     recent = []
-    for line in lines[-7:]:
+    for line in lines[-30:]:
         try:
             recent.append(json.loads(line))
         except json.JSONDecodeError:
             continue
 
-    if len(recent) < 2:
+    if not recent:
         return None
 
-    # recent[-1] is the most recent snapshot (previous day)
-    # recent[0] is the oldest of the 7 (approximately 1 week ago)
-    prev = recent[-1] if len(recent) >= 2 else None
-    week_ago = recent[0] if len(recent) >= 7 else recent[0]
-
     trends = {}
-    if prev:
-        prev_npm = prev.get("npm", {}).get("last_day")
-        prev_npm_end = prev.get("npm", {}).get("end_date")
-        trends["npm_day_prev"] = prev_npm
-        if prev_npm_end:
-            trends["npm_day_prev_end_date"] = prev_npm_end
+    prev = recent[-1]
+    prev_npm_block = prev.get("npm") or {}
+    trends["npm_day_prev"] = prev_npm_block.get("last_day")
+    if prev_npm_block.get("end_date"):
+        trends["npm_day_prev_end_date"] = prev_npm_block.get("end_date")
 
-    if week_ago:
-        week_npm = week_ago.get("npm", {}).get("last_week")
-        trends["npm_week_prev"] = week_npm
+    # Oldest rows first, so a newer row's (backfilled) count wins for a date.
+    by_date = {}
+    for row in recent:
+        by_date.update(_downloads_by_date((row.get("npm") or {}).get("daily_breakdown")))
+    current_npm = current_npm or {}
+    by_date.update(_downloads_by_date(current_npm.get("daily_breakdown")))
 
+    end_date = current_npm.get("end_date")
+    if not end_date:
+        trends["npm_week_prev"] = None
+        trends["npm_week_prev_unavailable"] = "current snapshot has no npm end_date"
+        return trends
+
+    prev_end = _shift_date(end_date, -7)
+    week_cur = _sum_window(by_date, end_date)
+    week_prev = _sum_window(by_date, prev_end)
+    trends["npm_week_cur"] = week_cur
+    trends["npm_week_cur_window"] = f"{_shift_date(end_date, -6)}..{end_date}"
+    trends["npm_week_prev"] = week_prev
+    trends["npm_week_prev_window"] = f"{_shift_date(prev_end, -6)}..{prev_end}"
+    if week_cur is None or week_prev is None:
+        trends["npm_week_prev_unavailable"] = (
+            "a day in one of the two 7-day windows has no known count in the "
+            "ledger or the current snapshot"
+        )
     return trends
 
 
@@ -263,9 +581,9 @@ def format_summary(snapshot):
 
     npm = snapshot.get("npm", {})
     lines.append(f"\nnpm Downloads:")
-    lines.append(f"  Last 24h:  {npm.get('last_day', '?'):>8,}")
-    lines.append(f"  Last 7d:   {npm.get('last_week', '?'):>8,}")
-    lines.append(f"  Last 30d:  {npm.get('last_month', '?'):>8,}")
+    lines.append(f"  Last 24h:  {_fmt_count(npm.get('last_day'))}")
+    lines.append(f"  Last 7d:   {_fmt_count(npm.get('last_week'))}")
+    lines.append(f"  Last 30d:  {_fmt_count(npm.get('last_month'))}")
     if npm.get("end_date"):
         lines.append(f"  Data published through: {npm.get('end_date')}")
 
@@ -280,14 +598,23 @@ def format_summary(snapshot):
     clones = gh.get("clones_14d", {})
     if clones:
         lines.append(f"\nGit Clones (14d):")
-        lines.append(f"  Total:     {clones.get('total', '?'):>8,}")
-        lines.append(f"  Unique:    {clones.get('unique', '?'):>8,}")
+        lines.append(f"  Total:     {_fmt_count(clones.get('total'))}")
+        lines.append(f"  Unique:    {_fmt_count(clones.get('unique'))}")
 
     views = gh.get("views_14d", {})
     if views:
         lines.append(f"\nPage Views (14d):")
         lines.append(f"  Total:     {views.get('total', '?'):>8}")
         lines.append(f"  Unique:    {views.get('unique', '?'):>8}")
+
+    notes = snapshot.get("change_notes") or []
+    if notes:
+        lines.append(f"\nChange Notes:")
+        for note in notes:
+            if isinstance(note, dict):
+                lines.append(f"  [{note.get('kind', 'note')}] {note.get('message', '')}")
+            else:
+                lines.append(f"  {note}")
 
     referrers = gh.get("top_referrers", [])
     if referrers:
@@ -314,16 +641,12 @@ def main():
     # Collect
     snapshot["npm"] = fetch_npm_downloads()
     snapshot["github"] = fetch_github_metrics()
-    snapshot["trends"] = compute_trends(args.state_dir)
+    snapshot["trends"] = compute_trends(args.state_dir, snapshot["npm"])
 
     # Detect significant changes (before saving)
     changes = detect_significant_changes(snapshot, args.state_dir)
     snapshot["alerts_sent"] = []
-    snapshot["change_notes"] = []
-
-    # Track stale data
-    if "npm_stale" in changes:
-        snapshot["change_notes"].append(f"⚠️ {changes['npm_stale']['message']}")
+    snapshot["change_notes"] = build_change_notes(changes)
 
     # Send alerts for significant changes
     if changes and not args.no_alerts:
@@ -331,12 +654,23 @@ def main():
             spike = changes["npm_spike"]
             alert_msg = (
                 f"🎯 Instar npm spike detected!\n"
-                f"Previous 24h: {spike['previous']} downloads\n"
-                f"Current 24h: {spike['current']} downloads\n"
+                f"{spike.get('previous_date', 'Previous day')}: {spike['previous']:,} downloads\n"
+                f"{spike.get('current_date', 'Current day')}: {spike['current']:,} downloads\n"
                 f"Change: +{(spike['ratio'] - 1) * 100:.0f}% ({spike['ratio']}x)"
             )
             if send_telegram_alert(alert_msg):
                 snapshot["alerts_sent"].append("npm_spike_telegram")
+
+        if "npm_drop" in changes:
+            drop = changes["npm_drop"]
+            alert_msg = (
+                f"\U0001F4C9 Instar npm weekly downloads dropped\n"
+                f"Previous 7d: {drop['previous']:,} downloads\n"
+                f"Current 7d: {drop['current']:,} downloads\n"
+                f"Change: {drop['pct_change']:.0f}% ({drop['ratio']}x)"
+            )
+            if send_telegram_alert(alert_msg):
+                snapshot["alerts_sent"].append("npm_drop_telegram")
 
     # Save
     save_snapshot(snapshot, args.state_dir)
