@@ -70,6 +70,7 @@ import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFil
 import { topicRef } from './shared/topicRef.js';
 import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
 import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
+import { learningOwnerId } from '../core/ownerWords.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -2505,6 +2506,14 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   getVerifiedOwner(): number | undefined {
     return this.getCallbackApprover();
+  }
+
+  /**
+   * Whose words may teach the agent preferences (SEC-105): the verified owner, else the one allowed
+   * sender of a single-person agent. Undefined means nobody's words teach.
+   */
+  getLearningOwner(): number | undefined {
+    return learningOwnerId(this.getVerifiedOwner(), this.config.authorizedUserIds);
   }
 
   /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
