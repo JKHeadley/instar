@@ -75,6 +75,8 @@ A revert restores whole-vault sync and printable metered keys; no data migration
 
 ## Second-pass review
 
+**Reviewer:** independent Opus reviewer subagent (second-pass, run 2026-11-20 on slice A; verdict: concur, four minor notes folded). The PR's later slices each carry their own independent reviewer verdicts: gemini-payg-money-model.md, gemini-payg-door-and-mesh.md, gemini-payg-go-live.md, gemini-payg-live-test.md.
+
 (appended below by the independent reviewer)
 
 ### Reviewer verdict (independent subagent)
