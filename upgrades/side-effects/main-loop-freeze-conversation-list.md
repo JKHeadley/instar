@@ -64,7 +64,7 @@ It is a read-path and boot-I/O performance repair. Nothing it computes gates, fi
 
 ## 4b. Judgment-point check (Judgment Within Floors standard)
 
-No new static heuristic at a competing-signals decision point. The two new fixed values (probe concurrency 4; index-retry backoff 1 min doubling to 30 min) are tuning brakes on internal work, declared with floors in the spec's Decision points section; neither chooses between competing signals.
+No new static heuristic at a competing-signals decision point. The new fixed values (history-load retry backoff 5 s doubling to 5 min; request waits of 15 s and 4 s; a 60 s bound on the inventory's first wait) are tuning brakes on internal work, declared with floors in the spec's Decision points section; neither chooses between competing signals.
 
 ---
 
@@ -73,8 +73,8 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 - **Shadowing:** none. The tail cache, its eviction and the unread service are unchanged; the view only replaces the file scan beneath them.
 - **Double-fire:** the load is single flight.
 - **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file, or an append onto a torn last line, causes a fresh read; a failed pass publishes nothing.
-- **Round 6 fixes (2026-11-21):** finding 2: the line where the cap was passed is recorded before a rotation attempt's reads, so a failed rotation read followed by a late rotation keeps every line an on-time rotation would have kept (the oldest survivor is the same); when the first line count itself cannot be read there is no brake, and the next append tries again as the old code did. Finding 8: switching `telegramHistoryView.enabled` off releases the background inventory wait and every request wait, which then take the old read path.
-- **Failure handling:** a rotation during handle close is re-read in the same load; a part-failed append drops and re-reads the view; a late rotation keeps every line an on-time one would have; a loading peer is reported as `loading`.
+- **Round 6 fixes (2026-11-21):** finding 2 (commit c8b9a0f50, then reworked after the narrow review): there is no longer any brake after a failed rotation. Every failure is retried on the next append and keeps exactly what the old code keeps, at the same moments. The line count is never below the file's real count of non-empty lines, and it is recounted after a failed append, so a rotation is never later than the old code's. A test replays the old algorithm on the same appends and failures and compares the files. Finding 8: switching `telegramHistoryView.enabled` off releases the background inventory wait and every request wait, which then take the old read path; a request wait that times out re-checks the switch, and the inventory's first wait is bounded at 60 s, so a stalled load or a switch turned off with nothing reading it cannot hold either.
+- **Failure handling:** a rotation during handle close is re-read in the same load; a part-failed append drops and re-reads the view; a failed rotation is retried on the next append, as before; a loading peer is reported as `loading`.
 - **Feedback loops:** none. No timer retries the load; a later request may start another pass after 5 s, doubling to 5 min.
 - The conversation-graph inventory starts after the first load, so it cannot publish a partial view.
 

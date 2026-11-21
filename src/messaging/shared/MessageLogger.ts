@@ -111,6 +111,7 @@ export class MessageLogger {
       fs.appendFileSync(this.logPath, JSON.stringify(entry) + '\n');
       this.maybeRotate();
     } catch (err) {
+      this.rotationLineCount.forget(); // part of the line may have reached the disk: recount
       console.error(`[message-logger] Failed to append to log: ${err}`);
       return false;
     }
@@ -234,13 +235,11 @@ export class MessageLogger {
       // (docs/specs/main-loop-freeze-conversation-list.md): above the size threshold this used
       // to read and split the entire file on EVERY append — a 30 MB synchronous read per message.
       if (!this.rotationLineCount.mayExceed(this.logPath, this.maxLines)) return;
-      this.rotationLineCount.failed(); // cleared by set() below once the rotation completes
 
       const content = fs.readFileSync(this.logPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length > this.maxLines) {
-        // After a failed attempt, keep what a rotation on time would have kept, never less.
-        const kept = lines.slice(-this.rotationLineCount.keepFor(lines.length, this.keepLines));
+        const kept = lines.slice(-this.keepLines);
         const tmpPath = `${this.logPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
         try {
           fs.writeFileSync(tmpPath, kept.join('\n') + '\n');
@@ -269,65 +268,35 @@ export class MessageLogger {
  * itself always re-reads and re-counts the file.
  */
 export class RotationLineCount {
+  /**
+   * Never below the file's real count of non-empty lines (the old code's measure), so rotation
+   * never happens later than it did: an over-estimate only costs an early read, after which
+   * set() makes the count exact. There is no brake after a failed attempt: the next append tries
+   * again, exactly as the old code did, so the moments of every rotation are unchanged.
+   */
   private count: number | null = null;
-  /** After a failed attempt, appends still to pass before the next one. */
-  private waitAppends = 0;
-  /** ...or until this time, so a quiet agent is not left over the cap by a brief failure. */
-  private waitUntilMs = 0;
 
   /** Called on each append above the size threshold: true when the cap may be passed. */
   mayExceed(logPath: string, maxLines: number): boolean {
-    if (this.waitAppends > 0 && Date.now() < this.waitUntilMs) {
-      this.waitAppends -= 1;
-      if (this.count !== null) this.count += 1;
-      return false;
-    }
     if (this.count === null) {
-      // No brake when the count itself cannot be read: the line where the cap was passed is
-      // unknown, so the next append must try again, as the old code did.
-      this.count = countNewlines(fs.readFileSync(logPath));
+      const buf = fs.readFileSync(logPath);
+      // A last line with no newline is still a line.
+      this.count = countNewlines(buf) + (buf.length > 0 && buf[buf.length - 1] !== 10 ? 1 : 0);
     } else {
       this.count += 1;
     }
     return this.count > maxLines;
   }
 
-  set(lines: number): void { this.count = lines; this.waitAppends = 0; this.waitUntilMs = 0; this.firstFailedAt = null; }
-
-  /** Lines in the file at the first attempt that failed since the last successful rotation. */
-  private firstFailedAt: number | null = null;
+  /** The exact non-empty line count, after a full read or a rotation. */
+  set(lines: number): void { this.count = lines; }
 
   /**
-   * How many lines a rotation keeps. Normally `keepLines`. After a failed attempt, also every line
-   * appended since, so a late rotation removes exactly what the on-time one would have: a brief
-   * failure leaves the log over its cap for a while but never costs history. Call it with the
-   * file's line count before rewriting; a rewrite that then fails is remembered as that attempt.
+   * Unknown: recount at the next check. Used when the file went back under the size threshold,
+   * and after an append that failed (part of it may have reached the disk).
    */
-  keepFor(lines: number, keepLines: number): number {
-    if (this.firstFailedAt === null) { this.firstFailedAt = lines; return keepLines; }
-    return keepLines + Math.max(0, lines - this.firstFailedAt);
-  }
-
-  /**
-   * A rotation is being attempted: unless set() reports it finished, wait ROTATION_RETRY_LINES
-   * appends or ROTATION_RETRY_MS before the next full read, not one read per append.
-   */
-  failed(): void {
-    this.waitAppends = ROTATION_RETRY_LINES;
-    this.waitUntilMs = Date.now() + ROTATION_RETRY_MS;
-    // Record where the cap was passed BEFORE the attempt's reads, so a read that fails still
-    // leaves the boundary keepFor needs: a late rotation then keeps every line an on-time one would.
-    if (this.firstFailedAt === null && this.count !== null) this.firstFailedAt = this.count;
-  }
-
-  /** The file is back under the size threshold (rotated or replaced elsewhere): start over. */
-  forget(): void { this.count = null; this.waitAppends = 0; this.waitUntilMs = 0; this.firstFailedAt = null; }
+  forget(): void { this.count = null; }
 }
-
-/** Appends between rotation attempts after a failure: 1% of the 100 000-line cap. */
-const ROTATION_RETRY_LINES = 1_000;
-/** ...or this long, whichever comes first. */
-const ROTATION_RETRY_MS = 60_000;
 
 /** Newline bytes in a buffer — the line count of a JSONL file without decoding it. */
 export function countNewlines(buf: Buffer): number {

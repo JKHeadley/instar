@@ -4873,7 +4873,7 @@ export class TelegramAdapter implements MessagingAdapter {
       const wake = (): void => { clearTimeout(timer); resolve(this.logView !== null || !this.historyViewOn()); };
       const timer = setTimeout(() => {
         this.logViewWaiters = this.logViewWaiters.filter((w) => w !== wake);
-        resolve(this.logView !== null);
+        resolve(this.logView !== null || !this.historyViewOn()); // switched off meanwhile: take the old path
       }, timeoutMs);
       timer.unref?.();
       this.logViewWaiters.push(wake);
@@ -4887,7 +4887,13 @@ export class TelegramAdapter implements MessagingAdapter {
   whenHistoryLoaded(): Promise<void> {
     if (!this.historyViewOn() || this.logView || this.logViewFailures > 0) return Promise.resolve();
     void this.loadHistory();
-    return new Promise((resolve) => { this.logViewSettled.push(resolve); });
+    return new Promise((resolve) => {
+      this.logViewSettled.push(resolve);
+      // Bounded: a load that stalls (or a switch turned off with nothing reading it) releases
+      // background work after a minute, onto whichever read path is current then.
+      const deadline = setTimeout(() => { this.logViewSettled = this.logViewSettled.filter((w) => w !== resolve); resolve(); }, 60_000);
+      deadline.unref?.();
+    });
   }
 
   /** Record an appended row exactly as a later read of the file will parse it. */
@@ -5327,8 +5333,10 @@ export class TelegramAdapter implements MessagingAdapter {
       this.maybeRotateLog();
     } catch (err) {
       console.error(`[telegram] Failed to append to message log: ${err}`);
-      // It may have written part of the line: the view re-reads what the file holds.
+      // It may have written part of the line: the view re-reads what the file holds, and the
+      // rotation line count is recounted.
       this.noteLogRotated();
+      this.rotationLineCount.forget();
       DegradationReporter.getInstance().report({
         feature: 'Telegram.messageLog',
         primary: 'JSONL message log for conversation history and recovery',
@@ -5418,14 +5426,12 @@ export class TelegramAdapter implements MessagingAdapter {
       // Read the whole log only when it may be over the cap, never per append
       // (docs/specs/main-loop-freeze-conversation-list.md).
       if (!this.rotationLineCount.mayExceed(this.messageLogPath, 100_000)) return;
-      this.rotationLineCount.failed(); // cleared by set() below once the attempt completes
 
       const content = fs.readFileSync(this.messageLogPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length <= 100_000) this.rotationLineCount.set(lines.length); // the count ran ahead: correct it
       else {
-        // After a failed attempt, keep what a rotation on time would have kept, never less.
-        const kept = lines.slice(-this.rotationLineCount.keepFor(lines.length, 75_000));
+        const kept = lines.slice(-75_000);
         const tmpPath = `${this.messageLogPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
         try {
           fs.writeFileSync(tmpPath, kept.join('\n') + '\n');

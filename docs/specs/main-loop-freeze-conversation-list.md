@@ -119,9 +119,9 @@ A small `RotationLineCount` (in `MessageLogger.ts`, used by both the shared logg
 adapter path) learns the log's line count once, by counting newline bytes in the file (no decode,
 no split), then adds one per append. The whole file is read only when the count passes the
 100 000-line cap, to rotate it exactly as before, after which the count is set to the kept lines.
-If the rotation's read or rename fails, the next attempt waits 1 000 more appends or one minute
-instead of re-reading the whole log on every append while the failure lasts; the count keeps
-advancing, and a successful rotation clears the brake.
+If the rotation's read or rename fails, the next append tries again, exactly as the old code
+did, so every rotation happens at the same append and keeps the same lines. The count is never
+below the file's real count of non-empty lines, and is recounted after a failed append.
 Below the size threshold the count is forgotten, so a log rotated or replaced elsewhere is
 recounted. The adapter is the file's single writer (see §1), so the count tracks the file; were
 another writer ever added, the count would lag and delay a rotation, and the rotation itself
@@ -133,8 +133,8 @@ always re-reads and re-counts.
   never finishes with no view (that would be a blank chat).
 - An append that fails part-way drops the view and re-reads the file, so a message is never
   visible only in memory.
-- A rotation that fails and later succeeds keeps every line an on-time rotation would have kept
-  (`RotationLineCount.keepFor`): the log may stay over its cap for a while, history is never lost.
+- A rotation that fails is retried on the next append, as before, so it keeps exactly the lines
+  the old code keeps.
 - A peer that answers `503 conversations-loading` is reported in `pool.failed` as `loading`, not
   `off`. The pool list re-checks the view after the peers answer and before its unread and pin passes.
 - A forwarded read report waits at most 4 s, inside the sender's 5 s budget.
@@ -161,8 +161,7 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
 
 ## Decision points touched
 
-- Node ABI probe concurrency 4 — judgment-candidate; floor: at least 1 probe at a time, and an unprobed path falls back to the existing synchronous probe; arbiter: the boot path's measured latency. A tuning value, not a decision: each probe is a whole node process, the candidate list is PATH-derived and normally under ten, so 4 keeps most boots to one or two waves without a burst of ten processes. Changing it changes boot latency only.
-- Rotation retry after a failed rotation: 1 000 appends — judgment-candidate; floor: rotation still happens once the failure clears, and the log only grows by the brake's width (1 % of the cap) meanwhile; arbiter: the next attempt. Brake required by No Unbounded Loops; the old behavior was a full read on every append.
+- Request waits 15 s (4 s for a peer machine's request) — judgment-candidate; floor: on expiry the request answers a retryable 503 and never reads the log synchronously; arbiter: the client's retry. The 4 s keeps a peer's answer inside the 5 s pool budget.
 - History-load retry backoff 5 s doubling to a 5 min cap — judgment-candidate; floor: a failed load publishes nothing and readers get a retryable answer; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
 
 ## Known limits (accepted)
@@ -188,7 +187,8 @@ it only makes each machine's own answer cheap.  No notices, no URLs, no durable 
 - Unit `tests/unit/telegram-log-view.test.ts`: answers equal a real file read; closing still evicts with no file read; appends and rotation stay correct; failed reads discarded, braked and self-retried; bounded wait; async scroll-back.
 - Unit `tests/unit/message-log-rotation-no-per-append-read.test.ts`: 200 appends above the size
   threshold read the file once (the seed), not 200 times; rotation still happens at the cap and
-  keeps the newest lines; a failing rotation is braked (100 appends, zero reads) and recovers.
+  keeps the newest lines; with failures injected into the read or the rename, the kept lines equal
+  an oracle replay of the old algorithm on the same appends and failures.
 - Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all topics in order; chats and scroll-back avoid synchronous log reads; unavailable history answers a retryable 503.
 - E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: production `AgentServer` and real adapter; concurrent cold requests share one load, with no synchronous log read.
 
