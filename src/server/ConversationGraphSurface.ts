@@ -17,6 +17,7 @@ import {createConversationGraphOwnerAdmission} from './ConversationGraphOwnerAdm
 import {ConversationGraphOwnerGrantStore} from './ConversationGraphOwnerGrant.js';
 import type {ConversationGraphOwnerPolicySnapshot} from '../core/ConversationGraphOwnerPolicy.js';
 import {createConversationGraphRouter} from './conversationGraphRoutes.js';
+import {treeProjects} from '../core/workFrontDoorsGraph.js';
 import {createConversationGraphChangeRouter} from './conversationGraphChangeRoutes.js';
 import {createConversationGraphHistoryRoutes,type ConversationGraphHistoryDeps} from './conversationGraphHistoryRoutes.js';
 import {createConversationGraphSuggestionRouter} from './conversationGraphSuggestionRoutes.js';
@@ -98,7 +99,9 @@ export function createConversationGraphSurface(options:{
    ?{kind:'conversation',platform:'telegram',chatId:options.telegramChatId,topicId}:null;
  };
  const model=new ConversationGraphReadModel(source,{rootConversation});
- router.use(createConversationGraphRouter({model,resolveViewer}));
+ // The phone tree's Project label reads the same Chief of Staff projects the suggestions offer (work-front-doors §3.1).
+ const suggestedProjects=options.suggestions?.projects;
+ router.use(createConversationGraphRouter({model,resolveViewer,...(suggestedProjects?{projects:()=>treeProjects(suggestedProjects())}:{})}));
  if(options.history)router.use(createConversationGraphHistoryRoutes({...options.history,
   // The same private-serving gate as the owner's read view that showed this conversation (readView), not
   // the 60 s write-readiness proof: history is a read (conversation-graph-suggestions follow-up, 2026-11-17).
