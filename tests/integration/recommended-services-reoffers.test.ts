@@ -266,4 +266,78 @@ describe('recommended services: re-offers after a real problem', () => {
       expect(fs.existsSync(path.join(dir, 'state', 'recommended-service-setup', 'address-outages.json'))).toBe(false);
     });
   });
+
+  describe('provider-exhausted: every AI door down for 30 minutes, twice in a week', () => {
+    const no = () => { ledger.recordNo({ service: 'second-ai-door', shutdown: 'none', reason: 'cost', origin: 'first-offer' }); clock += 1000; };
+
+    it('two long outages re-offer the second AI subscription once; a short one counts for nothing', async () => {
+      let down = true;
+      build({ everyDoorDown: () => down });
+      no();
+      const step = async (ms: number) => { clock += ms; await tick!(); };
+      await tick!();
+      await step(20 * 60_000);
+      down = false; await step(60_000);
+      expect(ledger.reofferRows()).toEqual([]);
+      down = true; await step(60_000); await step(30 * 60_000);
+      down = false; await step(60_000);
+      expect(ledger.reofferRows()).toEqual([]);
+      down = true; await step(24 * 60 * 60_000); await step(30 * 60_000);
+      expect(ledger.reofferRows('42').filter((r) => r.state === 'event')).toHaveLength(1);
+      expect(sent.at(-1)?.text).toContain('Every AI provider I work on was out');
+      expect(sent.at(-1)?.text).toContain('service=second-ai-door');
+    });
+
+    it('with no address the re-offer waits, and another problem still goes ahead of it', async () => {
+      build({ everyDoorDown: () => true, linkBase: () => null });
+      no();
+      refuse();
+      ledger.recordReofferEvent({ service: 'second-ai-door', owner: '42', kind: 'provider-exhausted', evidenceRef: 'pool' });
+      handle.recordProblem('voice-unreadable', 'telegram');
+      await tick!();
+      // An address comes first (Tailscale is unanswered here), and the voice problem still goes out beside it.
+      expect(sent).toHaveLength(2);
+      expect(sent[0]!.text).toContain('an address comes first');
+      expect(sent[1]!.text).toContain("couldn't turn into text");
+      expect(ledger.reofferRows('42').filter((r) => r.kind === 'provider-exhausted').map((r) => r.state)).toEqual(['event']);
+    });
+
+    it('with no address and Tailscale unanswered, an address comes first, once, with an owner-only Yes that starts Tailscale', async () => {
+      const taps: Array<(t: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>> = [];
+      const starts: string[] = [];
+      build({
+        everyDoorDown: () => false, linkBase: () => null,
+        registerOfferTapHandler: (h) => { taps.push(h); },
+        startSetup: async (service) => { starts.push(service); return { sessionName: `s-${service}`, topicId: 9 }; },
+      });
+      no();
+      ledger.recordReofferEvent({ service: 'second-ai-door', owner: '42', kind: 'provider-exhausted', evidenceRef: 'pool' });
+      await tick!();
+      await tick!();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.text).toContain('an address comes first');
+      expect(sent[0]!.buttons).toHaveLength(1);
+      const nonce = sent[0]!.buttons[0]!.data.replace('rs:y:', '');
+      expect(await taps[0]!({ action: 'yes', nonce, fromIsOwner: false })).toBe('Only the owner can say yes.');
+      expect(await taps[0]!({ action: 'yes', nonce, fromIsOwner: true })).toContain('Yes to Tailscale');
+      expect(ledger.effective('tailscale').choice).toBe('yes');
+      expect(ledger.reofferRows('42').filter((r) => r.kind === 'provider-exhausted').map((r) => r.state)).toEqual(['event']);
+    });
+
+    it('a no on Tailscale means no address-first message; the problem just waits', async () => {
+      build({ everyDoorDown: () => false, linkBase: () => null });
+      no();
+      ledger.recordNo({ service: 'tailscale', shutdown: 'none', reason: 'privacy', origin: 'first-offer' });
+      ledger.recordReofferEvent({ service: 'second-ai-door', owner: '42', kind: 'provider-exhausted', evidenceRef: 'pool' });
+      await tick!();
+      expect(sent).toEqual([]);
+    });
+
+    it('switched off, outages are not even sampled', async () => {
+      enabled = false;
+      build({ everyDoorDown: () => true });
+      await tick!();
+      expect(fs.existsSync(path.join(dir, 'state', 'recommended-service-setup', 'doors-down.json'))).toBe(false);
+    });
+  });
 });

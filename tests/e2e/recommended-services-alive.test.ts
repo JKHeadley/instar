@@ -31,7 +31,7 @@ const signer: MachineSigner = {
 const AUTH = 'e2e-token';
 const PIN = '123456';
 
-function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (stateDir: string) => void, tunnel?: unknown) {
+function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (stateDir: string) => void, tunnel?: unknown, more: Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -50,6 +50,7 @@ function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (
     config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir),
     ...(withLedger ? { recommendedServicesLedger: makeLedger() } : {}),
     ...(tunnel ? { tunnel } : {}),
+    ...more,
   } as any);
   servers.push(server);
   return { server, makeLedger };
@@ -277,6 +278,17 @@ describe('recommended services: production wiring', () => {
     const rows = on.makeLedger().reofferRows('42');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ service: 'tailscale', kind: 'address-repeatedly-down', state: 'event', evidenceRef: 'tunnel' });
+  });
+
+  it('provider-exhausted: the regular check reads the real subscription pool and starts counting an outage of every door', async () => {
+    let stateDir = '';
+    const pool = { list: () => [{ id: 'a1', framework: 'claude-code', status: 'rate-limited', configHome: '/tmp/x' }], get: () => null };
+    boot(true, { enabledFrameworks: ['claude-code'], monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } } }, (d) => { stateDir = d; }, undefined, { subscriptionPool: pool });
+    await new Promise((r) => setTimeout(r, 50));
+    const file = path.join(stateDir, 'state', 'recommended-service-setup', 'doors-down.json');
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(typeof state.downSince).toBe('number');
+    expect(state).toMatchObject({ counted: false, episodes: [] });
   });
 
   it('refuses to surface a retired offer', async () => {

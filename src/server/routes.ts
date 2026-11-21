@@ -43,7 +43,7 @@ import { JobPortableSync } from '../core/JobPortableSync.js';
 import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
-import { catalogWithProving } from '../recommended/recipes.js';
+import { TAILSCALE_PROGRAMS, catalogWithProving, judgeTailscaleStatus, readTailscaleStatus } from '../recommended/recipes.js';
 import { configHeldSecrets, copySourceNames, realBitwardenSurface } from '../recommended/bitwardenVault.js';
 import { realGitHubBackupSurface } from '../recommended/githubBackup.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
@@ -188,7 +188,7 @@ import { ANALYZE_MIN_INTERVAL_MS as BENCHMARK_ANALYZE_MIN_INTERVAL_MS } from '..
 import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
-import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
+import { DEFAULT_ENROLL_LOGIN_COMMANDS, FrameworkLoginDriver, enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
 import { SubscriptionAccountEmailRegistrar, normalizeSubscriptionEmail } from '../core/SubscriptionPool.js';
 import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
@@ -406,7 +406,11 @@ import { validateWriteToken, canPerformOperation } from '../core/StateWriteAutho
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, registerVoiceUnreadableListener, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
-import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
+import { DOOR_NPM_PACKAGE, detectDoorPath, proveDoorSignedIn, redetectDoorPath } from '../install/doors.js';
+import { everyDoorDown, runSecondDoorWithoutModel, runTailscaleWithoutModel, type TailscaleState } from '../recommended/noModelSetup.js';
+import { detectTmuxPath } from '../core/Config.js';
+import { EnrollmentWizard } from '../core/EnrollmentWizard.js';
+import { NEW_ACCOUNT_KINDS } from '../core/newSubscriptionAccountId.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { findUnresolvedSecrets } from '../recommended/reoffers.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
@@ -18475,6 +18479,103 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         writeDoorsAddedBySetup(readDoorsAddedBySetup().filter((d) => d !== door));
         return true;
       },
+    },
+    // `provider-exhausted` (recommended-services.md, rollout step 4): every door this agent uses, per the pool.
+    everyDoorDown: () => everyDoorDown(
+      [...((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[])],
+      (ctx.subscriptionPool?.list() ?? []).map((a) => ({ framework: a.framework, status: a.status })),
+    ),
+    // A yes to a second AI subscription while every door is down: fixed steps, no model (noModelSetup.ts).
+    noModelSetup: (service, io) => {
+      // Never a sync spawn here: tmux can be slow, and these run on the server's own loop. Null when it failed.
+      const tmuxRun = (bin: string, args: string[]): Promise<string | null> => new Promise((resolve) => {
+        execFileCb(bin, args, { timeout: 10_000, encoding: 'utf-8' }, (err, stdout) => resolve(err ? null : String(stdout ?? '')));
+      });
+      if (service === 'tailscale') {
+        const tmux = detectTmuxPath();
+        const run = (cmd: string, args: string[], timeout: number): Promise<boolean> => new Promise((resolve) => { execFileCb(cmd, args, { timeout }, (err) => resolve(!err)); });
+        const status = async (): Promise<TailscaleState> => {
+          const read = await readTailscaleStatus();
+          if (read.kind === 'missing') return 'missing';
+          if (read.kind === 'timeout') return 'unknown';
+          if (read.kind === 'failed') return 'not-running';
+          return judgeTailscaleStatus(read.stdout).result === 'pass' ? 'running' : 'not-running';
+        };
+        return runTailscaleWithoutModel({
+          status,
+          // No administrator rights: Homebrew on a Mac. Linux needs sudo for the official installer, so it is not tried here.
+          install: async () => process.platform === 'darwin' && await run('brew', ['install', 'tailscale'], 10 * 60_000) && (await status()) !== 'missing',
+          startService: async () => {
+            if (process.platform === 'darwin') await run('brew', ['services', 'start', 'tailscale'], 60_000);
+            return (await readTailscaleStatus()).kind === 'ok';
+          },
+          startSignIn: async () => {
+            if (!tmux) return null;
+            const program = TAILSCALE_PROGRAMS.find((p) => !p.startsWith('/') || fs.existsSync(p)) ?? 'tailscale';
+            const session = 'instar-no-model-tailscale-login';
+            await tmuxRun(tmux, ['kill-session', '-t', `=${session}`]);
+            if ((await tmuxRun(tmux, ['new-session', '-d', '-s', session, `${program} up`])) === null) return null;
+            for (let i = 0; i < 60; i++) {
+              await new Promise((r) => setTimeout(r, 1000));
+              let pane = '';
+              pane = (await tmuxRun(tmux, ['capture-pane', '-p', '-J', '-S', '-200', '-t', `=${session}:`])) ?? '';
+              const link = pane.match(/https:\/\/login\.tailscale\.com\/[^\s"'<>]+/)?.[0];
+              if (link) return link;
+            }
+            return null;
+          },
+          tell: io.tell,
+          stillWanted: io.stillWanted,
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+          now: () => Date.now(),
+        });
+      }
+      if (service !== 'second-ai-door') return null;
+      // The pool's own per-engine table names each door's provider.
+      const loginProviderFor = (door: string): 'anthropic' | 'openai' => Object.values(NEW_ACCOUNT_KINDS).find((k) => k.framework === door)?.provider ?? 'anthropic';
+      const enabledNow = (): string[] => [...((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[])];
+      const tmuxPath = detectTmuxPath();
+      const loginDriver = new FrameworkLoginDriver({
+        spawn: async ({ framework }) => {
+          if (!tmuxPath) throw new Error('tmux not available');
+          const session = `instar-no-model-login-${framework}`;
+          await tmuxRun(tmuxPath, ['kill-session', '-t', `=${session}`]);
+          // BROWSER=true: the link goes to the person's phone, never a page on this machine's screen.
+          if ((await tmuxRun(tmuxPath, ['new-session', '-d', '-s', session, `env BROWSER=true ${DEFAULT_ENROLL_LOGIN_COMMANDS[framework] ?? `${framework} login`}`])) === null) throw new Error('the login pane did not start');
+          return { session };
+        },
+        capture: async (session) => {
+          if (!tmuxPath) return '';
+          return (await tmuxRun(tmuxPath, ['capture-pane', '-p', '-J', '-S', '-300', '-t', `=${session}:`])) ?? '';
+        },
+      });
+      return runSecondDoorWithoutModel({
+        enabled: enabledNow,
+        installed: (door) => redetectDoorPath(door) !== null,
+        oneTapSignIn: (door) => EnrollmentWizard.defaultKind(loginProviderFor(door)) === 'device-code',
+        install: (door) => new Promise((resolve) => {
+          execFileCb('npm', ['install', '-g', DOOR_NPM_PACKAGE[door]], { timeout: 5 * 60_000 }, () => resolve(redetectDoorPath(door) !== null));
+        }),
+        startSignIn: async (door) => {
+          try {
+            const provider = loginProviderFor(door);
+            return await loginDriver.drive({ provider, framework: door, kind: EnrollmentWizard.defaultKind(provider), openBrowser: false });
+          } catch { return null; } // @silent-fallback-ok — null is "no link appeared", which the runner tells the person
+        },
+        signedIn: (door) => proveDoorSignedIn(door),
+        enable: (door) => {
+          if (!io.stillWanted()) return false;
+          const next = withDoor(enabledNow(), door);
+          if (!next) return false;
+          setEnabledFrameworks(next);
+          writeDoorsAddedBySetup([...new Set([...readDoorsAddedBySetup(), door])]);
+          return true;
+        },
+        tell: io.tell,
+        stillWanted: io.stillWanted,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        now: () => Date.now(),
+      });
     },
     // A confirmed no to GitHub turns the switch older versions read too, so no machine on an older build keeps pushing.
     disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },

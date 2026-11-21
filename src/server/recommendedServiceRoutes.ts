@@ -13,8 +13,8 @@ import type { Request, Response, Router } from 'express';
 import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger, type ReofferRow } from '../recommended/RecommendedServicesLedger.js';
-import { EVENT_FRESH_MS, isDuplicateEvent, noteOutage, serviceForProblem, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
-import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
+import { EVENT_FRESH_MS, PROBLEM_KINDS, eventBlock, isDuplicateEvent, noteOutage, serviceForProblem, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
+import { OFFER_TAP_TTL_MS, newListId, newOfferNonce, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
@@ -24,6 +24,7 @@ import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
 import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { clearRestoreMarker, readRestoreMarker } from '../core/restoreMarker.js';
+import { EMPTY_DOORS_DOWN, noteDoorsSample, type DoorsDownState } from '../recommended/noModelSetup.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
@@ -108,6 +109,13 @@ export interface RecommendedServiceRouteDeps {
    * encrypted store was merged (a secret the config refers to is missing). Read once per server start.
    */
   unresolvedSecrets?: () => readonly string[];
+  /** The `provider-exhausted` source: true while every AI door this agent uses is unusable (noModelSetup.everyDoorDown). */
+  everyDoorDown?: () => boolean;
+  /**
+   * Carries out a yes with no AI model, for a service that has fixed steps (today: second-ai-door). Used only while
+   * every door is down, when no setup session could run. `tell` and `stillWanted` are filled in by the routes.
+   */
+  noModelSetup?: (service: string, io: { tell: (text: string) => void; stillWanted: () => boolean }) => Promise<{ result: 'pass' | 'fail'; detail: string }> | null;
   /**
    * The `state-loss-risk` source: how many other machines this agent runs on (each holds a copy of its state).
    * With none, and no verified GitHub backup, a restore from a local snapshot means nothing exists off this machine.
@@ -217,7 +225,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!state) return;
     try {
       // Only forget a session that really stopped, so the next tick tries again if it didn't.
-      const stopped = !state.sessionName || !deps.isSetupRunning(state.sessionName) || deps.stopSetup(state.sessionName);
+      const stopped = !state.sessionName || !isRunning(state.sessionName) || deps.stopSetup(state.sessionName);
       if (state.commitmentId) deps.withdrawCommitment(state.commitmentId, 'The owner said no.');
       updateSetupState(deps.stateDir, service, {
         sessionName: stopped ? undefined : state.sessionName, commitmentId: undefined, verified: undefined,
@@ -350,11 +358,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
    * A key already held must never lead to a new sign-up that replaces it, so an unreadable check starts
    * nothing and costs nothing: the next regular check looks again.
    */
+  // A no-model setup runs in this process; its name stands in for a session's while it does.
+  const noModelRunning = new Set<string>();
+  const isRunning = (sessionName: string): boolean => noModelRunning.has(sessionName) || deps.isSetupRunning(sessionName);
   const beginSetup = async (row: CatalogRow): Promise<void> => {
     const recipe = recipeFor(row);
     if (!recipe || starting.has(row.id)) return;
     const before = currentState(row.id);
-    if (before?.sessionName && deps.isSetupRunning(before.sessionName)) return;
+    if (before?.sessionName && isRunning(before.sessionName)) return;
     starting.add(row.id);
     try {
       const preflight = await recipe.verify(recipeDeps());
@@ -374,6 +385,34 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         // after setup's own half-finished sign-in must not overwrite it.
         absentBeforeSetup: before?.absentBeforeSetup || preflight.absent === true ? true : undefined,
       });
+      // With every AI door down no setup session can run, so a service with fixed steps is set up without one.
+      let downNow = false;
+      try { downNow = !!deps.everyDoorDown?.(); } catch { /* @silent-fallback-ok — unknown means a session is tried, as before */ }
+      // The sign-in link is something the person must act on, so it goes the way offers go (always delivered,
+      // owner's conversation), not as a setup note that Quiet by Default may hold.
+      const tell = (text: string): void => {
+        if (!hasGrant(row.id)) return;
+        if (!deps.sendOfferList) { deps.tellOwner(text); return; }
+        void deps.sendOfferList(text, []).then((id) => { if (id === null || id === undefined) deps.tellOwner(text); }).catch(() => deps.tellOwner(text));
+      };
+      const fixed = downNow ? deps.noModelSetup?.(row.id, { tell, stillWanted: () => hasGrant(row.id) }) ?? null : null;
+      if (fixed) {
+        const name = `no-model:${row.id}`;
+        noModelRunning.add(name);
+        updateSetupState(deps.stateDir, row.id, { sessionName: name });
+        void fixed.then(async (outcome) => {
+          noModelRunning.delete(name);
+          updateSetupState(deps.stateDir, row.id, { sessionName: undefined });
+          if (outcome.result !== 'pass') return;
+          const check = await recipe.verify(recipeDeps());
+          recordVerify(row.id, check, false);
+        }).catch((err) => {
+          noModelRunning.delete(name);
+          updateSetupState(deps.stateDir, row.id, { sessionName: undefined });
+          report(`Set up ${row.id} without a model`, err, 'The next regular check tries again, a limited number of times.');
+        });
+        return;
+      }
       const { sessionName, topicId } = await deps.startSetup(row.id, row.name, recipe.brief({ port: deps.port }), before?.topicId);
       updateSetupState(deps.stateDir, row.id, { sessionName, topicId });
       // A no can land while the session starts, when there was nothing yet to stop.
@@ -633,7 +672,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         }
       }
       if (state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
-      if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
+      if (state?.sessionName && isRunning(state.sessionName)) continue;
       // Setup talks to the person. While this machine can't, a restart waits and costs no attempt.
       if (!reach(row.id)) continue;
       const decision = decideSetupRestart({ starts: state?.attempts ?? 0, lastStartMs: state?.lastAttemptAt ? Date.parse(state.lastAttemptAt) : null, nowMs });
@@ -720,6 +759,67 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       report('Count an address outage', err, 'This outage is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
+  // `provider-exhausted`: sampled on each regular check; the run of "every door down" is kept per machine, so a
+  // restart in the middle of an outage doesn't forget it began.
+  const sampleDoors = (): void => {
+    if (!deps.reoffersEnabled?.() || !deps.everyDoorDown) return;
+    try {
+      const file = path.join(deps.stateDir, 'state', 'recommended-service-setup', 'doors-down.json');
+      let state: DoorsDownState = EMPTY_DOORS_DOWN;
+      try {
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DoorsDownState>;
+        state = { downSince: typeof raw.downSince === 'number' ? raw.downSince : null, counted: raw.counted === true, episodes: Array.isArray(raw.episodes) ? raw.episodes.filter((t): t is number => typeof t === 'number') : [] };
+      } catch { /* @silent-fallback-ok — no file yet means no outage has been seen */ }
+      const next = noteDoorsSample(state, deps.everyDoorDown(), deps.now?.() ?? Date.now());
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(next.state));
+      if (next.problem) handle.recordProblem('provider-exhausted', 'pool');
+    } catch (err) { // @silent-fallback-ok — reported; a problem signal never breaks the regular check
+      report('Check whether every AI provider is out', err, 'This check is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    }
+  };
+  // `provider-exhausted` with no address (spec, "With every door down"): the yes page can't be reached, so an
+  // address comes first. Once per problem, and only while Tailscale is unanswered, the person gets Tailscale with
+  // an owner-only Yes button (the first list's address-service button); the problem itself stays waiting and asks
+  // with its yes link once there is an address. Not a re-offer of Tailscale, so it never touches a no.
+  const addressFirstFile = (): string => path.join(deps.stateDir, 'state', 'recommended-service-setup', 'address-first.json');
+  const maybeAddressFirst = async (rows: readonly ReofferRow[], facts: ReofferFacts, nowMs: number): Promise<void> => {
+    if (!deps.sendOfferList) return;
+    const tailscale = catalog.find((r) => r.id === 'tailscale');
+    if (!tailscale?.wayIn || !isServiceAvailable(tailscale) || deps.ledger()?.effective('tailscale').choice !== 'unset') return;
+    let sent: string[] = [];
+    try { const raw: unknown = JSON.parse(fs.readFileSync(addressFirstFile(), 'utf8')); if (Array.isArray(raw)) sent = raw.filter((x): x is string => typeof x === 'string'); } catch { /* @silent-fallback-ok — none sent yet */ }
+    const event = rows.find((r) => r.state === 'event' && r.kind === 'provider-exhausted' && !sent.includes(r.eventId) && eventBlock(r, rows, catalog, facts, nowMs) === null);
+    if (!event) return;
+    const nonce = newOfferNonce();
+    const text = [
+      PROBLEM_KINDS['provider-exhausted']!.why,
+      "A second AI subscription would fix that, but saying yes to it needs my yes page, and I don't have an address you can reach yet. So an address comes first.",
+      '',
+      `${tailscale.name}: ${tailscale.benefit}`,
+      `What leaves this machine: ${tailscale.dataLeaves}`,
+      `Cost: ${tailscale.cost}`,
+      `Account: ${tailscale.account}`,
+      '',
+      "Yes: the button below. It needs you, not me. Once my yes page can be reached, I'll send the link for the second subscription.",
+      "If you don't want it, there's nothing to do.",
+    ].join('\n');
+    let messageId: string | number | null = null;
+    try {
+      messageId = await deps.sendOfferList(text, [{ text: `Yes to ${tailscale.name}`, data: `rs:y:${nonce}` }]);
+    } catch (err) {
+      report('Offer an address first', err, 'It is tried again on the next check.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+      return;
+    }
+    if (messageId === null || messageId === undefined || messageId === '') return;
+    try {
+      taps.add([{ nonce, service: 'tailscale', action: 'yes', listId: `reoffer:${event.eventId}`, expiresAt: nowMs + OFFER_TAP_TTL_MS }]);
+      fs.mkdirSync(path.dirname(addressFirstFile()), { recursive: true });
+      fs.writeFileSync(addressFirstFile(), JSON.stringify([...sent, event.eventId].slice(-20)));
+    } catch (err) {
+      report('Record the address-first message', err, 'The button may answer "expired"; one repeat of the message is possible.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    }
+  };
   let lastReofferAttemptAt = 0;
   let reoffering = false;
   const maybeReoffer = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
@@ -738,7 +838,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
           return ats.length ? Math.max(...ats) : null;
         },
       };
-      const decision = nextReoffer(rows, catalog, facts, nowMs);
+      // A second AI subscription is said yes to on the confirm page, which needs an address. With none, that
+      // problem waits (it stays fresh for 30 days) rather than sending a yes nobody can reach; others go ahead.
+      const noAddress = !deps.linkBase?.();
+      if (noAddress) await maybeAddressFirst(rows, facts, nowMs);
+      const decision = nextReoffer(rows, catalog, facts, nowMs, { hold: (r) => noAddress && r.kind === 'provider-exhausted' });
       if (decision.action === 'none') return;
       lastReofferAttemptAt = nowMs;
       let pending: ReofferRow;
@@ -777,6 +881,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     await reconcile();
     admitExistingOwner();
     bootChecksOnce();
+    sampleDoors();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
     if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());

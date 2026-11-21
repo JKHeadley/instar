@@ -12,6 +12,8 @@ A third problem: when the agent is restored from a snapshot kept on its own mach
 
 A fourth problem: the agent's web address (the link you use from your phone) going down three times in one day without fixing itself. If you said no to Tailscale, it asks about Tailscale once more. If Tailscale is already set up, or was already asked about for this, it asks about a Cloudflare fixed address instead.
 
+A fifth problem: every AI provider the agent uses being out (out of quota or signed out) for more than half an hour, twice in a week. Then it asks once more about a second AI subscription. The hard part is what happens on a yes, because with every provider out the agent can't think, and normal setup needs an AI. So the server carries out that yes by fixed steps: it installs Codex if needed, sends the person Codex's one-tap sign-in link and code, waits up to 15 minutes, then switches Codex on and checks it. Claude's sign-in needs a code pasted back, which nothing can read without an AI, so that one waits until a provider is back. If there's no web address for the yes page yet, the agent first offers Tailscale (which gives it a private address) with a Yes button right in the chat, since that needs no page. Tailscale is also set up by fixed steps: on a Mac it installs it without administrator rights and sends Tailscale's own sign-in link. Once the yes page can be reached, the second-subscription question follows.
+
 ## The rules, all in code
 
 - Only a no, or an offer the person never answered, can be asked about again. The problem must have happened after that no.

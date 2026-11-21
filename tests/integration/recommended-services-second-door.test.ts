@@ -14,7 +14,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG, type CatalogRow } from '../../src/recommended/catalog.js';
 import { readSetupStates } from '../../src/recommended/setupState.js';
-import { registerRecommendedServiceRoutes } from '../../src/server/recommendedServiceRoutes.js';
+import { type RecommendedServiceRouteDeps, registerRecommendedServiceRoutes } from '../../src/server/recommendedServiceRoutes.js';
 import { withDoor, withoutDoor, type AiDoorSurface } from '../../src/recommended/aiDoors.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -42,7 +42,7 @@ describe('a second AI subscription through the routes', () => {
     enable: (d) => { const next = withDoor(enabled, d); if (!next) return false; enabled = next; added.push(d); return true; },
     disable: (d) => { if (!added.includes(d)) return false; enabled = withoutDoor(enabled, d); added = added.filter((x) => x !== d); return true; },
   });
-  const app = () => {
+  const app = (over: Partial<RecommendedServiceRouteDeps> = {}) => {
     const a = express();
     a.use(express.json());
     const router = express.Router();
@@ -54,6 +54,7 @@ describe('a second AI subscription through the routes', () => {
       notifyStuck: async () => true, clearStuck: () => undefined, tellOwner: told,
       readSecret: () => null, writeSecret: () => undefined, deleteSecret: () => undefined,
       aiDoors: surface(),
+      ...over,
     });
     a.use(router);
     return a;
@@ -106,5 +107,38 @@ describe('a second AI subscription through the routes', () => {
     await say(a, 'no', true);
     await vi.waitFor(() => expect(readSetupStates(dir)['second-ai-door']?.stopped).toBeTruthy());
     expect(enabled).toEqual(['claude-code', 'codex-cli']);
+  });
+
+  it('every AI door down: a yes is carried out by fixed steps with no setup session, then checked', async () => {
+    const offers: string[] = [];
+    let ran = 0;
+    const a = app({
+      everyDoorDown: () => true,
+      sendOfferList: async (text) => { offers.push(text); return 77; },
+      noModelSetup: (service, io) => {
+        if (service !== 'second-ai-door') return null;
+        ran += 1;
+        return (async () => {
+          io.tell('To finish adding Codex (ChatGPT), open this link: https://auth.example/device');
+          codexSigned = true;
+          enabled = [...enabled, 'codex-cli'];
+          return { result: 'pass' as const, detail: 'signed in' };
+        })();
+      },
+    });
+    expect((await say(a, 'yes')).status).toBe(200);
+    await vi.waitFor(() => expect(readSetupStates(dir)['second-ai-door']?.verified?.result).toBe('pass'));
+    expect(ran).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(offers[0]).toContain('https://auth.example/device');
+    expect(readSetupStates(dir)['second-ai-door']?.sessionName).toBeUndefined();
+  });
+
+  it('with a door up, the yes still goes to a setup session as before', async () => {
+    let ran = 0;
+    const a = app({ everyDoorDown: () => false, noModelSetup: () => { ran += 1; return null; } });
+    await say(a, 'yes');
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(ran).toBe(0);
   });
 });
