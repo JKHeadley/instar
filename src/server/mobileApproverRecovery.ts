@@ -18,11 +18,11 @@ import { ownerRecordEntryId, verifyEntrySignature, type OwnerRecordEntry } from 
 import { approverClaimEnv, ownerRecordPeersMissingGuard } from '../core/ownerRecordWiring.js';
 import {
   allFactsAfter, approvalSinceStart, arrivalDecision, endReason, endStops, finishRead, ingestPeerFacts, isReady, isSettled, noteOwnerKeys, noticeDue, onFirstSight, readRecovery, recordArrival, recordStop, recoveryForStopNonceHash,
-  recoveryFacts, writeRecovery, RECOVERY_WAIT_MS, STOP_KEY_MIN_AGE_MS, type HomeRecovery,
+  recoveryFacts, writeRecovery, RECOVERY_WAIT_MS, type ApproverRecoveryFacts, STOP_KEY_MIN_AGE_MS, type HomeRecovery,
 } from '../core/approverRecovery.js';
 import { activeOwnerPhone } from './mobileConsoleTicket.js';
 import { heldPresenceKeys, proveCandidatePresenceKey, readApproverState, retireApprovalKey, retiredKeyHashes, setRecoveredKeyCheck, verifyApproverPresence } from './mobileApprover.js';
-import { consumeWaitingRequest, findWaitingRequest, waitingRequestById } from './mobileApproverGrant.js';
+import { consumeWaitingRequest, findWaitingRequest, waitingRequestById, waitingRequestKeysFor } from './mobileApproverGrant.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 
 const GUARD = 'approver-recovery';
@@ -359,6 +359,8 @@ export function mountApproverRecoveryRoutes(router: Router, svc: MobilePairingSe
     const h = f.home;
     const d = deviceId ? svc.devices.get(deviceId) : null;
     if (!h || !deviceId || !d || deviceId === h.targetDeviceId || !activeOwnerPhone(svc, deviceId) || !d.approvedAt || Date.parse(d.approvedAt) >= h.startedAt) { res.status(403).json({ error: 'not-allowed' }); return; }
+    // The device says which recovery it saw; a stale or other recovery records nothing.
+    if (String(((req.body ?? {}) as Record<string, unknown>).recoveryId ?? '') !== h.recoveryId) { res.status(409).json({ error: 'recovery-changed', detail: 'That recovery has ended or another one started. Refresh.' }); return; }
     if (!(h.seenBy ?? []).some((s) => s.deviceId === deviceId)) writeRecovery(stateDir, { ...f, home: { ...h, seenBy: [...(h.seenBy ?? []), { deviceId, at: now() }] } });
     res.json({ ok: true });
   });
@@ -436,7 +438,8 @@ export function mountApproverRecoveryRoutes(router: Router, svc: MobilePairingSe
     if (!shown || typeof shown !== 'object' || ownerRecordEntryId({ ...shown, sig: '' } as OwnerRecordEntry) !== d.id) { res.status(400).json({ error: 'entry-changed' }); return; }
     const env = approverClaimEnv()!;
     const full = { ...d.entry, sig: String(body.sig ?? '') } as OwnerRecordEntry;
-    if (!verifyEntrySignature(full, env.agentId, h.presenceKey, 'p256')) { res.status(401).json({ error: 'presence-invalid' }); return; }
+    if (!verifyEntrySignature(full, env.agentId, h.presenceKey, 'p256')) { res.status(409).json({ error: 'presence-invalid', detail: 'That approval signature did not match the new device\'s approval key. Nothing was changed.' }); return; } // 409, not 401: 401 means the device's own request signature was refused
+    // E2E-PAIRING: EXEMPT — a status change and a body check on existing routes, pinned by the 3d recovery-flow unit tests; the end-to-end run needs an owner chat and is driven on a throwaway with the stand-in owner chat (identity card wc_491e135547ea8388).
     const me = selfId()!;
     // The second read. A stop found now leaves nothing in any record: the draft is discarded.
     const read = finishRead(stateDir, { recoveryId: h.recoveryId, startedAt: h.startedAt, candidateDeviceId: h.targetDeviceId, machines: h.machinesAtStart, selfMachineId: me, now: now(), selfLastPresence: readApproverState(stateDir).lastPresence ?? null, registered: registeredNow() });
@@ -453,11 +456,22 @@ export function mountApproverRecoveryRoutes(router: Router, svc: MobilePairingSe
   });
 }
 
+/**
+ * A recovery started on another computer, in the same app-facing shape as one started here. The device id differs
+ * per machine, so "is this me" is answered by the frozen key hash against the keys this device holds or has asked
+ * with here. Internal fields (counted keys, Stop nonce hashes, machines) are not passed to phones.
+ */
+function peerRecoveryFor(svc: MobilePairingService, deviceId: string, x: NonNullable<ApproverRecoveryFacts['recovery']> | null): Record<string, unknown> | null {
+  if (!x) return null;
+  const mine = [...heldPresenceKeys(svc).filter((k) => k.deviceId === deviceId).map((k) => k.key), ...waitingRequestKeysFor(deviceId)].map((k) => keyHashOf(k));
+  return { recoveryId: x.recoveryId, startedAt: x.startedAt, state: x.state, targetName: x.targetName, targetIsYou: mine.includes(x.keyHash), endsBy: x.startedAt + RECOVERY_WAIT_MS, elsewhere: true };
+}
+
 /** What the apps show (merged into GET /mobile/approvers). */
 export function recoveryStatusFor(svc: MobilePairingService, deviceId: string): Record<string, unknown> | null {
   const f = readRecovery(svc.deps.stateDir);
   const h = f.home;
   const r = h && (h.state === 'waiting' || h.state === 'ready' || h.state === 'finished') ? { recoveryId: h.recoveryId, startedAt: h.startedAt, state: h.state, targetName: h.targetName, targetIsYou: h.targetDeviceId === deviceId, seen: (h.seenBy ?? []).length > 0, endsBy: h.startedAt + RECOVERY_WAIT_MS }
-    : Object.values(f.peers).map((p) => p.facts.recovery).find((x) => x && (x.state === 'waiting' || x.state === 'ready'));
+    : peerRecoveryFor(svc, deviceId, Object.values(f.peers).map((p) => p.facts.recovery).find((x) => x && (x.state === 'waiting' || x.state === 'ready')) ?? null);
   return r ? (r as Record<string, unknown>) : null;
 }

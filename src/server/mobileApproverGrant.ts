@@ -47,6 +47,8 @@ export function findWaitingRequest(matchCode: string): { requestId: string; devi
 }
 /** Piece 3d: a recovery started for this request consumes it (the recovery froze the device and key). */
 export function consumeWaitingRequest(requestId: string): void { asks.delete(requestId); }
+/** Piece 3d: the presence keys this device has asked with here (to match a recovery started on another machine). */
+export function waitingRequestKeysFor(deviceId: string): string[] { prune(Date.now()); return [...asks.values()].filter((a) => a.deviceId === deviceId).map((a) => a.presenceKey); }
 export function waitingRequestById(requestId: string): { deviceId: string; presenceKey: string } | null {
   const a = asks.get(requestId);
   return a ? { deviceId: a.deviceId, presenceKey: a.presenceKey } : null;

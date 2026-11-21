@@ -154,3 +154,20 @@ Record of all rounds: `.instar/state/identity-build-144636/reviews/p3d-second-pa
 Replayed onto the refreshed piece 3a with no conflicts. One test fix: the recovery-flow test pinned its fake clock
 to 2026-11-20 while the first-approver code store reads the real clock, so the code read as expired once that date
 passed. The test now starts the fake clock at the real time. No source change.
+
+## Addendum: app contract review (2026-11-21)
+
+From the Apple session's comparison of the app with the server contract:
+
+- `POST /mobile/approver/recovery/finish/sign` answers 409 `presence-invalid` for a bad approval signature, not
+  401. The app reads 401 as its own device signature being refused and re-pairs. This matches 3a's sign routes.
+- `POST /mobile/approver/recovery/seen` now checks the `recoveryId` the device names, as its comment always said.
+  A stale or different id answers 409 `recovery-changed` and records nothing.
+- `GET /mobile/approvers` gives a recovery started on another computer the same app-facing shape as one started
+  here: `recoveryId, startedAt, state, targetName, targetIsYou, endsBy`, plus `elsewhere: true`. Device ids differ
+  per machine, so `targetIsYou` compares the recovery's frozen key hash with the keys this device holds or has
+  asked with on this machine. The peer's internal fields (counted keys, Stop nonce hashes, machines, the other
+  machine's device id) no longer reach phones.
+
+Tests: three new cases in `tests/unit/identity-piece3d-recovery-flow.test.ts`; every 3a/3d unit test and 29
+approver, pairing and team integration and e2e files pass.

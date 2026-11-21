@@ -16,8 +16,9 @@ import { presenceEnrollMessage } from '../../src/server/mobileConsoleTicket.js';
 import { mayApprove, migrateApprovers, resetApproverStateCacheForTests, verifyApproverPresence } from '../../src/server/mobileApprover.js';
 import { resetApproverClaimForTests } from '../../src/server/mobileApproverClaim.js';
 import { resetApproverGrantForTests } from '../../src/server/mobileApproverGrant.js';
-import { approverRecoveryTap, approverResetCommand, recoveryHooksFor, recoveryTick, resetApproverRecoveryForTests, setRecoveryChat } from '../../src/server/mobileApproverRecovery.js';
-import { resetRecoveryCacheForTests } from '../../src/core/approverRecovery.js';
+import { approverRecoveryTap, approverResetCommand, recoveryHooksFor, recoveryStatusFor, recoveryTick, resetApproverRecoveryForTests, setRecoveryChat } from '../../src/server/mobileApproverRecovery.js';
+import { ingestPeerFacts, resetRecoveryCacheForTests } from '../../src/core/approverRecovery.js';
+import { keyHashOf } from '../../src/core/MobileDeviceKeys.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { wireOwnerRecordStore, resetOwnerRecordWiringForTests, setOwnerRecordRecoveryHooks } from '../../src/core/ownerRecordWiring.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
@@ -93,6 +94,9 @@ describe('recovery through the private chat (piece 3d)', () => {
     const conf = await post(c.app, b, '/mobile/approver/recovery/finish/confirm', { code: codeIn(c.dms.at(-1)!.text) });
     expect(conf.status, JSON.stringify(conf.body)).toBe(200);
     expect(conf.body.entry.body.via).toBe('recovered');
+    // A wrong approval signature is 409, never 401 (401 means the device's own request signature was refused).
+    const bad = await post(c.app, b, '/mobile/approver/recovery/finish/sign', { entry: conf.body.entry, sig: makeDevice().sign(conf.body.sign) });
+    expect([bad.status, bad.body.error]).toEqual([409, 'presence-invalid']);
     const done = await post(c.app, b, '/mobile/approver/recovery/finish/sign', { entry: conf.body.entry, sig: b.presence.sign(conf.body.sign) });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(mayApprove(c.svc, b.id)).toBe(true); // a lone agent: settled at once
@@ -119,6 +123,36 @@ describe('recovery through the private chat (piece 3d)', () => {
     const fin = await post(c.app, b, '/mobile/approver/recovery/finish', {});
     expect(fin.body.error).toBe('not-ready');
     expect(mayApprove(c.svc, b.id)).toBe(false);
+  });
+
+  it('seen records only the recovery the device names', async () => {
+    const c = setup();
+    const a = c.pair(); await first(c, a);
+    const b = c.pair();
+    await askAndStart(c, b);
+    const st = recoveryStatusFor(c.svc, a.id)!;
+    expect(st.targetIsYou).toBe(false);
+    const stale = await post(c.app, a, '/mobile/approver/recovery/seen', { recoveryId: 'not-this-one' });
+    expect([stale.status, stale.body.error]).toEqual([409, 'recovery-changed']);
+    expect(recoveryStatusFor(c.svc, a.id)!.seen).toBe(false);
+    const ok = await post(c.app, a, '/mobile/approver/recovery/seen', { recoveryId: st.recoveryId });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(recoveryStatusFor(c.svc, a.id)!.seen).toBe(true);
+    expect(recoveryStatusFor(c.svc, b.id)!.targetIsYou).toBe(true);
+  });
+
+  it('a recovery started on another computer: "is this me" by key, and no internal fields reach the phone', () => {
+    const c = setup();
+    const p = c.pair();
+    const other = c.pair();
+    c.svc.devices.setPresenceKey(p.id, p.presence.publicKey);
+    const rec = { recoveryId: 'r-peer', startedAt: Date.now(), state: 'waiting' as const, notices: [null, null, null], targetName: 'New phone', machinesAtStart: ['m_peer', 'm_self'],
+      targetDeviceId: 'device-id-on-the-other-machine', keyHash: keyHashOf(p.presence.publicKey), home: 'm_peer', countedKeys: [{ keyId: 'k1', publicKey: 'pk' }], stopNonceHashes: ['h1'] };
+    ingestPeerFacts(c.dir, 'm_peer', { v: 1, now: Date.now(), recovery: rec, stops: [], lastPresence: null, acceptedRecoveries: [] }, Date.now(), ['m_peer', 'm_self']);
+    const mine = recoveryStatusFor(c.svc, p.id)!;
+    expect(mine).toMatchObject({ recoveryId: 'r-peer', targetIsYou: true, elsewhere: true, targetName: 'New phone' });
+    expect(Object.keys(mine).sort()).toEqual(['elsewhere', 'endsBy', 'recoveryId', 'startedAt', 'state', 'targetIsYou', 'targetName']);
+    expect(recoveryStatusFor(c.svc, other.id)!.targetIsYou).toBe(false);
   });
 
   it('the bare command explains; a retired key, or no enrolment, refuses', () => {
