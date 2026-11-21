@@ -161,3 +161,7 @@ GitHub's unit shard found that `GET /work-board/cards/:id` answered 500 when the
 ## Follow-up commit (docs wording aligned with main, 2026-11-21)
 
 Main now carries the outage fix's documentation for the `gemini-payg-reconcile` default job. This branch's own wording of the same two entries would have conflicted, so the routing-spend page and the default-jobs table are restored to main's exact text. Documentation only; no runtime change.
+
+## Follow-up commit (silent-fallback ratchet, 2026-11-21)
+
+Local Verify failed `tests/unit/no-silent-fallbacks.test.ts` at 495 against its baseline of 494. No new catch was added: the ratchet reads the 20 lines after each catch, and `attachWorkBoardRequestGate` had been placed directly after the existing catch in `requestSupervisedRestart`, changing what that window saw. The method now sits just above `requestSupervisedRestart`, so the existing catch reads exactly as it does on main and the count is back to 494. A move only; no behaviour change.

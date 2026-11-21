@@ -9693,43 +9693,6 @@ export class AgentServer {
   }
 
   /**
-   * Initiate the server's EXISTING supervised restart — the same
-   * `state/restart-requested.json` flag the auto-updater writes, which the
-   * supervisor (launchd keepalive) and the ForegroundRestartWatcher already act
-   * on. Deliberately NO new restart machinery
-   * (docs/specs/money-layer-operator-enable-surface.md §4).
-   *
-   * Returns FALSE when the request could not be written, so the caller answers
-   * `503` naming the reason and leaves the state unchanged rather than
-   * reporting a restart that will never happen.
-   */
-  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
-    try {
-      const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
-      fs.mkdirSync(path.dirname(flagPath), { recursive: true });
-      const data = {
-        requestedAt: new Date().toISOString(),
-        requestedBy,
-        reason,
-        plannedRestart: true, // maintenance, not a crash — the supervisor reads this
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-        pid: process.pid,
-      };
-      const tmp = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, flagPath);
-      console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
-      return true;
-    } catch (err) {
-      console.error(`[instar] supervised restart request could not be written: ${String(err)}`);
-      return false;
-    }
-  }
-
-  /**
-   * Start the HTTP server.
-   */
-  /**
    * agent-work-cards-default §3: the request-to-card gate joins the Work Board runtime to the commitments, the durable
    * message rows (Telegram log, app conversation events), the device registry and the team record. Every input the gate
    * reads is a recorded fact on THIS machine; absent pieces leave the gate inert (a commitment then reads
@@ -9803,6 +9766,43 @@ export class AgentServer {
     });
   }
 
+  /**
+   * Initiate the server's EXISTING supervised restart — the same
+   * `state/restart-requested.json` flag the auto-updater writes, which the
+   * supervisor (launchd keepalive) and the ForegroundRestartWatcher already act
+   * on. Deliberately NO new restart machinery
+   * (docs/specs/money-layer-operator-enable-surface.md §4).
+   *
+   * Returns FALSE when the request could not be written, so the caller answers
+   * `503` naming the reason and leaves the state unchanged rather than
+   * reporting a restart that will never happen.
+   */
+  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
+    try {
+      const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
+      fs.mkdirSync(path.dirname(flagPath), { recursive: true });
+      const data = {
+        requestedAt: new Date().toISOString(),
+        requestedBy,
+        reason,
+        plannedRestart: true, // maintenance, not a crash — the supervisor reads this
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        pid: process.pid,
+      };
+      const tmp = `${flagPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fs.renameSync(tmp, flagPath);
+      console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
+      return true;
+    } catch (err) {
+      console.error(`[instar] supervised restart request could not be written: ${String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Start the HTTP server.
+   */
   async start(): Promise<void> {
     // Layer 2 boot self-check (spec § 2a "Runtime dependency"). Probes the
     // sqlite3 CLI + better-sqlite3 in-process driver and emits degradation
