@@ -179,12 +179,70 @@ export class ConversationUnreadService {
     return { key: input.readerParam, person: this.deps.personOfReaderKey(input.readerParam), viaDevice: false };
   }
 
+  /**
+   * Per phone: the earliest admission at which its baseline could not be set because the first marker
+   * catch-up had not settled (conversation-list-offthread-scan). Rule: in doubt a message counts as
+   * unread. The cutoff is ONLY an extra "unread from here" line, never a saved read position: in a
+   * conversation with no read marker, another person's message after it counts as unread even when
+   * the baseline set later is newer. The entry is dropped when syncing delivers this phone's baseline
+   * from another machine, and the map is capped (oldest entry first out). In memory only.
+   */
+  private admissionCutoff = new Map<string, { atMs: number; ownBaseline: boolean }>();
+  private static readonly ADMISSION_CUTOFF_MAX = 1_000;
+
   /** A phone seen here gets its baseline once the first catch-up has settled (§3.2, §3.3). Never for a Bearer read. */
   touchBaseline(reader: Reader): void {
-    if (!reader.viaDevice || this.store.hasBaseline(reader.key) || !this.store.catchUpSettled()) return;
+    if (!reader.viaDevice) return;
+    const cut = this.admissionCutoff.get(reader.key);
+    if (this.store.hasBaseline(reader.key)) {
+      // A baseline this machine did not set came by syncing: drop the extra line.
+      if (cut && !cut.ownBaseline) this.admissionCutoff.delete(reader.key);
+      return;
+    }
     const wall = this.now();
     const hlc = this.deps.hlcNowMs?.() ?? wall;
-    this.store.setBaseline(reader.key, Math.min(Number.isFinite(hlc) ? hlc : wall, wall));
+    const nowPos = Math.min(Number.isFinite(hlc) ? hlc : wall, wall);
+    if (!this.store.catchUpSettled()) {
+      if (!cut) {
+        if (this.admissionCutoff.size >= ConversationUnreadService.ADMISSION_CUTOFF_MAX) {
+          const oldest = this.admissionCutoff.keys().next().value;
+          if (oldest !== undefined) this.admissionCutoff.delete(oldest);
+        }
+        this.admissionCutoff.set(reader.key, { atMs: nowPos, ownBaseline: false });
+      }
+      return;
+    }
+    this.store.setBaseline(reader.key, nowPos); // the saved position, exactly as before
+    if (cut) cut.ownBaseline = true;
+  }
+
+  /** Test seam: how many phones have an admission cutoff. */
+  private admissionCutoffCount(): number { return this.admissionCutoff.size; }
+
+  /**
+   * Other people's messages after a phone's admission cutoff that the stored position does not
+   * already count (conversation-list-offthread-scan): only in a conversation with no read marker, and
+   * only up to the stored baseline (later ones are counted by the ordinary walk). null when the source
+   * is not available.
+   */
+  private extraUnread(reader: Reader, ref: string, lastActivity: string | null): { count: number; more: boolean } | null {
+    const cut = reader.viaDevice ? this.admissionCutoff.get(reader.key) : undefined;
+    if (!cut || this.store.markerFor(reader.key, ref)) return { count: 0, more: false };
+    // The old code's activity pre-check, against the cutoff: nothing newer, nothing read.
+    const act = atMsOf(lastActivity);
+    if (act === null || act < cut.atMs - PRE_FILTER_MARGIN_MS) return { count: 0, more: false };
+    const baseline = this.store.baselineFor(reader.key);
+    const src = this.sourceRows(ref, reader);
+    if (!src) return null;
+    let count = 0;
+    for (const r of src.rows) {
+      if (r.atMs <= cut.atMs) continue;
+      if (baseline !== null && r.atMs > baseline) continue; // counted by the ordinary walk
+      if (this.isOwn(reader, r.sender)) continue;
+      count++;
+      if (count >= 99) return { count, more: true };
+    }
+    return { count, more: false };
   }
 
   private mayRead(reader: Reader, ref: string): boolean {
@@ -216,11 +274,18 @@ export class ConversationUnreadService {
     const ref = this.refOfRow(row);
     if (!ref || !this.mayRead(reader, ref)) return null;
     const stored = this.store.storedPosition(reader.key, ref);
-    if (!stored) return { hasUnread: false, unreadCount: 0, readUpTo: null };
-    if (!this.preFilterHasUnread(reader, ref, row.lastActivity)) return { hasUnread: false, unreadCount: 0, readUpTo: stored };
+    const extra = this.extraUnread(reader, ref, row.lastActivity);
+    const withExtra = (f: UnreadFields): UnreadFields => {
+      if (!extra) return { ...f, hasUnread: true, unreadCount: undefined } as UnreadFields; // unknown: in doubt, unread
+      if (extra.count === 0 && !extra.more) return f;
+      const count = (f.unreadCount ?? 0) + extra.count;
+      return { ...f, hasUnread: true, ...(f.unreadCount !== undefined ? { unreadCount: count } : {}), ...(extra.more || f.unreadMore ? { unreadMore: true as const } : {}) };
+    };
+    if (!stored) return withExtra({ hasUnread: false, unreadCount: 0, readUpTo: null });
+    if (!this.preFilterHasUnread(reader, ref, row.lastActivity)) return withExtra({ hasUnread: false, unreadCount: 0, readUpTo: stored });
     const c = this.countFor(reader, ref);
-    if (!c) return { hasUnread: true, readUpTo: stored };
-    return { hasUnread: c.count > 0 || c.more, unreadCount: c.count, ...(c.more ? { unreadMore: true as const } : {}), readUpTo: c.effective ?? stored };
+    if (!c) return withExtra({ hasUnread: true, readUpTo: stored });
+    return withExtra({ hasUnread: c.count > 0 || c.more, unreadCount: c.count, ...(c.more ? { unreadMore: true as const } : {}), readUpTo: c.effective ?? stored });
   }
 
   /** The reader's effective position in a conversation, for the history divider (§3.5). */

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T14:39:23.539Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "e91debe0a9e62921b8073c1a57e6302f2e39cbd118c11317859fc34bd1f4c754",
+  "coveredFiles": [
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "docs/specs/conversation-list-offthread-scan.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/conversation-list-offthread-scan-alive.test.ts",
+    "tests/helpers/offthreadScanServer.ts",
+    "tests/integration/conversation-list-offthread-scan.test.ts",
+    "tests/unit/telegram-offthread-history-scan.test.ts",
+    "upgrades/next/conversation-list-offthread-scan.md",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive off-main-thread fill of the existing tail cache behind a live off switch; old read and trim unchanged; a revert fully undoes it.",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

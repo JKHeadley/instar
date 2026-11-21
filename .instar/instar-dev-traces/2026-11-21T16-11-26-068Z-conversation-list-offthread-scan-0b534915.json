@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T16:11:26.068Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "0eca453e8368d19f599d138ba0c090a0b4a4d92725753d250326f6188dbe9171",
+  "coveredFiles": [
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "docs/specs/conversation-list-offthread-scan.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/unit/telegram-offthread-history-scan.test.ts",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Chief of Staff option A: trim-follow removed; one wait budget per request, one tracked scan, final time check; per-request unfinished-line check; baseline moved only when a scan is awaited. Old read and trim unchanged.",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
