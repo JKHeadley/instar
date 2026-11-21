@@ -42,13 +42,12 @@ on:
 # avoidable waste for a footgun. Scoping by event means push runs supersede push
 # runs (the 126-stale-run problem) while a review run can never cancel them.
 #
-# KNOWN AND DELIBERATELY NOT FIXED HERE: a review event therefore still starts its
-# own run, so approving a pull request costs a duplicate 13-job run. Narrowing that
-# needs job-level `if:` on the heavy jobs, and a job skipped by `if:` reports as
-# SUCCESS to required status checks — which would let a review-triggered run paint a
-# pull request green without the tests having run on that commit. That is a safety
-# hole, so it is a separate, carefully-designed change rather than a line slipped in
-# alongside a capacity fix.
+# A review event still starts its own run. Since 2026-11-21 (the block below) the
+# heavy jobs skip on `pull_request_review` as well as `pull_request`, so that run is
+# the fast checks only, and a skipped job's "success" satisfies nothing: none of the
+# heavy jobs is a required status check (the main ruleset requires only
+# `instar/local-verify`), so a review-triggered run cannot paint a pull request green.
+#
 # PULL REQUESTS SKIP THE HEAVY JOBS (2026-11-21). Local Verify runs the full unit,
 # integration and e2e suite on our own machines before anything merges, and the
 # ruleset on main requires only `instar/local-verify`. Running the same suite here
@@ -80,7 +79,7 @@ jobs:
     name: Desktop Windows package
     runs-on: windows-latest
     # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 15
     steps:
@@ -172,7 +171,7 @@ jobs:
     name: Desktop Mac package
     runs-on: macos-latest
     # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 15
     steps:
@@ -451,7 +450,7 @@ jobs:
     name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 60
     strategy:
@@ -499,7 +498,7 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     # 50 was cancelling green-in-progress runs: main itself was cancelled at 50 min on
     # 2026-11-10 (run 42878286348), and the conversations release adds about 15 min of
@@ -530,7 +529,7 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on main, on dispatch, and before a release. See the note above `concurrency`.
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 70
     # Independent checkout and runner: start alongside unit shards. This

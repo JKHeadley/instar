@@ -21,7 +21,8 @@ On pull requests, GitHub now skips the heavy jobs: the eight unit test shards, t
 
 - **Nothing merges with less testing than before.** Local Verify already runs the whole suite on every pull request and is the only required check. GitHub's copy was a repeat, not an extra gate.
 - **Main is still tested on GitHub.** The full suite still runs on every merge to main, on GitHub's older Node versions too, so a problem that shows up only there is still caught, after the merge rather than before it.
-- **The merger does not wait on the skipped jobs.** The agent's merge step runs on the local floor, which reads the Local Verify record. Its older GitHub-floor path still lists the heavy jobs, so if that path is ever switched back on it would wait forever on a pull request; the switch to this change must stay paired with the local floor.
+- **Every merge path still works.** The agent's merge step reads the Local Verify record (the local floor). One caller, the feedback executor, always asked the merge script to wait for GitHub's checks first; that would have blocked every one of its merges once the heavy jobs stopped running on pull requests, so the merge script now honours the local floor for that caller too. If the floor is ever switched back to GitHub's checks, merges of pull requests are refused outright until the heavy jobs are restored there.
+- **A Node 20 or 22 regression can now reach npm first.** Our machines test on Node 24. GitHub tests Node 20 and 22 on main, but the publish workflow runs on the same push and does not wait for it, so such a regression would be published and then flagged, rather than flagged on the pull request. This is stated in the review so it is a known cost, not a surprise.
 - **One commit undoes it.** The change is a single condition on each heavy job plus a comment. Reverting the commit restores the old behaviour exactly.
 
 ## What ships when
