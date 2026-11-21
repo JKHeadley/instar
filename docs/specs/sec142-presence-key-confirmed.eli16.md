@@ -1,7 +1,9 @@
-# ELI16: your phone's Face ID key counts only after you confirm it (SEC-142)
+# ELI16: your phone's Face ID key is set when you pair it (SEC-142)
 
-Your phone keeps a special key that only works after Face ID. The agent uses it whenever it needs to know it's really you on your phone, for example to open the console without the PIN.
+Your phone keeps a special key that only works after Face ID. The agent uses it whenever it needs to know it's really you on your phone.
 
-Right now, the first such key a phone sends to your computer is simply accepted. If harmful software got onto the phone before the real app sent its key, it could send its own key first, and from then on it would pass every Face ID check on that computer.
+Right now the phone sends that key separately, some time after you pair it, and the first one to arrive is accepted. Only the Instar app itself can use your phone's keys, so the only thing that could send a fake one is harmful software running as the app. Software like that could also fake anything the app shows you, so no check inside the app can catch it.
 
-From now on, a new phone's Face ID key is confirmed by the same approval you already give when you pair the phone, so nothing extra is asked of you. For phones that are already paired, you check once: the app shows a short code made from its own key, the dashboard shows the code the computer has on record, and you tap Confirm if they match. If they don't match, the key on record isn't your phone's, and the dashboard helps you pair the phone again to remove it.
+What this change does: the app sends its Face ID key in the pairing request itself, so it is set by the same approval you already give when you pair, with no gap afterwards for anything to slip in, and no extra step for you. The agent also shows you when a key was set some other way.
+
+What it can't do: stop harmful software that is already inside the app when you pair. Only Apple and Google can prove a key came from the genuine app, using a feature called attestation. Whether to add that is a separate decision for Justin.
