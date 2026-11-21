@@ -7,6 +7,7 @@
  * description puts the state label first and is cut to GitHub's 140-char limit.
  */
 
+import { validFirstPartEvidence, type FirstPartEvidence } from './firstPartReport.js';
 import type { LaneTotals } from './laneReport.js';
 import { isBoundedFailedFileSet } from './failedFileDiagnosis.js';
 import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
@@ -76,6 +77,13 @@ export interface LocalVerifyRecord {
   /** Complete failed test-file set when a full PR run failed in 1–3 inventoried files. */
   failedFiles?: string[];
   /**
+   * The files of `failedFiles` whose re-run alone was cut off because another lane had already
+   * failed: they failed once in their lane and were never shown to fail again. The likely-failing
+   * list and a change's previous failures leave them out (spec local-verify-likely-failing-first.md B).
+   * Present only when there is at least one.
+   */
+  rerunCutOff?: string[];
+  /**
    * Present only on a record a PEER verifier produced for a coordinator's hand-off
    * (spec local-verify-capacity.md Part D): the attempt it answers, the coordinator that
    * dispatched it and that coordinator's lease epoch at dispatch. The coordinator imports
@@ -84,6 +92,7 @@ export interface LocalVerifyRecord {
   attempt?: PeerAttemptRef;
   /** Diagnostic or early-red preflight evidence, validated before journal/peer import. */
   preflight?: PreflightEvidence;
+  firstPart?: FirstPartEvidence;
   /**
    * Present only when a borrowed helper took part in this verify (spec
    * local-verify-borrowed-slices-count.md, F "The record"): which helper, whether the verify was
@@ -241,6 +250,11 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const REF = /^(?!-)(?!\/)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[^\s~^:?*[\\\x00-\x1f\x7f]+(?<!\/)(?<!\.lock)(?<!\.)$/;
 const STATUS_LIMIT = 140;
 
+/** A branch name a record may carry as `baseRefName` (the same check `validateRecord` applies). */
+export function isValidBaseRef(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 255 && REF.test(v);
+}
+
 export function isValidPr(pr: unknown): pr is number {
   return typeof pr === 'number' && Number.isSafeInteger(pr) && pr > 0;
 }
@@ -281,6 +295,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   if (!isIso(x.finishedAt)) errors.push('finishedAt');
   if (isIso(x.startedAt) && isIso(x.finishedAt) && Date.parse(x.finishedAt) < Date.parse(x.startedAt)) errors.push('finishedAt<startedAt');
   if (x.outcome !== 'success' && x.outcome !== 'failure' && x.outcome !== 'error') errors.push('outcome');
+  if (x.firstPart !== undefined && (x.kind === 'main' || !validFirstPartEvidence(x.firstPart))) errors.push('firstPart');
   if (x.errorStep !== undefined && typeof x.errorStep !== 'string') errors.push('errorStep');
   for (const k of ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'] as const) {
     if (typeof x[k] !== 'boolean') errors.push(k);
@@ -295,6 +310,11 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   }
   if (x.failedFiles !== undefined) {
     if (!isBoundedFailedFileSet(x.failedFiles) || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
+  }
+  if (x.rerunCutOff !== undefined) {
+    const named = Array.isArray(x.failedFiles) ? x.failedFiles as unknown[] : [];
+    if (!Array.isArray(x.rerunCutOff) || x.rerunCutOff.length < 1 || x.rerunCutOff.length > named.length
+      || new Set(x.rerunCutOff).size !== x.rerunCutOff.length || !x.rerunCutOff.every((f) => typeof f === 'string' && named.includes(f))) errors.push('rerunCutOff');
   }
   if (x.independentReview !== undefined) {
     const ir = x.independentReview as Record<string, unknown> | null;

@@ -132,8 +132,8 @@ export function lineIdFor(recordId: string): string {
 
 export function newCardId(): string { return `wc_${randomBytes(8).toString('hex')}`; }
 
-const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror'] as const;
-const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror'] as const;
+const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror', 'brief'] as const;
+const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
 
 /**
  * The Needs-you item keys a card may say it is about (work-board-cards-appear §3): sources whose keys are
@@ -277,12 +277,15 @@ export class WorkBoardService {
    * closed, newest first, with who said it and a pointer to the card and its tap (rule 121: rechecked on every
    * read, so a reopened card's reason drops out). The agent reads these before it raises a new card.
    */
-  dismissalLessons(limit = 50): Array<{ cardId: string; tapId: string; title: string; reason: string; by: By; at: string; conversationKey: string }> {
-    const out: Array<{ cardId: string; tapId: string; title: string; reason: string; by: By; at: string; conversationKey: string }> = [];
+  dismissalLessons(limit = 50): Array<{ cardId: string; tapId: string; title: string; currentTitle?: string; titleUnconfirmed?: true; reason: string; by: By; at: string; conversationKey: string }> {
+    const out: Array<{ cardId: string; tapId: string; title: string; currentTitle?: string; titleUnconfirmed?: true; reason: string; by: By; at: string; conversationKey: string }> = [];
     for (const [id, v] of this.views) {
       const c = v.card.closeout;
       if (!c || c.as !== 'not-important' || v.card.redacted) continue;
-      out.push({ cardId: id, tapId: c.tapId, title: v.card.title, reason: c.note, by: c.by, at: c.at, conversationKey: v.card.conversationKey });
+      // SEC-122: the reason belongs to the title the person closed (matched by the hash their screen sent when
+      // there is one). A card retitled since keeps that title here with its current title beside it; a close
+      // whose title could not be confirmed says so.
+      out.push({ cardId: id, tapId: c.tapId, title: c.title, ...(v.card.title !== c.title ? { currentTitle: v.card.title } : {}), ...(c.titleUnconfirmed ? { titleUnconfirmed: true as const } : {}), reason: c.note, by: c.by, at: c.at, conversationKey: v.card.conversationKey });
     }
     out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
     return out.slice(0, Math.max(0, limit));
@@ -362,6 +365,11 @@ export class WorkBoardService {
     const src = fields.source as Record<string, unknown> | undefined;
     if (src) { push('source.conversationKey', src.conversationKey); push('source.messageId', src.messageId); }
     push('projectKey', fields.projectKey);
+    const brief = fields.brief as Record<string, unknown> | null | undefined;
+    if (brief && typeof brief === 'object') {
+      push('brief.ask', brief.ask); push('brief.goal', brief.goal); push('brief.chiefSaid', brief.chiefSaid);
+      if (Array.isArray(brief.checks)) (brief.checks as Array<Record<string, unknown>>).forEach((c, i) => push(`brief.checks[${i}].text`, c?.text));
+    }
     if (Array.isArray(fields.attachmentIds)) (fields.attachmentIds as unknown[]).forEach((a, i) => push(`attachmentIds[${i}]`, a));
     return out;
   }
@@ -491,6 +499,7 @@ export class WorkBoardService {
     const server = p.kind === 'agent' && p.server === true;
     if (card && isServerOwnedCard(card) && !server) return refuse(409, 'server-owned-card', { message: 'The Chief of Staff writes this card itself. Act on the project in its own conversation; the card follows.' });
     if (fields.mirror !== undefined && !server) return refuse(400, 'mirror-not-allowed');
+    if (fields.brief !== undefined && !server) return refuse(400, 'brief-not-allowed');
     if (fields.covers !== undefined) {
       if (!Array.isArray(fields.covers)) return refuse(400, 'covers-not-allowed');
       const allowed = server ? [...COVERABLE_PREFIXES, ...SERVER_COVERABLE_PREFIXES] : COVERABLE_PREFIXES;

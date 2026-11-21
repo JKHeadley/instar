@@ -62,6 +62,10 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // single-machine fold signing key (`.local-key.pem`) and the lock and
   // monotonic floor files a bearer edit could lower or forge.
   'state/fold-leases/',
+  // The owner record (identity-security piece 2b): signed entries whose files a bearer edit could swap or
+  // trim. Never served, backed up, committed or git-synced: machines exchange it only over signed mesh
+  // commands, and each judges every entry itself (owner-authentication §6).
+  'state/owner-record/',
   // Manifest-integrity signing secret (`.instar/state/.manifest-key`,
   // generated at init, 0600). Found by the §5.4 walk: a key the parent lists
   // never named.

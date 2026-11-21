@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-18T15:51:21.816Z",
+  "slug": "queued-signed-inbound-label",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 490,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AspInboundClassifier.ts",
+      "src/core/PendingInboundStore.ts",
+      "src/core/SessionRouter.ts",
+      "src/messaging/MessageProcessingLedger.ts",
+      "src/messaging/shared/signedInbound.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 436,
+    "deletedLines": 54
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

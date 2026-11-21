@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "conversation-source-cards",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T03:12:47.260Z",
+  "artifactPath": "upgrades/side-effects/conversation-source-cards.md",
+  "artifactSha256": "9d2bb6467e8fd5086ae5737fc2c46ec65ca6d0715a23c155238df61da8e2a796",
+  "coveredFiles": [
+    "dashboard/console/conversation-source-cards.js",
+    "dashboard/console/conversations.js",
+    "dashboard/console/work.js",
+    "src/core/workSourceCards.ts",
+    "src/data/awareness/work-card-sources.md",
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/work-board-alive.test.ts",
+    "tests/integration/work-board-routes.test.ts",
+    "tests/unit/console-conversations-dom.test.ts",
+    "tests/unit/console-source-cards.test.ts",
+    "tests/unit/console-work-model.test.ts",
+    "tests/unit/work-source-cards.test.ts",
+    "upgrades/eli16/conversation-source-cards.md",
+    "upgrades/next/conversation-source-cards.md",
+    "upgrades/side-effects/conversation-source-cards.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounded read-only increment in approved work-front-doors stage2b2, reusing existing owner board reads and card detail route; no new write or approval authority.",
+  "eli16Path": "upgrades/eli16/conversation-source-cards.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-source-cards.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

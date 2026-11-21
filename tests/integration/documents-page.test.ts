@@ -228,6 +228,30 @@ describe('document page', () => {
     expect(after.comments[0]).toMatchObject({ quote: 'ship the v' });
   });
 
+  it('page data places comments on the version being read: where it was made on its own version, never on unrelated words', async () => {
+    const s = setup();
+    const cookie = await openCookie(s);
+    const page = (await request(s.a).get(`/docs/${s.id}/page-data`).set('Cookie', cookie)).body;
+    const v1 = page.version.id as string;
+    const para = page.blocks[1];
+    const quote = 'the viewer on Friday';
+    const start = para.start + para.runs.map((r: { text: string }) => r.text).join('').indexOf(quote);
+    const salt = crypto.randomBytes(16).toString('hex');
+    const text = 'Is Friday realistic?';
+    const payload = { docId: s.id, commentId: crypto.randomUUID(), onVersion: v1, start, end: start + quote.length, bodyHash: blobHash(salt, text) };
+    expect((await request(s.a).post(`/docs/${s.id}/w/comment`).set(signedHeaders(s.owner, 'owner-phone', s.id, 'comment', payload)).send({ blobs: [{ salt, text }] })).status).toBe(201);
+    // Version 2 drops the sentence; an unrelated note happens to use the same words.
+    const bearer: Caller = { principal: { kind: 'bearer' }, actor: { type: 'agent', placeKey: 'owner-reach' }, access: {}, reader: { kind: 'owner' } };
+    s.service.revise(s.id, bearer, { markdown: '# Plan\n\nWe ship soon.\n\n## Notes\n\nDemo the viewer on Friday to the support team.\n' });
+    const latest = (await request(s.a).get(`/docs/${s.id}/page-data`).set('Cookie', cookie)).body;
+    expect(latest.version.latest).toBe(true);
+    expect(latest.comments[0]).toMatchObject({ quote, anchorState: 'orphaned', onVersion: v1, onVersionLabel: 1 });
+    expect(latest.comments[0].start).toBeUndefined();
+    const own = (await request(s.a).get(`/docs/${s.id}/page-data?version=${v1}`).set('Cookie', cookie)).body;
+    expect(own.version).toMatchObject({ id: v1, latest: false });
+    expect(own.comments[0]).toMatchObject({ quote, anchorState: 'ok', start, end: start + quote.length });
+  });
+
   it('exempts exactly the page shapes from the bearer gate', () => {
     const id = crypto.randomUUID();
     expect(DOC_PAGE_PATH('GET', `/docs/${id}`)).toBe(true);

@@ -5072,6 +5072,12 @@ export interface InstarConfig {
     toneTierDryRun?: boolean;
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
+    /**
+     * B26_WAITING_ASK_UNLINKED (docs/specs/waiting-on-you-links.md): a reply that refers to
+     * something the agent is waiting on the person for must carry the ask's link and a
+     * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
+     */
+    waitingAskLinks?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
@@ -5116,6 +5122,9 @@ export interface InstarConfig {
   dashboardPinGeneration?: string;
   /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
+    /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
+     *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
+    ownerRecord?: { enabled?: boolean };
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
       enabled?: boolean;

@@ -879,6 +879,27 @@ describe('coordinator — heartbeat for a planned restart', () => {
     expect(c.peer.runs()).toHaveLength(before);
   });
 
+  it('a stop of the server names each accepted peer attempt not yet imported in restart-interrupted-runs, and none once imported', async () => {
+    const rows = (audits: () => unknown[]) => (audits() as Array<Record<string, unknown>>).filter((e) => e.event === 'restart-interrupted-runs');
+    const a = await dispatched();
+    a.c.advance(11 * 60_000);
+    a.c.svc.shutdown();
+    expect(rows(a.audits)).toHaveLength(1);
+    expect(rows(a.audits)[0]).toMatchObject({
+      planned: null, bypassHolds: null,
+      localRuns: [expect.objectContaining({ pr: 1, ranMs: 11 * 60_000, finishedResult: 'none' })],
+      peerAttempts: [{ pr: 2, attemptId: a.req.attemptId, sentAgoMs: 11 * 60_000 }],
+      peerAttemptsTotal: 1,
+    });
+    // Imported before the stop: the attempt is no longer something a restart can cost.
+    const b = await dispatched();
+    b.c.peer.setResult(() => done(b.req));
+    b.c.advance(PEER_LIMITS.pollMs + 1);
+    await b.c.svc.tick();
+    b.c.svc.shutdown();
+    expect(rows(b.audits)[0]).toMatchObject({ peerAttempts: [], peerAttemptsTotal: 0 });
+  });
+
   it('audits the hold once per attempt per request, then why it ended', async () => {
     const { c, req, audits, requestRestart } = await dispatched();
     requestRestart();

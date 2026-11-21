@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "needs-one-list",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-19T02:24:43.928Z",
+  "artifactPath": "upgrades/side-effects/needs-one-list.md",
+  "artifactSha256": "927482198905518d0e2c43947458b6a1fc4ac9be1ec6fa8d6fb2d96fa64f6018",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-19T02-24-27-529Z-needs-one-list.json",
+    "dashboard/console/console.css",
+    "dashboard/console/needs-model.js",
+    "dashboard/console/needs-strip.js",
+    "docs/specs/work-board-cards-appear.eli16.md",
+    "docs/specs/work-board-cards-appear.md",
+    "src/data/awareness/needs-you-list.md",
+    "src/server/needsRoutes.ts",
+    "tests/e2e/needs-read-alive.test.ts",
+    "tests/unit/needs-read.test.ts",
+    "tests/unit/work-board-cards-appear.test.ts",
+    "upgrades/eli16/needs-one-list.md",
+    "upgrades/next/needs-one-list.md",
+    "upgrades/side-effects/needs-one-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-model join in the shared Needs-you model: a server-owned Chief of Staff card takes over its own cos: row; no new authority, no state, a revert restores today's behaviour exactly",
+  "eli16Path": "upgrades/eli16/needs-one-list.md",
+  "sideEffectsPath": "upgrades/side-effects/needs-one-list.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

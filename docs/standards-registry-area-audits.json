@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-19T03:22:00.000Z",
-      "auditRef": "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
-      "auditSha256": "6cf106db2d14c069d9f7931f98c1105ac33a23dfc0a3dc07ea6b4eb1a01b5e0c",
-      "areaSha256": "f282a347402598e1043c30bd9bd584b9b566b0d3e4a40b68a78884b7deee99e6",
+      "lastAuditedAt": "2026-11-19T09:47:49.000Z",
+      "auditRef": "docs/audits/waiting-ask-links-interaction-family-merge-2026-11-19.json",
+      "auditSha256": "5fbe42c7eff6018805ea9f689cdb953cbe4e120aa8eda95a376b1749d968e4c3",
+      "areaSha256": "610341e18c0a9f214ecf70f8ee172ed51abbf68b9cd82592c9e3f287806ed2ed",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13

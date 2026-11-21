@@ -354,9 +354,12 @@ describe('the pairing code page', () => {
 
   it('a wrong PIN shows the server’s words and no code', async () => {
     const h = boot();
-    h.answers['POST /dashboard/unlock'] = () => json(403, { error: 'Incorrect PIN', attemptsRemaining: 4 });
+    // identity-security-piece1c: the unlock route answers a wrong PIN with its words only (the legacy
+    // limiter's attemptsRemaining is gone; it is optional for every caller).
+    h.answers['POST /dashboard/unlock'] = () => json(403, { error: 'Incorrect PIN' });
     await unlock(h, '000000');
-    expect(text(h)).toContain('Incorrect PIN · 4 tries left');
+    expect(text(h)).toContain('Incorrect PIN');
+    expect(text(h)).not.toContain('tries left');
     expect(h.calls.some((c) => c.url === '/mobile/pairing-approvals')).toBe(false);
   });
 

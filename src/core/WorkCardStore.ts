@@ -48,7 +48,7 @@ export type WorkRecordType = typeof WORK_RECORD_TYPES[number];
 
 export const MATERIAL_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links'] as const;
 export type MaterialField = typeof MATERIAL_FIELDS[number];
-const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror'] as const;
+const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
 export type EditableField = typeof EDITABLE_FIELDS[number];
 
 export const PERMITTING_TAPS = ['approve', 'answer', 'confirm-done', 'unhold', 'retry', 'unarchive'] as const;
@@ -117,6 +117,18 @@ export type Carrier = 'agent' | { personKey: string };
 export type Principal = 'agent' | 'none' | { personKey: string };
 export type By = { kind: 'person'; personKey: string; proof: 'pin' | 'presence' } | { kind: 'agent' } | { kind: 'system' };
 export interface CardMirror { ref: string; hlc: HlcTimestamp; waitSince?: string; note?: string; waitRef?: string; cleared?: boolean }
+
+/** A done-when item's state as a card's brief shows it. */
+export const BRIEF_CHECK_STATUSES = ['passes', 'needs-you', 'unknown', 'fails'] as const;
+export type BriefCheckStatus = typeof BRIEF_CHECK_STATUSES[number];
+/**
+ * The structured, plain-text summary a server-owned card carries next to its prose `need` (a Chief of Staff wait
+ * card: what is asked, the goal, the done-when items with their state, the check's own words, when the wait
+ * started). Display only and NOT material: it is outside the material hash, so writing or changing it voids no
+ * approval, evidence or finish. Only the server's own writer sets it.
+ */
+export interface CardBrief { ask: string; goal?: string; checks?: Array<{ text: string; status: BriefCheckStatus }>; chiefSaid?: string; waitingSince?: string }
+export const BRIEF_MAX = { ask: 2000, goal: 8000, checks: 256, chiefSaid: 8000 } as const;
 
 const isStr = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
 const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_RE.test(v);
@@ -190,6 +202,27 @@ function vIdList(v: unknown, max = 256): string[] | null {
   return [...new Set(v as string[])].sort();
 }
 
+function vBrief(v: unknown): CardBrief | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const b = v as Record<string, unknown>;
+  if (!isStr(b.ask, BRIEF_MAX.ask)) return null;
+  const out: CardBrief = { ask: b.ask };
+  if (b.goal !== undefined) { if (!isStr(b.goal, BRIEF_MAX.goal)) return null; out.goal = b.goal; }
+  if (b.checks !== undefined) {
+    if (!Array.isArray(b.checks) || b.checks.length > BRIEF_MAX.checks) return null;
+    const checks: NonNullable<CardBrief['checks']> = [];
+    for (const raw of b.checks) {
+      const c = raw as Record<string, unknown> | null;
+      if (!c || typeof c !== 'object' || !isStr(c.text, SCHEMA_MAX.doneItemText) || !(BRIEF_CHECK_STATUSES as ReadonlyArray<string>).includes(c.status as string)) return null;
+      checks.push({ text: c.text, status: c.status as BriefCheckStatus });
+    }
+    out.checks = checks;
+  }
+  if (b.chiefSaid !== undefined) { if (!isStr(b.chiefSaid, BRIEF_MAX.chiefSaid)) return null; out.chiefSaid = b.chiefSaid; }
+  if (b.waitingSince !== undefined) { if (!isIso(b.waitingSince)) return null; out.waitingSince = b.waitingSince; }
+  return out;
+}
+
 /** Validates the editable-field subset present on a `created` / `edited` record. */
 function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
@@ -230,6 +263,11 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
       out.mirror = { ref: m.ref, hlc: { physical: h.physical, logical: h.logical, node: h.node }, ...(m.waitSince !== undefined ? { waitSince: m.waitSince } : {}), ...(m.note !== undefined ? { note: m.note } : {}), ...(m.waitRef !== undefined ? { waitRef: m.waitRef } : {}), ...(m.cleared === true ? { cleared: true } : {}) };
     } else out.mirror = null;
   }
+  if (has('brief')) {
+    // Display only (not material). Null clears it. An older machine drops the unknown field and keeps the record.
+    if (raw.brief === null) out.brief = null;
+    else { const b = vBrief(raw.brief); if (!b) return null; out.brief = b; }
+  }
   return out;
 }
 
@@ -238,7 +276,7 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
 const KNOWN_FIELDS = [
   'recordType', 'cardId', 'by', 'at',
   'title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'conversationKey',
-  'whyYou', 'covers', 'mirror',
+  'whyYou', 'covers', 'mirror', 'brief',
   'principal', 'question', 'supersedes', 'reason',
   'action', 'materialHash', 'questionId', 'answer', 'claimId', 'retryOf', 'names', 'titleHash', 'policy',
   'itemId', 'text', 'attachmentIds', 'reopens', 'evidenceIds',
@@ -452,10 +490,16 @@ export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-ap
 export interface QuestionState { id: string; text: string; options?: string[]; principal: Principal; state: 'open' | 'answered' | 'replaced'; replacedBy?: string; reason?: string; answer?: string; answeredBy?: string; at: string }
 export interface EvidenceState { id: string; itemId: string; text: string; attachmentIds?: string[]; materialHash: string; reopens: string[]; at: string; by: By; counts: boolean }
 export interface ClaimState { id: string; materialHash: string; reopens: string[]; evidenceIds: string[]; at: string; counts: boolean; confirmedBy?: string }
-export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; closeAs?: CloseAs; note?: string }
+export interface TapState { id: string; action: TapAction; by: By; at: string; hlc: HlcTimestamp; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; closeAs?: CloseAs; note?: string; titleHash?: string }
 
 /** The person's close in force (the newest archive tap still standing that carries a note). */
-export interface CloseoutState { as: CloseAs; note: string; by: By; at: string; tapId: string }
+/**
+ * `title`: the title the person closed (SEC-122). When the closing tap carries the hash of the title on
+ * the person's screen, it is the title that matches that hash; otherwise the fold's title at the tap.
+ * `titleUnconfirmed`: the tap carried no hash, or one that matches no title the card has had, so the
+ * title shown is the fold's and may not be what the person saw.
+ */
+export interface CloseoutState { as: CloseAs; note: string; by: By; at: string; tapId: string; title: string; titleUnconfirmed?: true }
 
 export interface CardFold {
   cardId: string;
@@ -472,6 +516,8 @@ export interface CardFold {
   covers: string[];
   /** The source record a server-owned card mirrors (§1 Fencing); null on every other card. */
   mirror: CardMirror | null;
+  /** A server-owned card's structured summary (display only, not material); null on every other card. */
+  brief: CardBrief | null;
   waitingOn: Principal;
   materialHash: string;
   lastWriter: Record<MaterialField, 'person' | 'agent'>;
@@ -547,7 +593,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const f: CardFold = {
     cardId, conversationKey: cardConversationKey(cardId), created: false, createdBy: null, createdAt: null,
     title: '', need: '', doneWhen: [], carrier: 'agent', outward: true, links: [], recommendation: null, due: null, projectKey: null, source: null,
-    whyYou: null, covers: [], mirror: null,
+    whyYou: null, covers: [], mirror: null, brief: null,
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
     evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
@@ -559,6 +605,10 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   let approveIdx = -1; let approveRec: TapState | null = null; let withdrawIdx = -1;
   const releasedHolds = new Set<string>(); const holdIds: string[] = [];
   const releasedArchives = new Set<string>(); const archiveIds: string[] = [];
+  // SEC-122: the title each archive tap closed: the one matching the hash the person's screen sent, else the
+  // fold's title at the tap. `titlesSeen` is every title the card has had, in fold order.
+  const titleAtArchive = new Map<string, { title: string; unconfirmed: boolean }>();
+  const titlesSeen: string[] = [];
   const evidenceIdx = new Map<string, number>(); const claimIdx = new Map<string, number>();
   const confirms: Array<{ tap: TapState; idx: number; reopens: string[] }> = [];
   let idx = -1;
@@ -585,6 +635,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         if (f.created) break;
         f.created = true; f.createdBy = by; f.createdAt = at;
         for (const k of EDITABLE_FIELDS) if (v[k] !== undefined) (f as unknown as Record<string, unknown>)[k] = v[k];
+        titlesSeen.push(f.title);
         if (v.source) f.source = v.source as CardFold['source'];
         const w = byIsPerson(by) ? 'person' : 'agent';
         for (const k of MATERIAL_FIELDS) f.lastWriter[k] = w;
@@ -605,6 +656,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
             f.lastWriter[k as MaterialField] = byIsPerson(by) ? 'person' : 'agent';
           }
         }
+        if (v.title !== undefined && titlesSeen[titlesSeen.length - 1] !== f.title) titlesSeen.push(f.title);
         if (v.carrier !== undefined && changed.includes('carrier')) f.carrierTrail.push({ carrier: f.carrier, by, at });
         if (changed.length) { f.lastMaterialIdx = idx; f.lastMaterialChangeFields = changed; }
         break;
@@ -628,7 +680,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
           ...(v.materialHash ? { materialHash: v.materialHash as string } : {}), ...(v.questionId ? { questionId: v.questionId as string } : {}),
           ...(v.answer ? { answer: v.answer as string } : {}), ...(v.claimId ? { claimId: v.claimId as string } : {}),
           ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}),
-          ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}) };
+          ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}), ...(v.titleHash ? { titleHash: v.titleHash as string } : {}) };
         f.taps.push(t);
         switch (t.action) {
           case 'approve': {
@@ -648,7 +700,17 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
           }
           case 'hold': holdIds.push(t.id); break;
           case 'unhold': if (t.names) releasedHolds.add(t.names); break;
-          case 'archive': archiveIds.push(t.id); break;
+          case 'archive': {
+            archiveIds.push(t.id);
+            // No hash from the person's screen: the fold's title is a guess, so it is marked unconfirmed.
+            let closed = { title: f.title, unconfirmed: !t.titleHash };
+            if (t.titleHash && sha256Hex(f.title) !== t.titleHash) {
+              const seen = [...titlesSeen].reverse().find((x) => sha256Hex(x) === t.titleHash);
+              closed = seen !== undefined ? { title: seen, unconfirmed: false } : { title: f.title, unconfirmed: true };
+            }
+            titleAtArchive.set(t.id, closed);
+            break;
+          }
           case 'unarchive': if (t.names) releasedArchives.add(t.names); break;
           case 'reopen': f.reopens.push(t.id); break;
           case 'confirm-done': confirms.push({ tap: t, idx, reopens: (v.reopens as string[]) ?? [] }); break;
@@ -675,7 +737,8 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   f.archives = archiveIds.filter((a) => !releasedArchives.has(a));
   // The close in force is the newest standing archive (fold order); a plain archive after a close replaces it.
   const standing = f.archives.length ? f.taps.find((t) => t.id === f.archives[f.archives.length - 1]) : undefined;
-  f.closeout = standing?.closeAs && standing.note ? { as: standing.closeAs, note: standing.note, by: standing.by, at: standing.at, tapId: standing.id } : null;
+  const closedTitle = standing ? titleAtArchive.get(standing.id) : undefined;
+  f.closeout = standing?.closeAs && standing.note ? { as: standing.closeAs, note: standing.note, by: standing.by, at: standing.at, tapId: standing.id, title: closedTitle?.title ?? f.title, ...(closedTitle?.unconfirmed ? { titleUnconfirmed: true as const } : {}) } : null;
   f.materialHash = f.created ? materialHashOf(f) : '';
   // The caller passes the policy records that apply (all of them for a read; the prefix seen so far when deriving causes).
   f.policy = opts?.policyOverride ?? policyAt(policies);
@@ -914,7 +977,7 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
 export function redactedView(f: CardFold, name: string): Partial<CardFold> & { removedBy: string } {
   return {
     cardId: f.cardId, conversationKey: f.conversationKey, redacted: f.redacted, removedBy: name,
-    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, questions: [], openQuestion: null, evidence: [], claims: [],
+    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [],
   };
 }
 
