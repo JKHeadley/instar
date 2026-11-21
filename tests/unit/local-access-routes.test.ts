@@ -148,9 +148,10 @@ describe('local access link — wiring and registration', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/server/AgentServer.ts'), 'utf-8');
     const unlock = src.indexOf("this.app.post('/dashboard/unlock'");
     const verify = src.indexOf('verifyUnlockLocalAccess(req)', unlock);
-    const localBudget = src.indexOf('localPinBlocked(now)', unlock);
+    // Piece 1c moved every budget into publicPinAdmit; the link must be judged before it is called.
+    const budgets = src.indexOf('publicPinAdmit(pinCtx, res, now)', unlock);
     expect(unlock).toBeGreaterThan(0);
     expect(verify).toBeGreaterThan(unlock);
-    expect(verify).toBeLessThan(localBudget);
+    expect(budgets).toBeGreaterThan(verify);
   });
 });

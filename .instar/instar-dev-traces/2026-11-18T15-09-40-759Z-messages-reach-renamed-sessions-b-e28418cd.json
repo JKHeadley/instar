@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "messages-reach-renamed-sessions-b",
+  "sessionId": "8a37436b-b318-47a9-8e43-4a900b4c18cb",
+  "timestamp": "2026-11-18T15:09:40.759Z",
+  "artifactPath": "upgrades/side-effects/messages-reach-renamed-sessions-b.md",
+  "artifactSha256": "e98fc34443dea8e4e983120710c040d55336a0b3d4f6421772bdc3eb95ad4c34",
+  "specPath": "docs/specs/messages-reach-renamed-sessions.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/data/awareness/messages-reach-renamed-sessions.md",
+    "src/messaging/CrossMachineRelayQueue.ts",
+    "src/messaging/DeliveryRetryManager.ts",
+    "src/messaging/MessageRouter.ts",
+    "src/messaging/MessageStore.ts",
+    "src/messaging/types.ts",
+    "src/server/machineAuth.ts",
+    "src/server/machineRoutes.ts",
+    "src/server/middleware.ts",
+    "tests/e2e/messages-cross-machine-wiring.test.ts",
+    "tests/integration/messages-relay-machine-route.test.ts",
+    "tests/unit/messages-cross-machine-relay.test.ts",
+    "upgrades/next/messages-reach-renamed-sessions-b.md",
+    "upgrades/side-effects/messages-reach-renamed-sessions-b.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "cross-machine relay and delivery into sessions; converged + approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

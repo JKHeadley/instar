@@ -50,6 +50,7 @@ export function topicWord(key, names, fallback = 'a conversation') {
 
 /** First-use definitions, shown at the top of their sections. */
 export const RECOVERY_INTRO = 'A compression is when a long conversation is squeezed to fit what the AI can hold at once. Afterwards I put the important context back; this checks that it really arrives.';
+export const PRACTICE_INTRO = 'Before a long session is ever shrunk for real, it is practised: at a calm moment the session writes a short handoff note, and a separate test session answers a quiz about what would be folded away, using only the note and the summaries. Nothing in the live conversation changes.';
 export const WATCHER_INTRO = 'The watcher looks at every conversation on this machine every few minutes: whether its summary is current, and whether a memory refresh (replacing a long session with a fresh one that starts from the summary) got stuck.';
 
 /**
@@ -215,6 +216,51 @@ export function trialLines(res) {
   return { state: 'ok', lines };
 }
 
+/** Plain words for the shadow-fold record's reason codes (counts only reach this page). */
+const PRACTICE_REASON_WORDS = [
+  [/^not-clean/, 'not at a calm stopping point'],
+  // The record's codes `below-margin` / `below-floor` (spelled with a class so this line is not read as page copy pointing at a place).
+  [/^b[e]low-(margin|floor)/, 'would not have saved enough'],
+  [/^estimate-unknown/, 'the conversation’s size could not be read yet'],
+  [/^(backoff|ask-cap)/, 'asked recently'],
+  [/^handoff-timeout/, 'the session did not write its note in time'],
+  [/^handoff-unparseable/, 'the session’s note could not be read'],
+  [/^fold-declined/, 'the check of the note turned it down'],
+  [/^fold-skipped/, 'a practice run could not start here'],
+  [/^no-judge/, 'no model was available to check it'],
+  [/^(packet-refused|probe-|answerer-|audit-invalid|step-threw|terminal-refused|reconciled-stale)/, 'a step failed and was recorded'],
+];
+function practiceReasonWords(code) {
+  for (const [re, words] of PRACTICE_REASON_WORDS) if (re.test(code)) return words;
+  return 'other';
+}
+
+/** The practice folds (shadow folding, Phase 2): graded runs toward the exit, the would-be loss, and why others did not run. */
+export function practiceLines(res) {
+  const st = readState(res);
+  if (st === 'off') return { state: 'off', lines: ['Practice runs are switched off on this machine.'] };
+  if (st === 'absent') return { state: 'absent', lines: ['This version does not run practice folds yet.'] };
+  if (st === 'failed') return { state: 'failed', lines: [`Couldn’t read the practice runs: ${res && res.reason ? res.reason : 'no answer'}.`] };
+  if (st === 'unreadable') return { state: 'unreadable', lines: ['The practice-run record answered in a form this page does not understand.'] };
+  const d = res.data || {};
+  const graded = Number(d.graded) || 0;
+  const needed = (d.exit && Number(d.exit.needed)) || 40;
+  const lines = [];
+  lines.push({ tone: d.exit && d.exit.reached ? 'ok' : 'unknown', text: `${plural(graded, 'practice run')} graded of the ${needed} needed before anything goes further.` });
+  const lost = num(d.lostRate);
+  // warning-exempt: a Phase 2 measurement the rung review reads (spec §16); there is nothing for the operator to do about one practice run
+  if (lost !== null) lines.push({ tone: lost > 0.05 ? 'attn' : 'ok', text: `In those, ${pct(lost)} of the quiz answers would have been lost.${d.wouldRollBack ? ` ${plural(d.wouldRollBack, 'run')} would have been undone.` : ''}` });
+  // warning-exempt: a Phase 2 measurement the rung review reads (spec §16); no live conversation lost anything, the run was practice
+  if (d.protectedLost) lines.push({ tone: 'attn', text: `${plural(d.protectedLost, 'run')} would have lost your own words or a decision.` });
+  const reasons = d.reasons && typeof d.reasons === 'object' ? d.reasons : {};
+  const grouped = {};
+  for (const [code, n] of Object.entries(reasons)) { const w = practiceReasonWords(code); grouped[w] = (grouped[w] || 0) + (Number(n) || 0); }
+  const top = Object.entries(grouped).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  if (top.length) lines.push({ tone: 'muted', text: `Not run: ${top.map(([w, n]) => `${n} ${w}`).join('; ')}.` });
+  lines.push({ tone: 'muted', text: 'Nothing in a live conversation is shrunk: these are practice runs graded off to the side.' });
+  return { state: 'ok', lines };
+}
+
 /** Why a section has nothing to show: failed, unreadable, not on this version, or switched off. */
 function missingWords(state, res, couldnt, off, absent = 'This version of the agent does not report it yet.') {
   if (state === 'unreadable') return `${couldnt}: it answered in a form this page does not understand.`;
@@ -229,13 +275,15 @@ function missingWords(state, res, couldnt, off, absent = 'This version of the ag
  */
 export function buildContextPage(reads, now = Date.now(), names = {}) {
   const st = { layers: readState(reads.layers), metrics: readState(reads.metrics), sentinel: readState(reads.sentinel), delta: readState(reads.delta) };
+  // The practice-fold record is optional: an absent read (an older version) is simply not shown.
+  const practice = reads.practice === undefined ? null : practiceLines(reads.practice);
   const quiet = (s) => s === 'off' || s === 'absent';
   if (quiet(st.layers) && quiet(st.metrics) && quiet(st.sentinel) && quiet(st.delta)) {
     return {
       ok: true, off: true, tone: 'muted',
       headline: 'Conversation summaries are switched off on this machine.',
       sub: 'When on, each conversation keeps a running summary so a long session can be refreshed without losing what we were doing, and this page shows what each summary holds and what it costs.',
-      needs: [], facts: [], conversations: [], recovery: null, cost: null, trial: null, upkeep: null,
+      needs: [], facts: [], conversations: [], recovery: null, cost: null, trial: null, practice: null, upkeep: null,
     };
   }
   const raw = st.sentinel === 'ok' ? reads.sentinel.data : null;
@@ -331,7 +379,7 @@ export function buildContextPage(reads, now = Date.now(), names = {}) {
     headline,
     sub: 'Each conversation keeps a running summary, so a long session can be refreshed without losing what we were doing. This page reads this machine only.',
     needs, needsUnreadable, needsStale: stale, facts,
-    conversations, conversationsNote, recovery, cost, trial, upkeep,
+    conversations, conversationsNote, recovery, cost, trial, practice, upkeep,
     partial: failed.length > 0 || stale,
     lastCheck: raw && !needsUnreadable ? agoWords(raw.lastTickAt, now) : null,
   };

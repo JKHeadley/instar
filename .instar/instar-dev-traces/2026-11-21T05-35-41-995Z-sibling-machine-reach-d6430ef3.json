@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "sibling-machine-reach",
+  "sessionId": "3f882236-e23a-4b54-97b4-d15bf61ad4a2",
+  "timestamp": "2026-11-21T05:35:41.995Z",
+  "artifactPath": "upgrades/side-effects/sibling-machine-reach.md",
+  "artifactSha256": "e34297ebd7ef1bd57c1dc093e32fbd716007a7b8cfb7218bc5ed97354df64c08",
+  "specPath": "docs/specs/sibling-machine-reach.md",
+  "coveredFiles": [
+    "docs/specs/reports/sibling-machine-reach-convergence.md",
+    "docs/specs/sibling-machine-reach.eli16.md",
+    "docs/specs/sibling-machine-reach.md",
+    "src/core/MessagingToneGate.ts",
+    "src/core/PlaywrightProfileRegistry.ts",
+    "src/core/agent-reach.ts",
+    "src/core/sibling-holdings.ts",
+    "src/core/types.ts",
+    "src/data/awareness/access-you-already-hold.md",
+    "src/data/feature-ladders.json",
+    "src/data/stageBCertifiedSet.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/sibling-machine-reach-lifecycle.test.ts",
+    "tests/integration/sibling-machine-reach-routes.test.ts",
+    "tests/unit/sibling-machine-reach.test.ts",
+    "upgrades/next/sibling-machine-reach.md",
+    "upgrades/side-effects/sibling-machine-reach.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the outbound gate's judgment inputs and adds a cross-machine read; converged spec + second-pass review per Tier 2",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/sibling-machine-reach-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

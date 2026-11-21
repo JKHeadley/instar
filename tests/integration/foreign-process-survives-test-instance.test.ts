@@ -225,7 +225,7 @@ describeMaybe('an instance kills only what it can prove it started', () => {
       const stateDir = fs.mkdtempSync(path.join(scratch, 'pipe-spawn-'));
       fs.mkdirSync(path.join(stateDir, 'logs'));
       const spawner = new PipeSessionSpawner({ stateDir, binaryPath: fakeClaude });
-      const threadId = `stamp-${process.pid}`;
+      const threadId = `thread-stamp-${process.pid}`;
       const name = `pipe-${threadId}`;
       handMade.push(name);
       const result = await spawner.spawn({
@@ -311,7 +311,7 @@ describeMaybe('an instance kills only what it can prove it started', () => {
     });
 
     it('refuses to spawn over a pre-existing foreign pipe-<threadId> session', async () => {
-      const threadId = `foreign-${process.pid}`;
+      const threadId = `thread-foreign-${process.pid}`;
       const foreignPid = foreignSession(`pipe-${threadId}`);
       const spawner = spawnerIn();
       const result = await spawner.spawn({

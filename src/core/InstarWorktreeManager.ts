@@ -101,6 +101,14 @@ export interface CreateWorktreeOptions {
   slug?: string;
   /** Default true (current bash-helper behavior). Pass false to skip the node_modules symlink. */
   shareNodeModules?: boolean;
+  /**
+   * How node_modules is shared when shareNodeModules is on. 'clone' makes an
+   * APFS copy-on-write clone (macOS `cp -cR`): the worktree owns its own folder,
+   * so an `npm ci` there cannot empty the shared source, and the clone costs
+   * almost no disk until changed. 'symlink' is the old behavior. Default: clone
+   * on macOS (falling back to symlink when cloning fails), symlink elsewhere.
+   */
+  nodeModulesShareMode?: 'clone' | 'symlink';
   /** Override agent-home resolution (mainly for tests). */
   resolveAgentHomeOpts?: ResolveAgentHomeOptions;
   /** Override instar-repo resolution (mainly for tests). */
@@ -120,6 +128,8 @@ export interface CreateWorktreeResult {
   instarRepo: string;
   instarRepoSha: string;
   shareNodeModules: boolean;
+  /** How node_modules ended up shared: an own clone, a symlink, or not at all. */
+  nodeModulesShared: 'clone' | 'symlink' | null;
   /** True if a new branch was created; false if an existing branch was checked out. */
   createdBranch: boolean;
 }
@@ -624,8 +634,13 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // node_modules binary, and a fresh worktree has none of its own. Activating first
   // failed every real create with "husky: not found".
   const shareNodeModules = opts.shareNodeModules ?? true;
+  let nodeModulesShared: 'clone' | 'symlink' | null = null;
   if (shareNodeModules) {
-    maybeSymlinkNodeModules(instarRepo, worktreePath);
+    nodeModulesShared = maybeShareNodeModules(
+      instarRepo,
+      worktreePath,
+      opts.nodeModulesShareMode ?? (process.platform === 'darwin' ? 'clone' : 'symlink'),
+    );
   }
   ensureHuskyHooksActive(worktreePath);
 
@@ -654,6 +669,7 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
     instarRepo,
     instarRepoSha: sha,
     shareNodeModules,
+    nodeModulesShared,
     createdBranch,
   };
   } finally {
@@ -717,7 +733,8 @@ export function acquireWorktreeCreateLock(agentHome: string): { release: () => v
 /** Keep full checkout growth bounded before git creates another source tree. */
 export function assertWorktreeCapacity(worktreesDir: string, limit = 500): void {
   const directories = fs.readdirSync(worktreesDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    // `.trash` holds the reaper's renamed-away checkouts, never a live worktree.
+    .filter((entry) => entry.isDirectory() && entry.name !== '.trash')
     .map((entry) => entry.name);
   if (directories.length >= limit) {
     throw new Error(
@@ -868,16 +885,51 @@ function setLocalGitIdentity(worktreePath: string, instarRepo: string, stateDir:
   tryGit(['-C', worktreePath, 'config', 'user.email', identity.email], worktreePath, idOp, 'write');
 }
 
-function maybeSymlinkNodeModules(instarRepo: string, worktreePath: string): void {
+function maybeShareNodeModules(
+  instarRepo: string,
+  worktreePath: string,
+  mode: 'clone' | 'symlink',
+): 'clone' | 'symlink' | null {
   const source = path.join(instarRepo, 'node_modules');
   const target = path.join(worktreePath, 'node_modules');
-  if (!fs.existsSync(source)) return;
+  if (!fs.existsSync(source)) return null;
   // Source must be a REAL directory inside the validated repo (not a symlink),
   // matching the bash-helper invariant.
   const lst = fs.lstatSync(source);
-  if (!lst.isDirectory()) return;
-  if (fs.existsSync(target)) return;
+  if (!lst.isDirectory()) return null;
+  if (fs.existsSync(target)) return null;
+  if (mode === 'clone' && cloneNodeModules(source, target)) return 'clone';
   fs.symlinkSync(source, target);
+  return 'symlink';
+}
+
+/**
+ * APFS copy-on-write clone of node_modules (measured 2026-11-17 on a loaded Mac
+ * Studio: ~16k files in ~19 s, no measurable disk cost). Why not a symlink: an
+ * `npm ci` run inside a worktree whose node_modules is a symlink empties the
+ * folder the link points to (npm 11, reproduced), breaking every other worktree
+ * that shares it; and sessions that found no usable link installed a full copy
+ * each (~0.64 GB, ~34 a day on one machine). The clone is staged beside the
+ * target and renamed into place, so a failed clone never leaves a half folder
+ * in the worktree; the caller then falls back to the symlink.
+ */
+function cloneNodeModules(source: string, target: string): boolean {
+  const staging = `${target}.clone-${process.pid}-${Date.now()}`;
+  try {
+    // lint-allow-sync-spawn: createAgentWorktree runs only from the `instar worktree create` CLI, never on the server event loop.
+    execFileSync('/bin/cp', ['-cR', source, staging], { stdio: 'ignore', timeout: 300_000 });
+    fs.renameSync(staging, target);
+    return true;
+  } catch {
+    // @silent-fallback-ok — no clone support (non-APFS volume, old cp) or a
+    // timeout: the caller falls back to the previous symlink behavior.
+    try {
+      if (fs.existsSync(staging)) {
+        SafeFsExecutor.safeRmSync(staging, { recursive: true, force: true, operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules' });
+      }
+    } catch { /* @silent-fallback-ok — leftover staging folder is inert */ }
+    return false;
+  }
 }
 
 export function ensureHuskyHooksActive(worktreePath: string): void {

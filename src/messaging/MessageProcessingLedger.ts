@@ -67,6 +67,12 @@ export interface SenderEnvelope {
   userId?: string | number;
   username?: string;
   firstName?: string;
+  /**
+   * SEC-106 decision 2c: the classifier's verdict for this message, written in the SAME call that
+   * creates the row (`decideIngress` sender, or the mesh owner's `claimForwardedInbound` envelope);
+   * stuck replay and lifeline reclaims read it. Rows are never updated.
+   */
+  signedByAgent?: string;
 }
 
 const SCHEMA = `
@@ -181,8 +187,10 @@ export class MessageProcessingLedger {
    * Claim the same key here so the owner's reply can commit and broadcast its
    * marker back to the router. A duplicate forwarded delivery stays terminal.
    */
-  claimForwardedInbound(dedupeKey: string, topic: string, input: string, epoch: number): boolean {
-    this.record(dedupeKey, { platform: 'telegram', topic, input });
+  claimForwardedInbound(dedupeKey: string, topic: string, input: string, epoch: number, sender?: SenderEnvelope | null): boolean {
+    // SEC-106 decision 2c: the forwarded envelope (label included) is stored in the same call that
+    // creates the row, so an owner-side stuck replay keeps the label.
+    this.record(dedupeKey, { platform: 'telegram', topic, input, ...(sender ? { sender } : {}) });
     return this.beginProcessing(dedupeKey, epoch);
   }
 

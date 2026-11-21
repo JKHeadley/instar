@@ -61,6 +61,8 @@ async function boot(developmentAgent: boolean) {
   server = new AgentServer({ config, sessionManager: { listRunningSessions: () => [], getSession: () => null } as any, state: new StateManager(stateDir) } as any);
   srv = await new Promise<http.Server>((resolve) => { const s = server!.getApp().listen(0, '127.0.0.1', () => resolve(s)); });
   const port = (srv.address() as AddressInfo).port;
+  // Piece 1c counts a loopback request as this machine only when its Host names the configured port.
+  (config as { port: number }).port = port;
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port, projectName: NAME }));
   const la = (server as any).localAccess;
   expect(la).toBeTruthy();

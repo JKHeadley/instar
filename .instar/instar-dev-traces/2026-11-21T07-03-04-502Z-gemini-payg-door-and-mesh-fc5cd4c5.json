@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "gemini-payg-door-and-mesh",
+  "sessionId": "c0c50b75-193a-4caa-8d3a-61a093d92b5c",
+  "timestamp": "2026-11-21T07:03:04.502Z",
+  "artifactPath": "upgrades/side-effects/gemini-payg-door-and-mesh.md",
+  "artifactSha256": "38c5639eeecbc3d1360b690f3ec637cb1838e011dce41b80474b4df363224e80",
+  "specPath": "docs/specs/gemini-payg-metered-lane.md",
+  "coveredFiles": [
+    "src/server/geminiPaygGoLiveWiring.ts",
+    "src/server/geminiPaygRoutes.ts",
+    "tests/e2e/gemini-payg-lane-alive.test.ts",
+    "upgrades/side-effects/gemini-payg-door-and-mesh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "conformance to a main ratchet: local-only checks ask mayBeLocalArrival first (strictly more refusal); e2e ingress case added",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

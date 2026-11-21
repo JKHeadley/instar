@@ -21,6 +21,7 @@ import {
   NATURE_ROUTING_DEFAULT_CHAINS,
   METERED_ROUTING_DOORS,
 } from '../data/llmBenchCoverage.js';
+import { PROBE_KEY_REF } from './moneyLayerProbe.js';
 import type { RoutingPriceAuthority, PriceBasis, DoorClass } from './routingPriceAuthority.js';
 import type { SpendTokenBucket } from '../monitoring/FeatureMetricsLedger.js';
 
@@ -124,18 +125,26 @@ export interface SpendCapRow {
   keyRef: string;
   provider: string;
   door: string;
-  lifetimeCapUsd: number;
+  /** Null for a monthly-only key (gemini-payg §5: the monthly cap is the bound). */
+  lifetimeCapUsd: number | null;
+  monthlyCapUsd: number | null;
   dailyCapUsd: number;
+  /** IANA zone the day/month periods use (UTC when unset). */
+  periodTimeZone: string;
   frozen: boolean;
   committedLifetimeUsd: number;
   committedDayUsd: number;
+  committedMonthUsd: number;
   pctLifetime: number;
   pctDaily: number;
+  pctMonthly: number;
   /** Increment A: every metered door is not-live. */
   goLiveState: 'not-live' | 'live' | 'disarmed';
   meteredLeaseHolder: string | null;
   /** Reporting-vs-ledger reconciliation — trivially ok before there is a ledger. */
   coverageOk: boolean;
+  /** A retired keyRef still present in an existing caps file (shown, never used for a new reservation). */
+  retired: boolean;
 }
 
 export interface SpendCapsView {
@@ -147,18 +156,69 @@ export interface SpendCapsView {
   note: string;
 }
 
+/** A metered key's default caps (DISPLAY + freeze-seed). Key NAMES only — never a secret. */
+export interface DefaultMeteredCaps {
+  provider: string;
+  door: string;
+  lifetimeCapUsd?: number;
+  monthlyCapUsd?: number;
+  dailyCapUsd: number;
+  periodTimeZone?: string;
+}
+
 /**
- * Default published caps per metered vault key (DISPLAY-ONLY, Increment A). The
- * PIN-only authoritative caps store (`state/routing-spend-caps.json`) is Increment B;
- * until it exists these seed the read-only caps view. Key NAMES only — never a secret.
+ * Default published caps per metered vault key. The PIN-only authoritative caps
+ * store (`state/routing-spend-caps.json`) overrides these; until a key has a
+ * record there these seed the read-only caps view. Key NAMES only — never a secret.
+ *
+ * `gemini_api_key_payg` (gemini-payg §5): monthly shape — $50/month, $10/day,
+ * periods in America/Los_Angeles (Google's billing month and the operator's day).
  */
-export const DEFAULT_METERED_CAPS: Readonly<Record<string, { provider: string; lifetimeCapUsd: number; dailyCapUsd: number }>> = {
-  metered_gemini_bench: { provider: 'google', lifetimeCapUsd: 40, dailyCapUsd: 15 },
-  metered_openrouter_bench: { provider: 'openrouter', lifetimeCapUsd: 60, dailyCapUsd: 25 },
-  metered_groq_bench: { provider: 'groq', lifetimeCapUsd: 30, dailyCapUsd: 10 },
+export const DEFAULT_METERED_CAPS: Readonly<Record<string, DefaultMeteredCaps>> = {
+  gemini_api_key_payg: { provider: 'google', door: 'gemini-api', monthlyCapUsd: 50, dailyCapUsd: 10, periodTimeZone: 'America/Los_Angeles' },
+  metered_openrouter_bench: { provider: 'openrouter', door: 'openrouter-api', lifetimeCapUsd: 60, dailyCapUsd: 25 },
+  metered_groq_bench: { provider: 'groq', door: 'groq-api', lifetimeCapUsd: 30, dailyCapUsd: 10 },
 };
 
-/** The metered (keyRef → door) pairs actually named by the shipped routing chains. */
+/**
+ * Retired metered keyRefs: still KNOWN (so an existing caps file holding one
+ * loads unchanged — Migration Parity), shown as retired, never defaulted.
+ */
+export const RETIRED_METERED_KEY_REFS: Readonly<Record<string, { provider: string; door: string; replacedBy: string }>> = {
+  metered_gemini_bench: { provider: 'google', door: 'gemini-api', replacedBy: 'gemini_api_key_payg' },
+};
+
+/** Every keyRef the caps store accepts (defaults + retired). The probe keyRef is added by the server, never here. */
+export function knownMeteredKeyRefs(): string[] {
+  return [...Object.keys(DEFAULT_METERED_CAPS), ...Object.keys(RETIRED_METERED_KEY_REFS)];
+}
+
+/**
+ * The metered (keyRef → door) pairs: every default key, plus any key present in
+ * the PIN caps store (gemini-payg §2: the Spend view lists keys from the caps
+ * store and the door registry — NOT from the routing chains, which no longer
+ * carry a metered gemini position). The reserved probe key never appears.
+ */
+export function meteredKeyDoors(store?: { caps: Record<string, unknown>; goLive: Record<string, { keyRef: string }> } | null): Array<{ keyRef: string; door: string; retired: boolean }> {
+  const out = new Map<string, { keyRef: string; door: string; retired: boolean }>();
+  for (const [keyRef, d] of Object.entries(DEFAULT_METERED_CAPS)) out.set(keyRef, { keyRef, door: d.door, retired: false });
+  if (store) {
+    const doorByKey = new Map<string, string>();
+    for (const [door, g] of Object.entries(store.goLive)) if (g?.keyRef) doorByKey.set(g.keyRef, door);
+    for (const keyRef of [...Object.keys(store.caps), ...doorByKey.keys()]) {
+      if (keyRef === PROBE_KEY_REF || out.has(keyRef)) continue;
+      const retired = RETIRED_METERED_KEY_REFS[keyRef];
+      out.set(keyRef, { keyRef, door: doorByKey.get(keyRef) ?? retired?.door ?? 'unknown', retired: !!retired });
+    }
+  }
+  return [...out.values()];
+}
+
+/**
+ * The metered (keyRef → door) pairs named by the shipped routing chains.
+ * Kept for chain-coverage callers; it no longer drives the Spend view
+ * (gemini-payg §2) — use `meteredKeyDoors()` for that.
+ */
 export function meteredKeysFromChains(): Array<{ keyRef: string; door: string }> {
   const seen = new Map<string, string>();
   for (const positions of Object.values(NATURE_ROUTING_DEFAULT_CHAINS)) {
@@ -358,7 +418,7 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
 
   // Credits are lump-sum per keyRef — applied at the TOTALS level (never per-model).
   let creditTotal = 0;
-  for (const { keyRef } of meteredKeysFromChains()) {
+  for (const { keyRef } of meteredKeyDoors()) {
     creditTotal += opts.prices.activeCreditUsd(keyRef, opts.now);
   }
 
@@ -420,42 +480,73 @@ export function buildRoutingSpendSummary(opts: BuildSpendSummaryOptions): SpendS
 
 export interface BuildSpendCapsOptions {
   /** Optional PIN-store caps override (Increment B). Absent in A → published defaults. */
-  capsOverride?: Record<string, { provider?: string; lifetimeCapUsd?: number; dailyCapUsd?: number; frozen?: boolean; goLiveState?: SpendCapRow['goLiveState']; meteredLeaseHolder?: string | null }>;
+  capsOverride?: Record<string, {
+    provider?: string;
+    door?: string;
+    lifetimeCapUsd?: number | null;
+    monthlyCapUsd?: number | null;
+    dailyCapUsd?: number;
+    periodTimeZone?: string | null;
+    frozen?: boolean;
+    goLiveState?: SpendCapRow['goLiveState'];
+    meteredLeaseHolder?: string | null;
+  }>;
   /** Committed totals from the MeteredSpendLedger (Increment B). Absent → $0 (pre-B honest state). */
-  committed?: Record<string, { committedLifetimeUsd: number; committedDayUsd: number }>;
+  committed?: Record<string, { committedLifetimeUsd: number; committedDayUsd: number; committedMonthUsd?: number }>;
   /** True once the money layer is enabled (Increment B) — flips the caps-view notes. */
   moneyLive?: boolean;
 }
 
 /**
- * Compose the caps view: every metered key named by the routing chains, its caps, and
- * honest committed state. Pre-B (no money ledger) committed is $0 and every door is
- * not-live; with the Increment-B money layer live the committed figures come from the
- * authoritative ledger fold. Pure.
+ * Compose the caps view: every default metered key plus any key in the PIN
+ * caps store, its caps, and honest committed state. Pre-B (no money ledger)
+ * committed is $0 and every door is not-live; with the Increment-B money layer
+ * live the committed figures come from the authoritative ledger fold. Pure.
  */
 export function buildRoutingSpendCaps(opts: BuildSpendCapsOptions = {}): SpendCapsView {
-  const keys: SpendCapRow[] = meteredKeysFromChains().map(({ keyRef, door }) => {
+  const fromStore = opts.capsOverride
+    ? {
+        caps: opts.capsOverride,
+        goLive: Object.fromEntries(
+          Object.entries(opts.capsOverride)
+            .filter(([, v]) => typeof v.door === 'string')
+            .map(([keyRef, v]) => [v.door as string, { keyRef }]),
+        ),
+      }
+    : null;
+  const pct = (c: number, cap: number | null) => (cap !== null && cap > 0 ? Math.round((c / cap) * 1000) / 10 : 0);
+  const keys: SpendCapRow[] = meteredKeyDoors(fromStore).map(({ keyRef, door, retired }) => {
     const def = DEFAULT_METERED_CAPS[keyRef];
     const ov = opts.capsOverride?.[keyRef];
-    const lifetimeCapUsd = ov?.lifetimeCapUsd ?? def?.lifetimeCapUsd ?? 0;
+    const pick = (o: number | null | undefined, d: number | undefined): number | null =>
+      o !== undefined ? o : d !== undefined ? d : null;
+    // A store record is authoritative for its shape: it never inherits the default's other cap kind.
+    const lifetimeCapUsd = ov ? (ov.lifetimeCapUsd ?? null) : pick(undefined, def?.lifetimeCapUsd);
+    const monthlyCapUsd = ov ? (ov.monthlyCapUsd ?? null) : pick(undefined, def?.monthlyCapUsd);
     const dailyCapUsd = ov?.dailyCapUsd ?? def?.dailyCapUsd ?? 0;
     const committed = opts.committed?.[keyRef];
     const committedLifetimeUsd = committed?.committedLifetimeUsd ?? 0;
     const committedDayUsd = committed?.committedDayUsd ?? 0;
+    const committedMonthUsd = committed?.committedMonthUsd ?? 0;
     return {
       keyRef,
-      provider: ov?.provider ?? def?.provider ?? 'unknown',
-      door,
+      provider: ov?.provider ?? def?.provider ?? RETIRED_METERED_KEY_REFS[keyRef]?.provider ?? 'unknown',
+      door: ov?.door ?? door,
       lifetimeCapUsd,
+      monthlyCapUsd,
       dailyCapUsd,
+      periodTimeZone: ov?.periodTimeZone ?? def?.periodTimeZone ?? 'UTC',
       frozen: ov?.frozen ?? false,
       committedLifetimeUsd,
       committedDayUsd,
-      pctLifetime: lifetimeCapUsd > 0 ? Math.round((committedLifetimeUsd / lifetimeCapUsd) * 1000) / 10 : 0,
-      pctDaily: dailyCapUsd > 0 ? Math.round((committedDayUsd / dailyCapUsd) * 1000) / 10 : 0,
+      committedMonthUsd,
+      pctLifetime: pct(committedLifetimeUsd, lifetimeCapUsd),
+      pctDaily: pct(committedDayUsd, dailyCapUsd),
+      pctMonthly: pct(committedMonthUsd, monthlyCapUsd),
       goLiveState: ov?.goLiveState ?? 'not-live',
       meteredLeaseHolder: ov?.meteredLeaseHolder ?? null,
       coverageOk: true,
+      retired,
     };
   });
   const anyLive = keys.some((k) => k.goLiveState === 'live');

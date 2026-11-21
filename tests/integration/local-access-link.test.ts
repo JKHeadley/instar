@@ -61,11 +61,14 @@ let base: string;
 
 async function boot(enabled = true) {
   project = createTempProject();
-  server = new AgentServer({ config: makeConfig(project.stateDir, enabled), sessionManager: createMockSessionManager() as any, state: project.state } as any);
+  const config = makeConfig(project.stateDir, enabled);
+  server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: project.state } as any);
   const app = server.getApp();
   srv = await new Promise<http.Server>((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   port = (srv.address() as AddressInfo).port;
   base = `http://127.0.0.1:${port}`;
+  // Piece 1c counts a loopback request as this machine only when its Host names the configured port.
+  config.port = port;
   // The test listens itself (AgentServer.start is not used), so point the service at this socket and run its start-up step.
   Object.assign((server as any).localAccess.deps, { boundAddress: () => srv.address() });
   (server as any).localAccess.startSweeps();

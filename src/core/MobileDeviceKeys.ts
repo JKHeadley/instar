@@ -184,7 +184,8 @@ const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
 /** `person-phone`: a member's own phone linked this browser to them (instar-document-viewer §3.6a). */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'local-install';
+/** `at-computer`: the owner typed the phone's number at the agent's own computer (identity A4). */
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'local-install' | 'at-computer';
 
 export interface DeviceRecord {
   id: string;
@@ -267,6 +268,31 @@ export interface DeviceRecord {
   outcomeWatchId?: string;
   /** The original pending deadline; `expiresAt` is overwritten by boot and lease-loss expiry (§3.3). */
   pendingDeadline?: string;
+  /**
+   * Paired on the agent's same-network listener (identity A4): `host` is `<name>.local:<port>`, a
+   * signature is accepted only on that listener, and that listener accepts no other device.
+   */
+  addressKind?: 'same-network';
+  /** The certificate public-key hash the phone pinned from the computer's screen (same-network only). */
+  pinnedKeyHash?: string;
+  /**
+   * Set at redeem for a phone whose setup was started at the agent's own computer with no Telegram
+   * owner (identity A4): while pending it is let in ONLY by the number typed at that computer and its
+   * own signed activation, never by a code, a tap, an introduction or the dashboard.
+   */
+  admission?: 'at-computer';
+}
+
+/**
+ * Identity A4: the ONE answer to "was this device let in at the agent's own computer (no approval
+ * power until piece 3b)". Two fields carry it: `admission` (set at redeem, while pending) and
+ * `approvedVia` (set at activation). Every check reads this function, never either field alone
+ * (tests/unit/at-computer-invariant.test.ts fails on a direct comparison elsewhere), and the store
+ * refuses an activation that would make the two disagree (applyConfirm), so a path that sets one
+ * field without the other cannot give such a device approval power.
+ */
+export function admittedAtComputer(d: Pick<DeviceRecord, 'admission' | 'approvedVia'> | null | undefined): boolean {
+  return !!d && (d.admission === 'at-computer' || d.approvedVia === 'at-computer');
 }
 
 export type BrowserEffectKind = 'revokeReplaced' | 'notice';
@@ -476,7 +502,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string; deviceKind?: 'computer' }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string; deviceKind?: 'computer'; addressKind?: 'same-network'; pinnedKeyHash?: string; admission?: 'at-computer' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -490,6 +516,8 @@ export class DeviceRegistry {
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
       ...(row.userId ? { userId: row.userId } : {}),
       ...(row.deviceKind ? { deviceKind: row.deviceKind } : {}),
+      ...(row.addressKind ? { addressKind: row.addressKind, ...(row.pinnedKeyHash ? { pinnedKeyHash: row.pinnedKeyHash } : {}) } : {}),
+      ...(row.admission ? { admission: row.admission } : {}),
       // Pairing outcome notice (§3.2): joined in this same write, so no crash window separates them.
       ...(row.outcomeWatchId ? { outcomeWatchId: row.outcomeWatchId, pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString() } : {}),
       // Only a non-owner role is written: absent already means owner, so an owner phone's record
@@ -563,6 +591,9 @@ export class DeviceRegistry {
     // refused without declining it, and activation goes through activateBrowser (§4.1, §4.2 step 10).
     if (d.activating) return d;
     if (outcome.ok && isBrowserDevice(d)) return d;
+    // The two at-computer fields never disagree: a phone let in at the computer is activated only as
+    // 'at-computer', and 'at-computer' activates only a phone admitted that way (admittedAtComputer).
+    if (outcome.ok && (d.admission === 'at-computer') !== (outcome.approvedVia === 'at-computer')) return d;
     if (outcome.ok) {
       d.status = 'active'; d.approvedAt = outcome.approvedAt ?? new Date(this.now()).toISOString(); d.approvedVia = outcome.approvedVia ?? 'telegram-dm';
       if (outcome.approvedBy) d.approvedBy = outcome.approvedBy;

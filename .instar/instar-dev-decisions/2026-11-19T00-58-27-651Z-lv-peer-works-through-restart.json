@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-19T00:58:27.651Z",
+  "slug": "lv-peer-works-through-restart",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

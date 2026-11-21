@@ -24,6 +24,10 @@ import { makeDownloadCheck } from '../../src/core/BrowserCareProbes.js';
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { buildMachineCarePage } from '../../dashboard/console/machine-care-model.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import { createMockSessionManager } from '../helpers/setup.js';
+import { serverHealthFromResponse } from '../../src/monitoring/machineMaintenance/PostRestartProof.js';
+import { isPeerBooting } from '../../src/server/BootReadiness.js';
 
 const AUTH = 'e2e-token';
 const auth = { Authorization: `Bearer ${AUTH}` };
@@ -105,6 +109,24 @@ describe('machine maintenance lifecycle', () => {
     const after = buildMachineCarePage(await read());
     expect(after.ok && after.rows[0]).toMatchObject({ skipped: true, controls: { skip: false, unskip: true } });
     expect(after.ok && after.rows[0].sentence).toMatch(/Skipped until /);
+  });
+
+  it('the restart proof\'s server row reads the real /health: 200 and finished starting passes; server.ts uses that judge', async () => {
+    // A server with a full config, as server.ts builds it (the minimal one above has no /health body).
+    const stateDir = path.join(dir, 'full', '.instar');
+    for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
+    const sm = createMockSessionManager() as any; sm.on = () => undefined;
+    const full = new AgentServer({ config: { projectName: 'proof-e2e', projectDir: path.dirname(stateDir), stateDir, host: '127.0.0.1', port: 0, authToken: AUTH,
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {} } as any, sessionManager: sm, state: new StateManager(stateDir) } as any);
+    const res = await request(full.getApp()).get('/health');
+    await full.stop();
+    expect(res.status).toBe(200);
+    expect(res.body.bootReadiness?.state).toBe('ready');
+    expect(serverHealthFromResponse({ status: res.status, headers: { get: (n: string) => res.headers[n.toLowerCase()] ?? null }, body: res.body }, isPeerBooting))
+      .toEqual({ state: 'pass', reason: 'health-200-ready' });
+    const src = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
+    expect(src).toContain("serverHealth: async () => serverHealthFromResponse(await getJson('/health', false), isPeerBooting),");
   });
 
   it('reaches a fresh agent and an updated one through one shared section', () => {

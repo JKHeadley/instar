@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T07:32:09.611Z",
+  "slug": "reaper-generated-files-regenerable",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/agentWorktreeGit.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "constant source change only; no self-triggered action added or changed"
+  },
+  "verdict": "pass"
+}

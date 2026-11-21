@@ -12,6 +12,7 @@
  */
 
 import crypto from 'node:crypto';
+import { resolveClientAddressParts } from './clientAddress.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { PresenceRegistry } from './PresenceRegistry.js';
 import type { AgentFingerprint, AgentMetadata, PresenceEntry, MessageEnvelope } from './types.js';
@@ -30,6 +31,8 @@ export interface A2ABridgeConfig {
   maxConcurrentTasksPerAgent?: number; // default 3
   /** Max request body size in bytes */
   maxRequestBodySize?: number; // default 65536 (64KB)
+  /** SEC-139: header the front proxy sets with the caller address; '' = trust no header. */
+  clientAddressHeader?: string;
 }
 
 export interface A2ABridgeDeps {
@@ -100,6 +103,13 @@ export interface A2ABridgeRateLimitConfig {
 export class A2ABridgeRateLimiter {
   private readonly config: A2ABridgeRateLimitConfig;
   private readonly windows = new Map<string, number[]>();
+  /** SEC-134: when keys of callers that never came back were last swept. */
+  private lastSweepAt = 0;
+  /**
+   * SEC-134: hard ceiling on tracked keys (two per address). Beyond it the oldest-inserted keys are
+   * dropped, so memory stays fixed even when callers rotate addresses faster than the hourly sweep.
+   */
+  static readonly MAX_KEYS = 50_000;
 
   constructor(config?: Partial<A2ABridgeRateLimitConfig>) {
     this.config = {
@@ -110,6 +120,7 @@ export class A2ABridgeRateLimiter {
 
   check(ip: string): { allowed: boolean; limitType?: string } {
     const now = Date.now();
+    this.sweepIdle(now);
 
     // Per-minute check
     const minKey = `min:${ip}`;
@@ -130,19 +141,50 @@ export class A2ABridgeRateLimiter {
 
   record(ip: string): void {
     const now = Date.now();
-    this.getOrCreate(`min:${ip}`).push(now);
-    this.getOrCreate(`hour:${ip}`).push(now);
+    for (const key of [`hour:${ip}`, `min:${ip}`]) {
+      const events = this.getOrCreate(key);
+      events.push(now);
+      // SEC-139: move to the end so the ceiling drops the least recently used keys first.
+      this.windows.delete(key);
+      this.windows.set(key, events);
+    }
+    for (const key of this.windows.keys()) {
+      if (this.windows.size <= A2ABridgeRateLimiter.MAX_KEYS) break;
+      this.windows.delete(key);
+    }
   }
 
   reset(): void {
     this.windows.clear();
   }
 
+  /** Number of tracked keys (for tests and diagnostics). */
+  get size(): number {
+    return this.windows.size;
+  }
+
   private cleanAndGet(key: string, cutoff: number): number[] {
-    const events = this.getOrCreate(key);
+    const events = this.windows.get(key);
+    if (!events) return [];
     const filtered = events.filter(t => t > cutoff);
-    this.windows.set(key, filtered);
+    // SEC-134: an empty window is deleted, so a caller seen once costs nothing after its window.
+    if (filtered.length === 0) this.windows.delete(key);
+    else this.windows.set(key, filtered);
     return filtered;
+  }
+
+  /**
+   * SEC-134: drop every key whose newest event is older than the longest window (one hour). Runs at
+   * most once a minute, so keys of callers that never return (for example a scan from many
+   * addresses) are released without a timer.
+   */
+  private sweepIdle(now: number): void {
+    if (now - this.lastSweepAt < 60_000) return;
+    this.lastSweepAt = now;
+    const cutoff = now - 3_600_000;
+    for (const [key, events] of this.windows) {
+      if (events.length === 0 || events[events.length - 1] <= cutoff) this.windows.delete(key);
+    }
   }
 
   private getOrCreate(key: string): number[] {
@@ -155,23 +197,57 @@ export class A2ABridgeRateLimiter {
 
 // ── Context ID ↔ Thread ID Mapping ──────────────────────────────────
 
-class ContextThreadMapper {
-  private readonly contextToThread = new Map<string, string>();
-  private readonly threadToContext = new Map<string, string>();
+/** SEC-134: a caller-supplied contextId longer than this is refused. */
+export const MAX_A2A_CONTEXT_ID_LENGTH = 256;
 
-  getOrCreateThreadId(contextId: string | undefined): { threadId: string; isNew: boolean } {
-    if (contextId && this.contextToThread.has(contextId)) {
-      return { threadId: this.contextToThread.get(contextId)!, isNew: false };
+/**
+ * Maps an A2A caller's contextId to a Threadline thread.
+ *
+ * SEC-134: the map used to be keyed by the bare contextId and never shrank, so any caller could grow
+ * it without limit, and a caller who learned another caller's contextId joined that caller's thread.
+ * It is now keyed by (caller, agent, contextId), entries expire after `ttlMs` without use, and at
+ * most `maxEntries` are kept (least recently used dropped first). A dropped mapping only means the
+ * next message with that contextId starts a new thread, the same as a first message.
+ */
+export class ContextThreadMapper {
+  private readonly entries = new Map<string, { threadId: string; lastUsedAt: number }>();
+
+  constructor(
+    private readonly maxEntries = 10_000,
+    private readonly ttlMs = 24 * 3_600_000,
+  ) {}
+
+  getOrCreateThreadId(scope: string, contextId: string | undefined, now = Date.now()): { threadId: string; isNew: boolean } {
+    if (contextId) {
+      const key = `${scope}\u0000${contextId}`;
+      const hit = this.entries.get(key);
+      if (hit && now - hit.lastUsedAt <= this.ttlMs) {
+        // Re-insert so Map order stays least-recently-used first.
+        this.entries.delete(key);
+        hit.lastUsedAt = now;
+        this.entries.set(key, hit);
+        return { threadId: hit.threadId, isNew: false };
+      }
+      if (hit) this.entries.delete(key);
     }
     const threadId = `a2a-${crypto.randomUUID()}`;
-    const ctx = contextId ?? `ctx-${crypto.randomUUID()}`;
-    this.contextToThread.set(ctx, threadId);
-    this.threadToContext.set(threadId, ctx);
+    // A message without a contextId cannot be continued by contextId, so it is not stored.
+    if (contextId) {
+      this.entries.set(`${scope}\u0000${contextId}`, { threadId, lastUsedAt: now });
+      this.evict(now);
+    }
     return { threadId, isNew: true };
   }
 
-  getContextId(threadId: string): string | undefined {
-    return this.threadToContext.get(threadId);
+  get size(): number {
+    return this.entries.size;
+  }
+
+  private evict(now: number): void {
+    for (const [key, entry] of this.entries) {
+      if (this.entries.size <= this.maxEntries && now - entry.lastUsedAt <= this.ttlMs) break;
+      this.entries.delete(key);
+    }
   }
 }
 
@@ -193,6 +269,7 @@ export class A2ABridge {
       responseTimeoutMs: config.responseTimeoutMs ?? 300_000,
       maxConcurrentTasksPerAgent: config.maxConcurrentTasksPerAgent ?? 3,
       maxRequestBodySize: config.maxRequestBodySize ?? 65_536,
+      clientAddressHeader: config.clientAddressHeader ?? '',
     };
     this.deps = deps;
     this.bridgeEncryptor = new MessageEncryptor(
@@ -213,8 +290,10 @@ export class A2ABridge {
     const agentId = match[1];
     const subpath = match[2] ?? '/';
 
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-      ?? req.socket.remoteAddress ?? 'unknown';
+    // SEC-139: the caller address the rest of the relay uses (no caller-written header trusted unless
+    // the deployment names one). Rate limits key IPv6 by /64; thread scope keeps the exact address so
+    // two hosts in one /64 never share a thread.
+    const { rateKey: ip, exact: callerAddress } = resolveClientAddressParts(req, this.config.clientAddressHeader);
 
     // Rate limit
     const rateCheck = this.deps.rateLimiter.check(ip);
@@ -232,7 +311,7 @@ export class A2ABridge {
     // Messages
     if (subpath === '/messages' && req.method === 'POST') {
       this.deps.rateLimiter.record(ip);
-      await this.handleMessage(req, res, agentId);
+      await this.handleMessage(req, res, agentId, callerAddress);
       return true;
     }
 
@@ -338,6 +417,7 @@ export class A2ABridge {
     req: IncomingMessage,
     res: ServerResponse,
     agentId: AgentFingerprint,
+    callerAddress: string,
   ): Promise<void> {
     // Check agent exists and is online
     const entry = this.deps.presence.get(agentId);
@@ -394,8 +474,24 @@ export class A2ABridge {
       return;
     }
 
-    // Map context ID to thread ID
-    const { threadId, isNew } = this.contextMapper.getOrCreateThreadId(params.contextId);
+    // SEC-134: a contextId must be text of bounded length.
+    if (params.contextId !== undefined && (typeof params.contextId !== 'string' || params.contextId.length > MAX_A2A_CONTEXT_ID_LENGTH)) {
+      this.sendJsonRpcError(res, request.id, -32602, `contextId must be a string of at most ${MAX_A2A_CONTEXT_ID_LENGTH} characters`, 400);
+      return;
+    }
+
+    // Map context ID to thread ID, scoped to this caller and this agent (SEC-134).
+    const { threadId, isNew } = this.contextMapper.getOrCreateThreadId(`${callerAddress}\u0000${agentId}`, params.contextId || undefined);
+
+    // SEC-139: an agent reply resolves the waiting task of its thread, so one thread holds at most one
+    // waiting task. Otherwise a second caller in the same thread could receive the reply meant for
+    // the first.
+    for (const task of this.pendingTasks.values()) {
+      if (task.threadId === threadId && task.agentId === agentId) {
+        this.sendJsonRpcError(res, request.id, -32005, 'A message in this conversation is still waiting for its reply; try again when it has been answered', 409);
+        return;
+      }
+    }
 
     // Create task
     const taskId = `task-${crypto.randomUUID()}`;
@@ -471,6 +567,19 @@ export class A2ABridge {
       this.decrementConcurrent(agentId);
       this.sendJsonRpcError(res, request.id, -32003, 'Failed to deliver to agent', 502);
       return;
+    }
+
+    // SEC-139: a caller that disconnects before the reply frees its thread at once, so a retry with
+    // the same contextId is not refused until the timeout.
+    if (typeof (res as { on?: unknown }).on === 'function') {
+      res.on('close', () => {
+        const task = this.pendingTasks.get(taskId);
+        if (!task || res.writableEnded) return;
+        clearTimeout(task.timeout);
+        this.pendingTasks.delete(taskId);
+        this.decrementConcurrent(agentId);
+        task.resolve({ id: taskId, status: 'failed', error: { code: -32006, message: 'Caller disconnected' } });
+      });
     }
 
     // Wait for response (with timeout)

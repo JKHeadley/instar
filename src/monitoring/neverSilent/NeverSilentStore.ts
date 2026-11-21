@@ -88,6 +88,8 @@ export interface Incident {
   /** Framework the conversation already moved away from in this incident (breaker, §3.3). */
   triedFrameworks: string[];
   attempts: number;
+  /** When this incident first held off for a stale-login restart (persisted, so a restart cannot reset the 3-minute cap). */
+  staleLoginWaitStartedAt?: number;
   closedAt?: number;
   closedReason?: string;
 }
