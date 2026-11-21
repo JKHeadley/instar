@@ -7916,7 +7916,7 @@ export class AgentServer {
         machineId: () => appSvc.deps.machineId(),
         app: appSvc.store,
         telegram: telegram ? {
-          history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
+          history: (topicId, limit) => telegram.getTopicHistoryForList(topicId, limit) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
           exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
@@ -7984,11 +7984,22 @@ export class AgentServer {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
           return options.telegram!.getAllTopicMappings().map((m) => {
-          const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
+          // From the in-memory log view when ready; otherwise the old read, immediately (conversation-list-log-view).
+          const last = options.telegram!.getTopicHistoryForList(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
         } : undefined,
       };
+      // The conversation list's in-memory log view (docs/specs/conversation-list-log-view.md): off switch
+      // `telegramHistoryView.enabled: false` (read live) returns the list to the old read. Built in the
+      // background where the app is on; nothing waits for it.
+      if (options.telegram) {
+        const lc = options.liveConfig;
+        options.telegram.setHistoryViewSwitch(() => (lc?.get
+          ? lc.get<boolean | undefined>('telegramHistoryView.enabled', undefined)
+          : (this.config as { telegramHistoryView?: { enabled?: boolean } }).telegramHistoryView?.enabled) !== false);
+        if (options.mobileRoutes?.start ?? !process.env.VITEST) void options.telegram.loadHistory();
+      }
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
       const searchDeps: ConversationSearchRouteDeps = {

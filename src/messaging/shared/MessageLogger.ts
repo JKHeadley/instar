@@ -67,6 +67,8 @@ export interface MessageLoggerConfig {
   keepLines?: number;
   /** File size threshold in bytes before checking line count (default: 20MB) */
   rotationSizeThreshold?: number;
+  /** Called after the file has been rotated (its oldest lines are gone). */
+  onRotated?: () => void;
 }
 
 /** Callback fired after every message is logged */
@@ -78,12 +80,14 @@ export class MessageLogger {
   private keepLines: number;
   private rotationSizeThreshold: number;
   private onMessageLogged: OnMessageLoggedCallback | null = null;
+  private readonly onRotated: (() => void) | null;
 
   constructor(config: MessageLoggerConfig) {
     this.logPath = config.logPath;
     this.maxLines = config.maxLines ?? 100_000;
     this.keepLines = config.keepLines ?? 75_000;
     this.rotationSizeThreshold = config.rotationSizeThreshold ?? 20 * 1024 * 1024;
+    this.onRotated = config.onRotated ?? null;
 
     // Ensure directory exists
     const dir = path.dirname(this.logPath);
@@ -238,6 +242,7 @@ export class MessageLogger {
           try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/shared/MessageLogger.ts:217' }); } catch { /* ignore */ }
           throw rotateErr;
         }
+        this.onRotated?.(); // e.g. the Telegram log view follows the file (main-loop-freeze-conversation-list)
         console.log(`[message-logger] Rotated log: ${lines.length} -> ${kept.length} lines`);
       }
     } catch {

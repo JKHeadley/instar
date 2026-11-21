@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "conversation-list-log-view",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T12:30:58.423Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-log-view.md",
+  "artifactSha256": "6a784ff6e1dabf5ce1e6400c6377289b03ab8f27bee9e9ea4be5676218c87959",
+  "coveredFiles": [
+    "docs/specs/conversation-list-log-view.eli16.md",
+    "docs/specs/conversation-list-log-view.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/MessageLogger.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/conversation-list-log-view-alive.test.ts",
+    "tests/integration/conversation-list-log-view.test.ts",
+    "tests/unit/message-log-rotation-matches-old-code.test.ts",
+    "tests/unit/message-log-rotation-real-size.test.ts",
+    "tests/unit/telegram-list-log-view.test.ts",
+    "upgrades/next/conversation-list-log-view.md",
+    "upgrades/side-effects/conversation-list-log-view.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path change for the conversation list only, behind an off switch, with the old read on every failure path; no state or migration.",
+  "eli16Path": "docs/specs/conversation-list-log-view.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-log-view.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the view build is request- or boot-started with a time brake and no timer; not a self-triggered loop"
+  }
+}

@@ -25,6 +25,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
@@ -1347,6 +1348,23 @@ export class TelegramAdapter implements MessagingAdapter {
   /** One-time batch seed done (all live topics seeded in a single file pass). */
   private tailCacheSeeded = false;
   private static readonly TAIL_CACHE_LIMIT = 500;
+  /**
+   * The log file's newest TAIL_CACHE_LIMIT rows per topic, exactly as a read of the file parses them
+   * (docs/specs/conversation-list-log-view.md). Used ONLY by the conversation list and its unread
+   * counts, in place of their synchronous file scan, and only while it is ready; otherwise they run
+   * the old read immediately. Nothing else reads it, and nothing ever waits for it.
+   */
+  private logView: Map<number, LogEntry[]> | null = null;
+  private logViewBuild: Promise<boolean> | null = null;
+  /** Bumped by each rotation (and on any doubt about the file), so a pass over an older file is discarded. */
+  private logGeneration = 0;
+  /** The file's last line has no newline, so the next append lands on that same line. */
+  private logTornTail = false;
+  private logViewFailures = 0;
+  /** After a failed pass, no new pass starts before this time; a later list request starts it. */
+  private logViewNextAttemptAt = 0;
+  /** The off switch (`telegramHistoryView.enabled`, read live): false = the old read, always. */
+  private historyViewSwitch: () => boolean = () => true;
 
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
@@ -1445,7 +1463,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Initialize shared modules when feature flags are enabled
     if (SHARED_INFRA_FLAGS.useSharedMessageLogger) {
-      this.sharedLogger = new MessageLogger({ logPath: this.messageLogPath });
+      this.sharedLogger = new MessageLogger({ logPath: this.messageLogPath, onRotated: () => this.noteLogRotated() });
     }
     if (SHARED_INFRA_FLAGS.useSharedStallDetector) {
       this.sharedStallDetector = new StallDetector({
@@ -4702,7 +4720,165 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.topicTailCache.get(topicId) ?? null;
   }
 
+  /** True when the conversation list may read the view (switched on and built). */
+  isHistoryLoaded(): boolean {
+    return this.historyViewOn() && this.logView !== null;
+  }
+
+  /** Wire the off switch. Called once by the server with a live config read. */
+  setHistoryViewSwitch(on: () => boolean): void {
+    this.historyViewSwitch = on;
+  }
+
+  /** Whether the view is in use. Off drops it: appends are not recorded while off, so it is rebuilt from the file when turned back on. */
+  historyViewOn(): boolean {
+    let on = true;
+    try { on = this.historyViewSwitch() !== false; } catch { on = true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
+    if (!on && this.logView) { this.logView = null; this.logTornTail = false; }
+    return on;
+  }
+
+  /**
+   * Build the view with ONE pass over the file, read in small awaited blocks, off the request path.
+   * Single flight; never rejects; nothing waits for it. It reads to the end of the file and publishes
+   * in the same turn that confirms that end (same file, same size), so no append falls between the
+   * read and the view. A failed pass publishes nothing; the next list request may start another
+   * after 5 s, doubling to 5 min.
+   */
+  loadHistory(): Promise<boolean> {
+    if (!this.historyViewOn()) return Promise.resolve(false);
+    if (this.logViewBuild) return this.logViewBuild;
+    if (Date.now() < this.logViewNextAttemptAt) return Promise.resolve(this.logView !== null);
+    const pass = async (generation: number): Promise<boolean> => {
+      const found = new Map<number, LogEntry[]>();
+      const take = (line: string): void => {
+        if (!line) return;
+        // Every step inside the try: a line the file scan would skip must never stop the load.
+        try {
+          const entry = JSON.parse(line) as LogEntry;
+          const id = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+          if (typeof id === 'number') TelegramAdapter.addToLogView(found, id, entry);
+        } catch { /* @silent-fallback-ok — skip a malformed JSONL line, identical to the scan path */ }
+      };
+      /** Publish in the turn that confirmed the end of the file: no append can fall in between. */
+      const publish = (unterminated: boolean): void => {
+        this.logView = found;
+        this.logTornTail = unterminated;
+      };
+      let fh: fs.promises.FileHandle;
+      try { fh = await fs.promises.open(this.messageLogPath, 'r'); }
+      catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+        if (generation !== this.logGeneration || fs.existsSync(this.messageLogPath)) return false; // it appeared: read it
+        publish(false);
+        return true;
+      }
+      try {
+        const opened = await fh.stat();
+        const decoder = new StringDecoder('utf8');
+        const block = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0, carry = '';
+        for (;;) {
+          const { bytesRead } = await fh.read(block, 0, block.length, offset);
+          if (generation !== this.logGeneration) return false;
+          if (bytesRead > 0) {
+            offset += bytesRead;
+            const lines = (carry + decoder.write(block.subarray(0, bytesRead))).split('\n');
+            carry = lines.pop() ?? '';
+            for (const line of lines) take(line);
+            continue;
+          }
+          // At the end. Appends are synchronous on this thread, so what this check sees holds
+          // until the turn ends. A different file at the path means this pass read a replaced one.
+          let now: fs.Stats;
+          try { now = fs.statSync(this.messageLogPath); } catch { return false; }
+          if (now.ino !== opened.ino || now.dev !== opened.dev || now.size < offset) return false;
+          if (now.size !== offset) continue;
+          carry += decoder.end();
+          take(carry);
+          publish(carry.length > 0);
+          return true;
+        }
+      } finally {
+        await fh.close().catch(() => undefined); // @silent-fallback-ok — closing a read-only handle
+      }
+    };
+    const run = async (): Promise<boolean> => {
+      try {
+        // A rotation during the pass means it read the replaced file: read the new one.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (!this.historyViewOn()) return false;
+          if (!(await pass(this.logGeneration))) continue;
+          // A rotation while the handle closed dropped what this pass published: read the new file
+          // in this same flight, never report a load that left no view.
+          if (!this.logView) continue;
+          this.logViewFailures = 0;
+          return true;
+        }
+        throw new Error('the log changed underneath every read');
+      } catch (err) {
+        // @silent-fallback-ok — reported here; the list uses the old read and a later list request reads again.
+        console.error(`[telegram] background load of message history failed: ${err}`);
+        this.logViewFailures += 1;
+        this.logViewNextAttemptAt = Date.now() + Math.min(5_000 * 2 ** (this.logViewFailures - 1), 5 * 60_000);
+        return this.logView !== null;
+      }
+    };
+    this.logViewBuild = run().finally(() => { this.logViewBuild = null; });
+    return this.logViewBuild;
+  }
+
+  private static addToLogView(view: Map<number, LogEntry[]>, topicId: number, entry: LogEntry): void {
+    let tail = view.get(topicId);
+    if (!tail) { tail = []; view.set(topicId, tail); }
+    tail.push(entry);
+    if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+  }
+
+  /** Record an appended row exactly as a later read of the file will parse it. */
+  private noteLogRow(row: unknown): void {
+    if (!this.logView || !this.historyViewOn()) return; // a pass in progress reads it from the file
+    if (this.logTornTail) {
+      // The row joined an unterminated last line: what the file now holds is the file's to say.
+      this.noteLogRotated();
+      return;
+    }
+    const parsed = JSON.parse(JSON.stringify(row)) as LogEntry;
+    const id = parsed.topicId ?? (parsed as unknown as { channelId?: number }).channelId;
+    if (typeof id === 'number') TelegramAdapter.addToLogView(this.logView, id, parsed);
+  }
+
+  /** The file changed in a way the view cannot follow row by row (a rotation, a failed append): drop it and rebuild. */
+  private noteLogRotated(): void {
+    this.logGeneration += 1;
+    const hadView = this.logView !== null;
+    this.logView = null;
+    this.logTornTail = false;
+    if (hadView || this.logViewBuild) void this.loadHistory();
+  }
+
+  /**
+   * getTopicHistory for the conversation list and its unread counts: identical, except that where
+   * getTopicHistory would read the whole log file synchronously (the tail-cache seed and the
+   * per-topic scan), this reads the view instead, when it is ready. Not ready: the old read, now.
+   */
+  getTopicHistoryForList(topicId: number, limit: number = 20): LogEntry[] {
+    if (!this.isHistoryLoaded()) {
+      if (this.historyViewOn()) void this.loadHistory(); // start (or retry) the background build; never wait
+      return this.getTopicHistory(topicId, limit);
+    }
+    return this.readTopicHistory(topicId, limit, true);
+  }
+
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
+    return this.readTopicHistory(topicId, limit, false);
+  }
+
+  /**
+   * The history read. `fromView` (only getTopicHistoryForList, only while the view is ready): the
+   * seed and the per-topic scan read the view instead of the file. Everything else is identical.
+   */
+  private readTopicHistory(topicId: number, limit: number, fromView: boolean): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
       if (cached) return this.authorshipJoin.join(cached.slice(-limit));
@@ -4710,14 +4886,14 @@ export class TelegramAdapter implements MessagingAdapter {
       // pass — the live-tail streamer enumerates exactly that set, so without
       // this its first tick would trigger one full-file scan PER topic.
       if (!this.tailCacheSeeded) {
-        this.seedTailCacheFromLog();
+        this.seedTailCacheFromLog(fromView);
         this.tailCacheSeeded = true;
         const justSeeded = this.topicTailCache.get(topicId);
         if (justSeeded) return this.authorshipJoin.join(justSeeded.slice(-limit));
       }
       // Not a live topic (e.g. respawn history for an unregistered topic) —
       // per-topic scan once, then cache it.
-      const seeded = this.scanLogForTopic(topicId, TelegramAdapter.TAIL_CACHE_LIMIT);
+      const seeded = this.scanLogForTopic(topicId, TelegramAdapter.TAIL_CACHE_LIMIT, fromView);
       this.topicTailCache.set(topicId, seeded);
       return this.authorshipJoin.join(seeded.slice(-limit));
     }
@@ -4732,10 +4908,11 @@ export class TelegramAdapter implements MessagingAdapter {
    * enumerates). Topics with no entries get an empty array so they never
    * trigger a per-topic file scan of their own.
    */
-  private seedTailCacheFromLog(): void {
+  private seedTailCacheFromLog(fromView = false): void {
     for (const id of this.topicToSession.keys()) {
-      if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, []);
+      if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, fromView && this.logView ? [...(this.logView.get(id) ?? [])] : []);
     }
+    if (fromView && this.logView) return; // the view holds what this pass would read from the file
     if (!fs.existsSync(this.messageLogPath)) return;
     let lines: string[];
     try {
@@ -4943,7 +5120,9 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
+  private scanLogForTopic(topicId: number, limit: number, fromView = false): LogEntry[] {
+    // The view holds the file's newest TAIL_CACHE_LIMIT rows per topic, exactly as this scan reads them.
+    if (fromView && this.logView && limit <= TelegramAdapter.TAIL_CACHE_LIMIT) return (this.logView.get(topicId) ?? []).slice(-limit);
     if (!fs.existsSync(this.messageLogPath)) return [];
 
     // Read the file to find matching entries.
@@ -4985,7 +5164,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Phase 1b: Delegate to shared MessageLogger when flag is enabled
     if (this.sharedLogger) {
-      const persisted = this.sharedLogger.append({
+      const sharedRow = {
         messageId: entry.messageId,
         channelId: entry.topicId,
         text: entry.text,
@@ -5000,8 +5179,11 @@ export class TelegramAdapter implements MessagingAdapter {
         ...(entry.via ? { via: entry.via, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
         provenance: entry.provenance,
         ...(entry.rowOrigin ? { rowOrigin: entry.rowOrigin } : {}),
-      });
-      if (!persisted) return;
+      };
+      const persisted = this.sharedLogger.append(sharedRow);
+      // A failed append may have written part of the line: the view re-reads what the file holds.
+      if (!persisted) { this.noteLogRotated(); return; }
+      this.noteLogRow(sharedRow);
       this.rememberLoggedEntry(entry, dedupeKey);
       // Also notify the Telegram-specific callback for backward compatibility
       if (this.onMessageLogged) {
@@ -5038,9 +5220,12 @@ export class TelegramAdapter implements MessagingAdapter {
     // Legacy path (flag disabled)
     try {
       fs.appendFileSync(this.messageLogPath, JSON.stringify(entry) + '\n');
+      this.noteLogRow(entry);
       this.maybeRotateLog();
     } catch (err) {
       console.error(`[telegram] Failed to append to message log: ${err}`);
+      // It may have written part of the line: the view re-reads what the file holds.
+      this.noteLogRotated();
       DegradationReporter.getInstance().report({
         feature: 'Telegram.messageLog',
         primary: 'JSONL message log for conversation history and recovery',
@@ -5140,6 +5325,7 @@ export class TelegramAdapter implements MessagingAdapter {
           try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:2844' }); } catch { /* ignore */ }
           throw rotateErr;
         }
+        this.noteLogRotated(); // the list's log view follows the file (conversation-list-log-view)
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
       }
     } catch {
