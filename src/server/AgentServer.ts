@@ -7643,7 +7643,7 @@ export class AgentServer {
       // A member's computer joining from the owner's team invite (docs/specs/member-browser-any-computer.md).
       const joinDeps = {
         config: () => options.config, pairing: () => this.mobilePairing ?? null,
-        machineId: () => this.meshSelfId ?? null,
+        machineId: () => this.meshSelfId ?? (options as { coordinator?: { identity?: { machineId?: string } | null } }).coordinator?.identity?.machineId ?? null,
         writesBlockedBy: () => this.computerWritesBlockedBy(),
         ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? '').trim(),
         notice: {

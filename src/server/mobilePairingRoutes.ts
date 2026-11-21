@@ -2663,6 +2663,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
+    // member-browser-any-computer §3.3.6: the owner's phone removes a member's computer from People.
+    { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}\/computers\/[^/]{1,128}\/forget$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone|switches\/turn-on)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
