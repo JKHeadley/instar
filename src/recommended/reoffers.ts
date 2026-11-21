@@ -47,8 +47,9 @@ export interface ProblemKind {
 
 /**
  * The real-problem table. Each kind is called only from its named source: `voice-unreadable` from the shared
- * transcription wrapper, `secret-lost` from the boot check over the loaded config. The other kinds in the spec's
- * table (`address-repeatedly-down`, `provider-exhausted`, `state-loss-risk`) join with their sources.
+ * transcription wrapper, `secret-lost` from the boot check over the loaded config, `state-loss-risk` from the restore marker
+ * read at start. The other kinds in the spec's table (`address-repeatedly-down`, `provider-exhausted`) join
+ * with their sources.
  */
 export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
   'voice-unreadable': {
@@ -58,6 +59,10 @@ export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
   'secret-lost': {
     service: 'bitwarden',
     why: "One of my saved passwords or keys is missing on this machine, and there's no vault holding a copy I could restore it from.",
+  },
+  'state-loss-risk': {
+    service: 'github-state-backup',
+    why: "I was just restored from a snapshot kept on this same machine, and there's no copy of my memory and settings anywhere else. If this machine is lost, so is everything I know.",
   },
 };
 

@@ -18495,6 +18495,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
     reoffersEnabled: () => !!ctx.config.recommendedServices?.reoffers?.enabled,
     unresolvedSecrets: () => findUnresolvedSecrets(ctx.config),
+    // Unknown self id counts every machine, so the answer leans to "a copy exists" and no re-offer goes out.
+    otherMachineCount: () => { const all = ctx.listPoolMachines?.() ?? []; return ctx.meshSelfId ? all.filter((m) => m.machineId !== ctx.meshSelfId).length : all.length; },
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;

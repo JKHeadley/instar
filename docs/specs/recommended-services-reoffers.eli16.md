@@ -8,6 +8,8 @@ This change builds the first and simplest of those reasons: a real problem that 
 
 A second problem is wired in too: when the agent starts, it checks whether any of its settings points at a saved password or key that is no longer there. That happens when the encrypted store was lost or can't be opened, and no vault keeps a copy. If the person said no to Bitwarden earlier, the agent asks once more, in the same way. The message never names which setting, only that one is missing.
 
+A third problem: when the agent is restored from a snapshot kept on its own machine, it leaves itself a note. At its next start it reads the note and checks whether a copy of its memory and settings exists anywhere else, either a working GitHub backup or another machine it runs on. If there's none and the person said no to the GitHub backup, it asks once more. The note is cleared even when the feature is off, so turning it on later never brings up an old restore.
+
 ## The rules, all in code
 
 - Only a no, or an offer the person never answered, can be asked about again. The problem must have happened after that no.
