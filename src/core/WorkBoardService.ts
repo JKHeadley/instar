@@ -19,19 +19,35 @@ import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
   materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
-  MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX,
+  normalizeRequestText,
+  MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
-  type WorkRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal,
+  type WorkRecordType, type SystemRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal, type CardRef, type HoldLiftReason,
 } from './WorkCardStore.js';
 
-export interface WorkBoardLimits { recordBytes: number; title: number; need: number; recommendation: number; doneItemText: number; optionText: number }
+export interface WorkBoardLimits { recordBytes: number; title: number; need: number; recommendation: number; doneItemText: number; optionText: number; /** agent-work-cards-default §2: a progress note's text ceiling (owner-set, hard-capped by `SCHEMA_MAX.noteText`). */ noteText: number }
 export interface WorkBoardPickupSettings { tickSeconds: number; freeCheckMinSeconds: number; freeCheckMaxSeconds: number; maxSpendingAttempts: number; surfaceAfterHours: number; ownerCatchUpSeconds: number }
-export interface WorkBoardSettings { softOpenCards: number; maxAgentCardsPerDay: number; quietAfterHours: number; limits: WorkBoardLimits; pickup: WorkBoardPickupSettings }
+/** agent-work-cards-default §3/§Migration: the request-to-card gate and sweep. `enabled` omitted ⇒ on where the board is on. */
+export interface WorkBoardRequestCardSettings { enabled: boolean; duplicateHintHours: number; backfillMaxAgeDays: number; sweepPerTick: number; unrecordedWorkMinutes: number; floorRecentHours: number }
+export interface WorkBoardSettings {
+  softOpenCards: number; maxAgentCardsPerDay: number; quietAfterHours: number; limits: WorkBoardLimits; pickup: WorkBoardPickupSettings;
+  requestCards: WorkBoardRequestCardSettings;
+  /** §2 "Note rate and the drain set". */
+  maxNotesPerCardPerDay: number; noteCoalesceMinutes: number; noteDrainPerTick: number;
+  /** §9 (slice 2/3 reads them; owner-set now so the settings surface is complete). */
+  softOpenBlockers: number; maxOpenAsksPerCard: number;
+}
+
+/** The replicated journal's per-kind rate bucket (`takeToken`: capacity 100): the sweep and the note drain together never exceed it. */
+export const JOURNAL_BUCKET_CAPACITY = 100;
 
 export const DEFAULT_WORK_BOARD_SETTINGS: WorkBoardSettings = Object.freeze({
   softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
-  limits: Object.freeze({ recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 }),
+  limits: Object.freeze({ recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200, noteText: 4000 }),
   pickup: Object.freeze({ tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 }),
+  requestCards: Object.freeze({ enabled: true, duplicateHintHours: 24, backfillMaxAgeDays: 14, sweepPerTick: 25, unrecordedWorkMinutes: 10, floorRecentHours: 72 }),
+  maxNotesPerCardPerDay: 50, noteCoalesceMinutes: 60, noteDrainPerTick: 25,
+  softOpenBlockers: 10, maxOpenAsksPerCard: 5,
 }) as WorkBoardSettings;
 
 /** Merge a partial config block over the defaults, keeping only positive whole numbers. */
@@ -40,27 +56,43 @@ export function resolveWorkBoardSettings(raw: unknown): WorkBoardSettings {
   const pos = (v: unknown, d: number) => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : d);
   const lim = (r.limits && typeof r.limits === 'object' ? r.limits : {}) as Record<string, unknown>;
   const pk = (r.pickup && typeof r.pickup === 'object' ? r.pickup : {}) as Record<string, unknown>;
+  const rc = (r.requestCards && typeof r.requestCards === 'object' ? r.requestCards : {}) as Record<string, unknown>;
   const D = DEFAULT_WORK_BOARD_SETTINGS;
+  // The sweep and the drain share one journal bucket: clamp their sum to its capacity, sweep first (Fixed limits).
+  let sweep = pos(rc.sweepPerTick, D.requestCards.sweepPerTick);
+  let drain = pos(r.noteDrainPerTick, D.noteDrainPerTick);
+  if (sweep + drain > JOURNAL_BUCKET_CAPACITY) { sweep = Math.min(sweep, JOURNAL_BUCKET_CAPACITY - 1); drain = Math.max(1, JOURNAL_BUCKET_CAPACITY - sweep); }
   return {
     softOpenCards: pos(r.softOpenCards, D.softOpenCards), maxAgentCardsPerDay: pos(r.maxAgentCardsPerDay, D.maxAgentCardsPerDay), quietAfterHours: pos(r.quietAfterHours, D.quietAfterHours),
     limits: {
       recordBytes: pos(lim.recordBytes, D.limits.recordBytes), title: pos(lim.title, D.limits.title), need: pos(lim.need, D.limits.need),
       recommendation: pos(lim.recommendation, D.limits.recommendation), doneItemText: pos(lim.doneItemText, D.limits.doneItemText), optionText: pos(lim.optionText, D.limits.optionText),
+      // A maximal note is valid on every replica: the owner may raise it only to the hard ceiling.
+      noteText: Math.min(SCHEMA_MAX.noteText, pos(lim.noteText, D.limits.noteText)),
     },
     pickup: {
       tickSeconds: pos(pk.tickSeconds, D.pickup.tickSeconds), freeCheckMinSeconds: Math.max(60, pos(pk.freeCheckMinSeconds, D.pickup.freeCheckMinSeconds)),
       freeCheckMaxSeconds: pos(pk.freeCheckMaxSeconds, D.pickup.freeCheckMaxSeconds), maxSpendingAttempts: Math.max(1, pos(pk.maxSpendingAttempts, D.pickup.maxSpendingAttempts)),
       surfaceAfterHours: pos(pk.surfaceAfterHours, D.pickup.surfaceAfterHours), ownerCatchUpSeconds: pos(pk.ownerCatchUpSeconds, D.pickup.ownerCatchUpSeconds),
     },
+    requestCards: {
+      enabled: rc.enabled !== false, duplicateHintHours: pos(rc.duplicateHintHours, D.requestCards.duplicateHintHours), backfillMaxAgeDays: pos(rc.backfillMaxAgeDays, D.requestCards.backfillMaxAgeDays),
+      sweepPerTick: sweep, unrecordedWorkMinutes: pos(rc.unrecordedWorkMinutes, D.requestCards.unrecordedWorkMinutes), floorRecentHours: pos(rc.floorRecentHours, D.requestCards.floorRecentHours),
+    },
+    maxNotesPerCardPerDay: pos(r.maxNotesPerCardPerDay, D.maxNotesPerCardPerDay), noteCoalesceMinutes: Math.max(1, pos(r.noteCoalesceMinutes, D.noteCoalesceMinutes)), noteDrainPerTick: drain,
+    softOpenBlockers: pos(r.softOpenBlockers, D.softOpenBlockers), maxOpenAsksPerCard: pos(r.maxOpenAsksPerCard, D.maxOpenAsksPerCard),
   };
 }
 
-const SETTING_GROUPS: ReadonlySet<string> = new Set(['limits', 'pickup']);
+const SETTING_GROUPS: ReadonlySet<string> = new Set(['limits', 'pickup', 'requestCards']);
 const SETTING_NAMES: ReadonlySet<string> = new Set([
-  'softOpenCards', 'maxAgentCardsPerDay', 'quietAfterHours',
+  'softOpenCards', 'maxAgentCardsPerDay', 'quietAfterHours', 'maxNotesPerCardPerDay', 'noteCoalesceMinutes', 'noteDrainPerTick', 'softOpenBlockers', 'maxOpenAsksPerCard',
   ...Object.keys(DEFAULT_WORK_BOARD_SETTINGS.limits).map((k) => `limits.${k}`),
   ...Object.keys(DEFAULT_WORK_BOARD_SETTINGS.pickup).map((k) => `pickup.${k}`),
+  ...Object.keys(DEFAULT_WORK_BOARD_SETTINGS.requestCards).map((k) => `requestCards.${k}`),
 ]);
+/** The one boolean setting; every other setting is a positive whole number. */
+const BOOLEAN_SETTINGS: ReadonlySet<string> = new Set(['requestCards.enabled']);
 
 /**
  * Validate a settings change from the Work page (§7: positive whole numbers; a free-check delay
@@ -75,8 +107,10 @@ export function validateSettingsPatch(patch: unknown): { ok: true } | { ok: fals
       // Only a known setting is stored: a mistyped name is refused, never saved beside the real one.
       if (!SETTING_NAMES.has(name) && !SETTING_GROUPS.has(name)) return name;
       if (v && typeof v === 'object' && !Array.isArray(v)) { const bad = walk(v as Record<string, unknown>, name); if (bad) return bad; continue; }
+      if (BOOLEAN_SETTINGS.has(name)) { if (typeof v !== 'boolean') return name; continue; }
       if (!(typeof v === 'number' && Number.isInteger(v) && v > 0)) return name;
       if (name === 'pickup.freeCheckMinSeconds' && v < 60) return name;
+      if (name === 'limits.noteText' && v > SCHEMA_MAX.noteText) return name;
     }
     return null;
   };
@@ -125,6 +159,10 @@ export interface CardView {
   mayHaveBeenHandedOver: boolean;
 }
 
+/** Why the holder did not write a requested card yet (agent-work-cards-default §3): terminal reasons leave the needs-card set; retryable ones stay. */
+export const TERMINAL_CARD_REASONS: ReadonlySet<string> = new Set(['not-operator-conversation', 'backfill-skipped-stale', 'card-exists-linked', 'invalid-record', 'over-limit', 'credential-refused', 'done-item-required']);
+export const RETRYABLE_CARD_REASONS: ReadonlySet<string> = new Set(['mixed-versions', 'daily-card-ceiling', 'store-unavailable', 'rate-limited', 'crash-before-gate']);
+
 /** Deterministic transcript-line id for a record (so a repeat append is a no-op and a surface can recognise the line). */
 export function lineIdFor(recordId: string): string {
   return `wb-${createHash('sha256').update(recordId).digest('hex').slice(0, 24)}`;
@@ -132,8 +170,16 @@ export function lineIdFor(recordId: string): string {
 
 export function newCardId(): string { return `wc_${randomBytes(8).toString('hex')}`; }
 
-const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror', 'brief'] as const;
-const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
+const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror', 'brief', 'refs', ...GATE_ONLY_FIELDS] as const;
+const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief', 'refs'] as const;
+
+/** An agent-work card (agent-work-cards-default §1) as the WRITE sees it: agent-carried, inward, no recommendation, no owner-confirms item. */
+export function isAgentWorkInput(fields: Record<string, unknown>): boolean {
+  if (fields.outward === true) return false;
+  if (fields.carrier !== undefined && fields.carrier !== 'agent') return false;
+  if (Array.isArray(fields.doneWhen) && (fields.doneWhen as Array<Record<string, unknown>>).some((d) => d?.certify !== 'agent-may-certify')) return false;
+  return true;
+}
 
 /**
  * The Needs-you item keys a card may say it is about (work-board-cards-appear §3): sources whose keys are
@@ -156,6 +202,15 @@ export class WorkBoardService {
   private keys = new Set<string>();
   /** Capacity-wait bookkeeping (in memory on the acting machine, §Multi-machine). */
   readonly capacityWait = new Map<string, { since: number; nextCheckAt: number; delayMs: number; reason: string; checkedAt?: number }>();
+  /**
+   * agent-work-cards-default §3 "The card index is the truth": `<kind>:<id>` of every `refs` entry → the card whose
+   * `refs` names it. Rebuilt with the index; `commitment.cardId` is only a cache of what this says.
+   */
+  private refIndex = new Map<string, string>();
+  /** The index keys each card currently holds, so a refold drops the entries an edit removed. */
+  private refsByCard = new Map<string, string[]>();
+  /** Counted refusals the graduation record reads (§1: refused agent writes on `not-started` cards). */
+  readonly stats = { notStartedRefusals: 0 };
 
   constructor(private readonly deps: WorkBoardDeps) {}
 
@@ -167,6 +222,7 @@ export class WorkBoardService {
     const { byCard, policies } = partitionRecords(this.records);
     this.byCard = byCard; this.policies = policies;
     this.views.clear();
+    this.refIndex.clear(); this.refsByCard.clear();
     for (const id of byCard.keys()) this.refold(id);
   }
 
@@ -202,6 +258,10 @@ export class WorkBoardService {
     const causes = derivePickupCauses(cardId, recs, this.policies);
     const pickups = foldPickups(cardId, recs, causes);
     this.views.set(cardId, { card, pickups });
+    for (const k of this.refsByCard.get(cardId) ?? []) if (this.refIndex.get(k) === cardId) this.refIndex.delete(k);
+    const keys = card.refs.map((r) => `${r.kind}:${r.id}`);
+    for (const k of keys) this.refIndex.set(k, cardId);
+    this.refsByCard.set(cardId, keys);
   }
 
   cardIds(): string[] { return [...this.views.keys()]; }
@@ -211,6 +271,43 @@ export class WorkBoardService {
   newestHlc(): HlcTimestamp | null { return this.records.length ? this.records[this.records.length - 1].hlc : null; }
   totalRecords(): number { return this.records.length; }
 
+  /** The card whose `refs` names this reference (agent-work-cards-default §3), or null. */
+  cardForRef(kind: CardRef['kind'], id: string): string | null { return this.refIndex.get(`${kind}:${id}`) ?? null; }
+
+  /** The gate's first-run record for a team (§3 "The first run"), or null before the first pass. */
+  enabledAt(teamKey: string): { at: string; id: string } | null {
+    const key = mintRecordKey('enabled-at', null, { teamKey });
+    const r = this.records.find((x) => x.id === key && x.d.recordType === 'enabled-at');
+    return r ? { at: String(r.d.at), id: r.id } : null;
+  }
+
+  /** Every `not-started` card (§1 "One aggregated row, not zero"), oldest first. */
+  notStartedCardIds(): string[] {
+    const out: Array<{ id: string; at: string }> = [];
+    for (const id of this.views.keys()) { const v = this.view(id); if (v && v.status === 'not-started') out.push({ id, at: v.card.createdAt ?? '' }); }
+    return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1)).map((x) => x.id);
+  }
+
+  /**
+   * Duplicate HINT (§3, never a merge): another open card in the same source conversation with the same verified
+   * message id, or (absent one) the same normalised title within `requestCards.duplicateHintHours`.
+   */
+  possibleDuplicateOf(cardId: string): string[] {
+    const me = this.views.get(cardId)?.card; if (!me || !me.source) return [];
+    const hours = this.deps.settings().requestCards.duplicateHintHours * 3_600_000;
+    const myAt = me.createdAt ? Date.parse(me.createdAt) : NaN;
+    const out: string[] = [];
+    for (const [id, v] of this.views) {
+      if (id === cardId) continue;
+      const c = v.card;
+      if (!c.created || c.redacted || c.archives.length || c.done || !c.source || c.source.conversationKey !== me.source.conversationKey) continue;
+      if (c.source.messageId === me.source.messageId) { out.push(id); continue; }
+      const at = c.createdAt ? Date.parse(c.createdAt) : NaN;
+      if (Number.isFinite(myAt) && Number.isFinite(at) && Math.abs(myAt - at) <= hours && normalizeRequestText(c.title) === normalizeRequestText(me.title)) out.push(id);
+    }
+    return out.sort();
+  }
+
   view(cardId: string): CardView | null {
     const v = this.views.get(cardId);
     if (!v) return null;
@@ -218,7 +315,9 @@ export class WorkBoardService {
     const now = this.deps.now();
     const active = v.pickups.filter((p) => p.status === 'pending' || p.status === 'parked');
     const parked = active.some((p) => p.status === 'parked');
-    const status = deriveStatus(v.card, { pendingOrParked: active.length > 0, parked }, now, s.quietAfterHours);
+    // The churn brake's park on a quiet re-pickup is what derives `quiet` (agent-work-cards-default §3).
+    const quietParked = active.some((p) => p.status === 'parked' && p.cause.repickup === true && /^decision:agent-churn/.test(p.closedReason ?? ''));
+    const status = deriveStatus(v.card, { pendingOrParked: active.length > 0, parked, quietParked }, now, s.quietAfterHours);
     const wait = active.map((p) => this.capacityWait.get(p.cause.id)).filter(Boolean) as Array<{ since: number }>;
     const capacityWaitSurfaced = wait.some((w) => now - w.since > s.pickup.surfaceAfterHours * 3_600_000);
     return { card: v.card, status, pickups: v.pickups, capacityWaitSurfaced, mayHaveBeenHandedOver: this.uncertainHandOver(cardId) };
@@ -348,8 +447,25 @@ export class WorkBoardService {
     return owner ? { personKey: owner } : v;
   }
 
+  /** `isOwner` is stamped here from the resolved principal, never from a body (agent-work-cards-default §3 "Gate-only fields"). */
   private byOf(p: WorkPrincipal): By {
-    return p.kind === 'person' ? { kind: 'person', personKey: p.personKey, proof: p.proof } : { kind: 'agent' };
+    return p.kind === 'person' ? { kind: 'person', personKey: p.personKey, proof: p.proof, isOwner: p.isOwner } : { kind: 'agent' };
+  }
+
+  /** `created.requester`, the two hashes and `pickupHold` are the in-process gate's alone (§3). */
+  private gateOnlyRefusal(p: WorkPrincipal, fields: Record<string, unknown>): Refusal | null {
+    if (p.kind === 'agent' && p.server === true) return null;
+    const hit = GATE_ONLY_FIELDS.find((k) => fields[k] !== undefined);
+    return hit ? refuse(400, 'gate-only-field', { field: hit, message: 'This field is written only by the request-to-card gate when a commitment is recorded (POST /commitments). It cannot be set by hand.' }) : null;
+  }
+
+  /** `not-started` (§1): an agent-work card the owner has not let start refuses the agent's work records, counted. */
+  private notStartedRefusal(p: WorkPrincipal, cardId: string): Refusal | null {
+    if (p.kind === 'person') return null;
+    const v = this.view(cardId);
+    if (!v || v.status !== 'not-started') return null;
+    this.stats.notStartedRefusals++;
+    return refuse(409, 'not-started', { message: 'This card is waiting for the team owner\'s approval (or a board setting) before the agent works it. Tell the requester it is waiting, and do nothing else on it.' });
   }
 
   private textFields(fields: Record<string, unknown>): Array<[string, string]> {
@@ -365,6 +481,7 @@ export class WorkBoardService {
     const src = fields.source as Record<string, unknown> | undefined;
     if (src) { push('source.conversationKey', src.conversationKey); push('source.messageId', src.messageId); }
     push('projectKey', fields.projectKey);
+    if (Array.isArray(fields.refs)) (fields.refs as Array<Record<string, unknown>>).forEach((r, i) => push(`refs[${i}].id`, r?.id));
     const brief = fields.brief as Record<string, unknown> | null | undefined;
     if (brief && typeof brief === 'object') {
       push('brief.ask', brief.ask); push('brief.goal', brief.goal); push('brief.chiefSaid', brief.chiefSaid);
@@ -422,6 +539,68 @@ export class WorkBoardService {
     return this.write(recordType, cardId, { ...safe, by: { kind: 'system' }, at: new Date(this.deps.now()).toISOString(), machineId: this.deps.machineId }) as Result<{ recordId: string; data: Record<string, unknown>; seq?: number }>;
   }
 
+  /**
+   * The lease holder's records (agent-work-cards-default): a `note` pointer, a `hold-lifted`, a `quiet-repickup`, the team's
+   * `enabled-at`. Idempotent where the key is derived (a repeat answers `card-exists`-style `duplicate-record`, writes nothing).
+   */
+  writeHolder(recordType: Exclude<SystemRecordType, 'dispatching' | 'dispatched'>, cardId: string | null, fields: Record<string, unknown>, keyFrom?: { eventId?: string }): Result<{ recordId: string; data: Record<string, unknown>; seq?: number; duplicate?: boolean }> {
+    const key = mintRecordKey(recordType, cardId, { eventId: (keyFrom?.eventId ?? fields.eventId) as string | undefined, teamKey: fields.teamKey as string | undefined, newestAgentRecordId: fields.newestAgentRecordId as string | undefined });
+    if (this.keys.has(key)) return { ok: true, recordId: key, data: this.records.find((r) => r.id === key)?.d ?? {}, duplicate: true };
+    return this.write(recordType, cardId, { ...fields, by: { kind: 'system' }, at: new Date(this.deps.now()).toISOString() }, key) as Result<{ recordId: string; data: Record<string, unknown>; seq?: number; duplicate?: boolean }>;
+  }
+
+  /** The hold on a gate-written card is lifted (§3 "Pickup hold"): one record, the pickup's cause. */
+  liftHold(cardId: string, reason: HoldLiftReason): Result<{ recordId: string }> {
+    const v = this.view(cardId);
+    if (!v || !v.card.created) return refuse(404, 'not-found');
+    if (!v.card.pickupHeld) return refuse(409, 'not-held');
+    return this.writeHolder('hold-lifted', cardId, { reason });
+  }
+
+  /** The one automatic re-pickup of a quiet card (§3 "Quiet"): keyed on the newest agent-written record. */
+  quietRepickup(cardId: string): Result<{ recordId: string; duplicate?: boolean }> {
+    const v = this.view(cardId);
+    if (!v || !v.card.created || !v.card.newestAgentRecordId) return refuse(404, 'not-found');
+    return this.writeHolder('quiet-repickup', cardId, { newestAgentRecordId: v.card.newestAgentRecordId });
+  }
+
+  /** A `note` pointer for one event, or one coalesced interval's events (§2). */
+  notePointer(cardId: string, eventIds: string[]): Result<{ recordId: string; duplicate?: boolean }> {
+    if (!eventIds.length) return refuse(400, 'event-required');
+    const v = this.view(cardId);
+    if (!v || !v.card.created) return refuse(404, 'not-found');
+    // One event, one pointer; a coalesced interval's pointer is keyed by its first event (idempotent either way).
+    return this.writeHolder('note', cardId, eventIds.length === 1 ? { eventId: eventIds[0] } : { eventIds }, { eventId: eventIds[0] });
+  }
+
+  /** The gate's first-run record for a team: earliest `at` wins by the store's merge; a second write answers duplicate. */
+  markEnabledAt(teamKey: string): Result<{ recordId: string; duplicate?: boolean }> { return this.writeHolder('enabled-at', null, { teamKey }); }
+
+  /** Every event id the card's `note` pointers name (the drain reconciles its pending set against this, §2). */
+  notedEventIds(cardId: string): Set<string> {
+    const out = new Set<string>();
+    const v = this.views.get(cardId); if (!v) return out;
+    for (const n of v.card.notes) for (const e of n.eventIds) out.add(e);
+    return out;
+  }
+
+  /** `note` pointers written today for a card (the daily ceiling, §2). */
+  notePointersOn(cardId: string, day: string): number {
+    const v = this.views.get(cardId); if (!v) return 0;
+    return v.card.notes.filter((n) => this.deps.dayOf(Date.parse(n.at)).day === day).length;
+  }
+
+  /** The text a progress note is checked and written with (§2): the credential guard, the owner-set limit, the hard ceiling. */
+  checkNoteText(text: unknown): Refusal | { ok: true; text: string } {
+    if (typeof text !== 'string' || !text.trim()) return refuse(400, 'text-required');
+    // The credential guard first (a secret is refused whatever its length), then the owner-set limit.
+    const kind = this.deps.detectCredential(text);
+    if (kind) return refuse(422, 'credential-refused', { field: 'text', credentialKind: kind, message: `The note looks like it contains a credential (${kind}). Reword it, or send the secret through Secret Drop.` });
+    const limit = this.deps.settings().limits.noteText;
+    if (text.length > limit) return refuse(413, 'over-limit', { field: 'text', limit, length: text.length, message: `A note is at most ${limit} characters here. Split it, or write substantive progress as evidence on the card.` });
+    return { ok: true, text: `${NOTE_EVENT_PREFIX}${text}` };
+  }
+
   /** Every record in the index as journal union entries (a reader that folds the board itself, e.g. project apps' served version). */
   entries(): UnionEntry[] { return this.records.map((r) => ({ data: r.d, origin: r.origin })); }
 
@@ -436,6 +615,7 @@ export class WorkBoardService {
     const fields: Record<string, unknown> = {};
     for (const k of CREATE_FIELDS) if (input[k] !== undefined) fields[k] = input[k];
     const own = this.ownershipRefusal(p, fields, null); if (own) return own;
+    const gateOnly = this.gateOnlyRefusal(p, fields); if (gateOnly) return gateOnly;
     if (fields.carrier !== undefined) fields.carrier = this.resolveOwnerAlias(fields.carrier);
     if (Array.isArray(fields.doneWhen) && fields.doneWhen.length === 0) return refuse(400, 'done-item-required');
     if (!Array.isArray(fields.doneWhen)) return refuse(400, 'done-item-required');
@@ -444,8 +624,12 @@ export class WorkBoardService {
       const ck = (fields.carrier as { personKey?: string })?.personKey;
       if (!owner || ck !== owner) return refuse(400, 'carrier-not-allowed', { message: 'In this phase a card is carried by the agent or by the team owner.' });
     }
-    if (fields.outward === undefined) fields.outward = true; // default when unsure: true (Decision points)
+    // `outward` defaults to `false` for the agent and `true` for a person (agent-work-cards-default §1, amending
+    // work-board-asks §1): the external-operation gate and the outbound guards hold whatever the flag says, so a wrong
+    // `false` cannot by itself send or spend; the awareness entry tells the agent to set `true` when unsure.
+    if (fields.outward === undefined) fields.outward = p.kind === 'person';
     if (fields.carrier === undefined) fields.carrier = 'agent';
+    if (Array.isArray(fields.refs) && (fields.refs as unknown[]).length > MAX_REFS) return refuse(400, 'too-many-refs', { limit: MAX_REFS });
     const t = this.checkText(fields); if (t) return t;
     const linkErr = this.checkAttachmentLinks(undefined, fields.links); if (linkErr) return linkErr;
     if (serverCard && (p.kind !== 'agent' || !isCardId(serverCard.cardId))) return refuse(400, 'bad-server-card');
@@ -517,16 +701,46 @@ export class WorkBoardService {
    */
   askFieldsRefusal(p: WorkPrincipal, fields: Record<string, unknown>, cardId: string | null): Refusal | null {
     if (p.kind === 'person') return null;
-    const why = { recommendation: 'A card the agent writes says what it recommends. Add a recommendation.', whyYou: 'A card the agent writes says why it needs the person and not the agent. Add whyYou.' };
+    const why = { recommendation: 'A card the agent writes that asks the person says what it recommends. Add a recommendation.', whyYou: 'A card the agent writes that asks the person says why it needs them and not the agent. Add whyYou.' };
     if (cardId === null) {
+      // agent-work-cards-default §1 (amending work-board-cards-appear §2): an AGENT-WORK card asks nothing, so it
+      // needs neither field. The requirement stands for every card that is an ask at creation: `outward: true`, a
+      // person carrier, or any done item that a person must confirm (`certify` defaults to owner-confirms).
+      if (isAgentWorkInput(fields)) {
+        if (fields.recommendation !== undefined && fields.recommendation !== null && !nonEmpty(fields.recommendation)) return refuse(400, 'recommendation-required', { message: why.recommendation });
+        if (fields.whyYou !== undefined && fields.whyYou !== null && !nonEmpty(fields.whyYou)) return refuse(400, 'why-you-required', { message: why.whyYou });
+        return null;
+      }
       if (!nonEmpty(fields.recommendation)) return refuse(400, 'recommendation-required', { message: why.recommendation });
       if (!nonEmpty(fields.whyYou)) return refuse(400, 'why-you-required', { message: why.whyYou });
       return null;
     }
     const card = this.view(cardId)?.card;
     if (!card || card.createdBy?.kind !== 'agent') return null;
-    if (fields.recommendation !== undefined && !nonEmpty(fields.recommendation)) return refuse(400, 'recommendation-required', { message: why.recommendation });
-    if (fields.whyYou !== undefined && !nonEmpty(fields.whyYou)) return refuse(400, 'why-you-required', { message: why.whyYou });
+    // An edit that makes an agent-work card an ask (outward, a person carrier, an owner-confirms item) re-runs the
+    // same check on the record that makes it one (§1): the fields must be present on the card or on the edit.
+    const becomesAsk = fields.outward === true
+      || (fields.carrier !== undefined && fields.carrier !== 'agent')
+      || (Array.isArray(fields.doneWhen) && (fields.doneWhen as Array<Record<string, unknown>>).some((d) => d?.certify !== 'agent-may-certify'));
+    const has = (k: 'recommendation' | 'whyYou') => (fields[k] !== undefined ? nonEmpty(fields[k]) : nonEmpty(card[k]));
+    if (becomesAsk) {
+      if (!has('recommendation')) return refuse(400, 'recommendation-required', { message: why.recommendation });
+      if (!has('whyYou')) return refuse(400, 'why-you-required', { message: why.whyYou });
+    }
+    if (fields.recommendation !== undefined && !nonEmpty(fields.recommendation) && !card.agentWork) return refuse(400, 'recommendation-required', { message: why.recommendation });
+    if (fields.whyYou !== undefined && !nonEmpty(fields.whyYou) && !card.agentWork) return refuse(400, 'why-you-required', { message: why.whyYou });
+    return null;
+  }
+
+  /** A `waiting-on` a person on an agent-work card makes it an ask (§1): both fields must be on the card or on the record. */
+  waitingOnAskRefusal(p: WorkPrincipal, cardId: string, input: { principal?: unknown; recommendation?: unknown; whyYou?: unknown }): Refusal | null {
+    if (p.kind === 'person') return null;
+    const card = this.view(cardId)?.card;
+    if (!card || card.createdBy?.kind !== 'agent') return null;
+    const principal = this.resolveOwnerAlias(input.principal);
+    if (!principal || typeof principal !== 'object') return null;
+    if (!(input.recommendation !== undefined ? nonEmpty(input.recommendation) : nonEmpty(card.recommendation))) return refuse(400, 'recommendation-required', { message: 'Waiting on a person makes this card an ask: say what you recommend (recommendation) on this record or on the card first.' });
+    if (!(input.whyYou !== undefined ? nonEmpty(input.whyYou) : nonEmpty(card.whyYou))) return refuse(400, 'why-you-required', { message: 'Waiting on a person makes this card an ask: say why it needs them (whyYou) on this record or on the card first.' });
     return null;
   }
 
@@ -563,6 +777,7 @@ export class WorkBoardService {
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
     const own = this.ownershipRefusal(p, input, card); if (own) return own;
+    const gateOnly = this.gateOnlyRefusal(p, input); if (gateOnly) return gateOnly;
     const changed: Record<string, unknown> = {};
     for (const k of EDIT_FIELDS) {
       if (input[k] === undefined) continue;
@@ -570,6 +785,9 @@ export class WorkBoardService {
       const cur = (card as unknown as Record<string, unknown>)[k];
       if (!sameValue(cur ?? null, next)) changed[k] = next;
     }
+    // The owner approved "do what I asked", whole: `need` on such a card is immutable (agent-work-cards-default §1).
+    if (changed.need !== undefined && card.needLockedToRequest) return refuse(409, 'need-locked-to-request', { message: 'This card\'s need is the owner\'s own request, word for word, and cannot be changed. Refine the title, the done items or the links; different work is its own card.' });
+    if (Array.isArray(changed.refs) && (changed.refs as unknown[]).length > MAX_REFS) return refuse(400, 'too-many-refs', { limit: MAX_REFS });
     const names = Object.keys(changed);
     if (!names.length) return { ok: true, recordId: '', changed: [] };
     const material = names.filter((n) => (MATERIAL_FIELDS as ReadonlyArray<string>).includes(n));
@@ -615,6 +833,7 @@ export class WorkBoardService {
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
     if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
+    const ns = this.notStartedRefusal(p, cardId); if (ns) return ns;
     const key = this.serverKey(p, cardId, opts.recordKey); if (key && typeof key !== 'string') return key;
     if (typeof input.itemId !== 'string' || !card.doneWhen.some((d) => d.id === input.itemId)) return refuse(400, 'unknown-item');
     if (typeof input.text !== 'string' || !input.text.trim()) return refuse(400, 'evidence-text-required');
@@ -636,6 +855,7 @@ export class WorkBoardService {
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
     if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
+    const ns = this.notStartedRefusal(p, cardId); if (ns) return ns;
     const key = this.serverKey(p, cardId, opts.recordKey); if (key && typeof key !== 'string') return key;
     if (card.holds.length) return refuse(409, 'held');
     if (card.unknown.length) return refuse(409, 'card-unreadable');
@@ -828,6 +1048,17 @@ export class WorkBoardService {
     }
     return n;
   }
+}
+
+/** Whether the agent may write a progress note on this card now (§1/§2): the card is readable and not `not-started`. */
+export function noteRefusalFor(svc: WorkBoardService, p: WorkPrincipal, cardId: string): Refusal | null {
+  if (p.kind === 'person') return refuse(403, 'agent-only', { message: 'A person writes in the card\'s conversation directly.' });
+  if (!isCardId(cardId)) return refuse(404, 'not-found');
+  const v = svc.view(cardId);
+  if (!v || !v.card.created) return refuse(404, 'not-found');
+  if (v.card.redacted) return refuse(409, 'card-removed');
+  if (v.status === 'not-started') { svc.stats.notStartedRefusals++; return refuse(409, 'not-started', { message: 'This card is waiting for the team owner\'s approval (or a board setting) before the agent works it.' }); }
+  return null;
 }
 
 /** Records that leave one `Work board:` line in the card's conversation (§2). */

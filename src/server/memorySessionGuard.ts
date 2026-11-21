@@ -56,6 +56,11 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   // no lanes read, no create, no tap.
   { method: 'GET', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   { method: 'POST', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}\/records$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // agent-work-cards-default §2: a progress note from the session doing the work — the card's own conversation OR the
+  // conversation that recorded the request (a Telegram topic session, most often). The handler checks the binding.
+  { method: 'POST', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}\/notes$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // agent-work-cards-default §3: a scoped session records a commitment; the conversation is derived from its binding.
+  { method: 'POST', pattern: /^\/commitments$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   { method: 'POST', pattern: /^\/messaging\/preflight$/, limit: 'any' },
   { method: 'POST', pattern: /^\/events\/delivery-failed$/, limit: 'any' },
   { method: 'POST', pattern: /^\/telegram\/origins\/operations\/[^/]+\/outcome$/, limit: 'any' },

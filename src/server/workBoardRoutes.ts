@@ -29,6 +29,8 @@ import { sourceCardQuery, sourceCardsJson } from '../core/workSourceCards.js';
 import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
 import { isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
 import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
+// agent-work-cards-default: POST /work-board/cards/:id/notes (agent / scoped session bound to the card or its source);
+// POST /work-board/not-started/approve and /approve-and-widen (the team owner's aggregated-row controls, PIN).
 
 /**
  * How the request authenticated. `bearer` is the server token, which both the agent and the
@@ -37,9 +39,19 @@ import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
  */
 export type ResolvedCaller =
   | { kind: 'bearer' }
-  | { kind: 'session'; conversationKey: string | null }
+  /** `placeKey`: the session's raw binding (`app:<key>`, `telegram:<topic>`, …), for the source-conversation admission (agent-work-cards-default §2). */
+  | { kind: 'session'; conversationKey: string | null; placeKey?: string | null }
   | { kind: 'device'; personKey: string | null; isOwner: boolean; mayRead: (conversationKey: string) => boolean }
   | { kind: 'none' };
+
+/** Does a scoped session's binding name this source conversation (`telegram:<n>` ↔ `telegram:<n>` / `telegram:topic:<n>`; an app key ↔ `app:<key>`)? */
+export function bindingNamesConversation(placeKey: string | null | undefined, conversationKey: string): boolean {
+  if (!placeKey) return false;
+  if (placeKey === `app:${conversationKey}` || placeKey === conversationKey) return true;
+  const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+  if (tg) return placeKey === `telegram:${tg[1]}` || placeKey === `telegram:topic:${tg[1]}`;
+  return false;
+}
 
 export interface WorkBoardRouteDeps {
   enabled: () => boolean;
@@ -85,6 +97,19 @@ export interface WorkBoardRouteDeps {
    * console (PIN) tap is refused except withdraw-approval, which only stops an app. Absent ⇒ none.
    */
   phoneOnlyCard?: (cardId: string) => boolean;
+  /**
+   * agent-work-cards-default §2: the runtime's note writer (conversation event first, pointer by the holder) and the
+   * card's last note. Absent ⇒ the notes route answers 503 `notes-unavailable`.
+   */
+  notes?: {
+    write: (p: WorkPrincipal, cardId: string, text: unknown, writerBinding: string) => { ok: true; eventId: string; conversationKey: string } | { ok: false; status: number; error: string; detail?: Record<string, unknown> };
+    last: (cardId: string) => { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null;
+  };
+  /**
+   * agent-work-cards-default §5: raise the `board-policy` trust request (the owner's path to the lighter policy) with the
+   * record it rests on. Absent ⇒ "Approve and widen" approves the cards and says the request could not be raised here.
+   */
+  proposeBoardPolicy?: (record: { approvedUnchanged: number; changed: number; declined: number; waiting: number }) => Promise<{ status: string; requestId?: string; message?: string }>;
 }
 
 /** The card text an approval ask lives in: the fields a person reads to decide. */
@@ -162,7 +187,15 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
     brokenAttachments: deps.brokenAttachments(v),
     phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
+    lastNote: deps.notes?.last(v.card.cardId) ?? null,
   });
+
+  /** A scoped session may act on a card bound as the card's own conversation OR as the card's recorded source conversation (§2). */
+  const sessionMayUse = (c: ResolvedCaller, v: CardView): boolean => {
+    if (c.kind !== 'session') return true;
+    if (c.conversationKey && c.conversationKey === v.card.conversationKey) return true;
+    return !!v.card.source && bindingNamesConversation(c.placeKey, v.card.source.conversationKey);
+  };
 
   /** Visible to this viewer? The owner and the agent see every card; others need read access to its conversation. */
   const visible = (c: ResolvedCaller, viewer: Viewer, v: CardView): boolean => viewer.isAgent || viewer.isOwner || (c.kind === 'device' && c.mayRead(v.card.conversationKey));
@@ -227,7 +260,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     const id = String(req.params.id);
     const v = isCardId(id) ? svc.view(id) : null;
     if (!v || !v.card.created) { res.status(404).json({ error: 'not-found' }); return; }
-    if (c.kind === 'session' && c.conversationKey !== v.card.conversationKey) { res.status(404).json({ error: 'not-found' }); return; }
+    if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
     if (!visible(c, viewer, v)) { res.status(404).json({ error: 'not-found' }); return; }
     res.json({ card: cardJson(svc, v, viewer, deps.displayName, extraFor(svc)(v)) });
   });
@@ -282,8 +315,15 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
       res.status(403).json({ error: 'server-owned-card', message: 'This card is written by Instar itself (an app version waiting for your phone); it cannot be changed here.' });
       return;
     }
-    const p = writerOf(req, res, 'Enter your dashboard PIN to change this card'); if (!p) return;
+    let p = writerOf(req, res, 'Enter your dashboard PIN to change this card'); if (!p) return;
     const id = String(req.params.id);
+    // A session bound to the card's SOURCE conversation (the Telegram topic that recorded the request) writes on it as if
+    // bound to the card's own conversation (agent-work-cards-default §2); any other binding never finds the card.
+    if (p.kind === 'session') {
+      const c = deps.caller(req); const v0 = isCardId(id) ? svc.view(id) : null;
+      if (!v0 || !v0.card.created || !sessionMayUse(c, v0)) { res.status(404).json({ error: 'not-found' }); return; }
+      p = { kind: 'session', conversationKey: v0.card.conversationKey };
+    }
     const { pin: _pin, kind: _k, recordType: _rt, ...rest } = body;
     const fields = (body.fields && typeof body.fields === 'object' ? body.fields : rest) as Record<string, unknown>;
     if (p.kind === 'person' && kind !== 'edited') { res.status(403).json({ error: 'agent-only' }); return; }
@@ -304,7 +344,15 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
         send(res, r); return;
       }
       case 'waiting-on': {
-        const r = svc.setWaitingOn(p, id, fields as never);
+        // agent-work-cards-default §1: waiting on a person makes an agent-work card an ask, so both ask fields must be on
+        // the card or on this record; when the record carries them they are written as an edit first.
+        const ask = svc.waitingOnAskRefusal(p, id, fields as never); if (ask) { send(res, ask); return; }
+        const carried: Record<string, unknown> = {};
+        if (typeof fields.recommendation === 'string') carried.recommendation = fields.recommendation;
+        if (typeof fields.whyYou === 'string') carried.whyYou = fields.whyYou;
+        if (Object.keys(carried).length) { const e = svc.edit(p, id, carried); if (!e.ok) { send(res, e); return; } }
+        const { recommendation: _r, whyYou: _w, ...waitFields } = fields;
+        const r = svc.setWaitingOn(p, id, waitFields as never);
         if (r.ok) { const rec = svc.recordsOf(id).find((x) => x.id === r.questionId); if (rec?.d.supersedes) await writeLine(svc, id, r.questionId, 'waiting-on', rec.d); }
         send(res, r); return;
       }
@@ -312,6 +360,79 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
       case 'claimed-done': send(res, svc.claimDone(p, id)); return;
       default: res.status(400).json({ error: 'unknown-record-kind', allowed: ['edited', 'waiting-on', 'evidence', 'claimed-done'] });
     }
+  });
+
+  // ── progress notes (agent-work-cards-default §2) ───────────────────────────
+  router.post('/work-board/cards/:id/notes', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const c = deps.caller(req);
+    const id = String(req.params.id);
+    if (c.kind === 'device') { res.status(403).json({ error: 'agent-only', message: 'A person writes in the card\'s conversation directly.' }); return; }
+    if (c.kind === 'none') { res.status(401).json({ error: 'unauthorized' }); return; }
+    const v = isCardId(id) ? svc.view(id) : null;
+    if (!v || !v.card.created) { res.status(404).json({ error: 'not-found' }); return; }
+    // The binding is checked HERE (the guard's `place` is a path check): the card's own conversation, or its source conversation.
+    if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
+    if (!deps.notes) { res.status(503).json({ error: 'notes-unavailable', message: 'Progress notes are not wired on this machine yet.' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.pin !== undefined) { res.status(403).json({ error: 'agent-only', message: 'A note is the agent\'s; a person writes in the conversation.' }); return; }
+    const p: WorkPrincipal = c.kind === 'session' ? { kind: 'session', conversationKey: c.conversationKey ?? v.card.conversationKey } : { kind: 'agent' };
+    const binding = c.kind === 'session' ? `session:${c.placeKey ?? c.conversationKey ?? 'unbound'}` : 'bearer:agent';
+    const r = deps.notes.write(p, id, body.text, binding);
+    if (!r.ok) { res.status(r.status).json({ error: r.error, ...(r.detail ?? {}) }); return; }
+    res.status(201).json({ eventId: r.eventId, conversationKey: r.conversationKey, note: 'The note is in the card\'s conversation now; its pointer record follows on the board\'s next tick.' });
+  });
+
+  // ── the aggregated row's controls (agent-work-cards-default §1, §5): the team owner's, from the console with the PIN ──
+  /** N signed approve taps, one per card the row rendered, each bound to that card's hashes; per-card results. */
+  const approveShown = async (svc: WorkBoardService, body: Record<string, unknown>, p: WorkPrincipal): Promise<Array<Record<string, unknown>>> => {
+    const cards = Array.isArray(body.cards) ? (body.cards as Array<Record<string, unknown>>) : [];
+    const results: Array<Record<string, unknown>> = [];
+    for (const card of cards.slice(0, 10)) {
+      const id = String(card?.id ?? '');
+      if (!isCardId(id)) { results.push({ id, status: 400, error: 'not-found' }); continue; }
+      const r = await performOwnerTap(deps, svc, id, { action: 'approve', materialHash: card.materialHash, titleHash: card.titleHash }, p);
+      results.push({ id, status: r.status, ...(r.status === 200 ? { approved: true } : { error: r.body.error }) });
+    }
+    return results;
+  };
+  const ownerFromPin = (req: Request, res: Response, message: string): WorkPrincipal | null => {
+    const c = deps.caller(req);
+    if (c.kind !== 'bearer') { res.status(403).json({ error: c.kind === 'device' ? 'owner-only' : 'person-required', message: 'Only the team owner approves, from the console with the PIN or from their own phone.' }); return null; }
+    if ((req.body as { pin?: unknown } | undefined)?.pin === undefined) { res.status(403).json({ error: 'person-required', message: 'This is a person\'s tap: it needs the dashboard PIN. The agent cannot approve its own cards.' }); return null; }
+    if (!deps.requirePin(req, res, message)) return null;
+    const owner = deps.ownerPersonKey();
+    if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return null; }
+    return { kind: 'person', personKey: owner, proof: 'pin', isOwner: true };
+  };
+  router.post('/work-board/not-started/approve', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const p = ownerFromPin(req, res, 'Enter your dashboard PIN to approve these cards'); if (!p) return;
+    const results = await approveShown(svc, (req.body ?? {}) as Record<string, unknown>, p);
+    const stale = results.filter((r) => r.error === 'stale-card').map((r) => r.id);
+    res.json({ results, ...(stale.length ? { stale, message: 'Some cards changed between display and tap; reopen the row for those.' } : {}), notStarted: svc.notStartedCardIds().length });
+  });
+  router.post('/work-board/not-started/approve-and-widen', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const p = ownerFromPin(req, res, 'Enter your dashboard PIN to approve these cards and ask to start internal cards without asking'); if (!p) return;
+    const results = await approveShown(svc, (req.body ?? {}) as Record<string, unknown>, p);
+    // The record the request rests on (§5): taps so far on agent-work cards, and what waits now.
+    let approvedUnchanged = 0; let changed = 0; let declined = 0;
+    for (const id of svc.cardIds()) {
+      const v = svc.view(id); if (!v || !v.card.agentWork) continue;
+      const approve = v.card.taps.find((t) => t.action === 'approve');
+      if (approve) { if (v.card.taps.some((t) => t.action === 'approve' && t.materialHash === v.card.materialHash) && v.card.lastMaterialChangeFields.length === 0) approvedUnchanged++; else changed++; }
+      else if (v.card.closeout?.as === 'not-important') declined++;
+    }
+    const waiting = svc.notStartedCardIds().length;
+    let request: { status: string; requestId?: string; message?: string };
+    if (!deps.proposeBoardPolicy) request = { status: 'not-raised', message: 'request not raised: the trust path is not available on this machine' };
+    else {
+      try { request = await deps.proposeBoardPolicy({ approvedUnchanged, changed, declined, waiting }); }
+      catch (err) { request = { status: 'not-raised', message: `request not raised: ${(err as Error)?.message ?? 'unknown error'}` }; }
+    }
+    const raised = request.status === 'sent' || request.status === 'awaiting-acceptance';
+    res.json({ results, request, message: raised ? 'The cards shown are approved. The request to start internal cards without asking is raised; answer it in your chat or on your phone.' : `The cards shown are approved. ${request.message ?? `request not raised: ${request.status}`}`, notStarted: waiting });
   });
 
   const applyTap = async (svc: WorkBoardService, req: Request, res: Response, p: WorkPrincipal) => {
