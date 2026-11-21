@@ -1,0 +1,21 @@
+{
+  "ts": "2026-11-18T16:04:29.564Z",
+  "slug": "feedback-4a1fdfc2-f88d-4-3d2671b7-a2",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-4a1fdfc2-f88d-43fe-895e-ecb61db4855a:a2",
+  "initiativeId": "feedback-4a1fdfc2-f88d-43fe-895e-ecb61db4855a",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 2,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/devProfileNode.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

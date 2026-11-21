@@ -120,3 +120,35 @@ describe('runDevProfileNode (orchestration, injected deps)', () => {
     expect(out.err).toContain('CPU profile failed');
   });
 });
+
+describe('runDevProfileNode — SME2 sampler hazard on Apple Silicon', () => {
+  it('refuses to profile on darwin-arm64 without --force because the V8 sampler can SIGILL under onnxruntime SME2', async () => {
+    const deps = mkDeps(); const out = capture();
+    const code = await runDevProfileNode({
+      pid: '4242', deps, output: out, host: { platform: 'darwin', arch: 'arm64' },
+    } as Parameters<typeof runDevProfileNode>[0]);
+    expect(code).toBe(1);
+    expect(deps.signalUsr1).not.toHaveBeenCalled();
+    expect(deps.captureCpuProfile).not.toHaveBeenCalled();
+    expect(out.err).toContain('SIGILL');
+    expect(out.err).toContain('--force');
+  });
+
+  it('profiles on darwin-arm64 when --force is given', async () => {
+    const deps = mkDeps(); const out = capture();
+    const code = await runDevProfileNode({
+      pid: '4242', deps, output: out, host: { platform: 'darwin', arch: 'arm64' }, force: true,
+    } as Parameters<typeof runDevProfileNode>[0]);
+    expect(code).toBe(0);
+    expect(deps.signalUsr1).toHaveBeenCalledWith(4242);
+  });
+
+  it('profiles without --force on other hosts (linux-x64)', async () => {
+    const deps = mkDeps(); const out = capture();
+    const code = await runDevProfileNode({
+      pid: '4242', deps, output: out, host: { platform: 'linux', arch: 'x64' },
+    } as Parameters<typeof runDevProfileNode>[0]);
+    expect(code).toBe(0);
+    expect(deps.signalUsr1).toHaveBeenCalledWith(4242);
+  });
+});

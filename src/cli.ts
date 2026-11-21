@@ -2893,9 +2893,10 @@ program
   .description("CPU-profile a running node process (via SIGUSR1 + the inspector) and print its hottest JS functions — sees the JS frames macOS `sample` can't")
   .option('--duration <sec>', 'Sampling duration in seconds (default 5)', (v) => parseInt(v, 10))
   .option('--top <n>', 'Number of hot frames to print (default 15)', (v) => parseInt(v, 10))
-  .action(async (pid: string | undefined, opts: { duration?: number; top?: number }) => {
+  .option('--force', 'Profile on darwin-arm64 despite the SME2 SIGILL hazard (can kill a target running onnxruntime embeddings)')
+  .action(async (pid: string | undefined, opts: { duration?: number; top?: number; force?: boolean }) => {
     const { runDevProfileNode } = await import('./commands/devProfileNode.js');
-    const exitCode = await runDevProfileNode({ pid, durationSec: opts.duration, top: opts.top });
+    const exitCode = await runDevProfileNode({ pid, durationSec: opts.duration, top: opts.top, force: opts.force });
     process.exit(exitCode);
   });
 
