@@ -2,7 +2,7 @@
 
 In plain words: the relay stops trusting the caller-written forwarding header, uses the header its own proxy sets, and forgets old per-address records.
 
-Tier 1. Size: 5 source files (`clientAddress.ts` new, `RelayServer.ts`, `RelayRateLimiter.ts`, `A2ABridge.ts`, `types.ts`), `src/commands/relay.ts`, `fly.toml`; 2 new and 1 extended test files. Stacked on SEC-134 (#3589), which it must follow.
+Tier 1. Size: 5 source files (`clientAddress.ts` new, `RelayServer.ts`, `RelayRateLimiter.ts`, `A2ABridge.ts`, `types.ts`), `src/commands/relay.ts`, `fly.toml`; 2 new and 1 extended test files. Rebased onto main after SEC-134 (#3589) merged.
 
 ## What changes
 - Caller address, everywhere in the relay (WebSocket connect, registry HTTP, A2A bridge): `resolveClientAddress(req, RELAY_CLIENT_IP_HEADER)`. No header named → socket address. Named header → its value when it is one valid IP (right-most entry for `x-forwarded-for`), else socket address. IPv4-mapped IPv6 folded to IPv4. Rate limits key IPv6 by its /64 network in one canonical form (callers sharing a /64 share a bucket, the usual practice, since one subscriber usually holds a whole /64). A2A thread scope (SEC-134) keeps the exact canonical address, so two hosts in one /64 never share a thread (`resolveClientAddressParts` returns both forms).
