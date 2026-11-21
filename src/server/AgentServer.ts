@@ -8,7 +8,7 @@ import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTi
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { isApproverRevokeNonce, takeApproverRevokeTap } from './mobileApproverRevoke.js';
 import { setOwnerRecordApproverHooks } from '../core/ownerRecordWiring.js';
-import { approverClaimLive, unvouchedOwnerDevices } from './mobileApproverClaim.js';
+import { approverClaimLive, declineApproverClaimTap, isApproverClaimNonce, unvouchedOwnerDevices } from './mobileApproverClaim.js';
 import { approverPresenceKey, ensureApproverMigration, setKeptDevicesNotice, mayApprove, mergeRetiredKeys, readApproverState, retiredKeyHashes, tightenApproverCutoff, verifyApproverPresence } from './mobileApprover.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
@@ -2699,6 +2699,8 @@ export class AgentServer {
         // The tap's wording follows the device's kind (dashboard-conversations-browser-device §4.7),
         // read before the nonce is consumed.
         options.telegram.mobileDeclineHandler = (nonce) => {
+          // identity-security piece 3a §3: "This wasn't me" on a first-approver code ends that claim.
+          if (isApproverClaimNonce(nonce)) return { result: 'declined' as const, text: declineApproverClaimTap(nonce).text };
           // identity-security piece 3a §6: Decline on "remove an approving device" keeps it.
           if (isApproverRevokeNonce(nonce)) { const t = takeApproverRevokeTap(mp, nonce, false, () => false); return { result: 'declined' as const, text: t.text }; }
           const client = mp.nonceClient(nonce);

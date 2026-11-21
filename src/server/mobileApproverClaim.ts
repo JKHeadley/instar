@@ -28,7 +28,7 @@ const MAX_CLAIMS_PER_DAY = 3;
 const CLAIM_LIVE_MS = 24 * 60 * 60 * 1000; // mobile-approver-mark §3.3: a claim stays live 24 h without a correct code
 const PEER_DEADLINE_MS = 10_000;
 
-interface Claim { deviceId: string; presenceKey: string; startedAt: number; tries: number; draft?: { entry: Omit<OwnerRecordEntry, 'sig'>; id: string } }
+interface Claim { deviceId: string; presenceKey: string; startedAt: number; tries: number; declineNonce?: string; draft?: { entry: Omit<OwnerRecordEntry, 'sig'>; id: string } }
 
 /** One live claim per machine, in memory (a restart voids it, as pairing codes are voided). */
 let live: Claim | null = null;
@@ -46,6 +46,14 @@ export function dropApproverClaimFor(deviceId: string): void { if (live?.deviceI
 /** Lease loss voids the code (§3.3). */
 export function voidApproverClaimCode(): void { if (live) codes.drop(live.deviceId); }
 export function resetApproverClaimForTests(): void { live = null; starting = false; codes.clearAll(); }
+/** The owner's "This wasn't me" on the code message: a `md:d:` nonce the Telegram tap router can carry. */
+export function isApproverClaimNonce(nonce: string): boolean { return approverClaimLive() && live!.declineNonce === nonce; }
+/** That tap ends the claim at once: the code no longer works, and nothing was granted. */
+export function declineApproverClaimTap(nonce: string): { text: string } {
+  if (!isApproverClaimNonce(nonce)) return { text: 'That request has already ended. Nothing was changed.' };
+  codes.drop(live!.deviceId); live = null;
+  return { text: 'Stopped. That code no longer works, and the device was not made able to approve.' };
+}
 
 /** This machine's active owner devices that are neither approvers nor kept (§3 condition 4), by id. */
 export function unvouchedOwnerDevices(svc: MobilePairingService, except?: string): string[] {
@@ -132,10 +140,12 @@ export function mountApproverClaimRoutes(router: Router, svc: MobilePairingServi
     const fp = crypto.createHash('sha256').update(key).digest('hex').slice(0, 12).replace(/(....)(?=.)/g, '$1 ');
     const text = `${name} asked to become the device that approves changes to ${env.agentId}: permissions, passwords, trust, team access, new devices. If you are setting up your own phone or Mac right now, type this code on it: ${displayCode(code)}. Never type it into a Windows PC. If this was not you, ignore this message. Fingerprint ${fp}.`;
     let sent: number | null = null;
-    try { sent = (await svc.deps.ownerDM?.(text, `approver-first-ignore:${deviceId}`)) ?? null; } catch { sent = null; /* @silent-fallback-ok: an unsent code is answered 503 below, and the claim is removed */ }
+    // "This wasn't me" is a real Decline: a 24-hex nonce in the form the Telegram tap router accepts (md:d:<nonce>).
+    const declineNonce = crypto.randomBytes(12).toString('hex');
+    try { sent = (await svc.deps.ownerDM?.(text, `md:d:${declineNonce}`)) ?? null; } catch { sent = null; /* @silent-fallback-ok: an unsent code is answered 503 below, and the claim is removed */ }
     if (sent === null) { codes.drop(deviceId); res.status(503).json({ error: 'owner-notice-unavailable', detail: 'The code could not be sent to your private chat. Try again.' }); return; }
     try { recordClaimStart(svc.deps.stateDir, now); } catch { /* @silent-fallback-ok: the code is already sent; the limit undercounts by one and is reported */ svc.deps.reportDegradation?.('MobileApproverClaim.limit', new Error('claim start not recorded')); }
-    live = { deviceId, presenceKey: key, startedAt: now, tries: 0 };
+    live = { deviceId, presenceKey: key, startedAt: now, tries: 0, declineNonce };
     res.json({ eligible: true, expiresAt: new Date(now + CODE_TTL_MS).toISOString() });
   };
 
