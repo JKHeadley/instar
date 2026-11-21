@@ -115,6 +115,12 @@ Not required (see header).
 
 ---
 
+## Follow-up commit (CI green-up, 2026-11-21)
+
+The topic-id ratchet (`tests/unit/topic-ref-ratchet.test.ts`, operator rule 2026-11-02: a topic id is never rendered without its name) caught one new bare `topic ${id}` render in `TelegramTopicNameReplication.ts` — the degradation report for a row the journal refused for good. The line now renders `topicRef(row.topicId, row.name)`; the row already carries the name, so no lookup is added and no behaviour changes beyond the report text. Not a decision point; no new side effect. The other red unit shard on the same head failed in `tests/integration/secret-drop-self-mint-hardening.test.ts:170` (`not.toContain('123')` against a random 64-hex token that happened to contain `123`); that test is unchanged from `main` and is a flake owned by a separate fix, not this change. The `eli16` check failed on the PR description's layout only (a second heading directly under `## ELI16 — …` left the gate 94 chars of content); fixed by editing the description, no file change.
+
+---
+
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. The drain is a bounded retry of the store's own outbox (steady state: no timer while nothing is unsent; one batch per tick; hourly ceiling), recorded here for the self-action reader.

@@ -30,6 +30,7 @@ import path from 'node:path';
 import type { StoreFieldSchema, StoreValidateContext, ReplicatedOp } from '../core/ReplicatedRecordEnvelope.js';
 import type { HlcTimestamp } from '../core/HybridLogicalClock.js';
 import { verifiedChannelIdentity } from './shared/channelIdentity.js';
+import { topicRef } from './shared/topicRef.js';
 
 export const TOPIC_NAME_RECORD_KIND = 'telegram-topic-name-record';
 export const TOPIC_NAMES_STORE_KEY = 'telegramTopicNames';
@@ -427,7 +428,8 @@ export class TelegramTopicNameStore {
     }
     if (out === 'final') {
       // The journal refused the row for good (schema or size): retrying cannot help. Reported, then left.
-      this.deps.report?.('TelegramTopicNames.replication', `a name for topic ${s.row.topicId} was refused by the journal for good; it stays on this machine only`);
+      // The row carries the name, so the report names the topic the way every other operator-facing line does.
+      this.deps.report?.('TelegramTopicNames.replication', `a name for ${topicRef(s.row.topicId, s.row.name)} was refused by the journal for good; it stays on this machine only`);
       s.emitted = true; s.final = true;
       return false;
     }
