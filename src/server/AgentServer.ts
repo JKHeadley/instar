@@ -45,6 +45,7 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey, createPublic
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { ConversationGraphCosTreeImporter } from './ConversationGraphCosTreeImporter.js';
 import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { JobCostReport } from '../scheduler/JobCostReport.js';
 import { mountJobCostRoutes } from './jobCostRoutes.js';
@@ -945,6 +946,8 @@ export class AgentServer {
   private meshSelfId?: string;
   /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
   private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
+  /** work-front-doors §3.1: brings Chief of Staff tree placements into the conversation graph (import tier). Null without a Chief of Staff or a graph. */
+  readonly conversationGraphCosTreeImport: import('./ConversationGraphCosTreeImporter.js').ConversationGraphCosTreeImporter | null = null;
   private deliverA2aToMachine?: (input: {
     machineId: string;
     targetAgent: string;
@@ -8391,6 +8394,31 @@ export class AgentServer {
     // 503 `conversation-graph-off` instead of Express's HTML "Cannot GET".
     // Mounted at the end of route setup, just before the error handler, so it
     // only ever answers a graph request nothing else handled.
+    // work-front-doors §3.1 / §7 stage 2: import the Chief of Staff tree into the graph (import tier, never displacing a
+    // placement). Dev-gated switch, and it waits until every graph member advertises a build that verifies import receipts.
+    // The Chief of Staff tree writes continue unchanged (stopping them is tracked as CMT-2074).
+    if(options.chiefOfStaffLoop&&(options.conversationGraphReplicationRuntime||options.conversationGraphDefault)){
+      const loop=options.chiefOfStaffLoop as unknown as {treeRecords?:()=>import('../core/ConversationGraphCosTreeImport.js').CosTreeRecordInput[]|null};
+      (this as {conversationGraphCosTreeImport:unknown}).conversationGraphCosTreeImport=new ConversationGraphCosTreeImporter({
+        runtime:()=>options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime??null,
+        identity:()=>options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager??null,
+        tree:()=>typeof loop.treeRecords==='function'?loop.treeRecords():null,
+        enabled:()=>{
+          const live=typeof options.liveConfig?.get==='function'?options.liveConfig.get<boolean|undefined>('multiMachine.conversationGraph.cosTreeImport',undefined):undefined;
+          return resolveDevAgentGate(live??options.config.multiMachine?.conversationGraph?.cosTreeImport,options.config);
+        },
+        // The latest heartbeat that carried flags; no registry or no row = unknown, which keeps the import shut.
+        advertises:(machineId)=>{
+          const reg=this.docPoolRegistry;if(!reg)return null;
+          try{const cap=reg.getCapacities().find(c=>c.machineId===machineId);return cap?.seamlessnessFlags?cap.seamlessnessFlags.conversationGraphImportAuthority===true:null;}
+          catch{return null;} // @silent-fallback-ok — an unreadable machine list keeps the import shut (unknown)
+        },
+        telegramChatId:graphTelegramChatId,
+        rootConversation:()=>{const t=graphChiefOfStaffTopicId();const chat=graphTelegramChatId();return t!==null&&chat?{kind:'conversation',platform:'telegram',chatId:chat,topicId:t}:null;},
+        projectOf:ref=>{if(ref.platform!=='telegram'||ref.chatId!==graphTelegramChatId())return undefined;return options.coherenceGate?.currentTopicBindings?.()[String(ref.topicId)]?.projectName??null;},
+      });
+      this.conversationGraphCosTreeImport!.start();
+    }
     const graphOff=!graphSurfaceMounted;
     // No graph surface here: a phone project confirm answers a lasting refusal, never "try again" forever.
     if(graphOff)this.groupProjectConfirm.off=true;
@@ -10339,6 +10367,7 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    this.conversationGraphCosTreeImport?.stop();
     await this.stopGraphSourceInventory();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }

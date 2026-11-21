@@ -554,6 +554,26 @@ export function foldTreeState(entries: UnionEntry[]): Map<string, TreeNode> {
   return out;
 }
 
+/** One live `tree` record with the identity of the write that set it (its HLC and origin machine). */
+export interface TreeRecord extends TreeNode { hlc: HlcTimestamp; origin: string }
+
+/**
+ * The live tree records with their winning write's identity (work-front-doors §3.1: the graph import names
+ * the exact record it imported). Same merge rule as foldTreeState; a tombstone removes the record.
+ */
+export function foldTreeRecords(entries: UnionEntry[]): TreeRecord[] {
+  const out: TreeRecord[] = [];
+  for (const [, w] of latestPerKey(entries)) {
+    if (w.data.recordType !== 'tree' || w.data.op === 'delete') continue;
+    const ck = w.data.conversationKey; if (typeof ck !== 'string') continue;
+    const parent = typeof w.data.parentConversationKey === 'string' ? w.data.parentConversationKey : null;
+    const role = w.data.role;
+    out.push({ conversationKey: ck, parentConversationKey: parent, ...(role === 'chief-of-staff' || role === 'project' || role === 'sub-topic' ? { role } : {}),
+      hlc: { physical: w.hlc.physical, logical: w.hlc.logical, node: w.hlc.node }, origin: w.origin });
+  }
+  return out;
+}
+
 export interface BindingState {
   conversationKey: string;
   /** The winning binding record (null when none confirmed). */

@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-20T21:38:46.211Z",
+  "slug": "work-front-doors-stage2-cos-tree-import",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 540,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/ConversationGraphCosTreeImport.ts",
+      "src/core/ConversationGraphReplicationProof.ts",
+      "src/core/conversationGraph.ts",
+      "src/core/types.ts",
+      "src/data/awareness/chief-of-staff-tree-in-conversations.md",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphCosTreeImporter.ts",
+      "src/server/ConversationGraphOwnerChanges.ts"
+    ],
+    "addedLines": 533,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
