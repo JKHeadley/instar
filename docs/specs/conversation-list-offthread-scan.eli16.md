@@ -60,6 +60,12 @@ read, and that read took more than 5 seconds, the other machine would show the l
 machine's conversations that one time. The next list includes them. On today's history the read
 takes well under a second, so this is not expected.
 
+## One known limit
+
+About once every 25,000 messages the server trims the oldest lines from the history file. After a
+trim, a conversation whose every message lay in the trimmed part shows none in the app, exactly as
+the old code does after any restart. The new read never adds a blank the old code would not show.
+
 ## What the reader needs to decide
 
 Nothing beyond the Chief of Staff's choice of this design over the memory-copy design (pull request

@@ -138,13 +138,11 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
   time; on a file system with coarse times the settle wait above makes sure a write during the
   re-read lands on a later tick (up to 2 s granularity). The hash catches every rewrite made
   before the re-read starts.
-- **A trim during a cold scan.** About once per 25,000 messages the trim drops the oldest lines. If
-  it lands during a cold scan, the scan keeps nothing and the request's old read runs on the trimmed
-  file. A conversation whose every message lay in the trimmed part then shows no messages: its
-  messages are no longer in the log, so the old read finds none, and every later read (and every
-  read after a restart) finds none either. This is exactly what the old code shows for that
-  conversation after any restart; the old code differs only when its cold read happened to run in
-  the instant before the trim, keeping the dropped rows in memory until the next restart.
+- **A trim during a cold scan.** About once per 25,000 messages the trim drops the oldest lines of
+  the log. If it lands during a cold scan, the scan keeps nothing and the request's old read runs on
+  the trimmed file. After a trim, a conversation whose every message lay in the trimmed part shows
+  none in the app, exactly as the old code does after any restart. Option C never adds a blank the
+  old code would not show, and the scan never records a conversation as empty (tested).
 - **A stalled disk.** A request with an uncached topic waits at most for the scan's 3.5 s deadline,
   then the old read runs (which a hung disk would hang, as in the old code). Requests whose topics
   are cached do not wait.

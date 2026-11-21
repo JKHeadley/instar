@@ -70,8 +70,9 @@ it. No second store; every reader still goes through `getTopicHistory`.
 - `unregisterTopic` drops a topic's cache and now counts the eviction; a scan that started earlier
   does not save that topic back (tested, mutation-checked).
 - The log trim: a scan that sees the file replaced or trimmed keeps nothing; the request's old read
-  runs (tested). The trim code itself is unchanged. Known limit in the spec: a conversation whose
-  every message the trim dropped shows none, as the old code shows after any restart.
+  runs (tested). The trim code itself is unchanged. Known limit in the spec: after a trim, a
+  conversation whose every message lay in the trimmed part shows none in the app, exactly as the old
+  code does after any restart.
 - An unfinished last line: every request, joiners included, defers to the old read in its own turn
   (tested, mutation-checked).
 - One 3.5 s wait budget per request, at most one scan per request, one tracked scan at a time, and a
