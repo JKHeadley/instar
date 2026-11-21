@@ -549,7 +549,16 @@ export class MeteredSpendGate {
       throw new MoneyGateRefusal('no-cap-slice', `this machine holds no cap authority for '${door}' (designated: ${goLive.designatedMachineId})`, keyRef, door);
     }
     // 2) Self-fence: positive lease re-confirmation within the bounded window (N-2).
-    const confirmedAgo = this.d.leaseConfirmedAgoMs();
+    //    The reserved cap-gate probe door is exempt. It is machine-local (designated to
+    //    this machine by `ensureProbeDoor`, a $0.01 cap, no provider behind it — an admit
+    //    there can never bill), and the lease input is the METERED door's designation
+    //    echo, which says nothing about it. Without the exemption every pool agent's boot
+    //    probe ran before the first echo was confirmed, refused for the wrong reason
+    //    (`lease-liveness-unconfirmed`), and left the money layer `probe-failed` after
+    //    every restart — found by the gemini-payg user-role live test on a real
+    //    two-machine pair (spec §8 "PROBE_DOOR is unaffected ... so enforcementReady
+    //    keeps working").
+    const confirmedAgo = door === PROBE_DOOR ? 0 : this.d.leaseConfirmedAgoMs();
     if (confirmedAgo === null || confirmedAgo > LEASE_LIVENESS_WINDOW_MS) {
       throw new MoneyGateRefusal('lease-liveness-unconfirmed', `metered-lease designation not positively re-confirmed within ${LEASE_LIVENESS_WINDOW_MS}ms (ago: ${confirmedAgo ?? 'never'})`, keyRef, door);
     }

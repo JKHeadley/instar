@@ -18415,6 +18415,23 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Machine-load assessment helper — always overwrite (CMT-1703, spec
     // robust-load-assessment-fleet). The go-to method for evaluating machine load
     // (real CPU idle% + time-windowed ResourceLedger + a verdict), so an agent

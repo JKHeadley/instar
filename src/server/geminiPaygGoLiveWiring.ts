@@ -52,7 +52,7 @@ import { MoneyLayerRefusal, type GeminiPaygSetupPort } from '../core/MoneyLayerE
 import { RoutingSpendCapsStore, type CapsStoreFile } from '../core/RoutingSpendCapsStore.js';
 import type { MeteredSpendLedger } from '../core/MeteredSpendLedger.js';
 import { nextPeriodBoundaryMs, periodEpochs } from '../core/MeteredSpendLedger.js';
-import type { MoneyGateRefusal } from '../core/MeteredSpendGate.js';
+import { LEASE_LIVENESS_WINDOW_MS, type MoneyGateRefusal } from '../core/MeteredSpendGate.js';
 import type { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
 import type { MoneyLayerAuditLog } from '../core/MoneyLayerAuditLog.js';
 import { GEMINI_API_MODELS } from '../providers/metered/gemini-api/geminiApiModels.js';
@@ -450,7 +450,18 @@ export function buildGeminiPaygGoLive(d: GeminiPaygGoLiveDeps): GeminiPaygGoLive
   router.get('/routing-spend/gemini-payg/release', (_req, res) => {
     if (!runtime.isDesignatedHere()) { res.json({ holder: runtime.holder(), here: false }); return; }
     // Read-only: a GET never records the release (only the audited POST paths do).
-    res.json({ here: true, evaluation: recorder.evaluate(undefined, { write: false }), attempts: recorder.attempts() });
+    // `lease` is the gate's own self-fence input (§6): how long ago the designation echo
+    // was last positively confirmed by the peers, against the window a paid call needs.
+    // Read-only observability — the holder-death drill (release check (b)) reads it to
+    // see the echo re-confirm after the holder comes back; nothing here gates on it.
+    let confirmedAgoMs: number | null = null;
+    try { confirmedAgoMs = runtime.leaseConfirmedAgoMs(); } catch { confirmedAgoMs = null; } // @silent-fallback-ok — unknown reads as null (unconfirmed), the gate's own fail-closed reading
+    res.json({
+      here: true,
+      evaluation: recorder.evaluate(undefined, { write: false }),
+      attempts: recorder.attempts(),
+      lease: { confirmedAgoMs, windowMs: LEASE_LIVENESS_WINDOW_MS, confirmed: confirmedAgoMs !== null && confirmedAgoMs <= LEASE_LIVENESS_WINDOW_MS },
+    });
   });
 
   router.post('/routing-spend/release-proof', async (req, res) => {
