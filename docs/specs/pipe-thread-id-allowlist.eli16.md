@@ -1,0 +1,7 @@
+# A connected agent's conversation label can no longer run commands here (ELI16)
+
+Agents can talk to each other. Every conversation between two agents carries a label, called a thread id, that the sending agent chooses. When a trusted agent asks this one a short question, the agent can answer it quickly in a small, read-only helper session (pipe mode). To start that helper, the agent runs a few terminal commands. It also writes the question to a temporary file. The conversation label was pasted straight into those commands and into the file name.
+
+That meant a connected agent the owner had trusted could pick a label containing terminal syntax, such as a quote followed by a command, and this agent would run that command with its own permissions. A label containing "../" could also put the temporary file outside its folder. Only agents already given trust could reach this, but trust is meant to let an agent ask questions, not run programs on the owner's machine. A test confirmed the command really ran.
+
+Now the quick-answer path only accepts labels in the standard shape every agent already creates: a random ID made of lowercase letters, digits and dashes. Anything else is refused before any command or file is made. The message is not lost: it goes through the normal, slower reply path, which does not build terminal commands from the label. Nothing changes for ordinary conversations, because real agents already use the standard shape.

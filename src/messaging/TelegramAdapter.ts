@@ -638,6 +638,9 @@ export interface TelegramInboundMedia {
 }
 export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<void> | void;
 
+/** docs/specs/topic-name-replication.md: the adapter's publish seam (see setTopicNameReplicationHook). */
+export type TopicNameReplicationHook = (topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number }) => string | null;
+
 export class TelegramAdapter implements MessagingAdapter {
   public selectivity: NotificationSelectivityGate | null = null;
   /** The mandatory origin dispatcher classifies local, relayed and recovery operations. */
@@ -1053,7 +1056,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
   // the adapter will handle the session action and skip the normal handler.
-  public onSentinelIntercept: ((message: string, topicId: number) => Promise<{
+  /** `messageKey` identifies this platform message, so a redelivery reuses its first verdict. */
+  public onSentinelIntercept: ((message: string, topicId: number, messageKey?: string) => Promise<{
     category: 'emergency-stop' | 'pause' | 'redirect' | 'normal';
     action: { type: string; message?: string };
     reason?: string;
@@ -1176,6 +1180,78 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   setTopicRenamedHandler(fn: ((topicId: number, newName: string) => void | Promise<void>) | null): void {
     this.topicRenamedHandler = fn;
+  }
+
+  /**
+   * Topic names reach every machine (docs/specs/topic-name-replication.md). Called after a name
+   * this machine learned from Telegram itself is put in the map, BEFORE the registry is saved:
+   * `rename` for a rename (the API call or Telegram's rename service message), `fill` for a
+   * creation or a reply to the creation message. It returns the name the map should hold, which
+   * differs only when a newer rename is already known. `evidence.atMs` is Telegram's own time for a
+   * service message; `evidence.api` marks the result of this machine's own successful API call, which
+   * is what Telegram holds now and so always wins. Never called from the replicated apply path.
+   */
+  private topicNameReplicationHook: TopicNameReplicationHook | null = null;
+
+  setTopicNameReplicationHook(fn: TopicNameReplicationHook | null, authority?: ((topicId: number) => string | null) | null): void {
+    this.topicNameReplicationHook = fn;
+    this.topicNameAuthority = authority ?? null;
+  }
+
+  /** The replicated winner's name for a topic, consulted when a session bind supplies a name. */
+  private topicNameAuthority: ((topicId: number) => string | null) | null = null;
+
+  /** Run the replication hook; a throw is logged and never affects the local write. */
+  private publishTopicName(topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number } = {}): void {
+    const hook = this.topicNameReplicationHook;
+    if (!hook) return;
+    let keep: string | null = null;
+    try { keep = hook(topicId, name, source, evidence); } catch (err) {
+      // @silent-fallback-ok: logged; the name stays local and is shared by the next boot's backfill
+      console.error(`[telegram] topic-name replication failed for ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (keep && keep !== name) this.topicToName.set(topicId, keep);
+  }
+
+  /**
+   * Put a name another machine learned into this machine's map and registry file. Not re-published
+   * (the store carries the row itself). A replaced real name fires the rename handler, as a rename
+   * seen by the poller does. False when the name is not a verified topic name.
+   */
+  applyReplicatedTopicName(topicId: number, name: string, persist = true): boolean {
+    const identity = verifiedChannelIdentity('telegram', topicId, name);
+    if (!identity || !Number.isSafeInteger(topicId)) return false;
+    const current = this.topicToName.get(topicId);
+    if (current === identity.name) return true;
+    this.topicToName.set(topicId, identity.name);
+    if (persist) this.saveRegistry();
+    const hadRealName = !!verifiedChannelIdentity('telegram', topicId, current);
+    if (hadRealName && this.topicRenamedHandler) {
+      try {
+        void Promise.resolve(this.topicRenamedHandler(topicId, identity.name)).catch((err) => {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
+          console.error(`[telegram] topicRenamedHandler failed for ${topicId}:`, err);
+        });
+      } catch (err) {
+        // @silent-fallback-ok: rename display is non-critical; the failure is logged
+        console.error(`[telegram] topicRenamedHandler threw for ${topicId}:`, err);
+      }
+    }
+    return true;
+  }
+
+  /** Write the registry file once after a batch of replicated names (applied with `persist: false`). */
+  persistTopicNames(): void { this.saveRegistry(); }
+
+  /** Every verified topic name this machine holds (the replication backfill reads it). */
+  listTopicNames(): Array<[number, string]> {
+    const out: Array<[number, string]> = [];
+    for (const [topicId, name] of this.topicToName) {
+      const identity = verifiedChannelIdentity('telegram', topicId, name);
+      if (identity) out.push([topicId, identity.name]);
+    }
+    return out;
   }
 
   /**
@@ -1969,7 +2045,10 @@ export class TelegramAdapter implements MessagingAdapter {
       const data = await response.json() as { ok: boolean; result: unknown };
       if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
       const results = Array.isArray(data.result) ? data.result : [data.result];
-      return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
+      const messageIds = results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n));
+      // identity-security-creation-provenance v5: a captioned file into a topic also disarms a waiting cross-topic proposal.
+      if (this.onTopicMessageSent && messageIds.length) { try { this.onTopicMessageSent(topicId, Math.max(...messageIds)); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
+      return { messageIds };
     } catch (error) {
       if (error instanceof QuietRecordedError) return error.receipt;
       throw error;
@@ -1988,6 +2067,9 @@ export class TelegramAdapter implements MessagingAdapter {
         const sent = await this.selectivityAdmitted.run(true, () => this.sendToTopicDelivered(topicId, text, options));
         if (envelope?.category === 'command-response' && envelope.inboundMessageId) this.commandReceipts.set(sent, { topicId, messageId: sent.messageId, until: Date.now() + 900000, inboundMessageId: envelope.inboundMessageId });
         if (!options?.operatorMirror && !envelope?.inboundMirror && (isVerifiedReplyEnvelope(envelope) || envelope?.category === 'command-response')) this.selectivity?.markAnswered(topicId);
+        // identity-security-creation-provenance v5: a later message into a topic disarms a cross-topic
+        // proposal waiting there, so an owner's "yes" can only answer the proposal itself.
+        if (this.onTopicMessageSent && typeof sent.messageId === 'number') { try { this.onTopicMessageSent(topicId, sent.messageId); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
         return sent;
       } catch (error) { if (error instanceof QuietRecordedError) return error.receipt; throw error; }
     });
@@ -2363,7 +2445,10 @@ export class TelegramAdapter implements MessagingAdapter {
       // Issues-group topics live in their own id range (telegramTopicSpace.ts).
       const topicId = inIssues ? ISSUES_TOPIC_OFFSET + result.message_thread_id : result.message_thread_id;
 
-      this.topicToName.set(topicId, name);
+      // Telegram's answer is the name it holds; the requested name is the fallback.
+      const created = typeof result.name === 'string' && result.name.trim() ? result.name : name;
+      this.topicToName.set(topicId, created);
+      this.publishTopicName(topicId, created, 'fill', { api: true });
       this.saveRegistry();
 
       console.log(`[telegram] Created forum topic: "${name}" (ID: ${topicId}${inIssues ? ', issues group' : ''})`);
@@ -2419,6 +2504,8 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.apiCall('editForumTopic', params);
       if (name) {
         this.topicToName.set(topicId, name);
+        // Published even when the text is unchanged: a rename back to an earlier name must advance its version.
+        this.publishTopicName(topicId, name, 'rename', { api: true });
         this.saveRegistry();
       }
       console.log(`[telegram] Renamed topic ${topicId} → "${name}"`);
@@ -2477,6 +2564,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * promptGate.ownerId for back-compat when ownerUserId isn't
    * explicitly configured.
    */
+  /** identity-security-creation-provenance v5: told of every message this adapter sends into a topic. */
+  onTopicMessageSent: ((topicId: number, messageId: number) => void) | null = null;
+
   getOwnerUserId(): number | undefined {
     return this.config.ownerUserId ?? this.config.promptGate?.ownerId;
   }
@@ -3430,7 +3520,11 @@ export class TelegramAdapter implements MessagingAdapter {
     // Keep an earlier verified title when a standby rebinds the session.
     const identity = verifiedChannelIdentity('telegram', topicId, topicName);
     if (identity) {
-      this.topicToName.set(topicId, identity.name);
+      // A name a caller passes at bind time is not Telegram's evidence: when replication already
+      // holds a name for this topic (docs/specs/topic-name-replication.md), that name stands.
+      let held: string | null = null;
+      try { held = this.topicNameAuthority?.(topicId) ?? null; } catch { held = null; } // @silent-fallback-ok: no answer keeps today's behavior
+      this.topicToName.set(topicId, held ?? identity.name);
     }
     this.saveRegistry();
     console.log(`[telegram] Registered topic ${topicId} <-> session "${sessionName}"${topicName ? ` (name: "${topicName}")` : ''}`);
@@ -3523,23 +3617,48 @@ export class TelegramAdapter implements MessagingAdapter {
    * lifeline owns polling, where the server never sees those service messages.
    * A known name is replaced only by a rename.
    */
-  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean): void {
+  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean, eventAtMs?: number, eventSeq?: number): void {
+    const seq = typeof eventSeq === 'number' && Number.isSafeInteger(eventSeq) && eventSeq >= 0 ? eventSeq : undefined;
     const name = String(detectedName).trim().slice(0, 128); // bounded-input-reviewed: display-name cap (Telegram allows 128), not a model prompt
     if (!name || !Number.isSafeInteger(numericTopicId)) return;
     const currentName = this.topicToName.get(numericTopicId);
     if (!currentName || /^topic-\d+$/.test(currentName) || isEditEvent) {
-      const isRename = isEditEvent && currentName !== name;
-      if (currentName === name) return;
+      if (currentName === name) {
+        // A rename notice naming what is already shown still orders against renames other machines hold
+        // (renames A, B, A delivered out of order); a creation name adds nothing.
+        if (isEditEvent) {
+          const at0 = typeof eventAtMs === 'number' && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : undefined;
+          this.publishTopicName(numericTopicId, name, 'rename', { atMs: at0, seq });
+          const kept = this.topicToName.get(numericTopicId);
+          if (kept && kept !== name) {
+            // A newer rename another machine holds was put back: save it and let the session label follow.
+            this.saveRegistry();
+            if (this.topicRenamedHandler) {
+              try { void Promise.resolve(this.topicRenamedHandler(numericTopicId, kept)).catch(() => { /* @silent-fallback-ok: rename display is non-critical */ }); }
+              catch { /* @silent-fallback-ok: rename display is non-critical */ }
+            }
+          }
+        }
+        return;
+      }
       this.topicToName.set(numericTopicId, name);
+      // Telegram's own time for the event orders a late rename notice behind a newer rename
+      // another machine already shared; the hook then puts that newer name back.
+      const at = typeof eventAtMs === 'number' && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : undefined;
+      // A creation is stamped by this machine's clock; only a rename carries Telegram's time and order.
+      this.publishTopicName(numericTopicId, name, isEditEvent ? 'rename' : 'fill', isEditEvent ? { atMs: at, seq } : {});
+      const held = this.topicToName.get(numericTopicId) ?? name;
+      if (held === currentName) { this.saveRegistry(); return; }
+      const isRename = isEditEvent && currentName !== held;
       this.saveRegistry();
-      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${name}"`);
+      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${held}"`);
       // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
       // initial capture or topic creation). The handler updates the bound
       // session's display `name` so the dashboard label tracks the user's
       // rename. Fire-and-forget: rename-display is non-critical.
       if (isRename && this.topicRenamedHandler) {
         try {
-          void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+          void Promise.resolve(this.topicRenamedHandler(numericTopicId, held)).catch((err) => {
             // @silent-fallback-ok: rename display is non-critical; the failure is logged
             console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
           });
@@ -4805,6 +4924,139 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.authorshipJoin.join(matching);
   }
 
+  /**
+   * Exact-id lookup of logged messages (docs/specs/waiting-on-you-links.md §3): for each wanted
+   * `{ topicId, messageId }`, whether this machine's retained log holds it, who sent it and its
+   * full text. One asynchronous pass for all ids together, read backwards in 1 MB blocks so a
+   * recent message is found in the first block, stopping as soon as every id is found. Bounded
+   * only by the log's own rotation. `topicId: null` matches the message id in any topic of the
+   * group the link named (`issues`), since a General-form link carries no topic id. Throws on a read error or when `signal` aborts;
+   * callers report "unavailable".
+   */
+  async findLoggedMessages(refs: Array<{ topicId: number | null; messageId: number; issues?: boolean }>, opts: { signal?: AbortSignal } = {}): Promise<Array<{
+    topicId: number | null; messageId: number; found: boolean; sentBy?: string; text?: string; timestamp?: string;
+  }>> {
+    const wanted = new Map<string, { topicId: number | null; messageId: number; issues: boolean }>();
+    for (const r of refs) {
+      if (!Number.isSafeInteger(r.messageId) || r.messageId <= 0) continue;
+      wanted.set(`${r.topicId ?? (r.issues ? '*issues' : '*')}:${r.messageId}`, { topicId: r.topicId, messageId: r.messageId, issues: r.issues === true });
+    }
+    const hits = new Map<string, LogEntry>();
+    if (wanted.size > 0 && fs.existsSync(this.messageLogPath)) {
+      // Cheap literal pre-filter before any parse; the exact compare after parsing decides.
+      const needles = [...new Set([...wanted.values()].map((w) => `"messageId":${w.messageId}`))];
+      const CHUNK = 1024 * 1024;
+      const fh = await fs.promises.open(this.messageLogPath, 'r');
+      try {
+        let pos = (await fh.stat()).size;
+        let carry = Buffer.alloc(0);
+        while (pos > 0 && hits.size < wanted.size) {
+          // The caller's allowance ran out: stop reading so timed-out lookups never pile up.
+          if (opts.signal?.aborted) throw new Error('find-logged-messages-aborted');
+          const size = Math.min(CHUNK, pos);
+          pos -= size;
+          const read = Buffer.alloc(size);
+          const { bytesRead } = await fh.read(read, 0, size, pos);
+          let buf = Buffer.concat([read.subarray(0, bytesRead), carry]);
+          if (pos > 0) {
+            const nl = buf.indexOf(0x0a);
+            if (nl < 0) { carry = buf; continue; }
+            carry = buf.subarray(0, nl);
+            buf = buf.subarray(nl + 1);
+          } else {
+            carry = Buffer.alloc(0);
+          }
+          const lines = buf.toString('utf-8').split('\n');
+          for (let i = lines.length - 1; i >= 0 && hits.size < wanted.size; i--) {
+            const line = lines[i];
+            if (!line || !needles.some((n) => line.includes(n))) continue;
+            try {
+              const entry: LogEntry = JSON.parse(line);
+              const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId ?? null;
+              for (const [key, w] of wanted) {
+                if (hits.has(key) || entry.messageId !== w.messageId) continue;
+                if (w.topicId !== null && entryTopicId !== w.topicId) continue;
+                // A link with no topic names only its chat. The main group and the Issues group
+                // number their messages separately in this one log, so the row must be in the
+                // same group the link named.
+                if (w.topicId === null && isIssuesTopicId(entryTopicId) !== w.issues) continue;
+                hits.set(key, entry);
+              }
+            } catch { /* @silent-fallback-ok: a malformed log line is skipped; the lookup is built from the lines that parse */ }
+          }
+        }
+      } finally {
+        await fh.close();
+      }
+    }
+    const joined = new Map<string, LogEntry & { authorship?: string }>();
+    const keys = [...hits.keys()];
+    const withAuthorship = this.authorshipJoin.join(keys.map((k) => hits.get(k)!));
+    keys.forEach((k, i) => joined.set(k, withAuthorship[i]));
+    return [...wanted.entries()].map(([key, w]) => {
+      const e = joined.get(key);
+      if (!e) return { topicId: w.topicId, messageId: w.messageId, found: false };
+      return {
+        topicId: w.topicId, messageId: w.messageId, found: true,
+        sentBy: e.teamPhone ? 'team-member' : e.fromUser ? 'person' : String(e.authorship ?? 'not-the-person'),
+        text: String(e.text ?? ''),
+        timestamp: String(e.timestamp ?? ''),
+      };
+    });
+  }
+
+  /**
+   * One message of one topic, by id, logged at or after `notBeforeMs` (identity-security-creation-
+   * provenance). Reads the log backwards in 1 MB chunks and stops at the first entry older than
+   * `notBeforeMs`, so it costs at most that window of log. `unreadable` is distinct from "not found".
+   */
+  findTopicMessage(topicId: number, messageId: number, notBeforeMs: number): { entry: LogEntry | null; unreadable?: boolean; budgetExceeded?: boolean } {
+    if (!fs.existsSync(this.messageLogPath)) return { entry: null };
+    const CHUNK = 1024 * 1024;
+    // I/O budget: at most 16 MB of log read per lookup (synchronous, so kept small). A day of log
+    // past that is reported as budgetExceeded (a distinct outcome), never as "not found".
+    const BUDGET = 16 * CHUNK;
+    let scanned = 0;
+    let fd: number;
+    try { fd = fs.openSync(this.messageLogPath, 'r'); } catch { return { entry: null, unreadable: true }; }
+    try {
+      let pos = fs.fstatSync(fd).size;
+      let carry = Buffer.alloc(0);
+      while (pos > 0) {
+        if (scanned >= BUDGET) return { entry: null, budgetExceeded: true };
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        scanned += size;
+        const read = Buffer.alloc(size);
+        fs.readSync(fd, read, 0, size, pos);
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
+        }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (!lines[i]) continue;
+          let entry: LogEntry;
+          try { entry = JSON.parse(lines[i]); } catch { continue; /* @silent-fallback-ok: a malformed log line is skipped */ }
+          const at = Date.parse(String(entry.timestamp));
+          if (Number.isFinite(at) && at < notBeforeMs) return { entry: null };
+          const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+          if (entryTopicId === topicId && entry.messageId === messageId) return { entry: this.authorshipJoin.join([entry])[0] ?? entry };
+        }
+      }
+      return { entry: null };
+    } catch {
+      return { entry: null, unreadable: true };
+    } finally {
+      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
+    }
+  }
+
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
@@ -5564,6 +5816,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const creation = (async (): Promise<number | null> => {
       const label = bucket === '*' ? 'multiple sources' : bucket;
+      // bounded-input-reviewed: Telegram forum-topic names are limited to 128 characters by the platform; a fixed label, not a judgment's input.
       const title = `🔁 ${label}: notices coalesced (flood guard)`.slice(0, 128);
       // 'system' + bounded: the coalesce surface itself must never be refused by
       // the budget it exists to absorb (one topic per bucket, create-once-reuse).
@@ -6484,7 +6737,7 @@ export class TelegramAdapter implements MessagingAdapter {
       msg.forum_topic_created?.name ??
       msg.forum_topic_edited?.name ??
       msg.reply_to_message?.forum_topic_created?.name;
-    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name);
+    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name, msg.forum_topic_edited?.name && typeof msg.date === 'number' ? msg.date * 1000 + 999 : undefined, msg.forum_topic_edited?.name ? msg.message_id : undefined);
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {
@@ -6619,7 +6872,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // kill/pause the session even when the session is mid-tool-call.
     if (this.onSentinelIntercept) {
       try {
-        const classification = await this.onSentinelIntercept(text, numericTopicId);
+        const classification = await this.onSentinelIntercept(text, numericTopicId, `telegram:${numericTopicId}:${msg.message_id}`);
         if (classification && (classification.category === 'emergency-stop' || classification.category === 'pause')) {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {
@@ -7764,7 +8017,10 @@ export function attentionBodyBlocks(
   const s = (summary ?? '').trim();
   const d = (description ?? '').trim();
   if (!d) return s ? [s] : [];
-  const dSliced = d.slice(0, descriptionSlice);
+  // bounded-input-reviewed: a display cap (callers pass 500 / 1000) on the hub post, which also lands in the topic history a later session reads; the cut is now marked in-band with a pointer to the full attention item, in words a person and a model both read as "partial".
+  const dSliced = d.length > descriptionSlice
+    ? `${d.slice(0, descriptionSlice)}… [description cut at ${descriptionSlice} of ${d.length} characters; the full text is in the attention item]`
+    : d;
   if (s && d.startsWith(s)) return [dSliced];
   // Leading \n preserves the original blank-line separation when joined by '\n'.
   return s ? [s, `\n${dSliced}`] : [dSliced];

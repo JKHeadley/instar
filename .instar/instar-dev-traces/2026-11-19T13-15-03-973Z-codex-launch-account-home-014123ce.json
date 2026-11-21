@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "codex-launch-account-home",
+  "sessionId": "67b86979-6270-4259-9115-b0a451a0856f",
+  "timestamp": "2026-11-19T13:15:03.973Z",
+  "artifactPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "artifactSha256": "79db77409e3447778c6d98ee0cf4e6560727f4797ec6cb866ddd4e1cfe588758",
+  "coveredFiles": [
+    "docs/specs/codex-launch-account-home.eli16.md",
+    "src/core/SessionManager.ts",
+    "tests/unit/team-guards.test.ts",
+    "upgrades/side-effects/codex-launch-account-home.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Refactor only: the Codex placement's thread-id check reads a local variable, so the two launch-flag guard pins (team-guards, memory-session-safety) count only --resume flags again; team-guards pin restored to main. No behaviour change.",
+  "eli16Path": "docs/specs/codex-launch-account-home.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

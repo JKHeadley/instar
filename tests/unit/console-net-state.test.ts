@@ -11,6 +11,8 @@ import {
   FIRST_TRY_MS, SLOW_LINE_MS, KEEP_MS, RETRY_STEPS_MS,
 } from '../../dashboard/console/net-state.js';
 
+import { signInAtBoot, validToken } from '../../dashboard/console/ticket-model.js';
+
 const ORIGIN = 'https://agent.example';
 
 function memStorage() {
@@ -70,9 +72,44 @@ function rig(opts: { online?: boolean } = {}) {
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 10, 16, 13, 52, 0)); });
 afterEach(() => { vi.useRealTimers(); });
 
+describe('console boot with a stored sign-in and an empty response cache', () => {
+  it.each([502, 504, 522])('keeps the stored sign-in and reports a weak connection on HTTP %i', async (apiStatus) => {
+    const { net, set } = rig();
+    set({ apiStatus });
+    expect(await signInAtBoot({ storedToken: 'tok-1', ticket: '', fetchFn: net.fetch })).toEqual({ via: 'stored', token: 'tok-1' });
+    expect(lineText(net.state(), Date.now())).toContain('Still trying to reach the agent');
+    expect(await validToken('typed', false, net.fetch)).toBe(false);
+  });
+
+  it.each([
+    ['a network exception', { api: 'down' as Behaviour }],
+    ['an offline device', { online: false }],
+  ])('keeps the stored sign-in on %s and still refuses a typed token', async (_label, state) => {
+    const { net, set } = rig();
+    set(state);
+    expect(await signInAtBoot({ storedToken: 'tok-1', ticket: '', fetchFn: net.fetch })).toEqual({ via: 'stored', token: 'tok-1' });
+    expect(await validToken('typed', false, net.fetch)).toBe(false);
+  });
+
+  it.each([401, 403, 503])('does not preserve the stored sign-in on an agent response of %i', async (apiStatus) => {
+    const { net, set } = rig();
+    set({ apiStatus });
+    expect(await signInAtBoot({ storedToken: 'tok-1', ticket: '', fetchFn: net.fetch })).toEqual({ via: 'pin', token: '' });
+  });
+
+  it('requires a live success for a typed token even when a previous read was saved', async () => {
+    const { net, set } = rig();
+    expect(await validToken('tok-1', false, net.fetch)).toBe(true);
+    set({ apiStatus: 502 });
+    expect(await validToken('tok-1', false, net.fetch)).toBe(false);
+  });
+});
+
 describe('which reads are saved', () => {
   it('saves allowlisted status reads only', () => {
     expect(isStorable('/needs', G)).toBe(true);
+    expect(isStorable('/needs?cursor=second-page', G)).toBe(false);
+    expect(isStorable('/needs?x=1&cursor=third-page', G)).toBe(false);
     expect(isStorable('/work/projects', G)).toBe(true);
     expect(isStorable('/commitments?scope=mesh', G)).toBe(true);
     expect(isStorable('/local-verify', G)).toBe(true);
@@ -100,14 +137,14 @@ describe('the top line', () => {
     expect(lineText({ mode: 'fresh', shownAt: null }, now)).toBe('');
   });
   it('says offline and the time of what is shown', () => {
-    expect(lineText({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Offline. Showing what I had at 1:52 pm.');
+    expect(lineText({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Waiting for network… Showing what I had at 1:52 pm.');
   });
   it('says weak connection and that it is trying again', () => {
-    expect(lineText({ mode: 'weak', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Weak connection. Showing what I had at 1:52 pm. Trying again.');
+    expect(lineText({ mode: 'weak', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Connecting… Showing what I had at 1:52 pm.');
   });
   it('says plainly when nothing is saved', () => {
-    expect(lineText({ mode: 'offline', shownAt: null }, now)).toMatch(/^Offline\. Nothing saved on this device yet\./);
-    expect(lineText({ mode: 'weak', shownAt: null }, now)).toBe('Weak connection. Still trying to reach the agent.');
+    expect(lineText({ mode: 'offline', shownAt: null }, now)).toMatch(/^Waiting for network… Nothing saved on this device yet\./);
+    expect(lineText({ mode: 'weak', shownAt: null }, now)).toBe('Connecting… Still trying to reach the agent.');
   });
   it('names yesterday and older days', () => {
     expect(whenWords(new Date(2026, 10, 15, 18, 10).getTime(), now)).toBe('yesterday 6:10 pm');
@@ -127,7 +164,7 @@ describe('reading on a weak or missing connection', () => {
     expect(res.headers.get('X-Instar-Saved-At')).toBe(String(new Date(2026, 10, 16, 13, 52).getTime()));
     expect(r.fetchFn.mock.calls.length).toBe(before); // no network wait at all
     expect(r.net.state()).toEqual({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() });
-    expect(lineText(r.net.state(), Date.now())).toBe('Offline. Showing what I had at 1:52 pm.');
+    expect(lineText(r.net.state(), Date.now())).toBe('Waiting for network… Showing what I had at 1:52 pm.');
   });
 
   it('fails at once offline when nothing is saved (no 40 s placeholder)', async () => {

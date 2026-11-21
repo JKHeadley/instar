@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T02:28:59.876Z",
+  "slug": "locked-proof-human-steps",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 116,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs"
+    ],
+    "addedLines": 100,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

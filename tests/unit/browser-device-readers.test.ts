@@ -31,6 +31,9 @@ const ALLOWED: ReadonlyArray<[string, string]> = [
   ['src/server/mobileConsoleTicket.ts', "!d.publicKey || d.client === 'browser'"],
   ['src/server/mobileConsoleTicket.ts', 'deviceKeyHashOf(d.publicKey), d.id'],
   ['src/server/mobileConsoleTicket.ts', 'samePublicKey(key, d.publicKey)'],
+  // piece 3a: an approval key must differ from the device key (the same check as the console presence key).
+  ['src/server/mobileApproverClaim.ts', 'samePublicKey(key, d.publicKey)'],
+  ['src/server/mobileApproverGrant.ts', 'samePublicKey(key, d.publicKey)'],
   // Team routes: fail closed on purpose (§4.1 table).
   ['src/server/teamRoutes.ts', '!dev?.publicKey'],
   ['src/server/teamRoutes.ts', 'deviceKeyHashOf(dev.publicKey)'],

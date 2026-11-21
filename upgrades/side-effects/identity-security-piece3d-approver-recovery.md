@@ -148,3 +148,9 @@ Record of all rounds: `.instar/state/identity-build-144636/reviews/p3d-second-pa
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a`
 - **reason:** the recovery tick is bounded by monotone state. It sends at most three notices per recovery, each once (an accepted notice is recorded), plus one owner message per milestone, deduplicated by key in memory and bounded by milestones. One tick runs at a time, every 5 minutes. A recovery ends by itself 7 days after its wait.
+
+## Addendum: rebase onto main (2026-11-21)
+
+Replayed onto the refreshed piece 3a with no conflicts. One test fix: the recovery-flow test pinned its fake clock
+to 2026-11-20 while the first-approver code store reads the real clock, so the code read as expired once that date
+passed. The test now starts the fake clock at the real time. No source change.

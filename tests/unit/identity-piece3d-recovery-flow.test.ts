@@ -75,7 +75,7 @@ async function askAndStart(c: ReturnType<typeof setup>, b: Phone) {
 
 describe('recovery through the private chat (piece 3d)', () => {
   it('a lost only approver: 72 h, three notices, a fresh code, and the new phone approves', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-20T00:00:00Z'));
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date()); // start from the real clock: the claim code store reads the real one
     const c = setup();
     const a = c.pair(); await first(c, a);
     const b = c.pair();
@@ -104,7 +104,7 @@ describe('recovery through the private chat (piece 3d)', () => {
   });
 
   it('an approval by a living approver during the wait stops it, and nothing is granted', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-20T00:00:00Z'));
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date()); // start from the real clock: the claim code store reads the real one
     const c = setup();
     const a = c.pair(); await first(c, a);
     const b = c.pair();

@@ -125,8 +125,19 @@ export type ProbeVerdict =
   | { passed: true; evaluatedUsd: number; refusalReason: 'cap-exceeded' }
   | { passed: false; failingComponent: string; refusalReason: string | null };
 
+/** The probe's reserved caller/component values (gemini-payg §8: "the probe's admit request gains the new required fields"). */
+export const PROBE_CALLER = 'probe' as const;
+export const PROBE_COMPONENT = 'money-layer-cap-gate-probe';
+
 export interface ProbeAdmitLike {
-  admit(req: { door: string; modelId: string; inputTokens: number; maxOutputTokens: number | undefined }): Promise<unknown>;
+  admit(req: {
+    door: string;
+    modelId: string;
+    inputTokens: number;
+    maxOutputTokens: number | undefined;
+    component: string;
+    caller: typeof PROBE_CALLER;
+  }): Promise<unknown>;
 }
 
 /**
@@ -165,7 +176,7 @@ export async function runCapGateProbe(
     return { passed: false, failingComponent: 'probe-door-not-live', refusalReason: null };
   }
   const caps = capsSnapshot.caps[PROBE_KEY_REF];
-  if (!caps || !(caps.lifetimeCapUsd > 0) || !(caps.dailyCapUsd > 0)) {
+  if (!caps || !((caps.lifetimeCapUsd ?? 0) > 0) || !(caps.dailyCapUsd > 0)) {
     // The (b) correction, asserted rather than assumed: a non-positive cap
     // would refuse as `invalid-cap` before the comparison the probe exists to
     // exercise.
@@ -182,6 +193,8 @@ export async function runCapGateProbe(
       modelId: PROBE_MODEL_ID,
       inputTokens: PROBE_INPUT_TOKENS,
       maxOutputTokens: PROBE_MAX_OUTPUT_TOKENS,
+      component: PROBE_COMPONENT,
+      caller: PROBE_CALLER,
     })) as { reserveId?: string; keyRef?: string } | undefined;
     // ADMITTED. The gate let a $2.00 reservation through a $0.01 cap — the
     // loudest possible failure.

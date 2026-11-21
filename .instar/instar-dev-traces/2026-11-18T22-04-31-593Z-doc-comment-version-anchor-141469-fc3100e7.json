@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "doc-comment-version-anchor-141469",
+  "sessionId": "21250972-e414-4b85-9ad8-9f856f442973",
+  "timestamp": "2026-11-18T22:04:31.593Z",
+  "artifactPath": "upgrades/side-effects/doc-comment-version-anchor-141469.md",
+  "artifactSha256": "6994946c1f21e8d92a2e059c088741cbd9ac68452b093510bc3dfef3d77850a1",
+  "coveredFiles": [
+    "dashboard/docs/doc-page-model.js",
+    "dashboard/docs/doc-page.css",
+    "dashboard/docs/doc-page.js",
+    "docs/specs/instar-document-viewer.md",
+    "src/data/awareness/instar-documents.md",
+    "src/documents/anchor.ts",
+    "src/documents/service.ts",
+    "src/server/documentPageRoutes.ts",
+    "tests/integration/documents-page.test.ts",
+    "tests/unit/documents-anchor.test.ts",
+    "tests/unit/documents-page-model.test.ts",
+    "tests/unit/documents-service.test.ts",
+    "upgrades/next/doc-comment-version-anchor-141469.md",
+    "upgrades/side-effects/doc-comment-version-anchor-141469.eli16.md",
+    "upgrades/side-effects/doc-comment-version-anchor-141469.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "placement and presentation fix on a dark-gated page; additive optional fields; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/doc-comment-version-anchor-141469.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/doc-comment-version-anchor-141469.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

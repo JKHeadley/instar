@@ -10,6 +10,7 @@ import type { AccountPathService, DeviceDirectory, DeviceSnapshot } from '../cor
 import type { TrustAccountPathRuntime } from '../core/trustJourney/TrustJourneyRuntime.js';
 import { deviceFingerprint, keyHashOf, type DeviceRecord, deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { activeOwnerPhone } from './mobileConsoleTicket.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 
@@ -83,7 +84,7 @@ const FORWARDING_HEADERS = ['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded
  * device can never replace a key.
  */
 export function arrivedLocallyUnforwarded(req: Pick<Request, 'headers' | 'socket'>): boolean {
-  if (!isLoopbackPeer(req.socket.remoteAddress)) return false;
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress)) return false;
   return !FORWARDING_HEADERS.some((h) => req.headers[h] !== undefined);
 }
 

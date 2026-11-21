@@ -39,7 +39,7 @@ function config(dir: string): InstarConfig {
 describe('approver mark lifecycle (production wiring)', () => {
   it('AgentServer wires the migration and the sync hooks', () => {
     const src = fs.readFileSync(path.join(__dirname, '../../src/server/AgentServer.ts'), 'utf8');
-    expect(src).toContain('migrateApprovers(mp, {');
+    expect(src).toContain('ensureApproverMigration(mp);');
     expect(src).toContain('setOwnerRecordApproverHooks({');
     const routes = fs.readFileSync(path.join(__dirname, '../../src/server/mobilePairingRoutes.ts'), 'utf8');
     expect(routes).toContain('mountApproverClaimRoutes(router, svc);');

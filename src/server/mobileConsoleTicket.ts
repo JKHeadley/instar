@@ -19,7 +19,7 @@ import type { Application, Request, Response, Router } from 'express';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { normalizeRequestHost } from '../core/MobileOwnNames.js';
-import { isStrictLowSDer, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
+import { admittedAtComputer, isStrictLowSDer, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
 import type { InstarConfig } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
@@ -225,6 +225,10 @@ export function activeOwnerPhone(svc: MobilePairingService, deviceId: string): b
   // Fails closed for a browser on purpose (dashboard-conversations-browser-device §4.1): it reads
   // `publicKey`, which a browser record never has, and refuses `client: 'browser'` explicitly.
   if (!d || d.status !== 'active' || !d.publicKey || d.client === 'browser') return false;
+  // Identity A4: a phone let in by the number at the agent's computer is an owner phone for
+  // conversations that cannot approve (no console ticket, presence key, pairing approval,
+  // introduction, permission or trust act) until piece 3b gives it the mark.
+  if (admittedAtComputer(d)) return false;
   if (svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id)) return false;
   const p = svc.personOfDevice(d);
   return p.ok && p.role === 'owner';

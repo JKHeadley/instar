@@ -59,6 +59,7 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
+import { OrgPolicyGateHooks } from '../core/OrgPolicyGateHooks.js';
 import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
@@ -545,6 +546,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
   installSecretGet(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
+  installSecretSet(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-set.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
   installBrowserScripts(projectDir);
@@ -954,6 +957,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
+  installSecretSet(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/secret-set.mjs');
   installBrowserScripts(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)');
 
@@ -4502,6 +4507,16 @@ for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};
   fi
 done
 
+# A literal credential on a command line is readable by every process on this machine through ps for
+# as long as the command runs, and process samplers (diagnostics, crash captures) record it
+# (argv-token incident, 2026-11-17). Read the secret inside the command instead; the shell expands it
+# and it never reaches the command line. Always blocked, regardless of safety level.
+if echo "\$INPUT" | grep -qE -e '(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[abprs]-[0-9A-Za-z-]{20,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})'; then
+  echo 'BLOCKED: this command carries a literal credential (a token, an API key or a bot token).' >&2
+  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="\$(gh auth token)" or "\$(node .instar/scripts/secret-get.mjs NAME)". To write a file that holds a fixture, use the Write tool.' >&2
+  exit 2
+fi
+
 # Safe-case carve-out: \`git push --force-with-lease\` to a NON-protected branch is the
 # legitimate way to update one's OWN amended/rebased PR branch. Still block plain --force/-f
 # and any force-push explicitly targeting a protected branch (main/master/develop/release*).
@@ -4657,6 +4672,10 @@ fi
   // External operation gate — intercepts MCP tool calls to external services.
   // Uses shared template from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'external-operation-gate.js'), migrator.getHookContent('external-operation-gate'), { mode: 0o755 });
+  // Organization never rules check (docs/specs/org-never-actions.md §A): a new agent gets the gate too.
+  // It allows everything until the agent joins an organization whose policy says otherwise.
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
 
   // Claim intercept — catches false operational claims against canonical state.
   // PostToolUse hook checks tool output; Stop hook checks direct responses.
@@ -5269,6 +5288,39 @@ function installSecretGet(projectDir: string): void {
   const candidates = [
     path.resolve(modDir, '..', 'templates', 'scripts', 'secret-get.mjs'),
     path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-get.mjs'),
+  ];
+
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+
+  if (!scriptContent) {
+    return;
+  }
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
+ * Install the vault WRITE helper (.instar/scripts/secret-set.mjs): the value is read
+ * from stdin only and never printed — the target of the no-echo transfer
+ * (`secret-drop-retrieve.mjs <token> <field> --run -- node .instar/scripts/secret-set.mjs <name>`,
+ * docs/specs/gemini-payg-metered-lane.md §4).
+ */
+function installSecretSet(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  const scriptPath = path.join(scriptsDir, 'secret-set.mjs');
+
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'secret-set.mjs'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-set.mjs'),
   ];
 
   let scriptContent = '';

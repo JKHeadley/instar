@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http2 from 'node:http2';
 import path from 'node:path';
-import type { DeviceRecord, DeviceRegistry } from './MobileDeviceKeys.js';
+import { admittedAtComputer, type DeviceRecord, type DeviceRegistry } from './MobileDeviceKeys.js';
 
 export const FOLD_MS = 2 * 60_000;
 export const HOURLY_MS = 60 * 60_000;
@@ -295,6 +295,8 @@ export class MobilePushService {
         try { may = !!(t.itemId && t.commentKey && this.deps.mayNotifyDocument?.(d.id, t.itemId, t.commentKey)); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
         if (!may) continue;
       } else if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;
+      // Identity A4: a phone let in at the computer cannot approve yet, on either platform: never ask it to.
+      if (t.kind === 'notice' && t.subject && SUBJECT_TEXT[t.subject] && admittedAtComputer(d)) continue;
       if ((d.pushProvider ?? 'apns') === 'fcm') {
         // Approval notices go only to an Android phone that can approve (mobile-android-app §2.3).
         if (t.kind === 'notice' && t.subject && SUBJECT_TEXT[t.subject]) {

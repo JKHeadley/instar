@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "imessage-tests-never-touch-real-messages",
+  "sessionId": "d3f30dbe-f296-4b8f-8a6e-dba230b510d9",
+  "timestamp": "2026-11-21T00:45:06.508Z",
+  "artifactPath": "upgrades/side-effects/imessage-tests-never-touch-real-messages.md",
+  "artifactSha256": "f7a7290cb89982bd573529fdaf56e1ff71a27cb3d9c0b0da2db0406eb900c05e",
+  "coveredFiles": [
+    "docs/specs/imessage-tests-never-touch-real-messages.eli16.md",
+    "src/messaging/imessage/IMessageAdapter.ts",
+    "tests/unit/imessage-adapter.test.ts",
+    "upgrades/next/imessage-tests-never-touch-real-messages.md",
+    "upgrades/side-effects/imessage-tests-never-touch-real-messages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two-file, ~45-LOC fix with no production behaviour change: the chat.db hard-link helper gains a messagesDir parameter whose default is unchanged in production and a never-created stand-in under the test runner. No block/allow surface, no session lifecycle, no gate/sentinel/guard; a revert fully restores the prior behaviour.",
+  "eli16Path": "docs/specs/imessage-tests-never-touch-real-messages.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/imessage-tests-never-touch-real-messages.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [],
+    "notes": "Latent since the iMessage chat.db auto-hardlink feature (commit 85812e19f, 2026-04-12): ensureChatDbHardlink always used os.homedir()/Library/Messages, so any test constructing the adapter without dbPath reached the real Messages DB. It stayed invisible because macOS answered with a fast EPERM and the adapter fell back silently. Surfaced 2026-11-20 ~12:46 PST after the Studio rebuild changed that machine TCC posture: link() on the TCC-protected file now parks on a Full Disk Access approval (kernel: watchdog expired for approval entry, kTCCServiceSystemPolicyAllFiles) that no one at an unattended machine answers, freezing vitest workers until the 40-min lane deadline. The M5 never changed posture and kept passing. Environment shift exposed a latent defect; the fix removes the test-time reach rather than depending on either posture."
+  }
+}

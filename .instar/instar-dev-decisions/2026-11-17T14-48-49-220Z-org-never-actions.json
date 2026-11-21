@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T14:48:49.220Z",
+  "slug": "org-never-actions",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "classification entries for an existing LLM component"
+  },
+  "verdict": "pass"
+}

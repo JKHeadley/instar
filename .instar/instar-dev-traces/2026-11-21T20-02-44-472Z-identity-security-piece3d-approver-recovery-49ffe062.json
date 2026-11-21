@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3d-approver-recovery",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T20:02:44.472Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3d-approver-recovery.md",
+  "artifactSha256": "5de7273d9b7fa7a9a6a11dfbbebfc2230c822f8db17718faefb4630f8d87333f",
+  "coveredFiles": [
+    "tests/unit/identity-piece3d-recovery-flow.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only fix for a date-pinned fake clock",
+  "eli16Path": "docs/specs/identity-security-piece3d-approver-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/identity-security-piece3d-approver-recovery.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

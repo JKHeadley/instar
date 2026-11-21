@@ -169,7 +169,11 @@ const NAMED: Array<[RegExp, string]> = [
   [/sessions\\\/move/, '/mobile/sessions/move/50'],
   [/secrets\\\/requests.*cancel/, '/mobile/secrets/requests/abcdef0123456789/cancel'],
   [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
+  [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef'],
   [/trust\\\/requests\\\/tr-/, '/mobile/trust/requests/tr-0123456789ab-abc123/approve'],
+  [/suggestions.*accept/, '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/accept'],
+  [/suggestions.*reject/, '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/reject'],
+  [/projects\\\/drafts/, '/mobile/work/projects/drafts/gpd-0123456789abcdef0123/confirm'],
 ];
 const pathFor = (re: RegExp) => {
   const s = sample(re);

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-19T02:53:00.348Z",
+  "slug": "local-verify-import-related-rerun",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/orchestrator.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The controller local-verify-flake-rerun stays registered with boundK 9 and perTargetBoundK 3, derived from LOCAL_VERIFY_LIMITS (3 files per verify x 3 runs per import-related file). This commit only adds a reason for a solo run not to pass (a different skipped count), which ends a file's sequence earlier; it adds no run. Steady-state bound: the cap counts files and is spent once per verify. Settling brake: the first solo run that does not pass ends the sequence. The budget lives inside one verify, so the count does not grow with the horizon."
+    }
+  },
+  "verdict": "pass"
+}

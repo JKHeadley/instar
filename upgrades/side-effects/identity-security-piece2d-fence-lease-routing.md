@@ -103,3 +103,19 @@ Review: `.instar/state/identity-build-144636/reviews/p2d-second-pass.md` in the 
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a`
 - **reason:** 2d adds no self-triggered loop. Lease takeover is an input to the existing acquire tick, bounded by a fixed budget; the notice is 2c's registered one.
+
+## Addendum: rebase onto main (2026-11-21)
+
+Main gained six mesh verbs for the Gemini pay-per-use lane while this piece waited. The fence table is
+compiler-exhaustive, so each needs a class before the branch builds:
+
+- `metered-gemini-call` is **authority**: it asks the designated machine to spend money, so it is never sent to a
+  below machine and is refused from one, like `slice-renew`.
+- `metered-gemini-result`, `designation-echo`, `secret-names` (key names only, never values) and
+  `gemini-payg-setup-render` (rendering is not authority; the PIN commit is) are **read**.
+- `metered-stop-action` is **liveness**: it can only reduce spending, and a below machine must still be able to
+  stop money.
+
+Side effects: none before enrolment (the fence applies nothing until the owner enrols above Basic). After
+enrolment, a below machine cannot start a metered call and cannot be the one asked to spend; it can still stop
+spending and read results. Tests: MeshRpc, piece 2c and 2d unit tests and 20 lease and mesh test files pass.

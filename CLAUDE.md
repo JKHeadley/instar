@@ -161,6 +161,11 @@ This toolkit is meant to be tested against real Claude Code projects. The flow:
   - **The principle**: This is a classic responsibility gap where no one claims failures because "someone else caused them." The standard eliminates this gap — if you see a failure, you own it
   - **Enforcement**: Husky pre-push hook (local), GitHub Actions CI with branch protection (remote), Claude Code test-health-gate hook (session-level)
 
+- **Approval Only Where Required** (2.0 Rule 82, *Agent Proposes, Operator Approves*): the operator approves only changes to the constitution and the protected list (the paths `.github/CODEOWNERS` assigns to an owner), plus anything their recorded instructions reserve. Everything else the agent approves and merges itself, and the operator hears what shipped, never "ready for your review".
+  - **Specs:** a spec's `approved: true` is the agent's, with an `approved-by` line naming the basis. Only a constitution or protected-list amendment goes to the operator.
+  - **PRs:** whether a PR needs a human approval is read live, never from memory or a brief. `node scripts/safe-merge.mjs` returns `refused:approval-required` only when GitHub will not merge without a review. Only then send the operator its `reviewUrl`.
+  - **Origin:** a build session asked the operator to approve PR #3326, which touched neither code-owned file (2026-11-17, Echo Bugs topic 10000002791).
+
 - **Agent Awareness Standard**: Every feature added to Instar MUST tell the agent it exists. An agent that doesn't know about a capability effectively doesn't have it. **New awareness text goes in ONE new file, `src/data/awareness/<id>.md`** (format: `src/data/awareness/README.md`; spec: `docs/specs/awareness-entry-registry.md`). The entry is written into every agent's instructions (new agents, existing agents, and the Codex/Gemini copies) as a "Feature notes" paragraph, so do NOT add a section to `generateClaudeMd()` or a block to `patchClaudeMdContent` for it. Only a row under one of the core headings still edits the template (`src/scaffold/templates.ts` → `generateClaudeMd()`). What awareness covers:
   1. **API endpoints** — Add to the Capabilities section with curl examples
   2. **Proactive triggers** — Add to Feature Proactivity ("when user does X → use this")

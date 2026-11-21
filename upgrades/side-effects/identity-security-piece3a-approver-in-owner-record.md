@@ -162,3 +162,22 @@ Record of all three rounds: `.instar/state/identity-build-144636/reviews/p3a-sec
 - **closure:** `guard`
 - **citation:** `tests/unit/identity-piece3a-approver-ratchet.test.ts`
 - **how-caught:** any new code that reads a device's presence key or checks a presence signature outside the approver module fails the ratchet.
+
+## Addendum: rebase onto main (2026-11-21)
+
+While this piece waited, main gained the home-network first phone (piece 3e, PR 3518) and moved the document
+decision root into `src/server/documentDecisionRoot.ts`. The rebase keeps the design of both:
+
+- A phone added at home stays a conversations-only owner phone; piece 3b grants it the right to approve later,
+  as the 3e spec says. This piece does not change that.
+- The document decision root now asks `activeOwnerPhone && mayApprove` through its dependency, and the helper no
+  longer reads `presenceKey` itself, so the approver module stays the only reader (the ratchet test).
+- Test updates only: two native-permissions e2e tests now expect this piece's 403 `approver-required` where they
+  expected 409 for a phone with no key; the approver e2e looks for `ensureApproverMigration(mp);`, which the
+  second commit of this piece introduced; the console-ticket test no longer expects a `presence-key-set` row,
+  because the test marks the phone with that same key first; the device-key reader ratchet allows the two
+  approval-key routes' "must differ from the device key" check, as it already allows the console route's.
+
+Owner-phone coordination: the presence-key route keeps this piece's own change and nothing more. SEC-142 (the
+first Face ID key accepted on the device key alone) is owned by the security session and will change that route
+next; this rebase does not attempt it.

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "core-instruction-headroom",
+  "sessionId": "557df37c-91a0-4ec9-a265-bebbdf05b55e",
+  "timestamp": "2026-11-19T06:23:07.074Z",
+  "artifactPath": "upgrades/side-effects/core-instruction-headroom.md",
+  "artifactSha256": "f1da395ef8bdba64b86ef3f9ce6c499e336a0a9161dec5af058e6761e9b9f3a7",
+  "coveredFiles": [
+    "docs/specs/core-instruction-headroom.eli16.md",
+    "src/scaffold/claudeMdLayout.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/claude-md-core-headroom.test.ts",
+    "tests/unit/migrate-context-budget-sentinel-row.test.ts",
+    "tests/unit/report-delivery-as-document.test.ts",
+    "upgrades/next/core-instruction-headroom.md",
+    "upgrades/side-effects/core-instruction-headroom.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "instruction text regenerated on every update plus a unit test; a revert fully undoes it; no runtime code; independent second pass recorded",
+  "eli16Path": "docs/specs/core-instruction-headroom.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/core-instruction-headroom.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

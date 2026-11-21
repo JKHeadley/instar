@@ -69,6 +69,13 @@ export const MESH_VERB_FENCE_CLASS: Readonly<Record<MeshCommand['type'], { cls: 
   'app-media-pull': { cls: 'read', why: 'reads app media blobs' },
   'owner-record-push': { cls: 'read', why: 'gated separately by piece 2c (confirmed peers only)' },
   'owner-record-pull': { cls: 'read', why: 'gated separately by piece 2c (confirmed peers only)' },
+  // ── Gemini pay-per-use lane (docs/specs/gemini-payg-metered-lane.md §6) ──
+  'metered-gemini-call': { cls: 'authority', why: 'asks the designated machine to spend money on a metered call' },
+  'metered-gemini-result': { cls: 'read', why: 'polls a forwarded call with its own result token; grants nothing' },
+  'metered-stop-action': { cls: 'liveness', why: 'can only reduce spending; a below machine must still be able to stop money' },
+  'designation-echo': { cls: 'read', why: 'echoes a lease-confirmation nonce and the designation seen' },
+  'secret-names': { cls: 'read', why: 'vault key names only, never values' },
+  'gemini-payg-setup-render': { cls: 'read', why: 'renders a setup plan; the PIN commit on that machine is the authority' },
 });
 
 /** §2b: may this verb be sent TO a below machine? */
