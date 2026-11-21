@@ -209,7 +209,7 @@ export class SecretProvisioner {
     const peers = this.deps.listPeers();
     if (peers.length === 0) return [];
     let designation: MeteredDesignation | null = null;
-    try { designation = this.deps.meteredDesignation?.() ?? null; } catch { designation = null; }
+    try { designation = this.deps.meteredDesignation?.() ?? null; } catch { /* @silent-fallback-ok: an unreadable designation is null, which drops every metered key (fail closed). */ designation = null; }
     const out: { machineId: string; ok: boolean; reason?: string }[] = [];
     for (const peer of peers) {
       const secrets = filterSecretsForSync(all, '', { recipientMachineId: peer.machineId, designation });
@@ -303,8 +303,8 @@ export class SecretShareHandler {
     let droppedMetered = 0;
     let selfId: string | null = null;
     let designation: MeteredDesignation | null = null;
-    try { selfId = this.deps.selfMachineId?.() ?? null; } catch { selfId = null; }
-    try { designation = this.deps.meteredDesignation?.() ?? null; } catch { designation = null; }
+    try { selfId = this.deps.selfMachineId?.() ?? null; } catch { /* @silent-fallback-ok: an unknown self id keeps no metered key (fail closed). */ selfId = null; }
+    try { designation = this.deps.meteredDesignation?.() ?? null; } catch { /* @silent-fallback-ok: an unreadable designation is null, which drops every metered key (fail closed). */ designation = null; }
     const keepMetered = meteredReceiveAllowed(selfId, designation);
     for (const key of Object.keys(secrets)) {
       if (!isMeteredSecretName(key) || keepMetered) continue;

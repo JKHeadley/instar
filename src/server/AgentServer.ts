@@ -384,10 +384,9 @@ import { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
 import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
-import { meteredKeysFromChains } from '../core/routingSpendView.js';
+import { meteredKeyDoors, knownMeteredKeyRefs } from '../core/routingSpendView.js';
 import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
 import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
-import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { buildInboundIdLedgerController } from '../threadline/InboundIdLedger.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -3344,7 +3343,11 @@ export class AgentServer {
               retentionDays: rsCfg?.providerReportRetentionDays ?? 400,
             });
             this.providerCostReportStore.prune(); // boot prune (batched — scal-F4)
-            const doorToKey = new Map(meteredKeysFromChains().map((m) => [m.door, m.keyRef]));
+            // gemini-payg §2: metered keys come from the caps store + defaults, never
+            // the routing chains (which no longer carry a metered gemini position).
+            const doorToKey = new Map(
+              meteredKeyDoors().filter((m) => !m.retired).map((m) => [m.door, m.keyRef]),
+            );
             const sweep = new ProviderReconciliationSweep({
               store: this.providerCostReportStore,
               // Internal-derived per (keyRef, door): the metered doors' daily token
@@ -3419,6 +3422,17 @@ export class AgentServer {
             this.meteredSpendLedger = new MeteredSpendLedger({
               stateDir: options.config.stateDir,
               reserveTtlMs: moneyCfg?.reserveTtlMs,
+              // The current period zone per key comes from the PIN caps store
+              // (gemini-payg §5); rows keep the period they were charged to.
+              zoneForKey: (keyRef) => {
+                try {
+                  return this.routingSpendCapsStore?.read().caps[keyRef]?.periodTimeZone;
+                } catch {
+                  // @silent-fallback-ok: an unreadable store makes the gate fail closed
+                  // on its own read; here it only picks which period the totals view rolls to.
+                  return undefined;
+                }
+              },
             });
             this.routingSpendCapsStore = new RoutingSpendCapsStore({
               stateDir: options.config.stateDir,
@@ -3427,7 +3441,9 @@ export class AgentServer {
               // METERED_ROUTING_DOORS / DEFAULT_METERED_CAPS: those drive the
               // operator's arming UI, the spend summaries and the bench coverage
               // map, and the probe door must appear in none of them (T41).
-              knownKeyRefs: new Set([...Object.keys(DEFAULT_METERED_CAPS), PROBE_KEY_REF]),
+              // Retired keyRefs (metered_gemini_bench) stay known so an existing
+              // caps file holding one loads unchanged (gemini-payg §10).
+              knownKeyRefs: new Set([...knownMeteredKeyRefs(), PROBE_KEY_REF]),
               knownDoors: new Set([...METERED_ROUTING_DOORS, PROBE_DOOR] as string[]),
             });
             this.spendPlanStore = new RenderedPlanStore();

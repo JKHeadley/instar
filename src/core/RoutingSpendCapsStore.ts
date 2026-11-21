@@ -43,11 +43,82 @@ function refuseIfReservedProbe(op: string, keyRefOrDoor: string): void {
 
 export interface KeyCapsRecord {
   provider: string;
-  lifetimeCapUsd: number;
+  /**
+   * Lifetime cap. OPTIONAL when `monthlyCapUsd` is set (gemini-payg §5 period
+   * model): the monthly cap is then the operator's bound. A record must carry
+   * at least one of lifetime or monthly, plus the daily cap.
+   */
+  lifetimeCapUsd?: number;
+  /** Monthly cap, the calendar month in `periodTimeZone` (gemini-payg §5). */
+  monthlyCapUsd?: number;
   dailyCapUsd: number;
+  /**
+   * IANA zone the day and month periods are computed in. Absent ⇒ UTC, so every
+   * pre-existing key keeps today's UTC-day behaviour. Fixed once a door using
+   * this key has a live go-live record.
+   */
+  periodTimeZone?: string;
   frozen: boolean;
   frozenBy?: string;
   frozenAt?: string;
+}
+
+/**
+ * The closed set of metered callers (gemini-payg §2). `release-proof` is
+ * admitted only with a recorder-minted proof marker; `probe` is the reserved
+ * cap-gate probe value and never passes the caller-facing entry.
+ */
+export type MeteredCallerId =
+  | 'spec-review'
+  | 'second-opinion'
+  | 'nature-routing'
+  | 'doorway-liveness'
+  | 'release-proof'
+  | 'probe';
+
+export const METERED_CALLER_IDS: readonly MeteredCallerId[] = [
+  'spec-review',
+  'second-opinion',
+  'nature-routing',
+  'doorway-liveness',
+  'release-proof',
+  'probe',
+];
+
+/** Callers an operator may list in a door policy (release-proof/probe are internal-only). */
+export const POLICY_LISTABLE_CALLERS: ReadonlySet<MeteredCallerId> = new Set([
+  'spec-review',
+  'second-opinion',
+  'nature-routing',
+  'doorway-liveness',
+]);
+
+export type MeteredReleaseState = 'armed-pending-proof' | 'live';
+
+/**
+ * Per-door governed money policy (gemini-payg §5). Every field is PIN-only
+ * governed state except the reduce-only Bearer mutators (`lowerCaps`,
+ * `disableCaller`, `lowerShare`), which can only halt money, never release it.
+ */
+export interface MeteredDoorPolicy {
+  /** One call may reserve at most this much. */
+  perCallCeilingUsd: number;
+  /** `provisional + outstanding + this reserve` may not exceed this (month-scoped provisional). */
+  provisionalCeilingUsd: number;
+  /** E2 (second-opinion) may commit at most this share of the monthly cap. */
+  e2MonthSharePct: number;
+  /** E2 daily cap. */
+  e2DayCapUsd: number;
+  /** E1 passes per (specSha256, round). */
+  e1PassesPerRound: number;
+  /** SHA-256 fingerprint of the committed key, or null before go-live. */
+  keyGeneration: string | null;
+  meteredCallers: { callers: MeteredCallerId[]; e3Components: string[] };
+  /** Measured throughput floor per model (tokens/s) — derives timeouts; releases no money. */
+  throughputFloorTps: Record<string, number>;
+  releaseState: MeteredReleaseState;
+  /** Orders lane transfers. NOT bumped by a cap lowering. */
+  designationEpoch: number;
 }
 
 export interface GoLiveRecord {
@@ -67,6 +138,8 @@ export interface CapsStoreFile {
   goLive: Record<string, GoLiveRecord>;
   /** Metered-lease epoch — bumped on designation change and cap-lowering. */
   leaseEpoch: number;
+  /** Per-door policy (gemini-payg §5). Optional so a pre-change file loads unchanged. */
+  doorPolicy?: Record<string, MeteredDoorPolicy>;
 }
 
 export interface CapsAuditRow {
@@ -78,6 +151,56 @@ export interface CapsAuditRow {
 }
 
 const EMPTY: CapsStoreFile = { version: 0, caps: {}, goLive: {}, leaseEpoch: 0 };
+
+/** True when `tz` is an IANA zone this runtime's Intl knows. */
+export function isValidTimeZone(tz: unknown): tz is string {
+  if (typeof tz !== 'string' || !tz.trim()) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    // @silent-fallback-ok: an unknown zone is a validation FAILURE (returns false), not a default.
+    return false;
+  }
+}
+
+function isNonNegFinite(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+/** Store-level validation of one door policy record (C4-4 independence applies here too). */
+export function validateDoorPolicy(door: string, p: unknown): string | null {
+  if (!p || typeof p !== 'object') return `doorPolicy['${door}'] not an object`;
+  const r = p as MeteredDoorPolicy;
+  for (const f of ['perCallCeilingUsd', 'provisionalCeilingUsd', 'e2DayCapUsd'] as const) {
+    if (!isNonNegFinite(r[f])) return `doorPolicy['${door}'].${f} must be ≥ 0`;
+  }
+  if (!isNonNegFinite(r.e2MonthSharePct) || r.e2MonthSharePct > 100) return `doorPolicy['${door}'].e2MonthSharePct must be in [0,100]`;
+  if (!Number.isInteger(r.e1PassesPerRound) || r.e1PassesPerRound < 0) return `doorPolicy['${door}'].e1PassesPerRound must be a non-negative integer`;
+  if (r.keyGeneration !== null && (typeof r.keyGeneration !== 'string' || !/^[0-9a-f]{64}$/.test(r.keyGeneration))) {
+    return `doorPolicy['${door}'].keyGeneration must be null or a sha256 hex fingerprint`;
+  }
+  const mc = r.meteredCallers;
+  if (!mc || typeof mc !== 'object' || !Array.isArray(mc.callers) || !Array.isArray(mc.e3Components)) {
+    return `doorPolicy['${door}'].meteredCallers must be { callers: [], e3Components: [] }`;
+  }
+  for (const c of mc.callers) {
+    if (!POLICY_LISTABLE_CALLERS.has(c)) return `doorPolicy['${door}'].meteredCallers.callers holds a non-listable caller '${String(c)}'`;
+  }
+  if (new Set(mc.callers).size !== mc.callers.length) return `doorPolicy['${door}'].meteredCallers.callers has duplicates`;
+  for (const c of mc.e3Components) {
+    if (typeof c !== 'string' || !c.trim()) return `doorPolicy['${door}'].meteredCallers.e3Components holds an empty name`;
+  }
+  if (!r.throughputFloorTps || typeof r.throughputFloorTps !== 'object' || Array.isArray(r.throughputFloorTps)) {
+    return `doorPolicy['${door}'].throughputFloorTps must be an object`;
+  }
+  for (const [m, v] of Object.entries(r.throughputFloorTps)) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return `doorPolicy['${door}'].throughputFloorTps['${m}'] must be > 0`;
+  }
+  if (r.releaseState !== 'armed-pending-proof' && r.releaseState !== 'live') return `doorPolicy['${door}'].releaseState invalid`;
+  if (!Number.isInteger(r.designationEpoch) || r.designationEpoch < 0) return `doorPolicy['${door}'].designationEpoch must be a non-negative integer`;
+  return null;
+}
 
 /** Schema-level validator, independent of the rendered-plan machinery (C4-4). */
 export function validateCapsFile(f: unknown, knownKeyRefs?: ReadonlySet<string>, knownDoors?: ReadonlySet<string>): string | null {
@@ -91,10 +214,16 @@ export function validateCapsFile(f: unknown, knownKeyRefs?: ReadonlySet<string>,
     if (knownKeyRefs && !knownKeyRefs.has(keyRef)) return `unknown keyRef '${keyRef}'`;
     if (!c || typeof c !== 'object') return `caps['${keyRef}'] not an object`;
     if (typeof c.provider !== 'string' || !c.provider.trim()) return `caps['${keyRef}'].provider missing`;
-    for (const capField of ['lifetimeCapUsd', 'dailyCapUsd'] as const) {
-      const v = c[capField];
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return `caps['${keyRef}'].${capField} must be ≥ 0`;
+    // Period model (gemini-payg §5): one of lifetime or monthly, plus the daily cap.
+    if (c.lifetimeCapUsd === undefined && c.monthlyCapUsd === undefined) {
+      return `caps['${keyRef}'] needs a lifetimeCapUsd or a monthlyCapUsd`;
     }
+    for (const capField of ['lifetimeCapUsd', 'monthlyCapUsd'] as const) {
+      const v = c[capField];
+      if (v !== undefined && !isNonNegFinite(v)) return `caps['${keyRef}'].${capField} must be ≥ 0`;
+    }
+    if (!isNonNegFinite(c.dailyCapUsd)) return `caps['${keyRef}'].dailyCapUsd must be ≥ 0`;
+    if (c.periodTimeZone !== undefined && !isValidTimeZone(c.periodTimeZone)) return `caps['${keyRef}'].periodTimeZone is not a known IANA zone`;
     if (typeof c.frozen !== 'boolean') return `caps['${keyRef}'].frozen must be boolean`;
   }
   for (const [door, g] of Object.entries(file.goLive)) {
@@ -105,7 +234,33 @@ export function validateCapsFile(f: unknown, knownKeyRefs?: ReadonlySet<string>,
     if (typeof g.designatedMachineId !== 'string' || !g.designatedMachineId.trim()) return `goLive['${door}'].designatedMachineId missing`;
     if (!Number.isInteger(g.epoch) || g.epoch < 0) return `goLive['${door}'].epoch must be a non-negative integer`;
   }
+  if (file.doorPolicy !== undefined) {
+    if (!file.doorPolicy || typeof file.doorPolicy !== 'object' || Array.isArray(file.doorPolicy)) return 'doorPolicy must be an object';
+    for (const [door, p] of Object.entries(file.doorPolicy)) {
+      if (knownDoors && !knownDoors.has(door)) return `unknown door '${door}' in doorPolicy`;
+      if (door === PROBE_DOOR) return 'the reserved probe door carries no door policy';
+      const err = validateDoorPolicy(door, p);
+      if (err) return err;
+    }
+  }
   return null;
+}
+
+/** The period zone a caps record uses (UTC when unset — pre-change behaviour). */
+export function periodTimeZoneOf(c: KeyCapsRecord | undefined): string {
+  return c?.periodTimeZone ?? 'UTC';
+}
+
+/** Values the Bearer reduce-only `lowerCaps` mutator accepts. Each must be ≤ its current value. */
+export interface LowerCapsValues {
+  monthlyCapUsd?: number;
+  dailyCapUsd?: number;
+  lifetimeCapUsd?: number;
+  /** Door whose policy ceilings below are lowered (required when any of them is set). */
+  door?: string;
+  perCallCeilingUsd?: number;
+  provisionalCeilingUsd?: number;
+  e2DayCapUsd?: number;
 }
 
 export interface RoutingSpendCapsStoreOptions {
@@ -185,23 +340,156 @@ export class RoutingSpendCapsStore {
     return after;
   }
 
-  /** PIN path: adjust caps for a key (raise or lower; lowering bumps the lease epoch — A-M9). */
-  adjustCaps(actor: string, expectedVersion: number, keyRef: string, provider: string, caps: { lifetimeCapUsd: number; dailyCapUsd: number }): CapsStoreFile {
+  /**
+   * PIN path: adjust caps for a key (raise or lower; lowering bumps the lease epoch — A-M9).
+   * `lifetimeCapUsd` may be omitted/null when `monthlyCapUsd` is set (gemini-payg §5).
+   * The period zone is FIXED once any door using this key has a live go-live
+   * record: a zone change then is refused (a reservation near midnight on a
+   * month's last day could otherwise land in a fresh month).
+   */
+  adjustCaps(
+    actor: string,
+    expectedVersion: number,
+    keyRef: string,
+    provider: string,
+    caps: { lifetimeCapUsd?: number | null; monthlyCapUsd?: number | null; dailyCapUsd: number; periodTimeZone?: string | null },
+  ): CapsStoreFile {
     refuseIfReservedProbe('re-pricing', keyRef);
     return this.mutate('caps-adjust', actor, expectedVersion, (f) => {
       const prev = f.caps[keyRef];
+      const nextZone = caps.periodTimeZone ?? prev?.periodTimeZone;
+      if (prev && periodTimeZoneOf(prev) !== (nextZone ?? 'UTC')) {
+        const liveDoor = Object.entries(f.goLive).find(([, g]) => g.keyRef === keyRef && g.enabled);
+        if (liveDoor) {
+          throw new Error(
+            `the period zone of '${keyRef}' is fixed while door '${liveDoor[0]}' is live — it can change only through a new go-live at a closed period boundary`,
+          );
+        }
+      }
+      const lifetime = caps.lifetimeCapUsd ?? undefined;
+      const monthly = caps.monthlyCapUsd ?? undefined;
       const lowered =
         prev !== undefined &&
-        (caps.lifetimeCapUsd < prev.lifetimeCapUsd || caps.dailyCapUsd < prev.dailyCapUsd);
+        (caps.dailyCapUsd < prev.dailyCapUsd ||
+          (lifetime !== undefined && (prev.lifetimeCapUsd === undefined || lifetime < prev.lifetimeCapUsd)) ||
+          (monthly !== undefined && (prev.monthlyCapUsd === undefined || monthly < prev.monthlyCapUsd)));
       f.caps[keyRef] = {
         provider,
-        lifetimeCapUsd: caps.lifetimeCapUsd,
+        ...(lifetime !== undefined ? { lifetimeCapUsd: lifetime } : {}),
+        ...(monthly !== undefined ? { monthlyCapUsd: monthly } : {}),
         dailyCapUsd: caps.dailyCapUsd,
+        ...(nextZone ? { periodTimeZone: nextZone } : {}),
         frozen: prev?.frozen ?? false,
         ...(prev?.frozenBy ? { frozenBy: prev.frozenBy } : {}),
         ...(prev?.frozenAt ? { frozenAt: prev.frozenAt } : {}),
       };
       if (lowered) f.leaseEpoch += 1; // fenced cap-lowering — the gate re-reads and clamps
+    });
+  }
+
+  /**
+   * PIN path: write a door's whole policy record (gemini-payg §5). Adding a
+   * caller or an E3 component, or raising a share, is a money release, so it
+   * rides the PIN plan path with an optimistic-concurrency version.
+   */
+  setDoorPolicy(actor: string, expectedVersion: number, door: string, policy: MeteredDoorPolicy): CapsStoreFile {
+    refuseIfReservedProbe('setting a door policy', door);
+    return this.mutate('door-policy-set', actor, expectedVersion, (f) => {
+      const prev = f.doorPolicy?.[door];
+      // The release proof recorder is the ONLY path to `live` (spec §8). A policy
+      // write may keep a live door live, but never moves a door to live.
+      if (policy.releaseState === 'live' && prev?.releaseState !== 'live') {
+        throw new Error(`door '${door}' can become live only through the release-proof recorder (recordReleaseLive), not a policy write`);
+      }
+      f.doorPolicy = { ...(f.doorPolicy ?? {}), [door]: structuredClone(policy) };
+    });
+  }
+
+  /**
+   * The store carrier for the release-proof recorder (spec §8, built in a later
+   * slice): moves a door from `armed-pending-proof` to `live`, recording the
+   * proof evidence in the audit row's actor. Refuses from any other state. The
+   * recorder is responsible for the release checks (a)–(e) before calling this.
+   */
+  recordReleaseLive(actor: string, door: string, evidence: { proofReserveId: string; intentHash: string }): CapsStoreFile {
+    refuseIfReservedProbe('recording a release on', door);
+    if (!evidence?.proofReserveId?.trim() || !evidence?.intentHash?.trim()) throw new Error('recordReleaseLive: proof evidence required');
+    return this.mutate('release-live', `${actor} proof=${evidence.proofReserveId} intent=${evidence.intentHash}`, null, (f) => {
+      const p = f.doorPolicy?.[door];
+      if (!p) throw new Error(`recordReleaseLive: no door policy for '${door}'`);
+      if (p.releaseState !== 'armed-pending-proof') throw new Error(`recordReleaseLive: door '${door}' is not armed-pending-proof`);
+      p.releaseState = 'live';
+    });
+  }
+
+  /**
+   * Bearer, REDUCE-ONLY: lower key caps and/or a door's money ceilings. Every
+   * value must be ≤ its current value (adding a lifetime cap where none exists
+   * is a restriction and is allowed). Bumps the gate's `leaseEpoch` (slice
+   * fencing) and NEVER `designationEpoch`, so lowering never interrupts the
+   * lease confirmation (§6). No expectedVersion: halting money is never blocked
+   * by a concurrent plan.
+   */
+  lowerCaps(actor: string, keyRef: string, values: LowerCapsValues): CapsStoreFile {
+    refuseIfReservedProbe('lowering', keyRef);
+    return this.mutate('caps-lower', actor, null, (f) => {
+      const c = f.caps[keyRef];
+      const keyFields = ['monthlyCapUsd', 'dailyCapUsd', 'lifetimeCapUsd'] as const;
+      const doorFields = ['perCallCeilingUsd', 'provisionalCeilingUsd', 'e2DayCapUsd'] as const;
+      let touched = false;
+      for (const k of keyFields) {
+        const v = values[k];
+        if (v === undefined) continue;
+        if (!isNonNegFinite(v)) throw new Error(`lowerCaps: ${k} must be a number ≥ 0`);
+        if (!c) throw new Error(`lowerCaps: no caps record for '${keyRef}'`);
+        const cur = c[k];
+        if (cur !== undefined && v > cur) throw new Error(`lowerCaps: ${k} ${v} is above the current ${cur} — raising is a PIN action`);
+        c[k] = v;
+        touched = true;
+      }
+      if (doorFields.some((k) => values[k] !== undefined)) {
+        const door = values.door;
+        if (!door) throw new Error('lowerCaps: door required to lower a door ceiling');
+        refuseIfReservedProbe('lowering', door);
+        const p = f.doorPolicy?.[door];
+        if (!p) throw new Error(`lowerCaps: no door policy for '${door}'`);
+        for (const k of doorFields) {
+          const v = values[k];
+          if (v === undefined) continue;
+          if (!isNonNegFinite(v)) throw new Error(`lowerCaps: ${k} must be a number ≥ 0`);
+          if (v > p[k]) throw new Error(`lowerCaps: ${k} ${v} is above the current ${p[k]} — raising is a PIN action`);
+          p[k] = v;
+          touched = true;
+        }
+      }
+      if (!touched) throw new Error('lowerCaps: nothing to lower');
+      f.leaseEpoch += 1;
+    });
+  }
+
+  /** Bearer, REDUCE-ONLY: remove a caller (or an E3 component) from a door's allowlist. Halting money is immediate. */
+  disableCaller(actor: string, door: string, target: { caller: MeteredCallerId } | { e3Component: string }): CapsStoreFile {
+    refuseIfReservedProbe('disabling a caller on', door);
+    return this.mutate('caller-disable', actor, null, (f) => {
+      const p = f.doorPolicy?.[door];
+      if (!p) throw new Error(`disableCaller: no door policy for '${door}'`);
+      if ('caller' in target) {
+        p.meteredCallers.callers = p.meteredCallers.callers.filter((c) => c !== target.caller);
+      } else {
+        p.meteredCallers.e3Components = p.meteredCallers.e3Components.filter((c) => c !== target.e3Component);
+      }
+    });
+  }
+
+  /** Bearer, REDUCE-ONLY: lower the E2 month share. Raising is a PIN action. */
+  lowerShare(actor: string, door: string, e2MonthSharePct: number): CapsStoreFile {
+    refuseIfReservedProbe('lowering a share on', door);
+    return this.mutate('share-lower', actor, null, (f) => {
+      const p = f.doorPolicy?.[door];
+      if (!p) throw new Error(`lowerShare: no door policy for '${door}'`);
+      if (!isNonNegFinite(e2MonthSharePct)) throw new Error('lowerShare: share must be a number ≥ 0');
+      if (e2MonthSharePct > p.e2MonthSharePct) throw new Error(`lowerShare: ${e2MonthSharePct}% is above the current ${p.e2MonthSharePct}% — raising is a PIN action`);
+      p.e2MonthSharePct = e2MonthSharePct;
     });
   }
 
@@ -268,7 +556,11 @@ export class RoutingSpendCapsStore {
    * Creates the caps record from defaults if absent so an un-adjusted key can still
    * be frozen instantly.
    */
-  freeze(actor: string, keyRef: string, defaults?: { provider: string; lifetimeCapUsd: number; dailyCapUsd: number }): CapsStoreFile {
+  freeze(
+    actor: string,
+    keyRef: string,
+    defaults?: { provider: string; lifetimeCapUsd?: number; monthlyCapUsd?: number; dailyCapUsd: number; periodTimeZone?: string },
+  ): CapsStoreFile {
     // Freezing the probe door would break readiness for no safety gain: it holds
     // a no-op provider and cannot spend in the first place.
     refuseIfReservedProbe('freezing', keyRef);
@@ -279,10 +571,15 @@ export class RoutingSpendCapsStore {
         c.frozenBy = actor;
         c.frozenAt = new Date(this.now()).toISOString();
       } else {
+        const monthly = defaults?.monthlyCapUsd;
         f.caps[keyRef] = {
           provider: defaults?.provider ?? 'unknown',
-          lifetimeCapUsd: defaults?.lifetimeCapUsd ?? 0,
+          // A monthly-shaped default stays monthly-only; otherwise lifetime (0 when unknown).
+          ...(monthly !== undefined && defaults?.lifetimeCapUsd === undefined
+            ? { monthlyCapUsd: monthly }
+            : { lifetimeCapUsd: defaults?.lifetimeCapUsd ?? 0, ...(monthly !== undefined ? { monthlyCapUsd: monthly } : {}) }),
           dailyCapUsd: defaults?.dailyCapUsd ?? 0,
+          ...(defaults?.periodTimeZone ? { periodTimeZone: defaults.periodTimeZone } : {}),
           frozen: true,
           frozenBy: actor,
           frozenAt: new Date(this.now()).toISOString(),

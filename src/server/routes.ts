@@ -358,6 +358,7 @@ import { REFUSING_REASONS as REFUSING_EXECUTE_REASONS } from '../feedback-factor
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
+import { isValidTimeZone } from '../core/RoutingSpendCapsStore.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
@@ -19444,15 +19445,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const capsOverride: NonNullable<Parameters<typeof buildRoutingSpendCaps>[0]>['capsOverride'] = {};
     for (const [keyRef, c] of Object.entries(store.caps)) {
-      capsOverride[keyRef] = { provider: c.provider, lifetimeCapUsd: c.lifetimeCapUsd, dailyCapUsd: c.dailyCapUsd, frozen: c.frozen };
+      capsOverride[keyRef] = {
+        provider: c.provider,
+        lifetimeCapUsd: c.lifetimeCapUsd ?? null,
+        monthlyCapUsd: c.monthlyCapUsd ?? null,
+        dailyCapUsd: c.dailyCapUsd,
+        periodTimeZone: c.periodTimeZone ?? null,
+        frozen: c.frozen,
+      };
     }
-    for (const g of Object.values(store.goLive)) {
+    for (const [door, g] of Object.entries(store.goLive)) {
       const prev = capsOverride[g.keyRef] ?? {};
-      capsOverride[g.keyRef] = { ...prev, goLiveState: g.enabled ? 'live' : 'disarmed', meteredLeaseHolder: g.designatedMachineId };
+      capsOverride[g.keyRef] = { ...prev, door, goLiveState: g.enabled ? 'live' : 'disarmed', meteredLeaseHolder: g.designatedMachineId };
     }
-    const committed: Record<string, { committedLifetimeUsd: number; committedDayUsd: number }> = {};
+    const committed: NonNullable<Parameters<typeof buildRoutingSpendCaps>[0]>['committed'] = {};
     for (const t of ctx.meteredSpendLedger.allCommitted()) {
-      committed[t.keyRef] = { committedLifetimeUsd: t.committedLifetimeUsd, committedDayUsd: t.committedDayUsd };
+      committed[t.keyRef] = { committedLifetimeUsd: t.committedLifetimeUsd, committedDayUsd: t.committedDayUsd, committedMonthUsd: t.committedMonthUsd };
     }
     return { ...buildRoutingSpendCaps({ capsOverride, committed, moneyLive: true }), storeVersion: store.version };
   }
@@ -19472,19 +19480,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     try {
       if (action === 'caps-adjust') {
-        const { keyRef, provider, lifetimeCapUsd, dailyCapUsd } = b;
+        const { keyRef, provider, dailyCapUsd } = b;
+        // gemini-payg §5 period model: lifetime OR monthly (or both), plus daily, and an
+        // optional IANA period zone. A null lifetime is legitimate when monthly is set.
+        const lifetimeCapUsd: number | null = b.lifetimeCapUsd ?? null;
+        const monthlyCapUsd: number | null = b.monthlyCapUsd ?? null;
+        const periodTimeZone: string | null = b.periodTimeZone ?? null;
         if (typeof keyRef !== 'string' || !keyRef.trim()) throw new Error('keyRef required');
         if (typeof provider !== 'string' || !provider.trim()) throw new Error('provider required');
-        for (const [n, v] of [['lifetimeCapUsd', lifetimeCapUsd], ['dailyCapUsd', dailyCapUsd]] as const) {
-          if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`${n} must be a number ≥ 0`);
+        if (typeof dailyCapUsd !== 'number' || !Number.isFinite(dailyCapUsd) || dailyCapUsd < 0) throw new Error('dailyCapUsd must be a number ≥ 0');
+        for (const [n, v] of [['lifetimeCapUsd', lifetimeCapUsd], ['monthlyCapUsd', monthlyCapUsd]] as const) {
+          if (v !== null && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) throw new Error(`${n} must be a number ≥ 0 when given`);
         }
+        if (lifetimeCapUsd === null && monthlyCapUsd === null) throw new Error('a lifetimeCapUsd or a monthlyCapUsd is required');
+        if (periodTimeZone !== null && !isValidTimeZone(periodTimeZone)) throw new Error('periodTimeZone must be an IANA zone name');
         const current = ctx.routingSpendCapsStore.read().caps[keyRef];
+        // Never `.toFixed` an absent cap (a monthly-only record has no lifetime).
+        const money = (v: number | null | undefined) => (typeof v === 'number' ? `$${v.toFixed(2)}` : 'none');
+        const changeLine = (label: string, prev: number | null | undefined, next: number | null) =>
+          next === null && (prev === undefined || prev === null) ? '' : `${label} ${current ? `${money(prev)} → ` : ''}${money(next)}; `;
+        const lowers =
+          !!current &&
+          (dailyCapUsd < current.dailyCapUsd ||
+            (lifetimeCapUsd !== null && (current.lifetimeCapUsd === undefined || lifetimeCapUsd < current.lifetimeCapUsd)) ||
+            (monthlyCapUsd !== null && (current.monthlyCapUsd === undefined || monthlyCapUsd < current.monthlyCapUsd)));
         const renderedText =
           `Adjust caps for key '${keyRef}' (${provider}): ` +
-          `daily cap ${current ? `$${current.dailyCapUsd.toFixed(2)} → ` : ''}$${dailyCapUsd.toFixed(2)}; ` +
-          `lifetime cap ${current ? `$${current.lifetimeCapUsd.toFixed(2)} → ` : ''}$${lifetimeCapUsd.toFixed(2)}. ` +
-          `No other field changes. ${current && (lifetimeCapUsd < current.lifetimeCapUsd || dailyCapUsd < current.dailyCapUsd) ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
-        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, dailyCapUsd }, { capsStore: storeVersion });
+          `daily cap ${current ? `${money(current.dailyCapUsd)} → ` : ''}${money(dailyCapUsd)}; ` +
+          changeLine('monthly cap', current?.monthlyCapUsd, monthlyCapUsd) +
+          changeLine('lifetime cap', current?.lifetimeCapUsd, lifetimeCapUsd) +
+          (periodTimeZone !== null ? `period zone ${current?.periodTimeZone ?? 'UTC'} → ${periodTimeZone}; ` : '') +
+          `No other field changes. ${lowers ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
+        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, monthlyCapUsd, dailyCapUsd, periodTimeZone }, { capsStore: storeVersion });
         // `action` rides the response so the client can post the commit to the route that
         // ACTION names. Without it the dashboard had to guess, guessed the caps route for
         // everything, and a go-live commit was refused 400 by the plan-binding check —
@@ -19534,8 +19561,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.post('/routing-spend/caps/adjust', (req, res) => {
     commitMoneyPlan(req, res, 'caps-adjust', (fields, expectedVersion, actor) =>
       ctx.routingSpendCapsStore!.adjustCaps(actor, expectedVersion, fields.keyRef as string, fields.provider as string, {
-        lifetimeCapUsd: fields.lifetimeCapUsd as number,
+        lifetimeCapUsd: (fields.lifetimeCapUsd as number | null | undefined) ?? null,
+        monthlyCapUsd: (fields.monthlyCapUsd as number | null | undefined) ?? null,
         dailyCapUsd: fields.dailyCapUsd as number,
+        periodTimeZone: (fields.periodTimeZone as string | null | undefined) ?? null,
       }),
     );
   });
