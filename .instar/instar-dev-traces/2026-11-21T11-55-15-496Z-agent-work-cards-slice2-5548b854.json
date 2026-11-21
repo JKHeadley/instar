@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "agent-work-cards-slice2",
+  "sessionId": "61e5c2a0-e245-4cf7-92a9-e660c912a3ec",
+  "timestamp": "2026-11-21T11:55:15.496Z",
+  "artifactPath": "upgrades/side-effects/agent-work-cards-slice2.md",
+  "artifactSha256": "f1c20f9c079ff3217268fa92a2b2aa5e920726f3034511894ddba48e444c7d7b",
+  "specPath": "docs/specs/agent-work-cards-default.md",
+  "coveredFiles": [
+    "tests/e2e/project-apps-custom-alive.test.ts",
+    "upgrades/side-effects/agent-work-cards-slice2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test stand-in only, part of the converged spec's slice two",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

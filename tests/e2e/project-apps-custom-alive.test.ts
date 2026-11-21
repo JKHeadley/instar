@@ -52,6 +52,7 @@ function boot(customOn: boolean) {
     appendLine: () => {}, ensureConversation: () => {}, removeConversation: () => {},
     behind: () => null, lastWrittenOn: () => null, repliedAfterQuestion: () => false, brokenAttachments: () => [],
     when: (iso: string) => iso, notePolicyChange: async () => {}, holdsLease: () => true, saveSettingsPatch: () => false,
+    teamAttached: () => true, onTeamRecordChanged: () => {}, reconcileBlockersNow: () => {},
   };
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
