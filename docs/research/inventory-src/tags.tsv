@@ -1,0 +1,274 @@
+B001	reference		NONE	S	-	
+B002	reference		NONE	S	-	
+B003	reference		NONE	S	-	
+B004	reference		TDEV	D	M	
+B005	reference		TDEV	D	M	
+B006	reference		TDEV	D	M	
+B007	reference		TDEV	D	M	
+B008	reference		TDEV	N	M	
+B009	reference		TDEV	D	M	
+B010	reference		NONE	S	-	
+B011	rule		SW	S	-	
+B012	rule	reference	LLMS	S	-	
+B013	rule	reference	TI	S	M	
+B014	rule		ZF	S	-	
+B015	rule	reference	AA	S	M	
+B016	rule	reference,history	MP	S	M	
+B017	reference		NONE	S	-	
+B018	rule	history	NMW	S	-	
+B019	rule		UXP	S	-	
+B020	reference		NONE	D	-	
+B021	rule	history	NONE	S	-	
+B022	rule	trigger,reference	NFB	S	-	
+B023	reference	rule	AA	I	-	
+B024	reference		AA	I	-	
+B025	rule		AA	S	-	
+B026	rule	trigger,reference	KYP	S	-	
+B027	rule	trigger,reference,dark	ACL	S	-	
+B028	reference	dark	AA	I	-	
+B029	reference	trigger,rule,dark	NSN	I	-	
+B030	reference	rule,trigger	MCO	I	-	
+B031	reference	rule	MCO	I	-	
+B032	reference		NONE	D	-	
+B033	rule	reference	OGS	S	-	
+B034	reference	dark	JWF	I	-	
+B035	reference		CMC	I	-	
+B036	reference		CMC	I	-	
+B037	reference		NONE	D	-	
+B038	reference		SW	I	-	
+B039	rule		SVA	S	-	
+B040	trigger		OCS	I	-	
+B041	reference		SW	D	-	
+B042	reference		SW	D	-	
+B043	reference		AA	I	-	
+B044	reference		AA	D	-	
+B045	reference		AA	D	-	
+B046	trigger		NFW	D	-	
+B047	reference		AA	D	-	
+B048	reference	trigger	AA	I	-	
+B049	reference		AA	X	-	
+B050	reference		AA	D	-	
+B051	reference		AA	D	-	
+B052	trigger		AA	D	-	
+B053	reference		NONE	S	-	
+B054	rule	reference	OCS	S	-	
+B055	rule	reference	AA	I	-	
+B056	rule	reference	DPO	I	-	
+B057	rule	reference	DPO	D	-	
+B058	rule	reference	VS	D	-	
+B059	reference		FA	I	-	
+B060	reference		CS	I	-	
+B061	reference	dark	CL	I	R	
+B062	reference	dark	VS	I	O	
+B063	rule	trigger,reference	DD	I	-	
+B064	reference	dark,trigger	SCE	I	R	
+B065	rule	reference,dark	OCS	S	F	
+B066	reference	dark,trigger	BBR	I	F	
+B067	rule	trigger	SU	S	-	
+B068	reference	trigger	AR	I	-	
+B069	reference	trigger,dark	IP	I	O	
+B070	reference	trigger,rule,dark	KYP	I	F	
+B071	reference	trigger	VS	I	-	
+B072	rule	trigger	IAC	S	-	
+B073	reference	trigger,dark	CMC	I	F	
+B074	reference	trigger,dark	CMC	I	F	
+B075	reference	trigger,dark	OGS	I	F	
+B076	reference	trigger,dark	BBR	I	O	
+B077	reference	dark	FA	I	O	
+B078	reference		TP	I	-	
+B079	reference		TP	D	-	
+B080	rule		KYP	D	-	
+B081	rule		SVA	S	-	
+B082	history		TP	N	-	
+B083	reference		TP	D	-	
+B084	trigger		TP	D	-	
+B085	rule	trigger,reference,history	VS	S	-	
+B086	reference	trigger,dark	MME	I	F	
+B087	reference	trigger,dark	MME	I	F	
+B088	reference	trigger,dark	KDM	I	-	
+B089	reference	trigger	TAC	I	F	
+B090	reference	trigger,rule,dark	CS	I	O	
+B091	reference	trigger,rule,dark	MCO	I	O	
+B092	reference	trigger,dark	DPO	I	F	
+B093	reference	trigger,dark	DPO	I	F	
+B094	rule	reference,dark	ACL	S	F	
+B095	reference		ACL	D	-	
+B096	reference		SU	D	-	
+B097	rule	reference,dark	SU	S	F	
+B098	rule		APOA	S	-	
+B099	rule		LUC	S	-	
+B100	reference	trigger,dark	ACL	I	O	
+B101	reference	dark	VS	I	R	
+B102	rule	reference	IP	S	-	
+B103	reference	dark,trigger	ATF	I	F	
+B104	reference	dark	ATF	I	R	
+B105	reference	trigger,dark	OGS	I	F	
+B106	reference	trigger,dark	CMC	I	F	
+B107	rule		CMC	I	F	
+B108	rule	trigger,reference,dark	CAO	I	-	
+B109	reference	trigger,dark	ROR	I	O	
+B110	reference	trigger,dark	AA	I	O	
+B111	reference	trigger,dark	AA	I	O	
+B112	reference	dark	BBR	D	O	
+B113	reference	dark	SW	I	O	
+B114	reference	trigger,dark,rule	AA	I	O	
+B115	reference	trigger,dark	ROR	I	O	
+B116	reference	trigger,dark	CPOC	I	F	
+B117	reference		TP	S	-	
+B118	rule		TP	S	-	
+B119	rule		TP	S	-	
+B120	rule		TP	S	-	
+B121	rule		TP	S	-	
+B122	rule	history	TP	S	-	
+B123	reference	trigger	TP	I	-	
+B124	reference	trigger,dark	CMC	I	F	
+B125	reference	trigger,rule	CMC	I	-	
+B126	reference	trigger,dark	TAC	I	O	
+B127	reference	trigger	JWF	I	-	
+B128	reference	trigger,rule,dark	CS	I	-	
+B129	rule	trigger,reference	SU	S	F	
+B130	rule	trigger,reference,dark	KYP	S	-	
+B131	reference	trigger	OBS	I	-	
+B132	reference	trigger	AA	I	-	
+B133	reference	trigger	KYP	I	-	
+B134	reference	trigger,rule	SCE	I	M	
+B135	rule		TP	S	-	
+B136	rule		CL	S	-	
+B137	reference	trigger	CMC	I	-	
+B138	reference	trigger	VS	I	-	
+B139	rule	reference	MME	S	-	
+B140	reference	trigger,dark	CMC	I	F	
+B141	reference	trigger,dark	CS	I	F	
+B142	rule	reference,trigger,dark	KYP	S	O	
+B143	rule	reference	NAR	I	-	
+B144	reference	dark	CL	I	M	
+B145	reference	trigger	CS	I	-	
+B146	reference	trigger,history	FA	I	O	
+B147	reference	trigger	OI	I	-	
+B148	reference	trigger	TAC	I	-	
+B149	rule	trigger,reference	NAR	S	-	
+B150	reference		NONE	X	-	
+B151	reference	trigger	ARO	I	-	
+B152	reference		NONE	X	-	
+B153	reference	trigger,dark	ARO	I	F	
+B154	reference	trigger,dark	CMC	I	F	
+B155	reference		NSN	D	-	
+B156	reference	trigger	NFW	I	-	
+B157	reference	dark	NFW	I	O	
+B158	reference	rule	SHN	I	-	
+B159	reference		SHN	D	-	
+B160	reference	trigger,dark	NSN	I	O	
+B161	reference	trigger,history	TP	I	-	
+B162	reference	trigger,history	SHN	I	-	
+B163	reference	trigger,history	BNS	I	-	
+B164	reference	trigger	AR	I	-	
+B165	reference	trigger	CSC	I	-	
+B166	reference	trigger,history	BNS	I	-	
+B167	rule	reference,history	BNS	S	-	
+B168	reference	dark	MME	I	F	
+B169	reference	trigger,dark	MME	D	F	
+B170	rule	reference	APOA	D	F	
+B171	reference	trigger	MME	D	F	
+B172	reference	dark	MME	I	F	
+B173	rule	reference,trigger	MME	D	F	
+B174	reference	trigger,dark	CSC	I	F	
+B175	rule	reference,trigger,dark	KYP	I	F	
+B176	reference	history	SHN	I	-	
+B177	reference	dark	SHN	D	O	
+B178	rule	history	SHN	I	-	
+B179	reference	trigger	OBS	I	-	
+B180	reference	trigger,dark	ARO	I	R	
+B181	reference	trigger,history	ARO	D	-	
+B182	reference	trigger,history,dark	ARO	D	F	
+B183	rule	reference,trigger,dark	APOA	I	M	
+B184	reference	trigger,history	DF	I	-	
+B185	rule	reference,trigger	DF	I	-	
+B186	reference	trigger,dark	DF	I	-	
+B187	reference	trigger,dark	BBR	I	O	
+B188	reference	trigger	OBS	I	-	
+B189	reference		SHN	D	-	
+B190	reference	trigger	SHN	I	-	
+B191	reference	trigger,history	OI	I	-	
+B192	rule	reference,trigger,history	CMC	I	-	
+B193	reference	trigger	FA	I	O	
+B194	reference	dark	FA	I	O	
+B195	reference	dark,rule	FA	I	O	
+B196	reference	trigger	FA	I	-	
+B197	reference	trigger	FA	D	-	
+B198	reference	trigger,dark	NFW	I	O	
+B199	reference	dark	NFW	D	O	
+B200	reference	dark	NFW	D	F	
+B201	rule		TCC	S	-	
+B202	history		TCC	D	-	
+B203	rule	reference	TP	I	M	
+B204	reference	trigger	OSQ	I	-	
+B205	reference	trigger	VS	I	-	
+B206	reference	trigger	OBS	I	F	
+B207	rule	reference,trigger	APOA	I	-	
+B208	rule	reference,trigger	APOA	I	-	
+B209	rule	reference	APOA	I	-	
+B210	reference	trigger,dark	MCO	I	F	
+B211	rule	reference,dark	SVA	I	F	
+B212	reference		CAO	I	-	
+B213	rule		CAO	X	-	
+B214	reference	trigger,dark	CS	I	F	
+B215	reference	trigger,dark	CMC	I	F	
+B216	reference	trigger	CMC	I	-	
+B217	reference	trigger,history	BBR	I	-	
+B218	rule	reference,trigger,history	CS	I	R	
+B219	reference	trigger,history	BBR	I	R	
+B220	reference	trigger	ROR	I	-	
+B221	rule		SSA	S	-	
+B222	reference		TP	D	-	
+B223	reference		ROR	D	-	
+B224	reference	trigger,dark	KYP	I	F	
+B225	reference	dark	ARO	D	O	
+B226	reference	trigger,dark	VS	I	F	
+B227	rule	reference,trigger,dark	TMO	I	-	
+B228	reference		CS	D	-	
+B229	reference	trigger,dark	OI	I	O	
+B230	reference	trigger	ARO	I	-	
+B231	reference	dark	IP	I	F	
+B232	reference	trigger	BNS	I	-	
+B233	reference	trigger	APOA	I	M	
+B234	reference	trigger,dark	AA	I	F	
+B235	reference	trigger,dark	OBS	I	F	
+B236	reference	history	CMC	I	-	
+B237	reference	trigger,dark	OBS	I	F	
+B238	reference	trigger	VS	I	-	
+B239	rule	reference,trigger	TP	I	-	
+B240	reference	trigger,dark	ROR	I	F	
+B241	reference	trigger	ROR	D	-	
+B242	reference	trigger,dark	NFW	I	F	
+B243	reference		ROR	D	-	
+B244	reference	trigger,dark	KYP	I	R	
+B245	reference	trigger	CMC	I	-	
+B246	rule	reference,trigger,dark	APOA	I	M	
+B247	reference		BBR	D	-	
+B248	rule	reference,trigger,dark	APOA	I	M	
+B249	reference	trigger,dark	KYP	I	R	
+B250	reference	trigger,dark	VS	I	R	
+B251	reference	trigger	OCS	I	-	
+B252	reference	trigger,dark	KYP	I	R	
+B253	rule	reference,trigger	MME	I	-	
+B254	reference	trigger	AR	D	-	
+B255	reference	trigger	VS	D	-	
+B256	rule	reference,trigger,history	KYP	I	-	
+B257	reference	trigger,history	BBR	I	-	
+B258	rule	trigger,reference	NMW	S	-	
+B259	reference	trigger	CMC	I	-	
+B260	rule	trigger	FA	I	-	
+B261	reference	history	BBR	D	-	
+B262	rule	trigger,reference	KYP	S	-	
+B263	reference	trigger	ZF	I	M	
+B264	reference	history	VS	I	-	
+B265	rule		VS	D	-	
+B266	rule	trigger,reference	NMW	I	-	
+B267	reference	trigger	NAR	I	-	
+B268	rule	reference	NAR	D	-	
+B269	reference	trigger	CMC	I	-	
+B270	rule	trigger,history	TCC	S	-	
+B271	rule	reference,trigger	VS	I	-	
+B272	rule	reference,trigger	VS	S	-	
+B273	reference	trigger,history,dark	BBR	I	R	
+B274	reference	trigger,dark	CS	I	F	
