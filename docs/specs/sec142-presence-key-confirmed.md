@@ -28,11 +28,13 @@ The first presence key a phone registers on a machine is accepted with only the 
 - **Android:** the device key is in the Android keystore and cannot be exported (Chief of Staff); the same reasoning applies once the app registers presence keys. Whether `PresenceKey.kt` is wired into registration is not verifiable from this machine (Open questions).
 - **Computers:** a computer paired at the computer cannot register a presence key today (`activeOwnerPhone` excludes them until piece 3b); the local install has no pairing request to carry one. How the Linux and Windows apps store keys is asked of their owners.
 
-So a server-side "confirmation" cannot tell the genuine key from the attacker's for the only attacker in scope. Earlier drafts proposed a fingerprint comparison; all three reviewers showed the app draws it and a 6-character code can be matched by search, so it is removed.
+So a server-side "confirmation" cannot tell the genuine key from the attacker's for the only attacker in scope.
+
+**An alternative weighed and not chosen: hold a new key unusable until approved separately.** A key registered outside pairing could be kept unusable for every Face ID check until the owner approves it through a channel outside the app (a direct chat message or the PIN-unlocked dashboard). That does keep a pending key from revealing the PIN. But the owner approves "set up Face ID on my phone", which they want whichever key arrived; nothing on either channel lets them tell the genuine key from the planted one. So it adds a step for every owner without separating the two cases, and the spec does not adopt it. The pairing-time binding below gets the same timing benefit without the extra step. Earlier drafts proposed a fingerprint comparison; all three reviewers showed the app draws it and a 6-character code can be matched by search, so it is removed.
 
 ## What is worth doing without attestation: close the timing gaps
 
-The window is wider than one moment: it is open from pairing until the genuine app registers, and again on every further machine the phone pairs with. Binding the key at pairing closes those gaps for software that arrives after pairing, at no cost to the owner:
+The window is wider than one moment: it is open from pairing until the genuine app registers, and again on every further machine the phone pairs with. Binding the key at pairing closes those gaps for software that arrives after pairing, with no extra step for the owner. A phone that cannot create a presence key (no passcode set) or where the person cancels Face ID during setup still pairs, without a key; the activation shows "Face ID isn't set up for this phone yet", the PIN paths keep working, and the app can register the key later through the existing route (labelled `after-pairing`). A presence proof that is present but invalid gets an explicit error (`presence-proof-invalid`) and the pairing request is refused, so nothing is half-bound:
 
 1. **The pairing request carries the presence key.** An updated app sends its presence public key and a possession proof in the redeem request. The proof signs `instar-presence-enroll-v2\n<sha256 of the device public key>\n<host>\n<sha256 of the pairing code>\n<presence public key>`, so it is tied to this pairing and this device key (both known before redeem). The server refuses the field when the presence key equals the device key, and accepts it only for a request that would make an owner phone (role `owner`, not `msp` or `team`, not a computer), whatever the approval channel.
    - The **full** presence public key is stored on the pending record and set in the same write that activates the device (`applyConfirm` and the activation path).
@@ -50,8 +52,8 @@ Attestation can prove three different things, and the platforms differ in which 
 | Property | iPhone (App Attest) | Android (key attestation) |
 |---|---|---|
 | **App identity:** the request comes from the genuine, unmodified app on a real device | Yes, for the App Attest key's own assertions | Yes, the attestation record names the app's package and signing certificate |
-| **Key provenance:** this particular presence public key was produced by that genuine app | Yes, if the app signs an App Attest assertion over the presence public key's bytes at registration | Yes, the presence key itself carries an attestation certificate chain |
-| **Authentication policy:** the presence key cannot sign without Face ID or the passcode | **No.** The `.userPresence` policy on the separate presence key stays a claim by the app | Yes, when the attestation record shows the key requires user authentication and is hardware-backed |
+| **Key provenance:** this particular presence public key was produced by that genuine app | Partly: an App Attest assertion over the presence public key's bytes shows the genuine app endorsed them; where the private key was generated still depends on trusting the genuine app's code | Yes, the presence key itself carries an attestation certificate chain from the keystore that generated it |
+| **Authentication policy:** the presence key cannot sign without Face ID or the passcode | **No.** The `.userPresence` policy on the separate presence key stays a claim by the app | Yes, when the attestation record shows a hardware-backed key whose use requires user authentication for every operation (an authentication timeout of zero), not merely within a validity window |
 
 So on Android attestation can prove all three; on the iPhone it proves the genuine app made the key but not that the key demands Face ID, which remains the app's own promise. Either way it closes the window for a tampered or repackaged app, though not for a compromise of the genuine app's own code paths, which no key check can detect.
 
@@ -76,12 +78,12 @@ Presence keys and their `presenceRegisteredVia` labels live on each machine's de
 ## Migration
 
 - Device records gain optional `presenceRegisteredVia`. An existing key without one is shown as `before-tracking`; a record with no key has no label.
-- The redeem request gains optional `presenceKey`, `presenceProof`; the answer gains `presenceKey: 'bound'`.
+- The redeem request gains optional `presenceKey`, `presenceProof`; the redeem answer gains `presenceKey: 'accepted'`, and the pairing status answer gains `presenceKey: 'bound'` once activation commits.
 - The ledger activation row gains an optional full presence public key.
 
 ## Tests
 
-- Unit: redeem with a presence key binds it on each listed approval and not on the others; one write activates and binds; a crash between ledger and registry restores both or neither; the old registration route still works and labels `after-pairing`; the local override labels `local-override`; the redeem answer reports `bound`.
+- Unit: redeem with a presence key binds it on each listed approval and not on the others; one write activates and binds; a crash between ledger and registry restores both or neither; the old registration route still works and labels `after-pairing`; the local override labels `local-override`; the redeem answer reports `accepted`, the status reports `bound` only after activation; a redeem that is never approved binds nothing; a lost status answer followed by a retry reports the same state.
 - Integration: the real pairing flow with a P-256 presence key in the request.
 
 ## Rollback
