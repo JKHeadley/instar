@@ -356,6 +356,12 @@ describe('A2ABridge', () => {
       await Promise.all([p1, p2]);
     });
 
+    const answer = (i: number) => bridge.handleAgentResponse({
+      from: sentEnvelopes[i].agentId, to: bridge.bridgeFingerprint,
+      threadId: sentEnvelopes[i].envelope.threadId, messageId: `r${i}`, timestamp: new Date().toISOString(),
+      nonce: '', ephemeralPubKey: '', salt: '', payload: Buffer.from('ok').toString('base64'), signature: '',
+    });
+
     it('SEC-134: the same caller and contextId keep their thread; a different agent gets its own', async () => {
       presence.register(
         'b2c3d4e5f6070000',
@@ -368,6 +374,7 @@ describe('A2ABridge', () => {
         bridge.handleRequest(mockReq('POST', sendBody('keep-ctx'), '10.0.0.5'), mockRes(), `/a2a/${AGENT_ID}/messages`),
       ];
       await new Promise(r => setTimeout(r, 30));
+      answer(0);
       ps.push(bridge.handleRequest(mockReq('POST', sendBody('keep-ctx'), '10.0.0.5'), mockRes(), `/a2a/${AGENT_ID}/messages`));
       await new Promise(r => setTimeout(r, 30));
       ps.push(bridge.handleRequest(mockReq('POST', sendBody('keep-ctx'), '10.0.0.5'), mockRes(), '/a2a/b2c3d4e5f6070000/messages'));
@@ -386,12 +393,59 @@ describe('A2ABridge', () => {
       (req.headers as Record<string, string>)['x-forwarded-for'] = 'x'.repeat(5000);
       const p = bridge.handleRequest(req, mockRes(), `/a2a/${AGENT_ID}/messages`);
       await new Promise(r => setTimeout(r, 30));
+      answer(0);
       const req2 = mockReq('POST', sendBody('xff-ctx'), '10.0.0.7');
       const p2 = bridge.handleRequest(req2, mockRes(), `/a2a/${AGENT_ID}/messages`);
       await new Promise(r => setTimeout(r, 30));
       expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
       bridge.destroy();
       await Promise.all([p, p2]);
+    });
+
+    it('SEC-139: two hosts in one IPv6 /64 keep separate threads for the same contextId', async () => {
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('v6-ctx'), '2001:db8:0:1::5'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      const p2 = bridge.handleRequest(mockReq('POST', sendBody('v6-ctx'), '2001:db8:0:1::6'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes[1].envelope.threadId).not.toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await Promise.all([p1, p2]);
+    });
+
+    it('SEC-139: a second message in a thread whose reply is still awaited is refused, so a reply has one recipient', async () => {
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('busy-ctx'), '10.0.0.9'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      const res2 = mockRes();
+      await bridge.handleRequest(mockReq('POST', sendBody('busy-ctx'), '10.0.0.9'), res2, `/a2a/${AGENT_ID}/messages`);
+      expect((res2 as unknown as { getJson: () => { error: { code: number } } }).getJson().error.code).toBe(-32005);
+      expect(res2.writeHead).toHaveBeenCalledWith(409, expect.anything());
+      expect(sentEnvelopes).toHaveLength(1);
+      bridge.handleAgentResponse({
+        from: AGENT_ID, to: bridge.bridgeFingerprint,
+        threadId: sentEnvelopes[0].envelope.threadId, messageId: 'r', timestamp: new Date().toISOString(),
+        nonce: '', ephemeralPubKey: '', salt: '', payload: Buffer.from('ok').toString('base64'), signature: '',
+      });
+      await p1;
+      const p3 = bridge.handleRequest(mockReq('POST', sendBody('busy-ctx'), '10.0.0.9'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes).toHaveLength(2);
+      expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await p3;
+    });
+
+    it('SEC-139: a caller that disconnects frees its thread for an immediate retry', async () => {
+      const closers: Array<() => void> = [];
+      const res1 = Object.assign(mockRes(), { writableEnded: false, on: vi.fn((ev: string, cb: () => void) => { if (ev === 'close') closers.push(cb); }) });
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('drop-ctx'), '10.0.0.11'), res1 as never, `/a2a/${AGENT_ID}/messages`);
+      await vi.waitFor(() => expect(sentEnvelopes).toHaveLength(1));
+      closers.forEach((c) => c());
+      await p1;
+      const p2 = bridge.handleRequest(mockReq('POST', sendBody('drop-ctx'), '10.0.0.11'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await vi.waitFor(() => expect(sentEnvelopes).toHaveLength(2));
+      expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await p2;
     });
 
     it('SEC-134: refuses a contextId that is too long or not text', async () => {
