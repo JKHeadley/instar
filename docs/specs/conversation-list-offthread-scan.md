@@ -111,8 +111,11 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
   read is not). An attempt at admission only ever makes later replies unread, and a single attempt
   means no later attempt can set a baseline after a reply saved during the wait. If the attempt
   cannot set a baseline because the first marker catch-up has not settled, the phone's admission
-  time is kept (in memory) as a cutoff: replies after it show as unread, and the baseline set once
-  catch-up settles is that cutoff, never a later time (`ConversationUnreadService`).
+  time is kept (in memory) as a cutoff. The cutoff is only an extra "unread from here" line, never
+  a saved read position: in a conversation with no read marker, another person's message after it
+  counts as unread even when the baseline set later is newer; the baseline itself is set as before.
+  The entry is dropped when syncing delivers this phone's baseline from another machine, and the
+  list is capped at 1,000 phones, oldest first out (`ConversationUnreadService`).
 
 ### Off switch
 

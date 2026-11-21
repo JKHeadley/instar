@@ -63,9 +63,31 @@ describe('a phone with no read position yet, while marker catch-up is pending', 
     setClock(4_000);
     svc.touchBaseline(reader as never);
     expect(store.hasBaseline(reader.key)).toBe(true);
+    // The cutoff is only an extra unread-from-here line, never the saved read position.
+    expect(store.baselineFor(reader.key)).toBe(4_000);
     const next = svc.rowFields(reader as never, row())!;
     expect(next.hasUnread).toBe(true);
     expect(next.unreadCount).toBe(1);
+  });
+
+  it('the cutoff is dropped when syncing delivers the phone\'s baseline from another machine', () => {
+    const { store, svc, reader } = setup();
+    const count = () => (svc as unknown as { admissionCutoffCount(): number }).admissionCutoffCount();
+    svc.touchBaseline(reader as never);
+    expect(count()).toBe(1);
+    store.setBaseline(reader.key, 5_000); // arrives by the marker catch-up from another machine
+    store.markCatchUpSettled();
+    svc.touchBaseline(reader as never);
+    expect(count()).toBe(0);
+  });
+
+  it('the cutoff list is capped: one entry per phone at most, oldest out first', () => {
+    const { svc } = setup();
+    const count = () => (svc as unknown as { admissionCutoffCount(): number }).admissionCutoffCount();
+    for (let i = 0; i < 1_050; i++) svc.touchBaseline({ key: `phone-${i}`, person: null, viaDevice: true } as never);
+    expect(count()).toBe(1_000);
+    svc.touchBaseline({ key: 'phone-1049', person: null, viaDevice: true } as never); // a repeat adds nothing
+    expect(count()).toBe(1_000);
   });
 
   it('with catch-up already settled, the baseline is set at admission as before', () => {

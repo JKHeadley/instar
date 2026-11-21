@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-21T17:15:27.642Z",
+  "slug": "conversation-list-offthread-scan",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 90,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationUnreadService.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
