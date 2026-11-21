@@ -25,7 +25,7 @@ The phone and Mac wait briefly for that first background read. If it cannot fini
 
 Two earlier versions of this fix were thrown away after outside review found they could change what the apps show.
 
-Trimming the file (which happens once the file holds 100,000 messages) is left exactly as it was, so it cannot delete anything it did not delete before; the memory copy is simply rebuilt after each trim. Earlier versions of this change tried to make the check before each save cheaper, and each one could, in some failure case, delete a message the old code would have kept. The old check costs under a tenth of a second per saved message on Echo's real file, which is well within the goal, so it stays.
+Trimming the file (which happens once the file holds 100,000 messages) is left exactly as it was, so it cannot delete anything it did not delete before; the memory copy is simply rebuilt after each trim. Earlier versions of this change tried to make the check before each save cheaper, and each one could, in some failure case, delete a message the old code would have kept. A test now saves messages through both of the server's save routes into a file built just over 20 MB, injects failures, and checks after every save that the file is byte-for-byte what the old code would have written. The old check costs under a tenth of a second per saved message on Echo's real file, which is well within the goal, so it stays.
 
 Two start-up improvements that were part of this change (the code map and the Node check) now have their own pull request, so this one covers only the conversation list, chat history and saving messages.
 
