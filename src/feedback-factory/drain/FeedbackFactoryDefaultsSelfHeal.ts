@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { announceRestartRequested } from '../../core/restartRequestSignal.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SelfHealGate, SqliteSelfHealEpisodeStore, type SelfHealNotice } from '../../core/SelfHealGate.js';
@@ -29,7 +30,13 @@ export function requestSelfHealRestart(stateDir: string, stableRequestId: string
     try { return (JSON.parse(fs.readFileSync(destination, 'utf8')) as { requestId?: string }).requestId === stableRequestId; } catch { return false; }
   }
   const tmp = path.join(dir, `.restart-request.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
-  const body = JSON.stringify({ requestedAt: new Date().toISOString(), requestedBy: 'self-heal-gate', requestId: stableRequestId, plannedRestart: true, pid: process.pid }, null, 2);
+  const requestedAt = new Date().toISOString();
+  const reason = 'feedback-factory generated defaults repaired';
+  // planned-restart-keeps-lead §1 step 1: announce first (the holder's window renewal is signed and
+  // persisted synchronously), then publish at once. The request carries the same fields as the
+  // other planned writers (reason, one-hour expiry) so every consumer reads it the same way.
+  void announceRestartRequested({ requestedBy: 'self-heal-gate', reason, requestedAt });
+  const body = JSON.stringify({ requestedAt, requestedBy: 'self-heal-gate', reason, requestId: stableRequestId, plannedRestart: true, expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(), pid: process.pid }, null, 2);
   try {
     const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
     try { fs.writeFileSync(fd, body); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }

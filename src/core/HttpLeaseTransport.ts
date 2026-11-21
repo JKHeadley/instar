@@ -165,6 +165,17 @@ export class HttpLeaseTransport implements LeaseTransport {
    * endpoint), or silence. Read by the boot hold; bounded to the recent tail per peer.
    */
   private probesByPeer = new Map<string, PeerProbeRecord>();
+  /**
+   * planned-restart-keeps-lead §2 — per peer, the last pull whose responder identity was VERIFIED
+   * (a signed ack bound to our request nonce), with the view it returned (`null` = an honest "no
+   * lease"). A qualifying answer for rule 1b is one of these from a live peer. Keyed on the dialed
+   * registry id, never a body field.
+   */
+  private verifiedAnswerByPeer = new Map<string, { lease: LeaseRecord | null; atMs: number; round: number }>();
+  /** planned-restart-keeps-lead §2 — pull rounds, so a boot can tell which round an outcome belongs to. */
+  private pullRound = 0;
+  private roundStartedAtMs = 0;
+  private probeListeners: Array<(peerId: string, answer: ProbeAnswer, round: number) => void> = [];
   private lastBroadcastOkAt = 0;
   private lastPullOkAt = 0;
   /**
@@ -286,7 +297,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     path: '/api/lease' | '/api/lease/pull',
     bodyBase: Record<string, unknown>,
     sentEpoch: number | null,
-  ): Promise<DialOutcome> {
+  ): Promise<DialOutcome & { verified?: boolean }> {
     const fetchImpl = this.d.fetchImpl ?? fetch;
     // mesh-endpoint-http-propagation — carry our own validated self-endpoints inside
     // the SIGNED body (covered by signRequest's body hash). Omit the field entirely
@@ -349,7 +360,8 @@ export class HttpLeaseTransport implements LeaseTransport {
     };
 
     const r = await this.hedge(resolved, attempt);
-    return { ...r, answer: best };
+    // On the mesh dial a confirmed pull from an ack-capable peer IS identity-verified (interpretResponse).
+    return { ...r, answer: best, verified: r.confirmed && !!peer.meshAckCapable && !!peer.publicKeyPem };
   }
 
   /**
@@ -383,6 +395,28 @@ export class HttpLeaseTransport implements LeaseTransport {
     }
     else if (answer === 'unsigned' && rec.unsignedSinceMs === null) rec.unsignedSinceMs = at;
     this.probesByPeer.set(peerId, rec);
+    for (const l of this.probeListeners) {
+      try { l(peerId, answer, this.pullRound); } catch { /* @silent-fallback-ok: a listener fault must never break a pull */ }
+    }
+  }
+
+  /**
+   * planned-restart-keeps-lead §2 step 2 — be told when a probe lands (the moment a round may have
+   * become evaluable). Listeners are error-isolated. Returns a detach.
+   */
+  attachProbeListener(listener: (peerId: string, answer: ProbeAnswer, round: number) => void): () => void {
+    this.probeListeners.push(listener);
+    return () => { this.probeListeners = this.probeListeners.filter((l) => l !== listener); };
+  }
+
+  /** The current pull round and when it started (0 before the first round). */
+  currentPullRound(): { round: number; startedAtMs: number } {
+    return { round: this.pullRound, startedAtMs: this.roundStartedAtMs };
+  }
+
+  /** Per-peer identity-verified pull answers (copies). */
+  verifiedAnswers(): Map<string, { lease: LeaseRecord | null; atMs: number; round: number }> {
+    return new Map(this.verifiedAnswerByPeer);
   }
 
   /** takeover-ready-pool R1 — per-peer probe records (copies). */
@@ -397,21 +431,27 @@ export class HttpLeaseTransport implements LeaseTransport {
     return this.d.peers().map((p) => p.machineId);
   }
 
-  /** Legacy single-`url` dial — byte-for-byte today (2xx = confirmed, no ack). */
+  /**
+   * Legacy single-`url` dial — 2xx = confirmed, as today. planned-restart-keeps-lead: when the peer's
+   * key is known the pull carries a request nonce, and a reply whose identity ack verifies is recorded
+   * `signed` for the boot hold (today every legacy probe read as silence, so a mesh-off pool read its
+   * answering peers as silent). Broadcast confirmation on this dial stays a 2xx.
+   */
   private async legacyDial(
     peer: LeasePeer,
     path: '/api/lease' | '/api/lease/pull',
     bodyBase: Record<string, unknown>,
     fetchImpl: typeof fetch,
-  ): Promise<DialOutcome> {
-    // A legacy dial has no endpoint kind and no signed reply, so for the boot hold it is
-    // always silence; what it returns still folds into the lease view as before.
+  ): Promise<DialOutcome & { verified?: boolean }> {
     try {
-      const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, bodyBase, this.d.nextSequence());
+      const canVerify = path === '/api/lease/pull' && !!peer.publicKeyPem;
+      const reqNonce = canVerify ? newReqNonce() : null;
+      const body = reqNonce ? { ...bodyBase, reqNonce } : bodyBase;
+      const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, body, this.d.nextSequence());
       const res = await fetchImpl(`${peer.url.replace(/\/$/, '')}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify(bodyBase),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
       const httpOk = !!res && (res as Response).ok;
@@ -421,8 +461,9 @@ export class HttpLeaseTransport implements LeaseTransport {
       }
       this.logSuccess(`${path} to ${peer.machineId}`);
       if (path === '/api/lease/pull') {
-        const data = (await (res as Response).json().catch(() => null)) as { lease?: LeaseRecord | null } | null;
-        return { confirmed: true, lease: data?.lease ?? null, answer: 'silent' };
+        const data = (await (res as Response).json().catch(() => null)) as MeshAckResponse | null;
+        const verified = !!reqNonce && verifyLeaseAckIdentity(data?.ack, data?.sig, peer.machineId, reqNonce, peer.publicKeyPem as string);
+        return { confirmed: true, lease: data?.lease ?? null, answer: verified ? 'signed' : 'silent', verified };
       }
       return { confirmed: true, lease: null, answer: 'silent' };
     } catch (err) {
@@ -606,7 +647,12 @@ export class HttpLeaseTransport implements LeaseTransport {
    * returns no lease — proves reachability.
    */
   async pullPeer(peer: LeasePeer): Promise<LeaseRecord | null> {
+    const round = this.pullRound;
     const outcome = await this.dialPeer(peer, '/api/lease/pull', {}, null);
+    if (outcome.confirmed && outcome.verified) {
+      const lease = outcome.lease && typeof outcome.lease.epoch === 'number' ? outcome.lease : null;
+      this.verifiedAnswerByPeer.set(peer.machineId, { lease, atMs: this.now(), round });
+    }
     this.recordProbe(peer.machineId, outcome.answer);
     if (!outcome.confirmed) return null;
     // A confirmed pull (verified reachability) proves the medium is live.
@@ -650,6 +696,11 @@ export class HttpLeaseTransport implements LeaseTransport {
     for (const id of this.probesByPeer.keys()) {
       if (!current.has(id)) this.probesByPeer.delete(id);
     }
+    for (const id of this.verifiedAnswerByPeer.keys()) {
+      if (!current.has(id)) this.verifiedAnswerByPeer.delete(id);
+    }
+    this.pullRound += 1;
+    this.roundStartedAtMs = this.now();
     if (peers.length === 0) return;
     await Promise.all(peers.map((p) => this.pullPeer(p).catch(() => null)));
   }

@@ -78,6 +78,7 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktreeReaper.js';
+import { EPISODE_CAP_MS, PENDING_RENEW_CADENCE_MS, REQUEST_POLL_MAX_MS, nextRequestPollMs, pendingRenewalDue } from '../core/LeaseContinuity.js';
 import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
@@ -321,6 +322,55 @@ const codexArmSessionSweep: SelfActionController = {
           sink.emit({ verb: 'killSession', target: name });
           if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
           else failures.delete(name);
+        }
+      },
+    };
+  },
+};
+
+/**
+ * planned-restart-lease-continuity (docs/specs/planned-restart-keeps-lead.md §1): while a restart request
+ * is pending the holder renews its lease with a window as the expiry once per pending cadence (10 s on a
+ * tunnel) and polls the request file every 2 s (doubling to 60 s on a read error). The pinned pressure
+ * is a request that is never consumed: the renewals keep their cadence (never faster) and stop at the
+ * episode's four-hour cap, which the episode rule ends; the poll's read always fails, so it backs off to
+ * its 60 s ceiling and stays there. Both are rate-floored sentinels, not count-bounded loops.
+ */
+const plannedRestartLeaseContinuity: SelfActionController = {
+  id: 'planned-restart-lease-continuity',
+  actionVerb: 'retry',
+  models: 'src/core/LeaseCoordinator.ts (pending window renewals, pendingRenewalDue) + src/core/MultiMachineCoordinator.ts (request-file poll, nextRequestPollMs)',
+  modelsPath: 'src/core/LeaseCoordinator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The episode is process memory; a restart is the event the renewal exists for, and the next process starts no episode until a request is seen again, so a restart cannot speed the cadence up.' },
+  boundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1 + Math.ceil((4 * 60 * 60_000) / REQUEST_POLL_MAX_MS) + 6,
+  perTargetBoundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1,
+  ticks: 2 * 60 * 60, // four hours at 2 s: the cap is reached inside the horizon
+  tickMs: 2_000,
+  eternalSentinel: { reason: 'While the request is pending the renewal must keep running at its cadence or the lead lapses during the boot it protects; it stops at the four-hour cap.', rateFloorMs: 2_000 },
+  delegatedGiveUp: 'The episode end rule (planned-restart-keeps-lead §1 step 3): withdrawn, absent 60 s with no ledger row, consumed but alive past the shutdown bound, or the four-hour cap',
+  makeUnderPressure(f, sink) {
+    const openedAt = f.clock.nowMs();
+    let lastRenewal: number | null = null;
+    let pollEvery = 2_000;
+    let nextPollAt = openedAt;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        // One action per tick: the renewal first (it protects the lead); the poll takes the next tick,
+        // so two emits never share a timestamp and the 2 s floor is the tick itself.
+        if (pendingRenewalDue({ nowMs: now, lastRenewalMs: lastRenewal, cadenceMs: PENDING_RENEW_CADENCE_MS, episodeOpenedAtMs: openedAt, capMs: EPISODE_CAP_MS })) {
+          lastRenewal = now;
+          sink.emit({ verb: 'retry', target: 'pending-window-renewal' });
+          sink.emitTimesMs.push(now);
+          return;
+        }
+        if (now >= nextPollAt) {
+          // The read fails for ever under pressure: the poll backs off and stays at its ceiling.
+          sink.emit({ verb: 'retry', target: 'restart-request-poll' });
+          sink.emitTimesMs.push(now);
+          pollEvery = nextRequestPollMs(false, pollEvery);
+          nextPollAt = now + pollEvery;
         }
       },
     };
@@ -6215,4 +6265,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   heldForwardExpiryReport,
   heldDebtLossNotice,
   workBoardPickup,
+  plannedRestartLeaseContinuity,
 ];

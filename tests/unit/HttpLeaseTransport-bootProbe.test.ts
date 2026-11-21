@@ -107,10 +107,29 @@ describe('lease-pull probe classification', () => {
     await t.pullAllPeers();
     expect(lastAnswer(t)).toBe('unsigned');
   });
-  it('a legacy dial (no endpoint kind) counts only signed replies, so it is silence', async () => {
+  it('a legacy dial whose reply carries an identity ack bound to our request nonce is a signed answer (planned-restart-keeps-lead: a mesh-off pool no longer reads its answering peers as silent)', async () => {
     const { t } = transport([TS], () => ({ status: 200, marker: mark, signed: true }), { mesh: false });
     await t.pullAllPeers();
+    expect(lastAnswer(t)).toBe('signed');
+    expect(t.verifiedAnswers().get(PEER)).toMatchObject({ lease: null, round: 1 });
+    expect(t.currentPullRound()).toEqual({ round: 1, startedAtMs: 1_000 });
+  });
+  it('a legacy dial answered 2xx without a verifiable ack is still silence for the boot hold (the 2xx still confirms the pull as today)', async () => {
+    const { t } = transport([TS], () => ({ status: 200, marker: mark }), { mesh: false });
+    await t.pullAllPeers();
     expect(lastAnswer(t)).toBe('silent');
+    expect(t.verifiedAnswers().size).toBe(0);
+  });
+  it('probe listeners are told of every landed probe with its round, and a listener fault never breaks the pull', async () => {
+    const { t } = transport([TS], () => ({ status: 200, marker: mark, signed: true }));
+    const seen: Array<[string, string, number]> = [];
+    t.attachProbeListener(() => { throw new Error('listener fault'); });
+    const detach = t.attachProbeListener((p, a, r) => { seen.push([p, a, r]); });
+    await t.pullAllPeers();
+    expect(seen).toEqual([[PEER, 'signed', 1]]);
+    detach();
+    await t.pullAllPeers();
+    expect(seen).toHaveLength(1);
   });
   it('the best rope wins: one rope silent, the other answering unsigned', async () => {
     const { t } = transport([TS, NAMED], (url) => (url.startsWith(TS.url) ? 'throw' : { status: 503, marker: mark }));

@@ -54,7 +54,7 @@ export const DEFAULT_BOOT_HOLD_SETTINGS: BootHoldSettings = { silentProbes: 3, s
 /** Interim unsigned-answer window until the preferred machine publishes its restart time (R5). */
 export const INTERIM_UNSIGNED_ANSWER_WINDOW_MS = 45_000 + 3 * 60_000;
 const UNSIGNED_WINDOW_FLOOR_MS = 45_000;
-const UNSIGNED_WINDOW_CEILING_MS = 10 * 60_000;
+export const UNSIGNED_WINDOW_CEILING_MS = 10 * 60_000;
 const UNSIGNED_WINDOW_SLACK_MS = 60_000;
 
 /**
@@ -237,4 +237,22 @@ export function resolveBootClaimSafety(config: {
     ...(typeof part?.silentProbes === 'number' && part.silentProbes >= 1 ? { silentProbes: Math.floor(part.silentProbes) } : {}),
     ...(typeof part?.silentSpanMs === 'number' && part.silentSpanMs >= 0 ? { silentSpanMs: part.silentSpanMs } : {}),
   };
+}
+
+/**
+ * planned-restart-keeps-lead §4 — the continuity switch, read live. `takeoverReadyPool.enabled: false`
+ * is the rollback for the whole project; otherwise the switch rides the development-agent gate unless
+ * set explicitly. `windowMs`, when set, replaces the measured base (still under the peer caps).
+ */
+export function resolvePlannedRestartLeaseContinuity(config: {
+  developmentAgent?: boolean;
+  multiMachine?: {
+    takeoverReadyPool?: { enabled?: boolean; plannedRestartLeaseContinuity?: { enabled?: boolean; windowMs?: number } };
+  };
+} | undefined): { enabled: boolean; windowMs: number | null } {
+  const pool = config?.multiMachine?.takeoverReadyPool;
+  const part = pool?.plannedRestartLeaseContinuity;
+  const enabled = pool?.enabled === false ? false : resolveDevAgentGate(part?.enabled ?? pool?.enabled, config);
+  const windowMs = typeof part?.windowMs === 'number' && Number.isFinite(part.windowMs) && part.windowMs > 0 ? part.windowMs : null;
+  return { enabled, windowMs };
 }
