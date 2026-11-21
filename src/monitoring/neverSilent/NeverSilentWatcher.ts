@@ -15,7 +15,7 @@
 import crypto from 'node:crypto';
 import type { NeverSilentStore, Incident, Obligation, ConversationPlatform, SilenceClass } from './NeverSilentStore.js';
 import type { ConversationSilenceJudge, SilenceVerdict } from './ConversationSilenceJudge.js';
-import { decideNeverSilentAction, renderNotice, ASK_BUTTON_TEXT, engineName, type NeverSilentAction } from './NeverSilentPolicy.js';
+import { decideNeverSilentAction, renderNotice, ASK_BUTTON_TEXT, engineName, STALE_LOGIN_HOLD_MS, STALE_LOGIN_WAIT_REASON, type NeverSilentAction } from './NeverSilentPolicy.js';
 
 export interface NeverSilentConfig {
   enabled: boolean;
@@ -63,7 +63,9 @@ export interface NeverSilentDeps {
   isProtected: (tmuxSession: string) => boolean;
   /** Pool funnel: a judged login failure counts as the CLI sighting (§3.3 a, §3.6). */
   /** Returns the pool's own answer (e.g. marked / already-held / credential-unreadable) for the log. */
-  observeLoginExpired: (configHome: string, tmuxSession: string) => Promise<string | void>;
+  observeLoginExpired: (configHome: string, tmuxSession: string) => Promise<string | void | { reason: string; probe?: 'ok' | 'refused' | 'pending' | 'inconclusive' }>;
+  /** Spec stale-process-login-expired: is an in-place refresh in progress or still possible for this session? */
+  inPlaceRefreshPossible?: (tmuxSession: string, accountId: string | null) => boolean;
   swap: (session: SessionFacts) => Promise<{ swapped: boolean; reason?: string }>;
   /**
    * Move the conversation to `target` and restart its session there carrying the waiting
@@ -161,11 +163,13 @@ export class NeverSilentWatcher {
 
     const { verdict, revision } = await this.judgeSafely(incident, session, open, cfg);
     let decision: { action: NeverSilentAction; reason: string; target?: string } = { action: 'tell', reason: 'no verdict' };
+    let loginProbe: 'ok' | 'refused' | 'pending' | 'inconclusive' | undefined;
     {
       if (verdict.silenceClass === 'engine-login' && verdict.confidence >= cfg.confidenceFloor && !verdict.truncated && session?.configHome) {
         try {
           const r = await this.d.observeLoginExpired(session.configHome, session.tmuxSession);
-          this.log({ event: 'pool-observed', incident: incident.id, result: typeof r === 'string' ? r : 'ok' });
+          if (r && typeof r === 'object') loginProbe = r.probe;
+          this.log({ event: 'pool-observed', incident: incident.id, result: typeof r === 'string' ? r : r && typeof r === 'object' ? r.reason : 'ok' });
         } catch { this.log({ event: 'pool-observed', incident: incident.id, result: 'error' }); }
       }
       decision = decideNeverSilentAction({
@@ -182,10 +186,19 @@ export class NeverSilentWatcher {
         swapTried: incident.attempts > 0,
         protectedSession: !!session && this.safe(() => this.d.isProtected(session.tmuxSession), true),
         recentlyRestored: (() => { const at = this.d.store.lastRestoreAt(platform, key); return at !== null && this.now() - at < RESTORE_FLAP_WINDOW_MS; })(),
+        loginProbe,
+        inPlaceRefreshPossible: !!session && this.safe(() => this.d.inPlaceRefreshPossible?.(session.tmuxSession, session.accountId ?? null) ?? false, false),
+        staleHoldExpired: incident.staleLoginWaitStartedAt !== undefined && this.now() - incident.staleLoginWaitStartedAt >= STALE_LOGIN_HOLD_MS,
       });
     }
     const cls: SilenceClass = verdict.silenceClass;
 
+    if (decision.action === 'wait' && decision.reason === STALE_LOGIN_WAIT_REASON) {
+      // A stale-login restart is under way: the persisted clock starts at the first hold-off.
+      if (incident.staleLoginWaitStartedAt === undefined) this.d.store.updateIncident(incident.id, { staleLoginWaitStartedAt: this.now() });
+      await this.sendWaitingIfUncovered(platform, key, incident, open, 'engine-login', 'restarting-sign-in');
+      return;
+    }
     if (decision.action === 'wait') {
       // Still working: only the waiting notice, and only when no standby line already covered it.
       await this.sendWaitingIfUncovered(platform, key, incident, open, 'working-slow');
@@ -325,10 +338,10 @@ export class NeverSilentWatcher {
     return 'succeeded';
   }
 
-  private async sendWaitingIfUncovered(platform: ConversationPlatform, key: string, incident: Incident, open: Obligation[], cls: SilenceClass): Promise<void> {
+  private async sendWaitingIfUncovered(platform: ConversationPlatform, key: string, incident: Incident, open: Obligation[], cls: SilenceClass, waitingReason?: 'restarting-sign-in'): Promise<void> {
     const uncovered = open.filter((o) => !o.coveredBy.includes('waiting') && !o.standbySeenAt);
     if (!uncovered.length) return;
-    const text = renderNotice({ kind: 'waiting', count: uncovered.length, silenceClass: cls, framework: incident.framework, action: null, outcome: null });
+    const text = renderNotice({ kind: 'waiting', count: uncovered.length, silenceClass: cls, framework: incident.framework, action: null, outcome: null, ...(waitingReason ? { waitingReason } : {}) });
     const id = await this.safeAsync(() => this.d.sendNotice(platform, key, text), null);
     if (id === null) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting' }); return; }
     this.d.store.markCovered(uncovered.map((o) => o.id), 'waiting');

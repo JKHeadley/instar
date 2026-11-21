@@ -40,7 +40,19 @@ export interface PolicyInput {
   protectedSession: boolean;
   /** The conversation was moved back after a repair recently: a new silence asks instead of moving (the repair did not hold). */
   recentlyRestored: boolean;
+  /**
+   * Spec stale-process-login-expired D2: the fresh-login probe's disposition for this session's
+   * stored login, whether an in-place refresh is in progress or still possible for this session,
+   * and whether this incident's 3-minute hold-off has run out. All optional (absent ⇒ today).
+   */
+  loginProbe?: 'ok' | 'refused' | 'pending' | 'inconclusive';
+  inPlaceRefreshPossible?: boolean;
+  staleHoldExpired?: boolean;
 }
+
+/** Spec stale-process-login-expired D2: NeverSilent holds off at most this long per incident. */
+export const STALE_LOGIN_HOLD_MS = 3 * 60_000;
+export const STALE_LOGIN_WAIT_REASON = 'stale-login: restarting on its own sign-in';
 
 export interface PolicyDecision { action: NeverSilentAction; reason: string; target?: string }
 
@@ -48,6 +60,13 @@ const RECOVERABLE: ReadonlySet<SilenceClass> = new Set(['engine-login', 'usage-o
 
 export function decideNeverSilentAction(i: PolicyInput): PolicyDecision {
   if (i.silenceClass === 'working-slow') return { action: 'wait', reason: 'still working' };
+  // A session stuck on an expired screen while its stored login works is being restarted on its own
+  // sign-in: no swap or engine move while that check or restart is under way, and never past the
+  // incident's 3-minute hold-off.
+  if (i.silenceClass === 'engine-login' && !i.staleHoldExpired
+    && (i.loginProbe === 'pending' || (i.loginProbe === 'ok' && i.inPlaceRefreshPossible === true))) {
+    return { action: 'wait', reason: STALE_LOGIN_WAIT_REASON };
+  }
   if (!RECOVERABLE.has(i.silenceClass)) return { action: 'tell', reason: `class ${i.silenceClass} has no automatic action` };
   if (!i.actionsEnabled) return { action: 'tell', reason: 'actions not enabled' };
   if (i.protectedSession) return { action: 'tell', reason: 'protected session' };
@@ -99,9 +118,14 @@ export interface NoticeInput {
   repairStarted?: boolean;
   /** Why a one-tap ask was used instead of moving automatically. */
   askReason?: 'pinned' | 'replay';
+  /** A waiting notice for a session being restarted on its own sign-in (spec stale-process-login-expired). */
+  waitingReason?: 'restarting-sign-in';
 }
 
 export function renderNotice(n: NoticeInput): string {
+  if (n.kind === 'waiting' && n.waitingReason === 'restarting-sign-in') {
+    return `${lead(n.count)} yet. The session got stuck on an old sign-in, so I'm restarting it on its own sign-in, which still works. I'll tell you here if that doesn't fix it.`;
+  }
   if (n.kind === 'waiting' && n.silenceClass === 'working-slow') {
     return `${lead(n.count)} yet. It's still being worked on; I'll tell you here if anything goes wrong.`;
   }

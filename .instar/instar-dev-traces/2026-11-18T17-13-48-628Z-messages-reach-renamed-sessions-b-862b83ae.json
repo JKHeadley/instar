@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "messages-reach-renamed-sessions-b",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T17:13:48.628Z",
+  "artifactPath": "upgrades/side-effects/messages-reach-renamed-sessions-b.md",
+  "artifactSha256": "a0cd34109bc0a16a46bfb5490855b05a0dd015a3afee112d929fb2428d08cc98",
+  "specPath": "docs/specs/messages-reach-renamed-sessions.md",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/messaging/SenderNotifier.ts",
+    "upgrades/side-effects/messages-reach-renamed-sessions-b.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "comment-only annotations for the silent-fallback ratchet, under the approved spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

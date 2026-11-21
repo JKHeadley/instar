@@ -11,6 +11,7 @@ import { answerBodyParseError } from './bodyBudget.js';
 import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { arrivalOf, isSameNetworkPublicRoute, mayBeLocalArrival } from '../core/requestArrival.js';
 
 const guardedResponses = new WeakSet<Response>();
 const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
@@ -263,6 +264,22 @@ export function authMiddleware(
   dashboardStepUpOk?: (req: Request) => boolean,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Identity A4: a request that arrived on the same-network (home) listener is judged here, FIRST and
+    // on its own terms, whatever else is configured (no agent token included): the pairing redeem and
+    // ping pass unsigned (they carry their own one-time code); anything else needs a verified device
+    // signature. The listener's gate only matches the route list; this is where the signature is required.
+    if (arrivalOf(req) === 'same-network') {
+      if (req.headers['x-instar-device'] === undefined) {
+        if (isSameNetworkPublicRoute(req.method, req.path)) { next(); return; }
+        res.status(404).json({ error: 'not-found' });
+        return;
+      }
+      if (!deviceAuth || req.path.startsWith('/internal/')) { res.status(404).json({ error: 'not-found' }); return; }
+      const verdict = deviceAuth(req, res);
+      if (verdict === 'ok') { next(); return; }
+      if (verdict !== 'refused') res.status(401).json({ error: 'device-unauthorized' });
+      return;
+    }
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
     // no-token-configured skip (so an install with no agent token still protects
     // it) and before the agent-id check (a mismatched id cannot change the
@@ -372,7 +389,6 @@ export function authMiddleware(
     // so the inbox route enforces `verifyAgentToken` in its handler.
     if (
       req.path === '/messages/relay-agent'
-      || req.path === '/messages/relay-machine'
       || req.path === '/a2a/inbox'
       || req.path === '/a2a/apprenticeship/cycles'
     ) {
@@ -438,7 +454,7 @@ export function authMiddleware(
     // internal paths to the LAN should not succeed).
     if (req.path.startsWith('/internal/')) {
       const remote = req.socket.remoteAddress;
-      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      if (!mayBeLocalArrival(req) || (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1')) {
         res.status(403).json({ error: 'Internal routes are localhost-only' });
         return;
       }

@@ -1033,6 +1033,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
     justification: 'No authority beyond the PIN-confirmed console: the action runs the console\'s own approve, deny and operator-switch code; the bearer is refused; it needs an active owner phone, a configured dashboard PIN, local TLS or loopback, the phone\'s Secure Enclave presence key and a 60-second single-use challenge naming the exact action (an approve also names the proposal\'s hash). Every write and refusal is audited. Switching it off stops the writes at once (re-checked live); the read-only lists stay. Dark on the fleet until the development-agent live proof passes.',
   },
+  {
+    name: 'takeoverReadyPoolBootClaimSafety',
+    configPath: 'multiMachine.takeoverReadyPool.bootClaimSafety.enabled',
+    description: 'takeover-ready-pool R1 (fb-2bf6ccd0-705): from process start until the boot hold ends, a restarted machine asks its peers before re-taking its own lapsed lease (even with a preferred machine named), never claims while the named preferred machine answers, and claims only after the preferred machine (every known peer when none is named) has been silent on 3 probes spanning 45 s; each decision is logged "boot-hold: <rule> <verdict>". takeoverReadyPool.enabled:false is the rollback.',
+    justification: 'It only withholds a claim the normal rules would already allow, and only for a bounded time: a dead peer releases it after 3 silent probes over 45 s, and a wedged peer answering errors releases it after the unsigned-answer window (45 s + 3 min, capped at 10 min). It never takes a lease the normal rules would refuse, adds no new authority, sends nothing, and a single machine with no peers is unchanged. Off (explicit false, or takeoverReadyPool.enabled:false) is byte-for-byte today\'s acquisition.',
+  },
 ];
 
 /**
