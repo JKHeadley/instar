@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1. `dashboard/console/display-identity.js` `plainReferenceText` gains one replacement: `topic <one or two digits> (name unresolved|name unavailable)` becomes "a conversation". Found by the pre-release page audit (topic 127504). One unit test added.
+Tier 1. `dashboard/console/display-identity.js` `plainReferenceText` gains one replacement: `topic <one or two digits> (name unresolved|name unavailable)` becomes "a conversation". Found by the pre-release page audit (topic 127504). One unit test added. Also `needs-strip.js`: the open list's heading is "Needs you" and the badge alone carries the count, so it no longer reads "16" beside "16+" (Chief of Staff request after the live check on 1.3.1947).
 
 ## Decision-point inventory
 

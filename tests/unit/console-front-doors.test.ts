@@ -194,7 +194,8 @@ describe('the Needs-you strip', () => {
     expect(m.rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
     expect(m.more).toBe(2);
     expect(m.state).toBe('bad');
-    expect(m.title).toBe('Needs you · 5');
+    expect(m.title).toBe('Needs you'); // The count lives only in the badge, so the open list never reads "16" and "16+".
+    expect(m.badge).toBe('5');
     expect(m.badge).toBe('5');
   });
 });
