@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "lv-unit-durations",
+  "sessionId": "dea26f69-42c8-4e85-b761-3a7bc7cbb122",
+  "timestamp": "2026-11-20T23:07:29.863Z",
+  "artifactPath": "upgrades/side-effects/lv-unit-durations.md",
+  "artifactSha256": "d4e7ba491f7fb30de1ae9169c9b37bdb182c92c5e73ca97998c3a6f1e874f758",
+  "specPath": "docs/specs/local-verify-borrowed-unit-slices.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-borrowed-unit-slices.eli16.md",
+    "docs/specs/local-verify-borrowed-unit-slices.md",
+    "docs/specs/reports/local-verify-borrowed-unit-slices-convergence.md",
+    "src/data/feature-ladders.json",
+    "src/localVerify/orchestrator.ts",
+    "tests/unit/localVerify/firstPartFlow.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/lv-unit-durations.md",
+    "upgrades/side-effects/lv-unit-durations.md",
+    "upgrades/side-effects/lv-unit-durations.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "approved converged spec (part A); this commit adds only an artifact addendum after an independent second pass concurred on the merge with main after #3470 (feature-ladders keeps both entries)",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

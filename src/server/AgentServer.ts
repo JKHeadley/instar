@@ -1,6 +1,10 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
+import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
+import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTitle.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
@@ -223,7 +227,8 @@ import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
 import { documentsReplaceViews, publishAsDocument, safeVerdict, systemDocumentLink, type ReadablePageDeps } from '../documents/readablePages.js';
-import { createDocumentPageRoutes } from './documentPageRoutes.js';
+import { createDocumentPageRoutes, notADocumentDevice, notADocumentDeviceRow } from './documentPageRoutes.js';
+import { documentDecisionRootOf } from './documentDecisionRoot.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
@@ -248,7 +253,9 @@ import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { SameNetworkListener } from './sameNetworkListener.js';
+import { sameNetworkGate, homeAddressInUse } from './phoneSetupRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
 import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
@@ -1392,6 +1399,8 @@ export class AgentServer {
      * never used and the loop is not started unless a test injects these.
      */
     mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
+    /** Same-network listener overrides for tests (identity A4): network observer, port, bind address, WSL. */
+    sameNetwork?: Pick<import('./sameNetworkListener.js').SameNetworkListenerDeps, 'observe' | 'port' | 'bindHost' | 'wsl' | 'announce' | 'machineName'>;
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
     triageNurse?: StallTriageNurse;
@@ -2020,6 +2029,23 @@ export class AgentServer {
     // SEC-118-R1: an error answer to a request whose body was never read closes the connection
     // instead of draining the rest (mounted first so every refusal is covered).
     this.app.use(closeUnreadBodyOnError());
+    // takeover-ready-pool R1 (boot claim safety): Instar's response marker on EVERY response,
+    // errors included, so a peer probing this machine can tell "this machine's Instar answered"
+    // from a tunnel edge or any other server. A fingerprint bound to the machine id, not the id.
+    {
+      let marker: string | null | undefined;
+      const markerFor = (): string | null => {
+        if (marker !== undefined && marker !== null) return marker;
+        const id = options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null;
+        marker = id ? instarMachineMarker(id) : null;
+        return marker;
+      };
+      this.app.use((_req, res, next) => {
+        const m = markerFor();
+        if (m) res.setHeader(INSTAR_MACHINE_HEADER, m);
+        next();
+      });
+    }
 
     // Middleware
     // Claim observation has a much smaller privacy/cost boundary than the
@@ -2206,7 +2232,8 @@ export class AgentServer {
       const raw = callerAddress(req, viaOwnNameForPin(host));
       // A loopback request that is not the machine itself and carries no own-tunnel client header is
       // unattributable (localtunnel, relays): charged to the global budget only, never to a shared key.
-      const ip = !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
+      // A same-network arrival (identity A4) is never loopback; its address is already rewritten to sn:<addr>.
+      const ip = mayBeLocalArrival(req) && !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
       const markerId = readPinMarker(req);
       return { ip, markerId, isLocalDirect, localUnmarked: isLocalDirect && !markerId };
     };
@@ -2538,6 +2565,30 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The same-network listener for a first phone at home (identity A4): built here, closed until
+    // the owner asks at the computer; `mobilePairing.sameNetwork.enabled: false` is its kill switch.
+    if ((this.config.mobilePairing as { sameNetwork?: { enabled?: unknown } } | undefined)?.sameNetwork?.enabled !== false && this.config.stateDir) {
+      const svc = this.mobilePairing;
+      const listener: SameNetworkListener = new SameNetworkListener({
+        stateDir: this.config.stateDir,
+        agentName: String(this.config.projectName ?? 'agent'),
+        mainPort: this.config.port,
+        app: this.app,
+        gate: sameNetworkGate({
+          device: (id) => svc.devices.get(id),
+          deviceRoute: (method, pathNorm) => DEVICE_ALLOWLIST.some((r) => r.method === method && r.re.test(pathNorm)),
+          ownHost: () => (listener.listening() ? listener.host() : null),
+        }),
+        inUse: () => homeAddressInUse(svc),
+        ...(options.sameNetwork ?? {}),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'serve the agent\'s home address for a phone on the same network',
+          fallback: 'the home address stays closed', reason: err instanceof Error ? err.message : String(err),
+          impact: 'A phone added at home cannot reach the agent until the address opens again.',
+        }),
+      });
+      svc.sameNetwork = listener;
+    }
     // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
     mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
@@ -7898,6 +7949,11 @@ export class AgentServer {
         }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
+      /** topicId → the Chief of Staff's project title, read per call (a failed read just means no fallback). */
+      const cosProjectTitles = (): Map<number, string> => {
+        try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
+        catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
+      };
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
@@ -7919,10 +7975,14 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
+        telegramTopics: options.telegram ? () => {
+          // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
+          const projectTitles = cosProjectTitles();
+          return options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
-        }) : undefined,
+          return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
+          });
+        } : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
@@ -7930,7 +7990,7 @@ export class AgentServer {
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
         topicMemory: () => options.topicMemory ?? null,
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: m.topicName })) : undefined,
+        telegramTopics: options.telegram ? () => { const projectTitles = cosProjectTitles(); return options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) })); } : undefined,
         telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
           return row ? telegramRowId(row) : null;
@@ -9719,6 +9779,8 @@ export class AgentServer {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
         bootReadiness().markReady();
+        // Identity A4: reopen the home address only if the owner had asked and the network is an allowed one.
+        void this.mobilePairing?.sameNetwork?.start().catch((err) => console.warn('[instar] same-network listener start failed:', err));
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {
@@ -10270,6 +10332,7 @@ export class AgentServer {
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
+    await this.mobilePairing?.sameNetwork?.stop().catch(() => { /* @silent-fallback-ok — closing a listener that is already gone */ });
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
     this.conversationEmbeddings?.feeder.stop();
@@ -10889,10 +10952,10 @@ export class AgentServer {
   }
 
   /** A device's activation from the replicated key ledger: the one for this key, else its newest live key. */
-  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; client?: 'browser' } | null {
+  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; host?: string; client?: 'browser' } | null {
     const ledger = this.mobilePairing?.keyLedger;
     if (!ledger) return null;
-    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; client?: 'browser' } | null = null;
+    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; host?: string; client?: 'browser' } | null = null;
     for (const r of ledger.rows()) {
       if (r.type !== 'activation' || r.deviceId !== deviceId) continue;
       if (keyHash ? r.keyHash !== keyHash : ledger.isRevoked(r.keyHash, deviceId)) continue;
@@ -11079,17 +11142,11 @@ export class AgentServer {
   documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
     const svc = this.mobilePairing;
     if (!svc) return null;
-    let d = svc.devices.get(deviceId);
-    if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
-    for (let depth = 0; depth < 8 && d; depth++) {
-      if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;
-      const via = d.approvedVia ?? 'telegram-dm';
-      if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
-      if (via === 'telegram-dm') return 'telegram';
-      if (via === 'dashboard-pin') return this.documentAgentHasTelegramOwner() ? null : 'pin';
-      return null;
-    }
-    return null;
+    return documentDecisionRootOf({
+      device: (id) => svc.devices.get(id),
+      activeOwnerPhone: (id) => activeOwnerPhone(svc, id),
+      agentHasTelegramOwner: () => this.documentAgentHasTelegramOwner(),
+    }, deviceId);
   }
 
   private documentAgentHasTelegramOwner(): boolean {
@@ -11219,6 +11276,10 @@ export class AgentServer {
         const d = svc.devices.get(deviceId);
         if (d) {
           if (d.status !== 'active') return null;
+          // Identity A4: a phone paired on the home address works only on that listener (no document
+          // page there), and a phone let in at the computer has no approval power until piece 3b (a
+          // document decision is one). Neither is a document device.
+          if (notADocumentDevice(d)) return null;
           // A member's linked computer is valid only while its link is (expiry, the linking phone).
           if (d.scope && (!linkStillValid(d, svc, Date.now()) || !svc.browserOn())) return null;
           const key = deviceKeyOf(d) ?? null;
@@ -11231,6 +11292,9 @@ export class AgentServer {
         // reads and writes work on any awake machine, nothing needs re-approval after a lease move).
         const act = this.documentLedgerActivation(deviceId);
         if (!act) return null;
+        // The same rule from the replicated row: let in at the computer, or paired on a home address
+        // (`<name>.local:<port>`, the only hosts that end that way).
+        if (notADocumentDeviceRow(act)) return null;
         const k = this.documentDeviceKey(deviceId, act.keyHash);
         if (k.status !== 'ok' || k.role === 'unknown') return null;
         const standing = k.role === 'person' && k.personKey ? svc.teamStanding(k.personKey) : null;

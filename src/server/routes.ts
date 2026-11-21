@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { projectTitlesByTopic } from './conversationFallbackTitle.js';
 import { signedInPinSource } from './ownerPinSource.js';
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
@@ -25,6 +26,7 @@ import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
 import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
+import { runTopicHistoryImport, ImportTooLargeError } from '../memory/topicHistoryImport.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -22243,9 +22245,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
       }
     }
+    const unresolved = [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b);
+    // A topic no machine can name shows its bound project's title instead (kept apart from verified names,
+    // which `topics` alone carries). 2026-11-20: ~60 names were lost on every machine in the Studio rebuild.
+    let projectTitles = new Map<number, string>();
+    try { projectTitles = projectTitlesByTopic(ctx.chiefOfStaffLoop?.projectsSummary() ?? []); } catch { /* @silent-fallback-ok — a fallback title is optional */ }
+    const fallbacks = unresolved.filter((id) => projectTitles.has(id)).map((id) => ({ topicId: id, title: projectTitles.get(id)!, source: 'project' as const }));
     res.json({
       topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
-      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+      fallbacks: filterTopicsForTeam(ctx.mobilePairingService, req, fallbacks, (t) => t.topicId),
+      pool: { failed, unresolved },
     });
   });
 
@@ -31665,11 +31674,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/telegram/dashboard-refresh', async (_req, res) => {
     if (!ctx.telegram) {
+      // An agent with no Telegram at all (an app-created agent talks through
+      // the app) has no Dashboard topic: the refresh does not apply, so it is
+      // a clean skip (200), not a failure the job would count every 15 minutes.
+      // Telegram that IS configured but not running stays a real failure.
+      const telegramConfigured = (ctx.config.messaging ?? []).some(m => m.type === 'telegram' && m.enabled);
+      if (!telegramConfigured) {
+        res.json({ action: 'skipped', reason: 'telegram-not-configured',
+          detail: 'Telegram is not set up for this agent, so there is no Dashboard topic to update.' });
+        return;
+      }
       res.status(503).json(dashboardRefreshFailure(
         'precondition',
-        'Telegram messaging is not configured for this agent, so there is no Dashboard topic to update.',
-        'Run Telegram setup for this agent or disable the dashboard-link-refresh job when Telegram is intentionally unavailable.',
-        'skipped',
+        'Telegram is configured for this agent but this server has no Telegram connection (it is not running), so the Dashboard topic cannot be updated.',
+        'Check the server log for a Telegram startup error (bot token, network), or whether the server was started without Telegram on purpose.',
       ));
       return;
     }
@@ -33855,6 +33873,71 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : null,
       stats: ctx.topicMemory.stats(),
     });
+  });
+
+  /**
+   * Restore recovered conversation history (docs/specs/topic-history-import.md).
+   * POST /topic/import { file?: "<path inside the state dir>", rows?: [...], source?, dryRun? }
+   *
+   * Agent bearer token only: a paired phone (owner, team or MSP) never writes
+   * history. Rows are validated against the store's own schema, deduped against
+   * the store, published as an immutable batch beside the logs (never into the
+   * live log), and merged into each topic at its message time. Idempotent: a
+   * second identical call accepts nothing.
+   */
+  router.post('/topic/import', async (req, res) => {
+    if (!ctx.topicMemory) {
+      res.status(503).json({ error: 'TopicMemory not initialized' });
+      return;
+    }
+    if (principalOf(req).kind !== 'token') {
+      res.status(403).json({ error: 'agent-token-required', reason: 'Only the agent itself can restore conversation history.' });
+      return;
+    }
+    const body = (req.body ?? {}) as { file?: unknown; rows?: unknown; source?: unknown; dryRun?: unknown };
+    let filePath: string | undefined;
+    if (body.file !== undefined) {
+      if (typeof body.file !== 'string' || !body.file.trim() || path.isAbsolute(body.file)) {
+        res.status(400).json({ error: 'file must be a path relative to the state directory' });
+        return;
+      }
+      let root: string;
+      let resolved: string;
+      try {
+        root = fs.realpathSync(ctx.config.stateDir);
+        resolved = fs.realpathSync(path.resolve(root, body.file));
+      } catch {
+        // @silent-fallback-ok — answered as a 400 naming the problem; nothing was read
+        res.status(400).json({ error: 'file not found inside the state directory' });
+        return;
+      }
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        res.status(400).json({ error: 'file must stay inside the state directory' });
+        return;
+      }
+      if (!fs.statSync(resolved).isFile()) {
+        res.status(400).json({ error: 'file is not a regular file' });
+        return;
+      }
+      filePath = resolved;
+    } else if (!Array.isArray(body.rows)) {
+      res.status(400).json({ error: 'file (string) or rows (array) required' });
+      return;
+    }
+    try {
+      const report = await runTopicHistoryImport(ctx.topicMemory, ctx.config.stateDir, {
+        ...(filePath ? { filePath } : { rows: body.rows as unknown[] }),
+        source: typeof body.source === 'string' ? body.source : undefined,
+        dryRun: body.dryRun === true,
+      });
+      res.json({ ...report, stats: ctx.topicMemory.stats() });
+    } catch (err) {
+      if (err instanceof ImportTooLargeError) {
+        res.status(413).json({ error: 'too-large', reason: operatorError(err, ctx.config.stateDir) });
+        return;
+      }
+      res.status(500).json({ error: 'import-failed', reason: operatorError(err, ctx.config.stateDir) });
+    }
   });
 
   // ── Pairing API — Multi-machine state sync (Phase 4.5) ────────
@@ -44646,8 +44729,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'Missing required fields: from, to, type, priority, subject, body' });
         return;
       }
+      // messages-reach-renamed-sessions §C: only the router creates delivery notices.
+      if (type === 'delivery-notice') {
+        res.status(400).json({ error: 'type "delivery-notice" is created by the server only' });
+        return;
+      }
       const result = await ctx.messageRouter.send(
-        from,
+        ctx.messageRouter.forceLocalSender(from),
         to,
         type as MessageType,
         priority as MessagePriority,

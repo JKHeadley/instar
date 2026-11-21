@@ -172,7 +172,7 @@ describe('the Needs-you strip', () => {
     expect(m.line).toContain('1 of 2');
     expect(m.line).toContain('1 more');
     expect(m.line).toContain('Could not check accounts.');
-    expect(m.badge).toBe('2+?');
+    expect(m.badge).toBe('2+');
   });
 
   it('stays while loading, and when the read failed or answered in an unreadable shape', () => {
@@ -185,7 +185,7 @@ describe('the Needs-you strip', () => {
     const m = stripModel(answer({ complete: false, couldNotCheck: ['the work board', 'accounts and sign-ins'] }));
     expect(m.show).toBe(true);
     expect(m.incomplete).toBe(true);
-    expect(m.badge).toBe('0+?');
+    expect(m.badge).toBe('0+');
     expect(m.line).toBe('Could not check the work board and accounts and sign-ins.');
   });
 

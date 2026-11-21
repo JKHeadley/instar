@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "takeover-ready-pool-boot-claim-safety",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T20:45:42.613Z",
+  "artifactPath": "upgrades/side-effects/takeover-ready-pool-boot-claim-safety.md",
+  "artifactSha256": "d887c453aeef209a81a230e36561dda46a015035f898abd75a4f4c7d7ed2addb",
+  "specPath": "docs/specs/takeover-ready-pool.md",
+  "coveredFiles": [
+    "docs/specs/takeover-ready-pool.eli16.md",
+    "docs/specs/takeover-ready-pool.md",
+    "src/commands/server.ts",
+    "src/core/BootClaimHold.ts",
+    "src/core/HttpLeaseTransport.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/server/AgentServer.ts",
+    "src/server/BootHealthBeacon.ts",
+    "tests/e2e/boot-claim-safety-boot-path.test.ts",
+    "tests/integration/boot-claim-safety.test.ts",
+    "tests/unit/BootClaimHold.test.ts",
+    "tests/unit/BootHealthBeacon.test.ts",
+    "tests/unit/HttpLeaseTransport-bootProbe.test.ts",
+    "tests/unit/LeaseCoordinator-bootClaimSafety.test.ts",
+    "upgrades/next/takeover-ready-pool-boot-claim-safety.md",
+    "upgrades/side-effects/takeover-ready-pool-boot-claim-safety.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes lease acquisition authority timing (dev-gated) and adds a response header on every server response; lease/session-lifecycle per the skill's high-risk list.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/takeover-ready-pool-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}
