@@ -78,6 +78,12 @@ it. No second store; every reader still goes through `getTopicHistory`.
   the only record kept (waiters are removed with their timers); a final time check before saving
   (tested with a disk that never answers, mutation-checked). A failed close saves nothing (tested,
   mutation-checked).
+- A scan failure of any kind is caught: nothing saved, the wait ends, the old read runs (tested with a
+  failure injected outside the scan's own handling, mutation-checked).
+- Unread, `src/core/ConversationUnreadService.ts`: a phone with no read position whose baseline could
+  not be set (marker catch-up pending) keeps its admission time as an in-memory cutoff; replies after
+  it show unread, and the later baseline is that cutoff (tested, mutation-checked). No marker is
+  written from the provisional cutoff. With catch-up settled, behavior is unchanged.
 - Unread: a phone's first baseline is attempted exactly once, at admission, before any wait; when in
   doubt a message counts as unread (tested with and without a scan, mutation-checked). Compared with
   the old code, the baseline may now be a little earlier (by the time the page takes to build), so a

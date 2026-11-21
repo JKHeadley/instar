@@ -91,7 +91,9 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
    a stuck scan is never joined by a second, and it is the only record kept: each waiter is removed,
    with its timer cleared, when it stops waiting. A scan checks its expiry before each read and in
    the turn that would save, so a late scan never saves.
-9. **Fallback.** On a read error, an open error, a replaced or shrunk file, a hash mismatch, a
+9. **A scan that fails in any way** (even outside its own error handling) is handled: it saves
+   nothing, ends the wait, and the request's old read runs; nothing can escape unhandled.
+10. **Fallback.** On a read error, an open error, a replaced or shrunk file, a hash mismatch, a
    change during the check, or a file still changing after 3 rounds, nothing is saved, the error is
    logged, and the unchanged synchronous code reads the file exactly as before.
 
@@ -107,7 +109,10 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
   baseline is attempted exactly once per list request, at admission, before any wait. Rule: when in
   doubt a message counts as unread (a reply shown unread when it was read is harmless; one hidden as
   read is not). An attempt at admission only ever makes later replies unread, and a single attempt
-  means no later attempt can set a baseline after a reply saved during the wait.
+  means no later attempt can set a baseline after a reply saved during the wait. If the attempt
+  cannot set a baseline because the first marker catch-up has not settled, the phone's admission
+  time is kept (in memory) as a cutoff: replies after it show as unread, and the baseline set once
+  catch-up settles is that cutoff, never a later time (`ConversationUnreadService`).
 
 ### Off switch
 

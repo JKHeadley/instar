@@ -4755,7 +4755,12 @@ export class TelegramAdapter implements MessagingAdapter {
       const scan = { expiresAt: performance.now() + this.tailWarmDeadlineMs, waiters: new Set<() => void>() };
       this.tailWarm = scan;
       // The slot is held until the scan really ends, so a stuck scan can never be joined by a second.
-      void this.scanTailsOffTurn(want, scan).finally(() => {
+      // Both outcomes are handled: a scan that fails in any way (even outside its own error handling)
+      // saves nothing, ends the wait, and the request's old read runs. Nothing can escape unhandled.
+      void this.scanTailsOffTurn(want, scan).catch((err) => {
+        console.error(`[telegram] off-turn history scan failed; the old read runs: ${err}`);
+        return false;
+      }).finally(() => {
         if (this.tailWarm === scan) this.tailWarm = null;
         for (const wake of [...scan.waiters]) wake();
       });

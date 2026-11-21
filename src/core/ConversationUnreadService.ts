@@ -179,12 +179,36 @@ export class ConversationUnreadService {
     return { key: input.readerParam, person: this.deps.personOfReaderKey(input.readerParam), viaDevice: false };
   }
 
+  /**
+   * Per phone without a baseline yet: the earliest admission at which its baseline could not be set
+   * because the first catch-up had not settled (conversation-list-offthread-scan). In doubt a message
+   * counts as unread: replies after this cutoff show as unread, and the baseline set once catch-up
+   * settles is this cutoff, never a later time that would mark a reply in between as read. In memory
+   * only; after a restart the next admission sets it again.
+   */
+  private admissionCutoff = new Map<string, number>();
+
   /** A phone seen here gets its baseline once the first catch-up has settled (§3.2, §3.3). Never for a Bearer read. */
   touchBaseline(reader: Reader): void {
-    if (!reader.viaDevice || this.store.hasBaseline(reader.key) || !this.store.catchUpSettled()) return;
+    if (!reader.viaDevice || this.store.hasBaseline(reader.key)) return;
     const wall = this.now();
     const hlc = this.deps.hlcNowMs?.() ?? wall;
-    this.store.setBaseline(reader.key, Math.min(Number.isFinite(hlc) ? hlc : wall, wall));
+    const nowPos = Math.min(Number.isFinite(hlc) ? hlc : wall, wall);
+    if (!this.store.catchUpSettled()) {
+      if (!this.admissionCutoff.has(reader.key)) this.admissionCutoff.set(reader.key, nowPos);
+      return;
+    }
+    const cutoff = this.admissionCutoff.get(reader.key);
+    this.store.setBaseline(reader.key, cutoff !== undefined ? Math.min(cutoff, nowPos) : nowPos);
+    this.admissionCutoff.delete(reader.key);
+  }
+
+  /** The stored position, or a phone's admission cutoff while it has no baseline yet. */
+  private positionFor(reader: Reader, ref: string): { pos: MessagePosition; provisional: boolean } | null {
+    const stored = this.store.storedPosition(reader.key, ref);
+    if (stored) return { pos: stored, provisional: false };
+    const cutoff = reader.viaDevice ? this.admissionCutoff.get(reader.key) : undefined;
+    return cutoff !== undefined ? { pos: { atMs: cutoff, id: '' }, provisional: true } : null;
   }
 
   private mayRead(reader: Reader, ref: string): boolean {
@@ -196,7 +220,7 @@ export class ConversationUnreadService {
 
   /** The pre-filter: something after the stored position, without a walk. */
   preFilterHasUnread(reader: Reader, ref: string, lastActivity: string | null): boolean {
-    const pos = this.store.storedPosition(reader.key, ref);
+    const pos = this.positionFor(reader, ref)?.pos;
     if (!pos) return false;
     const act = atMsOf(lastActivity);
     if (act === null) return false;
@@ -215,7 +239,7 @@ export class ConversationUnreadService {
   private rowFieldsUnguarded(reader: Reader, row: { platform: 'app' | 'telegram' | 'slack'; id: string | number; lastActivity: string | null; machine?: string | null }): UnreadFields | null {
     const ref = this.refOfRow(row);
     if (!ref || !this.mayRead(reader, ref)) return null;
-    const stored = this.store.storedPosition(reader.key, ref);
+    const stored = this.positionFor(reader, ref)?.pos ?? null;
     if (!stored) return { hasUnread: false, unreadCount: 0, readUpTo: null };
     if (!this.preFilterHasUnread(reader, ref, row.lastActivity)) return { hasUnread: false, unreadCount: 0, readUpTo: stored };
     const c = this.countFor(reader, ref);
@@ -246,7 +270,8 @@ export class ConversationUnreadService {
 
   /** Count for one reader and one conversation held here; null when the source is not available. */
   countFor(reader: Reader, ref: string): CountResult | null {
-    const stored = this.store.storedPosition(reader.key, ref);
+    const at = this.positionFor(reader, ref);
+    const stored = at?.pos ?? null;
     if (!stored) return { count: 0, more: false, ownNewest: null, effective: null };
     const src = this.sourceRows(ref, reader);
     if (!src) return null;
@@ -258,7 +283,8 @@ export class ConversationUnreadService {
     const result = countUnread(rows, stored, src.complete);
     // An own message after the stored marker is stored as an ordinary local advance (§3.4), so the
     // inference survives the message ageing out of the bounded history.
-    if (result.ownNewest && comparePositions(result.ownNewest, stored) > 0) this.store.advance(reader.key, ref, result.ownNewest);
+    // (Not from a provisional admission cutoff: no marker is written before the reader has a baseline.)
+    if (!at!.provisional && result.ownNewest && comparePositions(result.ownNewest, stored) > 0) this.store.advance(reader.key, ref, result.ownNewest);
     const after = this.store.storedPosition(reader.key, ref) ?? stored;
     if (this.cache.size >= COUNT_CACHE_MAX) this.cache.clear();
     this.cache.set(ck, { posKey: `${after.atMs}:${after.id}`, rev: src.rev, result });

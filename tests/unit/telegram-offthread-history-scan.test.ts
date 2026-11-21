@@ -435,6 +435,22 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(after.slice(-2)).toEqual(['row without newline', 'the next reply']);
   });
 
+  it('a scan that fails outside its own error handling ends the wait, crashes nothing, and the old read runs', async () => {
+    const escaped: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { escaped.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      vi.spyOn(adapter as unknown as { scanTailsOffTurn: () => Promise<boolean> }, 'scanTailsOffTurn').mockReturnValue(Promise.reject(new Error('injected failure outside the scan')));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      expect(await adapter.warmTopicTails([1003])).toBe(false);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(escaped).toEqual([]); // nothing escaped unhandled
+      expect(inner(adapter).topicTailCache.size).toBe(0);
+      vi.restoreAllMocks();
+      expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003)); // the old read answers
+    } finally { process.off('unhandledRejection', onUnhandled); }
+  });
+
   it('no log file: every topic caches empty, as the old read does', async () => {
     SafeFsExecutor.safeUnlinkSync(logPath, { operation: OP });
     expect(await adapter.warmTopicTails(all)).toBe(true);
