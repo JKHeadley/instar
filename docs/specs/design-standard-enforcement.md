@@ -8,18 +8,17 @@ tier: 2
 origin: "Justin, Chief of Staff conversation, 2026-11-21 12:12 PST: 'when I point out a bad UI/UX aspect of our designs, I would like to have a standard/requirement in which you officially diagnose what went wrong (what aesthetic or UI/UX best practices were violated) and then update our required UI/UX design standards (that should be infrastructurally enforced for ALL development that we do) such that we no longer make those mistakes. The goal should be better and better results in our designs that align with our goal to delight the user.' The Chief of Staff's brief the same day adds: every change touching a user interface shows screenshots at the standard sizes and a checklist against the standard before merge, checked by a gate; machine-checkable rules get automatic checks; every piece of design feedback is a tracked card with a diagnosis, a fix, a rule change and a record linking the feedback to the rule; 'write it as a spec and converge it before building'."
 lessons-engaged:
   - "Structure beats Willpower (the dashboard quality standard already says 'the PR says which screens were loaded and at which widths'; nothing checks it, and DF-0001 shipped anyway)"
-  - "Verify the State, Not Its Symbol (evidence is tied to the fingerprint of the screen files it was captured from; image sizes are read from the image bytes, never from a file name)"
-  - "Signal vs. Authority and Judgment Within Floors (machine checks and records are signals read by one gate; whether a message is design feedback is a judgment with a stated floor)"
-  - "Intelligent Prompts: An LLM Gate Must Not String-Match (design feedback is recognised by meaning)"
-  - "Counts are signals, not gates (the ratchet compares against a recorded baseline; no count ends or passes a review)"
-  - "No Silent Degradation to Brittle Fallback (a verifier with no browser fails the lane and says so; it never passes blind)"
-  - "Close the Loop: Untracked = Abandoned (each piece of design feedback is a card that cannot be claimed done until its entry, its rule and its fix are verified)"
-  - "Someone Else's Work trap (a parity gap on another surface is a named card, never a scope note)"
-  - "Operator handoff: verified authority (an override is a person's tap on a card bound to the exact change, never a line an agent writes)"
-  - "Approval Only Where Required (the owner approves the constitution article and overrides; nothing else in this loop waits for him)"
-  - "Local Verify is the merge floor; GitHub Actions is often saturated (a gate that lives only in a GitHub workflow is weak)"
-  - "Updates never restrict existing agents (the gate governs Instar's own screens on the development agent; other agents receive awareness text and no hold)"
-  - "Migration Parity and Agent Awareness"
+  - "Verify the State, Not Its Symbol (the gate makes the pictures itself from the code being merged; nobody submits a picture and nobody reads a size from a file name)"
+  - "Signal vs. Authority and Judgment Within Floors (measurements are signals; one decision table turns them into a merge decision; waivers, promotions and 'is this feedback' are judgments with stated floors)"
+  - "Counts are signals, not gates (a change is compared with its own base in the same run; no stored count and no run count decides anything)"
+  - "No Silent Degradation to Brittle Fallback (a step that could not run says so by name on the record and is swept the next day; it is never a silent pass and never a red verdict caused by a missing tool)"
+  - "Delivery and cost outrank gate strictness (a broken renderer cannot stop merges; a runtime switch outside the tree turns the step off)"
+  - "Close the Loop: Untracked = Abandoned (design feedback is a card that closes only on verified facts; every staged piece cites a tracked card)"
+  - "The Agent Carries the Loop; Approval Only Where Required (the owner is asked for the constitution article and for waiving a rule his own feedback earned, nothing else)"
+  - "Operator handoff: verified authority (the owner's waiver is a phone presence tap; the dashboard PIN, which the agent can read, never counts)"
+  - "Private evidence never enters the public repository (captures and the owner's screenshots stay in the agent's private store)"
+  - "Always a Multi-Machine Entity (every new piece of state declares its posture from the closed list)"
+  - "Updates never restrict existing agents; Migration Parity; Agent Awareness"
 ---
 
 # Every design mistake the owner points out becomes a rule, and every screen change shows its screens against the rules before it merges
@@ -28,81 +27,88 @@ lessons-engaged:
 
 On 2026-11-21 Justin compared two screenshots and saw that the Mac app's accounts screen was clearly worse than the web dashboard's. The diagnosis (`docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md`) found fifteen problems. For twelve of them no rule existed anywhere. For the rest a rule existed for the web only and nothing applied it to the Mac. `docs/DESIGN-STANDARD.md` now holds 65 rules for all six surfaces, 27 of them marked machine-checkable, and a table of standard screenshot sizes. Three things are still missing, and each is structural:
 
-1. **Nothing requires a screen change to show its screens.** The standard says captures are taken at the standard sizes before anyone is asked to look. No script checks that they exist, that they were taken from the code being merged, or that they are the stated size.
-2. **No machine-checkable rule has a machine check that runs at merge.** The dashboard UX standard designed a headless-browser smoke test for sideways scroll and left "run it on every PR or by hand?" as an open decision. The 27 machine rules in the new standard are descriptions of checks, not checks.
-3. **The feedback loop is a paragraph.** "How this standard grows" describes the diagnosis, the rule and the fix. Whether it happens depends on the session that hears the feedback remembering to do it.
+1. **Nothing makes a screen change show its screens.** The standard says captures are taken at the standard sizes before anyone is asked to look. Nothing produces them or checks that anyone read them.
+2. **No machine-checkable rule has a machine check that runs at merge.** The 27 machine rules are descriptions of checks, not checks.
+3. **The feedback loop is a paragraph.** Whether a diagnosis, a rule and a fix follow the owner's remark depends on the session that hears it remembering to do it.
 
 This spec makes all three structural, and it carries the server and web half of the DF-0001 fix as its first build stage.
 
-## Ground truth from the code (branch `echo/design-standards` at 468966b68)
+**What changed after review round 1.** The first draft had the author commit pictures and a hand-filled manifest, had a browser lane gate every merge, and made the owner the only way past any failing rule. Round 1 found about 65 design problems with that shape. This revision replaces it with a smaller one: the gate makes the pictures itself and keeps them outside git; a change is compared with its own base in the same run, so no stored baseline exists; one decision table says what merges; a step that cannot run never turns a change red; and the owner is asked only about rules his own feedback earned.
 
-Read in this worktree and in the apps checkout at `/Users/dabombstudio/.instar/agents/echo/apps/instar-ios` on 2026-11-21.
+## Words used here
+
+- **Local Verify**: the verifier on the agent's own machines that runs the tests for a pull request and writes a *verify record* for exactly (pull request, head, base). **safe-merge** reads that record and merges or refuses. A *merge floor* is the set of things safe-merge requires: the `local` floor reads the verify record, the `actions` floor reads GitHub check results.
+- **The lead**: the one machine in the agent's pool that currently runs scheduled work.
+- **Maturation review**: the existing weekly review of features still proving themselves.
+- **Earned rule**: a rule in the standard marked "Earned from: DF-NNNN", meaning the owner's feedback created or sharpened it. Today 24 rules carry the mark.
+- **Development agent**: an agent with `developmentAgent: true` in its config, today Echo.
+
+## Ground truth from the code (branch `echo/design-standards` at 0bf18894d)
+
+Read in this worktree, in the apps checkout at `/Users/dabombstudio/.instar/agents/echo/apps/instar-ios`, and in the second rule book through the GitHub API, on 2026-11-21.
 
 | Existing piece | Where | State today | How this spec uses it |
 |---|---|---|---|
-| Design Standard | `docs/DESIGN-STANDARD.md` | 65 rules `DS-*`; each has Rule, Why, Bad, Good, Surfaces, Check (`machine` or `review`), Source or Earned from. A table of 27 machine rules, a table of standard sizes, a changelog. Markdown only; no parser reads it. | The single source. One shared parser reads it (section 2). Nothing copies the rule list into another file. |
-| First feedback entry | `docs/design-feedback/DF-0001-…md`, `media/` | A header table, the owner's words, 15 numbered problems each naming a rule or "no rule existed", the fix, a table of 22 rules added or sharpened, a status block. No card id. | The format the lint enforces (section 6). Gains two header rows. |
-| UX impact lint | `scripts/ux-impact-lint.mjs`, `.github/workflows/ux-impact-pr-gate.yml` | Requires a "## UX Impact" section in the PR body for `src/server/routes.ts`, `src/commands/server.ts`, `src/scaffold/templates.ts`, `src/messaging/**`, `src/dashboard/**`, `src/templates/**`. The dashboard's real folder is `dashboard/` at the repo root; `src/dashboard/` does not exist, so no dashboard file is in its scope. It applies only when the pusher or a commit author matches the literal scope `jkheadley`. It is a GitHub workflow only, and its context is not in safe-merge's pinned floor. | Left as the gate for message wording. Its dead path is corrected in stage 2 (decision 17). It is not the design gate. |
-| Operator-surface classifier | `scripts/lib/operator-surface.mjs`, read by `scripts/instar-dev-precommit.js` | `OPERATOR_SURFACE_RE` matches `dashboard/*.js` and `*.html` plus approval and secret-drop files. The commit gate requires the side-effects artifact to mention operator-surface quality. | The pattern for a pure, unit-tested path classifier. The new classifier sits beside it. |
-| Merge path | `scripts/safe-merge.mjs`, `scripts/local-verify-floor.mjs`, `src/localVerify/` | Under the `local` floor safe-merge reads the server's verify record for exactly (pr, head, base), requires every gating lane to have `failed == 0 && tests > 0 && files > 0`, and runs three body checks from its own trusted copy (`eli16`, `decision-audit`, `release-fragment`). Lanes are `unit`, `integration`, `e2e` (`src/localVerify/inventory.ts`); a test file in no lane fails the run. Anything unmeasurable is a refusal, never an Actions fallback. Under the `actions` floor the code-pinned `REQUIRED_CONTEXTS_FLOOR` is enforced with producer binding. A record flagged `harnessChanging` needs an independent-review trace. | The gate's authority lives here (section 4). A fourth lane and one record field are added; both are harness changes and take the independent review the predicate already demands. |
-| Hooks | `.husky/pre-commit` (`set -e`, lint, instar-dev trace check), `.husky/pre-push` (gates, smoke tests, path-scoped e2e) | Live. | Pre-push gains the evidence check as the fast early signal. |
-| Skills | `skills/instar-dev/SKILL.md` (phases 0 to 7), `.claude/skills/build/SKILL.md` | Neither mentions screens, captures or the Design Standard. | Each gains one step (section 7). |
-| Dashboard standards | `docs/specs/dashboard-ux-standard.md` "Enforcement design", `docs/specs/dashboard-ui-quality-standard.md` | Static floors and jsdom tests for the legacy dashboard; the viewport smoke test in headless Chromium is designed with its run point undecided (FD-2 there). The quality standard's "check before calling it done" is prose. | This spec decides that open point: the browser checks run in Local Verify and in CI on every PR. The existing jsdom floors stay and are mapped to rule ids. |
-| Browser tooling | `package.json` | `jsdom` is a dev dependency. Playwright is not a dependency; `scripts/documents-live-proof.ts` loads it from a global install when present. | `playwright-core` and `axe-core` become dev dependencies (decision 12). |
-| Console pages | `dashboard/console/` (`nav-model.js` exports `NATIVE_PAGES`, `resolveRoute`, "tested over every route"); `src/server/dashboardPreview.ts` | A route table exists and is already walked by tests. Pages talk to the server API with the operator's token. | The list of web screens is read from the route table, not kept by hand. |
-| Work Board | `src/server/workBoardRoutes.ts`, `src/core/WorkBoardService.ts`, `src/core/WorkCardStore.ts`, `src/core/ChiefOfStaffWaitCards.ts` | A card has `title`, `need`, `doneWhen` (items with `certify: 'owner-confirms' \| 'agent-may-certify'`), `projectKey`, `source: { conversationKey, messageId }`, `covers`, `mirror`. `claimDone` refuses `evidence-missing` until every item has counting evidence. A tap is a person's only (dashboard PIN or phone presence signature); "The agent cannot tap." The server itself opens cards as principal `SERVER` with a derived card id (Chief of Staff wait cards). | The design-feedback card is a server-opened card of the same kind (section 6). Overrides are owner taps (section 4). |
-| Owner-message seam | `src/commands/server.ts` (the wrapper on `telegram.onMessageLogged`) | Every logged message is tested with `isOwnersOwnWords(entry, telegram.getVerifiedOwner())`; forwarded text and team members' words are excluded; the correction loop is then called with `void` so it can never delay delivery. | The design-feedback detector hangs on the same seam under the same rules. Only the Telegram seam was read; Slack and app conversations are proven in stage 4 or listed as gaps. |
-| Account usage, server | `src/server/mobileCapacityRoutes.ts` | `usageWindows()` ends `return wins.sort((a, b) => b.pct - a.pct)`. `MobileAccountWindow` is `{ label, pct, resetsAt }` with labels `5-hour`, `weekly`, `Fable weekly`. The account's top window is read as `windows[0]` at three places (the two notice checks near line 332 and 335, and `top` near line 414). Account tone is `>= 90 ? 'bad' : >= 75 ? 'attn' : null` on a rounded percentage. Accounts sort by needs-sign-in, kind, percentage, name. | Changed in stage 1. |
-| Account usage, web | `dashboard/console/accounts-model.js` | `usageWindows()` returns a fixed order. `windowRow()` capitalises the label into `name` and sets `tone` from the unrounded percentage with `NEAR_OUT_PCT = 90` and a literal 75. Accounts sort by framework name then percentage, with no tie-break. | Changed in stage 1. |
-| Tests that pin the old order | `tests/unit/mobile-native-capacity-screens.test.ts` ("usage windows: … highest first"), `tests/integration/mobile-native-capacity-screens.test.ts` (the `windows` array of the second account), `tests/e2e/mobile-native-capacity-screens-alive.test.ts` | Live. | Updated in stage 1. |
-| Native apps | `EchoOfDawn/instar-desktop-apps` (private) | One repository holding unrelated branch families: `apple/*` (SwiftUI, `project.yml`, `InstarApp`, `InstarMac`, `Tests/InstarAppUITests` with 16 XCUITest files), `android/*` (Kotlin, Jetpack Compose, `ui-test-junit4` already a test dependency), `windows/*` (WinUI 3 on the Windows App SDK, `InstarWindows/App`), `linux/main` (Avalonia 12, `src/App`). All four apps exist. The repository has no workflows, no git hooks, no tags and no pull requests. Its GitHub plan does not offer rulesets (`GET …/rulesets` answers 403 "Upgrade to GitHub Pro"). Its default branch is a Windows work branch. Releases are made by scripts: `scripts/ship.sh` (TestFlight), `scripts/ship-mac.sh` (signed Mac download), `scripts/publish-mac-feed.sh`, `scripts/play-publish.mjs` (Android), the Windows family's `scripts/sign-release.ps1` and `scripts/pack-test-release.ps1`, and the Linux family's `scripts/`. Apple builds run on the Laptop under a one-build lock, because the Studio has no Xcode (`apps/ios-wt/BRIEF.md`). Work is merged by an integrating session, branch to branch. | The gate there cannot rest on GitHub. It rests on the release scripts, repository hooks and a daily audit (section 4). |
-| Shipped scripts | `package.json` `files` | `scripts/` and `src/data/` ship in the npm package. | The checker and the shared test vectors reach every machine that has Instar installed, so the apps repository calls a trusted copy it does not carry. |
-| Constitution | `docs/STANDARDS-REGISTRY.md` ("Operator-Surface Quality", with "Dashboard UX Standard" as a named subsection), `.github/CODEOWNERS` | The registry is code-owned by Justin. | One article is added (section "Constitution wording"); that pull request needs his review on GitHub. |
-
-### What is new
-
-1. A **screen registry** and a **path classifier** that decide what counts as a user-interface change.
-2. A **design evidence folder** per change, and a checker that verifies it.
-3. A **design lane** of automatic checks in headless Chromium, a ratchet for existing violations, and a staged plan for native apps.
-4. The gate's **run points** in both repositories, the **override**, and a **daily audit**.
-5. The **design-feedback card**, its detector, and a **lint** that keeps the standard, the entries and the changelog consistent.
-6. The **DF-0001 server and web changes** (build stage 1).
-7. One **constitution article**.
+| Design Standard | `docs/DESIGN-STANDARD.md` | 65 rules `DS-*`, each with Rule, Why, Bad, Good, Surfaces, Check (`machine` or `review`), Source or Earned from. Markdown only; no parser reads it. | The single source. One parser reads it. |
+| First feedback entry | `docs/design-feedback/DF-0001-…md` | Header table, the owner's words, 15 numbered problems, the fix, a table of 22 rules added or sharpened, a status block. No images: they are in the agent's private store. | The format the lint enforces. |
+| Repository visibility | `gh repo view JKHeadley/instar` | PUBLIC. The apps repository `EchoOfDawn/instar-desktop-apps` is private. | No capture and no owner screenshot is ever committed to instar. |
+| Harness classifier | `src/localVerify/harnessClassifier.ts` | `HARNESS_GLOBS` lists the merge machinery, `vitest*.config.ts` and `tests/setup/**`. A change matching it is *harness-changing* and needs an independent-review trace before its green record is posted. `TOOLCHAIN_PACKAGES` does the same for test-toolchain versions. | The gate's own files join `HARNESS_GLOBS`; `playwright-core` and `axe-core` join `TOOLCHAIN_PACKAGES`. |
+| Merge path | `scripts/safe-merge.mjs`, `src/localVerify/` | safe-merge runs its body checks "from THIS (trusted) copy". Lanes are `unit`, `integration`, `e2e`; all gating. Live switches exist under `monitoring.localVerify` (`mergeLine`, `mainRedHold`, `failFast`), read at run time, absent meaning on. | The design step is not a lane. It is one step after the lanes, with its own live switch in the same family. |
+| Browser tooling | `package.json` | `jsdom` only. No Playwright, no `axe-core`. | `playwright-core` with its pinned Chromium build, and `axe-core`, become dev dependencies. |
+| Console pages | `dashboard/console/nav-model.js` | A route table of about 30 routes, already walked by tests. | Web screens are seeded from it. |
+| Other dashboard pages | `dashboard/index.html`, `desktop.html`, `recovery.html`, `proposals.html`, `dashboard/project-app/`, `dashboard/maturation/`, `dashboard-pair/pair.html` | Not console routes. | Listed in the registry as `uncaptured` under tracked item DSE-T5. |
+| Work Board cards | `src/core/WorkCardStore.ts`, `src/core/WorkBoardService.ts` | `DoneWhenItem.certify` is exactly `'owner-confirms' \| 'agent-may-certify'`; any other value rejects the whole card. `links` is a material field, so writing a link voids earlier evidence. `covers` accepts only `plan:`, `pr:` and, for the server, `cos:waiting:`. Evidence records carry `by`, which is `system` for the in-process server writer. A person's `reopen` tap makes the card need the owner's confirmation afterwards. | Feedback cards use the existing shapes only: no new `certify` value, no `covers`, no links after creation, no reopen tap. |
+| Owner taps | `src/server/workBoardRoutes.ts`, `src/server/routes.ts` | The console tap route accepts the dashboard PIN and records `proof: 'pin'`; the code's own comment says "the PIN is available to the agent". The phone route records `proof: 'presence'` (Face ID on the owner's phone). `phoneOnlyCard(cardId)` already refuses a PIN approval for one family of cards. An approve tap is accepted on any card whose material hash matches, and an edit to title, need or done items voids it. | The owner's waiver is a phone presence tap on a phone-only card. A PIN tap never counts. |
+| Owner-message seam | `src/commands/server.ts`, `src/core/ownerWords.ts`, `src/messaging/slack/SlackAdapter.ts` | Features chain their own wrapper on `telegram.onMessageLogged`; entries from the Instar app arrive on the same callback with `via: 'mobile-device'`. `isOwnersOwnWords(entry, ownerId)` excludes forwarded text and team members, and returns true for any sender when no owner id is configured. The Slack adapter has its own `onMessageLogged`. | The detector chains its own wrapper and refuses to act when no verified owner is configured. Slack is proven in stage 3 or carded (DSE-T9). |
+| Account usage, server | `src/server/mobileCapacityRoutes.ts` | `usageWindows()` ends `return wins.sort((a, b) => b.pct - a.pct)`. The account's top limit is read as `windows[0]` at lines 332, 335 and 414. Tone is computed on the rounded percentage. A limit whose reset time has passed keeps its old percentage; only `resetsAt` is cleared (line 426). | Changed in stage 1. |
+| Account usage, web | `dashboard/console/accounts-model.js` | Fixed order. `windowRow()` sets tone from the unrounded percentage. A limit whose reset time has passed is `rolledOver`: it shows "—", has no tone, and is left out of the tightest limit. Accounts sort with no tie-break. | Changed in stage 1. |
+| Apps that read the accounts list | apps checkout | iPhone and Mac draw `windows` in the order received and sort for the headline themselves (`InstarApp/CapacityViews.swift:390`, `InstarMac/MacOpsScreens.swift:926`, `InstarApp/CapacityData.swift:123`). Windows reads the list (`InstarWindows/Core/CapacityPagesData.cs`, `App/CapacityPages.cs`). `linux/main` has no match. On `android/main` a search matched three files that were not opened. | Removing the server's sort is safe for installed Apple apps. Stage 5 opens the three Android files before the note goes out. |
+| Native apps repository | `EchoOfDawn/instar-desktop-apps` | Branch families `apple/*`, `android/*`, `windows/*`, `linux/main`. No workflows, no hooks, no tags, no pull requests, no rulesets on its plan. Releases are made by scripts (`scripts/ship.sh`, `ship-mac.sh`, `publish-mac-feed.sh`, `play-publish.mjs`, the Windows and Linux release scripts). Apple builds run on the Laptop under a one-build lock. | The unit of change there is the release. The gate is a step in the release scripts. |
+| What ships in the package | `package.json` `files` | `scripts/`, `src/data/`, `dashboard/`, `skills/`. Not `docs/`. | The apps repository depends on nothing in the installed package. It carries a vendored copy. |
+| Awareness entries | `src/data/awareness/README.md` | An entry can vary only by `requires: telegram`. A row under a core heading still needs a template edit and a migration. | One new `requires` value, `developmentAgent`, is part of this build. No core-table row is added. |
+| Skill updates | `src/core/PostUpdateMigrator.ts` lines 4121 to 4126 | A fingerprinted, idempotent migration already patches the installed `instar-dev` and `build` skills and skips customised copies. | The same pattern delivers the new skill step. |
+| Constitution | `docs/STANDARDS-REGISTRY.md` (code-owned by Justin); `scripts/check-constitution-pairing.mjs` | The second book is another repository, `JKHeadley/instar-2`: `docs/01-the-rules.md` holds 123 numbered rules as table rows (rule 80 Operator-Surface Quality, rule 81 Dashboard UX Standard). A change to either book carries a `Constitution counterpart:` line naming the other pull request. | One article and one rule row, paired. |
 
 ## Threat model
 
-The agent is cooperating but forgetful, and under time pressure it takes the shortest path. The failures this prevents are omissions: no captures, captures of tidy data, a checklist ticked without looking, feedback acknowledged in chat and never diagnosed. Shortcuts designed against:
+The agent is cooperating but forgetful, and under time pressure it takes the shortest path. The failures this prevents are omissions: nobody looked at the screen, the data was tidy, feedback was acknowledged in chat and never diagnosed. The shortcuts designed against:
 
-- **Evidence from another version.** The folder records a fingerprint of the screen files it was captured from; the gate recomputes it from the merge head.
-- **A file named `1280x728.png` that is not.** Width and height are read from the image header.
-- **"Not applicable" as a way out.** Every applicable rule needs an entry; a not-applicable entry needs a reason; machine rules are filled by the checker, not by hand.
-- **"Refactor, nothing visible changed."** For the web the gate renders the affected screens at the base and at the head itself and compares them. A difference refuses the exemption.
-- **An override typed by the agent.** An override is an owner's tap on a card whose text binds the exact change. The agent cannot tap.
-- **A check that passes because it could not run.** No browser, no fixture, no registered screen: each is a failure with its own name.
+- **A picture from another version, or of tidy data.** Nobody submits pictures. The gate renders the head of the change itself, with data it generates itself.
+- **Changing the gate in the change being gated.** The verifier runs the base commit's copy of the gate, and the gate's files are harness files, so changing them needs an independent review.
+- **A waiver the agent grants itself on the owner's rules.** Waiving an earned rule needs the owner's Face ID tap on his phone. The dashboard PIN, which the agent can read, is refused.
+- **Feedback attributed to the owner that he did not give.** The server reads the message from its own log and tests the sender itself. A session cannot supply the words.
+- **A check that passes because it could not run.** That result has its own name, `unavailable`, on the record. It is never written as a pass.
 
-Out of scope, as for every merge gate today: a session that deliberately bypasses the merge path with an admin merge, or builds and uploads an app by hand outside the release scripts. The daily audit (section 4) finds both afterwards and opens a card.
+Not prevented, as for every merge gate today: a session that merges with an admin merge, or builds and uploads an app by hand outside the release scripts. The daily sweep (section 6) finds the first the next day.
 
 ## Frontloaded Decisions
 
-Every decision here is one Justin may want to change. Each gives the recommendation the rest of the spec assumes.
+### Yours to decide
 
-1. **Scope is Instar's own six surfaces.** The gate and the feedback loop run on the development agent (`resolveDevAgentGate`), for the instar repository and the apps repository. Other agents' own projects are not gated in this version. *Recommended*, because "all development that we do" is Instar's development, and a hold on other agents' projects would restrict existing agents through an update.
-2. **Which standard sizes a change must carry.** Web: Desktop 1280 x 728 dark, Phone 390 x 844 dark, Desktop light; Wide 1440 x 900 dark only when a stylesheet or a shared component changes; Tablet 768 is checked by machine and needs no committed image. Each native surface: Standard, Smallest and Large text in dark, and Standard in light where the surface has light mode. Web images are captured at scale 1, so the file is exactly the stated size. Native images are at the device's own scale and the manifest records it. *Recommended*: these are the standard's sizes with the smallest set of committed images.
-3. **Evidence is committed to the repository**, in `docs/design-evidence/<slug>/` (instar) and `design-evidence/<slug>/` (each apps branch family), at most 300 KB per image. The PR body shows a rendered copy; the gate reads only the committed files. *Recommended*, because a script can then verify existence, size and freshness from the merge tree with no network. Cost: repository growth, measured at each rung; folders older than 90 days that no feedback entry cites are removed from the tip of main by a monthly chore.
-4. **Day one blocks on evidence and reports on machine checks.** A UI change with no valid evidence folder is refused from the first day on the development agent. Each machine check starts in `report` mode and moves to `block` when it has run on ten real UI changes with every false failure traced and fixed. Existing violations are grandfathered by a ratchet. *Recommended*: the evidence check is deterministic and cheap; the browser checks are new and will have false failures.
-5. **Only the owner can override**, by tapping a Work Board card bound to the exact change. Agents cannot. *Recommended*.
-6. **Touching a screen clears its owner-earned violations.** A change to a registered screen may leave that screen's grandfathered violations of ordinary rules, and may not leave any violation of a rule marked "Earned from" a feedback entry. *Recommended*: a mistake Justin already pointed out is not grandfathered on a screen someone is editing anyway.
-7. **The feedback card's last item is the owner's.** Four items are verified by the server; the fifth, "Justin has seen the fixed screen", is `owner-confirms`: one tap. *Recommended*: he raised it, and his look is the real test. Alternative: the agent certifies and he is told.
-8. **Design feedback is detected automatically** by one fast model call on each of the owner's own messages, confirmed by a second call on a stronger tier before a card opens. A wrong card is closed by one owner tap. *Recommended*. Alternative: only the agent raises cards, which is the habit the brief rules out.
-9. **`docs/DESIGN-STANDARD.md` is not code-owned.** Adding or sharpening a rule after feedback is the agent's. Changing or retiring a rule that was earned from feedback needs an owner-tapped card. *Recommended*: the loop must not wait for him each time, and his earned rules must not be quietly loosened.
-10. **The apps repository's gate does not depend on a GitHub plan change.** It lives in the release scripts, repository hooks and a daily audit. *Recommended*. Alternative: pay for a plan with protected branches, or move the apps to a repository that has them; the same checker would then become a required status.
-11. **Native automatic checks are staged: Apple first, Android second, Windows and Linux third.** Until a surface's stage lands, it is covered by evidence, static scans and shared test vectors only. *Recommended*: Apple is where DF-0001 happened and already has a UI test target.
-12. **Two new development dependencies:** `playwright-core`, driving the Chrome already installed on verifier machines, and `axe-core` for contrast, names and target size. *Recommended* over writing a contrast engine.
-13. **Review rules are answered by a reader who did not write the change:** a subagent on the design model, given the standard and the captures only. Its name and model are recorded. This is self-reported and stated as such. *Recommended*; it is what `DS-DELIGHT-1` and `DS-DELIGHT-5` already ask for.
-14. **One constitution article is added.** Approving this spec approves the text. The registry is code-owned, so that one pull request needs Justin's review on GitHub.
-15. **Out of this version:** the public website (`site/`) and message wording. Message wording stays with the UX impact lint and the outbound tone gate.
-16. **DF-0001 stage, two points beyond the brief.** (a) The web computes a limit's colour from the unrounded percentage and the server from the rounded one, so 89.6% shows "90%" in amber on the web and red in the apps. Stage 1 makes both use the rounded figure that is shown. *Recommended*: `DS-COLOUR-3` says the number and its colour agree. (b) The server lists accounts that need a sign-in first; the web does not. Stage 1 adds the name tie-break only and records the difference on DF-0001 as an open point. *Recommended*: neither screenshot showed an account needing sign-in, so no one has yet decided which order is right.
-17. **The UX impact lint's dead path is corrected** from `src/dashboard/` to `dashboard/`, and it keeps its author scope. *Recommended*: a one-line truth fix; widening its scope is a separate decision.
+1. **Scope is Instar's own development, now.** The gate and the feedback loop run on the development agent, for the instar repository and the apps repository. *Recommended*: "all development that we do" is Instar's development today, and a hold on other agents' projects would restrict them through an update. Offering the same tools to users for their own projects is tracked item DSE-T1 <!-- tracked: CMT-2165 -->, not left implied.
+2. **Who can let a change through with a rule failing.** For a rule your feedback earned: only you, by a Face ID tap on your phone, for that exact change. For any other rule: a reviewer that did not write the change, with a written reason, recorded and listed in the weekly review. *Recommended*: your rules are never waived without you, and a false failure of a new browser check never becomes your task. Alternative: you approve every waiver.
+3. **You are never required to tap to close design feedback.** The card closes when the server has verified the diagnosis, the rules, the fix and the new check. You are shown the before and after pictures in the conversation where you raised it. If you say it is still wrong, that opens a continuation of the same entry. *Recommended*. Alternative: a confirming tap from you on every card.
+4. **Loosening an earned rule needs you.** Removing a surface from it, changing its check from machine to review, retiring it, or turning its check from blocking back to reporting needs your phone tap. Adding rules and tightening rules is the agent's. *Recommended*.
+5. **One constitution article, in both books.** Approving this spec approves both wordings (section "Constitution wording"). The registry is code-owned by you, so that pull request needs your review on GitHub.
+
+### Decided by the agent; say if you disagree
+
+6. **The gate makes the pictures; nothing visual is committed to instar.** Captures live in the verifier's artifact store, outside git. The verify record carries a small manifest of hashes, sizes and rule results. *Recommended*: this removes repository growth, stale pictures and private content in a public repository at once.
+7. **A step that cannot run never refuses a merge.** A missing renderer, a crashed harness or the off switch records `unavailable`, raises one degradation signal, and the change is rendered by the next daily sweep. *Recommended*: a broken tool must not stop every merge. Cost: a change can merge unseen for up to a day (see Under-block).
+8. **A change may not add violations; it need not clear old ones.** Violations already present at the base do not block. If one of them breaks an earned rule, one tracked card for that screen is opened or refreshed. The exception is a change that says it is the fix for a feedback entry: it must leave none of that entry's violations on that entry's screens. *Recommended*.
+9. **Day one: structural checks refuse, rule checks report.** From the day the step lands, a UI change with a visible difference and no review is refused, and so is a changed UI file that belongs to no registered screen. Every rule check starts in `report`. A pull request whose base predates the gate is not gated until it merges main, because the gate runs the base's copy. *Recommended*.
+10. **Promotion to blocking is a judgment.** The maturation review moves a check to `block` on evidence: which screens, sizes, themes and verifier machines it has run on, its negative control, and every false failure traced. No run count is the test. Each check's row carries a date by which it is promoted, changed or retired.
+11. **Renderer.** `playwright-core` with the Chromium build it pins, and fonts bundled with the harness, installed by the verifier into its own directory. `axe-core` for contrast, names and target size. *Recommended* over the machine's own Chrome, which updates itself and differs by machine.
+12. **Review rules are answered by a reader who did not write the change**: a fresh subagent given the standard and the gate's captures. Its name and model are recorded as reported. This is self-reported and stated as such.
+13. **Design feedback is noticed by one fast model call per owner message.** The result is only a candidate. The session in that conversation confirms it before a card opens, so a wrong guess costs the owner nothing. *Recommended*.
+14. **Apps repository: the release is the unit.** The gate is a step in each family's release script, using a copy of the checker and the standard vendored into that family at a pinned version. Evidence is stored in the private apps repository. Native captures and native automatic checks are tracked items with named owners (DSE-T2 to DSE-T4) and block nothing until their capture tool exists. *Recommended*.
+15. **`docs/DESIGN-STANDARD.md` is not code-owned.** Decision 4 protects earned rules instead.
+16. **DF-0001 stage, three points beyond the brief.** (a) Both sides compute a limit's colour from the rounded percentage that is displayed, so 89.6% shows "90%" in red everywhere. (b) The server adopts the web's handling of a limit that has already reset: no colour, and it is not the account's top limit. (c) The server lists accounts needing sign-in first and the web does not; stage 1 adds the name tie-break only and records the difference on DF-0001 as tracked item DSE-T7 <!-- tracked: CMT-2171 -->.
+17. **The UX impact lint's dead path is corrected** from `src/dashboard/` to `dashboard/`. That lint applies only to commits by the literal author `jkheadley` and is not in the merge floor, so wording in messages and notices written by agents has no merge gate today. This spec says so plainly and tracks the decision as DSE-T6 <!-- tracked: CMT-2170 -->.
+
+### Not cheap to change later
+
+The `design` field on the verify record; the fields `name`, `tone` and `rolledOver` on each limit in `/mobile/accounts`; the routes `POST /design-feedback/cards`, `GET /design-feedback`, `POST /local-verify/design-review`, `POST /local-verify/design-waiver` and `POST /design/waiver-cards`; the vendored folder `design-gate/` and the tag `shipped/<family>/<build>` in the apps repository; the awareness `requires: developmentAgent` value.
 
 ## Open questions
 
@@ -110,323 +116,317 @@ Every decision here is one Justin may want to change. Each gives the recommendat
 
 ## Proposed design
 
-### 1. What counts as touching a user interface
+### 1. The gate's files and who may change them
 
-**The classifier.** `scripts/lib/ui-surface.mjs` exports `classifyUiPath(repoKind, path)`, pure and unit-tested on both sides of every boundary, in the manner of `operator-surface.mjs`. It answers `ui`, `ui-test` or `not-ui`.
-
-| Repository | A path is `ui` when it matches | Never `ui` |
-|---|---|---|
-| instar | `dashboard/**` and `dashboard-pair/**` (markup, scripts, styles, images, fonts); any file a registered screen lists as a source (below) | `*.test.*`, `*.spec.*`, `dashboard/docs/**`, `site/**` |
-| apps, `apple/*` | `InstarApp/**/*.swift` and `InstarMac/**/*.swift` that import SwiftUI, AppKit or UIKit; `**/*.xcassets/**`; `**/*.strings`, `**/*.xcstrings` | `Tests/**`, `scripts/**`, `docs/**` |
-| apps, `android/*` | `app/src/main/**/*.kt` containing `@Composable` or under a `ui` package; `app/src/main/res/**` | `app/src/androidTest/**`, `app/src/test/**` |
-| apps, `windows/*` | `InstarWindows/App/**/*.xaml`, their code-behind `*.xaml.cs`, and `InstarWindows/App/**/*.cs` that reference `Microsoft.UI.Xaml`; `InstarWindows/App/Assets/**` | `InstarWindows/Tests/**`, `InstarWindows/Core/**` unless a screen lists the file |
-| apps, `linux/*` | `src/App/**/*.cs`, `src/App/**/*.axaml`, `src/App/Assets/**` | `test/**`, `tests/**`, `src/Core/**` unless a screen lists the file |
-
-The apps repository's family is read from the branch name, and from a one-line `design-gate.json` at the root of each family when the branch name does not say.
-
-**The screen registry.** `docs/design/screens.json` lists each screen once: an id, a title, its main question (`DS-DELIGHT-1`), and for each surface that shows it, the way to open it (a console route, or a native screen name) and the source files that shape it. The sources may name files the path rules would miss: for the accounts screen, `src/server/mobileCapacityRoutes.ts` and `dashboard/console/accounts-model.js`. This is how the cause of DF-0001's third problem, a sort in a server file, counts as a UI change. Web screens are seeded mechanically from the console's route table; native screens are seeded from each app's navigation list during that surface's stage. The registry is also what answers "does this screen exist on another surface?" for `DS-PARITY-1`.
-
-**How a mis-classified change is caught.**
-
-- **Unknown UI-looking files.** A test walks the tree: any file outside the declared roots whose type or content looks like a screen (`.html`, `.css`, `.xaml`, `.axaml`, a Swift file importing SwiftUI, a Kotlin file with `@Composable`) and that is not on a short written allow-list fails with `ui-path-unclassified`. A new UI folder cannot appear unnoticed.
-- **The design lane runs on every change**, not only on changes classed `ui` (section 3). A server change that alters what a registered screen renders is caught by the checks even if no path rule saw it.
-- **Feedback closes the hole.** A feedback entry records why the gate missed the problem. If the reason is that the change was not classed as UI, the lint requires that entry to cite the classifier or registry change that fixes it (section 6).
-
-**The exemption: no visible change.** The manifest declares `visibleChange: "none"`. It is verified, not trusted:
-
-- **Web.** The gate itself renders every screen whose sources the change touches, at the standard sizes, at the merge base and at the head, with the same fixtures, the same browser, a fixed clock and animations off, in one run on one machine, and compares the images. No difference: the exemption stands and no captures or checklist are needed. Any difference: `refused:visible-change`, and the full evidence is required. A touched file that belongs to no registered screen cannot use the exemption.
-- **Native.** The folder carries a before and an after capture of each affected screen at the Standard size, taken by the capture tool on one machine in one session. The gate recomputes both hashes from the committed files and requires them to be equal. (Git stores identical files once.) This trusts the capture more than the web check does, and is named in "Under-block". It tightens when that surface's checks run in a trusted lane.
-
-### 2. The evidence a change carries
-
-One folder per change, `docs/design-evidence/<slug>/` (instar) or `design-evidence/<slug>/` (apps), written by the capture tool and checked by `scripts/design-evidence-check.mjs`. The pure core takes a file list, file contents and the parsed standard, and returns `{ ok, problems }`; the command-line wrapper reads them from a git tree.
-
-**`manifest.json`:**
-
-```json
-{
-  "schema": 1,
-  "slug": "accounts-usage-fixed-order",
-  "visibleChange": "yes",
-  "uiTreeHash": "<sha256>",
-  "capturedBy": "design-capture@<instar version>",
-  "screens": [{
-    "id": "capacity-accounts",
-    "surface": "web",
-    "fixture": "accounts-stress",
-    "captures": [
-      { "size": "desktop", "theme": "dark", "file": "web-capacity-accounts-desktop-dark.png", "width": 1280, "height": 728, "scale": 1, "sha256": "…" }
-    ],
-    "parity": [
-      { "surface": "mac", "file": "parity-mac-capacity-accounts-default-dark.png", "from": "apple/rebuild-130@<commit>", "sha256": "…" }
-    ]
-  }],
-  "checklist": [
-    { "rule": "DS-DATA-1", "result": "pass", "by": "machine" },
-    { "rule": "DS-ACTION-3", "result": "not-applicable", "by": "review", "reason": "This screen has no destructive action." },
-    { "rule": "DS-PARITY-4", "result": "follow-up", "by": "review", "card": "wc_…" }
-  ],
-  "review": { "reviewer": "design-review subagent", "model": "<display name>" },
-  "override": null
-}
-```
-
-**What the checker verifies, each with its own problem name:**
-
-1. **The folder exists** for a change that touches a `ui` path, and there is exactly one for the change.
-2. **It matches the head.** `uiTreeHash` is a hash over the sorted list of (path, git blob id) of every `ui` file the change touches, relative to the merge base. The checker recomputes it from the head tree. An edit to any of those files after capture makes the evidence stale (`evidence-stale`). A merge from main that does not touch them leaves it valid.
-3. **Every affected screen is captured at every required size** (decision 2). The affected screens are those whose registry sources intersect the changed files; a changed `ui` file in no screen's sources must be added to one in the same change, or declared a shared component with the screens it was captured on.
-4. **The images are real and the stated size.** Each file exists, is at most 300 KB, hashes to its `sha256`, and its header width and height equal the stated size times the stated scale. For a "smallest window" size, the header dimensions must equal the smallest size the registry records for that surface. Two captures with the same hash at different sizes are refused.
-5. **The fixture is a stress fixture.** Each screen names a fixture from the registry. A fixture declares which of the `DS-DELIGHT-6` cases it contains (longest name, largest value, zero, missing value, every optional row, busiest count); a screen's fixture must declare all that apply to its data.
-6. **Side-by-side for other surfaces.** For a screen the registry shows on another surface, `parity` holds one capture per other surface: the newest one on record in that surface's evidence, copied into this folder with where it came from. A surface that has never been captured is captured now, or the entry reads `parity-unavailable` with one of two reasons: the screen is not built on that surface yet, or that surface cannot be captured from any pool machine today (with the machine tried).
-7. **The checklist is complete.** Every rule in the standard whose Surfaces include a surface of this change has one entry. A `machine` rule's entry is written by the checker from the lane's results and is refused if written by hand. A `review` rule's entry is `pass` or `not-applicable` with a reason of at least one sentence. A parity rule (`DS-PARITY-1` to `5`) may instead be `follow-up` with the id of an open Work Board card for the other surface; the checker asks the server that the card exists. There is no `fail` result: a rule that fails is fixed, or overridden by the owner.
-8. **The reviewer is recorded.** `review.reviewer` and `review.model` are present, and the model is a known registry id.
-
-`node scripts/design-capture.mjs --screen <id>` produces the folder for the web: it starts the design harness, captures each size, runs the machine checks and writes the manifest with the machine entries filled. `--render` prints a "## Design evidence" section for the PR body with the images and the checklist. For native surfaces the capture tool wraps what each platform has (section 3).
-
-### 3. Automatic checks
-
-**The harness (web).** `tests/design/harness.ts` serves the real console files and answers their API calls from fixture files (`tests/design/fixtures/<screen>.json`), with a fixed clock. Each registered web screen is loaded at 1280 x 728, 390 x 844, 768 wide and 1440 x 900, in dark, and at one size in light. The same harness is used by the capture tool, the lane and the no-visible-change comparison, so there is one way to render a screen.
-
-**Checks, by rule.**
-
-| Rule | How it is measured |
+| File | Purpose |
 |---|---|
-| `DS-LAYOUT-1` | The document's scroll width is no greater than its client width at every size. |
-| `DS-LAYOUT-2` | Every visible element's box lies inside the window and inside its nearest clipping ancestor; content inside a box that scrolls by itself is excluded. |
-| `DS-LAYOUT-3` | For elements marked as a bar, width over row width is at least 0.4 at the desktop size; the widest gap between a row's parts is at most 0.2 of its container. |
-| `DS-LAYOUT-7`, `DS-ACTION-5`, `DS-DATA-1` | Buttons, statuses and number cells render as one line box and their content width does not exceed their box. Number cells are found by mark, and also by content: a text node that is only a number with an optional unit. |
-| `DS-DATA-2` | Number cells sharing a column mark have right edges within 1 px. |
-| `DS-DATA-3` | In a marked list, the sequence of row labels, missing rows skipped, is the same in every item. |
-| `DS-TYPE-2` | The smallest computed font size of any visible text is at least 12 px. |
-| `DS-TYPE-3` | Marked labels start with an upper-case letter or a digit; the shared label table has one entry per meaning. |
-| `DS-COLOUR-1`, `DS-COLOUR-2` | `axe-core`'s contrast rule against the element's effective background; where a background is an image or a gradient, the pixels behind the text are sampled from the capture. Run in dark and in light, and on a hovered and a selected row. |
-| `DS-ACTION-1` | Every interactive element's box is at least 24 x 24 px at every size, and at least 44 px high at the phone size. |
-| `DS-ACTION-6`, `DS-A11Y-2` | `axe-core`'s name rules for buttons, links, fields and images; bars must expose a value as text. |
-| `DS-STATE-6` | No image or icon request fails, and every image has a natural width. |
-| `DS-WORDS-2` | Rendered text is scanned against the shared internal-terms list (moved to `src/data/design/` so every surface reads one list). |
-| `DS-A11Y-1` | The page is rendered at 200% zoom and the `DS-LAYOUT-1`, `2` and `7` checks are run again. |
-| `DS-COLOUR-3`, `DS-PARITY-2` | A unit test over the shared boundary vectors (stage 1). |
-| `DS-DELIGHT-4` | A static scan of console scripts and styles for fixed colour values and inline styles outside the token and shared-component files. |
-| `DS-LAYOUT-6`, `DS-LAYOUT-9`, `DS-DATA-10`, `DS-DATA-11`, `DS-WORDS-5`, `DS-STATE-1` | The dashboard UX standard already designs these as static floors and jsdom tests for the legacy dashboard. This spec does not rebuild them. The coverage map (below) names the test that covers each, or records the rule as staged for the console. |
+| `scripts/design/parse-standard.mjs` | The one parser for `docs/DESIGN-STANDARD.md`. |
+| `scripts/design/ui-surface.mjs` | `classifyUiPath(repoKind, path)`: pure, unit-tested on both sides of every boundary. |
+| `scripts/design/gate.mjs` | The checker and the decision table (section 3). |
+| `scripts/design/modes.mjs` | `DESIGN_GATE_MODES`: one row per check and per structural refusal, `report` or `block`. |
+| `scripts/design/lint.mjs` | The standard and entry lint (section 5). |
+| `docs/design/screens.json` | The screen registry. |
+| `docs/design/coverage.json` | One row per rule per surface: what checks it, or `staged` with a tracked card. |
+| `tests/design/harness/**`, `tests/design/seeds/**`, `tests/design/fonts/**` | The renderer harness, the seeded inputs and the bundled fonts. |
 
-The marks are a small set of `data-ds` attributes (`num`, `col`, `bar`, `label`, `list`) on the console's shared components. A check that depends on a mark also has a test that the shared component emits it, so a screen cannot escape a check by omitting the mark.
+**Trust boundary.** All of these join `HARNESS_GLOBS`, and `playwright-core` and `axe-core` join `TOOLCHAIN_PACKAGES`. Two consequences follow from code that exists today: a change to any of them is harness-changing and needs the independent-review trace, and a renderer version bump is treated the same way. On top of that, **the verifier runs the base commit's copy** of the parser, classifier, gate, modes, coverage map and harness, checked out from the merge base into a temporary directory. A change cannot declassify its own paths, soften its own modes or weaken its own check. The registry and the seeds are read at both base and head: a path is UI if either says so, and a screen present at either is in scope. When a change edits the gate, the head's copy is also run and its result is recorded for the independent reviewer; it decides nothing.
 
-**The coverage map.** `tests/design/coverage.json` has one row per machine rule per surface: the test that checks it, or `staged` with the stage that will add it. The lint fails if a rule marked `machine` in the standard has no row for a surface it applies to. This keeps the table of 27 honest: a rule cannot be called machine-checkable and have nothing behind it without that being written down.
+**The classifier.** A path in the instar repository is `ui` when it is under `dashboard/**` or `dashboard-pair/**` (not tests, not `dashboard/docs/**`), or when a registered screen lists it as a source. The rules for the four native families (Swift files importing SwiftUI, AppKit or UIKit; Kotlin files with `@Composable`; `.xaml` and `.axaml` files; asset and string folders) live in the vendored copy each family carries. A unit test walks the instar tree and fails with `ui-path-unclassified` for any `.html` or `.css` file outside the declared roots that is not on a written allow-list.
 
-**The ratchet.** `tests/design/baseline.json` records, for each (screen, size, theme, rule), the number of violations on main when the check was first run, with the offending elements listed for the reader. A run fails when a count rises. A run also fails when a count has fallen and the baseline was not lowered in the same change, as the skip ratchet does, so the file only ever goes down. On a screen the change touches, the baseline is treated as zero for every rule marked "Earned from" (decision 6). A web screen with no fixture yet is `grandfathered` in the registry; the number of grandfathered screens has a committed ceiling that can only be lowered, a new console route must be registered with a fixture, and touching a grandfathered screen means registering it, because evidence needs a stress fixture anyway.
+**The screen registry.** Each screen has an id, a title, its main question (`DS-DELIGHT-1`), the surfaces that show it, how to open it, its seed, and its source files. Sources may name server files: the accounts screen lists `src/server/mobileCapacityRoutes.ts` and `dashboard/console/accounts-model.js`, which is how the cause of DF-0001's third problem, a sort in a server file, counts as a UI change. Web screens are seeded from the console route table. A screen with no seed yet has `status: "uncaptured"` and must cite a tracked card; the lint enforces the citation. Native screens are rows in each family's own vendored registry, so adding a native screen never waits for an instar release.
 
-**Modes.** Each check has a mode in one code-pinned table, `DESIGN_GATE_MODES`: `report` (failures are printed and recorded, the lane passes) or `block`. Moving a check to `block` is a reviewed change that cites the runs it was judged on (decision 4). There is no environment switch.
+### 2. How a screen is rendered
 
-**Native apps, staged honestly.**
+**Pinned renderer.** The harness drives the Chromium build that the locked `playwright-core` version pins, with the fonts in `tests/design/fonts/`, a fixed clock, animations off, a fresh temporary profile, and every network request refused except those to the harness itself. The verifier installs that build into its own directory the first time the step runs. If the build is missing and cannot be installed, the step reports `unavailable: renderer-missing`. The build's revision is written on the verify record.
 
-- **Now, for all four apps (stage 5).** Shared test vectors shipped in the instar package under `src/data/design/`: colour boundaries, the label table, the internal-terms list, a list with ties for the sort rule, and the date forms. Each app's unit tests read them. The Apple family already carries a script for shared desktop-compatibility vectors (`scripts/desktop-compat-vectors.mjs`), so the pattern is not new there. Static scans in the checker for each family: fixed colour values in view code outside the shared components (`DS-DELIGHT-4`), internal terms and label capitals in string literals (`DS-WORDS-2`, `DS-TYPE-3`), fixed font sizes under the floor (`DS-TYPE-2`), referenced assets that do not exist (`DS-STATE-6`).
-- **Apple (stage 6).** A design-audit test in the existing `InstarAppUITests` target launches each registered screen with fixture data at the standard sizes (iPhone 390 x 844 and 375 x 667, the largest accessibility text size, and the Mac window at its default and smallest size). From the accessibility tree it reads each element's frame and label: nothing outside the window (`DS-LAYOUT-2`), hit areas of at least 44 pt on iPhone and 28 pt on Mac (`DS-ACTION-1`), non-empty names (`DS-ACTION-6`, `DS-A11Y-2`), marked numbers and buttons one line high (`DS-DATA-1`, `DS-ACTION-5`, `DS-LAYOUT-7`), marked column values sharing a right edge (`DS-DATA-2`), and every text frame larger at the large-text size (`DS-A11Y-1`). Where the platform's own accessibility audit is available to UI tests it is run as well, and its contrast and clipped-text findings are recorded. The same test writes the captures. It runs on the Laptop under the existing one-build lock, so it runs at integration and before a release, not on every commit. Contrast from pixels starts in `report` mode.
-- **Android (stage 7).** Compose UI tests with the dependency already present: touch size assertions of 48 dp, bounds inside the root, content descriptions, and single-line layout results for marked text, at 412 x 915, 360 x 640 and font scale 1.3; the platform's accessibility checks are turned on for the test run. Captures come from the same tests.
-- **Windows and Linux (stage 8).** Windows through UI Automation bounding rectangles and names; Linux through Avalonia's headless test support. Neither is designed in detail here. Their stage begins with a short design note reviewed on its own, and until then both surfaces are covered by evidence, static scans and vectors only. The coverage map says so for every rule.
+**Data comes through production code.** A seed is a small file of synthetic raw inputs (pool readings, account rows, machine names). The harness mounts the real route handlers and model functions over those inputs and serves the real console files. A server change that alters what a screen shows therefore changes the render. Seeds contain invented people only: the lint refuses an email address that does not end in `@example.com`.
 
-### 4. Where the gate runs, and who can pass it
+**Stress content is checked, not declared.** For each seed the gate reads the produced API response and verifies the `DS-DELIGHT-6` cases that can be read from data: a zero, a value at the maximum, a missing value, every optional row present on at least one item, and a name at least as long as the registry's stated longest name. The one case that stays a declaration is "the busiest realistic count", which the registry states as a number per screen.
 
-**Instar repository.**
+**Sizes.** Each affected web screen is rendered at 1280 x 728, 390 x 844, 768 wide and 1440 x 900 in dark, at 1280 x 728 in light, and at 200% zoom. Named states the seed defines (empty, error, loading) are rendered as further captures.
 
-1. **Pre-push** runs `design-evidence-check` against the resolved base. It needs no browser and reads only the tree. It is the early signal; it can be skipped with `--no-verify`, and nothing rests on it.
-2. **Local Verify, the floor.** Two additions to the verifier:
-   - A fourth gating lane, `design` (`vitest.design.config.ts`, `tests/design/**`), holding the browser checks. The predicate's existing rule applies: a lane with zero tests or any failure refuses the merge. A verifier with no usable browser fails the lane with `browser-unavailable`; it does not skip.
-   - One step that runs the evidence checker over the merge tree and writes `designEvidence: { ok, problems, uiTouched, override }` on the verify record. A failing step makes the record's outcome a failure, so the `instar/local-verify` status the ruleset requires is red. `evaluateLocalPredicate` also reads the field: for a record with `uiTouched: true`, anything other than `ok: true` is `refused:design-evidence`, and a record without the field is unmeasurable.
-   Because the ruleset's one required status is posted from this record, the evidence check cannot be skipped by merging with plain `gh pr merge`: without it there is no green status.
-3. **The Actions floor**, for the cases the local floor does not cover (a fork, a machine with the local floor off). A workflow `design-gate.yml` runs on every pull request, exits at once when no `ui` path is touched, and otherwise runs the same checker and the same lane with a browser. Its context joins `REQUIRED_CONTEXTS_FLOOR` with producer binding. It runs on every pull request because a required context that is path-filtered never reports.
-4. **The green-PR watcher** merges through the same floor selection. Stage 3 proves that it refuses a UI change with no evidence, instead of assuming it.
+**Where captures go.** Into the verifier's artifact store, outside git, named by content hash. The verify record carries the manifest: for each screen and size the hash and byte size, and for each rule the measurement. The session, the reviewer and the owner read captures through an authenticated route on the agent's server (`GET /local-verify/design/<pr>/captures/<hash>`), or the private viewer. The pull request body gets the manifest's text only.
 
-**Apps repository.** There is no continuous integration and no branch protection to stand on, so the gate has three layers, each calling the checker from the installed Instar package (a trusted copy, never the branch under test):
+### 3. The design step and the one decision table
 
-1. **The release scripts refuse.** `ship.sh`, `ship-mac.sh`, `publish-mac-feed.sh`, `play-publish.mjs`, the Windows release scripts and the Linux release script each run `design-gate` first, over every commit since that family's last shipped mark. On success the script writes a tag `shipped/<family>/<build>` and pushes it; the first run takes the current tip as its starting mark. A UI change in that range with no valid evidence stops the release with the list of commits and the command that produces the evidence. This is the layer on the path every build takes to a person.
-2. **Hooks carried by the repository.** Each family carries `.githooks/pre-merge-commit` and `.githooks/pre-push`, which run the checker for merges into, and pushes to, that family's integration and main branches. A release script refuses to run in a clone whose `core.hooksPath` is not `.githooks`, so any machine that ships has them on. The integrating session's brief names the same command as its merge step.
-3. **A daily audit.** A scheduled job on the development agent, `design-gate-audit`, reads each family's integration branch heads and the instar main branch through the GitHub API, runs the checker over what was merged since its last pass, and compares with the verify records. A UI change that merged with no valid evidence and no override opens a server-written Work Board card naming the commit. This is what finds a skipped hook, an admin merge or a hand-made build whose code was pushed.
+**When it runs.** After the three lanes pass, and only when the base's classifier says the change touches a `ui` path, a registered source, the standard, or a gate file. A change that touches none of these never starts a browser. This bounds the cost to UI changes and means an unrelated pull request cannot be affected by the renderer.
 
-**Override.** The only way past a failing gate is the owner's. The agent opens a Work Board card whose `need` states the change (repository, pull request or commit, `uiTreeHash`), the rules to be waived and why. The owner approves it with a tap. The manifest's `override` names the card. The checker asks the server for the card and accepts it only when its approval is valid for the card's current text and that text contains the same `uiTreeHash` and rule ids; an edit to the card or to the screen files voids it. Waived rules are recorded on the verify record, printed in the PR body, and counted in the weekly maturation review. An override waives named rules for one change. It does not waive the evidence folder.
+**What it does.** For each affected screen it renders the base and the head in the same run, on the same machine, with the same renderer and the same seeds (the base's seeds; the head's only for a screen that is new, or when the seed itself changed, which is a harness change). It then:
 
-### 5. DF-0001: the server and web changes (build stage 1)
+1. **Compares the pictures.** A screen whose base and head captures are identical at every size has *no visible difference* and needs no review. Nothing is declared by the author.
+2. **Runs each rule check on both.** A violation is identified by rule, screen, size, theme and the element's path and text. A violation present at the head and absent at the base is **added**. Where element paths are not stable, counts are compared instead: a higher count at the head is added.
+3. **Proves each check first.** Every check has a small violating fixture. If a check does not fail on it in this run, that check reports `unavailable: control-failed` and decides nothing.
+4. **Does the card part**, reading waiver cards and tracked cards in process on the agent's machine.
 
-These are small, and they go first because the Apple app session's fix depends on them.
+There is no stored baseline. The comparison is always base against head in one run, so a renderer update or a different machine cannot move a count against a recorded number.
 
-1. **Fixed order.** `usageWindows()` in `src/server/mobileCapacityRoutes.ts` returns limits in the order 5-hour, weekly, Fable weekly, by an explicit rank, not by the order keys happen to be read (a reading with `sevenDay` and `primary` would otherwise put weekly first). The final `wins.sort((a, b) => b.pct - a.pct)` is removed.
-2. **The top limit is computed, not assumed.** A new `topWindow(windows)` returns the limit with the highest percentage. It replaces `windows[0]` at the three places that read it: the two notice checks and the account's `top`. `usageLine`, the account's `tone` and `_pct` keep their meaning.
-3. **Two new fields per limit.** `MobileAccountWindow` gains `name`, the display label with its capital ("5-hour", "Weekly", "Fable weekly"), and `tone` (`null` below 75, `'attn'` from 75 to 89, `'bad'` at 90 and above), from one exported function `usageTone(pct)` that the account's tone uses too. `label` is unchanged, so installed apps keep working; `schemaVersion` stays 1 because the change is additive.
-4. **Web tie-break.** The account sort in `dashboard/console/accounts-model.js` gains a name tie-break after the percentage, so accounts on the same percentage no longer fall in arrival order.
-5. **One colour boundary test for both sides.** `src/data/design/usage-tone-vectors.json` holds the vectors (74, 75, 89, 89.6, 90, 100 and the expected state for each). One test feeds them to the server's `usageTone` and to the web's `windowRow` and expects the same answers; it also checks that the server's `name` equals the web's for each label. The web's literal 75 and the server's literals move to shared constants. Both sides compute the state from the rounded percentage that is displayed (decision 16a).
-6. **Tests that pin the old order are updated**: the unit test "usage windows: … highest first" (new order, new fields, and the mixed-keys case), the integration test's `windows` expectation (now also asserting `name` and `tone`), and the end-to-end "alive" test (fixed order from the production route).
+**Cost bound.** One browser process, at most four pages at a time, a hang limit per screen and a total limit for the step, all in the Local Verify policy beside the lane limits; a screen that exceeds its limit is `unavailable: timeout`. The step's duration is recorded on every record. The leftover reaper gains the browser's process name. A shared stylesheet change renders every captured screen; that is the worst case and its measured duration is reported at the first rung.
 
-**What the Apple app session is told** (sent by the coordinating session, tracked as an item on DF-0001's card; this spec sends nothing): draw limits in the order received; show `name`, not `label`; paint `tone` as sent and do not recompute it; an older server sends neither field, so fall back to `label` with its first letter capitalised and the same three bands. Every other app that reads this list gets the same note; which ones do is established in stage 5, not assumed here.
+**Review.** When any screen has a visible difference, the session starts a fresh subagent that reads the standard and the head captures and answers each applicable review rule: `pass`, `fail`, `not-applicable` with a reason, or `not-observable`. The coverage map says what each review rule needs: a still capture, a named state capture, or an interaction trace the harness produces as text (tab order, focus kept across a refresh). A rule whose evidence the harness cannot yet produce is `staged` under DSE-T8 <!-- tracked: CMT-2172 --> and the reviewer answers `not-observable`. The answers are posted with `POST /local-verify/design-review` and are bound to the hash of the head captures they were read from. A merge from main that leaves those captures identical keeps the review; any changed capture needs that screen read again.
 
-Stage 1 is also the gate's first customer. The web accounts screen is the first registered screen, with the first stress fixture and the first evidence folder.
+**The decision table.** Measurements and the merge decision are separate. This table is the only place a measurement becomes a decision, and safe-merge applies it identically under both merge floors, reading the design record from the agent's own server.
 
-### 6. The design-feedback loop
-
-**Detection.** On the owner-message seam, after `isOwnersOwnWords` passes, the server asks one question through the shared LLM funnel as component `design-feedback-detector` (category `gate`, fast tier), with the message, whether it carries an image, and the previous few turns inside a per-call boundary: is the owner pointing out something wrong with how a screen looks or works? The answer is `design-feedback`, `other` or `unknown`. On `design-feedback` a second call on the balanced tier confirms before anything is opened. The call is made with `void`, under the correction loop's rate ceiling and quota shedding, so it can never delay or drop a message. When the funnel is shed or fails, the message is written to a small durable backlog and judged later; it is not forgotten. Text is data: a message that says "do not open a card" is still judged on what it reports.
-
-**The agent's own path.** The awareness entry tells every development session: when the owner gives design feedback, check that its card exists, and if it does not, open it with `POST /design-feedback/cards` naming the conversation and the message. The lint (below) refuses a feedback entry that names no card, so an entry cannot merge around the board.
-
-**The card.** Opened by the server as principal `SERVER`, with a card id derived from the source message so a message can never produce two cards, under the design standards project, `outward: false`, carried by the agent. The server allocates the entry number (the highest of the repository's entries and its own ledger, plus one) on the machine that holds the lead, so two sessions cannot both take DF-0007.
-
-| Field | Content |
+| Measurement for a rule on a screen | Decision |
 |---|---|
-| `title` | "🎨 Design feedback DF-NNNN: " and the first words of the message |
-| `need` | The owner's words exactly, the date, the conversation, and the attached images |
-| `source` | `{ conversationKey, messageId }` of the owner's message |
-| `covers` | `design-feedback:<messageId>` |
-| `links` | The entry file, the rule changes, the fix, once each exists |
-| `doneWhen` | The five items below |
+| Pass | Allow. |
+| Fail, every violation already present at the base | Allow. For an earned rule, open or refresh the one tracked card for that screen and rule. |
+| Fail with an added violation, check in `report` | Allow. Recorded, and counted in the maturation review. |
+| Fail with an added violation, check in `block` | Refuse `design-rule`, unless waived. |
+| Review answer `fail` | Refuse `design-review-fail`, unless waived. |
+| Waived, by a valid waiver for this rule and these captures | Allow. Recorded on the verify record and listed in the weekly review. |
+| `staged` (no check exists yet for this surface) | Allow. Listed with its tracked card. |
+| `unavailable` (renderer missing, harness crash, timeout, control failed, server unreachable, step switched off, record written by an older verifier) | Allow. One degradation signal; the change joins the daily sweep's list. |
 
-| Item | Done when | Who certifies |
-|---|---|---|
-| `entry` | `docs/design-feedback/DF-NNNN-*.md` is on main, names this card and this message, quotes the owner's words, and lists every problem with the rule it broke or "no rule existed" | Server-checked |
-| `rules` | Every problem maps to a rule; each added or sharpened rule carries "Earned from: DF-NNNN"; the standard's changelog has the entry's row; the lint passes on main | Server-checked |
-| `fix` | For every surface the entry lists, a change is merged whose evidence folder cites DF-NNNN and whose checklist passes every rule the entry cites | Server-checked |
-| `check` | For every cited rule that already existed, the entry names what now catches it: a new machine check, a fixed check, a classifier or registry change, or one sentence on why none is possible | Server-checked |
-| `seen` | Justin has looked at the fixed screen; the before and after captures were sent to him | Owner confirms (decision 7) |
+Three structural refusals sit beside the table. Each is deterministic, the author can always fix it, and each has its own row in `DESIGN_GATE_MODES`:
 
-**The done condition is enforced, not promised.** A server module, `DesignFeedbackCards`, runs `scripts/design-feedback-status.mjs --entry DF-NNNN` for each open card on a slow cadence and when the card is read. The script is pure over the repository trees it is given (instar main and the apps branches, read through the GitHub read path the green-PR watcher uses). For each server-checked item that holds, the module writes the evidence record itself; an agent's own evidence on those four items is refused `server-checked-item`. `claimDone` then behaves as it does today: `evidence-missing` until all four are verified, and the card closes on the owner's confirmation of the fifth. A card whose message turns out not to be design feedback is closed by the owner's tap; its reason reaches the detector's prompt as a lesson, as "Not important" reasons do for other cards.
+- `screen-unregistered`: a changed `ui` file belongs to no registered screen and no `uncaptured` listing.
+- `review-missing`: a screen has a visible difference and no review is bound to its head captures.
+- `fix-incomplete`: the pull request body says `Design-Feedback: DF-NNNN`, and a rule that entry cites still fails on a screen that entry lists.
 
-**The lint.** `scripts/design-standard-lint.mjs`, pure, run as a unit test (so it is in the unit lane on every change), at pre-commit when the standard or an entry is staged, and by the verifier with the merge base. It reads the standard through the same parser the checker uses.
+**Waivers.**
 
-1. Every rule has an id of the right form, every required field, and a Check of `machine` or `review`. Ids are unique.
-2. The "machine-checkable rules at a glance" table lists exactly the rules whose Check is `machine`.
-3. **Ids are permanent.** `docs/design/rule-ids.lock.json` lists every id ever issued. The standard must contain every locked id, as a rule or marked Retired; with a base, the lock at the head must contain the lock at the base.
-4. **Rule to entry, both ways.** Each "Earned from: DF-N" on a rule appears in entry DF-N's "Rules this entry added or sharpened" table, and each row of that table has the matching mark on the rule.
-5. **Every problem maps to a rule.** Each numbered problem in an entry cites at least one existing rule id, or says no rule existed and names the rule added.
-6. **The changelog is complete.** Each entry that added or sharpened rules has one changelog row naming exactly those rules, and every rule appears in at least one row.
-7. **Earned rules are not loosened.** With a base: if the Rule line of an earned rule changed, or the rule was retired, the changelog row for that change must cite a newer feedback entry or an owner-approved card, checked as an override is (decision 9).
-8. **Entry header.** Each entry has the Card and Source message rows, the owner's words as a quotation, and media files that exist. DF-0001 gains the two rows in stage 4, with a card opened for it from its original message.
-9. **Gate misses are closed.** An entry's "why it was not caught" line that names the gate (not classed as UI, no check, baseline) must cite the change that fixes it.
-10. **Machine rules are covered.** The coverage map has a row for every machine rule and surface (section 3).
+- *A rule that was not earned from feedback.* The reviewer, not the author, posts `POST /local-verify/design-waiver` with the rule, the screen, the capture hash and a reason. The server opens an agent-carried card for the eventual fix. This is self-reported; every waiver is listed in the weekly review the owner can read.
+- *An earned rule.* The session asks the server for a waiver card (`POST /design/waiver-cards`). The server composes the card text itself: the repository, the pull request, the capture hash, the rule ids and the reason given. The card belongs to a phone-only family (`phoneOnlyCard` is extended to it), so the console refuses a PIN approval. The gate accepts the waiver only when the card's `approvalValid` is true and `approvedBy.by.proof` is `presence`. It never reads card status or "approval not required". Editing the card or changing the captures voids the approval. On a pool machine running an older build the console would still take a PIN tap on this card; the gate rejects it because the proof is `pin`.
 
-### 7. Reaching every agent and every development session
+**Where the card part cannot run.** The card part needs the agent's server. It runs in Local Verify on the agent's machine. A unit test, a GitHub runner or a pre-push hook does only the tree part and reports the card part as unmeasurable. No new GitHub workflow and no new required context is added: the lint, the parser and the classifier tests are ordinary unit tests in the existing unit lane.
+
+**The off switch.** `monitoring.localVerify.designStep` in the agent's config, read live, absent meaning on for a development agent. Set to `false`, every decision is `unavailable: switched-off`, which the record and `GET /local-verify` show. It lives outside the tree, so a broken step can never block the change that fixes it.
+
+### 4. DF-0001: the server and web changes (build stage 1)
+
+These go first because the Apple app session's fix depends on them. They do not depend on the gate.
+
+1. **Fixed order.** `usageWindows()` returns limits in the order 5-hour, weekly, Fable weekly, by an explicit rank. The final sort by percentage is removed.
+2. **A limit that has reset.** `usageWindows(q, now)` takes the clock. A limit whose reset time has passed gets `rolledOver: true` and `tone: null`, as the web already does. Its percentage is still sent, so installed apps keep drawing.
+3. **The top limit is computed.** A new `topWindow(windows)` returns the highest limit that has not rolled over. It replaces `windows[0]` at lines 332, 335 and 414, so the "nearly out" notices, the account's tone, the usage line and the account sort no longer react to a limit that already reset.
+4. **Three new fields per limit.** `name` (the label with its capital: "5-hour", "Weekly", "Fable weekly"), `tone` (`null` below 75, `'attn'` from 75 to 89, `'bad'` from 90) and `rolledOver`. One exported `usageTone(pct, rolledOver)` serves the limit and the account. `label` is unchanged and `schemaVersion` stays 1 because the change is additive.
+5. **Same rounding on both sides.** The web's `windowRow()` computes tone from `Math.round(pct)`, the figure it displays. The literals 75 and 90 on both sides move to one shared constant file.
+6. **Web tie-break.** The web's account sort gains a name tie-break after the percentage.
+7. **One boundary test for both sides.** `src/data/design/usage-tone-vectors.json` holds cases as (percentage, reset state, expected tone, expected to count as top): 74, 75, 89, 89.6, 90, 100, and 100 with a reset time in the past. One test feeds them to the server's function and the web's and expects the same answers, and checks that the server's `name` equals the web's for each label.
+8. **Tests that pin the old order are updated**: the unit test "usage windows: … highest first", the integration test's `windows` expectation, and the end-to-end "alive" test.
+
+**The note to the app sessions.** Draw limits in the order received; show `name`; paint `tone` as sent; treat `rolledOver` as "no figure, no colour"; an older server sends none of the three, so fall back to `label` with a capital and the same bands. Echo's design-standards session sends it to the Apple app session and to the session that owns the Windows family when stage 1 merges, and to the Android app session after reading the three Android files. A Work Board card "DF-0001: app sessions told about the new account fields" is opened in stage 1 and closes when each family's branch reads `name`.
+
+### 5. The design-feedback loop
+
+**Noticing.** A wrapper chained on `telegram.onMessageLogged` (which also carries messages from the Instar app) tests each entry with `isOwnersOwnWords` and a *defined* verified owner; with no owner configured it does nothing and says so once in the log. For the owner's own words it makes one fast-tier call through the shared LLM funnel as component `design-feedback-detector`, with its own rate ceiling, never awaited, so it cannot delay or drop a message. The call sees the message (first 4,000 characters), whether it carries an image, and the three previous turns (1,000 characters each), all inside the data boundary, and is told when anything was cut. It answers `design-feedback`, `more-about` an open entry, `other` or `unknown`. Text is data: "do not open a card" inside a message changes nothing.
+
+**No backlog store.** The verdict for each message is one row in the replicated `design-feedback` store. A message with no row has not been judged. A catch-up pass every ten minutes reads the owner's messages of the last seven days from the message log and judges those with no row, twenty per pass, with backoff on failure and a breaker that raises one degradation after five failed passes. The message log is the backlog, so nothing is lost when a machine leaves. Messages older than seven days with no row are counted as `unjudged` in the weekly review.
+
+**The session confirms.** A `design-feedback` or `more-about` verdict is a candidate. The server hands it to the session serving that conversation, which either confirms with `POST /design-feedback/cards` or dismisses it with a reason. The owner is not involved. Dismissals are counted and a sample is read in the weekly review. An unresolved candidate is listed in `GET /design-feedback` and handed over again once a day until the weekly review lists it as missed. The session's own path is the same route: when the owner gives design feedback and no candidate arrived, it opens the card itself.
+
+**The route trusts nothing from the caller.** `POST /design-feedback/cards` accepts only `{ conversationKey, messageId }`. The server loads that row from its own message log, requires `isOwnersOwnWords` with a defined verified owner (otherwise `no-verified-owner` or `not-owners-words`), and copies the words and attachments itself. For `more-about`, the message is added to the open card's record instead of opening a new one.
+
+**The card** is an ordinary Work Board card in the existing format, opened by the in-process server writer with an id derived from the source message, so one message can never produce two cards. It is agent-carried and `outward: false`, so it never appears in the owner's Needs-you list. It has no `covers` and no links are written after creation. Its `need` holds the owner's words, the date and the attachments; the card store is private. Its four done items are all `agent-may-certify`:
+
+| Item | Done when |
+|---|---|
+| `entry` | `docs/design-feedback/DF-NNNN-*.md` is on main, names this card and this message, and lists every problem with the rule it broke or "no rule existed" |
+| `rules` | Every problem maps to a rule; each added or sharpened rule carries "Earned from: DF-NNNN"; the changelog has the row; the lint passes on main |
+| `fix` | For every surface the entry lists, a change citing DF-NNNN is merged (instar) or shipped (apps) whose design record shows every cited rule passing, or `staged` with its tracked card |
+| `check` | For every cited rule that already existed, the entry names what now catches it: a new check, a fixed check, a registry change, or one sentence on why none is possible |
+
+**Closing is the server's.** A server module, `DesignFeedbackCards`, makes one pass an hour. It fetches each tree once (instar main and the apps families, from local mirrors), evaluates at most fifty open cards against them with a pure script, and for each item that holds writes the evidence itself as `system`. When all four hold it claims the card done and sends the before and after captures to the conversation the feedback came from. A card read never triggers a pass; it shows the last result and its age. On the same build, an agent's own evidence on these cards is refused `server-checked-item`. The authoritative answer is `GET /design-feedback`, recomputed each pass: if a card is found done while its status is not complete (for example, claimed on an older build), the module opens a continuation card and records why. Cards replicate unchanged to every machine because no new field or value is used.
+
+**"Still wrong."** The owner says so in the conversation. The detector's `more-about` verdict, or the session, links it to the entry; the server opens a continuation card for the same entry, and the entry gains a new numbered round. The owner does not reopen anything by tap.
+
+**Entry numbers** are not allocated by the server. An entry takes the next free number on main, and the lint refuses two entries with one number, so the second of two parallel pull requests renumbers when it merges main.
+
+**The lint** (`scripts/design/lint.mjs`) is pure and tree-only. It runs as a unit test on every change and at pre-commit when the standard or an entry is staged.
+
+1. Every rule has a well-formed, unique id, every required field, and a Check of `machine` or `review`. The "at a glance" table lists exactly the machine rules.
+2. **Ids are permanent.** `docs/design/rule-ids.lock.json` lists every id ever issued; with a base, the head's lock contains the base's.
+3. **Rule and entry agree both ways**, and with a base, an "Earned from" mark or a row in an entry's rules table that exists at the base still exists at the head.
+4. Every numbered problem in an entry cites a rule, or says none existed and names the rule added. Every entry that changed rules has one changelog row naming exactly those rules.
+5. **An earned rule is not loosened without the owner.** With a base, the lint lists every earned rule whose Rule line changed, that lost a surface, whose Check went from `machine` to `review`, that was retired, whose coverage row went from a test to `staged`, or whose mode went from `block` to `report`. For a reduction, the changelog row must cite a waiver-style card; the card part verifies it is phone-approved by the owner and names the rule and the reduction. For a changed Rule line only, a reviewer shown both wordings answers "does the new wording permit anything the old one refused?"; `no` is recorded and merges, `yes` or `unsure` is treated as a reduction.
+6. **Entries are safe to publish.** An entry has Card and Source message rows and a unique number. No file other than `DF-*.md` exists under `docs/design-feedback/`. Any email address in an entry ends in `@example.com`. The session removes names and account details from the owner's quoted words and marks each removal; the unedited words stay on the card.
+7. **Gate misses are closed.** An entry's "why it was not caught" line that names the gate cites the change that fixes it.
+8. **The coverage map is complete.** Every machine rule has a row per surface: a test, or `staged` with a tracked card id. Every review rule has its evidence kind. Every `uncaptured` screen cites a card.
+
+### 6. Background work
+
+Four repeating behaviours exist. The intervals and bounds below are operating brakes held in config, set from the first measured runs; none of them decides a merge or what counts as feedback. Each is a server module behind the development-agent gate (none is a default job, so none is installed on other agents), runs on the lead only, is registered in the self-action registry with a pure decision function, and has a sustained-failure test.
+
+| Module | Interval | Bound per pass | On failure | When it reaches a person |
+|---|---|---|---|---|
+| Detector catch-up | 10 minutes | 20 messages | Backoff, breaker after 5 failed passes, one degradation | Never; `unjudged` count in the weekly review |
+| Card status pass | 1 hour | 50 cards, each tree fetched once | Items stay unverified, backoff, one degradation | Never; the card stays open |
+| Renderer install | On demand | One attempt, then hourly backoff | `unavailable: renderer-missing`, one degradation | Never by itself |
+| Daily sweep | 1 day | Every captured screen once, at main's tip | Cursor does not advance; degradation when the last success is older than two days | See below |
+
+**The daily sweep** renders every captured screen at main's tip with the pinned renderer and stores the per-rule counts as history for the maturation review. It reports three things: violations on main that the previous sweep did not see, changes that merged as `unavailable` since the last sweep, and UI changes that reached main with no design record at all. Self-heal comes first: it opens **one** agent-carried, `outward: false` card per sweep listing all of them, and the session fixes them. Only items still open at the following weekly maturation review appear in that review, which the owner can read; nothing is pushed to him. Its first run starts from the current tip and records that it did.
+
+### 7. The apps repository
+
+There are no pull requests there, so the unit is the **release**: everything between a family's last shipped mark and the commit being shipped.
+
+- **Vendored gate.** Each family carries `design-gate/`: the checker, the classifier rules for that family, a machine-readable copy of the standard, that family's own screen registry and coverage rows, and a `VERSION` file with the instar release it was taken from and a hash of the folder. A script in instar, `scripts/design/vendor.mjs`, produces the folder; a unit test proves the machine-readable standard equals the Markdown. Nothing in a release depends on an installed Instar package. A new rule reaches a family when its folder is refreshed, which the daily sweep reports when it is behind.
+- **The release step.** Each release script runs the vendored gate first, **from the commit at the last shipped mark**, over the range up to the commit being shipped. The mark is the tag `shipped/<family>/<build>`, read from the remote with `ls-remote`; an unreadable remote is `unavailable`, and "no mark at all" is accepted as a first run only when the remote has none for that family, and is recorded. The tag is written after the upload succeeds.
+- **What it measures today.** Shared test vectors (colour boundaries, the label table, the internal-terms list, a list with ties, the date forms), which each app's unit tests read from the vendored folder; and static scans of the range for fixed colour values outside shared components (`DS-DELIGHT-4`), internal terms and label capitals in string literals (`DS-WORDS-2`, `DS-TYPE-3`), font sizes under the floor (`DS-TYPE-2`) and missing assets (`DS-STATE-6`). An added violation of a blocking check refuses the release; the shipping session fixes it at the head. An owner tap is never the repair for a release.
+- **What is staged.** Native captures and native automatic checks. Until a family's capture tool exists, every native rule that needs a render reads `staged` in that family's coverage rows and blocks nothing. Each is a tracked item with a named owner (section "Tracked next steps").
+- **Evidence.** The release manifest and, once a capture tool exists, the captures are committed under `design-evidence/<family>/<build>/` in the private apps repository. They are never copied into instar. A side-by-side with the web is assembled by the reviewer from the two private sources.
+- **Who builds it.** Echo's design-standards session prepares the `design-gate/` folder and the release-script change for each family on a branch named `design-gate/<family>`, and hands each to that family's session with a brief and a Work Board card: the Apple app session, the Android app session, and for Windows and Linux the session the Chief of Staff's project list names for that family. Where it names none, Echo's design-standards session applies the change to that family itself. The card closes when the family's main branch calls the gate, which the daily sweep reads.
+
+### 8. Reaching every development session
 
 | Change | Path |
 |---|---|
-| Classifier, checker, lint, capture tool, shared vectors | `scripts/` and `src/data/design/` ship in the package, so every machine with Instar has the trusted copy the apps repository calls. |
-| Design lane, record field, predicate change, Actions workflow, floor constant | Code in the release. Harness changes carry the independent review the predicate requires. |
-| Detector, card module, `POST /design-feedback/cards`, `GET /design-feedback` | Code in the release, behind `resolveDevAgentGate`. With the gate off the routes answer 503 and nothing listens on the seam. |
-| Agent awareness | One entry, `src/data/awareness/design-standard-gate.md`: any change to an Instar screen needs its evidence folder, made with the capture command; where the standard and the registry are; design feedback from the owner is a card with an entry, never only a reply; a failing gate is fixed or taken to the owner as an override card, never worked around. Awareness entries need no migration. A `GET /design-feedback` row joins the Registry First table for "what design feedback is open?". |
-| `/instar-dev` and `/build` | Each gains one step before the commit phase: if the change touches a UI path, run the capture tool, have the reviewer answer the checklist, commit the folder. Both skills ship in the package (`skills/`, `.claude/skills/build`). How a wording change reaches a copy already installed was not read for these two skills; stage 4 uses the update path each one already has, or adds an idempotent migration that skips customised copies, as Migration Parity requires. The step repeats what the gate enforces, so a session that never reads it is still stopped. |
-| Side-effects artifact template | The operator-surface section points to the evidence folder instead of a prose attestation. |
-| Apps repository sessions | Each family gets `.githooks/`, `design-gate.json` and a `DESIGN-GATE.md` of ten lines; the shared build brief names the command. The release scripts' refusal message is the last teacher: it prints the missing evidence and the command that makes it. |
-| Constitution article | The 2.0 rule book first, then the registry article, each pull request naming the other; `scripts/check-constitution-pairing.mjs` passes for the pair. |
-
-No setting is added. The modes table and the dev-agent gate are the only switches.
+| Gate files, design step, record field, routes, modules | Code in the release. The server pieces sit behind `resolveDevAgentGate`: with it off the routes answer 503 and nothing listens on the seam. The explicit config value always wins, so it is also the off switch for the detector and the cards. |
+| Agent awareness | One entry, `src/data/awareness/design-standard-gate.md`, with `requires: developmentAgent`. The awareness reader learns that one new value in this build (parser, README, test). Other agents never see the text. It says: a change to an Instar screen is rendered and checked at merge; where the standard and the registry are; design feedback from the owner is a card with an entry, never only a reply; read `GET /design-feedback` for what is open. No row is added to a core table. |
+| `/instar-dev` and `/build` | One step before the commit phase: if the change touches a UI path, run the design step locally (`node scripts/design/gate.mjs --local`), read the captures, start the reviewer. Delivered to installed copies by a fingerprinted, idempotent migration in `PostUpdateMigrator`, as the existing one at lines 4121 to 4126 does; customised copies are left alone. |
+| Rollout order | Verifier machines are updated together before safe-merge's new reading ships, because the change alters `verifierVersion` and every open pull request re-verifies once. A record from an older verifier reads `unavailable`, never a refusal. |
+| Visibility | `GET /local-verify` shows the step's switch, the renderer build, the modes table and waivers per record. `GET /design-feedback` shows candidates, open cards with their last status and its age, and the last sweep. Both are agent-scoped reads that proxy to the lead. |
 
 ## Verify the state, not its symbol
 
 | What is claimed | Symbol read | State it stands for | Corroboration | When it cannot be measured |
 |---|---|---|---|---|
-| These captures show the code being merged | `uiTreeHash` in the manifest | The screen files at the head are the ones that were captured | The gate recomputes the hash from the head tree; for the web, the lane renders the head itself | Hash differs: `evidence-stale`, refused. Native: the picture's content is not re-rendered by the gate (see Under-block) |
-| The capture is at the standard size | Width and height in the image header | The screen was rendered at that size | Stated size times stated scale must equal the header; hash must match the manifest | Unreadable image: refused |
-| Nothing visible changed | Image equality of base and head renders | The change does not alter any registered screen | Web: rendered by the gate in one run. Native: two committed captures | A touched file in no registered screen: exemption refused |
-| A machine rule passes | The lane's result for that rule | The rendered screen satisfies it at every standard size | Each check has a negative control proving it fails on a violating fixture | No browser, no fixture, no test: lane failure, never a pass |
-| A review rule passes | The checklist entry and the recorded reviewer | A reader other than the author answered the rule's question from the captures | Self-reported; the owner's own look on feedback cards; the audit of entries ("why was it not caught") | Not corroborated by code. Stated, not hidden |
-| The owner agreed to an exception | A valid approval on a card whose text holds the hash and the rules | A person tapped yes to this exact change | The tap route accepts only a PIN or a phone presence signature; a later edit voids it | Card unreadable: refused |
-| This feedback is fully handled | Server-written evidence on four card items | Entry on main, rules linked, fix merged with passing evidence, check added | The status script reads the trees; the lint passes on main | A tree that cannot be read leaves the item unverified and the card open |
-| A screen exists on another surface | The registry's surface list | The same data is shown there | Seeded from each app's navigation; an entry whose problem was a missed parity adds the registry row | An unregistered native screen has no parity requirement until its surface's stage |
+| These captures show the code being merged | The design record for (pull request, head, base) | The gate rendered that head itself | Seeds run through production code; renderer build on the record | `unavailable`, by name |
+| Nothing visible changed | Base and head captures are identical | The change alters no captured state of any registered screen | Same run, machine, renderer and seeds | States the seed does not render are not compared (Under-block) |
+| A machine rule passes | The step's measurement | The rendered screen satisfies it at every size | The check failed on its violating fixture in the same run | `unavailable: control-failed` |
+| A review rule passes | The posted review | A reader other than the author answered from the gate's captures | Bound to the capture hash; self-reported, and stated so | `not-observable` is `staged` with a card |
+| The owner agreed to waive his rule | `approvalValid` and `proof: presence` on a server-composed card | The owner tapped on his phone for this change | Card text holds the capture hash and rule ids; an edit voids it | Server unreachable: unmeasurable, and the rule is not waived |
+| This message is the owner's design feedback | The row in the server's own message log | The owner wrote it | `isOwnersOwnWords` with a defined owner, run by the server | No verified owner: no card |
+| This feedback is fully handled | Evidence written by `system` on four items | Entry, rules, fix and check exist on main or in a shipped release | Recomputed from the trees every pass | A tree that cannot be read leaves the item unverified |
 
 ## Multi-machine posture
 
-- **Standard, registry, classifier, checker, lint, baseline, coverage map: `unified`.** Git-tracked or shipped in the package.
-- **Design-feedback cards and override cards: `unified`.** They are Work Board records in the replicated store. The detector runs on the machine that logs the owner's message. Entry numbers are allocated on the machine that holds the lead; a machine that does not hold it forwards the request, and when the holder cannot be reached the card opens without a number and takes one when it can.
-- **Verify records: as Local Verify has them today.** The new field travels with the record.
-- **Whether a machine can run the design lane: machine-local by design.**
-  machine-local-justification: physical-toolchain-locality. The lane needs a browser binary on that disk, and the Apple checks need Xcode, which the Studio does not have and the Laptop does. A verifier with no browser fails the lane by name; Local Verify's existing helper-machine path is how the work reaches a machine that has one.
-- **Apps release gate.** Runs on whichever machine ships that family, using that machine's installed Instar. A machine whose Instar is older than the checker's first release refuses to ship UI changes and says to update.
-- **Audit job.** One machine runs it (the lead); its cursor is a replicated record, so a takeover continues from the last audited commit instead of starting over.
-- **Holds go only to the session that is merging or shipping.** The only operator-facing items are override cards the agent chose to raise, audit cards, and the one confirmation on each feedback card.
-- **Single machine:** everything works with no peer.
+- **Gate files, standard, registry, coverage map, lock file:** `unified`. Git-tracked.
+- **Pinned renderer:** `unified`. It is a provisioned prerequisite that every verifier installs on demand; a machine without it reports `unavailable`, and no verdict depends on which machine ran.
+- **Captures in the verifier's artifact store:** `proxied-on-read`. They are operational, not memory: any machine can re-create them from the commit, the seeds and the renderer build. They are read through the route of the machine that made them. Retention is declared: the newest set per screen on main and the sets of open pull requests are kept; the rest are removed oldest first when the store passes its byte budget, a config value the Disk Steward reads.
+- **Verify records, with the new `design` field:** as Local Verify has them today.
+- **Detector verdict rows, the sweep cursor and the sweep's count history:** `unified`, one replicated store named `design-feedback`. Verdict rows are kept 30 days. A lost cursor restarts the sweep from the current tip and says so. There is no detector backlog and no entry-number ledger; both were removed from the design.
+- **Design-feedback cards, waiver cards and tracked cards:** `unified`. Work Board records in the replicated store, in the existing format.
+- **`GET /design-feedback` and the design part of `GET /local-verify`:** agent-scoped; a machine that is not the lead proxies the read to it.
+- **The four modules:** run on the lead only; a takeover continues from the replicated cursor.
+- **Apple captures and checks (tracked item DSE-T2):** they need Xcode, which runs only on Apple hardware; in this pool that is the Laptop. They are not part of Local Verify.
+  machine-local-justification: hardware-bound-resource
+- **Apps release step:** runs on whichever machine ships that family, from the vendored folder in that checkout. It reads no per-machine state.
+- **Single machine:** everything works with no peer. A single machine without the renderer installs it; if it cannot, changes merge as `unavailable` and the sweep reports them.
 
 ## Decision points touched
 
 | Decision | Kind |
 |---|---|
-| Is this path a user-interface file? | invariant; basis: enumerable-domain; evidence: the path rules and the registry's source lists are closed lists, and a file that looks like a screen and is in neither fails the tree test |
-| Does this change need evidence? | invariant; basis: enumerable-domain; evidence: the changed files either include a `ui` path or do not |
-| Is the evidence for this version? | invariant; basis: enumerable-domain; evidence: the recomputed fingerprint equals the recorded one or does not |
-| Did anything visible change? | invariant; basis: enumerable-domain; evidence: the base and head images are equal or not; the exemption is unavailable where no render exists |
-| Does a machine rule pass? | invariant; basis: enumerable-domain; evidence: each check is a measurement with a stated threshold from the standard; the baseline comparison is a count against a recorded count |
-| Does a review rule pass? | judgment-candidate. Floor: every applicable rule must have an entry, a not-applicable needs a reason, machine rules cannot be hand-filled; arbiter: a reviewer subagent on the design model that did not write the change; unknown is not a result |
-| Is a rule not applicable to this screen? | judgment-candidate. Floor: only `review` rules; a reason of at least a sentence; counted per rule in the maturation review so a rule that is always "not applicable" is noticed; arbiter: the same reviewer |
-| May this change merge with a rule failing? | invariant; basis: irreversible-consequence; evidence: a shipped screen reaches people; only a person's tap bound to the exact change passes it |
-| Is this owner message design feedback? | judgment-candidate. Floor: only the owner's own words; outcomes are open a card or do nothing; never delays or drops a message; shed or failed calls go to a durable backlog; ladder: fast tier, confirmed on the balanced tier, `unknown` leaves the agent's own path; arbiter: the design-feedback detector |
-| Is a feedback card done? | invariant; basis: enumerable-domain; evidence: four items are pure functions of repository trees and the fifth is a person's tap |
-| Was an earned rule loosened? | invariant; basis: enumerable-domain; evidence: the Rule line at the head equals the base or does not; any difference needs a newer entry or an owner card. Whether the change is a sharpening or a loosening is not judged by code |
-| Should a check block yet? | judgment-candidate. Floor: a check moves from `report` to `block` only by a reviewed change citing ten real runs with every false failure traced; arbiter: the maturation review |
-| Which surfaces show the same screen? | invariant; basis: enumerable-domain; evidence: the registry's list |
+| Is this path a user-interface file? | invariant; basis: enumerable-domain; evidence: the path rules and the registry's source lists are closed lists, read at base and head |
+| Did anything visible change? | invariant; basis: enumerable-domain; evidence: base and head captures from one run are byte-identical or not |
+| Is a violation added by this change? | invariant; basis: enumerable-domain; evidence: the violation's key is present at the head and absent at the base, or the head's count is higher |
+| What does a measurement mean for the merge? | invariant; basis: enumerable-domain; evidence: the decision table has eight rows and every measurement falls in exactly one |
+| Does a review rule pass? | judgment-candidate. Floor: every applicable review rule has an answer bound to the head captures; a `fail` refuses unless waived; `not-observable` needs a tracked card. Arbiter: a reviewer subagent that did not write the change |
+| May a non-earned rule be waived for this change? | judgment-candidate. Floor: never by the author; a written reason; bound to the rule and the captures; a card for the fix; listed weekly. Arbiter: the reviewer subagent |
+| May an earned rule be waived or loosened? | invariant; basis: external-constraint; evidence: the owner's recorded rule in the standard's "How this standard grows" ("A rule earned this way is not removed or loosened without the owner's agreement") reserves it to him, and in the tap code only `proof: presence` cannot be produced by the agent |
+| Does a new Rule line loosen an earned rule? | judgment-candidate. Floor: any Rule-line edit to an earned rule needs a recorded verdict; `yes` or `unsure` goes to the owner. Arbiter: the reviewer subagent, shown both wordings |
+| Is this owner message design feedback? | judgment-candidate. Floor: only the owner's own words with a defined owner; the only outcome is a candidate; never delays a message; an unjudged message is retried from the log. Arbiter: the detector proposes, the session in the conversation confirms |
+| Is a feedback card done? | invariant; basis: enumerable-domain; evidence: four pure functions of repository trees, written by the server |
+| Should a check block yet? | judgment-candidate. Floor: a mode change is a harness change with an independent review; the review sees coverage of screens, sizes, themes and machines, the negative control, and every traced false failure. Arbiter: the maturation review |
+| Is a step result `unavailable`? | invariant; basis: enumerable-domain; evidence: a closed list of causes, each produced by code |
 
 ## Over-block and under-block
 
-- **Over-block.** A change to a dashboard file that alters nothing visible must still declare `visibleChange: "none"`; the gate does the comparison, so the cost is one line. A change to a grandfathered screen must first give it a fixture; that is real work and is the intended ratchet. A browser check can be wrong (a contrast reading through a gradient, a number cell found by content that is not a number); that is why every check starts in `report` mode and why false failures are traced before it blocks. The detector can open a card for a remark that was not feedback; the owner closes it with one tap, the false cards are counted, and each one is traced. Parity can require a capture from a surface no pool machine can build today; the checker accepts `parity-unavailable` with the machine that was tried.
-- **Under-block.** Native captures are trusted as taken: the gate verifies their size, freshness and hash, and until that surface's checks run in a trusted lane it does not re-render them. Review-rule answers are self-reported by a reviewer the session started. The count ratchet passes a change that fixes one violation and adds another of the same rule on the same screen; the listed elements make this visible to a reader and nothing blocks it. A screen not yet in the registry has no parity requirement and no machine checks. An evidence folder stays valid when main changes a shared component under it, because its fingerprint covers only the files the change touched; for the web the lane re-renders at the merge head and catches a regression, for native nothing does until the next capture. An admin merge, a skipped hook or a hand-made build passes at the time and is found by the audit within a day, if the code was pushed. A design problem the owner mentions on a channel with no owner-message seam is caught only by the agent's own path. The first run of each apps family grandfathers everything before its starting mark.
-- **Cost.** The design lane adds a browser run to every verify. Its duration is measured at each rung and reported beside the other lanes. The detector adds one fast call per owner message and one stronger call per suspected feedback. Committed images grow the repository; growth per month is a line in the maturation review.
+- **Over-block.** A new screen must come with a seed and be clean of blocking rules, because all of its violations are added. Registering a screen or editing a seed is a harness change and needs the independent review; that is deliberate friction on the files that define the gate. A check can be wrong (a contrast reading through a gradient); that is why every check starts in `report`, and why a wrong failure of a non-earned rule can be waived by the reviewer without the owner. A capture that differs by one pixel after a merge from main needs that screen read again.
+- **Under-block.** An `unavailable` step lets a change merge unseen until the next daily sweep. Review answers and non-earned waivers are self-reported. A change that fixes one violation and adds another with the same key passes; counts catch most of these and nothing blocks the rest. States the seed does not render (hover, an open dialog) are not compared. A server file that affects a screen and is in no registry source list is caught only by the daily sweep. Native surfaces have static scans and vectors only until their capture tools exist. A screen marked `uncaptured` has no checks. A release built by hand outside the scripts is not seen. Feedback on a channel with no seam is caught only by the session's own path. The first release of each apps family starts from its current tip.
+- **Cost.** The step adds a browser run to verifies of UI changes only, rendering base and head. The detector adds one fast call per owner message. Both are measured at each rung and reported beside the lanes.
+- **What is not measured.** The headline number below measures recurrence. Nothing here measures delight, and the spec does not claim to.
 
 ## Maturation plan
 
-- **test-agent-live:** each build stage is proven first on a throwaway agent and a throwaway clone of each repository: a UI pull request with no evidence, with stale evidence, with a wrong-sized image, with a hand-filled machine entry, with a false no-visible-change claim, with a valid owner override and with a forged one; a release script run over a range with and without evidence; a detector run on real past owner messages including DF-0001's, and on messages that mention a screen without criticising it.
-- **dev-agent-live:** then on the development agent (today Echo) with real UI changes and Justin's real feedback. The DF-0001 fix on every surface is the first full pass through the loop.
-- **fleet:** the checker, vectors and awareness text reach every agent through the normal update. The gate and the detector stay on the development agent only (decision 1); no fleet turn-on is planned in this version.
-- **graduation criterion:** decided by the existing maturation review over real use. Each machine check moves to `block` on its own evidence (ten real UI changes, every false failure traced). The loop as a whole is judged on: every piece of owner design feedback since stage 4 has a card and an entry; every closed card closed on verified items; the number of times Justin pointed out a mistake that an existing rule already covered, with each traced to a check that was then added; false cards and false refusals, each traced; overrides, each listed; baseline counts per rule, which must fall; the lane's added verify time; repository growth. Missing evidence records `incomplete`, never a pass. No minimum duration.
-- **dark-window:** not applicable to the fleet (no fleet turn-on). On the development agent, each check's `report` period is its dark window.
+- **test-agent-live:** each stage is proven on a throwaway agent and throwaway clones: a UI pull request with no review, with a review bound to older captures, with an added violation in `report` and in `block`, with a change that edits the classifier to hide itself, with a valid owner phone waiver, with a PIN tap on the same card, with the renderer removed, and with the switch off; a detector run over real past owner messages including DF-0001's and over messages that mention a screen without criticising it.
+- **dev-agent-live:** then on the development agent with real UI changes and Justin's real feedback. The DF-0001 fix is the first full pass through the loop.
+- **fleet:** no fleet turn-on in this version. Other agents receive the code dark and no awareness text. Opening it to users' projects is DSE-T1.
+- **graduation criterion:** judged by the maturation review on real use: every piece of owner design feedback since stage 3 has a card and an entry; every closed card closed on server-written evidence; how often the owner pointed out something an existing rule already covered, each traced to a check that was then added; a weekly replay of a sample of owner messages through a stronger tier, reporting misses; dismissed candidates, sampled; waivers, each listed; merges as `unavailable`; open earned-rule cards and their age; per-rule counts on main from the sweep; the step's added verify time. Missing evidence records `incomplete`, never a pass. No minimum duration.
+- **dark-window:** not applicable to the fleet. On the development agent each check's `report` period is its dark window, and each has a date by which it is promoted, changed or retired.
 - **ladder:** not applicable: no flag of its own until the stage 2 change adds the design-standard-gate entry, gated by developmentAgent, and points this line at it
 - **Owner:** Echo.
 
-The north-star measure is the one in the criterion: **how often the owner points out something a rule already covered.** That number going to zero is what "we no longer make those mistakes" means.
+The north-star measure: **how often the owner points out something a rule already covered.** That number going to zero is what "we no longer make those mistakes" means.
 
 ## Build stages with live proof
 
-1. **DF-0001 server and web.** Section 5. Proof: the unit, integration and end-to-end tests named there; the shared boundary test failing when either side's threshold is changed; a live read of `/mobile/accounts` on a throwaway agent showing fixed order, `name` and `tone`, with an older app build still drawing its list; the web accounts page captured at the standard sizes with the stress fixture, side by side with the Mac capture from the entry.
-2. **Parser, classifier, registry, evidence checker, lint, capture tool for the web.** Proof: the checker refuses each case in the test-agent list with its own problem name; the lint fails on a removed rule id, a missing "Earned from", an incomplete changelog row and a problem with no rule; DF-0001 and the current standard pass unchanged.
-3. **Design lane, ratchet, verify-record field, predicate, Actions workflow, pre-push.** Proof on a throwaway repository with the local floor on: a UI pull request with no evidence cannot reach a green `instar/local-verify`; `gh pr merge` without safe-merge is refused by the ruleset; the green-PR watcher refuses it; a verifier with no browser fails the lane by name; the baseline refuses a new violation and a stale high count; each check fails on its negative control.
-4. **Design-feedback detector, card module, routes, status script, awareness, skill steps.** Proof through real Telegram on a throwaway agent, then Slack and an app conversation: a design remark with a screenshot opens exactly one card; the same message redelivered opens none; a non-design remark opens none; a forwarded message and a team member's message open none; the card cannot be claimed done until each item verifies; an agent's evidence on a server-checked item is refused; the owner's "not design feedback" tap closes it. A channel with no seam is recorded as a gap with its own follow-up card. DF-0001 gets its card.
-5. **Apps repository: shared vectors, static scans, hooks, release-script gate, audit job.** Proof per family: a release script run over a range holding a UI change without evidence stops; with evidence it proceeds and writes its mark; a clone without the hooks path cannot ship; the audit opens a card for a UI commit pushed around the hooks.
-6. **Apple automatic checks and captures.** Proof on the Laptop under the build lock: the design-audit test reproduces DF-0001's wrapped "100%" and short bar on the old Mac screen and passes on the fixed one, at every standard size.
-7. **Android automatic checks and captures.**
-8. **Windows and Linux**, each after its own reviewed design note.
-9. **Constitution article**, both books.
+1. **DF-0001 server and web** (section 4). Proof: the tests named there; the shared boundary test failing when either side's threshold or rounding is changed; a live read of `/mobile/accounts` on a throwaway agent showing fixed order, `name`, `tone`, and a reset limit with no tone that is not the top; an older app build still drawing its list.
+2. **The gate** (sections 1 to 3): parser, classifier, registry, coverage map, modes, lint, harness with the pinned renderer, the accounts screen's seed, the design step, the review and waiver routes, the off switch, the `HARNESS_GLOBS` additions. Proof on a throwaway repository with the local floor on: each case in the test-agent list gives its named result; a non-UI pull request never starts a browser; the green-PR watcher applies the same table; DF-0001 and the current standard pass the lint unchanged.
+3. **The feedback loop** (section 5): detector, candidates, card module, status pass, routes, awareness value, skill steps. Proof through real Telegram and an app conversation on a throwaway agent: a design remark with a screenshot produces one candidate and, once confirmed, exactly one card; the same message again produces none; a forwarded message and a team member's message produce none; with no owner configured nothing opens; a session cannot supply words through the route; the card closes only when the four items verify; "still wrong" opens a continuation. Slack is proven the same way, or DSE-T9 <!-- tracked: CMT-2173 --> is opened with what was found. DF-0001 gets its card.
+4. **The daily sweep** (section 6). Proof: a violation pushed to main around the step appears on the next sweep's single card; a failed sweep does not advance its cursor.
+5. **Apps repository** (section 7): the vendored folder, vectors, static scans and the release step, per family. Proof per family: a release over a range that adds a blocking violation stops; a clean range ships and writes its mark after upload; a family whose folder is behind is reported.
+6. **Constitution**, both books, last. Nothing in this run comes after it.
 
-Each stage ships unit, integration and end-to-end tests under the Testing Integrity Standard, with both sides of every decision row above, and wiring checks for the detector, the card module and the record field.
+Each stage ships unit, integration and end-to-end tests under the Testing Integrity Standard, with both sides of every decision row above, and wiring checks for the detector, the card module and the record field. The run's completion condition is stages 1 to 6 merged and every item under "Tracked next steps" existing as an open Work Board card with its named owner.
+
+## Tracked next steps
+
+Each item below is opened as a Work Board card under the design standards project when this spec is approved. The lint requires every `staged` coverage row and every `uncaptured` screen to cite one of them, so none can sit unowned.
+
+> **CMT-2165** — "DSE-T1: Offer the design gate to users' own projects: the checker, lint, capture step and detector read the standard path, the registry path and the evidence location from one project file, and turn on only by the explicit flag `resolveDevAgentGate` already honours." Owner: Echo's design-standards session.
+>
+> **CMT-2166** — "DSE-T2: Apple capture tool and automatic checks: a design-audit test in `InstarAppUITests` that launches each registered screen with seeded data at the standard sizes, reads frames and names from the accessibility tree, and writes captures into the private apps repository." Owner: the Apple app session. Runs on the Laptop under the one-build lock.
+>
+> **CMT-2167** — "DSE-T3: Android capture tool and automatic checks with Compose UI tests at the standard sizes and font scale 1.3." Owner: the Android app session.
+>
+> **CMT-2168** — "DSE-T4: Windows and Linux capture tools and automatic checks. Each begins as its own spec through spec-converge." Owner: the session the Chief of Staff's project list names for each family; Echo's design-standards session carries either one for which none is named.
+>
+> **CMT-2169** — "DSE-T5: Seeds and harness support for the dashboard pages that are not console routes, and the pairing page." Owner: Echo's design-standards session.
+>
+> **CMT-2170** — "DSE-T6: Decide the merge gate for wording in messages and notices written by agents: widen the UX impact lint beyond its one author and move it into the floor, or bring notices under the design gate." Owner: Echo's design-standards session.
+>
+> **CMT-2171** — "DSE-T7: Decide whether accounts needing sign-in sort first on every surface; the server does this and the web does not." Owner: Echo's design-standards session, recorded on DF-0001.
+>
+> **CMT-2172** — "DSE-T8: Interaction traces the harness does not yet produce, for the review rules that need them." Owner: Echo's design-standards session.
+>
+> **CMT-2173** — "DSE-T9: Design-feedback detection for owner messages that arrive through Slack, if stage 3 does not prove it." Owner: Echo's design-standards session.
 
 ## Rollback
 
-The fast rollback is a reviewed change to `DESIGN_GATE_MODES` setting every check to `report` and the evidence check to `report`: the lane and the checker still run and record, nothing refuses. The detector and cards are turned off by the same release setting their gate off; open cards stay on the board and can be closed by hand. Stage 1's fields are additive and are not rolled back with the gate; reverting them means restoring the old sort, which older and newer apps both accept. Evidence folders, the baseline and the lock file are inert without the code that reads them. A full revert of the lane must ship with the removal of `tests/design/**` from the tree, or those files become unlaned and fail every verify. In the apps repository, removing the `design-gate` line from a release script is the rollback, and the audit reports that it happened.
+The fast rollback is the runtime switch `monitoring.localVerify.designStep: false` in the agent's config: no pull request is needed, so a broken step cannot block its own removal. The detector and the cards are turned off by their dev-agent gate value in the same config; open cards stay on the board. Setting rows of `DESIGN_GATE_MODES` back to `report` is the slower, reviewed path. Stage 1's fields are additive and are not rolled back with the gate. The gate files are inert without the step, and because the step is not a lane, removing it leaves no unlaned test files. In the apps repository the rollback is removing the gate call from a release script, which the daily sweep reports.
 
 ## Out of scope
 
-- Other agents' own projects (decision 1). The checker and the standard's format are written so a later version can point them at another repository.
-- The public website, and the wording of messages and notices (decision 15).
+- Other agents' own projects, tracked as DSE-T1.
+- The public website (`site/`), and the wording of messages and notices, tracked as DSE-T6.
 - Deciding what good design is. That is `docs/DESIGN-STANDARD.md`; this spec only makes it apply.
-- Pixel-perfect visual regression against golden images. The gate compares images only to verify a no-visible-change claim.
-- The native side of the DF-0001 fix, which the Apple app session is building. This spec provides what it reads and the gate its change must pass.
-- A GitHub plan change or a continuous-integration service for the apps repository (decision 10).
-- Rewriting the legacy dashboard's existing floors and tests. They are mapped, not replaced.
+- Golden-image visual regression. The gate compares a change only with its own base.
+- The native side of the DF-0001 fix, which the Apple app session is building.
+- A GitHub plan change or a continuous-integration service for the apps repository.
+- Rewriting the legacy dashboard's existing floors and jsdom tests. The coverage map points at them.
+
+## Left behind
+
+Precision findings from round 1 that this revision did not settle in passing. None changes the design.
+
+- Which existing server-to-session path hands a candidate to the session in a conversation; named at build and proven in stage 3.
+- The exact default values of the detector's rate ceiling, the per-screen hang limit, the step's total limit and the artifact store's byte budget; each is a config value set from the first measured runs.
+- Whether two remarks a few minutes apart are better joined by the detector or by the session; both paths exist, and the weekly review reads the result.
+- The standard does not state the 1 px tolerance used for `DS-DATA-2` or the 0.2 gap used for `DS-LAYOUT-3`; the coverage map records them as the check's tolerance, not as the rule.
+- Expected size of an apps release range after a long gap between releases; the static scans need no browser, and the duration is measured at stage 5.
+- A cap on the length of dismissal reasons and of the card title's first words.
 
 ## Constitution wording
 
-One article. The 2.0 rule book (the master) receives the same obligation in its own form first; the 1.x Standards Registry article, placed under *Operator-Surface Quality*, reads:
+Two pull requests, opened by Echo's design-standards session, each naming the other on a `Constitution counterpart:` line so `scripts/check-constitution-pairing.mjs` passes. The registry is code-owned, so that pull request needs Justin's review on GitHub. Whether the `instar-2` pull request needs it too is read live by safe-merge (`refused:approval-required`), not assumed.
 
-> ### Design Mistakes Become Rules; Screens Are Shown Against the Rules Before They Merge
-> **Rule.** Every design mistake the owner points out is diagnosed in writing, naming the practice that was broken, and becomes a rule in the Design Standard or sharpens one; the feedback, the diagnosis, the rule and the fix are linked by a tracked card that cannot close until each exists. Every change to a screen on any surface shows that screen at the standard sizes, with realistic data, and a checklist of the applicable rules, before it merges. Rules that can be measured are measured by machine.
-> **Fails.** A screen change with no evidence, with evidence from another version, or with an image that is not the stated size, does not merge and does not ship. A check that cannot run fails by name; it never passes blind. Only the owner can let a change through with a rule failing, by a tap bound to that exact change, and each such tap is recorded. Existing violations are grandfathered by a count that can only fall, and never for a rule the owner's feedback earned on a screen that is being changed.
-> **In practice.** `docs/DESIGN-STANDARD.md` is the one standard and its rule ids are permanent. A change that touches a user-interface path carries a `design-evidence` folder that the merge floor verifies; the design lane runs the machine checks in a real browser; the app release scripts refuse a range with ungated screen changes; a daily audit finds anything that went around. Owner design feedback opens a Work Board card whose first four items the server verifies from the repository and whose last is the owner's look.
+**Second book** (`JKHeadley/instar-2`, `docs/01-the-rules.md`, a new row in "Needs building"; the two headings' totals change from 123 to 124):
+
+> | 124 | Design Mistakes Become Rules | Every design mistake the owner points out is diagnosed in writing and becomes a rule in the Design Standard or sharpens one. Every change to a screen is rendered by the gate at the standard sizes with realistic data and measured against the rules before it merges or ships. A rule the owner's feedback earned is waived or loosened only by the owner. | A design step in the merge path that renders base and head and applies one decision table; a lint tying each feedback entry to its rules; a tracked card per piece of feedback that closes on verified facts. Whether a screen is genuinely good stays the mind's (#80). |
+
+**First book** (`docs/STANDARDS-REGISTRY.md`, under *Operator-Surface Quality*):
+
+> ### Design Mistakes Become Rules; Screens Are Measured Against the Rules Before They Merge
+> **Rule.** Every design mistake the owner points out is diagnosed in writing, naming the practice that was broken, and becomes a rule in the Design Standard or sharpens one; the feedback, the diagnosis, the rule and the fix are linked by a tracked card that closes only when the server has verified each. Every change to a screen is rendered by the gate itself, at the standard sizes, with realistic data, and measured against the applicable rules before it merges or ships. Rules that can be measured are measured by machine.
+> **Fails.** A change may not add a violation of a blocking rule. A screen change with a visible difference that nobody independent has read does not merge. A check that cannot run is recorded as unavailable by name and is swept the next day; it is never recorded as a pass and never refuses a merge by itself. A rule the owner's feedback earned is waived or loosened only by the owner, by a tap on his own phone bound to that exact change. Any other rule may be waived only by a reviewer who did not write the change, with a recorded reason.
+> **In practice.** `docs/DESIGN-STANDARD.md` is the one standard and its rule ids are permanent. The design step in Local Verify runs the base commit's copy of the gate, renders base and head with a pinned renderer, and applies one decision table on both merge floors. Captures stay in the agent's private store. The app release scripts run a vendored copy of the same gate. Owner design feedback becomes a Work Board card that the owner is never required to tap.
 > **Earned from.** 2026-11-21: the owner compared the Mac app's accounts screen with the web dashboard's and found the Mac one clearly worse. The diagnosis found fifteen problems; for twelve no rule existed, and the rest were covered by a rule that applied to the web only. The existing quality standard already said a pull request names the screens that were loaded and at which widths, and nothing checked it.
 > **Traces to the goal.** A coherent agent does not make its person point out the same kind of mistake twice, and does not ask them to look at a screen it has not looked at itself.
-> **Applied through.** `scripts/lib/ui-surface.mjs`; `scripts/design-evidence-check.mjs`; the `design` lane of Local Verify; `scripts/design-standard-lint.mjs`; `DesignFeedbackCards`; `docs/specs/design-standard-enforcement.md`. **Parent principle:** *Structure beats Willpower*.
+> **Applied through.** `scripts/design/gate.mjs`; `scripts/design/lint.mjs`; the design step of Local Verify; `DesignFeedbackCards`; `docs/specs/design-standard-enforcement.md`. **Parent principle:** *Structure beats Willpower*.
 
 ## Constitution alignment
 
-- **Structure beats Willpower (parent).** A paragraph in a standard and a line in a quality checklist are replaced by a lane, a record field, a refusing release script and a card with verified items.
-- **Verify the State, Not Its Symbol.** Evidence is bound to file fingerprints and image headers; the no-visible-change claim is checked by rendering; each remaining symbol is declared with its unmeasurable case.
-- **Signal vs. Authority; Judgment Within Floors.** Lane results, the manifest and the detector's answer are signals. The merge predicate holds the authority for merging, the owner's tap for exceptions, and two judgments (review rules, design feedback) sit inside stated floors.
-- **Intelligent Prompts: An LLM Gate Must Not String-Match.** Whether a message is design feedback is judged by meaning. Path rules and measurements are not meaning judgments and are done by code.
-- **No Silent Degradation to Brittle Fallback.** No browser, no fixture and an unreadable card are each a named failure. A shed detector call is queued, not dropped.
-- **Counts are signals, not gates.** The ratchet refuses a rise against a recorded baseline; moving a check to blocking is a judgment on traced runs, not a threshold reached.
-- **Close the Loop.** Feedback is a card from the moment it is heard; the audit re-surfaces anything that went around the gate.
-- **Agent Proposes, Operator Approves; Approval Only Where Required.** The owner is asked for the constitution article, for overrides, and for one look at each fix he asked for. Rules, entries, fixes and evidence are the agent's.
-- **Updates never restrict existing agents.** Nothing here holds any agent but the development agent.
-- **Cross-Machine Coherence; Migration Parity; Agent Awareness.** Stated in "Multi-machine posture" and section 7.
-- **One Constitution, Two Books Aligned.** The article lands in both books, master first.
-- **Occam's Razor.** One parser, one classifier, one checker and one lane serve the pre-push hook, the verifier, the Actions workflow, the apps release scripts, the audit and the feedback card. Nothing is added to GitHub that the local floor does not need, and no setting is added.
+- **Structure beats Willpower (parent).** A paragraph in a standard becomes a step in the merge path, a lint, a release-script step and a card the server closes.
+- **Verify the State, Not Its Symbol.** The gate makes the pictures; nothing submitted is trusted. Each remaining symbol is declared with its unmeasurable case.
+- **Signal vs. Authority; Judgment Within Floors.** Measurements are signals. The decision table holds the authority to merge. Five judgments sit inside stated floors with named arbiters. No fixed count, age or size limit decides anything.
+- **Intelligent Prompts: An LLM Gate Must Not String-Match.** Whether a message is design feedback is judged by meaning.
+- **No Silent Degradation to Brittle Fallback; the User Experience Is the Product.** `unavailable` is named, signalled and swept. A broken tool cannot stop delivery.
+- **Close the Loop.** Feedback is a card from the moment it is confirmed; every staged piece cites a tracked card; the sweep brings back anything that went around.
+- **Agent Proposes, Operator Approves; Approval Only Where Required; The Agent Carries the Loop.** The owner is asked for the constitution article and for his own earned rules. He is never asked to close a card, dismiss a wrong guess or approve a waiver of an ordinary rule.
+- **Always a Multi-Machine Entity.** Every new piece of state has a posture; the one machine-local item uses a key from the closed list.
+- **Self-Hosting.** Scope today is Instar's own development. The path to users' projects is a tracked item, not a sentence.
+- **Updates never restrict existing agents; Migration Parity; Agent Awareness.** Nothing here holds or instructs any agent but a development agent.
+- **One Constitution, Two Books Aligned.** Both wordings are above, paired.
+- **Occam's Razor.** One parser, one classifier, one gate and one decision table serve the verifier, the release scripts, the sweep and the feedback card. The revision removed the committed evidence folder, the stored baseline, the fourth lane, the GitHub workflow, the repository hooks, the entry-number ledger and the detector backlog.
