@@ -27,10 +27,9 @@ Two earlier versions of this fix were thrown away after outside review found the
 
 Review also found that every saved message read the whole 31 MB file just to decide whether it was due for trimming. The server now counts the lines once, keeps the count current, and reads the file only when it is actually time to trim.
 
-Two smaller fixes ride along, both found in the same recordings:
+Two start-up improvements that were part of this change (the code map and the Node check) now have their own pull request, so this one covers only the conversation list, chat history and saving messages.
 
-- **The code map rebuilt at start-up (the "Cartographer")** used to rewrite thousands of small files on every restart, even when nothing had changed. It now compares each one with what is already on disk and rewrites only the files whose contents actually changed, which is usually none.
-- **The start-up check of which Node program to use** ran a separate test program for each installed copy of Node, one after another, while the server waited. Those tests now run side by side in the background, and the server uses their answers.
+There is also an off switch: one setting (`telegramHistoryView.enabled` set to false) puts every read back on the old path without a code change.
 
 ## The safeguards
 
@@ -38,7 +37,7 @@ Two smaller fixes ride along, both found in the same recordings:
 - A message saved during the background read appears once. When old messages are trimmed from the file, the memory copy is dropped and rebuilt, so it never shows a message the file no longer holds.
 - If the background read fails, nothing partial is kept. The apps are told to try again, and a later request reads the file again after a growing pause (five seconds, doubling, at most five minutes).
 - Other parts of the server that use the old way of reading history behave exactly as before.
-- Tests cover the old failure: the list used to read the file once per conversation and now reads it zero times on the main thread. Others cover paging, failed reads, trimming and the code map.
+- Tests cover the old failure: the list used to read the file once per conversation and now reads it zero times on the main thread. Others inject failures (a trim during loading, a save that half-fails, a trim that fails and succeeds later, another machine still loading) and check that nothing is lost, hidden or duplicated.
 
 ## What is not in this change
 

@@ -66,6 +66,20 @@ describe('message-log rotation does not read the log per append', () => {
     expect(JSON.parse(lines.at(-1)!).messageId).toBe(1_099);
   });
 
+  it('injected: a rotation that fails, then succeeds late, keeps every line an on-time rotation would have kept', () => {
+    const { logPath, log } = logger(50, 20);
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('simulated rename failure'); });
+    for (let i = 0; i < 51; i++) log.append(entry(i) as never); // the on-time attempt at 51 lines fails
+    rename.mockRestore();
+    for (let i = 51; i < 80; i++) log.append(entry(i) as never); // braked: still over the cap
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+    log.append(entry(80) as never); // the late rotation
+    const ids = fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l).messageId);
+    // On time, rotation at 51 lines keeps messages 31..50; then 51..80 follow: 31..80.
+    expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => 31 + i));
+  });
+
   it('forget() makes the next check recount the file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msglog-rot-'));
     dirs.push(dir);

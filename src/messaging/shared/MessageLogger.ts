@@ -239,7 +239,8 @@ export class MessageLogger {
       const content = fs.readFileSync(this.logPath, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length > this.maxLines) {
-        const kept = lines.slice(-this.keepLines);
+        // After a failed attempt, keep what a rotation on time would have kept, never less.
+        const kept = lines.slice(-this.rotationLineCount.keepFor(lines.length, this.keepLines));
         const tmpPath = `${this.logPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
         try {
           fs.writeFileSync(tmpPath, kept.join('\n') + '\n');
@@ -290,7 +291,21 @@ export class RotationLineCount {
     return this.count > maxLines;
   }
 
-  set(lines: number): void { this.count = lines; this.waitAppends = 0; this.waitUntilMs = 0; }
+  set(lines: number): void { this.count = lines; this.waitAppends = 0; this.waitUntilMs = 0; this.firstFailedAt = null; }
+
+  /** Lines in the file at the first attempt that failed since the last successful rotation. */
+  private firstFailedAt: number | null = null;
+
+  /**
+   * How many lines a rotation keeps. Normally `keepLines`. After a failed attempt, also every line
+   * appended since, so a late rotation removes exactly what the on-time one would have: a brief
+   * failure leaves the log over its cap for a while but never costs history. Call it with the
+   * file's line count before rewriting; a rewrite that then fails is remembered as that attempt.
+   */
+  keepFor(lines: number, keepLines: number): number {
+    if (this.firstFailedAt === null) { this.firstFailedAt = lines; return keepLines; }
+    return keepLines + Math.max(0, lines - this.firstFailedAt);
+  }
 
   /**
    * A rotation is being attempted: unless set() reports it finished, wait ROTATION_RETRY_LINES
@@ -299,7 +314,7 @@ export class RotationLineCount {
   failed(): void { this.waitAppends = ROTATION_RETRY_LINES; this.waitUntilMs = Date.now() + ROTATION_RETRY_MS; }
 
   /** The file is back under the size threshold (rotated or replaced elsewhere): start over. */
-  forget(): void { this.count = null; this.waitAppends = 0; this.waitUntilMs = 0; }
+  forget(): void { this.count = null; this.waitAppends = 0; this.waitUntilMs = 0; this.firstFailedAt = null; }
 }
 
 /** Appends between rotation attempts after a failure: 1% of the 100 000-line cap. */

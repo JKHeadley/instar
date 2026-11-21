@@ -913,44 +913,16 @@ function findNodePath(): string {
  * Used to create fallback-aware boot wrappers that survive NVM/asdf version switches.
  */
 function resolveNodeCandidates(): string[] {
-  let current: string | null = null;
-  try {
-    current = execFileSync('which', ['node'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-  } catch { /* not found */ }
-  let brewPrefix: string | null = null;
-  try {
-    brewPrefix = execFileSync('brew', ['--prefix', 'node'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5000,
-    }).trim();
-  } catch { /* brew not installed or node not installed via brew */ }
-  return assembleNodeCandidates(current, brewPrefix);
-}
-
-/**
- * The same candidate list as resolveNodeCandidates, with its two child processes
- * (`which node`, `brew --prefix node` — the latter is a Ruby script that can take a
- * second or more) run asynchronously, for the server's boot path
- * (docs/specs/main-loop-freeze-conversation-list.md).
- */
-async function resolveNodeCandidatesAsync(): Promise<string[]> {
-  const { execFile } = await import('node:child_process');
-  const run = (file: string, args: string[], timeout?: number) => new Promise<string | null>((resolve) => {
-    execFile(file, args, { encoding: 'utf-8', ...(timeout ? { timeout } : {}) }, (err, stdout) => resolve(err ? null : String(stdout).trim()));
-  });
-  const [current, brewPrefix] = await Promise.all([run('which', ['node']), run('brew', ['--prefix', 'node'], 5000)]);
-  return assembleNodeCandidates(current, brewPrefix);
-}
-
-function assembleNodeCandidates(current: string | null, brewPrefix: string | null): string[] {
   const candidates = new Set<string>();
 
   // 1. Current session's node (most likely correct)
-  if (current && fs.existsSync(current)) candidates.add(current);
+  try {
+    const current = execFileSync('which', ['node'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (current && fs.existsSync(current)) candidates.add(current);
+  } catch { /* not found */ }
 
   // 1b. Every PATH entry, not only the first `which node` result. The first
   // result can be this agent's own .instar/bin/node symlink. If that symlink is
@@ -977,10 +949,15 @@ function assembleNodeCandidates(current: string | null, brewPrefix: string | nul
   }
 
   // 4. Homebrew cellar (follows any installed version)
-  if (brewPrefix) {
+  try {
+    const brewPrefix = execFileSync('brew', ['--prefix', 'node'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).trim();
     const brewNode = path.join(brewPrefix, 'bin', 'node');
     if (fs.existsSync(brewNode)) candidates.add(brewNode);
-  }
+  } catch { /* brew not installed or node not installed via brew */ }
 
   return [...candidates];
 }
@@ -1001,10 +978,7 @@ export function excludeManagedNodeSymlink(candidates: string[], symlinkPath: str
  * actual module. A Node whose NODE_MODULE_VERSION doesn't match the
  * prebuilt fails here.
  */
-function nodeCanLoadNativeModule(nodePath: string, nativeModulePath: string, known?: ReadonlyMap<string, boolean>): boolean {
-  // A result probed ahead of time off the event loop (probeNodeNativeCompat) is used as-is.
-  const cached = known?.get(nodePath);
-  if (cached !== undefined) return cached;
+function nodeCanLoadNativeModule(nodePath: string, nativeModulePath: string): boolean {
   try {
     execFileSync(nodePath, ['-e', `require(${JSON.stringify(nativeModulePath)})`], {
       stdio: 'ignore',
@@ -1072,10 +1046,10 @@ export function selectDurableNode(
   return pool[0];
 }
 
-function pickDurableNodePath(candidates: string[], nativeModulePath?: string, known?: ReadonlyMap<string, boolean>): string | undefined {
+function pickDurableNodePath(candidates: string[], nativeModulePath?: string): string | undefined {
   const isUsable = (p: string) => fs.existsSync(p);
   const isCompatible = nativeModulePath && fs.existsSync(nativeModulePath)
-    ? (p: string) => nodeCanLoadNativeModule(p, nativeModulePath, known)
+    ? (p: string) => nodeCanLoadNativeModule(p, nativeModulePath)
     : undefined;
   return selectDurableNode(candidates, isUsable, isCompatible);
 }
@@ -1089,64 +1063,7 @@ function pickDurableNodePath(candidates: string[], nativeModulePath?: string, kn
  *
  * Returns the symlink path.
  */
-/** The shadow-install's better-sqlite3 binary: the ABI anchor for node selection. */
-function shadowNativeModulePath(projectDir: string): string {
-  return path.join(
-    projectDir, '.instar', 'shadow-install', 'node_modules',
-    'better-sqlite3', 'build', 'Release', 'better_sqlite3.node',
-  );
-}
-
-/**
- * Probe, in parallel and OFF the event loop, whether each node candidate can load the
- * shadow-install's native module (docs/specs/main-loop-freeze-conversation-list.md).
- * The server's boot passes the result to ensureStableNodeSymlink, which otherwise runs
- * one blocking `node -e require(...)` per candidate on the main thread. An empty map
- * (no native module, or a probe that could not run) just means the synchronous path
- * probes for itself, so behavior never depends on this succeeding.
- */
-export async function probeNodeNativeCompat(projectDir: string): Promise<NodeProbeResult> {
-  const known = new Map<string, boolean>();
-  const result: NodeProbeResult = { nativeCompat: known, candidates: null };
-  // The symlink step leaves a preserved recovery bootstrap alone, so there is nothing to probe for.
-  if (preserveRecoveryBootstrap(projectDir)) return result;
-  const candidates = await resolveNodeCandidatesAsync();
-  result.candidates = candidates;
-  const nativeModulePath = shadowNativeModulePath(projectDir);
-  if (!fs.existsSync(nativeModulePath)) return result;
-  const symlinkPath = path.join(projectDir, '.instar', 'bin', 'node');
-  const paths = new Set(excludeManagedNodeSymlink(candidates, symlinkPath).filter((p) => fs.existsSync(p)));
-  try { const target = fs.readlinkSync(symlinkPath); if (fs.existsSync(target)) paths.add(target); } catch { /* @silent-fallback-ok — no current symlink to probe */ }
-  // At most NODE_PROBE_CONCURRENCY probes at once: each is a whole node process.
-  const queue = [...paths];
-  const worker = async (): Promise<void> => {
-    for (let nodePath = queue.shift(); nodePath !== undefined; nodePath = queue.shift()) {
-      const p = nodePath;
-      await new Promise<void>((resolve) => {
-        // Output ignored, as in the synchronous probe: only the exit status answers.
-        const child = spawn(p, ['-e', `require(${JSON.stringify(nativeModulePath)})`], { stdio: 'ignore', timeout: 10_000 });
-        child.once('error', () => { known.set(p, false); resolve(); });
-        child.once('exit', (code) => { known.set(p, code === 0); resolve(); });
-      });
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(NODE_PROBE_CONCURRENCY, queue.length) }, worker));
-  return result;
-}
-
-/** What the boot path learned off the event loop: probe answers and the candidate list (null = not resolved). */
-export interface NodeProbeResult {
-  nativeCompat: Map<string, boolean>;
-  candidates: string[] | null;
-}
-
-/**
- * Probes running at once. Each is a full node process (tens of MB); the candidate list is
- * PATH-derived and usually under ten, so four keeps the boot spike small without serializing.
- */
-const NODE_PROBE_CONCURRENCY = 4;
-
-export function ensureStableNodeSymlink(projectDir: string, beforeWrite?:(target:string)=>void, opts?: { nativeCompat?: ReadonlyMap<string, boolean>; candidates?: readonly string[] | null }): string {
+export function ensureStableNodeSymlink(projectDir: string, beforeWrite?:(target:string)=>void): string {
   if(!beforeWrite&&preserveRecoveryBootstrap(projectDir))return path.join(projectDir,'.instar','bin','node');
   if(beforeWrite)assertRecoveryBootstrapWrite(projectDir);
   const binDir = path.join(projectDir, '.instar', 'bin');
@@ -1157,14 +1074,16 @@ export function ensureStableNodeSymlink(projectDir: string, beforeWrite?:(target
   // The shadow-install's better-sqlite3 native binary — the ABI anchor.
   // pickDurableNodePath uses it to avoid selecting a node major that can't
   // load it (the recurring-SQLite-bane fix).
-  const nativeModulePath = shadowNativeModulePath(projectDir);
+  const nativeModulePath = path.join(
+    projectDir, '.instar', 'shadow-install', 'node_modules',
+    'better-sqlite3', 'build', 'Release', 'better_sqlite3.node',
+  );
   const nativeModuleExists = fs.existsSync(nativeModulePath);
-  const known = opts?.nativeCompat;
 
   // Resolve all available node paths and pick the most durable ABI-compatible one
-  const candidates = excludeManagedNodeSymlink(opts?.candidates ? [...opts.candidates] : resolveNodeCandidates(), symlinkPath);
+  const candidates = excludeManagedNodeSymlink(resolveNodeCandidates(), symlinkPath);
   const fallback = findNodePath();
-  const durablePath = pickDurableNodePath(candidates, nativeModulePath, known)
+  const durablePath = pickDurableNodePath(candidates, nativeModulePath)
     ?? (path.resolve(fallback) !== path.resolve(symlinkPath) ? fallback : undefined);
   if (!durablePath) {
     throw new Error(`No real Node binary found outside managed symlink ${symlinkPath}`);
@@ -1181,7 +1100,7 @@ export function ensureStableNodeSymlink(projectDir: string, beforeWrite?:(target
       // re-pointed, even though it "works" in the naive sense. This is the
       // gap that let SQLite silently break: the old check only compared paths.
       if (target === durablePath) {
-        if (!nativeModuleExists || nodeCanLoadNativeModule(target, nativeModulePath, known)) {
+        if (!nativeModuleExists || nodeCanLoadNativeModule(target, nativeModulePath)) {
           return symlinkPath;
         }
         // target === durablePath but it can't load the module AND a better

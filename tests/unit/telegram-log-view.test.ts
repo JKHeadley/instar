@@ -134,6 +134,63 @@ describe('Telegram log view', () => {
     expect((adapter as unknown as Inner).loggedMessageKeys.has('in:1007:8200')).toBe(true);
   });
 
+  it('injected: a rotation while the handle closes is read again in the same flight, never a load with no view', async () => {
+    const real = fs.promises.open.bind(fs.promises);
+    let rotated = false;
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (...a: Parameters<typeof fs.promises.open>) => {
+      const fh = await real(...a); const close = fh.close.bind(fh);
+      (fh as unknown as { close: unknown }).close = async () => {
+        if (!rotated) {
+          rotated = true;
+          const kept = fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).filter((l) => !l.includes('"topicId":1059'));
+          fs.writeFileSync(logPath, kept.join('\n') + '\n');
+          (adapter as unknown as Inner).noteLogRotated();
+        }
+        await close();
+      };
+      return fh;
+    }) as typeof fs.promises.open);
+    expect(await adapter.loadHistory()).toBe(true);
+    expect(rotated).toBe(true);
+    expect(adapter.isHistoryLoaded()).toBe(true);
+    expect(adapter.getTopicTailRows(1059, 5)).toEqual([]);
+    expect(adapter.getTopicTailRows(1001, 1)[0].text).toBe('shared logger row');
+  });
+
+  it('injected: an append that fails part-way is never visible only in memory', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await adapter.loadHistory();
+    const realAppend = fs.appendFileSync.bind(fs);
+    const spy = vi.spyOn(fs, 'appendFileSync').mockImplementationOnce(((file: fs.PathOrFileDescriptor, data: string | Uint8Array) => {
+      realAppend(file, String(data).slice(0, 25)); // part of the line reached the disk
+      throw new Error('disk full');
+    }) as typeof fs.appendFileSync);
+    adapter.logInboundMessage({ messageId: 8400, topicId: 1009, text: 'partly written', timestamp: at(8400) });
+    spy.mockRestore();
+    adapter.logInboundMessage({ messageId: 8401, topicId: 1009, text: 'lands on the broken line', timestamp: at(8401) });
+    await adapter.loadHistory();
+    const fresh = make(dir); extra.push(fresh);
+    (adapter as unknown as Inner).topicTailCache.clear();
+    expect(adapter.getTopicHistory(1009, 500)).toEqual(fresh.getTopicHistory(1009, 500));
+    expect(adapter.getTopicHistory(1009, 500).some((r) => r.messageId === 8401)).toBe(false);
+  });
+
+  it('the off switch returns every read to the old file read and drops the view', async () => {
+    await adapter.loadHistory();
+    let on = true;
+    adapter.setHistoryViewSwitch(() => on);
+    on = false;
+    const reads = vi.spyOn(fs, 'readFileSync');
+    expect(adapter.isHistoryLoaded()).toBe(false);
+    expect(await adapter.waitForHistory(10)).toBe(true); // no wait: callers take the old path
+    expect(adapter.getTopicTailRows(1003, 1)[0].text).toBe('r2 t3');
+    expect(reads.mock.calls.filter((c) => String(c[0]) === logPath).length).toBeGreaterThan(0);
+    expect(await adapter.loadHistory()).toBe(false);
+    on = true;
+    expect(await adapter.loadHistory()).toBe(true);
+    expect(adapter.isHistoryLoaded()).toBe(true);
+  });
+
   it('a read failing part-way is discarded and braked, waiters are told, and a later request reads again', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const real = fs.promises.open.bind(fs.promises);

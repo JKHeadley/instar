@@ -7987,6 +7987,13 @@ export class AgentServer {
       };
       // Conversation reads wait for one streamed load of the log instead of scanning it on the main
       // thread (docs/specs/main-loop-freeze-conversation-list.md). Loaded early where the app is on.
+      // Off switch: `telegramHistoryView.enabled: false` returns every read to the old path, read live.
+      if (options.telegram) {
+        const lc = options.liveConfig;
+        options.telegram.setHistoryViewSwitch(() => (lc?.get
+          ? lc.get<boolean | undefined>('telegramHistoryView.enabled', undefined)
+          : (this.config as { telegramHistoryView?: { enabled?: boolean } }).telegramHistoryView?.enabled) !== false);
+      }
       if (options.telegram && (options.mobileRoutes?.start ?? !process.env.VITEST)) void options.telegram.loadHistory();
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.

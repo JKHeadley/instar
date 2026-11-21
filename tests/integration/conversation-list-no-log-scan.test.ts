@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
+import http from 'node:http';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
@@ -22,7 +23,7 @@ const N = 120;
 const cleanup: Array<() => Promise<void> | void> = [];
 afterAll(async () => { for (const c of cleanup.reverse()) await c(); });
 
-async function boot() {
+async function boot(opts: { peerUrls?: string[]; config?: Record<string, unknown> } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'clist-int-'));
   cleanup.push(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/conversation-list-no-log-scan.test.ts' }));
   const stateDir = path.join(dir, '.instar');
@@ -39,11 +40,12 @@ async function boot() {
   const config = {
     projectName: 'clist-int', projectDir: dir, stateDir, port: 0, authToken: 'tok-1', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
-    scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, threadline: { ownerName: 'Justin' },
+    scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, threadline: { ownerName: 'Justin' }, ...(opts.config ?? {}),
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), telegram } as never);
+  const resolvePeerUrls = () => (opts.peerUrls ?? []).map((url, i) => ({ machineId: `m_peer${i}`, url, kind: 'lan' }));
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), telegram, resolvePeerUrls, meshSelfId: 'm1' } as never);
   cleanup.push(() => server.stop());
   return { server, telegram, logPath };
 }
@@ -95,5 +97,30 @@ describe('GET /mobile/conversations with many closed Telegram topics', () => {
       expect(r.headers['retry-after']).toBe('5');
       expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath)).toHaveLength(0);
     } finally { wait.mockRestore(); reads.mockRestore(); vi.restoreAllMocks(); }
+  });
+
+  it('injected: a peer still loading its history is reported as loading, never as off', async () => {
+    const peer = http.createServer((_req, res) => { res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '5' }); res.end(JSON.stringify({ error: 'conversations-loading', retryable: true })); });
+    const off = http.createServer((_req, res) => { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'native-conversations-off' })); });
+    await Promise.all([new Promise<void>((r) => peer.listen(0, '127.0.0.1', r)), new Promise<void>((r) => off.listen(0, '127.0.0.1', r))]);
+    cleanup.push(() => { peer.close(); off.close(); });
+    const url = (s: http.Server) => `http://127.0.0.1:${(s.address() as { port: number }).port}`;
+    const e = await boot({ peerUrls: [url(peer), url(off)] });
+    const r = await request(e.server.getApp()).get('/mobile/conversations?scope=pool').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+    expect(r.status).toBe(200);
+    const failed = Object.fromEntries(r.body.pool.failed.map((f: { machineId: string; reason: string }) => [f.machineId, f.reason]));
+    expect(failed).toEqual({ m_peer0: 'loading', m_peer1: 'off' });
+  });
+
+  it('with telegramHistoryView.enabled false the list takes the old read path', async () => {
+    const e = await boot({ config: { telegramHistoryView: { enabled: false } } });
+    const reads = vi.spyOn(fs, 'readFileSync');
+    try {
+      const r = await request(e.server.getApp()).get('/mobile/conversations?limit=5').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+      expect(r.status).toBe(200);
+      expect(r.body.conversations[0]).toMatchObject({ id: 5000 + N, lastPreview: `msg 3 in ${N}` });
+      expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath).length).toBeGreaterThan(0);
+      expect(e.telegram.isHistoryLoaded()).toBe(false);
+    } finally { reads.mockRestore(); }
   });
 });

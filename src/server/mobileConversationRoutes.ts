@@ -228,7 +228,13 @@ async function fetchPeers<T>(
         headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
       });
       if (r.status === 404) return;
-      if (!r.ok) { failed.push({ machineId: p.machineId, reason: r.status === 503 ? 'off' : `http-${r.status}` }); return; }
+      if (!r.ok) {
+        // A peer still loading its Telegram history is warming, not off: say so (main-loop-freeze-conversation-list).
+        let loading = false;
+        if (r.status === 503) { try { loading = ((await r.json()) as { error?: unknown })?.error === 'conversations-loading'; } catch { /* @silent-fallback-ok — an unreadable 503 body reads as off, as before */ } }
+        failed.push({ machineId: p.machineId, reason: loading ? 'loading' : r.status === 503 ? 'off' : `http-${r.status}` });
+        return;
+      }
       const text = await r.text();
       if (Buffer.byteLength(text) > maxBytes) { failed.push({ machineId: p.machineId, reason: 'too-large' }); return; }
       results.push(take(JSON.parse(text) as Record<string, unknown>, p.machineId));
@@ -724,6 +730,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         };
       })
       : { results: [], failed: [] };
+    // The view can be dropped (a log rotation) while the peers answer: check again before the
+    // unread and pinned passes below read Telegram rows.
+    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady(historyWait))) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     // A peer's Slack rows are never listed: a Slack conversation id is local to the machine that
     // minted it, and the Slack routes on this machine look ids up here, so a peer row could name a
     // different conversation that shares the number (and would otherwise collapse onto this
@@ -763,7 +772,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (reader.viaDevice) unread.touchBaseline(reader);
     // Only a mark on a Telegram conversation needs its history.
     // After the wait the report runs either way, one result per mark, as it always has.
-    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady) await deps.telegramHistoryReady();
+    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady) await deps.telegramHistoryReady(p.kind === 'device' ? 15_000 : 4_000);
     // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
     const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
     res.json({ results });

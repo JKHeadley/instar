@@ -13,12 +13,20 @@ Files touched:
 - `src/messaging/TelegramAdapter.ts` — an in-memory log view replaces the per-topic file scan (`loadHistory`, `waitForHistory`, `whenHistoryLoaded`), `getTopicTailRows`, `getTopicHistoryBeforeAsync`; legacy rotation uses `RotationLineCount`.
 - `src/server/AgentServer.ts`, `src/server/routes.ts`, `src/server/mobileConversationRoutes.ts` — list, read-report and chat-history routes wait (bounded) for the view; the list and unread counter use unjoined tail rows; the graph inventory starts after the first load.
 - `src/messaging/shared/MessageLogger.ts` — `RotationLineCount` + `countNewlines`; `maybeRotate` no longer reads the log on every append.
-- `src/core/CartographerTree.ts` — `scaffoldChunked` writes a node file only when its bytes change.
-- `src/commands/setup.ts` — `probeNodeNativeCompat` (async candidate resolution + bounded parallel ABI probes), `assembleNodeCandidates` shared by sync/async; `ensureStableNodeSymlink` accepts pre-probed answers and candidates.
-- `src/commands/server.ts` — boot awaits the async probe and hands its answers to the symlink step.
 - Tests: 5 unit files, 1 integration, 1 e2e (listed in the spec).
 
-Tier 1 (small, reversible: a revert fully restores prior behavior; no state, config or migration). Size: 8 source files, 7 test files. Effort: spec review 3 rounds (the Tier-1 cap); each round found a real design issue one layer further out (partial-read merge and Cartographer race; per-append rotation read; the unread pass's scan), which is why it used the full cap.
+Tier 1 (small, reversible: a revert fully restores prior behavior; no state or migration; one new optional setting, `telegramHistoryView.enabled`, defaults on and needs no migration). Size: 5 source files, 4 test files. Effort: spec review 3 rounds (the Tier-1 cap); each round found a real design issue one layer further out (partial-read merge and Cartographer race; per-append rotation read; the unread pass's scan), which is why it used the full cap.
+
+**Split:** the boot-time changes (Cartographer scaffold, async Node ABI check) moved to their own pull request, #3601. This change covers only the conversation-list, chat-history and message-save paths.
+
+**Off switch:** `telegramHistoryView.enabled: false` (default on; read live through LiveConfig where available) returns every read to the old path with no code change. Tested in `tests/unit/telegram-log-view.test.ts` and `tests/integration/conversation-list-no-log-scan.test.ts`.
+
+## Known limits (accepted by the operator, 2026-11-21)
+
+- **Replacing the log file by hand while the server runs** is unsupported: the view and rotation line count follow the file the server writes, and catch up at the next rotation or restart.
+- **A warming peer beyond 4 s** (round 5, finding 6) is reported as `loading` for that request rather than listed; the forwarded read-report wait is 4 s, inside the sender's 5 s budget.
+- **The 15 s wait racing a shorter server request timeout** (round 5, finding 7) produces the timeout answer; the data is unchanged.
+- **The graph inventory waiting for the first load** (round 5, finding 9) starts after the first load or its first failure, so coverage is late, never wrong.
 
 ## Decision-point inventory
 
@@ -64,7 +72,8 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 
 - **Shadowing:** none. The tail cache, its eviction and the unread service are unchanged; the view only replaces the file scan beneath them.
 - **Double-fire:** the load is single flight.
-- **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file, or an append onto a torn last line, causes a fresh read; a failed pass publishes nothing. The Cartographer read-compare-write stays in one synchronous turn.
+- **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file, or an append onto a torn last line, causes a fresh read; a failed pass publishes nothing.
+- **Failure handling:** a rotation during handle close is re-read in the same load; a part-failed append drops and re-reads the view; a late rotation keeps every line an on-time one would have; a loading peer is reported as `loading`.
 - **Feedback loops:** none. No timer retries the load; a later request may start another pass after 5 s, doubling to 5 min.
 - The conversation-graph inventory starts after the first load, so it cannot publish a partial view.
 
@@ -74,7 +83,7 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 
 - Other agents / install base: every agent gets a faster list (rows and unread counts); first requests after a boot wait up to 15 s for one background read, then get a retryable 503, no per-append full-log read above 20 MB, and a quieter boot. No API shape change: `/mobile/conversations` rows are identical, and that is verified by an old-versus-new client diff.
 - External systems: none.
-- Persistent state: none added. Cartographer node files are rewritten only on change (same contents format). Rotation behavior (when and what it keeps) is unchanged.
+- Persistent state: none added. Rotation behavior (when and what it keeps) is unchanged.
 - Timing: the streamed index build runs once in the background after the first list request.
 - Operator surface: no operator-facing actions.
 
@@ -88,7 +97,7 @@ No operator surface — not applicable.
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-Proxied-on-read. The log view is derived in-memory state over this machine's own Telegram log, with no durable store (same as the existing tail cache); the pool-wide list is served by the existing `?scope=pool` merged read that calls each machine's producer. No notices, no URLs, no durable state; nothing strands on topic transfer. Cartographer node files and the node symlink are per-machine files, as before. Status surfaces: none new or changed.
+Proxied-on-read. The log view is derived in-memory state over this machine's own Telegram log, with no durable store (same as the existing tail cache); the pool-wide list is served by the existing `?scope=pool` merged read that calls each machine's producer. No notices, no URLs, no durable state; nothing strands on topic transfer. Status surfaces: none new or changed.
 
 ---
 

@@ -69,11 +69,8 @@ No request or periodic task blocks the main loop for more than about one second.
 
 1. The conversation list never reads the Telegram log synchronously on a request's turn. It waits
    (bounded) for one streamed load, then builds N rows from memory.
-2. The Cartographer boot scaffold is incremental: an unchanged node is read, not rewritten.
 3. Logging a message never reads the whole log just to decide whether to rotate.
 3a. The list's unread counts (the same request) never read the log synchronously either.
-4. The boot-time node ABI probe does not run one blocking child process per node candidate on the
-   server's main thread.
 5. A guard test fails if a list of N topics reads the log synchronously at all (the old code reads it
    N+1 times); the one shared asynchronous warm-up read is distinguished from that.
 
@@ -116,18 +113,6 @@ rules as they were and replaces only the slow step underneath them.
 Row shape, previews, order, cursors, unread counts and dividers are intended to be unchanged; the
 old-versus-new client diff on identical fixture data is the proof.
 
-### 3. Incremental Cartographer scaffold
-
-`scaffoldChunked` pass 2 already yields between nodes (at most 50 ms per chunk), so it never held
-the loop for seconds; its cost was rewriting every node file on every boot. It now reads each
-existing node file once (one small synchronous read, replacing the old exists-check + read),
-serializes the refreshed node, and writes it only when the bytes differ. An unchanged tree on
-reboot writes no node file. The read, compare and write deliberately stay in ONE synchronous turn:
-an await between them would let `setSummary`'s synchronous write land in the gap and be overwritten
-by the scaffold's stale copy (a lost update an async draft of this change had; review caught it).
-A corrupt node file reads as absent and is rewritten. `lastScaffoldUnchangedNodes` exposes the count
-for tests and diagnosis. The walk (pass 1) and the streamed index (pass 3) are unchanged.
-
 ### 3b. Rotation check without a per-append read
 
 A small `RotationLineCount` (in `MessageLogger.ts`, used by both the shared logger and the legacy
@@ -142,6 +127,31 @@ recounted. The adapter is the file's single writer (see §1), so the count track
 another writer ever added, the count would lag and delay a rotation, and the rotation itself
 always re-reads and re-counts.
 
+### 4. Failure handling added after review
+
+- A rotation while a load is closing its file handle is read again in the same load, so a load
+  never finishes with no view (that would be a blank chat).
+- An append that fails part-way drops the view and re-reads the file, so a message is never
+  visible only in memory.
+- A rotation that fails and later succeeds keeps every line an on-time rotation would have kept
+  (`RotationLineCount.keepFor`): the log may stay over its cap for a while, history is never lost.
+- A peer that answers `503 conversations-loading` is reported in `pool.failed` as `loading`, not
+  `off`. The pool list re-checks the view after the peers answer and before its unread and pin passes.
+- A forwarded read report waits at most 4 s, inside the sender's 5 s budget.
+
+### 5. Off switch
+
+`telegramHistoryView.enabled` (default on). Set to `false`, every read returns to the old path with
+no code change: no view, no waits, the synchronous scroll-back, and the joined history read for the
+list and unread counter. It is read live through LiveConfig where available (otherwise from the
+config at boot). Turning it off drops the view; turning it back on rebuilds it from the file.
+
+### Split out
+
+The boot-time changes (the Cartographer scaffold writing only changed node files, and the async
+Node ABI check) moved to their own pull request, #3601, at the operator's request. This change is
+only the conversation-list, chat-history and message-save paths.
+
 ### Simplest robust route
 
 Replace only the expensive file scan with an in-memory copy of what it would return. No new data
@@ -155,17 +165,15 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
 - Rotation retry after a failed rotation: 1 000 appends — judgment-candidate; floor: rotation still happens once the failure clears, and the log only grows by the brake's width (1 % of the cap) meanwhile; arbiter: the next attempt. Brake required by No Unbounded Loops; the old behavior was a full read on every append.
 - History-load retry backoff 5 s doubling to a 5 min cap — judgment-candidate; floor: a failed load publishes nothing and readers get a retryable answer; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
 
-## Out of scope, with routes
+## Known limits (accepted)
 
-- `SessionManager.configHomeForSession` / `tmuxSessionExists` / `captureOutput` synchronous tmux
-  spawns under `#monitorTick` and `StuckInputSentinel` (0.3-0.5 % each in the profile). These belong
-  to the async-tmux work; queued with this profile as evidence. (feedback item fb-9193b40c-880)
-- About fifteen callers of `getTopicHistory(topicId, 1_000)` (above the 500-row view; e.g.
-  `notificationAlreadyDelivered`) still scan synchronously per call. Not on the list or chat path. (feedback item fb-9193b40c-880)
-- An actual rotation still reads and rewrites the file synchronously, once per roughly 25 000
-  messages, as it always has. (feedback item fb-9193b40c-880)
-- `CiFailurePoller`'s `gh` launches are already async `execFile`; the profile's `spawn` frames
-  under it are the unavoidable fork cost of a real child process, not a blocking wait.
+- Replacing the log file by hand while the server runs is unsupported: the view and the rotation
+  line count follow the file the server writes, and catch up at the next rotation or restart.
+- Timing budgets: a peer that needs more than 4 s to load reports `loading` for that request; the
+  15 s wait can race a shorter server request timeout; the graph inventory waits for the first load
+  or its first failure. In each case the answer is late or "try again", never different data.
+- About fifteen callers of `getTopicHistory(topicId, 1_000)` (above the 500-row view) and an actual
+  rotation still read the file synchronously, as before. (feedback item fb-9193b40c-880)
 
 ## Multi-machine posture
 
@@ -173,8 +181,7 @@ Proxied-on-read. The tail cache is derived, in-memory, operational state: a view
 Telegram log with no durable store, the same posture as the existing tail cache. The pool-wide list
 is served by the existing `?scope=pool` merged read, which calls each machine's own producer. This change does not alter
 what a surviving machine can show for a dark peer (that is the existing pool read's contract);
-it only makes each machine's own answer cheap. The Cartographer scaffold and
-the node symlink are per-machine files. No notices, no URLs, no durable state added.
+it only makes each machine's own answer cheap.  No notices, no URLs, no durable state added.
 
 ## Testing
 
@@ -182,11 +189,6 @@ the node symlink are per-machine files. No notices, no URLs, no durable state ad
 - Unit `tests/unit/message-log-rotation-no-per-append-read.test.ts`: 200 appends above the size
   threshold read the file once (the seed), not 200 times; rotation still happens at the cap and
   keeps the newest lines; a failing rotation is braked (100 appends, zero reads) and recovers.
-- Unit `tests/unit/cartographer-scaffold-incremental.test.ts`: unchanged tree → zero node writes; a
-  new file → exactly two node writes (the file and its parent dir); a summary authored between
-  scaffold chunks survives; corrupt node rewritten.
-- Unit `tests/unit/node-symlink-async-probe.test.ts`: with probed answers and candidates, zero
-  synchronous probes and no synchronous `brew`; without them, behavior unchanged.
 - Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all topics in order; chats and scroll-back avoid synchronous log reads; unavailable history answers a retryable 503.
 - E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: production `AgentServer` and real adapter; concurrent cold requests share one load, with no synchronous log read.
 
@@ -207,7 +209,7 @@ the node symlink are per-machine files. No notices, no URLs, no durable state ad
 - **test-agent-live:** the e2e test boots the production `AgentServer` with a real Telegram adapter and read-marker store and drives the list route and the unread wiring; that is the throwaway-agent proof.
 - **dev-agent-live:** live on Echo from the release that carries it (no flag: it is a repair of an existing read path). The lead run (topic 145840) watches the Studio for the 20-30 s freezes and missed lease renewals over the following days.
 - **fleet:** the same release, ungated.
-- **graduation criterion:** over 7 days on the Echo Studio after the release, no event-loop freeze of 5 s or more whose saved profile shows `scanLogForTopic`, `maybeRotateLog`/`maybeRotate` or `CartographerTree.atomicWrite` as its top frame, and no lease renewal missed for a freeze. Zero observed freezes with no profile captured is not a pass on its own: at least one profile of a normal list poll is captured and shows no full-log read.
+- **graduation criterion:** over 7 days on the Echo Studio after the release, no event-loop freeze of 5 s or more whose saved profile shows `scanLogForTopic`, `maybeRotateLog`/`maybeRotate` as its top frame, and no lease renewal missed for a freeze. Zero observed freezes with no profile captured is not a pass on its own: at least one profile of a normal list poll is captured and shows no full-log read.
 - **ladder:** none (an always-on repair of an existing read path, no feature flag to climb)
 - **dark-window:** none — live on release. If the criterion is not met within 14 days, the reason and a new date are recorded on fb-52447f16-7d3.
 

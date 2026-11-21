@@ -23426,7 +23426,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return;
     }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
-      : ctx.telegram.getTopicHistoryBeforeAsync
+      : typeof ctx.telegram.getTopicHistoryBeforeAsync === 'function' && (ctx.telegram as { historyViewOn?: () => boolean }).historyViewOn?.() !== false
         ? await ctx.telegram.getTopicHistoryBeforeAsync(topicId, beforeMs, limit, beforeMessageId ?? undefined)
         : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).

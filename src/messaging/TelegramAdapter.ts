@@ -1359,6 +1359,8 @@ export class TelegramAdapter implements MessagingAdapter {
   /** The file's last line has no newline, so the next append lands on that same line. */
   private logTornTail = false;
   private logViewSettled: Array<() => void> = [];
+  /** The off switch (`telegramHistoryView.enabled`, read live): false returns every read to the old path. */
+  private historyViewSwitch: () => boolean = () => true;
   /** Bumped by each rotation, so a build that read the replaced file is not published. */
   private logGeneration = 0;
   private logViewFailures = 0;
@@ -4724,7 +4726,23 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** True once the in-memory view of the log can answer in place of a file scan. */
   isHistoryLoaded(): boolean {
-    return this.logView !== null;
+    return this.historyViewOn() && this.logView !== null;
+  }
+
+  /** Wire the off switch. Called once by the server with a live config read. */
+  setHistoryViewSwitch(on: () => boolean): void {
+    this.historyViewSwitch = on;
+  }
+
+  /**
+   * Whether the view is in use. Off drops it: appends are not recorded while off, so a view kept
+   * across off and on again could miss rows. Turning it back on rebuilds from the file.
+   */
+  historyViewOn(): boolean {
+    let on = true;
+    try { on = this.historyViewSwitch() !== false; } catch { on = true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
+    if (!on && this.logView) { this.logView = null; this.logTornTail = false; }
+    return on;
   }
 
   /**
@@ -4734,6 +4752,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * next request may start another after 5 s, doubling to 5 min.
    */
   loadHistory(): Promise<boolean> {
+    if (!this.historyViewOn()) return Promise.resolve(false);
     if (this.logViewBuild) return this.logViewBuild;
     if (Date.now() < this.logViewNextAttemptAt) return Promise.resolve(this.logView !== null);
     const pass = async (generation: number): Promise<boolean> => {
@@ -4803,7 +4822,11 @@ export class TelegramAdapter implements MessagingAdapter {
       try {
         // A rotation during the pass means it read the replaced file: read the new one.
         for (let attempt = 0; attempt < 3; attempt++) {
+          if (!this.historyViewOn()) return false;
           if (!(await pass(this.logGeneration))) continue;
+          // A rotation while the handle closed dropped what this pass published: read the new file
+          // in this same flight, never report a load that left no view.
+          if (!this.logView) continue;
           this.logViewFailures = 0;
           for (const wake of this.logViewWaiters.splice(0)) wake();
           for (const wake of this.logViewSettled.splice(0)) wake();
@@ -4833,6 +4856,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** Wait, without blocking the event loop, until the log view is usable. False after `timeoutMs`. */
   async waitForHistory(timeoutMs: number = 15_000): Promise<boolean> {
+    if (!this.historyViewOn()) return true; // switched off: callers use the old read path, no wait
     if (this.logView) return true;
     void this.loadHistory();
     if (!this.logViewBuild) return false; // the last pass failed and the next is not due yet
@@ -4852,14 +4876,14 @@ export class TelegramAdapter implements MessagingAdapter {
    * ordinary read path rather than waiting for a request to start another load.
    */
   whenHistoryLoaded(): Promise<void> {
-    if (this.logView || this.logViewFailures > 0) return Promise.resolve();
+    if (!this.historyViewOn() || this.logView || this.logViewFailures > 0) return Promise.resolve();
     void this.loadHistory();
     return new Promise((resolve) => { this.logViewSettled.push(resolve); });
   }
 
   /** Record an appended row exactly as a later read of the file will parse it. */
   private noteLogRow(row: unknown): void {
-    if (!this.logView) return; // a pass in progress reads it from the file
+    if (!this.logView || !this.historyViewOn()) return; // a pass in progress reads it from the file
     if (this.logTornTail) {
       // The row joined an unterminated last line. What that line now parses to, and which older
       // rows come back into the window, are the file's to say: read it again.
@@ -4889,6 +4913,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * parse its whole ledger synchronously.
    */
   getTopicTailRows(topicId: number, limit: number = 20): LogEntry[] {
+    if (!this.historyViewOn()) return this.getTopicHistory(topicId, limit); // the old read, exactly
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
       if (cached) return cached.slice(-limit);
@@ -4937,9 +4962,9 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private seedTailCacheFromLog(): void {
     for (const id of this.topicToSession.keys()) {
-      if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, this.logView ? [...(this.logView.get(id) ?? [])] : []);
+      if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, this.logView && this.historyViewOn() ? [...(this.logView.get(id) ?? [])] : []);
     }
-    if (this.logView) return; // the view already holds what this pass would read
+    if (this.logView && this.historyViewOn()) return; // the view already holds what this pass would read
     if (!fs.existsSync(this.messageLogPath)) return;
     let lines: string[];
     try {
@@ -5191,7 +5216,7 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
-    if (this.logView && limit <= TelegramAdapter.TAIL_CACHE_LIMIT) return (this.logView.get(topicId) ?? []).slice(-limit);
+    if (this.logView && limit <= TelegramAdapter.TAIL_CACHE_LIMIT && this.historyViewOn()) return (this.logView.get(topicId) ?? []).slice(-limit);
     if (!fs.existsSync(this.messageLogPath)) return [];
 
     // Read the file to find matching entries.
@@ -5250,7 +5275,8 @@ export class TelegramAdapter implements MessagingAdapter {
         ...(entry.rowOrigin ? { rowOrigin: entry.rowOrigin } : {}),
       };
       const persisted = this.sharedLogger.append(sharedRow);
-      if (!persisted) return;
+      // A failed append may have written part of the line: re-read what the file holds.
+      if (!persisted) { this.noteLogRotated(); return; }
       this.noteLogRow(sharedRow);
       this.rememberLoggedEntry(entry, dedupeKey);
       // Also notify the Telegram-specific callback for backward compatibility
@@ -5292,6 +5318,8 @@ export class TelegramAdapter implements MessagingAdapter {
       this.maybeRotateLog();
     } catch (err) {
       console.error(`[telegram] Failed to append to message log: ${err}`);
+      // It may have written part of the line: the view re-reads what the file holds.
+      this.noteLogRotated();
       DegradationReporter.getInstance().report({
         feature: 'Telegram.messageLog',
         primary: 'JSONL message log for conversation history and recovery',
@@ -5387,7 +5415,8 @@ export class TelegramAdapter implements MessagingAdapter {
       const lines = content.split('\n').filter(Boolean);
       if (lines.length <= 100_000) this.rotationLineCount.set(lines.length); // the count ran ahead: correct it
       else {
-        const kept = lines.slice(-75_000);
+        // After a failed attempt, keep what a rotation on time would have kept, never less.
+        const kept = lines.slice(-this.rotationLineCount.keepFor(lines.length, 75_000));
         const tmpPath = `${this.messageLogPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
         try {
           fs.writeFileSync(tmpPath, kept.join('\n') + '\n');

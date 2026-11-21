@@ -194,19 +194,6 @@ export class CartographerTree {
     fs.renameSync(tmp, filePath);
   }
 
-  /** A node file's raw text, or null when absent or unreadable. */
-  private readNodeFileRaw(filePath: string): string | null {
-    try {
-      return fs.readFileSync(filePath, 'utf8');
-    } catch {
-      // @silent-fallback-ok — an absent or unreadable node file reads as "no prior node"; the scaffold rewrites it.
-      return null;
-    }
-  }
-
-  /** Node files the last scaffoldChunked found unchanged and did not rewrite (observability + tests). */
-  lastScaffoldUnchangedNodes = 0;
-
   private ensureDirs(): void {
     fs.mkdirSync(this.nodesDir, { recursive: true });
   }
@@ -407,20 +394,8 @@ export class CartographerTree {
     // ── Pass 2: write each node file (preserving authored fields), yielding. ──
     const nodes = new Map<string, CartographerNode>();
     const keep = new Set<string>();
-    let unchangedNodes = 0;
     for (const [p, kind] of kindByPath) {
-      // Write only on change (docs/specs/main-loop-freeze-conversation-list.md): a boot used to
-      // rewrite every node file even when nothing moved; now an unchanged node costs one small
-      // read and no write. The read, compare and write stay in ONE synchronous turn on purpose:
-      // an await between them would let setSummary's synchronous write land in the gap and be
-      // overwritten by this pass's stale copy. tick() still yields between nodes.
-      const fp = this.nodeFilePath(p);
-      const existingRaw = this.readNodeFileRaw(fp);
-      let existing: CartographerNode | null = null;
-      if (existingRaw !== null) {
-        try { existing = JSON.parse(existingRaw) as CartographerNode; }
-        catch { existing = null; /* @silent-fallback-ok — a corrupt node file reads as absent and is rewritten below */ }
-      }
+      const existing = this.readNodeFile(p);
       const node: CartographerNode = {
         path: p, kind, summary: existing?.summary ?? '',
         summaryUpdatedAt: existing?.summaryUpdatedAt ?? null,
@@ -434,12 +409,9 @@ export class CartographerTree {
       };
       nodes.set(p, node);
       keep.add(`${this.slug(p)}.json`);
-      const serialized = JSON.stringify(node, null, 2);
-      if (serialized === existingRaw) unchangedNodes += 1;
-      else this.atomicWrite(fp, serialized);
+      this.atomicWrite(this.nodeFilePath(p), JSON.stringify(node, null, 2));
       await tick();
     }
-    this.lastScaffoldUnchangedNodes = unchangedNodes;
     // Prune node files for paths that disappeared.
     if (fs.existsSync(this.nodesDir)) {
       for (const f of fs.readdirSync(this.nodesDir)) {
