@@ -1,0 +1,51 @@
+{
+  "version": 2,
+  "slug": "native-lock-observation",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T02:51:41.970Z",
+  "artifactPath": "upgrades/side-effects/native-lock-observation.md",
+  "artifactSha256": "c63dcfad3f40c2312abb91b8c7e2ad926f2540241cac12e0d9aa9f64e27df037",
+  "specPath": "docs/specs/desktop-locked-screen.md",
+  "coveredFiles": [
+    "docs/specs/native-lock-observation.eli16.md",
+    "scripts/locked-proof/NATIVE-OBSERVATION.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "scripts/locked-proof/native-observation.mjs",
+    "src/core/DesktopGuardObservation.ts",
+    "src/core/DesktopLockedController.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/scaffold/templates.ts",
+    "tests/e2e/desktop-locked-lifecycle.test.ts",
+    "tests/fixtures/native-observation/isolation.ts",
+    "tests/integration/desktop-locked-routes.test.ts",
+    "tests/unit/desktop-guard-observation.test.ts",
+    "tests/unit/desktop-native-observer-swift.test.ts",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-human-steps.test.ts",
+    "tests/unit/locked-proof-native-observation.test.ts",
+    "tests/unit/native-observation-awareness.test.ts",
+    "tests/unit/native-observation-isolation.test.ts",
+    "upgrades/next/native-lock-observation.md",
+    "upgrades/side-effects/native-lock-observation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Native safety-path observation and bounded actor history; no safety decisions changed, but helper identity and permission validation require owner-managed rollout.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The existing desktop-relock-guard-replacement model exercises decideGuardReplacement under sustained pressure and proves the durable maximum of three replacements settles the controller. This change adds passive bounded observation at the existing spawn funnel; it introduces no new trigger, retry, or producer and does not change that production brake."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The proof harness had no native lock-dispatch source or complete actor history, so no-lock-call cases remained unmeasured. The new observer closes that evidence gap without changing production safety decisions."
+  }
+}

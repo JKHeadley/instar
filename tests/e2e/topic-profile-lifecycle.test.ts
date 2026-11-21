@@ -185,6 +185,19 @@ describe('Topic Profile E2E lifecycle', () => {
     expect(res.status).toBe(403);
   });
 
+  it('identity-security-creation-provenance: the creation record route answers through the production wiring', async () => {
+    const res = await request(app).get('/topic-creation-provenance/987654').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ topicId: 987654, provenance: null });
+  });
+
+  it('identity-security-creation-provenance: the propose lane (and so confirmIn) needs Telegram; on this server it is refused before anything is armed', async () => {
+    const res = await request(app).post('/topic-profile/987654/propose').set(auth()).set('X-Instar-Request', '1')
+      .send({ model: 'sonnet', confirmIn: 1 });
+    expect(res.status).toBe(409);
+    expect(String(res.body.error)).toContain('Propose-confirm needs a platform-bound numeric topic');
+  });
+
   it('refuses a write for a topic with no bound operator (403 no-bound-operator)', async () => {
     const res = await request(app)
       .post('/topic-profile/555')

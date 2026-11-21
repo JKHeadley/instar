@@ -133,7 +133,7 @@ describe('selection → projection offsets', () => {
     expect(pieces[0].keys).toEqual([]);
   });
 
-  it('highlights only on the latest version and only placed open comments', () => {
+  it('highlights placed open comments on whichever version is being read', () => {
     const comments = [
       { key: 'a', start: 1, end: 3, resolved: false, anchorState: 'ok' },
       { key: 'b', start: 1, end: 3, resolved: true, anchorState: 'ok' },
@@ -141,7 +141,8 @@ describe('selection → projection offsets', () => {
       { key: 'd', start: 4, end: 9, resolved: false, anchorState: 'edited' },
     ];
     expect(m.highlightRanges({ version: { latest: true }, comments }).map((r) => r.key)).toEqual(['a', 'd']);
-    expect(m.highlightRanges({ version: { latest: false }, comments })).toEqual([]);
+    expect(m.highlightRanges({ version: { latest: false }, comments }).map((r) => r.key)).toEqual(['a', 'd']);
+    expect(m.highlightRanges({ version: null, comments })).toEqual([]);
   });
 
   it('numbers ordered items per level', () => {
@@ -204,6 +205,12 @@ describe('links, location and words', () => {
     expect(m.anchorNote('edited')).toBe('The passage changed since this comment');
     expect(m.anchorNote('orphaned')).toBe('The passage this comment was on was removed');
     expect(m.anchorNote('ok')).toBeNull();
+    const page = { version: { id: 'v2' } };
+    const fromV1 = { onVersion: 'v1', onVersionLabel: 1 };
+    expect(m.anchorNote('ok', { onVersion: 'v2', onVersionLabel: 2 }, page)).toBeNull();
+    expect(m.anchorNote('ok', fromV1, page)).toBe('Made on version 1');
+    expect(m.anchorNote('edited', fromV1, page)).toBe('Made on version 1. The passage changed since this comment');
+    expect(m.anchorNote('orphaned', fromV1, page)).toBe("Made on version 1. This passage isn't in the version you're reading");
   });
 
   it('turns errors into plain words, never raw codes', () => {

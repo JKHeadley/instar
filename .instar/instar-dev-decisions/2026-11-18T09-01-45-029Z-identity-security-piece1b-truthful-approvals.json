@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-18T09:01:45.029Z",
+  "slug": "identity-security-piece1b-truthful-approvals",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 49,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/moltbridge/routes.ts",
+      "src/moltbridge/types.ts",
+      "src/threadline/AgentTrustManager.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/TrustEvaluator.ts",
+      "src/threadline/httpPeerTrust.ts",
+      "src/users/peerPlaceAdmission.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

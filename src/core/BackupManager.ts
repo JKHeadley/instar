@@ -276,6 +276,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/conversation-read-markers.json',
     // Conversation-list pins (conversation-list-pins): what each person pinned to the top of the list, replicated; small.
     'state/conversation-list-pins.json',
+    // Telegram topic names (topic-name-replication): the replicated name rows and outbox; small.
+    'state/telegram-topic-names.json',
     // Context budget layer store (context-budget-layered-summaries §9.7). A
     // directory entry: a glob with a wildcard in a middle segment is skipped.
     // Fold records, holds and markers inside it are never-backup segments

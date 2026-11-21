@@ -93,6 +93,12 @@ export interface SentinelClassification {
    * information that downstream gate telemetry consumes.
    */
   continuePingIntent?: ContinuePingIntent | null;
+  /**
+   * True when no judgment was actually made: the model call failed, was shed for
+   * capacity, or answered something unparseable, and a fallback was returned. A
+   * fallback is never remembered as a message's verdict (a repeated delivery asks again).
+   */
+  degraded?: boolean;
 }
 
 export type SentinelAction =
@@ -446,7 +452,20 @@ export interface InboundDecision {
   /** the underlying classification method (audit) */
   method: 'fast-path' | 'llm' | 'default';
   reason?: string;
+  /** True when this is the verdict an earlier delivery of the SAME message already got. */
+  reused?: boolean;
+  /** True when the decision rests on a fallback, not a judgment (see SentinelClassification.degraded). */
+  degraded?: boolean;
 }
+
+/**
+ * How long a message's verdict is kept for a repeated delivery of that message.
+ * A relay retry arrives seconds later; a crash redrive within minutes. Fifteen
+ * minutes covers both with room to spare, and bounds the memory held.
+ */
+export const INBOUND_DECISION_REUSE_MS = 15 * 60 * 1000;
+/** Upper bound on remembered verdicts (oldest dropped first). */
+export const INBOUND_DECISION_MAX_ENTRIES = 1000;
 
 // ── Sentinel Implementation ──────────────────────────────────────────
 
@@ -456,7 +475,9 @@ export class MessageSentinel {
   private customStopExact: Set<string>;
   private customPauseExact: Set<string>;
   /** Operator-channel-sacred disposition counters (observability — /metrics/features). */
-  public dispositionStats = { pauseConsumed: 0, pauseRoutedThrough: 0, breakerRecovered: 0, stopRescued: 0 };
+  public dispositionStats = { pauseConsumed: 0, pauseRoutedThrough: 0, breakerRecovered: 0, stopRescued: 0, decisionReused: 0 };
+  /** One verdict per inbound message: key = caller's message key + text identity. Insertion-ordered (oldest first). */
+  private decisionsByMessage = new Map<string, { at: number; decision: Promise<InboundDecision> }>();
   /** Bounded-blast-radius circuit-breaker: per-topic pause-consume timestamps (rolling window).
    *  Shared across BOTH inbound consume paths because both use this one MessageSentinel instance.
    *  In-memory by design: the PRIMARY guard is deterministic-only-consume (below), so a restart
@@ -507,8 +528,56 @@ export class MessageSentinel {
    *      route-through ALWAYS delivers — the breaker can only ever convert a
    *      consume into a delivery, never the reverse. Resets by window expiry.
    */
-  async decideInboundDisposition(message: string, topicId?: number): Promise<InboundDecision> {
+  async decideInboundDisposition(message: string, topicId?: number, messageKey?: string): Promise<InboundDecision> {
+    // ONE VERDICT PER MESSAGE (idempotency, not judgment). The relay retries a
+    // forward it gave up on, and the model's answer to the same text varies from
+    // call to call. Re-asking on every delivery meant the most disruptive answer
+    // among N draws won: on 2026-11-18 one correction was classified 7 times
+    // (6× redirect, 1× emergency-stop) and the single stop killed the session.
+    // The first decision for a message is the decision; a repeated delivery of
+    // the same message (same key AND same text) gets that decision, including
+    // while the first classification is still running.
+    if (!messageKey) return this.decideInboundDispositionOnce(message, topicId);
+    const key = `${messageKey}\u0000${buildStructuredSha256Identity(message)}`;
+    const now = Date.now();
+    this.pruneDecisions(now);
+    const prior = this.decisionsByMessage.get(key);
+    if (prior) {
+      this.dispositionStats.decisionReused++;
+      const d = await prior.decision;
+      return { ...d, reused: true };
+    }
+    const decision = this.decideInboundDispositionOnce(message, topicId);
+    this.decisionsByMessage.set(key, { at: now, decision });
+    // A failed decision, or one that rests on a fallback rather than a judgment
+    // (model failed, shed for capacity, unparseable), is never remembered: the next
+    // delivery decides afresh. Deliveries already waiting share this one result.
+    const forget = () => { if (this.decisionsByMessage.get(key)?.decision === decision) this.decisionsByMessage.delete(key); };
+    decision.then((d) => { if (d.degraded) forget(); }, forget);
+    return decision;
+  }
+
+  /** Drop remembered verdicts past the reuse window, then the oldest past the cap. */
+  private pruneDecisions(now: number): void {
+    for (const [k, v] of this.decisionsByMessage) {
+      if (now - v.at <= INBOUND_DECISION_REUSE_MS) break; // insertion order = age order
+      this.decisionsByMessage.delete(k);
+    }
+    while (this.decisionsByMessage.size >= INBOUND_DECISION_MAX_ENTRIES) {
+      const oldest = this.decisionsByMessage.keys().next().value;
+      if (oldest === undefined) break;
+      this.decisionsByMessage.delete(oldest);
+    }
+  }
+
+  private async decideInboundDispositionOnce(message: string, topicId?: number): Promise<InboundDecision> {
     const c = await this.classify(message);
+    const d = this.dispositionFor(c, message, topicId);
+    return c.degraded ? { ...d, degraded: true } : d;
+  }
+
+  /** The disposition for one classification (the operator-channel-sacred policy). */
+  private dispositionFor(c: SentinelClassification, message: string, topicId?: number): InboundDecision {
     const method = c.method;
 
     if (c.category === 'emergency-stop') {
@@ -655,6 +724,7 @@ export class MessageSentinel {
       confidence: result.confidence,
       action: { type: 'pass-through' },
       reason: `pause downgraded: ${wordCount}-word message exceeds the ${MAX_PAUSE_DIRECTIVE_WORDS}-word pause-directive ceiling (was: ${result.reason})`,
+      ...(result.degraded ? { degraded: true } : {}),
     };
   }
 
@@ -828,6 +898,7 @@ export class MessageSentinel {
           confidence: 0.2,
           action: { type: 'pass-through' },
           reason: `LLM response unparseable (passed through)`,
+          degraded: true,
         };
       }
 
@@ -852,6 +923,7 @@ export class MessageSentinel {
           confidence: 0.4,
           action: { type: 'pause-session' },
           reason: 'LLM classification unavailable (spawn capacity saturated) — held (fail-closed) instead of auto-passing',
+          degraded: true,
         };
       }
       // Any other LLM failure → pass through (don't block on evaluation errors)
@@ -860,6 +932,7 @@ export class MessageSentinel {
         confidence: 0.3,
         action: { type: 'pass-through' },
         reason: 'LLM classification failed, defaulting to pass-through',
+        degraded: true,
       };
     }
   }

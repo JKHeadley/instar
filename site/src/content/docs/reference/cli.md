@@ -216,6 +216,7 @@ instar playbook user-audit <userId>   # Audit user data footprint
 instar doctor                   # Run health diagnostics
 instar review                   # Review system state
 instar nuke <name>              # Remove an agent completely
+instar nuke --here              # Remove the project-local install in this folder
 instar migrate                  # Run pending migrations
 instar upgrade-ack              # Acknowledge an upgrade
 instar discovery                # Scan filesystem + registry + GitHub for existing agents
@@ -227,6 +228,15 @@ instar telegram-origin enroll-browser <profileId>  # After a Telegram Web K upda
 probe. After repairing the provider, `instar gate reset-breaker` invokes the
 authenticated `POST /internal/stop-gate/reset-breaker` operation so the next
 Stop event may probe immediately.
+
+`instar nuke` checks everything before it removes anything. It stops only the
+sessions that started inside the agent's own folder. A session whose name
+matches but that started in another agent's folder (for example `echo-wt-1`
+while removing `echo`) is left running. A matching session that started
+anywhere else makes nuke stop and list it with its id; run the command again
+with `--also-stop <id>...` if it belongs to the agent. The auto-start entry is
+removed first, and only when it points at the agent's folder. If any step
+fails, nuke names it and exits non-zero instead of reporting the agent removed.
 
 ## Multi-machine
 

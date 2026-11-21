@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-suggestions-replicated-decisions",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-18T13:34:12.410Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-suggestions-replicated-decisions.md",
+  "artifactSha256": "893fbd56ef8051236b79e8042043ed99249fa36f9fd52ed82249f0b436be6b37",
+  "coveredFiles": [
+    "docs/specs/conversation-graph-suggestions-replicated-decisions.eli16.md",
+    "src/commands/server.ts",
+    "upgrades/side-effects/conversation-graph-suggestions-replicated-decisions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "order-only change in an OR chain to restore a pinned wiring test; no behavior change",
+  "eli16Path": "docs/specs/conversation-graph-suggestions-replicated-decisions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-graph-suggestions-replicated-decisions.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

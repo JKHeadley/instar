@@ -22,12 +22,13 @@
  * This route is a signal, not an authority: it reads and lists; it never approves, hides or changes
  * anything. Every row's action opens the source's own page, where the existing authorization applies.
  */
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer } from './mobileCapacityRoutes.js';
-import { devicePersonOf, DEVICE_ALLOWLIST } from './mobilePairingRoutes.js';
+import { deviceAdmissionIdentity, devicePersonOf, DEVICE_ALLOWLIST } from './mobilePairingRoutes.js';
 import { tierAtLeast } from '../permissions/TeamAccess.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
 import { operatorError } from '../core/storageMachineName.js';
@@ -117,6 +118,12 @@ export interface NeedItem {
    * own words and action; the card is one tap away. Additive and optional: a reader that does not know it shows the row.
    */
   card?: { id: string; href: string; label: string };
+  /**
+   * When the item IS its card (the Chief of Staff's wait card, needs-one-list), `action` opens the card and this is the
+   * source's own page (the project conversation), one tap away. Additive and optional: a reader that does not know it
+   * opens the card, which links on to the project.
+   */
+  alsoOpens?: { href: string; label: string };
 }
 
 export interface NeedsAnswer {
@@ -129,6 +136,7 @@ export interface NeedsAnswer {
   complete: boolean;
   items: NeedItem[];
   truncated: boolean;
+  continuation?: { start: number; previousCursor: string | null; nextCursor: string | null };
   /** posture: where this source's answer comes from when the agent runs on several machines (spec §4.5). */
   sources: Array<{ id: string; label: string; state: 'ok' | 'off' | 'failed' | 'not-for-viewer'; posture?: string }>;
   couldNotCheck: string[];
@@ -233,7 +241,16 @@ function toItem(row: Rec, source: string): NeedItem {
     action,
     refs: Array.isArray(row.refs) ? row.refs.filter((x): x is string => typeof x === 'string').slice(0, 8).map((x) => clean(x, 80)) : [],
     ...cardOf(row.card),
+    ...alsoOpensOf(row.alsoOpens),
   };
+}
+
+/** The same href rule as an item's own action (a console hash or a dashboard path), so it can never point outside. */
+function alsoOpensOf(a: unknown): { alsoOpens?: NeedItem['alsoOpens'] } {
+  if (!a || typeof a !== 'object') return {};
+  const r = a as Rec;
+  if (typeof r.href !== 'string' || !/^(#\/|\/dashboard\/)/.test(r.href)) return {};
+  return { alsoOpens: { href: r.href, label: clean(r.label, 80) || 'Open the project conversation' } };
 }
 
 function cardOf(c: unknown): { card?: NeedItem['card'] } {
@@ -250,8 +267,23 @@ export interface NeedsComposer {
   team: (board: NeedsSelfRead | null) => Promise<Omit<NeedsAnswer, 'viewer'>>;
 }
 
-/** The composition, separate from HTTP so tests drive it with fixture reads. */
-export function createNeedsComposer(deps: Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now'>): NeedsComposer {
+type Composed = Omit<NeedsAnswer, 'viewer'>;
+type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now'>;
+
+function page(answer: Composed, start: number): Composed {
+  return { ...answer, items: answer.items.slice(start, start + NEEDS_MAX_ITEMS) };
+}
+
+/** Direct callers receive the same bounded first page as before. */
+export function createNeedsComposer(deps: ComposerDeps): NeedsComposer {
+  const full = createFullComposer(deps);
+  return {
+    owner: async () => page(await full.owner(), 0),
+    team: async (board) => page(await full.team(board), 0),
+  };
+}
+
+function createFullComposer(deps: ComposerDeps): NeedsComposer {
   const now = () => (deps.now ? deps.now() : Date.now());
   const dir = deps.consoleDir ?? resolveConsoleDir();
   // Kept across reads so a failed source keeps its last good rows for the grace period (needs-model.js).
@@ -269,7 +301,7 @@ export function createNeedsComposer(deps: Pick<NeedsDeps, 'read' | 'consoleDir' 
     }
     const couldNotCheck = sources.filter((s) => s.state === 'failed').map((s) => s.label);
     const withPosture = sources.map((s) => (NEED_SOURCE_POSTURE[s.id] ? { ...s, posture: NEED_SOURCE_POSTURE[s.id].posture } : s));
-    return { ...base(), count: items.length, complete: couldNotCheck.length === 0, items: items.slice(0, NEEDS_MAX_ITEMS), truncated: items.length > NEEDS_MAX_ITEMS, sources: withPosture, couldNotCheck, notes };
+    return { ...base(), count: items.length, complete: couldNotCheck.length === 0, items, truncated: items.length > NEEDS_MAX_ITEMS, sources: withPosture, couldNotCheck, notes };
   };
 
   const owner = async () => {
@@ -459,31 +491,66 @@ export function teamMayReadBoard(req: Request): boolean {
 }
 
 export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: NeedsCanary }): void {
-  const composer = createNeedsComposer(deps);
+  const composer = createFullComposer(deps);
   const now = () => (deps.now ? deps.now() : Date.now());
-  // One build at a time; its answer is shared for NEEDS_CACHE_MS after it finishes (never overlapping builds).
-  let inFlight: Promise<Omit<NeedsAnswer, 'viewer'>> | null = null;
-  let last: { at: number; answer: Omit<NeedsAnswer, 'viewer'> } | null = null;
-  const ownerCached = (_key: string, f: () => Promise<Omit<NeedsAnswer, 'viewer'>>): Promise<Omit<NeedsAnswer, 'viewer'>> => {
-    if (last && now() - last.at < NEEDS_CACHE_MS) return Promise.resolve(last.answer);
-    if (inFlight) return inFlight;
-    const p = f().then((answer) => { last = { at: now(), answer }; return answer; }).finally(() => { if (inFlight === p) inFlight = null; });
-    inFlight = p;
-    return p;
+  const signingKey = randomBytes(32);
+  const snapshot = (answer: Composed) => {
+    const hash = createHash('sha256');
+    for (const item of answer.items) hash.update(JSON.stringify([item.id, item.action]));
+    return { answer, digest: hash.digest('base64url') };
+  };
+  type Snapshot = ReturnType<typeof snapshot>;
+  // Keep only the first page and its digest after a build. Concurrent fresh reads share the build.
+  let inFlight: Promise<Snapshot> | null = null;
+  let last: { at: number; first: Snapshot } | null = null;
+  const ownerFresh = () => {
+    if (!inFlight) {
+      inFlight = composer.owner().then(snapshot).then((full) => {
+        last = { at: now(), first: { ...full, answer: page(full.answer, 0) } };
+        return full;
+      }).finally(() => { inFlight = null; });
+    }
+    return inFlight;
   };
   const handle = async (req: Request, res: Response) => {
     res.set('Cache-Control', 'no-store');
     const role = needsViewer(req, deps.bearerOk);
     if (!role) { res.status(403).json({ error: 'needs-viewer-unknown', detail: 'This phone is not linked to a person on this agent.' }); return; }
     try {
-      // The canary's single-use request (owner bearer only) is composed fresh and carries its synthetic row.
-      const canaryRow = role === 'owner' && deps.canary && typeof req.query.canary === 'string' ? deps.canary.synthetic(req.query.canary) : null;
-      // The canary's own answer is composed fresh, but never alongside another build (it waits for one in flight).
-      const answer = role === 'owner'
-        ? (canaryRow ? await (inFlight ?? Promise.resolve()).catch(() => undefined).then(() => composer.owner()) : await ownerCached('owner', composer.owner))
-        : await composer.team(teamMayReadBoard(req) ? deps.boardFor(req) : null);
-      const withCanary = canaryRow ? { ...answer, items: [...answer.items, canaryRow], count: answer.count + 1 } : answer;
-      res.json({ ...withCanary, viewer: { role } } satisfies NeedsAnswer);
+      const cursor = req.query.cursor;
+      // Four bytes of page position plus a 32-byte signature, encoded without padding.
+      const cursorBytes = typeof cursor === 'string' && /^[A-Za-z0-9_-]{48}$/.test(cursor) ? Buffer.from(cursor, 'base64url') : null;
+      const start = cursorBytes?.readUInt32BE(0) ?? 0;
+      if (cursor !== undefined && (!cursorBytes || start % NEEDS_MAX_ITEMS !== 0)) {
+        res.status(400).json({ error: 'needs-cursor-invalid' }); return;
+      }
+      const canaryRow = cursor === undefined && role === 'owner' && deps.canary ? deps.canary.synthetic(req.query.canary) : null;
+      const full = role === 'owner'
+        ? (!cursorBytes && !canaryRow && last && now() - last.at < NEEDS_CACHE_MS ? last.first : await ownerFresh())
+        : snapshot(await composer.team(teamMayReadBoard(req) ? deps.boardFor(req) : null));
+      const device = deviceAdmissionIdentity(req);
+      const principal = [role, device?.keyHash ?? null, devicePersonOf(req)?.userId ?? null];
+      const token = (offset: number) => {
+        const position = Buffer.alloc(4);
+        position.writeUInt32BE(offset);
+        const signature = createHmac('sha256', signingKey).update(JSON.stringify([principal, full.digest, offset])).digest();
+        return Buffer.concat([position, signature]);
+      };
+      if (cursorBytes && (full.answer.count <= NEEDS_MAX_ITEMS || start >= full.answer.count || !timingSafeEqual(cursorBytes, token(start)))) {
+        res.status(409).json({ error: 'needs-cursor-stale' }); return;
+      }
+      const answer = page(full.answer, start);
+      if (canaryRow) {
+        answer.items = [...answer.items.slice(0, NEEDS_MAX_ITEMS - 1), canaryRow];
+        answer.count += 1;
+        answer.truncated = answer.count > answer.items.length;
+      } else if (answer.count > NEEDS_MAX_ITEMS) {
+        answer.continuation = {
+          start, previousCursor: start ? token(start - NEEDS_MAX_ITEMS).toString('base64url') : null,
+          nextCursor: start + NEEDS_MAX_ITEMS < answer.count ? token(start + NEEDS_MAX_ITEMS).toString('base64url') : null,
+        };
+      }
+      res.json({ ...answer, viewer: { role } } satisfies NeedsAnswer);
     } catch (err) {
       // The list could not be built at all: say so; a surface shows "could not check" and keeps the strip.
       res.status(500).json({ error: 'needs-read-failed', detail: clean(operatorError(err), 200) });

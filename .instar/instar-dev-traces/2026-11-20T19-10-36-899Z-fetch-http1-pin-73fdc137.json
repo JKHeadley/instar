@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "fetch-http1-pin",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T19:10:36.899Z",
+  "artifactPath": "upgrades/side-effects/fetch-http1-pin.md",
+  "artifactSha256": "f7f154f7c49402167e6ba5e7199723ff6b5988a8a2f3d0e13be374f8d023ebeb",
+  "coveredFiles": [
+    "docs/specs/fetch-http1-pin.eli16.md",
+    "src/cli.ts",
+    "src/core/http1GlobalFetch.ts",
+    "tests/e2e/cli-fetch-http1-pinned.test.ts",
+    "tests/integration/telegram-egress-http1.test.ts",
+    "tests/unit/http1GlobalFetch.test.ts",
+    "upgrades/next/fetch-http1-pin.md",
+    "upgrades/side-effects/fetch-http1-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Transport default pinned back to what Node 20-24 already use; no decision point, no state; a revert or INSTAR_ALLOW_FETCH_HTTP2=1 fully undoes it.",
+  "eli16Path": "docs/specs/fetch-http1-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fetch-http1-pin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

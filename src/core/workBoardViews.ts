@@ -110,6 +110,8 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
   const out: Record<string, unknown> = {
     ...base,
     title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, whyYou: c.whyYou, doneWhen: c.doneWhen,
+    // A server-owned card's structured summary (display only; older clients keep reading `need`). Absent when none.
+    ...(c.brief ? { brief: c.brief } : {}),
     // The Needs-you items this card is about (work-board-cards-appear §3); a server-owned card is written by the Chief of Staff itself.
     covers: c.covers, createdAt: c.createdAt, ...(isServerOwnedCard(c) ? { serverOwned: true } : {}),
     // A phone-only card keeps `outward` in its record so it needs its own approve under every board
@@ -126,7 +128,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     claim: c.currentClaim ? { id: c.currentClaim.id, evidenceIds: c.currentClaim.evidenceIds, needsConfirm: c.needsConfirm, confirmedBy: c.currentClaim.confirmedBy ?? null, at: c.currentClaim.at } : null,
     done: c.done, doneByAgentOwnEvidence: c.doneByAgentOwnEvidence, reopens: c.reopens, holds: c.holds, archives: c.archives,
     // A person's Done / Not important close in force; `unarchive` naming `tapId` reopens the card.
-    closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId } : null,
+    closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId, title: c.closeout.title } : null,
     conversation: conversationRef(c.conversationKey),
     carrierTrail: c.carrierTrail.map((t) => ({ carrier: principalJson(t.carrier, name), by: byJson(t.by, name), at: t.at })),
     taps: c.taps.map((t) => ({ id: t.id, action: t.action, at: t.at, by: byJson(t.by, name) })),

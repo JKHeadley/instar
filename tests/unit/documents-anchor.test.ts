@@ -77,6 +77,29 @@ describe('reanchor', () => {
     expect(next.slice(r.start!, r.end!)).toBe(r.exact);
   });
 
+  it('the same words left only in an unrelated section are not the passage → orphaned', () => {
+    const filler = 'Unrelated material about vendors and timelines. '.repeat(40);
+    const old = `Section A. The budget is tight this quarter so we must cut travel now.\n${filler}\nSection B. Hiring notes.`;
+    const a = anchorOf(old, 'cut travel');
+    // Section A is rewritten without the words; a far-off unrelated section happens to use them.
+    const next = `Section A. Spending is fine this quarter.\n${filler}\nSection B. Hiring notes. Teams should not cut travel budgets for recruiting.`;
+    expect(reanchor(old, next, a)).toEqual({ state: 'orphaned' });
+  });
+
+  it('in a short document, the same words in a nearby unrelated section are not the passage → orphaned', () => {
+    const old = '# Plan\n\nWe ship the viewer in three steps, starting with the core library.\n\nThe budget covers two engineers.';
+    const a = anchorOf(old, 'three steps');
+    const next = '# Plan\n\nWe ship the viewer soon, starting with the core library.\n\nThe budget covers two engineers.\n\nThe fire drill has three steps for every floor.';
+    expect(reanchor(old, next, a)).toEqual({ state: 'orphaned' });
+  });
+
+  it('the same words still in place with changed surroundings → ok', () => {
+    const old = 'Intro. We must cut travel this quarter. End.';
+    const a = anchorOf(old, 'cut travel');
+    const next = 'Intro. Everyone should cut travel from now on. End.';
+    expect(reanchor(old, next, a).state).toBe('ok');
+  });
+
   it('a deleted passage → orphaned', () => {
     const a = anchorOf(DOC, 'The budget is tight this quarter and we must cut travel.');
     const next = DOC.replace('The budget is tight this quarter and we must cut travel.\n', '');

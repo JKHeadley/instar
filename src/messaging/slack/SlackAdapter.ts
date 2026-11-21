@@ -210,6 +210,8 @@ export class SlackAdapter implements MessagingAdapter {
   private botUserId: string | null = null;
   /** VERIFIED connected team id from `auth.test` at start (null until verified). */
   private connectedTeamId: string | null = null;
+  /** The workspace address from `auth.test` (`https://<team>.slack.com/`), for message permalinks; null until read. */
+  private workspaceUrl: string | null = null;
 
   // Threads-as-first-class-sessions (§5.3). Resolved once from config. When a
   // channel is opted in, a message carrying a thread_ts routes to a session keyed
@@ -458,6 +460,7 @@ export class SlackAdapter implements MessagingAdapter {
       const authResult = await this.apiClient.call('auth.test', {}) as Record<string, unknown>;
       this.botUserId = authResult.user_id as string ?? null;
       this.connectedTeamId = typeof authResult.team_id === 'string' ? authResult.team_id : null;
+      this.workspaceUrl = typeof authResult.url === 'string' ? authResult.url : null;
       if (this.botUserId) {
         console.log(`[slack] Bot user ID: ${this.botUserId}${this.connectedTeamId ? ` (team ${this.connectedTeamId})` : ''}`);
         reportBotOnlyAuthorization(this.config.authorizedUserIds, this.botUserId);
@@ -761,6 +764,9 @@ export class SlackAdapter implements MessagingAdapter {
    * adapter has proven which workspace it is actually connected to.
    */
   getConnectedTeamId(): string | null { return this.connectedTeamId; }
+
+  /** The workspace address Slack reported at start, or null (docs/specs/waiting-on-you-links.md §1). */
+  getWorkspaceUrl(): string | null { return this.workspaceUrl; }
 
   /** Get the current workspace behavior config. */
   getWorkspaceConfig(): { mode: SlackWorkspaceMode; autoJoinChannels: boolean; respondMode: SlackRespondMode } {
