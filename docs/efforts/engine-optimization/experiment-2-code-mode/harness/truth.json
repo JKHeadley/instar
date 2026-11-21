@@ -1,0 +1,115 @@
+{
+ "dead": [
+  "utilA1",
+  "utilA2",
+  "utilC0",
+  "utilC1",
+  "utilE2",
+  "utilF1",
+  "utilF2"
+ ],
+ "timeouts": {
+  "job00": 5000,
+  "job01": 30000,
+  "job02": 30000,
+  "job03": 5300,
+  "job04": 30000,
+  "job05": 30000,
+  "job06": 5600,
+  "job07": 30000,
+  "job08": 30000,
+  "job09": 5900,
+  "job10": 30000,
+  "job11": 30000,
+  "job12": 6200,
+  "job13": 30000
+ },
+ "routes": [
+  {
+   "method": "GET",
+   "path": "/health"
+  },
+  {
+   "method": "GET",
+   "path": "/jobs"
+  },
+  {
+   "method": "POST",
+   "path": "/jobs"
+  },
+  {
+   "method": "DELETE",
+   "path": "/jobs/:id"
+  },
+  {
+   "method": "GET",
+   "path": "/jobs/:id"
+  },
+  {
+   "method": "GET",
+   "path": "/topics"
+  },
+  {
+   "method": "POST",
+   "path": "/topics"
+  },
+  {
+   "method": "GET",
+   "path": "/topics/:id"
+  },
+  {
+   "method": "GET",
+   "path": "/users"
+  },
+  {
+   "method": "POST",
+   "path": "/users"
+  },
+  {
+   "method": "GET",
+   "path": "/users/:id"
+  }
+ ],
+ "broken": [
+  "task-02",
+  "task-10",
+  "task-14",
+  "task-22",
+  "task-26"
+ ],
+ "topError": {
+  "code": "E101",
+  "count": 369
+ },
+ "incident": {
+  "firstSession": "s33",
+  "topic": 1006,
+  "crashedSessions": 14
+ },
+ "top3": [
+  {
+   "topic": 2000,
+   "total": 3041584
+  },
+  {
+   "topic": 2002,
+   "total": 2857562
+  },
+  {
+   "topic": 2001,
+   "total": 2798976
+  }
+ ],
+ "todos": [
+  "src/jobs/job01.js,1,bo",
+  "src/jobs/job06.js,1,chen",
+  "src/jobs/job11.js,1,dee",
+  "src/services/s00.js,6,ana",
+  "src/services/s02.js,6,chen",
+  "src/services/s04.js,6,ana",
+  "src/services/s06.js,6,chen",
+  "src/services/s08.js,6,ana",
+  "src/services/s10.js,6,chen"
+ ],
+ "magicCommit": "00f7b1b3aef493827f9e57f2d3bd36ac79d5f3db"
+}

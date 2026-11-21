@@ -10,3 +10,4 @@ Owner: Justin. Conversation: Telegram topic 141868. Working copy on the Echo M5 
 | Step reviews | [step0](step0-post-review.md), [step1](step1-post-review.md), [step2](step2-post-review.md) |
 
 The job-effort design (needs approval) is on branch `echo/engine-optimization-step2`: `docs/specs/job-launch-intent-record.eli16.md` (plain English) and `docs/specs/job-launch-intent-record.md` (full spec).
+- [Experiment 2 — Code Mode savings (REJECTED, 4.0% saving vs 20% bar)](experiment-2-code-mode/RESULTS.md)
