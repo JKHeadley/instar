@@ -4,7 +4,7 @@ import fs from 'node:fs'; import path from 'node:path'; import { monitorEventLoo
 const root = process.cwd(); const imp = (p: string) => import(path.join(root, p));
 const [home, portS, mode, pub, deviceId] = process.argv.slice(2); const port = Number(portS);
 if (port === 4042 || port < 4190 || port > 4199) throw new Error('throwaway ports 4190-4199 only');
-if (!home.includes('pr3598-proof')) throw new Error('throwaway home only');
+if (!home.includes('pr3609-proof')) throw new Error('throwaway home only');
 const { AgentServer } = await imp('src/server/AgentServer.ts'); const { StateManager } = await imp('src/core/StateManager.ts');
 const { InitiativeTracker } = await imp('src/core/InitiativeTracker.ts'); const { MachineIdentityManager } = await imp('src/core/MachineIdentity.ts');
 const { TelegramAdapter } = await imp('src/messaging/TelegramAdapter.ts'); const { wireReadMarkerStore } = await imp('src/core/ConversationReadMarkersWiring.ts');
@@ -12,10 +12,10 @@ const { createMockSessionManager } = await imp('tests/helpers/setup.ts');
 const stateDir = path.join(home, '.instar');
 for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
 for (const [f, c] of [['config.json', '{}'], ['users.json', '[]']]) if (!fs.existsSync(path.join(stateDir, f))) fs.writeFileSync(path.join(stateDir, f), c);
-const idm = new MachineIdentityManager(stateDir); if (!idm.hasIdentity()) await idm.generateIdentity({ name: 'pr3598 throwaway' });
-const config = { projectName: 'pr3598proof', projectDir: home, stateDir, port, host: '127.0.0.1', authToken: 'throwaway-proof-token', developmentAgent: true,
+const idm = new MachineIdentityManager(stateDir); if (!idm.hasIdentity()) await idm.generateIdentity({ name: 'pr3609 throwaway' });
+const config = { projectName: 'pr3609proof', projectDir: home, stateDir, port, host: '127.0.0.1', authToken: 'throwaway-proof-token', developmentAgent: true,
   mobilePairing: { multiRoute: { enabled: false } }, sessions: { claudePath: '/usr/bin/true', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 60_000 },
-  scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: { autoApply: false, enabled: false }, feedback: { enabled: false, webhookUrl: 'http://127.0.0.1:9/disabled', feedbackFile: path.join(stateDir, 'feedback.json') }, dispatches: { enabled: false, dispatchUrl: 'http://127.0.0.1:9/disabled', dispatchFile: path.join(stateDir, 'dispatches.json') }, tunnel: { enabled: false }, threadline: { ownerName: 'Fixture Owner' }, requestTimeoutMs: 120_000, version: '0.0.0-pr3598-proof' };
+  scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: { autoApply: false, enabled: false }, feedback: { enabled: false, webhookUrl: 'http://127.0.0.1:9/disabled', feedbackFile: path.join(stateDir, 'feedback.json') }, dispatches: { enabled: false, dispatchUrl: 'http://127.0.0.1:9/disabled', dispatchFile: path.join(stateDir, 'dispatches.json') }, tunnel: { enabled: false }, threadline: { ownerName: 'Fixture Owner' }, requestTimeoutMs: 120_000, version: '0.0.0-pr3609-proof' };
 const telegram = new TelegramAdapter({ token: 'not-a-real-token', chatId: '-100123' }, stateDir);
 const meta = JSON.parse(fs.readFileSync(path.join(home, 'fixture-meta.json'), 'utf8'));
 const readMarkers = wireReadMarkerStore({ stateDir, emitter: null, peerStreams: null, ownMachineId: null, report: () => undefined, removalEvidence: () => false });
@@ -38,7 +38,6 @@ if (mode === '--seed') {
     readMarkers.advance('owner', `telegram:${id}`, { atMs: r.atMs, id: idOf(r) }); });
   await new Promise((r) => setTimeout(r, 1500)); await server.stop(); await telegram.stop(); console.log('seeded'); process.exit(0);
 }
-if (typeof (telegram as any).loadHistory === 'function') await (telegram as any).loadHistory(); // the new code: the view is ready before measuring
 const h = monitorEventLoopDelay({ resolution: 10 }); h.enable();
 const { PerformanceObserver } = await import('node:perf_hooks'); let gcMs = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) gcMs = Math.max(gcMs, Math.round(e.duration)); }).observe({ entryTypes: ['gc'] });
 const httpMod = await import('node:http'); const slow: Array<{ d: number; label: string }> = []; const recent: string[] = []; const stalls: Array<{ gapMs: number; recent: string[] }> = [];

@@ -2,13 +2,13 @@
 # Option C (PR head) three cold runs with per-request timing, each paired with a control run of the same
 # server and log with the list path idle for the same length of time. Private copy of the agent's own
 # log; localhost-only throwaway servers; messaging and outbound off; counts only; copy deleted after.
-S=${0:A:h}; P=${OFFTHREAD_MEASURE_DIR:-${TMPDIR%/}/pr3598-proof}; mkdir -p $P
+S=${0:A:h}; P=${OFFTHREAD_MEASURE_DIR:-${TMPDIR%/}/pr3609-proof}; mkdir -p $P
 NEW=${1:?usage: measure.sh <worktree of the PR branch>}
 R=$P/real-seed; umask 077; rm -rf $R; mkdir -p $R/.instar
 LOG=${INSTAR_TELEGRAM_LOG:-$HOME/.instar/agents/echo/.instar/telegram-messages.jsonl}; cp "$LOG" $R/.instar/telegram-messages.jsonl
 node $S/meta-from-log.mjs $R/.instar/telegram-messages.jsonl $R/fixture-meta.json > /dev/null
 node $S/keys.mjs $P/keys > /dev/null
-(cd $NEW && TOPIC_PREFIX="Real topic" npx tsx $S/serve.mts $R 4195 --seed "$(cat $P/keys/public.txt)" fixture-device-3598 > /dev/null 2>&1)
+(cd $NEW && TOPIC_PREFIX="Real topic" npx tsx $S/serve.mts $R 4195 --seed "$(cat $P/keys/public.txt)" fixture-device-3609 > /dev/null 2>&1)
 for i in 1 2 3; do
   # control: the same server and log, no requests, for as long as a measured run takes
   n=c7ctl$i; rm -rf $P/$n; cp -R $R $P/$n

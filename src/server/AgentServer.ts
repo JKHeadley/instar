@@ -7996,7 +7996,7 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
-        // Read every listed topic's history off the main thread before the list runs
+        // Read every listed topic's history off the request's turn, in slices, before the list runs
         // (docs/specs/conversation-list-offthread-scan.md); the same switch as the chat read.
         telegramWarm: routeCtx.telegramHistoryWarm
           ? async () => { await routeCtx.telegramHistoryWarm!(options.telegram!.getAllTopicMappings().map((m) => m.topicId)); }

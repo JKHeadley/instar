@@ -1,4 +1,4 @@
-# Measuring the conversation list's off-main-thread history scan
+# Measuring the conversation list's history scan (off the request's turn, in slices)
 
 The control measurement for `docs/specs/conversation-list-offthread-scan.md` (pull request 3609). It
 must be rerun once when the Studio's test line is idle.
@@ -20,8 +20,8 @@ docs/specs/reports/conversation-list-offthread-scan-measure/measure.sh "$PWD"
 ```
 
 - `INSTAR_TELEGRAM_LOG` overrides the log copied (default: this user's Echo agent log).
-- `OFFTHREAD_MEASURE_DIR` overrides the private working folder (default `$TMPDIR/pr3598-proof`;
-  the name must contain `pr3598-proof`, which `serve.mts` checks before it starts).
+- `OFFTHREAD_MEASURE_DIR` overrides the private working folder (default `$TMPDIR/pr3609-proof`;
+  the name must contain `pr3609-proof`, which `serve.mts` checks before it starts).
 
 It runs three pairs, back to back: a **control** (the same server and log, no requests, 140 s), then
 an **Option C cold run** (`run.sh`: cold list, warm list, every chat, scroll-back pages, read marks,

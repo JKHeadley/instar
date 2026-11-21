@@ -4727,7 +4727,10 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /**
    * Fill the EXISTING tail cache for every given topic that is not cached yet, with the file read
-   * off the request's turn (docs/specs/conversation-list-offthread-scan.md). The rows are exactly what
+   * off the request's turn, in slices (docs/specs/conversation-list-offthread-scan.md). There is no
+   * worker thread: only the read calls run on the libuv pool; each 64 KiB block's decode, line split,
+   * JSON parse and hashing run on the main thread in their own turn, so other requests and timers
+   * run between blocks. The rows are exactly what
    * the old synchronous read would cache: scanLogForTopic's split, JSON parse, topicId/channelId
    * match and malformed-line skip, the newest TAIL_CACHE_LIMIT rows per topic in file order. The
    * scan saves only in the turn that confirms the file is still the same file with the same bytes
@@ -4746,7 +4749,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Every request checks for an unfinished last line itself, before any wait, so its old read runs
     // in its own turn, exactly when the old code would have read (also when a scan is already running).
     if (this.logLastLineUnfinished()) return false;
-    const requestEnds = performance.now() + this.tailWarmDeadlineMs; // 3.5 s from this request's arrival
+    // 3.5 s from this call, the start of the history read (after the route's admission work, topic
+    // enumeration and the last-line check above), not from the request's arrival.
+    const requestEnds = performance.now() + this.tailWarmDeadlineMs;
     // Never join a scan that has used up its time limit: it can no longer save, so the old read runs now.
     if (this.tailWarm && this.tailWarm.expiresAt <= performance.now()) return false;
     if (!this.tailWarm) {

@@ -1,4 +1,4 @@
-# Side-Effects Review — conversation list and first chat read scan the Telegram log off the main thread
+# Side-Effects Review — conversation list and first chat read scan the Telegram log off the request's turn, in slices
 
 **Version / slug:** `conversation-list-offthread-scan`
 **Date:** `2026-11-21`
@@ -73,7 +73,8 @@ it. No second store; every reader still goes through `getTopicHistory`.
   runs (tested). The trim code itself is unchanged. Known limit (spec, Limits): After a log trim, a Telegram conversation whose every message lay in the trimmed part shows no messages in the app, exactly as the old code does after any restart; Option C adds no blank the old code would not show, and the scan never records such a conversation as empty. Those Telegram messages remain in the conversation memory database and search (every message is written there when sent or received, independently of the log; verified on the live Studio data: all of the last 400 log rows are present in memory), and the approved follow-up CMT-2127 can surface them in the app. Native app conversations are stored separately and are not touched by the Telegram log trim.
 - An unfinished last line: every request, joiners included, defers to the old read in its own turn
   (tested, mutation-checked).
-- A request's wait is capped at 3.5 s from its arrival, it never joins a scan past its limit, and it
+- A request's wait is capped at 3.5 s from the start of its history read (the warm call, after
+  admission, topic enumeration and the last-line check; not from its arrival), it never joins a scan past its limit, and it
   stops at whichever comes first, the scan's limit or its own; one scan at a time; a stuck scan is
   the only record kept (waiters are removed with their timers); a final time check before saving
   (tested with a disk that never answers, mutation-checked). A failed close saves nothing (tested,
@@ -117,7 +118,7 @@ Nothing is persisted.
 
 ## Evidence
 
-- Unit: `tests/unit/telegram-offthread-history-scan.test.ts` (18 tests) — replay against a fresh
+- Unit: `tests/unit/telegram-offthread-history-scan.test.ts` (29 tests) — replay against a fresh
   adapter's old read; read error, replaced file, same-size rename, same-length rewrite during the
   read and during the re-read, coarse change times, append during the scan, a cache filled during
   the scan, an unregister during the scan, the live-topic seed, cache hits never waiting, pending
@@ -127,6 +128,24 @@ Nothing is persisted.
 - Integration: `tests/integration/conversation-list-offthread-scan.test.ts` — list and cold chat
   through the HTTP routes, on versus off identical, off switch live, one scan for concurrent lists.
 - E2E: `tests/e2e/conversation-list-offthread-scan-alive.test.ts` — production constructor, ~25 MB
-  log, cold list and cold chat with the longest stall under 1 s measured in-test; fails with the
-  switch off (about 6 s).
+  log, cold list and cold chat answered with every topic's real newest message and no synchronous
+  read of the log (asserted); the longest in-test event-loop stall is logged as a diagnostic, not
+  asserted. The switch-off path is asserted by the integration test (the old synchronous read runs).
 - Real-log comparison on a private copy of Echo's log: see the pull request body.
+
+## Review follow-up (2026-11-21)
+
+A strict whole-diff review of head `ee33dce8d` returned CONCUR with five medium findings, none a
+correctness defect. This follow-up applies the wording and test-assertion changes it asked for and
+changes no runtime behaviour: "off the main thread" became "off the request's turn, in slices" in
+the spec, its ELI16 companion, the measurement README, the code comments and the pull request
+(there is no worker thread; parsing and hashing run on the main thread one 64 KiB block per turn;
+the config switch `telegramHistoryScan.offMainThread` keeps its name, since renaming a switch is a
+behaviour change); the 3.5 s budget is now described as starting at the warm call after admission,
+not at request arrival (comment, spec and pull request); the stale "no deadline of its own" limit
+bullet was deleted (the code and the later bullet say 3.5 s); the timing assertions in the new unit
+and e2e tests became logged diagnostics, with structural assertions (microtask-settled refusal,
+waiter count back to zero, one scan, no synchronous read of the log) as the pass/fail; and the
+documentation drift (18 versus 29 unit tests, the unasserted "fails with the switch off" e2e
+claim, PR-3598 names and a dead `loadHistory` probe in the measurement scripts) was corrected. The
+busy-log round-cap finding (M2) is carried as a follow-up, not changed here.

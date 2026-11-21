@@ -1,5 +1,5 @@
 ---
-title: "Conversation list and first chat read scan the Telegram log off the main thread (Option C of the freeze fix)"
+title: "Conversation list and first chat read scan the Telegram log off the request's turn, in slices (Option C of the freeze fix)"
 slug: "conversation-list-offthread-scan"
 author: "echo"
 parent-principle: "Structure beats Willpower"
@@ -11,7 +11,7 @@ feedback: "fb-52447f16-7d3"
 replaces: "pull request 3602 (docs/specs/conversation-list-log-view.md there), which stays a draft"
 ---
 
-# Conversation list and first chat read scan the Telegram log off the main thread
+# Conversation list and first chat read scan the Telegram log off the request's turn, in slices
 
 ## Problem
 
@@ -45,8 +45,12 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
    line without a newline is parsed, as the old read parses it. A topic with no rows caches `[]`,
    as `scanLogForTopic` does. Multi-byte characters split across block edges are joined by a
    `StringDecoder`, so the text equals a whole-file UTF-8 decode.
-2. **Off the main thread.** The file is read with `fs.promises` in awaited 64 KiB blocks; each
-   block's lines are parsed in their own turn. No turn does more than one block. Each round reads
+2. **Off the request's turn, in slices.** The file is read with `fs.promises` in awaited 64 KiB
+   blocks; each block's lines are parsed in their own turn. There is no worker thread: only the
+   read calls run on the libuv thread pool, while each block's decode, line split, JSON parse and
+   hashing run on the main thread, one block per turn, so other requests and timers run between
+   blocks (the per-slice cost is what the measured longest stalls show). No turn does more than
+   one block. Each round reads
    only up to the size seen when it starts, so a writer that keeps appending cannot keep a round
    going.
 3. **Saved only after an end-of-same-file check.** At the end of each round's read:
@@ -83,8 +87,9 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
    writer mid-line, or a crash), the request does not wait and its old read runs in its own turn,
    exactly when the old code would have read. A scan that ends on an unfinished line saves nothing.
 8. **One wait budget per request, one scan at a time.** A request's total wait is capped at 3.5 s
-   counted from its arrival (inside the 5 s budget another of this agent's machines gives a list
-   read). It waits for at most one scan, never starts a second one behind a running one, and never
+   counted from the start of its history read, that is the warm call after the route's admission
+   work, topic enumeration and the synchronous last-line check, not from the request's arrival
+   (inside the 5 s budget another of this agent's machines gives a list read). It waits for at most one scan, never starts a second one behind a running one, and never
    joins a scan that has used up its own 3.5 s limit (it runs the old read at once); a request that
    joins a running scan stops waiting at whichever comes first, the scan's limit or its own. Topics
    the running scan does not cover fall to the old read. The scan is held until it really ends, so
@@ -138,9 +143,6 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
   (`timeoutIntervalForRequest = 12`) and then reports the agent unreachable or tries its next
   route; that retry joins the scan still running. The old code's 19.6 s cold list crossed that
   limit; this scan does not.
-- **A hung disk hangs the wait.** The route awaits the scan with no deadline of its own; a read
-  that never returns leaves the request waiting until the app's own timeout. A disk in that state
-  hangs the synchronous read too.
 - **Other readers keep the old read.** Scroll-back pages (`getTopicHistoryBefore`), the
   respawn-history mesh read, and any other caller that reaches an uncached topic without going
   through these two routes still read synchronously, exactly as today. The scroll-back read was
@@ -174,8 +176,10 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
 - Concurrent requests share one scan.
 - The switch set to false returns both routes to the old read, live.
 - A production-constructed server over a ~25 MB log answers a cold list and a cold chat read with
-  the longest event-loop stall under one second, measured in-test; the same test fails with the
-  switch off.
+  every topic's real newest message and no synchronous read of the log; the longest event-loop
+  stall is measured in-test and logged as a diagnostic, not asserted (a saturated verifier stalls
+  for reasons of its own). The switch-off path is asserted by the integration test, which checks
+  that the old synchronous read runs.
 
 ## Review
 

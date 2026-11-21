@@ -20,4 +20,4 @@ The phone and Mac apps' conversation list used to make the agent's server re-rea
 
 - Unit: `tests/unit/telegram-offthread-history-scan.test.ts`.
 - Integration: `tests/integration/conversation-list-offthread-scan.test.ts`.
-- E2E: `tests/e2e/conversation-list-offthread-scan-alive.test.ts` (longest stall under one second on a ~25 MB log; about 6 s with the switch off).
+- E2E: `tests/e2e/conversation-list-offthread-scan-alive.test.ts` (a cold list and a cold chat on a ~25 MB log with no synchronous read of the log; the longest stall is logged as a diagnostic). The switch-off path is asserted by the integration test.

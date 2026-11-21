@@ -19,7 +19,10 @@ filling that memory the first time, conversation by conversation, with a full bl
 
 When the list (or a chat opened before any list, say from a notification) needs conversations that
 are not in that memory yet, the server reads the file once for all of them, in small pieces. Between
-pieces it goes back to answering everything else. When it reaches the end it checks the file is
+pieces it goes back to answering everything else. There is no separate helper thread doing this
+work: the server's one thread still does the reading and checking, one 64 KiB piece at a time, and
+what changes is that it pauses between pieces instead of holding everything up until the end. When
+it reaches the end it checks the file is
 still the same file with the same contents, and only then fills the same memory it already had.
 The list then runs exactly as before. It finds what it needs already in memory, so it never does
 the slow read.

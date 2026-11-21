@@ -1,7 +1,8 @@
 /**
  * docs/specs/conversation-list-offthread-scan.md through the real HTTP routes: the conversation list
- * and a chat opened before any list read the Telegram log off the main thread (no synchronous read of
- * the log) and answer exactly what the old synchronous read answers; concurrent lists share one scan;
+ * and a chat opened before any list read the Telegram log off the request's turn, in slices (no
+ * synchronous read of the log) and answer exactly what the old synchronous read answers; concurrent
+ * lists share one scan;
  * and the live switch `telegramHistoryScan.offMainThread: false` returns both to the old read.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
@@ -25,7 +26,7 @@ const spyLog = () => {
   };
 };
 
-describe('conversation list and first chat read — off the main thread', () => {
+describe('conversation list and first chat read — off the request\'s turn, in slices', () => {
   it('switched off, the list reads the log the old way; switched on (the default), it answers the same with no synchronous read', async () => {
     setOffMainThread(s, false);
     s.coldCache();

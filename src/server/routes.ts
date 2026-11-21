@@ -1390,7 +1390,7 @@ export interface RouteContext {
    *  the route 503s (governor not initialized on this build). */
   selfActionGovernor?: import('../monitoring/selfaction/governor.js').SelfActionGovernorCore | null;
   telegram: TelegramAdapter | null;
-  /** Fill these topics' Telegram history cache off the main thread before a read (conversation-list-offthread-scan); absent or switched off = the old read. Never throws. */
+  /** Fill these topics' Telegram history cache off the request's turn, in slices, before a read (conversation-list-offthread-scan); absent or switched off = the old read. Never throws. */
   telegramHistoryWarm?: ((topicIds: number[]) => Promise<void>) | null;
   /** Attention list kept when there is no Telegram adapter (LocalAttentionItems). */
   localAttention?: import('../core/LocalAttentionItems.js').LocalAttentionItems | null;

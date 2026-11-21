@@ -256,7 +256,7 @@ export interface MobileConversationRouteDeps {
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
-  /** Fill the Telegram history cache for the listed topics off the main thread before the list runs (conversation-list-offthread-scan). */
+  /** Fill the Telegram history cache for the listed topics off the request's turn, in slices, before the list runs (conversation-list-offthread-scan). */
   telegramWarm?: () => Promise<void>;
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
