@@ -34,6 +34,7 @@ import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRou
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { MemoryPrivacy } from '../../src/users/MemoryPrivacy.js';
 import { commentKeysHashOf } from '../../src/documents/originCheck.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-doclink-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -143,7 +144,7 @@ async function world(opts: { privacy?: boolean } = {}) {
   const owner = client(app, ownerId, ownerDev);
   expect((await owner('POST', '/mobile/device/confirm', { code: /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('') })).body.status).toBe('active');
   const presence = makeDevice();
-  server.mobilePairing!.devices.setPresenceKey(ownerId, presence.publicKey);
+  markApproverForTest(server.mobilePairing!, ownerId, presence.publicKey);
   const shared = (await owner('POST', '/mobile/conversations', { title: 'Client work', requestId: rid() })).body.conversationKey as string;
   expect(shared).toBeTruthy();
 

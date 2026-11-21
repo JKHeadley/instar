@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T19:55:39.898Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3a-approver-in-owner-record.md",
+  "artifactSha256": "4dd18421b8c4a30a80e81472618d57c1a53edf409b938aee68ae28d79edbfbe8",
+  "specPath": "docs/specs/identity-security-piece3a-approver-in-owner-record.md",
+  "coveredFiles": [
+    "src/server/documentDecisionRoot.ts",
+    "tests/e2e/identity-piece3a-approver-alive.test.ts",
+    "tests/e2e/mobile-native-permissions-alive.test.ts",
+    "tests/e2e/mobile-native-secrets-writes-alive.test.ts",
+    "tests/integration/mobile-console-ticket-routes.test.ts",
+    "tests/unit/browser-device-readers.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "rebase follow-up inside the approved 3a spec: route the document decision root through the approver reader and align tests with 3a's intended answers",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

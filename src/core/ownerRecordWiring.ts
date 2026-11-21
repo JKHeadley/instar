@@ -6,19 +6,68 @@
  * `security.ownerRecord.enabled: false` turns it off; the route then answers 503 and no mesh traffic runs.
  */
 import { OwnerRecordStore, type OwnerRecordSelf } from './ownerRecordStore.js';
-import { OwnerRecordSync, type OwnerRecordPullCmd, type OwnerRecordPushCmd } from './ownerRecordSync.js';
+import { OwnerRecordSync, type ClaimPeerCheck, type OwnerRecordPullCmd, type OwnerRecordPushCmd } from './ownerRecordSync.js';
 import { sign as machineSign } from './MachineIdentity.js';
 import type { MachineIdentityManager } from './MachineIdentity.js';
 import type { OwnerRecordRouteDeps } from '../server/ownerRecordRoutes.js';
 import { PeerBuildLedger, fenceInForce, keyFingerprint } from './identityBuildFence.js';
 import { MESH_VERB_FENCE_CLASS, setBelowFencePredicate, setMeshFencePolicy } from './meshVerbFenceClass.js';
 import { getInstarVersion } from './Config.js';
+import { makeFirstOwnerProofVerifier } from './ownerApprover.js';
+import { readLocalRecordKey } from './ownerRecordLocalKey.js';
 import type { GateVerdict } from './ownerRecordStore.js';
 
 const PULL_INTERVAL_MS = 15 * 60 * 1000;
 const FIRST_PULL_DELAY_MS = 30 * 1000;
 
 let live: { store: OwnerRecordStore; sync: OwnerRecordSync | null } | null = null;
+
+/** Piece 3a: what the first-approver claim needs from this machine's record and mesh. */
+interface ClaimBase { stateDir: string; agentId: string; identity: MachineIdentityManager; selfMachineId: string | null; leaseHolder: (() => string | null) | null; splitBrain: (() => boolean) | null }
+let claimBase: ClaimBase | null = null;
+let approverFactsFn: (() => { unvouched: number; migratedAt?: string | null; retired?: string[] }) | null = null;
+let peerRetiredFn: ((hashes: string[]) => void) | null = null;
+let peerMigrationsFn: ((earliest: string | null, allAnswered: boolean) => void) | null = null;
+let claimLiveFn: (() => boolean) | null = null;
+
+/** Piece 3a §3: the server tells the sync how many unvouched owner devices this machine has, and whether a claim is live. */
+export function setOwnerRecordApproverHooks(h: { approverFacts: () => { unvouched: number; migratedAt?: string | null; retired?: string[] }; claimLive: () => boolean; peerMigrations?: (earliest: string | null, allAnswered: boolean) => void; peerRetired?: (hashes: string[]) => void } | null): void {
+  peerRetiredFn = h?.peerRetired ?? null;
+  approverFactsFn = h?.approverFacts ?? null;
+  peerMigrationsFn = h?.peerMigrations ?? null;
+  claimLiveFn = h?.claimLive ?? null;
+}
+
+export interface ApproverClaimEnv {
+  store: OwnerRecordStore;
+  agentId: string;
+  stateDir: string;
+  /** Every other registered machine. */
+  peers: () => string[];
+  /** Ask every other machine now; null when there are peers but no running sync (the claim then refuses). */
+  check: ((timeoutMs: number) => Promise<ClaimPeerCheck>) | null;
+  /** This machine holds the lease (a lone agent is its own holder) and no split-brain is reported. */
+  leaseHere: () => boolean;
+  splitBrain: () => boolean;
+  /** Carry new entries to every machine (no-op on a lone agent). */
+  push: (ids: string[]) => void;
+}
+
+/** Piece 3a: the claim's view of the record and mesh; null while the owner record is off. */
+export function approverClaimEnv(): ApproverClaimEnv | null {
+  if (!live || !claimBase) return null;
+  const b = claimBase;
+  const sync = live.sync;
+  const self = b.selfMachineId;
+  const peers = (): string[] => { try { return b.identity.hasIdentity() ? b.identity.getActiveMachines().map((m) => m.machineId).filter((id) => id !== self) : []; } catch { return ['(unreadable machine registry)']; /* @silent-fallback-ok: an unreadable registry names a placeholder machine, which closes the claim */ } };
+  return {
+    store: live.store, agentId: b.agentId, stateDir: b.stateDir, peers,
+    check: sync ? (ms) => sync.claimCheck(ms) : (peers().length === 0 ? async () => ({ silent: [], enrolled: [], olderBuild: [], unvouched: [] }) : null),
+    leaseHere: () => (b.leaseHolder ? b.leaseHolder() === self : peers().length === 0),
+    splitBrain: () => (b.splitBrain ? b.splitBrain() : false),
+    push: (ids) => { if (sync) void sync.pushToPeers(ids); },
+  };
+}
 let timers: NodeJS.Timeout[] = [];
 
 export interface OwnerRecordConfigView {
@@ -40,7 +89,10 @@ export function ownerRecordRouteDeps(): OwnerRecordRouteDeps | null {
 export function wireOwnerRecordStore(config: OwnerRecordConfigView, identity: MachineIdentityManager): OwnerRecordStore | null {
   if (!ownerRecordEnabled(config)) return null;
   const self = (): OwnerRecordSelf | null => {
-    if (!identity.hasIdentity()) return null;
+    // Piece 3a §2: a lone agent signs with its record-only key, and only once it has one (created at the claim).
+    if (!identity.hasIdentity()) {
+      try { return readLocalRecordKey(config.stateDir); } catch { return null; /* @silent-fallback-ok: an unreadable record-only key signs nothing; the claim refuses and names it */ }
+    }
     const machineId = identity.loadIdentity().machineId;
     const publicKeyPem = identity.getSigningPublicKeyPem(machineId);
     if (!publicKeyPem) return null;
@@ -50,8 +102,15 @@ export function wireOwnerRecordStore(config: OwnerRecordConfigView, identity: Ma
     instarDir: config.stateDir,
     agentId: config.projectName ?? 'agent',
     self,
-    registeredKey: (machineId) => (identity.isMachineActive(machineId) || self()?.machineId === machineId ? identity.getSigningPublicKeyPem(machineId) : null),
+    registeredKey: (machineId) => {
+      const me = self();
+      if (me && me.machineId === machineId && machineId.startsWith('m_local_')) return me.publicKeyPem;
+      return identity.isMachineActive(machineId) || me?.machineId === machineId ? identity.getSigningPublicKeyPem(machineId) : null;
+    },
+    // Piece 3a §3: the first owner key's proof is checked against the record itself.
+    verifyFirstOwnerProof: makeFirstOwnerProofVerifier(config.projectName ?? 'agent'),
   });
+  claimBase = { stateDir: config.stateDir, agentId: config.projectName ?? 'agent', identity, selfMachineId: identity.hasIdentity() ? identity.loadIdentity().machineId : null, leaseHolder: null, splitBrain: null };
   const { corruptLines } = store.load();
   if (corruptLines > 0) console.warn(`[owner-record] ${corruptLines} unreadable line(s) in the stored record; they will be pulled again from a peer`);
   live = { store, sync: null };
@@ -131,16 +190,23 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
     // Identity guards this build runs live (piece 2c §3). Pieces that add one list it here, e.g. 2d's
     // 'fence-lease' and 'fence-routing'. None yet.
     // Piece 2d: this build refuses a below machine the lease and routing whenever the fence is in force.
-    selfGuards: () => ['fence-lease', 'fence-routing'],
+    // Piece 3a: 'approver-record' (devices approve only through the owner record); the first-approver claim reads
+    // it from each peer's signed build statement.
+    selfGuards: () => ['fence-lease', 'fence-routing', 'approver-record'],
     peerKey: (machineId) => keyFingerprint(w.identity.getSigningPublicKeyPem(machineId)),
     ledger: PeerBuildLedger.at(w.config.stateDir),
     notify: w.notify,
     machineName: w.machineName,
     clearNotice: w.clearNotice,
     degradeFence: w.degradeFence,
+    approverFacts: () => approverFactsFn?.() ?? { unvouched: 0 },
+    onPeerMigrations: (earliest, allAnswered) => peerMigrationsFn?.(earliest, allAnswered),
+    onPeerRetired: (hashes) => peerRetiredFn?.(hashes),
     peerSince: (machineId) => { const t = Date.parse(String(w.identity.loadRegistry().machines?.[machineId]?.pairedAt ?? '')); return Number.isFinite(t) ? t : null; },
   });
   live.sync = sync;
+  sync.claimLive = () => claimLiveFn?.() ?? false;
+  if (claimBase) claimBase = { ...claimBase, selfMachineId: w.selfMachineId, leaseHolder: w.leaseHolder, splitBrain: w.splitBrain };
   installMeshFencePolicy(sync, w.activeOwner);
   setBelowFencePredicate((machineId) => sync.isBelow(machineId));
   // @silent-fallback-ok: a failed pass is logged and retried on the next 15-minute tick; peers' state is per pass.
@@ -158,6 +224,11 @@ export function resetOwnerRecordWiringForTests(): void {
   for (const t of timers) clearTimeout(t);
   timers = [];
   live = null;
+  claimBase = null;
+  approverFactsFn = null;
+  claimLiveFn = null;
+  peerMigrationsFn = null;
+  peerRetiredFn = null;
 }
 
 /**
@@ -211,3 +282,9 @@ export function belowFenceHoldersForLease(stateDir: string): ReadonlySet<string>
 export function noteBelowFenceTakeover(stateDir: string, holder: string): void {
   PeerBuildLedger.at(stateDir).noteTakeover(holder);
 }
+
+/** Piece 3a §3: no machine joins while a first-approver claim is live. */
+export function ownerRecordClaimLive(): boolean { return claimLiveFn?.() ?? false; }
+
+/** Piece 3a §2: the genesis this machine pins, for the join answer. */
+export function ownerRecordPinnedGenesis(): string | null { return live ? live.store.pinned() : null; }

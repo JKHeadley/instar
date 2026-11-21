@@ -1,0 +1,53 @@
+{
+  "ts": "2026-11-21T19:46:46.187Z",
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 25,
+  "loc": 1481,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/machine.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/core/ownerApprover.ts",
+      "src/core/ownerRecord.ts",
+      "src/core/ownerRecordLocalKey.ts",
+      "src/core/ownerRecordStore.ts",
+      "src/core/ownerRecordSync.ts",
+      "src/core/ownerRecordWiring.ts",
+      "src/data/awareness/owner-record.md",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/mobileApprover.ts",
+      "src/server/mobileApproverClaim.ts",
+      "src/server/mobileApproverGrant.ts",
+      "src/server/mobileApproverRevoke.ts",
+      "src/server/mobileConsoleTicket.ts",
+      "src/server/mobileOwnerPresenceRoutes.ts",
+      "src/server/mobilePairingApproval.ts",
+      "src/server/mobilePairingIntroducer.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobileTrustApproval.ts",
+      "src/server/teamRoutes.ts"
+    ],
+    "addedLines": 1403,
+    "deletedLines": 78
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered loop: each new action fires at most once per cause, held by state that only moves one way. The per-tick machine-key self-add adds once per machine, then reports present. The Basic fork merge runs only on the lease holder with no split-brain, only while forked, and never after the first owner key. The kept-devices notice fires once per migration, which runs once per machine and is saved on disk. The dropped-devices notice fires only when the kept list shrinks, which it can do at most as many times as it has entries. The removal DM is user-driven (one per removal request, at most 20 pending)."
+  },
+  "verdict": "pass"
+}

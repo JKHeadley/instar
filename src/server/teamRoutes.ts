@@ -4,6 +4,7 @@ import { storageErrorResponse } from '../core/storageMachineName.js';
  * and the owner's phone is the only person writer. Every write stores the phone's whole signed
  * request, and events are read from that signed body. The bearer token can only take access away.
  */
+import { approverPresenceKey, mayApprove, APPROVER_REQUIRED } from './mobileApprover.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
@@ -443,7 +444,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
     if (!floorOk(res)) return;
     // Nobody may invite a person they could not later remove: turning access off takes Face ID.
-    if (!svc.devices.get(deviceId)?.presenceKey) { res.status(409).json({ error: 'face-id-required', detail: 'Set up Face ID for this phone in the app first, so you can turn team access off later.' }); return; }
+    // identity-security piece 3a: an approving device (one that can later turn the access off).
+    if (!mayApprove(svc, deviceId)) { res.status(409).json({ error: 'face-id-required', detail: 'Set up Face ID for this phone in the app first, so you can turn team access off later.' }); return; }
     const log = svc.teamLog();
     if (!log || !deps.signer()) { res.status(409).json({ error: 'team-access-no-identity', detail: 'This machine has no identity key, so it cannot sign access changes.' }); return; }
     if (!svc.pairingOrigin()) { res.status(503).json({ error: 'no-pairing-origin', detail: 'This agent has no secure address for a phone to reach yet.' }); return; }

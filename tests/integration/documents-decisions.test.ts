@@ -24,6 +24,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import type { TeamView } from '../../src/documents/access.js';
 import { checkRowOrigin, NO_NOTE } from '../../src/documents/originCheck.js';
 import { DOC_PAGE_PATH } from '../../src/server/middleware.js';
+import { verifyPresenceSignature } from '../../src/server/mobileConsoleTicket.js';
 
 const tmp: string[] = [];
 afterEach(() => { for (const d of tmp.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/documents-decisions.test.ts' }); });
@@ -68,7 +69,7 @@ function setup(opts: { root?: 'telegram' | 'pin' | null; blockedBy?: string | nu
     device: (id) => id === 'owner-phone' ? { person: { ok: true, role: 'owner', userId: null, name: 'Justin', telegramUserId: null } as never, client: 'phone', publicKey: owner.raw, approvedVia: 'telegram-dm' }
       : id === 'owner-browser' ? { person: { ok: true, role: 'owner', userId: null, name: 'Justin', telegramUserId: null } as never, client: 'browser', publicKey: browser.raw, approvedVia: 'owner-phone' } : null,
     isOwnHost: (h) => h === HOST, stableOrigin: () => `https://${HOST}`, assetsDir: assets,
-    ownerPresence: (_req, id) => id === 'owner-phone' ? { presenceKey: presence.raw, host: HOST } : null,
+    ownerPresence: (_req, id) => id === 'owner-phone' ? { host: HOST, verify: (m: string, sig: unknown) => (verifyPresenceSignature(presence.raw, m, sig) ? 'ok' : 'bad-signature') } : null,
     decisionRoot: (id) => id === 'owner-phone' ? (opts.root === undefined ? 'telegram' : opts.root) : null,
     decisionWritesBlockedBy: () => opts.blockedBy ?? null,
     notifyDecisionAsk: (docId, askId) => { pushes.push(`ask:${docId}:${askId}`); },

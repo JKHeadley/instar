@@ -15,6 +15,7 @@
  *     proof, umbrella 4.5a; piece 3). No check supplied → refused.
  */
 import crypto from 'node:crypto';
+import { isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
 import { canonicalJson } from './GraphWitnessTypes.js';
 
 export type OwnerRecordKind = 'genesis' | 'add-machine-key' | 'add-owner-key' | 'revoke-key' | 'policy' | 'tls-key' | 'merge';
@@ -40,7 +41,10 @@ const MACHINE_ID = /^m_[0-9A-Za-z_-]{1,64}$/;
 const OWNER_KEY_ID = /^o_[0-9A-Za-z_-]{1,64}$/;
 
 export interface RejectedEntry { id: string | null; reason: string }
-export interface KeyInfo { keyId: string; type: SignerType; publicKey: string; addedBy: string }
+/** `keyType`: machine keys are Ed25519 (PEM); owner keys are Ed25519 or, from piece 3a, a device's P-256 presence key
+ *  (raw 65-byte point, base64url) whose signature covers the presence message for the entry (ownerRecordPresenceMessage). */
+export type OwnerKeyType = 'ed25519' | 'p256';
+export interface KeyInfo { keyId: string; type: SignerType; publicKey: string; addedBy: string; keyType?: OwnerKeyType }
 
 export interface OwnerRecordState {
   /** `owner-lost`: the record was enrolled but no owner key is valid now (machine keys may remain): human
@@ -83,7 +87,19 @@ export interface EvaluateOptions {
   /** The genesis this machine pinned when it first adopted the record (2b). Unset: the lowest machine id's. */
   pinnedGenesis?: string;
   /** The route's proof for the FIRST owner key (umbrella 4.5a; piece 3). Absent → the first owner key is refused. */
-  verifyFirstOwnerProof?: (body: Record<string, unknown>) => boolean;
+  verifyFirstOwnerProof?: (body: Record<string, unknown>, ctx: FirstOwnerProofContext) => boolean;
+}
+
+/** What the first owner key's proof hook may check (piece 3a): the entry's parent and the keys valid there, so an
+ *  attestation is verified against the record itself, never against a machine's local registry. */
+export interface FirstOwnerProofContext {
+  parentId: string;
+  keysAtParent: ReadonlyMap<string, KeyInfo>;
+}
+
+/** The message a P-256 owner key signs for an entry (piece 3a): a presence message no other presence purpose uses. */
+export function ownerRecordPresenceMessage(agentId: string, entryId: string): string {
+  return `instar-owner-record-v1\n${agentId}\n${entryId}`;
 }
 
 export function ownerRecordSignedText(e: Omit<OwnerRecordEntry, 'sig'> | OwnerRecordEntry): string {
@@ -97,6 +113,24 @@ export function ownerRecordEntryId(e: Omit<OwnerRecordEntry, 'sig'> | OwnerRecor
 
 function verifySig(text: string, sig: string, publicKeyPem: string): boolean {
   try { return crypto.verify(null, Buffer.from(text), publicKeyPem, Buffer.from(sig, 'base64')); } catch { return false; /* @silent-fallback-ok: a key or signature that can't be parsed does not verify; the entry is rejected and listed */ }
+}
+
+/** One signature check for an entry, by the signer's key type: Ed25519 over the signed text, or (piece 3a) a P-256
+ *  presence signature over the entry's presence message. Shared with 2b's arrival filter. */
+export function verifyEntrySignature(e: OwnerRecordEntry, agentId: string, publicKey: string, keyType: OwnerKeyType = 'ed25519'): boolean {
+  return keyType === 'p256'
+    ? verifyP256(ownerRecordPresenceMessage(agentId, ownerRecordEntryId(e)), e.sig, publicKey)
+    : verifySig(ownerRecordSignedText(e), e.sig, publicKey);
+}
+
+/** A P-256 presence signature (strict low-S DER, base64url) over the entry's presence message. */
+function verifyP256(message: string, sigB64url: string, rawPointB64url: string): boolean {
+  if (typeof sigB64url !== 'string' || sigB64url.length > 128 || !/^[A-Za-z0-9_-]+$/.test(sigB64url)) return false;
+  const key = parseDevicePublicKey(rawPointB64url);
+  if (!key) return false;
+  const sig = Buffer.from(sigB64url, 'base64url');
+  if (!isStrictLowSDer(sig)) return false;
+  try { return crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig); } catch { return false; /* @silent-fallback-ok: an unparseable signature does not verify; the entry is rejected and listed */ }
 }
 function str(v: unknown, max = 4096): v is string { return typeof v === 'string' && v.length > 0 && v.length <= max; }
 
@@ -124,7 +158,7 @@ function malformed(raw: unknown, agentId: string): string | null {
   switch (kind) {
     case 'genesis': if (!MACHINE_ID.test(txt(b.machineId)) || !str(b.publicKey)) return 'bad-genesis-body'; break;
     case 'add-machine-key': if (!MACHINE_ID.test(txt(b.machineId)) || !str(b.publicKey)) return 'bad-body-fields'; break;
-    case 'add-owner-key': if (!OWNER_KEY_ID.test(txt(b.keyId)) || !str(b.publicKey)) return 'bad-body-fields'; break;
+    case 'add-owner-key': if (!OWNER_KEY_ID.test(txt(b.keyId)) || !str(b.publicKey) || (b.keyType !== undefined && b.keyType !== 'ed25519' && b.keyType !== 'p256')) return 'bad-body-fields'; break;
     case 'revoke-key': if (!MACHINE_ID.test(txt(b.keyId)) && !OWNER_KEY_ID.test(txt(b.keyId))) return 'bad-body-fields'; break;
     case 'policy': if (!str(b.path, 200) || !('value' in b)) return 'bad-body-fields'; break;
     case 'tls-key': if (!MACHINE_ID.test(txt(b.machineId)) || !str(b.fingerprint, 200) || !Number.isSafeInteger(b.seq) || (b.seq as number) < 0) return 'bad-body-fields'; break;
@@ -149,8 +183,11 @@ function authorized(e: OwnerRecordEntry, f: Fold, opts: EvaluateOptions): string
   // The first owner key: self-signed, admitted only through the caller's proof check.
   if (e.kind === 'add-owner-key' && !f.everOwner) {
     if (e.signer.type !== 'owner-key' || e.signer.keyId !== e.body.keyId) return 'first-owner-key-must-be-self-signed';
-    return opts.verifyFirstOwnerProof?.(e.body) ? null : 'first-owner-key-proof-missing';
+    return opts.verifyFirstOwnerProof?.(e.body, { parentId: e.parents[0], keysAtParent: new Map([...f.keys].filter(([, k]) => !f.revokedInst.has(k.addedBy))) }) ? null : 'first-owner-key-proof-missing';
   }
+  // Piece 3a: while no owner key exists (Basic, agent-producible), a machine may add its own key, self-signed, so
+  // any lease holder's key is in the record to attest the first owner key. After an owner key, only owners add.
+  if (e.kind === 'add-machine-key' && !f.everOwner && e.signer.type === 'machine' && e.signer.keyId === e.body.machineId) return null;
   const key = validKey(f, e.signer.keyId);
   if (!key || key.type !== e.signer.type) return 'signer-not-valid-in-ancestry';
   if (e.signer.type === 'owner-key') return null;
@@ -159,10 +196,11 @@ function authorized(e: OwnerRecordEntry, f: Fold, opts: EvaluateOptions): string
   return 'machine-key-not-allowed-for-kind';
 }
 
-function signerPublicKey(e: OwnerRecordEntry, f: Fold): { pub: string; inst: string } | null {
-  if (e.kind === 'add-owner-key' && !f.everOwner && e.signer.keyId === e.body.keyId) return { pub: String(e.body.publicKey), inst: 'self' };
+function signerPublicKey(e: OwnerRecordEntry, f: Fold): { pub: string; inst: string; keyType: OwnerKeyType } | null {
+  if (e.kind === 'add-owner-key' && !f.everOwner && e.signer.keyId === e.body.keyId) return { pub: String(e.body.publicKey), inst: 'self', keyType: e.body.keyType === 'p256' ? 'p256' : 'ed25519' };
+  if (e.kind === 'add-machine-key' && !f.everOwner && e.signer.type === 'machine' && e.signer.keyId === e.body.machineId) return { pub: String(e.body.publicKey), inst: 'self', keyType: 'ed25519' };
   const k = validKey(f, e.signer.keyId);
-  return k ? { pub: k.publicKey, inst: k.addedBy } : null;
+  return k ? { pub: k.publicKey, inst: k.addedBy, keyType: k.keyType ?? 'ed25519' } : null;
 }
 
 function apply(e: OwnerRecordEntry, id: string, f: Fold): string | null {
@@ -174,7 +212,7 @@ function apply(e: OwnerRecordEntry, id: string, f: Fold): string | null {
       return null;
     case 'add-owner-key':
       if (f.keys.has(String(b.keyId))) return 'owner-key-id-reused';
-      f.keys.set(String(b.keyId), { keyId: String(b.keyId), type: 'owner-key', publicKey: String(b.publicKey), addedBy: id }); f.everOwner = true; return null;
+      f.keys.set(String(b.keyId), { keyId: String(b.keyId), type: 'owner-key', publicKey: String(b.publicKey), addedBy: id, ...(b.keyType === 'p256' ? { keyType: 'p256' as const } : {}) }); f.everOwner = true; return null;
     case 'revoke-key': {
       const k = f.keys.get(String(b.keyId));
       if (!k) return 'no-such-key'; // revoking a key that doesn't exist does nothing and is never stored
@@ -245,8 +283,8 @@ export function evaluateOwnerRecord(rawEntries: unknown[], opts: EvaluateOptions
   // The first verifying copy (copies are sorted by signature) is remembered, so storage keeps exactly one
   // verifying signature per entry and never a junk copy.
   const verifiedSig = new Map<string, string>();
-  const verifiesAny = (id: string, pub: string): boolean => {
-    const hit = byId.get(id)!.find((x) => verifySig(ownerRecordSignedText(x), x.sig, pub));
+  const verifiesAny = (id: string, pub: string, keyType: OwnerKeyType = 'ed25519'): boolean => {
+    const hit = byId.get(id)!.find((x) => verifyEntrySignature(x, opts.agentId, pub, keyType));
     if (hit && !verifiedSig.has(id)) verifiedSig.set(id, hit.sig);
     return !!hit;
   };
@@ -290,7 +328,7 @@ export function evaluateOwnerRecord(rawEntries: unknown[], opts: EvaluateOptions
       let after = e.kind === 'merge' ? joinFolds(parentFolds, ancestry) : cloneFold(parentFolds[0]);
       const why = authorized(e, base, opts);
       const signer = why ? null : signerPublicKey(e, base);
-      const hardWhy = why ?? (!signer || !verifiesAny(id, signer.pub) ? 'bad-signature' : null);
+      const hardWhy = why ?? (!signer || !verifiesAny(id, signer.pub, signer.keyType) ? 'bad-signature' : null);
       if (hardWhy) { hard.add(id); reasons.set(id, hardWhy); continue; }
       const reason = rule(id, e, signer!.inst) ?? apply(e, id, after);
       // An ineffective merge joins nothing: its children start from its first parent's state.

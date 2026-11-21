@@ -13,6 +13,7 @@
  * a purpose-specific message. The session minted here is desktop-scoped (PhoneDesktopSessionStore),
  * never the dashboard operator session. Secrets never reach the audit, a log or a notice.
  */
+import { APPROVER_REQUIRED, approverPresenceKey, approverSigRefusal, mayApprove, verifyApproverPresence } from './mobileApprover.js';
 import crypto from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
@@ -167,9 +168,9 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
     if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto'])) return refuse({ status: 403, error: 'secure-transport-required' });
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' });
     if (!revealablePin(config.dashboardPin)) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'This agent has no dashboard PIN set right now.' });
-    const d = svc.devices.get(deviceId);
-    if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' });
-    return { svc, deviceId, host: signedHost(req, svc, deviceId), presenceKey: d.presenceKey };
+    const approverKey = approverPresenceKey(svc, deviceId); // identity-security piece 3a: only an approving device
+    if (!approverKey) return refuse({ status: 403, ...APPROVER_REQUIRED });
+    return { svc, deviceId, host: signedHost(req, svc, deviceId), presenceKey: approverKey };
   };
 
   /** Gate steps 7–8: the challenge for this purpose, then the presence signature over this purpose's message. */
@@ -181,9 +182,11 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
       res.status(401).json({ error: 'challenge-invalid' });
       return null;
     }
-    if (!verifyPresenceSignature(g.presenceKey, ownerPresenceMessage(version, g.deviceId, g.host, body.challenge as string), body.presenceSig)) {
+    const presenceCheck = verifyApproverPresence(g.svc, g.deviceId, ownerPresenceMessage(version, g.deviceId, g.host, body.challenge as string), body.presenceSig); // identity-security piece 3a: the one reader
+    if (presenceCheck !== 'ok') {
+      const presenceRefusal = approverSigRefusal(presenceCheck, 'presence-invalid');
       record(g.svc, { event: 'refused', deviceId: g.deviceId, reason: `${purpose}:presence-invalid`, ticketRef: c.ref });
-      res.status(401).json({ error: 'presence-invalid' });
+      res.status(presenceRefusal.status).json(presenceRefusal.body);
       return null;
     }
     return c.ref;
@@ -308,9 +311,11 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
       res.status(401).json({ error: 'challenge-invalid' });
       return;
     }
-    if (!verifyPresenceSignature(g.presenceKey, actionApprovalMessage(g.deviceId, g.host, a.purpose, a.actionKey, body.challenge as string), body.presenceSig)) {
+    const presenceCheck = verifyApproverPresence(g.svc, g.deviceId, actionApprovalMessage(g.deviceId, g.host, a.purpose, a.actionKey, body.challenge as string), body.presenceSig); // identity-security piece 3a: the one reader
+    if (presenceCheck !== 'ok') {
+      const presenceRefusal = approverSigRefusal(presenceCheck, 'presence-invalid');
       record(g.svc, { event: 'refused', deviceId: g.deviceId, reason: `action:${a.purpose}:presence-invalid` });
-      res.status(401).json({ error: 'presence-invalid' });
+      res.status(presenceRefusal.status).json(presenceRefusal.body);
       return;
     }
     const ref = deps.approvalStore.record({ purpose: a.purpose, actionKey: a.actionKey });

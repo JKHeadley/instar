@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T20:23:03.284Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3a-approver-in-owner-record.md",
+  "artifactSha256": "07294ac19d1fe63260e43f631cbb9977a9d28cf117986075fc2e708e0f76b256",
+  "specPath": "docs/specs/identity-security-piece3a-approver-in-owner-record.md",
+  "coveredFiles": [
+    "src/server/mobileApproverClaim.ts",
+    "src/server/mobileApproverGrant.ts",
+    "tests/unit/identity-piece3a-approver-claim.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "app contract fix inside the approved 3a spec: a bad approval signature answers 409, not the device-auth 401",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

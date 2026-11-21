@@ -23,6 +23,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { DASHBOARD_PIN_PLACEHOLDER } from '../../src/core/dashboardPin.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const PIN = '424242';
@@ -70,7 +71,7 @@ function setup(cfg: Record<string, unknown> = {}, opts: { ownerDM?: boolean; own
     const created = svc.devices.createPending({ deviceName: 'Justin iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
     if (!created.ok) throw new Error('setup');
     svc.devices.applyConfirm(created.device.id, { ok: true });
-    if (withPresence) svc.devices.setPresenceKey(created.device.id, presence.publicKey);
+    if (withPresence) markApproverForTest(svc, created.device.id, presence.publicKey);
     return { dev, presence, id: created.device.id };
   };
   return { app, svc, pair, dir, config, dms, sessions };
@@ -154,7 +155,7 @@ describe('Remote Desktop with Face ID', () => {
     // Off the local front.
     expect((await send(c.app, p, 'POST', '/mobile/desktop-unlock/challenge', {}, { 'x-test-lan': '1' })).body.error).toBe('secure-transport-required');
     // No presence key.
-    expect((await send(c.app, c.pair(undefined, false), 'POST', '/mobile/desktop-unlock/challenge', {})).body.error).toBe('presence-key-missing');
+    expect((await send(c.app, c.pair(undefined, false), 'POST', '/mobile/desktop-unlock/challenge', {})).body.error).toBe('approver-required');
     // A reused challenge.
     const ch = await challengeFor(c.app, p, '/mobile/desktop-unlock/challenge');
     const body = { challenge: ch, presenceSig: p.presence.sign(ownerPresenceMessage(DESKTOP_UNLOCK_VERSION, p.id, HOST, ch)) };
@@ -172,7 +173,7 @@ describe('Remote Desktop with Face ID', () => {
     const y = await challengeFor(c.app, p, '/mobile/desktop-unlock/challenge');
     expect((await send(c.app, p, 'POST', '/mobile/desktop-unlock', { challenge: y, presenceSig: p.dev.sign(ownerPresenceMessage(DESKTOP_UNLOCK_VERSION, p.id, HOST, y)) })).body.error).toBe('presence-invalid');
     const reasons = auditRows(c.dir).filter((r) => r.event === 'refused').map((r) => r.reason);
-    expect(reasons).toEqual(expect.arrayContaining(['desktop:secure-transport-required', 'desktop:presence-key-missing', 'desktop:challenge-invalid', 'desktop:presence-invalid']));
+    expect(reasons).toEqual(expect.arrayContaining(['desktop:secure-transport-required', 'desktop:approver-required', 'desktop:challenge-invalid', 'desktop:presence-invalid']));
   });
 
   it('off, or with no real PIN, it answers why', async () => {
