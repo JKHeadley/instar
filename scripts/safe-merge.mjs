@@ -573,6 +573,43 @@ export async function selectSafeMergeFloor({ repo, view, agent, override, server
 }
 
 /**
+ * Does `--auto` take the Actions-floor path? Only when the caller asked for
+ * `--auto` AND the selected floor is `actions`. Under the `local` floor the
+ * Actions matrix is not the gate (ci.yml skips the heavy jobs on pull requests
+ * since 2026-11-21), so `--auto` falls through to the local path. Pure.
+ */
+export function autoTakesActionsFloor(args, sel) {
+  return Boolean(args?.auto) && sel?.floor !== 'local';
+}
+
+/**
+ * Read the agent's config and server once and select the floor for this merge.
+ * An unreadable config without the `actions` override is the local floor with
+ * an unmeasurable refusal (never a silent fall-back to Actions).
+ */
+export async function resolveFloorSelection({ repo, view }) {
+  const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
+  let agent = null;
+  let configError = null;
+  try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
+  const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
+  let token = agent?.inlineToken ?? null;
+  let tokenTried = false;
+  const serverGet = async (p) => {
+    if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+    return makeServerGet({ port: agent?.port ?? null, token })(p);
+  };
+  const serverPost = async (p, body) => {
+    if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+    return makeServerPost({ port: agent?.port ?? null, token })(p, body);
+  };
+  const sel = configError && !override
+    ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
+    : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+  return { sel, agent, serverGet, serverPost };
+}
+
+/**
  * The §3 predicate's inputs, gathered fresh (server index + GitHub), then
  * judged by `evaluateLocalPredicate`. Any read failure is unmeasurable.
  *
@@ -1229,12 +1266,22 @@ async function main() {
     process.exit(1);
   }
 
+  // --- Floor selection (local-verify-merge-authority §3), read once ----------
+  // Under the `local` floor the §3 predicate (a Local Verify record in the
+  // server index) is the merge gate and the Actions matrix is not: since
+  // 2026-11-21 ci.yml skips the heavy jobs on pull requests, so a caller that
+  // asked for `--auto` (the feedback executor does) would otherwise wait on
+  // checks that never run. So `--auto` takes the Actions path only when the
+  // selected floor is `actions`; under `local` it falls through to the local
+  // path below, exactly like the synchronous call.
+  const floorSel = await resolveFloorSelection({ repo, view });
+
   // --- CI-floor merge path (--auto): defer until green, then merge now ------
   // GitHub enforces only the contexts configured in branch rules. On this repo
   // that can be just instar/local-verify, so --auto would merge while the CI
   // matrix is still queued. Check the full code-pinned Actions floor before
   // merging. A pending check is a deferral: the caller retries on its next tick.
-  if (args.auto) {
+  if (autoTakesActionsFloor(args, floorSel.sel)) {
     // Zero Actions checks is never green. A queued run may not yet appear,
     // so classify pending first and refuse only once the rows have settled.
     let headRuns;
@@ -1299,29 +1346,12 @@ async function main() {
     mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin: false });
   }
 
-  // --- Floor selection (local-verify-merge-authority §3) --------------------
-  // On the synchronous path without `--auto`, the
-  // `local` floor replaces the three Actions waits and the contexts floor with
-  // the §3 predicate; it never falls back to the Actions floor on its own.
+  // --- Local floor (local-verify-merge-authority §3) -------------------------
+  // The `local` floor replaces the three Actions waits and the contexts floor
+  // with the §3 predicate; it never falls back to the Actions floor on its own.
+  // Reached by the synchronous call, and by `--auto` when the floor is `local`.
   {
-    const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
-    let agent = null;
-    let configError = null;
-    try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
-    const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
-    let token = agent?.inlineToken ?? null;
-    let tokenTried = false;
-    const serverGet = async (p) => {
-      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
-      return makeServerGet({ port: agent?.port ?? null, token })(p);
-    };
-    const serverPost = async (p, body) => {
-      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
-      return makeServerPost({ port: agent?.port ?? null, token })(p, body);
-    };
-    const sel = configError && !override
-      ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
-      : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+    const { sel, agent, serverGet, serverPost } = floorSel;
     if (sel.floor === 'local') {
       const refuseLocal = (r) => {
         result({ result: r.result, pr: Number(pr), floor: 'local', problems: (r.problems ?? []).slice(0, 20) });
