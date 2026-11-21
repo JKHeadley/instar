@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-21T21:05:36.521Z",
+  "generatedAt": "2026-11-21T21:53:19.103Z",
   "slug": "design-standard-enforcement",
   "carriers": {
     "CMT-2165": {
@@ -55,6 +55,12 @@
       "owner": "agent",
       "blockedOn": "none",
       "excerpt": "DSE-T9: Design-feedback detection for owner messages that arrive through Slack, if stage 3 does not prove it. Owner: Echo's design-standards session."
+    },
+    "CMT-2178": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T10: Before building design-standards stage 3 (the feedback loop), check that pull request 3596 (agent work cards slice 1, owned by the agent-work-cards build session) has merged with requestApproved on main; if not, build stages 4 to 6 first and hand the dependency to that session."
     }
   }
 }
