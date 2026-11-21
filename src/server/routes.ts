@@ -339,7 +339,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
-import { appOwnerName } from './mobileConversationRoutes.js';
+import { appOwnerName, POOL_READ_HEADER } from './mobileConversationRoutes.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import { mountMobileOpsRoutes, machineKey, summarizeMachines } from './mobileOpsRoutes.js';
 import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
@@ -23421,11 +23421,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const viaDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     const remoteContinuation = req.query.row !== undefined || req.query.byteFrom !== undefined;
     const needsHistoryView = !remoteContinuation && (beforeMs === null || (viaDevice && !!ctx.conversationUnread?.enabled()));
-    // Wait (bounded; 4 s for a peer's fan-out read, inside its 5 s budget) for the in-memory view.
-    // Without it (still loading, or its rebuild failed) the reads below take the old path, the file.
-    if (needsHistoryView && ctx.telegram.waitForHistory) await ctx.telegram.waitForHistory(viaDevice ? 15_000 : 4_000);
+    // A read from another of this agent's machines (the pool fan-out marks it) never waits for the
+    // in-memory view; any other read waits, bounded. Without the view (loading, or its rebuild failed)
+    // every read below takes the old path, from the file.
+    const fromPeerMachine = !viaDevice && req.get(POOL_READ_HEADER) === '1';
+    if (needsHistoryView && ctx.telegram.waitForHistory && !fromPeerMachine) await ctx.telegram.waitForHistory(15_000);
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
-      : typeof ctx.telegram.getTopicHistoryBeforeAsync === 'function' && (ctx.telegram as { historyViewOn?: () => boolean }).historyViewOn?.() !== false
+      // Scroll-back reads the file in awaited blocks only while the view is in use; without it, the old reader.
+      : typeof ctx.telegram.getTopicHistoryBeforeAsync === 'function' && (ctx.telegram as { isHistoryLoaded?: () => boolean }).isHistoryLoaded?.() === true
         ? await ctx.telegram.getTopicHistoryBeforeAsync(topicId, beforeMs, limit, beforeMessageId ?? undefined)
         : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
@@ -23522,7 +23525,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
           if (!p.url || !isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) throw new BearerReadRefused('peer URL refused');
           const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${beforeMessageId === null ? '' : `&beforeMessageId=${beforeMessageId}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+            headers: { Authorization: `Bearer ${ctx.config.authToken}`, [POOL_READ_HEADER]: '1' }, signal: AbortSignal.timeout(5000), redirect: 'manual',
           });
           if (!r.ok) throw new BearerReadRefused(`HTTP ${r.status}`);
           const payload = await r.text();

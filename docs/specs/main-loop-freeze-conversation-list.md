@@ -126,6 +126,19 @@ appends would continue during the read, which changes which lines a rotation kee
 
 Measured on the Studio (2026-11-21): the old per-save check (stat, full synchronous read, split, filter) takes a median 87 ms and at most 136 ms on Echo's real 30.8 MB, 36,029-line log, and a median 190 ms and at most 587 ms on an 88 MB, 100,000-line log (the largest size before a trim). Echo saved about 98 messages a day over the last week, at most 8 in any one minute. Each check stays under the one-second goal, so the old trim is kept rather than changed.
 
+### 3c. Every conversation read falls back to the old read path
+
+Without the in-memory copy (still loading, or its rebuild failed) every request that reads
+conversation history answers from the file through the old read path, the code the off switch uses:
+the list, read reports, chat history, scroll-back pages (which use the background block reader only
+while the copy is in use), and list or history requests from another of this agent's machines.
+Those requests carry `x-instar-pool-read: 1` (set by the pool fan-out) and never wait for the copy,
+so the caller's 5 s budget is spent only on the read. Other requests wait for it for at most 15 s.
+
+A read failure during the first one-pass fill of the history cache is never stored as empty
+history: nothing is cached, that request is answered by the per-topic file read, and a later
+request tries the fill again.
+
 ### 4. Failure handling added after review
 
 - A rotation while a load is closing its file handle is read again in the same load, so a load

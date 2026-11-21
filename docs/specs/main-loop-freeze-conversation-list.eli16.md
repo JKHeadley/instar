@@ -21,7 +21,7 @@ For each conversation in the list, the server asked "what is this conversation's
 
 The server now keeps a copy in memory of what that slow file read would have returned: the newest 500 messages of each conversation, exactly as stored in the file. It builds this once in the background, in small pieces, and updates it with every saved message. Everything above that step works as it did, so previews, order and unread counts should not change, and a comparison of old and new servers on identical data checks that.
 
-The phone and Mac wait briefly for that first background read. If it cannot finish within 15 seconds (four seconds when another of the agent's machines is asking), or if rebuilding it fails, the request is simply answered the old way, from the file, so the app sees exactly what it saw before.
+When the memory copy is not there, every kind of request (the list, chat history, older pages, read receipts and requests from the agent's other machines) is answered the old way, from the file; requests from other machines never wait for it. A failed read while the server first fills its short memory is never remembered as "no messages"; the next request simply tries again. The phone and Mac wait briefly for that first background read. If it cannot finish within 15 seconds (four seconds when another of the agent's machines is asking), or if rebuilding it fails, the request is simply answered the old way, from the file, so the app sees exactly what it saw before.
 
 Two earlier versions of this fix were thrown away after outside review found they could change what the apps show.
 

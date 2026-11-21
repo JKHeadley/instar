@@ -4953,10 +4953,11 @@ export class TelegramAdapter implements MessagingAdapter {
       const cached = this.topicTailCache.get(topicId);
       if (cached) return cached.slice(-limit);
       if (!this.tailCacheSeeded) {
-        this.seedTailCacheFromLog();
-        this.tailCacheSeeded = true;
-        const justSeeded = this.topicTailCache.get(topicId);
-        if (justSeeded) return justSeeded.slice(-limit);
+        if (this.seedTailCacheFromLog()) {
+          this.tailCacheSeeded = true;
+          const justSeeded = this.topicTailCache.get(topicId);
+          if (justSeeded) return justSeeded.slice(-limit);
+        }
       }
       const seeded = this.scanLogForTopic(topicId, TelegramAdapter.TAIL_CACHE_LIMIT);
       this.topicTailCache.set(topicId, seeded);
@@ -4973,10 +4974,11 @@ export class TelegramAdapter implements MessagingAdapter {
       // pass — the live-tail streamer enumerates exactly that set, so without
       // this its first tick would trigger one full-file scan PER topic.
       if (!this.tailCacheSeeded) {
-        this.seedTailCacheFromLog();
-        this.tailCacheSeeded = true;
-        const justSeeded = this.topicTailCache.get(topicId);
-        if (justSeeded) return this.authorshipJoin.join(justSeeded.slice(-limit));
+        if (this.seedTailCacheFromLog()) {
+          this.tailCacheSeeded = true;
+          const justSeeded = this.topicTailCache.get(topicId);
+          if (justSeeded) return this.authorshipJoin.join(justSeeded.slice(-limit));
+        }
       }
       // Not a live topic (e.g. respawn history for an unregistered topic) —
       // per-topic scan once, then cache it.
@@ -4995,32 +4997,43 @@ export class TelegramAdapter implements MessagingAdapter {
    * enumerates). Topics with no entries get an empty array so they never
    * trigger a per-topic file scan of their own.
    */
-  private seedTailCacheFromLog(): void {
-    for (const id of this.topicToSession.keys()) {
-      if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, this.logView && this.historyViewOn() ? [...(this.logView.get(id) ?? [])] : []);
+  /**
+   * Fill the tail cache for every live topic in one pass. Returns false when the log could not be
+   * read: then NOTHING is cached (a failed read is unknown history, never an empty one), the caller
+   * answers from the file through the per-topic read, and a later request tries the fill again
+   * (docs/specs/main-loop-freeze-conversation-list.md).
+   */
+  private seedTailCacheFromLog(): boolean {
+    const fresh = new Map<number, LogEntry[]>();
+    for (const id of this.topicToSession.keys()) if (!this.topicTailCache.has(id)) fresh.set(id, []);
+    if (this.logView && this.historyViewOn()) {
+      // The view already holds what this pass would read.
+      for (const [id, tail] of fresh) { tail.push(...(this.logView.get(id) ?? [])); this.topicTailCache.set(id, tail); }
+      return true;
     }
-    if (this.logView && this.historyViewOn()) return; // the view already holds what this pass would read
-    if (!fs.existsSync(this.messageLogPath)) return;
-    let lines: string[];
-    try {
-      lines = fs.readFileSync(this.messageLogPath, 'utf-8').split('\n').filter(Boolean);
-    } catch (err) {
-      // @silent-fallback-ok — a transiently unreadable log just means the seed
-      // is empty this boot; per-topic reads still work and appends repopulate.
-      console.error(`[telegram] tail-cache seed failed to read message log: ${err}`);
-      return;
+    let lines: string[] = [];
+    if (fs.existsSync(this.messageLogPath)) {
+      try {
+        lines = fs.readFileSync(this.messageLogPath, 'utf-8').split('\n').filter(Boolean);
+      } catch (err) {
+        // @silent-fallback-ok — reported; nothing is cached, so later reads try again.
+        console.error(`[telegram] tail-cache seed failed to read message log (will retry): ${err}`);
+        return false;
+      }
     }
     for (const line of lines) {
       try {
         const entry: LogEntry = JSON.parse(line);
         const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
         if (typeof entryTopicId !== 'number') continue;
-        const tail = this.topicTailCache.get(entryTopicId);
+        const tail = fresh.get(entryTopicId);
         if (!tail) continue; // not a live topic — lazy per-topic path covers it
         tail.push(entry);
         if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
       } catch { /* @silent-fallback-ok — skip a malformed JSONL line, identical to the scan path's long-standing behavior */ }
     }
+    for (const [id, tail] of fresh) this.topicTailCache.set(id, tail);
+    return true;
   }
 
   /** Full JSONL scan for a topic's most recent entries (the cache seed / fallback path). */

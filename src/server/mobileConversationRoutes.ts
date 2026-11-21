@@ -213,6 +213,9 @@ const MAX_POOL_LIST_BYTES = 512 * 1024;
 const MAX_POOL_BROWSE_BYTES = 2 * 1024 * 1024;
 type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult'> & { config: InstarConfig };
 
+/** Marks a read sent by the pool fan-out from another of this agent's machines (main-loop-freeze-conversation-list). */
+export const POOL_READ_HEADER = 'x-instar-pool-read';
+
 /** GET a peer's own (non-pool) read with the agent's Bearer token. A 404 is "nothing there", not a failure. */
 async function fetchPeers<T>(
   ctx: PoolReadCtx, pathFor: string, maxBytes: number, take: (body: Record<string, unknown>, machineId: string) => T,
@@ -225,7 +228,8 @@ async function fetchPeers<T>(
     if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { failed.push({ machineId: p.machineId, reason: 'peer-url-refused' }); return; }
     try {
       const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, pathFor, {
-        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
+        // POOL_READ_HEADER: the peer answers at once from whatever read path it has, never waiting.
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, [POOL_READ_HEADER]: '1' }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
       });
       if (r.status === 404) return;
       if (!r.ok) {
@@ -611,8 +615,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
     // A first-time reader's baseline is this request's arrival, not the end of the wait below.
     { const u = unreadOn(); const r = readerOf(req); if (u && r) u.touchBaseline(r); }
-    // A peer's fan-out read has about 5 s: answer inside it, so a warming peer is reported, not lost.
-    const historyWait = principalOf(req).kind === 'device' ? 15_000 : 4_000;
+    // A request from another of this agent's machines (the pool fan-out marks it) never waits for the
+    // in-memory copy: without it, it reads the file straight away, so the caller's 5 s budget is never
+    // spent waiting. Any other read waits, bounded, then falls back to the file the same way.
+    const historyWait = req.get(POOL_READ_HEADER) === '1' ? 0 : 15_000;
     // Without the view (still loading, or its rebuild failed) the reads below take the old path.
     if (deps.telegramHistoryReady) await deps.telegramHistoryReady(historyWait);
     const local = localListPage(limit, cursor);
@@ -773,7 +779,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (reader.viaDevice) unread.touchBaseline(reader);
     // Only a mark on a Telegram conversation needs its history.
     // After the wait the report runs either way, one result per mark, as it always has.
-    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady) await deps.telegramHistoryReady(p.kind === 'device' ? 15_000 : 4_000);
+    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady) await deps.telegramHistoryReady(p.kind === 'device' ? 15_000 : 0);
     // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
     const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
     res.json({ results });
