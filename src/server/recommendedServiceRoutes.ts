@@ -1078,7 +1078,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         deps.telegramSetup.write({ token, chatId });
         // Setup made this channel: the switch-off may disable it.
         updateSetupState(deps.stateDir, row.id, { signedInBySetup: true });
-        deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
+        await deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
       } catch (err) {
         report('Store the Telegram channel', err, 'The channel was not saved.');
         res.status(503).json({ error: 'key-not-saved' });

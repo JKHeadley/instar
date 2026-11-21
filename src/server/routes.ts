@@ -18815,7 +18815,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const current = telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown });
         if (current) telegramWrittenHere = { ...current, enabled: false };
       },
-      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },
+      requestRestart: async (reason) => (await ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram')) === true,
     },
     // The Cloudflare recipe: Cloudflare's API, this agent's tunnel block, one public read, and a planned restart.
     cloudflare: {
@@ -18848,7 +18848,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return code === 'ENOTFOUND' || code === 'ECONNREFUSED' ? 'unreachable' : 'unknown';
         }
       },
-      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare'); return r === true; },
+      requestRestart: async (reason) => (await ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare')) === true,
     },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     // Setting up Telegram itself needs no Telegram yet: that session runs where the dashboard shows it (startSetup below).
