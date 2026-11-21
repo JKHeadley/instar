@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "console-notice-topic-zero",
+  "sessionId": "858473d9-be33-4c39-9456-54abdb9aa26a",
+  "timestamp": "2026-11-21T07:43:02.483Z",
+  "artifactPath": "upgrades/side-effects/console-notice-topic-zero.md",
+  "artifactSha256": "54385849bd462da5e80189c9300be6cc07a92c0ed4649effed50cdf22f81a937",
+  "coveredFiles": [
+    "dashboard/console/display-identity.js",
+    "tests/unit/console-live-check-fixes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one display-text replacement in a shared helper, no gate or state",
+  "eli16Path": "docs/specs/console-notice-topic-zero.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-notice-topic-zero.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
