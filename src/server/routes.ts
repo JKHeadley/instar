@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { projectTitlesByTopic } from './conversationFallbackTitle.js';
 import { signedInPinSource } from './ownerPinSource.js';
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
@@ -22064,9 +22065,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
       }
     }
+    const unresolved = [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b);
+    // A topic no machine can name shows its bound project's title instead (kept apart from verified names,
+    // which `topics` alone carries). 2026-11-20: ~60 names were lost on every machine in the Studio rebuild.
+    let projectTitles = new Map<number, string>();
+    try { projectTitles = projectTitlesByTopic(ctx.chiefOfStaffLoop?.projectsSummary() ?? []); } catch { /* @silent-fallback-ok — a fallback title is optional */ }
+    const fallbacks = unresolved.filter((id) => projectTitles.has(id)).map((id) => ({ topicId: id, title: projectTitles.get(id)!, source: 'project' as const }));
     res.json({
       topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
-      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+      fallbacks: filterTopicsForTeam(ctx.mobilePairingService, req, fallbacks, (t) => t.topicId),
+      pool: { failed, unresolved },
     });
   });
 

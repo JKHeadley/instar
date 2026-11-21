@@ -26,7 +26,7 @@ describe('paging the Needs-you strip', () => {
   });
   afterEach(() => { stop?.(); dom.window.close(); vi.unstubAllGlobals(); vi.useRealTimers(); });
   async function mount(get: (path: string) => Promise<unknown>) {
-    stop = mountNeedsStrip(host, { get, hrefFor: (a: { href: string }) => a.href });
+    stop = mountNeedsStrip(host, { get, hrefFor: (a: { href: string }) => a.href, open: true });
     await Promise.resolve();
   }
   async function press(label: string) {
@@ -105,5 +105,46 @@ describe('paging the Needs-you strip', () => {
     await press('Show more needs'); await press('Next page');
     expect(host.textContent).toContain('page could not be read');
     expect(host.querySelector('li')).toBeNull();
+  });
+});
+
+describe('the Needs-you strip is one calm line until opened (Justin, 2026-11-20)', () => {
+  let dom: JSDOM, host: HTMLElement, stop: () => void;
+  beforeEach(() => {
+    dom = new JSDOM('<section></section>', { pretendToBeVisual: true, url: 'https://example.test/' });
+    vi.stubGlobal('document', dom.window.document);
+    host = document.querySelector('section')!;
+  });
+  afterEach(() => { stop?.(); dom.window.close(); vi.unstubAllGlobals(); });
+  const answer = (over: Record<string, unknown> = {}) => ({ ok: true, data: { complete: false, count: 12, couldNotCheck: ['accounts on M5 Pro'],
+    items: [{ id: 'a', title: 'Rebuild any machine in one step', why: 'Waiting for your OK', tone: 'attn', action: { kind: 'href', href: '#/work/plans' } },
+      { id: 'b', title: 'Second', why: '', tone: 'attn', action: { kind: 'href', href: '#/x' } }], ...over } });
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+  it('closed: one button with the dot, "Needs you · 12+", the first need, and no list or could-not-check prose', async () => {
+    stop = mountNeedsStrip(host, { get: async () => answer(), hrefFor: (a: { href: string }) => a.href, open: false });
+    await settle();
+    const line = host.querySelector('button.needs-compact')!;
+    expect(line.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelector('.needs-compact-label')!.textContent).toBe('Needs you · 12+');
+    expect(host.querySelector('.needs-compact-first')!.textContent).toBe('Rebuild any machine in one step');
+    expect(host.querySelector('.needs-rows')).toBeNull();
+    expect(host.textContent).not.toContain('Could not check');
+  });
+  it('opening shows the full list and the could-not-check line; Hide closes it again', async () => {
+    stop = mountNeedsStrip(host, { get: async () => answer(), hrefFor: (a: { href: string }) => a.href, open: false });
+    await settle();
+    (host.querySelector('button.needs-compact') as HTMLButtonElement).click();
+    expect(host.querySelectorAll('.needs-rows li')).toHaveLength(2);
+    expect(host.textContent).toContain('Could not check accounts on M5 Pro.');
+    (host.querySelector('button.needs-close') as HTMLButtonElement).click();
+    expect(host.querySelector('button.needs-compact')).not.toBeNull();
+  });
+  it('compactLine covers loading, a failed read and an incomplete zero', async () => {
+    const { compactLine, stripModel } = await import('../../dashboard/console/needs-strip.js');
+    expect(compactLine(stripModel(null))!.label).toBe('Checking what needs you…');
+    expect(compactLine(stripModel({ ok: false, reason: 'x' }))!.label).toBe('Could not check what needs you');
+    expect(compactLine(stripModel({ ok: true, data: { complete: false, count: 0, items: [], couldNotCheck: ['a'] } }))!.label).toBe('Needs you · ?');
+    expect(compactLine(stripModel({ ok: true, data: { complete: true, count: 0, items: [], couldNotCheck: [] } }))).toBeNull();
   });
 });
