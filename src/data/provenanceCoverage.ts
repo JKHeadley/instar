@@ -358,6 +358,9 @@ export const DP_STALL_TRIAGE_DIAGNOSIS = 'stall-triage-diagnosis';
 /** Sanitized conversation context + eligible features → surfacing recommendation. */
 export const DP_DISCOVERY_EVALUATE = 'discovery-evaluate';
 
+/** A declined recommended service, its changes and categorical use facts → offer again or hold (shadow first). */
+export const DP_REOFFER_JUDGE = 'reoffer-judge';
+
 /** Durable mid-work queue evidence → observe-only restart sanity verdict. */
 export const DP_RESUME_SANITY_CHECK = 'resume-sanity-check';
 
@@ -980,6 +983,19 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Artifact-vs-standard conformance review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+  },
+  {
+    decisionPoint: DP_REOFFER_JUDGE,
+    component: 'ReofferJudge',
+    status: 'wired',
+    volumeClass: 'budget:100',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Shadow-only until its labelled bench (src/recommended/reofferJudge.ts REOFFER_JUDGE_BENCH) and dev-agent shadow records pass; ' +
+      'verdicts are recorded beside the deterministic hold default, so provenance is collected without claiming a grade.',
+    reason:
+      'Recommended-services re-offer for a change or cool-off (recommended-services.md, reasons 2 and 3): categorical inputs only, a closed offer/hold verdict with a closed reason set, inside a code floor; provenance stores identities and counts, never descriptive text.',
   },
   {
     decisionPoint: DP_DISCOVERY_EVALUATE,

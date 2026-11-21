@@ -41,6 +41,7 @@ const NOT_EXPOSED_BASELINE = [
   'CoherenceGate',
   'InputDetector',
   'MachineWedgeJudge', // machine-self-maintenance Part E: structured probe readings this agent measured itself
+  'ReofferJudge', // recommended-services reasons 2/3: person-written catalog changes, counts and fixed enum facts only
 ].sort();
 
 describe('FD5b injection-exposure static-map ratchet', () => {

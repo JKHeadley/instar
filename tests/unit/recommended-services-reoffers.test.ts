@@ -304,3 +304,14 @@ describe('provider-exhausted', () => {
     expect(nextReoffer([rows[0]!], RECOMMENDED_SERVICE_CATALOG, f, t0 + 2000, { hold })).toEqual({ action: 'none', why: 'nothing-waiting' });
   });
 });
+
+describe('review fix: a reservation is resumed only while it could still be sent', () => {
+  const t0 = Date.parse('2026-11-20T00:00:00Z');
+  const pending = (kind: string, service: string) => ({ type: 'reoffer', eventId: 'p1', service, owner: '42', kind, state: 'pending', evidenceRef: 'x', eventRef: 'e1', at: new Date(t0).toISOString() }) as never;
+  const facts = (choice: string) => ({ choice: () => ({ choice, at: '2026-11-01T00:00:00Z' }) as never, offer: () => 'none' as never, offeredAt: () => null });
+  it('a yes since, or a kind this build does not know, is not resumed', () => {
+    expect(nextReoffer([pending('voice-unreadable', 'voice-transcription')], RECOMMENDED_SERVICE_CATALOG, facts('no'), t0 + 1000)).toMatchObject({ action: 'resume' });
+    expect(nextReoffer([pending('voice-unreadable', 'voice-transcription')], RECOMMENDED_SERVICE_CATALOG, facts('yes'), t0 + 1000)).toEqual({ action: 'none', why: 'nothing-waiting' });
+    expect(nextReoffer([pending('from-a-newer-build', 'voice-transcription')], RECOMMENDED_SERVICE_CATALOG, facts('no'), t0 + 1000)).toEqual({ action: 'none', why: 'nothing-waiting' });
+  });
+});

@@ -195,3 +195,18 @@ describe('runTailscaleWithoutModel', () => {
     expect(await runTailscaleWithoutModel(b.deps)).toEqual({ result: 'fail', detail: 'Setup was stopped.' });
   });
 });
+
+describe('review fix: nothing is claimed when the door was not switched on', () => {
+  it('a sign-in that completes after the yes was withdrawn ends in fail, with no "switched on" message', async () => {
+    let clock = 0;
+    const told: string[] = [];
+    const out = await runSecondDoorWithoutModel({
+      enabled: () => ['claude-code'], installed: () => true, oneTapSignIn: () => true, install: async () => true,
+      startSignIn: async () => ({ verificationUrl: 'https://x/device', userCode: 'ABCD-1234' }),
+      signedIn: async () => (clock > 0 ? 'signed-in' : 'signed-out'), enable: () => false,
+      tell: (t) => told.push(t), stillWanted: () => true, sleep: async (ms) => { clock += ms; }, now: () => clock,
+    });
+    expect(out.result).toBe('fail');
+    expect(told.some((t) => t.includes('switched on'))).toBe(false);
+  });
+});

@@ -70,6 +70,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
     exempt:
       'judges a FIXED known-answer canary probe — the canary is its own benchmark; a bench task would re-test the same constant',
   },
+  ReofferJudge: {
+    exempt:
+      'ships its OWN labelled bench — REOFFER_JUDGE_BENCH + scoreBench in src/recommended/reofferJudge.ts, the spec\'s named gate (>=80% of offer cases found, <=5% false offers, failures never pass), run deterministically in tests/unit/reoffer-judge-bench.test.ts PLUS an opt-in INSTAR_LIVE_REOFFER_JUDGE=1 real-model run. Shadow-only until that passes (recommended-services.md, Evidence before authority); a generic harness task would re-test the same judgment less precisely.',
+  },
   HubIntentClassifier: {
     exempt:
       'ships its OWN dedicated discrimination benchmark — tests/unit/hub-intent-discrimination.test.ts, a committed command-vs-discussion corpus (open/tie vs question/mention + unknown-target guardrail + fail-open) run deterministically in CI PLUS an opt-in INSTAR_LIVE_HUB_INTENT=1 real-model accuracy benchmark (the graduation gate before dryRun:false). The co-located benchmark IS the benchmark; a generic harness task would re-test the same judgment less precisely. Spec: docs/specs/keyword-intent-conversions-1-and-3.md §Tests.',
@@ -223,6 +227,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   TelegramAdapter: true,
   FeedbackReadinessArbiter: true,
   FeedbackTriageArbiter: true,
+  ReofferJudge: { false: 'categorical inputs only: a catalog change written by a person in code, counts, the saved reason enum and fixed facts; no conversation, file or tool text' },
   EcosystemIdeaReview: true, // files from other projects
   MachineWedgeJudge: { false: 'structured probe readings only: fixed result and reason codes, numbers and booleans this agent measured itself' },
   FeedbackTriageSecondOpinion: true,
@@ -444,6 +449,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   EcosystemIdeaReview: false, // judges whether another project's idea fits, not a completion/health claim
   MachineWedgeJudge: false, // proposes a ladder entry point from probe readings; it does not credit a claim
   FeedbackTriageArbiter: false, // judges whether a feedback work item is worth work, not a completion/health claim
+  ReofferJudge: false, // judges whether to ask a declined service again, not a completion/health claim
   FeedbackTriageSecondOpinion: false, // re-judges an ignore decision, not a completion/health claim
   GoalPriorityExtractor: false, // extracts durable operator priorities; it does not credit a completion/progress/health claim
   AlignmentReviewer: { claimKind: 'healthClaim' }, // judges whether the active run remains healthy relative to durable operator priorities
@@ -573,6 +579,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
   FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
   FeedbackTriageArbiter: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
+  ReofferJudge: { contractTest: 'tests/unit/reoffer-judge-bench.test.ts' },
   EcosystemIdeaReview: { contractTest: 'tests/unit/ecosystem/idea-prompts.test.ts' },
   MachineWedgeJudge: { contractTest: 'tests/unit/machine-wedge-judge.test.ts' },
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
@@ -930,6 +937,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
     'structured probe readings only: fixed result and reason codes, numbers and booleans this agent measured; no external, user or model text reaches the prompt',
   ),
   FeedbackTriageArbiter: exposed(EXPOSED_USER_TOOL), // scrubbed feedback report text + cluster metadata
+  ReofferJudge: notExposed('categorical inputs only: catalog change lines written by a person in code, counts and fixed enum facts; no user, model or tool text reaches the prompt'),
   FeedbackTriageSecondOpinion: exposed(EXPOSED_USER_TOOL), // the same scrubbed triage packet
   GoalPriorityExtractor: exposed(EXPOSED_USER), // verified operator message + quoted context
   AlignmentReviewer: exposed(EXPOSED_ALL), // operator priorities + model/tool-authored run focus

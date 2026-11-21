@@ -407,6 +407,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, registerVoiceUnreadableListener, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { DOOR_NPM_PACKAGE, detectDoorPath, proveDoorSignedIn, redetectDoorPath } from '../install/doors.js';
+import { runReofferJudge } from '../recommended/reofferJudge.js';
 import { everyDoorDown, runSecondDoorWithoutModel, runTailscaleWithoutModel, type TailscaleState } from '../recommended/noModelSetup.js';
 import { detectTmuxPath } from '../core/Config.js';
 import { EnrollmentWizard } from '../core/EnrollmentWizard.js';
@@ -18480,6 +18481,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return true;
       },
     },
+    // Reasons 2 and 3 (a change, a long cool-off): the judge runs in SHADOW only, on the shared provider.
+    reofferJudge: ctx.intelligence ? (input) => runReofferJudge(ctx.intelligence!, input) : undefined,
+    useFacts: () => {
+      // With no self id the list includes this machine, so it leans to fewer, not more (a fact for the judge, not a safety call).
+      const all = ctx.listPoolMachines?.() ?? [];
+      const machines = ctx.meshSelfId ? all.filter((m) => m.machineId !== ctx.meshSelfId).length : Math.max(0, all.length - 1);
+      const doors = ((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[]).length;
+      return { otherMachines: (machines >= 2 ? 2 : machines) as 0 | 1 | 2, aiDoors: Math.max(1, doors) };
+    },
     // `provider-exhausted` (recommended-services.md, rollout step 4): every door this agent uses, per the pool.
     everyDoorDown: () => everyDoorDown(
       [...((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[])],
@@ -18501,6 +18511,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (read.kind === 'failed') return 'not-running';
           return judgeTailscaleStatus(read.stdout).result === 'pass' ? 'running' : 'not-running';
         };
+        const tailscalePane = 'instar-no-model-tailscale-login';
         return runTailscaleWithoutModel({
           status,
           // No administrator rights: Homebrew on a Mac. Linux needs sudo for the official installer, so it is not tried here.
@@ -18511,8 +18522,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           },
           startSignIn: async () => {
             if (!tmux) return null;
-            const program = TAILSCALE_PROGRAMS.find((p) => !p.startsWith('/') || fs.existsSync(p)) ?? 'tailscale';
-            const session = 'instar-no-model-tailscale-login';
+            // The same program readTailscaleStatus would answer with: the bare name only when it is on PATH, else the
+            // first install folder that exists (a launchd PATH often lacks /opt/homebrew/bin; the app may be all there is).
+            const onPath = (name: string): boolean => (process.env.PATH ?? '').split(path.delimiter).some((dir) => dir && fs.existsSync(path.join(dir, name)));
+            const program = TAILSCALE_PROGRAMS.find((p) => (p.startsWith('/') ? fs.existsSync(p) : onPath(p))) ?? 'tailscale';
+            const session = tailscalePane;
             await tmuxRun(tmux, ['kill-session', '-t', `=${session}`]);
             if ((await tmuxRun(tmux, ['new-session', '-d', '-s', session, `${program} up`])) === null) return null;
             for (let i = 0; i < 60; i++) {
@@ -18528,17 +18542,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           stillWanted: io.stillWanted,
           sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
           now: () => Date.now(),
-        });
+        }).finally(() => { if (tmux) void tmuxRun(tmux, ['kill-session', '-t', `=${tailscalePane}`]); });
       }
       if (service !== 'second-ai-door') return null;
       // The pool's own per-engine table names each door's provider.
       const loginProviderFor = (door: string): 'anthropic' | 'openai' => Object.values(NEW_ACCOUNT_KINDS).find((k) => k.framework === door)?.provider ?? 'anthropic';
       const enabledNow = (): string[] => [...((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[])];
       const tmuxPath = detectTmuxPath();
+      const doorPanes = new Set<string>();
       const loginDriver = new FrameworkLoginDriver({
         spawn: async ({ framework }) => {
           if (!tmuxPath) throw new Error('tmux not available');
           const session = `instar-no-model-login-${framework}`;
+          doorPanes.add(session);
           await tmuxRun(tmuxPath, ['kill-session', '-t', `=${session}`]);
           // BROWSER=true: the link goes to the person's phone, never a page on this machine's screen.
           if ((await tmuxRun(tmuxPath, ['new-session', '-d', '-s', session, `env BROWSER=true ${DEFAULT_ENROLL_LOGIN_COMMANDS[framework] ?? `${framework} login`}`])) === null) throw new Error('the login pane did not start');
@@ -18575,7 +18591,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         stillWanted: io.stillWanted,
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
         now: () => Date.now(),
-      });
+      }).finally(() => { if (tmuxPath) for (const pane of doorPanes) void tmuxRun(tmuxPath, ['kill-session', '-t', `=${pane}`]); });
     },
     // A confirmed no to GitHub turns the switch older versions read too, so no machine on an older build keeps pushing.
     disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },

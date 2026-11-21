@@ -291,6 +291,17 @@ describe('recommended services: production wiring', () => {
     expect(state).toMatchObject({ counted: false, episodes: [] });
   });
 
+  it('reasons 2 and 3: the judge is wired to the shared provider, the list reports its shadow verdicts, and a machine that cannot reach the person never asks it', async () => {
+    let calls = 0;
+    const intelligence = { evaluate: async () => { calls += 1; return '{"verdict":"hold","why":"unsure"}'; } };
+    const { server } = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } } }, undefined, undefined, { intelligence });
+    await new Promise((r) => setTimeout(r, 50));
+    const list = await request(server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.status).toBe(200);
+    expect(list.body.reofferShadow).toEqual({});
+    expect(calls).toBe(0);
+  });
+
   it('refuses to surface a retired offer', async () => {
     const { server } = boot(true);
     const res = await request(server.getApp()).post('/features/git-backup/surface').set('Authorization', `Bearer ${AUTH}`).send({ trigger: 't' });

@@ -340,4 +340,76 @@ describe('recommended services: re-offers after a real problem', () => {
       expect(fs.existsSync(path.join(dir, 'state', 'recommended-service-setup', 'doors-down.json'))).toBe(false);
     });
   });
+
+  describe('reasons 2 and 3: the judge in shadow', () => {
+    const DAY = 24 * 60 * 60_000;
+    const noTailscale = () => { ledger.recordNo({ service: 'tailscale', shutdown: 'none', reason: 'not-needed', origin: 'first-offer' }); };
+
+    it('past the cool-off it judges once, records the verdict, sends nothing, and is not asked again until its inputs change', async () => {
+      const calls: string[] = [];
+      build({ reofferJudge: async (input) => { calls.push(input.service); return { verdict: 'offer', why: 'use-changed-since-no' }; } });
+      noTailscale();
+      await tick!();
+      expect(calls).toEqual([]);
+      clock += 91 * DAY;
+      await tick!();
+      expect(calls).toEqual(['tailscale']);
+      expect(handle.reofferShadow().tailscale).toMatchObject({ verdict: 'offer', why: 'use-changed-since-no', reasonKind: 'cool-off' });
+      expect(sent).toEqual([]);
+      expect(ledger.reofferRows()).toEqual([]);
+      expect(ledger.effective('tailscale').choice).toBe('no');
+      clock += DAY;
+      await tick!();
+      expect(calls).toEqual(['tailscale']);
+      // A new real problem changes what it reads, so it is asked again.
+      handle.recordProblem('voice-unreadable', 'telegram');
+      await tick!();
+      expect(calls).toEqual(['tailscale', 'tailscale']);
+      const log = fs.readFileSync(path.join(dir, 'state', 'recommended-service-setup', 'reoffer-judge-shadow.jsonl'), 'utf8').trim().split('\n');
+      expect(JSON.parse(log[0]!)).toMatchObject({ service: 'tailscale', verdict: 'offer', shadow: true });
+    });
+
+    it('a verdict for a row the floor now stops is dropped from the shadow record', async () => {
+      build({ reofferJudge: async () => ({ verdict: 'offer', why: 'use-changed-since-no' }) });
+      noTailscale();
+      clock += 91 * DAY;
+      await tick!();
+      expect(handle.reofferShadow().tailscale).toBeTruthy();
+      ledger.recordYes({ service: 'tailscale', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '42' });
+      await tick!();
+      expect(handle.reofferShadow().tailscale).toBeUndefined();
+    });
+
+    it('a failed judgment holds, is retried only after its backoff, and records no verdict', async () => {
+      let calls = 0;
+      build({ reofferJudge: async () => { calls += 1; return null; } });
+      noTailscale();
+      clock += 91 * DAY;
+      await tick!();
+      await tick!();
+      expect(calls).toBe(1);
+      expect(handle.reofferShadow()).toEqual({});
+      clock += 61 * 60_000;
+      await tick!();
+      expect(calls).toBe(2);
+    });
+
+    it('never with the switch off, on a machine that cannot reach the person, or inside the floor', async () => {
+      let calls = 0;
+      const judge = async () => { calls += 1; return { verdict: 'hold' as const, why: 'unsure' as const }; };
+      enabled = false;
+      build({ reofferJudge: judge });
+      noTailscale();
+      clock += 91 * DAY;
+      await tick!();
+      enabled = true; reach = false;
+      build({ reofferJudge: judge });
+      await tick!();
+      reach = true;
+      ledger.recordNo({ service: 'tailscale', shutdown: 'none', reason: 'not-needed', origin: 'first-offer' });
+      build({ reofferJudge: judge });
+      await tick!();
+      expect(calls).toBe(0);
+    });
+  });
 });

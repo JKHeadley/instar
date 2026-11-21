@@ -25,6 +25,7 @@ import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { clearRestoreMarker, readRestoreMarker } from '../core/restoreMarker.js';
 import { EMPTY_DOORS_DOWN, noteDoorsSample, type DoorsDownState } from '../recommended/noModelSetup.js';
+import { judgeInputHash, judgeRetryAfterMs, judgedFloor, type JudgeInput, type JudgeVerdict, type UseFacts } from '../recommended/reofferJudge.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
@@ -109,6 +110,13 @@ export interface RecommendedServiceRouteDeps {
    * encrypted store was merged (a secret the config refers to is missing). Read once per server start.
    */
   unresolvedSecrets?: () => readonly string[];
+  /**
+   * Reasons 2 and 3 (a change that matters, a long cool-off): the model judgment, SHADOW ONLY. The routes record what it
+   * would do and send nothing. Absent: reasons 2 and 3 are never considered.
+   */
+  reofferJudge?: (input: JudgeInput) => Promise<JudgeVerdict | null>;
+  /** Categorical facts about this agent's use, for the judge (no conversation text). */
+  useFacts?: () => Partial<Omit<UseFacts, 'recentProblems'>>;
   /** The `provider-exhausted` source: true while every AI door this agent uses is unusable (noModelSetup.everyDoorDown). */
   everyDoorDown?: () => boolean;
   /**
@@ -159,10 +167,12 @@ export interface RecommendedServiceRoutesHandle {
   recordProblem: (kind: string, evidenceRef: string) => void;
   /** The tunnel's self-heal gave up on an outage (`exhausted`). Three in a day is the `address-repeatedly-down` problem. */
   recordAddressOutage: () => void;
+  /** The newest shadow verdict per service for reasons 2 and 3 (nothing was sent on any of them). */
+  reofferShadow: () => Record<string, { verdict: 'offer' | 'hold'; why: string; reasonKind: string; at: string }>;
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): RecommendedServiceRoutesHandle {
-  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {}, recordAddressOutage: () => {} };
+  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {}, recordAddressOutage: () => {}, reofferShadow: () => ({}) };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
@@ -820,6 +830,71 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       report('Record the address-first message', err, 'The button may answer "expired"; one repeat of the message is possible.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
+  // Reasons 2 and 3 in shadow (spec, Evidence before authority): on the machine that can reach the person, at most one
+  // judgment per regular check, only for a row past the code floor, and again only when what the judge reads changes.
+  // A failure holds, is reported, and retries with backoff. Nothing here sends a message or touches a choice.
+  const judgeFile = (): string => path.join(deps.stateDir, 'state', 'recommended-service-setup', 'reoffer-judge.json');
+  const judgeLog = (): string => path.join(deps.stateDir, 'state', 'recommended-service-setup', 'reoffer-judge-shadow.jsonl');
+  interface JudgeMemory { verdicts: Record<string, { hash: string; verdict: 'offer' | 'hold'; why: string; reasonKind: string; at: string }>; failures: Record<string, { count: number; nextAt: number }> }
+  const readJudgeMemory = (): JudgeMemory => {
+    try {
+      const raw = JSON.parse(fs.readFileSync(judgeFile(), 'utf8')) as Partial<JudgeMemory>;
+      return { verdicts: raw.verdicts && typeof raw.verdicts === 'object' ? raw.verdicts : {}, failures: raw.failures && typeof raw.failures === 'object' ? raw.failures : {} };
+    } catch { return { verdicts: {}, failures: {} }; } // @silent-fallback-ok — nothing judged yet
+  };
+  let judging = false;
+  const judgeShadow = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
+    if (judging || !deps.reoffersEnabled?.() || !deps.reofferJudge || !reach()) return;
+    judging = true;
+    try {
+      const memory = readJudgeMemory();
+      const all = ledger.all();
+      const reofferRows = ledger.reofferRows();
+      const recentProblems = [...new Set(reofferRows.filter((r) => r.state === 'event' && nowMs - Date.parse(r.at) < 90 * 24 * 60 * 60_000).map((r) => r.kind))];
+      const facts: UseFacts = { hasAddress: !!deps.linkBase?.(), otherMachines: 0, aiDoors: 1, ...(deps.useFacts?.() ?? {}), recentProblems };
+      for (const row of catalog) {
+        const floor = judgedFloor(row, all, reofferRows, nowMs);
+        if ('blocked' in floor) {
+          // A verdict for a row the floor now stops (a yes since, a limit reached) no longer applies.
+          if (memory.verdicts[row.id]) { delete memory.verdicts[row.id]; fs.mkdirSync(path.dirname(judgeFile()), { recursive: true }); fs.writeFileSync(judgeFile(), JSON.stringify(memory)); }
+          continue;
+        }
+        const input: JudgeInput = {
+          service: row.id, serviceName: row.name, reasonKind: floor.reason, noReason: floor.noReason,
+          changes: floor.changes.map(({ version, summary, affects }) => ({ version, summary, affects })),
+          nos: floor.nos, deliveredReoffers: floor.delivered, facts,
+        };
+        const hash = judgeInputHash(input);
+        if (memory.verdicts[row.id]?.hash === hash) continue;
+        const failed = memory.failures[row.id];
+        if (failed && failed.nextAt > nowMs) continue;
+        const verdict = await deps.reofferJudge(input);
+        if (!verdict) {
+          const count = (failed?.count ?? 0) + 1;
+          memory.failures[row.id] = { count, nextAt: nowMs + judgeRetryAfterMs(count) };
+          report(`Judge whether to ask about ${row.name} again`, new Error('the judgment failed or could not be read'), 'Nothing is recorded for this row; it is tried again later. Shadow only: no message was affected.', 'RecommendedServices.reofferJudge', 'The row holds, which is the default.');
+        } else {
+          delete memory.failures[row.id];
+          const at = new Date(nowMs).toISOString();
+          memory.verdicts[row.id] = { hash, verdict: verdict.verdict, why: verdict.why, reasonKind: floor.reason, at };
+          // Bounded: the newest 200 shadow records are kept.
+          let lines: string[] = [];
+          try { lines = fs.readFileSync(judgeLog(), 'utf8').split('\n').filter(Boolean); } catch { /* @silent-fallback-ok — first record */ }
+          lines.push(JSON.stringify({ at, service: row.id, reasonKind: floor.reason, noReason: floor.noReason, changes: input.changes.map((c) => c.version), verdict: verdict.verdict, why: verdict.why, shadow: true }));
+          fs.mkdirSync(path.dirname(judgeLog()), { recursive: true });
+          fs.writeFileSync(judgeLog(), lines.slice(-200).join('\n') + '\n');
+        }
+        fs.mkdirSync(path.dirname(judgeFile()), { recursive: true });
+        fs.writeFileSync(judgeFile(), JSON.stringify(memory));
+        return; // one judgment per regular check
+      }
+    } catch (err) { // @silent-fallback-ok — reported; shadow work never breaks the regular check
+      report('Run the re-offer judgment in shadow', err, 'The next regular check tries again.', 'RecommendedServices.reofferJudge', 'No message is affected: this runs in shadow only.');
+    } finally {
+      judging = false;
+    }
+  };
+  handle.reofferShadow = () => readJudgeMemory().verdicts;
   let lastReofferAttemptAt = 0;
   let reoffering = false;
   const maybeReoffer = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
@@ -859,7 +934,13 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       const row = catalog.find((r) => r.id === pending.service);
       if (!row) return;
       const deliveredBefore = rows.filter((r) => r.state === 'offered' && r.kind === pending.kind && r.service === pending.service).length;
-      const text = renderReoffer(pending.kind, row, { linkBase: deps.linkBase?.() ?? null, choice: ledger.effective(row.id).choice, deliveredBefore });
+      let text: string;
+      try {
+        text = renderReoffer(pending.kind, row, { linkBase: deps.linkBase?.() ?? null, choice: ledger.effective(row.id).choice, deliveredBefore });
+      } catch (err) { // @silent-fallback-ok — reported; nothing is sent for a row this build can't word
+        report('Word the re-offer', err, 'Nothing was sent for this row.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+        return;
+      }
       let messageId: string | number | null = null;
       try {
         messageId = await deps.sendOfferList(text, []);
@@ -885,6 +966,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
     if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());
+    if (ledger) await judgeShadow(ledger, deps.now?.() ?? Date.now());
   };
   deps.onReady?.(reconcileAndOffer);
   // A sender that saw its credential refused asks for the re-check now (Self-Heal Before Notify), not tomorrow.
@@ -910,7 +992,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(state),
         offered: owner !== null && ledger.offerState(id, owner) === 'offered', inUse: !!state?.inUse };
     });
-    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
+    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating(), reofferShadow: Object.fromEntries(Object.entries(handle.reofferShadow()).map(([k, v]) => [k, { verdict: v.verdict, why: v.why, reasonKind: v.reasonKind, at: v.at }])) });
   });
 
   /** Asks for nothing and grants nothing: it only stops this session being restarted, so it needs no PIN. */

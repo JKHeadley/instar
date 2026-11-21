@@ -33,6 +33,20 @@ export interface CatalogRow {
   setupRecipe: string | null;
   /** A way for the person to reach the agent (an address or a channel). Switching one off waits until another route works. */
   wayIn?: boolean;
+  /**
+   * Changes that may matter to a person who said no (spec, Re-offering after a no, reason 2), written by a person in
+   * code. A routine release adds nothing here, so a version bump alone is never a reason to ask again.
+   */
+  changes?: readonly ServiceChange[];
+}
+
+export interface ServiceChange {
+  version: string;
+  /** When the change took effect (ISO date). Only a change after the no can count. */
+  at: string;
+  /** One plain sentence. */
+  summary: string;
+  affects: 'cost' | 'privacy' | 'setup' | 'capability';
 }
 
 const LOCAL_MODEL_SPEC = 'docs/specs/backup-local-model-last-resort.md';

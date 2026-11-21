@@ -100,7 +100,7 @@ export async function runSecondDoorWithoutModel(deps: NoModelDoorDeps): Promise<
   const name = DOOR_NAMES[door];
   if (!deps.stillWanted()) return { result: 'fail', detail: 'Setup was stopped.' };
   if ((await deps.signedIn(door)) === 'signed-in' && deps.installed(door)) {
-    deps.enable(door);
+    if (!deps.enable(door) && !deps.enabled().includes(door)) return { result: 'fail', detail: `${name} could not be switched on.` };
     deps.tell(`${name} was already signed in on this machine, so I've switched it on for me. You now have a second AI provider I can work on.`);
     return { result: 'pass', detail: `${name} was already signed in.` };
   }
@@ -129,7 +129,8 @@ export async function runSecondDoorWithoutModel(deps: NoModelDoorDeps): Promise<
     await deps.sleep(SIGN_IN_POLL_MS);
     if (!deps.stillWanted()) return { result: 'fail', detail: 'Setup was stopped.' };
     if ((await deps.signedIn(door)) === 'signed-in') {
-      deps.enable(door);
+      // `enable` refuses when the yes was withdrawn meanwhile; then nothing is switched on, and nothing is claimed.
+      if (!deps.enable(door) && !deps.enabled().includes(door)) return { result: 'fail', detail: `${name} signed in, but it was not switched on.` };
       deps.tell(`${name} is signed in and switched on for me. When my main provider is out, you can ask me to move a conversation onto ${name}.`);
       return { result: 'pass', detail: `${name} signed in.` };
     }
