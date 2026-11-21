@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-18T17:23:39.193Z",
+  "slug": "restart-lock-continuity-c",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 350,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/lock-watch.md",
+      "src/monitoring/LockWatch.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 347,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "lock-watch-report registered: one report per lock episode per host; durable host-file episode and delivered state; new report needs an unlocked reading; bound 1 over 24 h"
+    }
+  },
+  "verdict": "pass"
+}

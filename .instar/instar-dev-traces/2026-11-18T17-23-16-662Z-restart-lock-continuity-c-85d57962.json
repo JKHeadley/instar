@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "restart-lock-continuity-c",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T17:23:16.662Z",
+  "artifactPath": "upgrades/side-effects/restart-lock-continuity-c.md",
+  "artifactSha256": "e9625726dc6ed9484c1c2c4db4b2a9411bb6e9ae5169514336ead7997663c023",
+  "specPath": "docs/specs/restart-lock-continuity.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T17-21-15-886Z-restart-lock-continuity-c.json",
+    ".instar/instar-dev-decisions/2026-11-18T17-23-03-199Z-restart-lock-continuity-c.json",
+    "src/commands/server.ts",
+    "src/data/awareness/lock-watch.md",
+    "src/monitoring/LockWatch.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/lock-watch-wiring.test.ts",
+    "tests/unit/lock-watch.test.ts",
+    "upgrades/next/restart-lock-continuity-c.md",
+    "upgrades/side-effects/restart-lock-continuity-c.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "lock watch: new owner-facing notice, host-level shared file, reader moved out of maintenance gate; converged + approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "lock-watch-report registered: one report per lock episode per host; durable host-file episode and delivered state; new report needs an unlocked reading; bound 1 over 24 h"
+    }
+  }
+}
