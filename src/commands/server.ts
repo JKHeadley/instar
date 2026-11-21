@@ -25470,7 +25470,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           // Object form: surfaces the structured refusal code so the
           // anti-thrash observation layer can classify failures (§3.1/§3.6).
-          return r.ok ? { ok: true } : { ok: false, code: r.code };
+          return r.ok
+            ? { ok: true, ...(r.conversationPreserved !== undefined ? { conversationPreserved: r.conversationPreserved } : {}) }
+            : { ok: false, code: r.code };
         },
         onNoAlternate: telegramRef ? (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
