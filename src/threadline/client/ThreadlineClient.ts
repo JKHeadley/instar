@@ -16,6 +16,7 @@ import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { AUTO_ACK_TYPE, encodePlaintextPayload, decodePlaintextPayload } from '../autoAck.js';
 import { ACK_KINDS_VERSION, type KindedAckWire } from '../requiredAck.js';
 import { RelayClient } from './RelayClient.js';
+import { reportUnheardRelayError } from './relayErrorReport.js';
 import { derivePairingIdV2, edPublicToX25519, isX25519BoundToIdentity } from '../ThreadlineCrypto.js';
 import { buildPairVerifyReceipt, PAIR_VERIFY_OP } from '../PairVerifyReceipt.js';
 import type { PeerPresenceRead } from '../peerDark.js';
@@ -371,7 +372,11 @@ export class ThreadlineClient extends EventEmitter {
 
     this.relayClient.on('error', (err: unknown) => {
       this.handleRelayErrorFrame(err);
-      this.emit('error', err);
+      // SEC-136: an 'error' event with no listener throws, and on the agent server nothing listens
+      // here, so a relay could take the whole server down by sending one {type:'error'} frame. Pass
+      // it on only to a caller that listens; otherwise log it and report it, never throw.
+      if (this.listenerCount('error') > 0) this.emit('error', err);
+      else reportUnheardRelayError(err, this.nowFn());
     });
 
     // Honest delivery (spec §1): the relay's per-message verdicts. ONE
@@ -386,7 +391,7 @@ export class ThreadlineClient extends EventEmitter {
     });
 
     this.relayClient.on('discover-result', (result: { agents: Array<KnownAgent & { status?: 'online' | 'offline' }> }) => {
-      this.ingestDiscoveredAgents(result.agents);
+      this.ingestDiscoveredAgents(result?.agents);
       this.lastPresenceFrameAt = this.nowFn();
       this.presenceFrameSeq++;
       this.emit('discover-result', result);
@@ -1100,7 +1105,10 @@ export class ThreadlineClient extends EventEmitter {
    * `status` onto `online` so findAgentByName can prefer the live registration.
    */
   private ingestDiscoveredAgents(agents: Array<KnownAgent & { status?: 'online' | 'offline' }>): void {
+    // SEC-136: the list comes from the relay; anything that is not a list of objects is ignored.
+    if (!Array.isArray(agents)) return;
     for (const agent of agents) {
+      if (!agent || typeof agent !== 'object' || typeof agent.agentId !== 'string') continue;
       const existing = this.knownAgents.get(agent.agentId);
       this.knownAgents.set(agent.agentId, {
         ...existing,
@@ -1463,6 +1471,10 @@ export class ThreadlineClient extends EventEmitter {
 
   private handleIncomingMessage(envelope: MessageEnvelope): void {
     if (!this.encryptor) return;
+    // SEC-136: the envelope comes from the relay. It is dropped (and reported) unless `from` and
+    // `payload` are text and every other envelope field is text or absent, so no listener downstream
+    // can be made to throw by a field that only pretends to be text.
+    if (!isWellFormedEnvelope(envelope)) { reportUnheardRelayError({ code: 'malformed-envelope' }, this.nowFn()); return; }
 
     // The sender's identity key: the cached one, or else the key pinned by a verified
     // pairing. The in-memory cache is empty after a restart, so the pinned key in the
@@ -1524,4 +1536,15 @@ export class ThreadlineClient extends EventEmitter {
       this.emit('decrypt-error', { envelope, error: err });
     }
   }
+}
+
+const OPTIONAL_TEXT_ENVELOPE_FIELDS = ['to', 'threadId', 'messageId', 'timestamp', 'nonce', 'ephemeralPubKey', 'salt', 'signature'] as const;
+
+/** SEC-136: the minimal shape every relay envelope must have before anything reads it. */
+export function isWellFormedEnvelope(envelope: unknown): envelope is MessageEnvelope {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
+  const e = envelope as Record<string, unknown>;
+  if (typeof e.from !== 'string' || typeof e.payload !== 'string') return false;
+  for (const k of OPTIONAL_TEXT_ENVELOPE_FIELDS) if (e[k] !== undefined && typeof e[k] !== 'string') return false;
+  return true;
 }

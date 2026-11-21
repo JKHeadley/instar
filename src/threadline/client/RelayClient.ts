@@ -8,6 +8,7 @@
 import { WebSocket } from 'ws';
 import { EventEmitter } from 'node:events';
 import { sign } from '../ThreadlineCrypto.js';
+import { reportUnheardRelayError } from './relayErrorReport.js';
 import type {
   RelayClientConfig,
   AgentFingerprint,
@@ -184,6 +185,13 @@ export class RelayClient extends EventEmitter {
           return;
         }
 
+        // SEC-136: a relay frame must never throw out of this handler (it runs inside the socket's
+        // data callback, so a throw is process-wide). Refuse non-objects; catch anything else.
+        if (!frame || typeof frame !== 'object' || typeof (frame as { type?: unknown }).type !== 'string') {
+          reportUnheardRelayError({ code: 'malformed-frame' }, Date.now());
+          return;
+        }
+        try {
         switch (frame.type) {
           case 'challenge':
             this.handleChallenge(frame.nonce);
@@ -192,10 +200,11 @@ export class RelayClient extends EventEmitter {
           case 'auth_ok':
             clearTimeout(connectTimeout);
             this.state = 'connected';
-            this.sessionId = frame.sessionId;
+            // SEC-136: relay-supplied values are made text at this boundary.
+            this.sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : String(frame.sessionId ?? '');
             this.heartbeatInterval = frame.heartbeatInterval;
-            this.emit('connected', frame.sessionId);
-            resolve(frame.sessionId);
+            this.emit('connected', this.sessionId);
+            resolve(this.sessionId);
             break;
 
           case 'auth_error':
@@ -253,8 +262,11 @@ export class RelayClient extends EventEmitter {
             // overwrite this terminal event and make health report "recoverable".
             this.state = 'disconnected';
             this.sessionId = null;
-            this.emit('displaced', frame.reason);
+            this.emit('displaced', typeof frame.reason === 'string' ? frame.reason : 'displaced');
             break;
+        }
+        } catch (err) {
+          reportUnheardRelayError({ code: `bad-${String((frame as { type?: unknown }).type).slice(0, 40)}-frame`, message: err instanceof Error ? err.message : String(err) }, Date.now());
         }
       });
 
