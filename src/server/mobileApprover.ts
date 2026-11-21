@@ -58,8 +58,14 @@ function writeApproverState(stateDir: string, s: ApproverState): void {
 export function resetApproverStateCacheForTests(): void { stateCache.clear(); }
 
 /** Is this device's presence key a valid owner key in the signed record? Matched by public key (§1). */
+let recoveredKeyOk: ((keyId: string) => boolean) | null = null;
+/** Piece 3d: the recovery module tells the one reader whether a recovered owner key has settled. */
+export function setRecoveredKeyCheck(fn: ((keyId: string) => boolean) | null): void { recoveredKeyOk = fn; }
+
 function inRecord(stateDir: string, presenceKey: string): boolean {
   if (retiredIn(stateDir, presenceKey)) return false;
+  // Piece 3d §2: a recovered key approves nothing until every machine has accepted it.
+  if (recoveredKeyOk && !recoveredKeyOk(ownerKeyIdFor(presenceKey))) return false;
   const st = ownerRecordRouteDeps()?.store.state();
   if (!st || st.status !== 'ok') return false;
   const id = ownerKeyIdFor(presenceKey);

@@ -63,3 +63,36 @@ export function firstOwnerKeyDraft(input: { agentId: string; parentId: string; d
     signer: { type: 'owner-key', keyId },
   };
 }
+
+/** Piece 3d: the minimum wait the recovery proof states (umbrella §9). */
+export const RECOVERY_WAIT_MS = 72 * 60 * 60 * 1000;
+
+/** Piece 3d §2: the text the home machine's key signs to attest it enforced the wait and the stops. */
+export function recoveryProofMessage(f: { agentId: string; parentId: string; recoveryId: string; deviceId: string; ownerKeyId: string; presenceKey: string; startedAt: string; finishedAt: string }): string {
+  if (!AGENT_ID_PATTERN.test(f.agentId)) throw new Error('agent id is not safe to sign');
+  for (const v of [f.parentId, f.recoveryId, f.deviceId, f.ownerKeyId, f.presenceKey, f.startedAt, f.finishedAt]) if (/[\n\r]/.test(v)) throw new Error('newline in a signed field');
+  return `instar-owner-recovery-v1\n${f.agentId}\n${f.parentId}\n${f.recoveryId}\n${f.deviceId}\n${f.ownerKeyId}\n${f.presenceKey}\n${f.startedAt}\n${f.finishedAt}`;
+}
+
+/**
+ * Piece 3d §2: 2a's hook for a recovered owner key. The proof verifies against the attesting machine's key as it
+ * stands in the record at the parent; the signed facts state a wait of at least 72 hours and a clear stop check.
+ */
+export function makeRecoveryProofVerifier(agentId: string): (body: Record<string, unknown>, ctx: FirstOwnerProofContext) => boolean {
+  return (body, ctx) => {
+    const r = body.recovery as Record<string, unknown> | undefined;
+    if (!r || typeof r !== 'object') return false;
+    const proof = r.proof as { by?: unknown; sig?: unknown } | undefined;
+    if (!proof || typeof proof.by !== 'string' || typeof proof.sig !== 'string') return false;
+    if (typeof body.deviceId !== 'string' || typeof body.keyId !== 'string' || typeof body.publicKey !== 'string') return false;
+    if (body.keyType !== 'p256' || body.keyId !== ownerKeyIdFor(body.publicKey) || body.via !== 'recovered') return false;
+    if (typeof r.recoveryId !== 'string' || typeof r.startedAt !== 'string' || typeof r.finishedAt !== 'string' || r.stopCheck !== 'clear') return false;
+    const started = Date.parse(r.startedAt), finished = Date.parse(r.finishedAt);
+    if (!Number.isFinite(started) || !Number.isFinite(finished) || finished - started < RECOVERY_WAIT_MS) return false;
+    const machine = ctx.keysAtParent.get(proof.by);
+    if (!machine || machine.type !== 'machine') return false;
+    let text: string;
+    try { text = recoveryProofMessage({ agentId, parentId: ctx.parentId, recoveryId: r.recoveryId, deviceId: body.deviceId, ownerKeyId: body.keyId, presenceKey: body.publicKey, startedAt: r.startedAt, finishedAt: r.finishedAt }); } catch { return false; /* @silent-fallback-ok: an unsafe field fails the proof; the entry is rejected and listed */ }
+    try { return crypto.verify(null, Buffer.from(text), machine.publicKey, Buffer.from(proof.sig, 'base64')); } catch { return false; /* @silent-fallback-ok: an unparseable key or signature does not verify; the entry is rejected and listed */ }
+  };
+}

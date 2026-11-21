@@ -44,6 +44,9 @@ describe('approver mark lifecycle (production wiring)', () => {
     const routes = fs.readFileSync(path.join(__dirname, '../../src/server/mobilePairingRoutes.ts'), 'utf8');
     expect(routes).toContain('mountApproverClaimRoutes(router, svc);');
     expect(routes).toContain('mountApproverGrantRoutes(router, svc);');
+    expect(routes).toContain('mountApproverRecoveryRoutes(router, svc);'); // piece 3d
+    expect(src).toContain('setOwnerRecordRecoveryHooks(recoveryHooksFor(mp));');
+    expect(src).toContain('options.telegram.approverResetHandler = (args) => approverResetCommand(mp, args);');
   });
 
   it('is alive: boot runs the migration, and the approver routes answer (not 404)', async () => {
@@ -53,7 +56,7 @@ describe('approver mark lifecycle (production wiring)', () => {
     const stateFile = path.join(cfg.stateDir, 'state', 'mobile-approver-state.json');
     expect(fs.existsSync(stateFile)).toBe(true);
     expect(JSON.parse(fs.readFileSync(stateFile, 'utf8')).migration).toMatchObject({ kept: [], cutoffConfirmed: true });
-    for (const [method, url] of [['post', '/mobile/approver/first'], ['post', '/mobile/approver/request'], ['get', '/mobile/approver/requests']] as const) {
+    for (const [method, url] of [['post', '/mobile/approver/first'], ['post', '/mobile/approver/request'], ['get', '/mobile/approver/requests'], ['post', '/mobile/approver/recovery/stop'], ['post', '/mobile/approver/recovery/finish']] as const) {
       const r = await (method === 'get' ? request(server.getApp()).get(url) : request(server.getApp()).post(url).send({})).set({ Authorization: `Bearer ${AUTH}` });
       expect(r.status, `${method} ${url}: ${JSON.stringify(r.body)}`).not.toBe(404);
       expect([401, 403]).toContain(r.status); // the bearer is not a device: refused by the route, never "not found"

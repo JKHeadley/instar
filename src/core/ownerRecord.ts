@@ -88,6 +88,14 @@ export interface EvaluateOptions {
   pinnedGenesis?: string;
   /** The route's proof for the FIRST owner key (umbrella 4.5a; piece 3). Absent → the first owner key is refused. */
   verifyFirstOwnerProof?: (body: Record<string, unknown>, ctx: FirstOwnerProofContext) => boolean;
+  /** Piece 3d: the proof for a RECOVERED owner key (after enrolment, without an owner's signature). Absent → refused. */
+  verifyRecoveryProof?: (body: Record<string, unknown>, ctx: FirstOwnerProofContext) => boolean;
+}
+
+/** Piece 3d: an owner key added by the private-chat recovery: self-signed by the recovered key, admitted only through
+ *  the caller's machine-attested recovery proof (the wait and the stops were enforced by the home machine). */
+function isRecoveredOwnerKey(e: OwnerRecordEntry): boolean {
+  return e.kind === 'add-owner-key' && e.body?.via === 'recovered' && e.signer.type === 'owner-key' && e.signer.keyId === e.body.keyId;
 }
 
 /** What the first owner key's proof hook may check (piece 3a): the entry's parent and the keys valid there, so an
@@ -185,6 +193,10 @@ function authorized(e: OwnerRecordEntry, f: Fold, opts: EvaluateOptions): string
     if (e.signer.type !== 'owner-key' || e.signer.keyId !== e.body.keyId) return 'first-owner-key-must-be-self-signed';
     return opts.verifyFirstOwnerProof?.(e.body, { parentId: e.parents[0], keysAtParent: new Map([...f.keys].filter(([, k]) => !f.revokedInst.has(k.addedBy))) }) ? null : 'first-owner-key-proof-missing';
   }
+  // Piece 3d: after enrolment, a recovered owner key: self-signed, admitted only through the recovery proof.
+  if (isRecoveredOwnerKey(e) && f.everOwner) {
+    return opts.verifyRecoveryProof?.(e.body, { parentId: e.parents[0], keysAtParent: new Map([...f.keys].filter(([, k]) => !f.revokedInst.has(k.addedBy))) }) ? null : 'recovery-proof-missing';
+  }
   // Piece 3a: while no owner key exists (Basic, agent-producible), a machine may add its own key, self-signed, so
   // any lease holder's key is in the record to attest the first owner key. After an owner key, only owners add.
   if (e.kind === 'add-machine-key' && !f.everOwner && e.signer.type === 'machine' && e.signer.keyId === e.body.machineId) return null;
@@ -197,7 +209,7 @@ function authorized(e: OwnerRecordEntry, f: Fold, opts: EvaluateOptions): string
 }
 
 function signerPublicKey(e: OwnerRecordEntry, f: Fold): { pub: string; inst: string; keyType: OwnerKeyType } | null {
-  if (e.kind === 'add-owner-key' && !f.everOwner && e.signer.keyId === e.body.keyId) return { pub: String(e.body.publicKey), inst: 'self', keyType: e.body.keyType === 'p256' ? 'p256' : 'ed25519' };
+  if (e.kind === 'add-owner-key' && (!f.everOwner || isRecoveredOwnerKey(e)) && e.signer.keyId === e.body.keyId) return { pub: String(e.body.publicKey), inst: 'self', keyType: e.body.keyType === 'p256' ? 'p256' : 'ed25519' };
   if (e.kind === 'add-machine-key' && !f.everOwner && e.signer.type === 'machine' && e.signer.keyId === e.body.machineId) return { pub: String(e.body.publicKey), inst: 'self', keyType: 'ed25519' };
   const k = validKey(f, e.signer.keyId);
   return k ? { pub: k.publicKey, inst: k.addedBy, keyType: k.keyType ?? 'ed25519' } : null;
