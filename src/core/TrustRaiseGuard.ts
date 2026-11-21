@@ -300,13 +300,62 @@ export function evolutionRaises(before: unknown, patchValue: unknown, profile?: 
  * the ones `configPatchRaises` judges. SEC-162 added the guard blocks, so a guard-off refusal has an
  * approval path. One list, read by the request parser and by the apply step.
  */
-export const APPROVABLE_CONFIG_PATCH_KEYS: ReadonlySet<string> = new Set(['externalOperations', 'evolution', 'monitoring', 'inputGuard', 'responseReview']);
+export const APPROVABLE_CONFIG_PATCH_KEYS: ReadonlySet<string> = new Set(['externalOperations', 'evolution', 'monitoring', 'inputGuard', 'responseReview', 'tunnel', 'threadline']);
+
+/**
+ * SEC-163: under the exposure blocks a card may carry only their switches, never an address, token,
+ * hostname or any other setting the operator owns (SEC-151). One rule, read by the request parser and
+ * the apply step.
+ */
+const EXPOSURE_SWITCH_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  tunnel: new Set(['enabled']),
+  threadline: new Set(['relayEnabled', 'visibility']),
+};
+
+/** Whether a config-patch is one a person may approve on the trust card. */
+export function approvableConfigPatch(patch: unknown): boolean {
+  if (!isObj(patch)) return false;
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return false;
+  for (const k of keys) {
+    if (!APPROVABLE_CONFIG_PATCH_KEYS.has(k)) return false;
+    const allowed = EXPOSURE_SWITCH_KEYS[k];
+    if (!allowed) continue;
+    const v = patch[k];
+    if (!isObj(v) || Object.keys(v).length === 0 || Object.keys(v).some((x) => !allowed.has(x))) return false;
+  }
+  return true;
+}
 
 export function configPatchRaises(fileConfig: Obj, patch: Obj, profile?: AutonomyProfileLevel): string[] {
   const out: string[] = [];
   if ('externalOperations' in patch) out.push(...externalOperationsRaises(fileConfig.externalOperations, patch.externalOperations));
   if ('evolution' in patch) out.push(...evolutionRaises(fileConfig.evolution, patch.evolution, profile));
   out.push(...guardOffRaises(fileConfig, patch));
+  out.push(...exposureOnRaises(fileConfig, patch));
+  return out;
+}
+
+/**
+ * SEC-163: what a patch switches on among the agent's public exposure: the public tunnel (on unless
+ * false), and the agent-network relay (on only when true) and widening its visibility. Publishing is
+ * not judged here: switching it on publishes nothing by itself. Compared with the same one-level merge the route writes. Switching
+ * exposure off, or narrowing visibility, is never a raise.
+ */
+export function exposureOnRaises(fileConfig: Obj, patch: Obj): string[] {
+  const out: string[] = [];
+  const blockAfter = (k: string): Obj => { const v = mergedConfigValue(fileConfig?.[k], patch[k]); return isObj(v) ? v : {}; };
+  const blockBefore = (k: string): Obj => (isObj(fileConfig?.[k]) ? fileConfig[k] : {});
+  if ('tunnel' in patch && blockBefore('tunnel').enabled === false && blockAfter('tunnel').enabled !== false) out.push('turning on the public tunnel');
+  if ('threadline' in patch) {
+    const b = blockBefore('threadline'), a = blockAfter('threadline');
+    if (b.relayEnabled !== true && a.relayEnabled === true) out.push('joining the agent network (the relay)');
+    else if (a.relayEnabled === true) {
+      // The relay's default visibility is public (ThreadlineBootstrap). An unknown value ranks widest.
+      const rank = (v: unknown) => (v === 'private' ? 0 : v === 'unlisted' ? 1 : 2);
+      if (rank(a.visibility ?? 'public') > rank(b.visibility ?? 'public')) out.push(`making the agent ${String(a.visibility ?? 'public')} on the agent network`);
+    }
+  }
   return out;
 }
 

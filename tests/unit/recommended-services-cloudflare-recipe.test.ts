@@ -183,6 +183,18 @@ describe('the cloudflare-v1 recipe', () => {
     expect(mine.state.restarts).toHaveLength(1);
   });
 
+  it('SEC-163: the daily refresh never switches a tunnel back on that was switched off since setup', async () => {
+    const { api } = fakeApi();
+    const mine = surface({ tunnel: { enabled: true, type: 'quick' }, api });
+    const w = work();
+    await recipe.sync!({ readSecret: () => SECRET, cloudflare: mine.s, agentName: 'Echo', cloudflareWork: w, secretNames: () => [] } as SyncDeps);
+    mine.state.tunnel = { ...(mine.state.tunnel as Record<string, unknown>), enabled: false } as never;
+    const refresh = await recipe.sync!({ readSecret: () => SECRET, cloudflare: mine.s, agentName: 'Echo', cloudflareWork: w, secretNames: () => [] } as SyncDeps);
+    expect(refresh).toMatchObject({ ok: true, detail: expect.stringContaining('left it off') });
+    expect((mine.state.tunnel as { enabled?: boolean }).enabled).toBe(false);
+    expect(mine.state.restarts).toHaveLength(1);
+  });
+
   it('sync reuses a tunnel of the same name, and stops at the first refusal without writing anything', async () => {
     const reuse = fakeApi({ existingTunnel: true });
     const a = surface({ api: reuse.api });

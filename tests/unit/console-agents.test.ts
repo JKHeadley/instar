@@ -291,6 +291,8 @@ describe('action words never claim more than the server did', () => {
     expect(enableWords(202, { state: 'restart-requested', sayToPerson: 'I am switching the agent network on; back in a minute.' })).toMatchObject({ ok: true, done: false, text: 'I am switching the agent network on; back in a minute.' });
     expect(enableWords(409, { state: 'unavailable-here' }).text).toContain('Another of my machines holds');
     expect(enableWords(503, { state: 'restart-unavailable', reason: 'no supervised restart here' }).text).toBe('no supervised restart here');
+    // SEC-163: joining the network needs the owner's card; the person sees the card sentence, not a code.
+    expect(enableWords(403, { error: 'operator-approval-required', sayToPerson: 'Joining the agent network needs your approval, so I have sent you an approval card. Nothing changes until you say yes there.' })).toMatchObject({ ok: false, text: expect.stringContaining('approval card') });
     expect(bindRequest('open', 'thread-pp-1', '')).toEqual({ action: 'open', threadId: 'thread-pp-1' });
     expect(bindRequest('tie', 'thread-pp-1', ' 52075 ')).toEqual({ action: 'tie', threadId: 'thread-pp-1', targetTopicId: 52075 });
     expect(bindRequest('tie', 'thread-pp-1', 'PP Hub')).toEqual({ action: 'tie', threadId: 'thread-pp-1', targetTopicName: 'PP Hub' });

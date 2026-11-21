@@ -28,7 +28,7 @@ describe('POST /threadline/pairing/enable (route wiring)', () => {
   let lifeline: FakeLifeline | null = null;
   afterEach(async () => { lifeline?.stop(); lifeline = null; await server?.stop(); project?.cleanup(); server = null; project = null; });
 
-  async function boot(blockersSeen: string[][], activeOthers: string[], extraConfig: Partial<InstarConfig> = {}) {
+  async function boot(blockersSeen: string[][], activeOthers: string[], extraConfig: Partial<InstarConfig> = {}, ownerApproved = true) {
     project = createTempProject();
     const config = {
       projectName: 'pp', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: AUTH,
@@ -59,6 +59,14 @@ describe('POST /threadline/pairing/enable (route wiring)', () => {
       handshakeManager: new HandshakeManager(project.stateDir, 'pp'), autoUpdater: autoUpdater as never,
     } as never);
     await server.start();
+    // SEC-163: joining the agent network needs the owner's approval card. The owner's yes writes
+    // `threadline.relayEnabled: true` to the settings file (the running server still booted with the
+    // relay off, so the restart rules below are unchanged).
+    if (ownerApproved) {
+      const p = path.join(project.stateDir, 'config.json');
+      const disk = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      fs.writeFileSync(p, JSON.stringify({ ...disk, threadline: { ...(disk.threadline ?? {}), relayEnabled: true } }));
+    }
     const port = (server as unknown as { server: { address(): { port: number } } }).server.address().port;
     return async (body: unknown) => {
       const r = await fetch(`http://127.0.0.1:${port}/threadline/pairing/enable`, {
@@ -126,6 +134,17 @@ describe('POST /threadline/pairing/enable (route wiring)', () => {
     expect(r.body.state).toBe('unavailable-here');
     expect(flagExists()).toBe(false);
     const disk = JSON.parse(fs.readFileSync(path.join(project!.stateDir, 'config.json'), 'utf-8'));
-    expect(disk.threadline.relayEnabled).toBe(false);
+    expect(disk.threadline.verifiedPairing).toBeUndefined();
+  });
+
+  it('SEC-163: with the relay off and no owner approval, the key alone is refused and nothing is written', async () => {
+    const call = await boot([], [], {}, false);
+    const r = await call({ sessionId: 'sid-asker' });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toBe('operator-approval-required');
+    expect(r.body.raises).toContain('joining the agent network (the relay)');
+    expect(flagExists()).toBe(false);
+    const disk = JSON.parse(fs.readFileSync(path.join(project!.stateDir, 'config.json'), 'utf-8'));
+    expect(disk.threadline).toEqual({ relayEnabled: false });
   });
 });

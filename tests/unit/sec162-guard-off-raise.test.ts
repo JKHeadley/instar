@@ -102,6 +102,7 @@ describe('SEC-162: which everyday feature toggles are affected', () => {
       'external-operation-gate:disable', // unchanged: already a raise before SEC-162
       'input-guard:disable',
       'response-review:disable',
+      'threadline-relay:enable', // SEC-163: this config has no relay, so switching it on asks too
     ].sort());
   });
 });

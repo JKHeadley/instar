@@ -112,10 +112,17 @@ describe('PATCH /config', () => {
     expect(fileConfig()).toEqual(startConfig);
   });
   it('a restriction and an ungoverned key still apply', async () => {
-    const r = await request(app).patch('/config').send({ externalOperations: { readOnlyServices: ['calendar', 'slack'] }, tunnel: { enabled: true } });
+    // SEC-163: switching the tunnel on is now a raise, so the ungoverned key here is publishing.
+    const r = await request(app).patch('/config').send({ externalOperations: { readOnlyServices: ['calendar', 'slack'] }, publishing: { enabled: true } });
     expect(r.status).toBe(200);
     expect(fileConfig().externalOperations.readOnlyServices).toEqual(['calendar', 'slack']);
-    expect(fileConfig().tunnel.enabled).toBe(true);
+    expect(fileConfig().publishing.enabled).toBe(true);
+  });
+  it('SEC-163: switching the tunnel on with the key alone is refused', async () => {
+    const r = await request(app).patch('/config').send({ tunnel: { enabled: true } });
+    expect(r.status).toBe(403);
+    expect(r.body.raises).toContain('turning on the public tunnel');
+    expect(fileConfig().tunnel.enabled).toBe(false);
   });
 });
 

@@ -136,6 +136,18 @@ describe('pairing switched on without a person-performed restart (production pat
     // The route is the agent's own (Bearer) — nothing else can call it.
     expect((await call('POST', '/threadline/pairing/enable', {}, false)).status).toBe(401);
 
+    // SEC-163: with the relay off, the key alone is refused and nothing is written; the owner's
+    // approval card is what switches the relay on. The test plays the owner's yes by writing exactly
+    // what an approved card writes (`threadline.relayEnabled: true`); the server still booted off.
+    const refused = await call('POST', '/threadline/pairing/enable', { sessionId: 'pp-topic-session' });
+    expect(refused.status).toBe(403);
+    {
+      const p = path.join(project.stateDir, 'config.json');
+      const disk = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      expect(disk.threadline).toEqual({ relayEnabled: false, visibility: 'unlisted' });
+      fs.writeFileSync(p, JSON.stringify({ ...disk, threadline: { ...disk.threadline, relayEnabled: true } }, null, 2));
+    }
+
     // The agent's one call, at its person's request.
     const firstPid = process.pid;
     const en = await call('POST', '/threadline/pairing/enable', { sessionId: 'pp-topic-session' });

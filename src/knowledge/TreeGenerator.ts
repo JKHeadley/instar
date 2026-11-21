@@ -391,8 +391,9 @@ export class TreeGenerator {
       managed: true,
       depth: 'medium',
       // The whole procedure must arrive (the Finish step is near the end); 900 cut it off
-      // once step 1 learned to switch pairing on without a restart.
-      maxTokens: 1400,
+      // once step 1 learned to switch pairing on without a restart, and 1400 once step 1 learned
+      // the owner's approval card (SEC-163).
+      maxTokens: 1600,
       sensitivity: 'public',
       sources: [
         { type: 'file_section', path: 'CLAUDE.md', section: 'Connecting to another agent' },

@@ -30,7 +30,7 @@ import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
 import type { RegistryClient } from './ThreadlineMCPServer.js';
-import { sendMessageViaHttp, getThreadHistoryViaHttp, acknowledgeViaHttp, getThreadReceiptsViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp, createHttpRelayDiscoverer, approvedDeleteViaHttp } from './mcp-http-client.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, acknowledgeViaHttp, getThreadReceiptsViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp, createHttpRelayDiscoverer, approvedDeleteViaHttp, openOwnerApprovalViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
 import { resolveMcpAuthToken } from './mcpAuthToken.js';
 
@@ -167,6 +167,8 @@ async function main(): Promise<void> {
       // Sealed-handoff keystone: mint with the agent's key (key-gated route) so the
       // receipt message can reach this conversation; falls back to the keyless route.
       requestSecret: (params) => requestSecretViaHttp(params, serverPort, agentToken),
+      // SEC-163: joining the agent network opens the owner's approval card on the server.
+      openOwnerApproval: (change) => openOwnerApprovalViaHttp(change, serverPort, agentToken),
       // Verified pairing v2: start a pending static-key pairing on the server (spec §3.2).
       startPairing: (peerFp) => startPairingViaHttp(peerFp, serverPort, agentToken),
       // Pairing by invite: make an invite on the server (a2a-pairing-invite-link).

@@ -38,6 +38,7 @@ import {
   acknowledgeViaHttp,
   getThreadReceiptsViaHttp,
   requestSecretViaHttp,
+  openOwnerApprovalViaHttp,
   startPairingViaHttp,
   createPairingInviteViaHttp,
   createHttpRelayDiscoverer,
@@ -472,6 +473,7 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
         acknowledge: (params) => track(acknowledgeViaHttp(params, port, token())),
         getThreadReceipts: (threadId) => track(getThreadReceiptsViaHttp(threadId, port, token())),
         requestSecret: (params) => track(requestSecretViaHttp(params, port, token())),
+        openOwnerApproval: (change) => track(openOwnerApprovalViaHttp(change, port, token())),
         startPairing: (peerFp) => track(startPairingViaHttp(peerFp, port, token())),
         createInvite: (o) => track(createPairingInviteViaHttp(o, port, token())),
         // Shared live trust manager: never reload from disk (a reload could drop debounced writes).
