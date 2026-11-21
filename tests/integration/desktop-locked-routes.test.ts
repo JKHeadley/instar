@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import express from 'express';
+import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { DesktopLockedController } from '../../src/core/DesktopLockedController.js';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
@@ -82,4 +84,24 @@ describe('locked-screen routes', () => {
     const reply = await request(server).patch('/config').set(headers).send({ remoteDesktop: { lockedScreen: { enabled: true } } });
     expect(reply.status).toBe(400);
   });
+});
+
+// Observational route wiring: real host ledger through the real controller, no native helper.
+it('own locked status carries the injected host history and preserves a failed spawn', async () => {
+  const host = new MacDesktopHost();
+  const controller = new DesktopLockedController({ host, agentId: 'observer-test', root: '/nonexistent/observer-test',
+    settings: () => ({ enabled: false, browserBox: false, chime: false }), saveSettings: () => {},
+    readPolicy: async () => ({ status: 'unknown' } as never), tunnelFirstTierActive: () => false, raiseSecurity: () => true });
+  host.setLockedRoot('/nonexistent/observer-test');
+  const server = app({ desktopLocked: levers({ status: () => controller.status(undefined) }) as never });
+  const before = await request(server).get('/desktop/locked/status').set(headers);
+  expect(before.status).toBe(200);
+  expect(before.body.guardObservation).toEqual(host.getRelockGuardObservation());
+  const binary = vi.spyOn(host as any, 'trustedBinary').mockImplementation(() => { throw new Error('inert failure'); });
+  try {
+    await expect(host.startRelockGuard('12345678-1234-1234-1234-123456789abc.0')).rejects.toThrow('inert failure');
+    const after = await request(server).get('/desktop/locked/status').set(headers);
+    expect(after.body.guardObservation.instanceId).toBe(before.body.guardObservation.instanceId);
+    expect(after.body.guardObservation.entries).toMatchObject([{ spawn: 'error', exit: 'pending' }]);
+  } finally { binary.mockRestore(); controller.stop(); }
 });

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "cb-p2-replay-fixes",
+  "sessionId": "5b03ccb2-629b-45ef-8ba6-d9db40431584",
+  "timestamp": "2026-11-21T05:24:06.174Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-replay-fixes.md",
+  "artifactSha256": "8be109b9118f4669e6fcb85ff2f5c7d7431477c7ff2219dc8b89ae1d4c339847",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "docs/specs/context-budget-layered-summaries.eli16.md",
+    "docs/specs/context-budget-layered-summaries.md",
+    "src/monitoring/foldGrade.ts",
+    "src/monitoring/foldHandoff.ts",
+    "src/monitoring/foldPacket.ts",
+    "src/monitoring/foldShadowRunner.ts",
+    "tests/unit/fold-grade.test.ts",
+    "tests/unit/fold-handoff.test.ts",
+    "tests/unit/fold-packet.test.ts",
+    "tests/unit/fold-runner-prereqs.test.ts",
+    "tests/unit/fold-shadow-runner.test.ts",
+    "upgrades/next/cb-p2-replay-fixes.md",
+    "upgrades/side-effects/cb-p2-replay-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dark practice-fold correctness and a trust-label boundary for tool output; second-pass reviewed over three rounds.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

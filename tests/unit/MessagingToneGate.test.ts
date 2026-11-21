@@ -574,9 +574,12 @@ describe('MessagingToneGate', () => {
         recentMessages: [{ role: 'user', text: longText }],
       });
 
-      // Truncated to 500 chars + ellipsis
-      expect(capturedPrompt).toContain('a'.repeat(500) + '…');
-      expect(capturedPrompt).not.toContain('a'.repeat(501));
+      // Bounded through boundedHead: ~500 chars of content, then an in-band
+      // disclosure the model can read (JSON-encoded, so the newline is "\\n").
+      expect(capturedPrompt).toContain('a'.repeat(500));
+      expect(capturedPrompt).not.toContain('a'.repeat(600));
+      expect(capturedPrompt).toMatch(/a\\n\[BOUNDED INPUT: \d+ characters removed/);
+      expect(capturedPrompt).toContain('LATER content was omitted');
     });
 
     it('keeps only the last 6 messages when more are provided', async () => {

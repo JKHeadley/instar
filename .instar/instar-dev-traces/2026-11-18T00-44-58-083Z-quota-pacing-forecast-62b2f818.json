@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "quota-pacing-forecast",
+  "sessionId": "d76f6866-8ef0-448a-b0d6-f3afa70073ec",
+  "timestamp": "2026-11-18T00:44:58.083Z",
+  "artifactPath": "upgrades/side-effects/quota-pacing-forecast.md",
+  "artifactSha256": "14ec16b21b5ede6a53eebdf03aae9d2375e67e1a5ca22d5de704214d2c126241",
+  "specPath": "docs/specs/quota-pacing-forecast.md",
+  "coveredFiles": [
+    "docs/specs/quota-pacing-forecast.eli16.md",
+    "docs/specs/quota-pacing-forecast.md",
+    "src/monitoring/quotaPacing.ts",
+    "tests/unit/quota-pacing.test.ts",
+    "upgrades/side-effects/quota-pacing-forecast.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the same Tier 2 change: wording fix found by the pre-merge test-agent rung, plus spec/eli16 corrections.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

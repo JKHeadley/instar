@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {setupGraphRuntimeFixture as setup} from '../helpers/conversation-graph-runtime.js';
-import {GraphCustodyPeerFrontier,GRAPH_CUSTODY_FRONTIER_DOMAIN} from '../../src/core/GraphCustodyPeerFrontier.js';
+import {GraphCustodyPeerFrontier,GRAPH_CUSTODY_FRONTIER_DOMAIN,RETAINED_REUSE_MAX_MS} from '../../src/core/GraphCustodyPeerFrontier.js';
 import {GraphCustodyBootstrapStore} from '../../src/core/GraphCustodyBootstrap.js';
 import {canonicalHash,signGraphRecord,unsigned} from '../../src/core/GraphWitnessTypes.js';
 function frontiers(f:Awaited<ReturnType<typeof setup>>){return f.managers.map((manager,index)=>new GraphCustodyPeerFrontier({stateDir:manager.baseDir,identity:manager,identities:f.options[index].identities,custodyAuthority:f.authorities[index],publication:new GraphCustodyBootstrapStore(manager.baseDir,'echo').publication(f.f.membership.members)!}));}
@@ -28,6 +28,27 @@ describe('actual owned peer-frontier retained authority',()=>{
   expect((await commit('retained-before-live')).state).toBe('committed');const [local,remote]=frontiers(fixture),challenge=local.beginProbe(fixture.managers[1].loadIdentity().machineId),head=remote.signedSnapshot(challenge);local.observeHead(head.head,challenge);local.observe(head,challenge);
   const retained=await local.confirmLocalAcknowledgedSource(runtime.source,runtime.reader,runtime.droppedOriginRegistry);expect((await commit('retained-after-live')).state).toBe('committed');expect(()=>retained.assertCurrent(runtime.source,fixture.authorities[0],f.membership)).toThrow();
   expect(()=>local.assertPrivateServing(f.membership)).not.toThrow();expect(local.retainedSnapshotFor(runtime.source,f.membership)).toBeNull();
+ });
+ // Accept all round 4: while the graph is not ready the owner step re-ran this full history verification on
+ // every save and every 10 s upkeep tick, holding saves past the page's limit. An unchanged store reuses it.
+ it('reuses the retained history check while the store is unchanged and verifies again after a change',async()=>{
+  const fixture=await setup({ownedCustodyHostIndex:0}),{runtime,peer,f}=fixture;await runtime.refreshReadiness();await peer.refreshReadiness();
+  const commit=async(id:string)=>{const record=f.record(id);return runtime.withSourceMutation(token=>runtime.submitPrepared({coreType:record.coreType,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash(id),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('actual reuse body')},token));};
+  expect((await commit('reuse-first')).state).toBe('committed');
+  const [cold]=frontiers(fixture),source=runtime.source,verify=source.verifyLocalAcknowledgedSnapshot.bind(source);let calls=0;
+  source.verifyLocalAcknowledgedSnapshot=(...args:Parameters<typeof verify>)=>{calls++;return verify(...args);};
+  const first=await cold.confirmLocalAcknowledgedSource(source,runtime.reader,runtime.droppedOriginRegistry);
+  const again=await cold.confirmLocalAcknowledgedSource(source,runtime.reader,runtime.droppedOriginRegistry);
+  expect(again).toBe(first);expect(calls).toBe(1);
+  // An unchanged result is still re-read from disk once it is older than the reuse limit.
+  (cold as unknown as {retained:{verifiedAt:number}}).retained.verifiedAt=Date.now()-RETAINED_REUSE_MAX_MS-1;
+  const aged=await cold.confirmLocalAcknowledgedSource(source,runtime.reader,runtime.droppedOriginRegistry);expect(calls).toBe(2);expect(aged.highestAcknowledgedSequence).toBe(1);
+  expect((await commit('reuse-second')).state).toBe('committed');
+  const after=await cold.confirmLocalAcknowledgedSource(source,runtime.reader,runtime.droppedOriginRegistry);
+  expect(after).not.toBe(first);expect(calls).toBe(3);expect(after.highestAcknowledgedSequence).toBe(2);
+  // A peer that refused us still blocks the reuse path exactly like the full check.
+  cold.noteUnverifiedPeer(fixture.managers[1].loadIdentity().machineId,'authorization-refused');
+  await expect(cold.confirmLocalAcknowledgedSource(source,runtime.reader,runtime.droppedOriginRegistry)).rejects.toThrow('reachable-unverified');expect(calls).toBe(3);
  });
 
 });

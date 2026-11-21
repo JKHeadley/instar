@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-19T05:30:04.353Z",
+  "slug": "identity-security-creation-provenance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 542,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/topicCreationProvenance.ts",
+      "src/core/topicProfileIngress.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/data/awareness/owner-request-citations.md",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 535,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

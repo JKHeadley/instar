@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-21T05:26:48.291Z",
+  "slug": "desktop-notice-only-when-used",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DesktopAccessAudit.ts",
+      "src/core/DesktopHelperPermissionNotice.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 43,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

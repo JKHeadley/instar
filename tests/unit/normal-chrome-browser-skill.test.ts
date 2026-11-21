@@ -23,15 +23,18 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { installBuiltinSkills, installBrowserScripts, BROWSER_SCRIPT_NAMES, MACOS_BROWSER_SCRIPT_NAMES, BROWSER_CARE_SCRIPT_NAMES } from '../../src/commands/init.js';
-import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_SECTION } from '../../src/data/builtinSkillContent.js';
+import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_SECTION, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE } from '../../src/data/builtinSkillContent.js';
 import { NORMAL_CHROME_BROWSER_SKILL_MARKER, NORMAL_CHROME_BROWSER_SKILL_V1_SHA256 } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TEMPLATE_DIR = path.resolve(process.cwd(), 'src/templates/scripts/browser');
 /** The scripts pin the system python (macOS Command Line Tools; present on Linux CI images). */
 const HAS_PY = fs.existsSync('/usr/bin/python3');
-/** PP's reviewed v5, the file the Mama PC live test ran on 2026-10-21 (VERDICT: PASS). */
-const NATIVE_DRIVE_V5_SHA256 = '9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e';
+/**
+ * PP's reviewed v5 (Mama PC live test 2026-10-21, VERDICT: PASS) plus the occlusion fix and ERR page-not-rendering
+ * (spec normal-chrome-windows-occlusion; these bytes ran live on the Mama PC on 2026-11-19).
+ */
+const NATIVE_DRIVE_V6_SHA256 = '74f2071c3a53ad92b305ed0d6b4ac5cfc73b6df0671da946adb7c9e1be6aad92';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-normal-chrome-')); });
@@ -109,6 +112,16 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     expect(NORMAL_CHROME_BROWSER_SKILL_CONTENT).not.toContain('bridge-failed');
   });
 
+  it('every ERR token the Windows driver itself can emit is in the skill text, with its blank-page note', () => {
+    const driver = fs.readFileSync(path.join(TEMPLATE_DIR, 'native-drive.ps1'), 'utf-8');
+    const tokens = [...new Set([...driver.matchAll(/ERR ([a-z-]+)/g)].map(m => m[1]))];
+    expect(tokens).toContain('page-not-rendering');
+    for (const t of tokens) expect(NORMAL_CHROME_BROWSER_SKILL_CONTENT, t).toContain(`ERR ${t}`);
+    expect(NORMAL_CHROME_BROWSER_WINDOWS_SECTION).toContain(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE);
+    expect(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE.startsWith(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBe(true);
+    expect(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE).toContain('--disable-features=CalculateNativeWinOcclusion');
+  });
+
   it('the Windows appendix carries the marker, the Windows section and the Linux statement', () => {
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith('## Drivers by operating system')).toBe(true);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_WINDOWS_SECTION.trim());
@@ -146,10 +159,10 @@ describe('installBrowserScripts', () => {
     }
   });
 
-  it('ships native-drive.ps1 byte-identical to the live-tested v5 (no BOM, LF)', () => {
+  it('ships native-drive.ps1 byte-identical to the live-tested v6 (no BOM, LF)', () => {
     installBrowserScripts(tmp);
     const bytes = fs.readFileSync(target('native-drive.ps1'));
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(NATIVE_DRIVE_V5_SHA256);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(NATIVE_DRIVE_V6_SHA256);
     expect(bytes.slice(0, 3).toString('hex')).not.toBe('efbbbf');
     expect(bytes.includes('\r\n')).toBe(false);
   });
@@ -191,6 +204,40 @@ describe('native-drive.ps1 — static checks on the live-tested bytes', () => {
     expect(launch).toContain('refused: ND_CHROME_FLAGS may only contain allowlisted flags');
   });
 
+  it('launch always adds the occlusion fix, and ND_CHROME_FLAGS cannot remove or override it', () => {
+    const launch = src.slice(src.indexOf("'launch' {"), src.indexOf("'attach' {"));
+    expect(src).toContain("$OcclusionFix = '--disable-features=CalculateNativeWinOcclusion'");
+    const args = launch.slice(launch.indexOf('$chromeArgs = @('), launch.indexOf(')', launch.indexOf('$chromeArgs = @(')));
+    expect(args).toContain('$OcclusionFix');
+    // The allowlist (same regex syntax in .NET and JS) refuses every --disable-features / --enable-features spelling.
+    const ok = new RegExp('^--(disable-extensions|start-maximized|new-window|window-size=\\d+,\\d+|window-position=-?\\d+,-?\\d+|lang=[A-Za-z-]+)$');
+    for (const f of ['--disable-features=Foo', '--enable-features=CalculateNativeWinOcclusion', '--disable-features=', '-disable-features=X', '/disable-features=X']) expect(ok.test(f), f).toBe(false);
+    expect(ok.test('--disable-extensions')).toBe(true);
+  });
+
+  it('attach warns when the bound Chrome lacks the fix; page reads name a blank site instead of returning Chrome UI', () => {
+    const attach = src.slice(src.indexOf("'attach' {"), src.indexOf("'target' {"));
+    expect(attach.indexOf('Save-Target $A1')).toBeLessThan(attach.indexOf('Test-OcclusionFix $bpid'));
+    expect(attach).toContain('[Console]::Error.WriteLine($OcclusionMissingWarning)');
+    expect(attach).not.toMatch(/Test-OcclusionFix[^\n]*Fail/);
+    const text = src.slice(src.indexOf("'text' {"), src.indexOf("'find' {"));
+    expect(text).toContain('if (-not (Get-PageDocument $t)) {');
+    expect(text).toContain("only Chrome''s own UI was read");
+    expect(src).toContain("$root = if ($scope -eq 'browser') { Get-TargetElement $t } else { Get-PageDocument $t }");
+    expect(src).toContain('$doc = Get-PageDocument $t');
+    const fn = src.slice(src.indexOf('function Get-PageDocument('), src.indexOf('# Search scope:'));
+    // Blank or new tab: the old answer; a site: one recheck after a second, then the named failure.
+    expect(fn.indexOf('if (-not $title) { return $null }')).toBeLessThan(fn.indexOf('Start-Sleep -Milliseconds 1000'));
+    expect(fn.indexOf('Start-Sleep -Milliseconds 1000')).toBeLessThan(fn.indexOf('Fail "ERR page-not-rendering'));
+    expect((fn.match(/Fail "ERR page-not-rendering: /g) || []).length).toBe(2);
+    expect((fn.match(/" 2\n/g) || []).length).toBe(2);
+    // The page title is page-supplied: control characters dropped, length cut, labelled in the message.
+    const title = src.slice(src.indexOf('function Get-PageTitle('), src.indexOf('function Get-PageDocument('));
+    expect(title).toContain("-replace '[\\x00-\\x1f\\x7f]', ''");
+    expect(title).toContain('if ($n.Length -gt 80)');
+    expect(fn).toContain('window title (page-supplied)');
+  });
+
   it('every PowerShell input wrapper checks the foreground before its Win32 input call (ordering within each body; SendInput itself is in the C# block)', () => {
     const body = (name: string) => {
       const start = src.indexOf(`function ${name}(`);
@@ -229,10 +276,10 @@ describe('native-drive.ps1 — static checks on the live-tested bytes', () => {
   });
 
   it('is pinned to the reviewed hash in the skill text and the manifest', () => {
-    expect(createHash('sha256').update(fs.readFileSync(path.join(TEMPLATE_DIR, 'native-drive.ps1'))).digest('hex')).toBe(NATIVE_DRIVE_V5_SHA256);
+    expect(createHash('sha256').update(fs.readFileSync(path.join(TEMPLATE_DIR, 'native-drive.ps1'))).digest('hex')).toBe(NATIVE_DRIVE_V6_SHA256);
     const manifest = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'scripts/blocking-decision-surfaces-baseline.json'), 'utf-8'));
     const entry = manifest.nonBlocking.find((e: { path: string }) => e.path === 'src/templates/scripts/browser/native-drive.ps1');
-    expect(entry?.sha256).toBe(NATIVE_DRIVE_V5_SHA256);
+    expect(entry?.sha256).toBe(NATIVE_DRIVE_V6_SHA256);
   });
 });
 

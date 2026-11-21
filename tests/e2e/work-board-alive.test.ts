@@ -118,12 +118,26 @@ describe('Work Board E2E (feature is alive)', () => {
       expect((await request(app).get('/work-board')).status).toBe(401);
 
       // The agent proposes a card.
-      const created = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: false });
+      // Without a recommendation and why-you, the agent's card is refused (work-board-cards-appear §2).
+      const bare = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: false });
+      expect(bare.status).toBe(400);
+      expect(bare.body.error).toBe('recommendation-required');
+      const created = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: false, recommendation: 'The lake house: closest for everyone.', whyYou: 'Only you know the budget.', covers: ['plan:INI-1'], source: { conversationKey: 'telegram:42', messageId: 'original-1' } });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
+      expect(created.body.card.whyYou).toBe('Only you know the budget.');
+      expect(created.body.card.covers).toEqual(['plan:INI-1']);
       const id = created.body.cardId as string;
       expect(id).toMatch(/^wc_[0-9a-f]{16}$/);
       expect(created.body.card.status).toBe('needs-approval');
       expect(rig.conversations.has(created.body.conversationKey)).toBe(true);
+
+      // The source projection is mounted on the actual production server, not a test-only route.
+      const source = await request(app).get('/work-board?sourceConversationKey=telegram%3A42').set(auth());
+      expect(source.status).toBe(200); expect(source.body.total).toBe(1);
+      expect(source.body.cards.map((c: { id: string }) => c.id)).toEqual([id]);
+      expect(source.body.nextPage).toBeNull();
+      const otherSource = await request(app).get('/work-board?sourceConversationKey=telegram%3A4').set(auth());
+      expect(otherSource.status).toBe(200); expect(otherSource.body.cards).toEqual([]);
 
       // It is in the owner's first lane, and nothing was handed over.
       const board = await request(app).get('/work-board').set(auth());
@@ -131,6 +145,7 @@ describe('Work Board E2E (feature is alive)', () => {
       expect(board.body.lanes[0].lane).toBe('waiting-on-you');
       expect(board.body.lanes[0].cards.map((c: { id: string }) => c.id)).toEqual([id]);
       expect(board.body.waitingOnYou).toBe(1);
+      expect(board.body.myBoard.sections[0]).toMatchObject({ reason: 'approval', words: 'Waiting for your approval', cardIds: [id], notStarted: 1 });
       await rig.runtime.controller.tick();
       expect(rig.briefs).toHaveLength(0);
 

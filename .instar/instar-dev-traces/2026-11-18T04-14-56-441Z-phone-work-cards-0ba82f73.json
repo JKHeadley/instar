@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "slug": "phone-work-cards",
+  "sessionId": "8d848839-63d1-417d-ad1d-769adac726e8",
+  "timestamp": "2026-11-18T04:14:56.441Z",
+  "artifactPath": "upgrades/side-effects/phone-work-cards.md",
+  "artifactSha256": "27ad16a7e9f431ababf6b8fd197f3c859f0afd642d4ed44c526dc9d1b9d4dac8",
+  "specPath": "docs/specs/phone-work-cards.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T04-14-35-091Z-phone-work-cards.json",
+    "docs/specs/phone-work-cards.eli16.md",
+    "docs/specs/phone-work-cards.md",
+    "docs/specs/reports/phone-work-cards-convergence.md",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/data/awareness/phone-work-cards.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/phoneWorkCards.ts",
+    "src/server/routes.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/phone-work-cards-alive.test.ts",
+    "tests/integration/phone-work-cards.test.ts",
+    "tests/integration/team-access-status-table.test.ts",
+    "tests/unit/phone-work-cards.test.ts",
+    "tests/unit/work-board-wiring.test.ts",
+    "upgrades/next/phone-work-cards.md",
+    "upgrades/side-effects/phone-work-cards.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds owner write authority (Face ID-proven card create) and a read on device routes; durable replicated records; Tier 2 per instar-dev size tiers",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/phone-work-cards-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

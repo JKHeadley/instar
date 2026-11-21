@@ -23,7 +23,7 @@ import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { OrgMemberSide } from '../../src/core/OrgMemberSide.js';
 import { encodeKeeperCode } from '../../src/core/OrgKeepers.js';
 import { newMemberKeyPair, signPayload } from '../../src/core/OrgMembers.js';
-import { readPublished, setOrgForward, handleOrgForward, markPublishedElsewhere } from '../../src/server/orgPackRoutes.js';
+import { publishedPaths, readPublished, setOrgForward, handleOrgForward, markPublishedElsewhere } from '../../src/server/orgPackRoutes.js';
 import { validateBundle } from '../../src/core/OrgPack.js';
 
 const HOST = 'org-mm.example.dev';
@@ -85,6 +85,46 @@ function fetchTo(app: Application): typeof fetch {
 }
 
 describe('a machine without the key forwards to the one that has it', () => {
+  it('keeps admin drafts on the key machine and identifies it to an authenticated peer', async () => {
+    const publisher = await boot('publisher');
+    const peer = await boot('peer');
+    const draft = { orgName: 'Monroe Institute', policyMarkdown: POLICY };
+    const first = await publisher.bearer(request(publisher.app).post('/org/draft')).send(draft);
+    expect(first.status).toBe(200);
+    expect((await publisher.signed('POST', '/mobile/org/publish', {
+      draftId: first.body.draftId, readBackConfirmed: true, shareUpdates: true,
+    })).status).toBe(200);
+    const orgId = readPublished(publisher.stateDir)!.bundle.record.orgId;
+
+    // A peer may have a valid local draft created before it received the publisher marker.
+    const legacy = await peer.bearer(request(peer.app).post('/org/draft')).send(draft);
+    expect(legacy.status).toBe(200);
+    const savedBefore = fs.readdirSync(publishedPaths(peer.stateDir).drafts);
+    markPublishedElsewhere(peer.stateDir, orgId, 'publisher');
+    const refused = await peer.bearer(request(peer.app).post('/org/draft')).send(draft);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: 'org-key-elsewhere', machineId: 'publisher' });
+    expect(refused.body.detail).toContain('publisher');
+    expect(fs.readdirSync(publishedPaths(peer.stateDir).drafts)).toEqual(savedBefore);
+
+    const publishBody = { draftId: legacy.body.draftId, readBackConfirmed: true };
+    const bearerPublish = await peer.bearer(request(peer.app).post('/mobile/org/publish')).send(publishBody);
+    expect(bearerPublish.status).toBe(403);
+    expect(bearerPublish.body.machineId).toBeUndefined();
+    const signedPublish = await peer.signed('POST', '/mobile/org/publish', publishBody);
+    expect(signedPublish.status).toBe(409);
+    expect(signedPublish.body).toMatchObject({ error: 'org-key-elsewhere', machineId: 'publisher' });
+    expect(readPublished(peer.stateDir)).toBeNull();
+    expect(fs.readdirSync(publishedPaths(peer.stateDir).root).some(name => name.endsWith('.signing-key'))).toBe(false);
+
+    // A recovered publisher's local key takes precedence over an earlier peer marker.
+    markPublishedElsewhere(publisher.stateDir, orgId, 'former-publisher');
+    const local = await publisher.bearer(request(publisher.app).post('/org/draft')).send(draft);
+    expect(local.status).toBe(200);
+    const saved = path.join(publishedPaths(publisher.stateDir).drafts, local.body.draftId + '.json');
+    expect(JSON.parse(fs.readFileSync(saved, 'utf8')).base).toMatchObject({ orgId, version: 1 });
+  }, 60000);
+
   it('public pack, check-in and the admin members page reach the key machine', async () => {
     const keyMachine = await boot('keymachine');
     const lease = await boot('leasemachine');

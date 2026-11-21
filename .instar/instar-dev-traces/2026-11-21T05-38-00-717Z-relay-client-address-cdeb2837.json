@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "relay-client-address",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T05:38:00.717Z",
+  "artifactPath": "upgrades/side-effects/relay-client-address.md",
+  "artifactSha256": "17558ca507e0cb147c1aeb40e1e5135574765c903aa865983a4f7beaa85fa53d",
+  "coveredFiles": [
+    "docs/specs/relay-client-address.eli16.md",
+    "fly.toml",
+    "src/commands/relay.ts",
+    "src/threadline/relay/A2ABridge.ts",
+    "src/threadline/relay/RelayRateLimiter.ts",
+    "src/threadline/relay/RelayServer.ts",
+    "src/threadline/relay/clientAddress.ts",
+    "src/threadline/relay/types.ts",
+    "tests/unit/threadline/relay/A2ABridge.test.ts",
+    "tests/unit/threadline/relay/RelayRateLimiter.test.ts",
+    "tests/unit/threadline/relay/clientAddress.test.ts",
+    "tests/unit/threadline/relay/relay-registry-rate-bounded.test.ts",
+    "upgrades/next/relay-client-address.md",
+    "upgrades/side-effects/relay-client-address.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Caller-address trust and resource bounds on existing relay rate limits; no new refusals; revert-and-redeploy rollback",
+  "eli16Path": "docs/specs/relay-client-address.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relay-client-address.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

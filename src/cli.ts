@@ -26,6 +26,7 @@ import { Command } from 'commander';
 import { initProject } from './commands/init.js';
 import { SUPPORTED_FRAMEWORKS } from './core/TopicFrameworksStore.js';
 import { SafeFsExecutor } from './core/SafeFsExecutor.js';
+import { pinGlobalFetchToHttp1 } from './core/http1GlobalFetch.js';
 // setup.ts is imported dynamically — it depends on @inquirer/prompts which requires Node 20.12+
 import { startServer, stopServer, restartServer } from './commands/server.js';
 import { showStatus } from './commands/status.js';
@@ -562,6 +563,7 @@ addCmd
   .option('--phone-number-id <id>', 'Meta Phone Number ID (Business API)')
   .option('--access-token <token>', 'Meta access token (Business API)')
   .option('--webhook-verify-token <token>', 'Webhook verification token (Business API)')
+  .option('--app-secret <secret>', 'Meta app secret that signs webhook deliveries (Business API; or set WHATSAPP_APP_SECRET)')
   .option('--webhook-port <port>', 'Webhook port if different from server port (Business API)', parseInt)
   .action(async (opts) => {
     const { addWhatsApp } = await import('./commands/whatsapp.js');
@@ -612,6 +614,19 @@ introducerCmd.command('remove')
   .requiredOption('--key <publicKey>', 'The introducer key to remove')
   .option('--dir <path>', 'Agent directory (default: detected)')
   .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.removeIntroducer(opts); });
+mobileCmd.command('add-phone')
+  .description("Add your first phone at this computer: same Wi-Fi, no account (asks for the dashboard PIN)")
+  .option('--anywhere', 'Use the address that works away from home (Tailscale) instead of the home address')
+  .option('--json', 'Print the setup as JSON')
+  .option('--port <port>', 'The home-network port to use (default: the stored one, else the main port + 20000)', (v: string) => parseInt(v, 10))
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileAddPhone.js'); await m.addPhone(opts); });
+mobileCmd.command('ceremony-credential')
+  .description("For the Instar app on this computer: make a one-time credential for one phone setup (run as the agent's own user)")
+  .option('--for <ceremony>', 'The ceremony it is for', 'phone-setup')
+  .option('--json', 'Print it as JSON')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileCeremonyCredential.js'); m.ceremonyCredential(opts); });
 introducerCmd.command('list')
   .description('List the introducers this agent trusts')
   .option('--dir <path>', 'Agent directory (default: detected)')
@@ -2504,6 +2519,7 @@ program
   .option('--here', 'Remove the instar install in the current project directory (instead of a standalone agent)')
   .option('--yes', 'Skip confirmation prompts')
   .option('-d, --dir <path>', 'Project directory (with --here; defaults to cwd)')
+  .option('--also-stop <ids...>', 'Also stop these tmux session ids, which nuke listed because they match the agent\'s name but started outside every agent home')
   .action(async (name, opts) => {
     if (opts.here) {
       if (name) {
@@ -2512,7 +2528,7 @@ program
         process.exit(1);
       }
       const { nukeHere } = await import('./commands/nuke.js');
-      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes });
+      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes, alsoStop: opts.alsoStop });
       return;
     }
     if (!name) {
@@ -2522,7 +2538,7 @@ program
       process.exit(1);
     }
     const { nukeAgent } = await import('./commands/nuke.js');
-    await nukeAgent(name, { skipConfirm: opts.yes });
+    await nukeAgent(name, { skipConfirm: opts.yes, alsoStop: opts.alsoStop });
   });
 
 // ── Playbook (Context Engineering) ───────────────────────────────
@@ -2917,5 +2933,8 @@ program
     return route(taskPrompt, opts);
   });
 
+// Every instar process (server, lifeline, CLI) keeps Node's fetch on HTTP/1.1 — Node 26's
+// default HTTP/2 path ballooned the agent server to 10-37 GB (2026-11-20 post-mortem A3).
+await pinGlobalFetchToHttp1();
 rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();

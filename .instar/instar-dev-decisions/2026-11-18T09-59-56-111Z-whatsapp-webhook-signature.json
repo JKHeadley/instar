@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-18T09:59:56.111Z",
+  "slug": "whatsapp-webhook-signature",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/commands/setup.ts",
+      "src/commands/whatsapp.ts",
+      "src/data/awareness/whatsapp-business-signature.md",
+      "src/messaging/WhatsAppAdapter.ts",
+      "src/messaging/backends/BusinessApiBackend.ts",
+      "src/messaging/backends/WhatsAppWebhookRoutes.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 75,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

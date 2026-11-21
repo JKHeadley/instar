@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "cb-p2-shadow-answerer",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T21:50:24.611Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-shadow-answerer.md",
+  "artifactSha256": "e4deb59bc5a67cb8c8e237c83984dfa0c852341fd0c781fa6ca00efb1181c62d",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/monitoring/foldShadowAnswerer.ts",
+    "src/server/memorySessionGuard.ts",
+    "src/server/routes.ts",
+    "src/users/MemoryPrivacy.ts",
+    "tests/integration/fold-probe-token-routes.test.ts",
+    "tests/unit/fold-marker-guard-hook.test.ts",
+    "tests/unit/fold-shadow-answerer.test.ts",
+    "tests/unit/memory-privacy.test.ts",
+    "tests/unit/memory-session-guard.test.ts",
+    "tests/unit/session-manager-confined-spawn.test.ts",
+    "upgrades/next/cb-p2-shadow-answerer.md",
+    "upgrades/side-effects/cb-p2-shadow-answerer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice touching authorization (memory-session guard) and session spawn; second-pass reviewed, two rounds.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

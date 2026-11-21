@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-17T23:11:28.400Z",
+  "slug": "create-agent-account-choice",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 344,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/install.ts",
+      "src/commands/install/engine.ts",
+      "src/commands/install/progress.ts",
+      "src/commands/setup-wizard/codex-driver.ts",
+      "src/commands/setup-wizard/gemini-driver.ts",
+      "src/commands/setup-wizard/state-machine.ts",
+      "src/install/accountChoice.ts",
+      "src/install/accountEnroll.ts",
+      "src/install/accounts.ts",
+      "src/install/doorSteps.ts"
+    ],
+    "addedLines": 334,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "new install capability (account choice), no defect closed"
+  },
+  "verdict": "blocked"
+}

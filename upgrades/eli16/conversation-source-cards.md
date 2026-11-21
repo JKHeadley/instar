@@ -1,0 +1,8 @@
+# Cards from this conversation
+When you turn a message into a work card, the card should be easy to find again while reading that conversation. The dashboard now shows up to three such cards, with a button to expand the list and load more. It looks through all cards before paging, so normal board limits do not hide matches. Only the owner can see where a card came from. If the list changes while you page through it, Reload gets a fresh list; a failed read or a computer still catching up never pretends there are no cards.
+
+The conversation already contains the original messages, and Make a card already records which message you used. This change reads that recorded connection rather than guessing from similar titles. It does not move conversations, make more cards, approve work or give the agent new permission. A person who can read a shared card still cannot use this list to discover the owner's original conversation.
+
+The normal board only shows part of long lists. These conversation rows search the complete card index first, then show a page. Opening an older card asks for that card directly, so it still opens even when it is missing from the board's first page. Returning to the conversation and opening it again works too; a routine refresh does not reopen a card you dismissed.
+
+The dashboard and shared read are included here. The native iPhone and Mac display, and making a new card on a phone, stay with the app work already assigned to its owner. Full verification and installation happen through the merge line. No additional decision is needed from the user for this approved step.

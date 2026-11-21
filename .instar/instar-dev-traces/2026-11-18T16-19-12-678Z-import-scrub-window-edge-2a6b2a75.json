@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "import-scrub-window-edge",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-18T16:19:12.678Z",
+  "artifactPath": "upgrades/side-effects/import-scrub-window-edge.md",
+  "artifactSha256": "e58511fcc4ab4e4095e13ed2038aafd53c92d620646fc731a93ee605b2d4b43f",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T16-19-04-305Z-import-scrub-window-edge.json",
+    "docs/specs/import-scrub-window-edge.eli16.md",
+    "src/import/exportParsers.ts",
+    "tests/unit/import-claude-chatgpt.test.ts",
+    "upgrades/next/import-scrub-window-edge.md",
+    "upgrades/side-effects/import-scrub-window-edge.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to the import path's windowed secret scrub (texts over 1 MB only): overlapping windows plus fail-toward-removal at edges; no stored data, config or routes; reversible by revert; two independent review rounds with probes.",
+  "eli16Path": "docs/specs/import-scrub-window-edge.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/import-scrub-window-edge.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

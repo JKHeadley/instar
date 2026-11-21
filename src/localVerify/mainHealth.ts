@@ -48,6 +48,37 @@ interface Watermark {
   leaseEpoch?: number | null;
   /** The machine that held the lease at that epoch (this machine — the watermark is machine-local). */
   holderMachineId?: string;
+  /**
+   * When the oldest `main` merge with no green verify after it was first seen (ms). Absent = none
+   * known. Kept across restarts so the 90-minute and 3-hour clocks do not start again at each boot
+   * (spec docs/specs/local-verify-main-age-survives-restart.md).
+   */
+  oldestUnverifiedAt?: number;
+  /**
+   * Present = that age is UNKNOWN (the one encoding of unknown, in memory and here): the time
+   * unknown was first seen, a lower bound for the 3-hour signal. Never beside `oldestUnverifiedAt`.
+   */
+  unknownSince?: number;
+}
+
+/** Why the age of the oldest unverified merge is unknown (the `main-age-unknown` audit line). */
+export type MainAgeUnknownReason = 'field-absent' | 'file-unreadable' | 'future' | 'non-finite' | 'other-machine' | 'carried';
+
+/** The age of the oldest unverified `main` merge. `unknownSince !== null` means unknown (then `oldestUnverifiedAt` is null). */
+export interface MainUnverifiedAge {
+  oldestUnverifiedAt: number | null;
+  unknownSince: number | null;
+}
+
+/**
+ * A stored time, judged: usable (a finite number not in the future), absent, or why not.
+ * Pure. A time in the future is what a backward wall-clock jump leaves behind.
+ */
+export function judgeStoredTime(v: unknown, now: number): { ok: true; at: number } | { ok: false; reason: 'absent' | 'future' | 'non-finite' } {
+  if (v === undefined || v === null) return { ok: false, reason: 'absent' };
+  if (typeof v !== 'number' || !Number.isFinite(v)) return { ok: false, reason: 'non-finite' };
+  if (v > now) return { ok: false, reason: 'future' };
+  return { ok: true, at: v };
 }
 
 export interface MainHealthSeams {
@@ -325,6 +356,19 @@ export class MainHealth {
   private readonly raised = new Set<string>();
   /** The lease epoch recorded in the watermark (kept across boots until an acquisition supplies a new one). */
   private leaseEpoch: number | null = null;
+  /** The oldest unverified merge's first-seen time (null = none known, or unknown). Written with every watermark. */
+  private oldestUnverifiedAt: number | null = null;
+  /** Non-null = the age is unknown, since this time. */
+  private unknownSince: number | null = null;
+  /** The stored age is read once per process start, at the first load(). */
+  private ageRestored = false;
+  /**
+   * Boot found no usable stored age: the first head observed that is not the last green one
+   * makes the age unknown (never `now`), for this reason.
+   */
+  private bootUnknownReason: MainAgeUnknownReason | null = null;
+  /** `main-age-unknown` is audited once per process start. */
+  private unknownAudited = false;
 
   constructor(stateDir: string, machineId: string, seams: MainHealthSeams) {
     this.file = path.join(stateDir, 'state', 'local-verify', 'main-health.json');
@@ -346,6 +390,7 @@ export class MainHealth {
    */
   load(opts: { foreignHolder?: boolean; epoch?: number | null } = {}): MainHealthSnapshot {
     const w = this.readWatermark();
+    if (!this.ageRestored) { this.ageRestored = true; this.restoreAge(w); }
     // A gap from the stored epoch means another holder came in between (a
     // same-machine re-acquisition is the next epoch): treated as a different machine.
     const stored = typeof w?.leaseEpoch === 'number' ? w.leaseEpoch : null;
@@ -353,6 +398,14 @@ export class MainHealth {
     this.leaseEpoch = opts.epoch !== undefined ? opts.epoch : stored;
     if (opts.foreignHolder || epochGap) {
       if (epochGap) this.seams.audit({ event: 'main-health-epoch-gap', storedEpoch: stored, epoch: opts.epoch });
+      // Another machine held the lease in between: what merged meanwhile is not known here, so the
+      // age is unknown. The bound is this machine's own earlier age when it has one (never later than
+      // now), and an unknown already running keeps its start: a lease flap cannot push the signal back.
+      const now = this.seams.now();
+      if (this.unknownSince === null) this.unknownSince = this.oldestUnverifiedAt !== null ? Math.min(this.oldestUnverifiedAt, now) : now;
+      this.oldestUnverifiedAt = null;
+      this.bootUnknownReason = null;
+      this.auditUnknown('other-machine');
       this.set({ state: 'main-suspect', redHead: w?.redHead ?? null, reason: epochGap ? 'lease-epoch-gap' : 'lease-foreign', lastGreenHead: w?.lastGreenHead ?? null });
     } else if (!w || w.machineId !== this.machineId) {
       this.set({ state: 'main-suspect', redHead: w?.redHead ?? null, reason: w ? 'watermark-other-machine' : 'boot-unknown', lastGreenHead: w?.lastGreenHead ?? null });
@@ -370,9 +423,21 @@ export class MainHealth {
    *   'none'
    */
   /** `detail` (bounded run-detail: reasons, failures, flaky re-runs) travels with the main-red signal. */
-  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>): Promise<'rerun' | 'cleared' | 'none'> {
+  /**
+   * `age` (a green verify only): the age after this verify, as the service computed it. It is
+   * written in the same watermark write as `lastGreenHead`, and it ends an unknown age.
+   */
+  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>, age?: { oldestUnverifiedAt: number | null }): Promise<'rerun' | 'cleared' | 'none'> {
     if (outcome === 'error') return 'none'; // only `failure` counts as red
     if (outcome === 'success') {
+      let ageChanged = false;
+      if (age) {
+        const at = age.oldestUnverifiedAt !== null && Number.isFinite(age.oldestUnverifiedAt) ? age.oldestUnverifiedAt : null;
+        ageChanged = at !== this.oldestUnverifiedAt || this.unknownSince !== null;
+        this.oldestUnverifiedAt = at;
+        this.unknownSince = null;
+        this.bootUnknownReason = null;
+      }
       if (this.snap.state === 'healthy') {
         this.set({ ...this.snap, lastGreenHead: head, reason: 'green' });
         return 'none';
@@ -386,6 +451,7 @@ export class MainHealth {
       }
       if (!clears) {
         this.seams.audit({ event: 'main-health-green-not-descendant', redHead: red, head });
+        if (ageChanged) this.writeWatermark(); // the state is unchanged; the age still has to be recorded
         return 'none';
       }
       const wasRed = this.snap.state === 'main-red';
@@ -408,13 +474,69 @@ export class MainHealth {
     return 'none';
   }
 
-  /** `main` has gone unverified (no green verify after a merge) for too long. */
-  noteUnverifiedAge(oldestUnverifiedAt: number | null): void {
+  /**
+   * `main` has gone unverified (no green verify after a merge) for too long. `atLeast`: the time
+   * given is a lower bound (the age is unknown), so `ageMs` reads "at least", never an exact age.
+   */
+  noteUnverifiedAge(oldestUnverifiedAt: number | null, opts: { atLeast?: boolean } = {}): void {
     if (oldestUnverifiedAt === null) return;
     const age = this.seams.now() - oldestUnverifiedAt;
     if (age <= MAIN_HEALTH_LIMITS.unverifiedSuspectMs) return;
     if (this.snap.state === 'healthy') this.set({ ...this.snap, state: 'main-suspect', reason: 'unverified-too-long' });
-    this.raise('local-verify:main-unverified', { ageMs: age });
+    this.raise('local-verify:main-unverified', { ageMs: age, ...(opts.atLeast ? { atLeast: true } : {}) });
+  }
+
+  /** The age of the oldest unverified merge as this machine holds it. */
+  unverifiedAge(): MainUnverifiedAge {
+    return { oldestUnverifiedAt: this.oldestUnverifiedAt, unknownSince: this.unknownSince };
+  }
+
+  /**
+   * A valid `main` head was observed. A head that is not the last green one starts the age
+   * when there is none: at `now` when this process saw the head leave green, and as UNKNOWN
+   * when it is the first such head after a boot that found no usable stored age.
+   */
+  noteHeadObserved(sha: string): void {
+    if (sha === this.snap.lastGreenHead) { this.bootUnknownReason = null; return; } // nothing unverified was found at boot
+    if (this.unknownSince !== null || this.oldestUnverifiedAt !== null) return;
+    const now = this.seams.now();
+    if (this.bootUnknownReason !== null) {
+      const reason = this.bootUnknownReason;
+      this.bootUnknownReason = null;
+      this.unknownSince = now;
+      this.auditUnknown(reason);
+    } else {
+      this.oldestUnverifiedAt = now;
+    }
+    this.writeWatermark();
+  }
+
+  /** The current head is a release commit of the last green head: nothing is unverified. Clears the age and an unknown one. */
+  clearUnverifiedAge(): void {
+    this.bootUnknownReason = null;
+    if (this.oldestUnverifiedAt === null && this.unknownSince === null) return;
+    this.oldestUnverifiedAt = null;
+    this.unknownSince = null;
+    this.writeWatermark();
+  }
+
+  /** Once per process start: read the stored age from this machine's own watermark. */
+  private restoreAge(w: Watermark | null): void {
+    const now = this.seams.now();
+    if (!w) { this.bootUnknownReason = fs.existsSync(this.file) ? 'file-unreadable' : 'field-absent'; return; }
+    if (w.machineId !== this.machineId) { this.bootUnknownReason = 'other-machine'; return; }
+    const since = judgeStoredTime(w.unknownSince, now);
+    if (since.ok) { this.unknownSince = since.at; this.auditUnknown('carried'); return; }
+    if (since.reason !== 'absent') { this.unknownSince = now; this.auditUnknown(since.reason); return; } // still unknown; a fresh bound
+    const at = judgeStoredTime(w.oldestUnverifiedAt, now);
+    if (at.ok) this.oldestUnverifiedAt = at.at;
+    else this.bootUnknownReason = at.reason === 'absent' ? 'field-absent' : at.reason;
+  }
+
+  private auditUnknown(reason: MainAgeUnknownReason): void {
+    if (this.unknownAudited) return;
+    this.unknownAudited = true;
+    this.seams.audit({ event: 'main-age-unknown', reason, unknownSince: this.unknownSince });
   }
 
   private raise(key: string, detail: Record<string, unknown>): void {
@@ -452,6 +574,7 @@ export class MainHealth {
         v: 1, machineId: this.machineId, state: this.snap.state, redHead: this.snap.redHead,
         lastGreenHead: this.snap.lastGreenHead, reason: this.snap.reason, updatedAt: new Date(this.seams.now()).toISOString(),
         leaseEpoch: this.leaseEpoch, holderMachineId: this.machineId,
+        ...(this.unknownSince !== null ? { unknownSince: this.unknownSince } : this.oldestUnverifiedAt !== null ? { oldestUnverifiedAt: this.oldestUnverifiedAt } : {}),
       };
       const tmp = `${this.file}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(w)); /* state-registry: local-verify-main-health */
