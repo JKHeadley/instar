@@ -41,7 +41,7 @@ export const UNATTRIBUTED_RESTART_LABEL = 'an unattributed writer (no requestedB
 
 const MAX_FIELD = 200;
 
-function cleanString(value: unknown): string | null {
+export function cleanString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -152,5 +152,65 @@ export function readLastRestartRequest(stateDir: string): RestartRequestRecord |
   } catch {
     // @silent-fallback-ok — no record yet
     return null;
+  }
+}
+
+/** How far back the by-request lookup reads: ~300 B per row, so this reaches well past a 4-hour episode. */
+const FIND_TAIL_BYTES = 64 * 1024;
+
+export interface RestartRequestLookup {
+  /** The request's own `requestedAt` (cleaned), or null for an unattributed flag. */
+  requestedAt: string | null;
+  /** Rows older than this are not the request's (ISO or ms). */
+  sinceMs: number;
+}
+
+export interface RestartRequestFind {
+  record: RestartRequestRecord | null;
+  /** Whether the tail reached back to `sinceMs`; a cut or unreadable ledger is not a negative answer. */
+  coverage: 'full' | 'cut' | 'unreadable';
+}
+
+/**
+ * planned-restart-keeps-lead §1 step 3 — did a consumer record THIS request? Both consumers write a row
+ * before they unlink the file, so a row is the state "a kill follows". Matches the request's
+ * `requestedAt`; an unattributed flag (no `requestedAt`) matches an unattributed row written since the
+ * episode opened. Reads a bounded tail and reports whether it reached `sinceMs`.
+ */
+export function findRestartRequestRecord(stateDir: string, lookup: RestartRequestLookup): RestartRequestFind {
+  try {
+    const file = restartRequestsLogPath(stateDir);
+    if (!fs.existsSync(file)) return { record: null, coverage: 'full' };
+    const size = fs.statSync(file).size;
+    const fd = fs.openSync(file, 'r');
+    let text: string;
+    try {
+      const len = Math.min(size, FIND_TAIL_BYTES);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      text = buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    let oldestAt = Infinity;
+    let found: RestartRequestRecord | null = null;
+    for (const line of lines) {
+      let row: RestartRequestRecord;
+      try { row = JSON.parse(line) as RestartRequestRecord; } catch { continue; } // @silent-fallback-ok: a torn first line from the tail cut
+      if (!row || typeof row.at !== 'string') continue;
+      const at = Date.parse(row.at);
+      if (!Number.isFinite(at)) continue;
+      oldestAt = Math.min(oldestAt, at);
+      if (at < lookup.sinceMs) continue;
+      const matches = lookup.requestedAt !== null
+        ? row.requestedAt === lookup.requestedAt
+        : row.attributed === false || row.requestedAt == null;
+      if (matches && (!found || Date.parse(found.at) < at)) found = row;
+    }
+    const coverage: RestartRequestFind['coverage'] = size <= FIND_TAIL_BYTES || oldestAt <= lookup.sinceMs ? 'full' : 'cut';
+    return { record: found, coverage };
+  } catch {
+    return { record: null, coverage: 'unreadable' }; // @silent-fallback-ok: the caller treats an unreadable ledger as "row present"
   }
 }

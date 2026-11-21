@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { announceRestartRequested } from './restartRequestSignal.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
@@ -179,6 +180,9 @@ export function writeSubscriptionReloginRestartRequest(stateDir: string, now: Da
     const count = JSON.parse(fs.readFileSync(countFile, 'utf8')) as { targetVersion?: string };
     if (!count.targetVersion) SafeFsExecutor.safeUnlinkSync(countFile, { operation: 'src/core/SubscriptionReloginOperatorConfig.ts:unversioned-restart-count' });
   } catch { /* @silent-fallback-ok — no count file, nothing to clear */ }
+  // planned-restart-keeps-lead §1 step 1: announce first (the holder's window renewal is signed and
+  // persisted synchronously), then publish at once.
+  void announceRestartRequested({ requestedBy: SUBSCRIPTION_RELOGIN_RESTART_REQUESTED_BY, reason: 'sign-in repair setting changed at the operator\'s request', requestedAt: now.toISOString() });
   SafeFsExecutor.atomicWriteJsonSync(flagPath, {
     requestedAt: now.toISOString(),
     requestedBy: SUBSCRIPTION_RELOGIN_RESTART_REQUESTED_BY,

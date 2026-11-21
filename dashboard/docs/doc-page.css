@@ -71,16 +71,44 @@ body {
 .page-message.bad { color: var(--bad); }
 
 /* ── linking this computer (§3.6a) ──────────────────────── */
+/* Redesigned 2026-11-18: what linking does up front, numbered steps naming the app's buttons, the code large. */
 .link-computer { color: var(--text); text-align: center; }
-.link-computer .link-title { font-size: 1.4rem; line-height: 1.3; color: var(--text-strong); margin: 0 0 12px; }
+.page-message.link-computer { max-width: 1040px; padding: 28px 0 48px; }
+.link-head { max-width: 680px; margin: 0 auto 24px; }
+.link-computer .link-title { font-size: clamp(1.6rem, 4.2vw, 2.25rem); line-height: 1.2; font-weight: 800; letter-spacing: -0.02em; color: var(--text-strong); margin: 0 0 14px; }
 .link-computer p { margin: 0 0 12px; }
 .link-computer .bad { color: var(--bad); }
-.link-fingerprint { font-family: var(--font-mono); font-size: clamp(1.4rem, 6vw, 2.1rem); font-weight: 600; letter-spacing: 0.06em; color: var(--text-strong); overflow-wrap: anywhere; }
-/* The code keeps its own white background and quiet zone in dark mode too, so phones can read it. */
-.link-qr { display: flex; justify-content: center; margin: 16px 0; }
-.link-qr svg { display: block; width: min(300px, 100%); height: auto; border-radius: 6px; }
+.link-lead { font-size: 1.15rem; line-height: 1.55; color: var(--text-strong); }
+.link-limits { font-size: 0.95rem; color: var(--text-muted); }
+.link-grid { display: grid; grid-template-columns: 1fr; gap: 20px; text-align: left; }
+@media (min-width: 860px) {
+  .link-grid { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: stretch; gap: 28px; }
+  .link-grid .link-qr svg { width: min(264px, 100%); }
+  .link-steps li { padding: 8px 0; }
+}
+.link-card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 18px; padding: 24px; box-shadow: var(--shadow); min-width: 0; }
+.link-eyebrow { margin: 0 0 14px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+.link-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; counter-reset: none; }
+.link-steps li { display: flex; gap: 14px; align-items: flex-start; padding: 10px 0; font-size: 1.05rem; line-height: 1.5; }
+.link-steps li + li { border-top: 1px solid var(--hairline); }
+.link-step-n { flex: none; width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.95rem; background: var(--accent); color: var(--accent-text); }
+.link-step-text { padding-top: 3px; min-width: 0; overflow-wrap: anywhere; }
+.link-btn-name { display: inline-block; padding: 0 8px; margin: 0 2px; border-radius: 7px; border: 1px solid var(--hairline); background: var(--surface-sunk); color: var(--text-strong); font-weight: 650; white-space: nowrap; }
+.link-fallback { margin: 16px 0 0 !important; padding: 12px 14px; border-radius: 12px; background: var(--surface-sunk); color: var(--text-muted); font-size: 0.92rem; line-height: 1.5; }
+.link-scan { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.link-scan .link-eyebrow { margin: 18px 0 4px; }
+.link-fingerprint { font-family: var(--font-mono); font-size: clamp(1.4rem, 6vw, 2rem); font-weight: 650; letter-spacing: 0.06em; color: var(--text-strong); overflow-wrap: anywhere; margin: 0 0 4px !important; }
+.link-hint { font-size: 0.9rem; color: var(--text-muted); }
+.link-qr svg { display: block; width: min(340px, 72vw); height: auto; }
+.link-qr { display: flex; justify-content: center; margin: 0; padding: 14px; background: #ffffff; border-radius: 16px; }
+.link-wait { display: inline-flex; align-items: center; gap: 10px; margin-top: 6px; }
+.link-wait .link-status { margin: 0; }
+.link-pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: link-pulse 1.6s ease-in-out infinite; }
+@keyframes link-pulse { 0%, 100% { opacity: .35; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
+@media (prefers-reduced-motion: reduce) { .link-pulse { animation: none; } }
 .link-status { color: var(--text-muted); }
 .link-computer .scope { color: var(--text-muted); font-size: 0.9rem; margin-top: 16px; }
+@media (max-width: 520px) { .page-message.link-computer { padding-top: 24px; } .link-card { padding: 18px; } .link-head { margin-bottom: 20px; } }
 
 /* ── header ─────────────────────────────────────────────── */
 .doc-header { max-width: 720px; padding: 24px 0 8px; }

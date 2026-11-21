@@ -1,0 +1,81 @@
+{
+  "version": 3,
+  "slug": "identity-security-piece3e-same-network-first-phone",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-20T00:28:46.406Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3e-same-network-first-phone.md",
+  "artifactSha256": "243449ade80cc27d2ccc0a9a1301e9fa709a6bd3297804746811811d9b003bc1",
+  "specPath": "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-20T00-28-35-359Z-identity-security-piece3e-same-network-first-phone.json",
+    ".instar/instar-dev-traces/2026-11-20T00-27-33-687Z-identity-security-piece3e-same-network-first-phone-35cb0e56.json",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.eli16.md",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+    "docs/specs/reports/identity-security-piece3e-same-network-first-phone-convergence.md",
+    "site/src/pages/pair.astro",
+    "src/cli.ts",
+    "src/commands/mobileAddPhone.ts",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/MobilePairing.ts",
+    "src/core/SameNetworkCert.ts",
+    "src/core/SameNetworkNetwork.ts",
+    "src/core/keyMaterialPaths.ts",
+    "src/core/requestArrival.ts",
+    "src/data/awareness/same-network-first-phone.md",
+    "src/server/AgentServer.ts",
+    "src/server/documentPageRoutes.ts",
+    "src/server/middleware.ts",
+    "src/server/mobileBrowserDevices.ts",
+    "src/server/mobileConsoleTicket.ts",
+    "src/server/mobileLocalOwnerDevice.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobileTrustApproval.ts",
+    "src/server/phoneSetupRoutes.ts",
+    "src/server/sameNetworkListener.ts",
+    "tests/e2e/same-network-first-phone-alive.test.ts",
+    "tests/helpers/pinnedPhone.ts",
+    "tests/integration/same-network-first-phone.test.ts",
+    "tests/unit/phone-setup-store.test.ts",
+    "tests/unit/request-arrival-ratchet.test.ts",
+    "tests/unit/same-network-cert.test.ts",
+    "tests/unit/same-network-gate.test.ts",
+    "tests/unit/same-network-network.test.ts",
+    "upgrades/next/identity-a4-same-network-first-phone.md",
+    "upgrades/side-effects/identity-security-piece3e-same-network-first-phone.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive: identity/admission, a new network listener, device authentication. Full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "fixed",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/identity-security-piece3e-same-network-first-phone-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/integration/same-network-first-phone.test.ts",
+      "howCaught": "Steady-state bound: one reconcile per 15 s fixed interval, serialized (a tick while one runs returns the running one). Each tick converges the listener to one of two states from the stored wish and the observed network: open or closed. No retries, no spawns, no backoff loop, no notices; a tick that finds the state already right does nothing. Tested: closed on another network, reopened on an allowed one, closed itself when unused, after a restart."
+    },
+    "component": "src/server/sameNetworkListener.ts"
+  }
+}

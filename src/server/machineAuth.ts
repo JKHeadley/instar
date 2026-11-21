@@ -244,6 +244,52 @@ function leaseAckMessage(ack: LeaseAck): string {
   return `mesh-ack-v1|${ack.machineId}|${ack.reqNonce}|${ack.observedEpoch}`;
 }
 
+// ── messages-reach-renamed-sessions §D: signed relay ack / nack ─────────────
+// A relay response is otherwise unsigned, so a proxy, a tunnel edge or another
+// server on a reused address could answer. Only a signature from the intended
+// machine, over this message id and this request's nonce, proves who answered.
+// Domain-separated (`relay-ack-v1|`, `relay-nack-v1|`) like `mesh-ack-v1|`.
+
+export interface RelayAnswer {
+  machineId: string;
+  messageId: string;
+  reqNonce: string;
+  /** Present on a refusal (nack): the stable refusal code. */
+  code?: string;
+}
+
+function relayAnswerMessage(a: RelayAnswer): string {
+  return a.code === undefined
+    ? `relay-ack-v1|${a.machineId}|${a.messageId}|${a.reqNonce}`
+    : `relay-nack-v1|${a.machineId}|${a.messageId}|${a.reqNonce}|${a.code}`;
+}
+
+/** Receiver-side: sign a relay ack (no code) or nack (with code). */
+export function signRelayAnswer(answer: RelayAnswer, privateKeyPem: string): string {
+  return sign(relayAnswerMessage(answer), privateKeyPem);
+}
+
+/**
+ * Sender-side: 'ack' or 'nack' only when the answer is signed by the expected
+ * machine, for this message id and this request's nonce; otherwise false.
+ */
+export function verifyRelayAnswer(
+  answer: RelayAnswer | undefined,
+  sig: string | undefined,
+  expectedMachineId: string,
+  messageId: string,
+  sentReqNonce: string,
+  peerPublicKeyPem: string,
+): 'ack' | 'nack' | false {
+  if (!answer || !sig || typeof answer !== 'object') return false;
+  if (answer.machineId !== expectedMachineId || answer.messageId !== messageId || answer.reqNonce !== sentReqNonce) return false;
+  if (answer.code !== undefined && (typeof answer.code !== 'string' || !/^[a-z0-9-]{1,64}$/.test(answer.code))) return false;
+  try {
+    if (!verify(relayAnswerMessage(answer), sig, peerPublicKeyPem)) return false;
+  } catch { return false; } // @silent-fallback-ok: an unverifiable answer is no proof; the caller tries the next address
+  return answer.code === undefined ? 'ack' : 'nack';
+}
+
 /** Receiver-side: sign an accept-ack with this machine's private key. */
 export function signLeaseAck(ack: LeaseAck, privateKeyPem: string): string {
   return sign(leaseAckMessage(ack), privateKeyPem);
