@@ -638,6 +638,9 @@ export interface TelegramInboundMedia {
 }
 export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<void> | void;
 
+/** docs/specs/topic-name-replication.md: the adapter's publish seam (see setTopicNameReplicationHook). */
+export type TopicNameReplicationHook = (topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number }) => string | null;
+
 export class TelegramAdapter implements MessagingAdapter {
   public selectivity: NotificationSelectivityGate | null = null;
   /** The mandatory origin dispatcher classifies local, relayed and recovery operations. */
@@ -1177,6 +1180,78 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   setTopicRenamedHandler(fn: ((topicId: number, newName: string) => void | Promise<void>) | null): void {
     this.topicRenamedHandler = fn;
+  }
+
+  /**
+   * Topic names reach every machine (docs/specs/topic-name-replication.md). Called after a name
+   * this machine learned from Telegram itself is put in the map, BEFORE the registry is saved:
+   * `rename` for a rename (the API call or Telegram's rename service message), `fill` for a
+   * creation or a reply to the creation message. It returns the name the map should hold, which
+   * differs only when a newer rename is already known. `evidence.atMs` is Telegram's own time for a
+   * service message; `evidence.api` marks the result of this machine's own successful API call, which
+   * is what Telegram holds now and so always wins. Never called from the replicated apply path.
+   */
+  private topicNameReplicationHook: TopicNameReplicationHook | null = null;
+
+  setTopicNameReplicationHook(fn: TopicNameReplicationHook | null, authority?: ((topicId: number) => string | null) | null): void {
+    this.topicNameReplicationHook = fn;
+    this.topicNameAuthority = authority ?? null;
+  }
+
+  /** The replicated winner's name for a topic, consulted when a session bind supplies a name. */
+  private topicNameAuthority: ((topicId: number) => string | null) | null = null;
+
+  /** Run the replication hook; a throw is logged and never affects the local write. */
+  private publishTopicName(topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number } = {}): void {
+    const hook = this.topicNameReplicationHook;
+    if (!hook) return;
+    let keep: string | null = null;
+    try { keep = hook(topicId, name, source, evidence); } catch (err) {
+      // @silent-fallback-ok: logged; the name stays local and is shared by the next boot's backfill
+      console.error(`[telegram] topic-name replication failed for ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (keep && keep !== name) this.topicToName.set(topicId, keep);
+  }
+
+  /**
+   * Put a name another machine learned into this machine's map and registry file. Not re-published
+   * (the store carries the row itself). A replaced real name fires the rename handler, as a rename
+   * seen by the poller does. False when the name is not a verified topic name.
+   */
+  applyReplicatedTopicName(topicId: number, name: string, persist = true): boolean {
+    const identity = verifiedChannelIdentity('telegram', topicId, name);
+    if (!identity || !Number.isSafeInteger(topicId)) return false;
+    const current = this.topicToName.get(topicId);
+    if (current === identity.name) return true;
+    this.topicToName.set(topicId, identity.name);
+    if (persist) this.saveRegistry();
+    const hadRealName = !!verifiedChannelIdentity('telegram', topicId, current);
+    if (hadRealName && this.topicRenamedHandler) {
+      try {
+        void Promise.resolve(this.topicRenamedHandler(topicId, identity.name)).catch((err) => {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
+          console.error(`[telegram] topicRenamedHandler failed for ${topicId}:`, err);
+        });
+      } catch (err) {
+        // @silent-fallback-ok: rename display is non-critical; the failure is logged
+        console.error(`[telegram] topicRenamedHandler threw for ${topicId}:`, err);
+      }
+    }
+    return true;
+  }
+
+  /** Write the registry file once after a batch of replicated names (applied with `persist: false`). */
+  persistTopicNames(): void { this.saveRegistry(); }
+
+  /** Every verified topic name this machine holds (the replication backfill reads it). */
+  listTopicNames(): Array<[number, string]> {
+    const out: Array<[number, string]> = [];
+    for (const [topicId, name] of this.topicToName) {
+      const identity = verifiedChannelIdentity('telegram', topicId, name);
+      if (identity) out.push([topicId, identity.name]);
+    }
+    return out;
   }
 
   /**
@@ -2368,7 +2443,10 @@ export class TelegramAdapter implements MessagingAdapter {
       // Issues-group topics live in their own id range (telegramTopicSpace.ts).
       const topicId = inIssues ? ISSUES_TOPIC_OFFSET + result.message_thread_id : result.message_thread_id;
 
-      this.topicToName.set(topicId, name);
+      // Telegram's answer is the name it holds; the requested name is the fallback.
+      const created = typeof result.name === 'string' && result.name.trim() ? result.name : name;
+      this.topicToName.set(topicId, created);
+      this.publishTopicName(topicId, created, 'fill', { api: true });
       this.saveRegistry();
 
       console.log(`[telegram] Created forum topic: "${name}" (ID: ${topicId}${inIssues ? ', issues group' : ''})`);
@@ -2424,6 +2502,8 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.apiCall('editForumTopic', params);
       if (name) {
         this.topicToName.set(topicId, name);
+        // Published even when the text is unchanged: a rename back to an earlier name must advance its version.
+        this.publishTopicName(topicId, name, 'rename', { api: true });
         this.saveRegistry();
       }
       console.log(`[telegram] Renamed topic ${topicId} → "${name}"`);
@@ -3435,7 +3515,11 @@ export class TelegramAdapter implements MessagingAdapter {
     // Keep an earlier verified title when a standby rebinds the session.
     const identity = verifiedChannelIdentity('telegram', topicId, topicName);
     if (identity) {
-      this.topicToName.set(topicId, identity.name);
+      // A name a caller passes at bind time is not Telegram's evidence: when replication already
+      // holds a name for this topic (docs/specs/topic-name-replication.md), that name stands.
+      let held: string | null = null;
+      try { held = this.topicNameAuthority?.(topicId) ?? null; } catch { held = null; } // @silent-fallback-ok: no answer keeps today's behavior
+      this.topicToName.set(topicId, held ?? identity.name);
     }
     this.saveRegistry();
     console.log(`[telegram] Registered topic ${topicId} <-> session "${sessionName}"${topicName ? ` (name: "${topicName}")` : ''}`);
@@ -3528,23 +3612,48 @@ export class TelegramAdapter implements MessagingAdapter {
    * lifeline owns polling, where the server never sees those service messages.
    * A known name is replaced only by a rename.
    */
-  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean): void {
+  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean, eventAtMs?: number, eventSeq?: number): void {
+    const seq = typeof eventSeq === 'number' && Number.isSafeInteger(eventSeq) && eventSeq >= 0 ? eventSeq : undefined;
     const name = String(detectedName).trim().slice(0, 128); // bounded-input-reviewed: display-name cap (Telegram allows 128), not a model prompt
     if (!name || !Number.isSafeInteger(numericTopicId)) return;
     const currentName = this.topicToName.get(numericTopicId);
     if (!currentName || /^topic-\d+$/.test(currentName) || isEditEvent) {
-      const isRename = isEditEvent && currentName !== name;
-      if (currentName === name) return;
+      if (currentName === name) {
+        // A rename notice naming what is already shown still orders against renames other machines hold
+        // (renames A, B, A delivered out of order); a creation name adds nothing.
+        if (isEditEvent) {
+          const at0 = typeof eventAtMs === 'number' && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : undefined;
+          this.publishTopicName(numericTopicId, name, 'rename', { atMs: at0, seq });
+          const kept = this.topicToName.get(numericTopicId);
+          if (kept && kept !== name) {
+            // A newer rename another machine holds was put back: save it and let the session label follow.
+            this.saveRegistry();
+            if (this.topicRenamedHandler) {
+              try { void Promise.resolve(this.topicRenamedHandler(numericTopicId, kept)).catch(() => { /* @silent-fallback-ok: rename display is non-critical */ }); }
+              catch { /* @silent-fallback-ok: rename display is non-critical */ }
+            }
+          }
+        }
+        return;
+      }
       this.topicToName.set(numericTopicId, name);
+      // Telegram's own time for the event orders a late rename notice behind a newer rename
+      // another machine already shared; the hook then puts that newer name back.
+      const at = typeof eventAtMs === 'number' && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : undefined;
+      // A creation is stamped by this machine's clock; only a rename carries Telegram's time and order.
+      this.publishTopicName(numericTopicId, name, isEditEvent ? 'rename' : 'fill', isEditEvent ? { atMs: at, seq } : {});
+      const held = this.topicToName.get(numericTopicId) ?? name;
+      if (held === currentName) { this.saveRegistry(); return; }
+      const isRename = isEditEvent && currentName !== held;
       this.saveRegistry();
-      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${name}"`);
+      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${held}"`);
       // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
       // initial capture or topic creation). The handler updates the bound
       // session's display `name` so the dashboard label tracks the user's
       // rename. Fire-and-forget: rename-display is non-critical.
       if (isRename && this.topicRenamedHandler) {
         try {
-          void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+          void Promise.resolve(this.topicRenamedHandler(numericTopicId, held)).catch((err) => {
             // @silent-fallback-ok: rename display is non-critical; the failure is logged
             console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
           });
@@ -6610,7 +6719,7 @@ export class TelegramAdapter implements MessagingAdapter {
       msg.forum_topic_created?.name ??
       msg.forum_topic_edited?.name ??
       msg.reply_to_message?.forum_topic_created?.name;
-    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name);
+    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name, msg.forum_topic_edited?.name && typeof msg.date === 'number' ? msg.date * 1000 + 999 : undefined, msg.forum_topic_edited?.name ? msg.message_id : undefined);
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {

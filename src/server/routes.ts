@@ -31765,7 +31765,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // lifeline-proven sender may name a topic: names are shown to the operator.
     const forwardedTopicName = typeof req.body?.topicName === 'string' ? req.body.topicName : null;
     if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
-      ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
+      const eventAt = Number(req.body?.topicEventAtMs);
+      const eventSeq = Number(req.body?.topicEventSeq);
+      ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true, Number.isSafeInteger(eventAt) && eventAt > 0 ? eventAt : undefined, Number.isSafeInteger(eventSeq) && eventSeq >= 0 ? eventSeq : undefined);
     }
     // A pin made in Telegram, read by the lifeline (conversation-pinned-messages). Only a lifeline-proven
     // sender; the adapter checks the person who pinned is authorized here.

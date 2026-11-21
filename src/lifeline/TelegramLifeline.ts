@@ -1376,7 +1376,7 @@ export class TelegramLifeline {
     // message, which has no text. Pass the name on, or the server never learns it.
     const serviceName = msg.forum_topic_created?.name ?? msg.forum_topic_edited?.name;
     if (serviceName && !msg.text) {
-      await this.forwardTopicName(msg.message_thread_id ?? 1, serviceName, Boolean(msg.forum_topic_edited?.name));
+      await this.forwardTopicName(msg.message_thread_id ?? 1, serviceName, Boolean(msg.forum_topic_edited?.name), typeof msg.date === 'number' ? msg.date * 1000 + 999 : undefined, msg.message_id);
       return;
     }
 
@@ -1821,7 +1821,7 @@ export class TelegramLifeline {
   }
 
   /** Name-only forward: a topic's name from its created/renamed service message. Best effort. */
-  private async forwardTopicName(topicId: number, name: string, renamed: boolean): Promise<void> {
+  private async forwardTopicName(topicId: number, name: string, renamed: boolean, eventAtMs?: number, eventSeq?: number): Promise<void> {
     if (!this.supervisor.healthy) return; // the next message in the topic carries the name again
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
@@ -1829,7 +1829,9 @@ export class TelegramLifeline {
     try {
       await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`, {
         method: 'POST', headers, signal: AbortSignal.timeout(5000),
-        body: JSON.stringify({ topicId, text: '', topicName: name, topicRenamed: renamed, nameOnly: true, lifelineVersion: this.lifelineVersion }),
+        // topicEventAtMs / topicEventSeq: Telegram's time and message order for a rename, so a late notice never
+        // beats a newer rename (topic-name-replication).
+        body: JSON.stringify({ topicId, text: '', topicName: name, topicRenamed: renamed, ...(renamed && eventAtMs ? { topicEventAtMs: eventAtMs } : {}), ...(renamed && typeof eventSeq === 'number' ? { topicEventSeq: eventSeq } : {}), nameOnly: true, lifelineVersion: this.lifelineVersion }),
       });
     } catch { /* @silent-fallback-ok: a later message in the topic carries its name again */ }
   }
