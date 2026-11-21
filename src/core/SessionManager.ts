@@ -138,6 +138,8 @@ import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
+import { placeCodexResumeRollout, type CodexRolloutPlacement } from './codexResumeRollout.js';
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 import {
   InboundDeliveryStore,
   InboundDeliveryStoreUnavailableError,
@@ -549,6 +551,45 @@ export function parseProcTimeToSeconds(raw: string): number {
  */
 
 /** Sanitize a string for use as part of a tmux session name. */
+/**
+ * messages-reach-renamed-sessions §E (pure): see SessionManager.tmuxNameFor.
+ */
+export function chooseTmuxName(
+  sanitized: string,
+  projectBase: string,
+  records: ReadonlyArray<Pick<Session, 'tmuxSession' | 'status' | 'name' | 'telegramTopicId' | 'jobSlug'>>,
+  role: { topicId?: number; jobSlug?: string },
+): string {
+  const p = `${projectBase}-`;
+  const strip = (n: string) => (n.startsWith(p) ? n.slice(p.length) : n);
+  const sameRole = (r: Pick<Session, 'name' | 'telegramTopicId' | 'jobSlug'>) => {
+    // A record with no topic and no job is not a competing role. When its stored name is
+    // this name, it is the same session line (e.g. started without a topic, respawned for one).
+    // The record stores the raw name; compare it in the same sanitized form the spawn paths use.
+    const norm = (n: string) => strip(String(n ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40));
+    if (r.telegramTopicId === undefined && !r.jobSlug && norm(r.name) === norm(sanitized)) return true;
+    if (role.topicId !== undefined) return r.telegramTopicId === role.topicId;
+    if (role.jobSlug) return r.jobSlug === role.jobSlug;
+    return r.telegramTopicId === undefined && !r.jobSlug && strip(r.name) === strip(sanitized);
+  };
+  const heldByOtherRole = (name: string) => records.some((r) => r.tmuxSession === name && !sameRole(r));
+  const legacy = `${p}${sanitized}`;
+  if (sanitized.startsWith(p)) {
+    if (records.some((r) => r.tmuxSession === legacy && r.status === 'running')) return legacy;
+    if (!heldByOtherRole(sanitized)) return sanitized;
+    if (!heldByOtherRole(legacy)) return legacy;
+  } else if (!heldByOtherRole(legacy)) {
+    return legacy;
+  }
+  // Both natural names belong to other roles: take the first free numbered form, so
+  // two roles never share one tmux name in either direction.
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${legacy}-${n}`;
+    if (!heldByOtherRole(candidate)) return candidate;
+  }
+  return `${legacy}-${Date.now()}`;
+}
+
 function sanitizeSessionName(name: string): string {
   const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
   return sanitized || 'session';
@@ -866,6 +907,11 @@ export function writePrivatePasteFile(content: string, baseDir: string = os.tmpd
   }
 }
 
+/** SEC-107: a credential-stripped launch blanks its origin token and carries this marker, so a
+ * server restart's re-enrollment (enrollExistingOriginSessions) never hands it one back. */
+const ORIGIN_OMITTED_KEY = 'INSTAR_ORIGIN_OMITTED';
+const ORIGIN_OMITTED_FLAGS: string[] = ['-e', 'INSTAR_ORIGIN_TOKEN=', '-e', `${ORIGIN_OMITTED_KEY}=1`];
+
 export class SessionManager extends EventEmitter {
   private pendingHeadlessSpawns = 0;
   private pendingScheduledSpawns = 0;
@@ -1033,6 +1079,9 @@ export class SessionManager extends EventEmitter {
     for (const session of this.state.listSessions().filter(s => s.status === 'running')) {
       if (!session.framework || !await this.isSessionAliveAsync(session.tmuxSession)) { unavailable.push(session.id); continue; }
       try {
+        // SEC-107: a session launched without credentials (omitAuthEnv) stays without an origin
+        // credential across a server restart. Never re-arm it.
+        if (await this.originOmitted(session.tmuxSession)) { this.revokeOriginSession(session.id); continue; }
         const token = await this.originLifecycle.issue({ sessionId: session.id, harnessId: session.framework,
           projectDir: session.cwd ?? this.config.projectDir, configuredModel: session.model,
           nativeSessionId: session.claudeSessionId,
@@ -1048,6 +1097,32 @@ export class SessionManager extends EventEmitter {
       }
     }
     return { enrolled, unavailable };
+  }
+
+  /** SEC-107: was this session launched credential-stripped? True when it carries the
+   * ORIGIN_OMITTED_FLAGS marker in any form (set, blanked or removed), or, for sessions started
+   * before the marker existed, when its agent token was blanked while this agent has one (both
+   * stripped launch paths blank it; every normal path sets it). Absent keys mean a normal session;
+   * any other tmux failure (no such session, timeout) fails enrollment closed. */
+  private async originOmitted(tmuxSession: string): Promise<boolean> {
+    if (await this.tmuxEnvLine(tmuxSession, ORIGIN_OMITTED_KEY) !== null) return true;
+    if (!this.config.authToken) return false;
+    return await this.tmuxEnvLine(tmuxSession, 'INSTAR_AUTH_TOKEN') === 'INSTAR_AUTH_TOKEN=';
+  }
+
+  /** One key of a session's tmux environment: its line (`K=V`, or `-K` when removed), or null when
+   * tmux reports the variable unknown. Every other failure throws. */
+  private async tmuxEnvLine(tmuxSession: string, key: string): Promise<string | null> {
+    try {
+      const result = await promisify(execFile)(this.config.tmuxPath,
+        ['show-environment', '-t', `=${tmuxSession}`, key], { timeout: 5000, encoding: 'utf8', maxBuffer: 16 * 1024 });
+      const line = result.stdout.trim();
+      return line === '' ? null : line;
+    } catch (error) {
+      const e = error as { code?: number; stderr?: unknown };
+      if (e.code === 1 && /unknown variable/i.test(String(e.stderr ?? ''))) return null;
+      throw error;
+    }
   }
 
   /** Re-enrollment must retain the running process's account home, not the
@@ -1180,6 +1255,9 @@ export class SessionManager extends EventEmitter {
    * is at its wall, or null for the default login as before. Unset → today.
    */
   private codexSpawnAccountResolver?: () => { configHome: string; accountId: string } | { refused: string } | null;
+  /** Every Codex account home the pool knows. A Codex conversation relaunched under one
+   *  account's home is looked for in these (and the default home) first. Unset → default home only. */
+  private codexAccountHomesResolver?: () => string[];
   /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
   private memoryPrivacyWiring?: {
     privacy: MemoryPrivacy;
@@ -2220,6 +2298,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
     this.codexSpawnAccountResolver = resolver;
+  }
+
+  setCodexAccountHomesResolver(resolver: () => string[]): void {
+    this.codexAccountHomesResolver = resolver;
   }
 
   /**
@@ -3553,6 +3635,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
       };
     } catch {
       // Registry read failure — fail open (no binding = no check)
+      // @silent-fallback-ok: a missing binding only skips the topic-binding check; nothing is delivered on it
+      return null;
+    }
+  }
+
+  private topicRegistryCache: { mtimeMs: number; map: Record<string, unknown> } | null = null;
+
+  /**
+   * messages-reach-renamed-sessions §A: the tmux name the topic registry binds to a
+   * topic. Caches the parsed registry and reloads it when the file's mtime changes.
+   */
+  sessionNameForTopic(topicId: number): string | null {
+    if (!this.registryPath || !Number.isSafeInteger(topicId)) return null;
+    try {
+      const mtimeMs = fs.statSync(this.registryPath).mtimeMs;
+      if (!this.topicRegistryCache || this.topicRegistryCache.mtimeMs !== mtimeMs) {
+        const registry = JSON.parse(fs.readFileSync(this.registryPath, 'utf8')) as { topicToSession?: Record<string, unknown> };
+        this.topicRegistryCache = { mtimeMs, map: registry.topicToSession ?? {} };
+      }
+      const name = this.topicRegistryCache.map[String(topicId)];
+      return typeof name === 'string' && name.length > 0 ? name : null;
+    } catch { // @silent-fallback-ok: missing/malformed registry means no binding; the resolver falls back to session records
       return null;
     }
   }
@@ -4406,9 +4510,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** The tmux session name `spawnSession` gives a session named `name` (callers record it before spawning). */
-  plannedTmuxSessionName(name: string): string {
-    return `${path.basename(this.config.projectDir)}-${sanitizeSessionName(name)}`;
+  plannedTmuxSessionName(name: string, role: { topicId?: number; jobSlug?: string } = {}): string {
+    return this.tmuxNameFor(sanitizeSessionName(name), role);
   }
+
+  /**
+   * messages-reach-renamed-sessions §E: the ONE place a tmux name gets the
+   * `<projectDir basename>-` prefix. A name that already starts with it is not
+   * prefixed again (`echo-x` stays `echo-x`, not `echo-echo-x`), except:
+   *  - while the double-prefixed form of this name is running, it is kept, so one
+   *    role never runs under two names during the change-over;
+   *  - when a session record of a DIFFERENT role already holds the plain form
+   *    (role = its topic, else its job, else its stored name), today's double-prefixed
+   *    form is used, so two roles can never take turns under one tmux name.
+   */
+  tmuxNameFor(sanitized: string, role: { topicId?: number; jobSlug?: string }): string {
+    let records: Session[] = [];
+    try { records = this.state.listSessions(); } catch { // @silent-fallback-ok: unreadable records keep today's name, which is never wrong, only doubled
+      return `${path.basename(this.config.projectDir)}-${sanitized}`;
+    }
+    return chooseTmuxName(sanitized, path.basename(this.config.projectDir), records, role);
+  }
+
 
   /**
    * Spawn a new Claude Code session in tmux.
@@ -4591,6 +4714,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
      */
     omitAuthEnv?: boolean;
     /**
+     * The Instar session id (INSTAR_SESSION_ID) to launch under, chosen by the caller so it can
+     * write state keyed by that id BEFORE the session's first tool call (context-budget §9.3: the
+     * fold coordinator supplies the shadow answerer's id so its fold marker exists first). Must be
+     * a safe id and must not belong to a running session. Absent → generated, as always.
+     */
+    instarSessionId?: string;
+    /**
+     * A memory-session bearer (`mps_…`, MemoryPrivacy) to hand the session as INSTAR_AUTH_TOKEN in
+     * place of the agent's own token. Requires `omitAuthEnv` (the session carries this narrow token
+     * and nothing else), and is set after the credential blanking so it is not blanked again. The
+     * server's memory-session guard decides what the token reaches. Used by the context budget's
+     * shadow answerer (§10), whose token reaches only its own topic's chunk lookups.
+     */
+    memorySessionToken?: string;
+    /**
      * A framework confinement adapter. `claude-code` is the only framework with one: the policy is a
      * `--settings` file (OS sandbox for Bash and children + permission rules), loaded with
      * `--setting-sources local` so no user or project hooks run, and no MCP servers. Any other
@@ -4653,8 +4791,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
-    const sessionId = this.generateId();
-    const tmuxSession = this.plannedTmuxSessionName(options.name);
+    if (options.memorySessionToken !== undefined) {
+      if (!options.omitAuthEnv) throw new Error('memory-session-token-requires-omit-auth-env');
+      if (!/^mps_[A-Za-z0-9_-]{16,256}$/.test(options.memorySessionToken)) throw new Error('memory-session-token-invalid');
+    }
+    if (options.instarSessionId !== undefined) {
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(options.instarSessionId)) throw new Error('instar-session-id-invalid');
+      if (this.listRunningSessions().some((s) => s.id === options.instarSessionId)) throw new Error('instar-session-id-in-use');
+    }
+    const sessionId = options.instarSessionId ?? this.generateId();
+    // Name by the session's own role (its job or topic), so a relaunch of the same job or
+    // topic keeps its tmux name instead of being read as a different role (messages-reach-renamed-sessions §E).
+    const tmuxSession = this.plannedTmuxSessionName(options.name, {
+      jobSlug: options.jobSlug,
+      topicId: typeof options.topicId === 'number' ? options.topicId : undefined,
+    });
 
     // Check if tmux session already exists
     if (this.tmuxSessionExists(tmuxSession)) {
@@ -5006,7 +5157,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         : undefined;
 
     if (!options.omitAuthEnv) this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
-    const originEnvFlags = options.omitAuthEnv ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
+    const originEnvFlags = options.omitAuthEnv ? ORIGIN_OMITTED_FLAGS : await this.originTokenEnvFlags({
       sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
       configuredModel: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       configHome: this.originConfigHome(headlessFramework, headlessSpec.envOverrides),
@@ -5106,6 +5257,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
         ...omitAuthEnvFlags,
+        // After the blanking: the narrow memory-session token is the session's only credential.
+        ...(options.memorySessionToken ? ['-e', `INSTAR_AUTH_TOKEN=${options.memorySessionToken}`] : []),
         ...headlessSpec.argv,
       ]), { encoding: 'utf-8' }));
 
@@ -5509,7 +5662,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     } else if (!omitAuth) {
       this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
     }
-    const originEnvFlags = omitAuth ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
+    const originEnvFlags = omitAuth ? ORIGIN_OMITTED_FLAGS : await this.originTokenEnvFlags({
       sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
       configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
     });
@@ -5584,6 +5737,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
         ...confinedEnvFlags,
+        // After the blanking, as on the headless lane: the memory-session token is the only credential.
+        ...(options.memorySessionToken ? ['-e', `INSTAR_AUTH_TOKEN=${options.memorySessionToken}`] : []),
         ...launchSpec.argv,
       ]), { encoding: 'utf-8' }));
 
@@ -8210,7 +8365,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
     const projectBase = path.basename(this.config.projectDir);
-    const tmuxSession = sanitized ? `${projectBase}-${sanitized}` : `${projectBase}-interactive-${Date.now()}`;
+    const tmuxSession = sanitized
+      ? this.tmuxNameFor(sanitized, { topicId: options?.telegramTopicId })
+      : `${projectBase}-interactive-${Date.now()}`;
 
     // Prevent injection into protected sessions (e.g., the server itself)
     if (this.config.protectedSessions.includes(tmuxSession)) {
@@ -8423,6 +8580,50 @@ rm()  { "${shimRunner}" rm  "$@"; }
         });
       }
     }
+    // The Codex half of Resume Follows the Account. `codex resume <thread>` reads the
+    // conversation only from the CODEX_HOME it runs under, so before relaunching a
+    // Codex conversation under an account's home, place the freshest copy there.
+    // Without it the launch below (which now honours the home) would stop at
+    // "no rollout found"; the earlier code avoided that only by ignoring the home
+    // and running on the default login under another account's name (2026-11-18).
+    // A relaunch WITHOUT an account home runs on the default login, and is placed
+    // too: after a swap the conversation continued in the account's home, and the
+    // default home holds only the older copy, so resuming there would silently drop
+    // every turn taken on the account. There, a conversation found nowhere keeps
+    // today's behaviour (the default home is where it was always looked for).
+    const defaultCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const codexPlacementHome = explicitConfigHome ?? defaultCodexHome;
+    // The thread id names a file copied between homes, so it is checked here too. This is
+    // a file-copy guard, not a launch flag: the --resume flag keeps its own guard in the builder.
+    const codexThreadToPlace = options?.resumeSessionId;
+    if (
+      codexThreadToPlace &&
+      framework === CODEX_CLI_FRAMEWORK &&
+      (explicitConfigHome || this.codexAccountHomesResolver) &&
+      isSafeSessionRef(codexThreadToPlace)
+    ) {
+      let outcome: CodexRolloutPlacement | 'error';
+      try {
+        const sources = [defaultCodexHome, ...(this.codexAccountHomesResolver?.() ?? [])];
+        outcome = (await placeCodexResumeRollout(codexThreadToPlace, codexPlacementHome, sources)).outcome;
+      } catch (err) {
+        // @silent-fallback-ok — reported below; the session launches fresh instead of failing.
+        console.warn(`[SessionManager] Codex resume placement failed for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+        outcome = 'error';
+      }
+      console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${codexThreadToPlace}, home=${codexPlacementHome})`);
+      if (explicitConfigHome && (outcome === 'not-found' || outcome === 'error')) {
+        resumeReopenFailed = true;
+        options = { ...options, resumeSessionId: undefined };
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.codexResumePlacement',
+          primary: 'Place the Codex conversation in the account home the session launches under',
+          fallback: 'The session launched without its earlier conversation',
+          reason: `Why: Codex resume placement outcome ${outcome}`,
+          impact: 'The session starts from recent topic messages instead of the full conversation',
+        });
+      }
+    }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
@@ -8437,8 +8638,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // when resuming) so eviction mid-thread falls back to --resume losslessly.
       ...(options?.sessionId && !options?.resumeSessionId ? { sessionId: options.sessionId } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
-      // Subscription & Auth Standard P1.3: per-account config home (claude-only,
-      // ignored by other builders) → CLAUDE_CONFIG_DIR for the launched session.
+      // Subscription & Auth Standard P1.3: per-account config home → CLAUDE_CONFIG_DIR
+      // (claude-code) or CODEX_HOME (codex-cli) for the launched session.
       // effectiveConfigHome = explicit caller home, else the resolver-pinned one.
       ...(effectiveConfigHome ? { configHome: effectiveConfigHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
@@ -9067,8 +9268,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     resumeSessionId?: string;
   }): Promise<string> {
     const sanitized = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    const projectBase = path.basename(this.config.projectDir);
-    const tmuxSession = `${projectBase}-${sanitized}`;
+    const tmuxSession = this.tmuxNameFor(sanitized, {});
 
     if (this.config.protectedSessions.includes(tmuxSession)) {
       throw new Error(`Cannot create triage session with protected name: ${tmuxSession}`);

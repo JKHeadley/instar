@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "lv-peer-works-through-restart",
+  "sessionId": "cff5be70-b3a4-4015-afa9-248b5a32dedc",
+  "timestamp": "2026-11-19T00:58:01.680Z",
+  "artifactPath": "upgrades/side-effects/lv-peer-works-through-restart.md",
+  "artifactSha256": "b44b0e6bf9e8d62026d532e26729fb9c6a46323f41e746f746c329293b35fd6d",
+  "specPath": "docs/specs/local-verify-peer-works-through-restart.md",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/lv-peer-works-through-restart.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "ladder registry entry the approved spec names; data only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

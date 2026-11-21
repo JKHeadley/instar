@@ -1266,6 +1266,12 @@ export interface IntelligenceOptions {
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
   requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  /**
+   * Keep this call on one provider family: no category or nature routing and no
+   * failure swap. If that framework is unavailable the call throws; it never moves
+   * to another vendor (context-budget §9: conversation content stays on its family).
+   */
+  pinnedFramework?: IntelligenceFramework;
   /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
   launchGuard?: () => boolean;
   /** Maximum tokens for the response */
@@ -3091,6 +3097,28 @@ export interface MultiMachineConfig {
    */
   leaseSelfHeal?: LeaseSelfHealConfig;
   /**
+   * takeover-ready-pool (docs/specs/takeover-ready-pool.md) — losing any machine never
+   * silences a multi-machine agent. `enabled: false` turns every part off (the rollback);
+   * each part rides the development-agent gate (live on a development agent, dark on the
+   * fleet) unless set explicitly.
+   */
+  takeoverReadyPool?: {
+    enabled?: boolean;
+    /**
+     * R1 boot claim safety (fb-2bf6ccd0-705): a restarted machine never claims from its own
+     * lapsed lease before asking its peers, never claims while the named preferred machine
+     * answers, and claims only after the preferred machine (every known peer when none is
+     * named) has been silent on `silentProbes` probes spanning `silentSpanMs`.
+     */
+    bootClaimSafety?: {
+      enabled?: boolean;
+      /** Default 3. */
+      silentProbes?: number;
+      /** Default 45000. */
+      silentSpanMs?: number;
+    };
+  };
+  /**
    * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
    * Cloudflare failover). Ships ENABLED (Layers 0-2 are strictly additive); a
    * single-machine agent is a no-op. FLAT knobs to dodge the one-level-deep
@@ -3466,6 +3494,8 @@ export interface SessionPoolConfig {
     ambiguityCeilingMultiple?: number;
     /** P19 per-tick claim cap. Default 2. */
     maxClaimsPerTick?: number;
+    /** Unroutable-owner release: claims from a revoked / unregistered-silent owner land even in dryRun. Default true. */
+    unroutableOwnerLive?: boolean;
     /** Bootstrap (R-r2-2): never-observed-since-boot expiry multiple. Default 3. */
     bootstrapNonObservationMultiple?: number;
     /** The owner self-fence TTL the §2.3 ordering invariant checks against. Default 60000. */
@@ -5077,6 +5107,14 @@ export interface InstarConfig {
     toneTierDryRun?: boolean;
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
+    /**
+     * B26_WAITING_ASK_UNLINKED (docs/specs/waiting-on-you-links.md): a reply that refers to
+     * something the agent is waiting on the person for must carry the ask's link and a
+     * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
+     */
+    waitingAskLinks?: { enabled?: boolean };
+    /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
+    siblingReach?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
@@ -5121,6 +5159,9 @@ export interface InstarConfig {
   dashboardPinGeneration?: string;
   /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
+    /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
+     *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
+    ownerRecord?: { enabled?: boolean };
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
       enabled?: boolean;

@@ -24,6 +24,13 @@ export interface ReanchorResult { state: AnchorState; start?: number; end?: numb
 /** Proximity's weight in the exact-match score, and the distance at which it reaches zero. */
 const PROXIMITY_MAX = FORMAT.contextChars;
 const PROXIMITY_RANGE = 2000;
+/**
+ * An exact match counts as the same passage only if it starts within MAPPED_SLACK characters of
+ * where the version diff moved the old position, or at least MIN_CONTEXT_AGREE characters of the
+ * stored prefix and suffix still sit right next to it.
+ */
+const MAPPED_SLACK = 8;
+const MIN_CONTEXT_AGREE = 12;
 /** Fuzzy search: ±window around the mapped position, Bitap chunk size, acceptance. */
 const FUZZY_WINDOW = 2000;
 const FUZZY_MIN_CHARS = 20;
@@ -223,8 +230,15 @@ function reanchorUnsafe(oldText: string, newText: string, anchor: Anchor, diffOp
   // 1. Exact with context.
   const occ = occurrences(newText, q);
   if (occ.length) {
+    // A match must look like the same passage: it sits where the edits moved the passage to, or
+    // real surrounding text agrees. The same words alone, elsewhere in the document, are a
+    // different passage (a comment once jumped to an unrelated appendix that way, topic 141469).
+    const plausible = occ.filter((o) => Math.abs(o.start - mapped) <= MAPPED_SLACK || contextScore(newText, q, o.start, o.end) >= MIN_CONTEXT_AGREE);
+    // The words survive only where they don't look like the passage: a fuzzy search would land on
+    // those same words, so the passage counts as removed.
+    if (!plausible.length) return { state: 'orphaned' };
     const maxScore = q.prefix.length + q.suffix.length + PROXIMITY_MAX;
-    const scored = occ.map((o) => ({
+    const scored = plausible.map((o) => ({
       ...o,
       score: contextScore(newText, q, o.start, o.end) + PROXIMITY_MAX * Math.max(0, 1 - Math.abs(o.start - mapped) / PROXIMITY_RANGE),
     }));

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "autoapply-off-cancels-queued-update",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-20T09:42:51.172Z",
+  "artifactPath": "upgrades/side-effects/autoapply-off-cancels-queued-update.md",
+  "artifactSha256": "ff1d27d5bc288c849e243b4f8543ea9cfa513383f0f8c84a5d513c15ab9b8306",
+  "coveredFiles": [
+    "docs/eli16/autoapply-off-cancels-queued-update.eli16.md",
+    "src/core/AutoUpdater.ts",
+    "src/server/routes.ts",
+    "tests/e2e/autoapply-off-cancels-queued-update-lifecycle.test.ts",
+    "tests/integration/updates-config-autoapply-cancel.test.ts",
+    "tests/unit/AutoUpdater-autoapply-cancel.test.ts",
+    "upgrades/next/autoapply-off-cancels-queued-update.md",
+    "upgrades/side-effects/autoapply-off-cancels-queued-update.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow updater bug fix in two source files; a revert fully undoes it, no persisted-state change.",
+  "eli16Path": "docs/eli16/autoapply-off-cancels-queued-update.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/autoapply-off-cancels-queued-update.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

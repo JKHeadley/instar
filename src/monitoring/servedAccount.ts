@@ -93,7 +93,7 @@ export class ServedAccountResolver {
     try {
       const a = this.deps.pool().find((x) => x.id === accountId);
       return a ? { provider: a.provider, email: a.email ?? null } : null;
-    } catch { return null; }
+    } catch { /* @silent-fallback-ok: pool unreadable, so the email stays unknown and attribution says so */ return null; }
   }
 
   resolve(input: ResolveInput): ServedAttribution {

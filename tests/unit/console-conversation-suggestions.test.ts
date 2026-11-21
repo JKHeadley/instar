@@ -1,8 +1,8 @@
 /**
- * Dashboard half of the suggestion step (docs/specs/conversation-graph-suggestions.md §4):
- * Accept runs the ordinary owner changes in order, waits for each to commit, resumes from
- * opaque progress after a stall without repeating a step, skips a conversation that can no
- * longer move, and never keeps a title or the owner proof in browser storage.
+ * Dashboard half of the suggestion step (docs/specs/conversation-graph-suggestions.md §4,
+ * conversation-groups-phone.md §2): Accept is one server step. The page calls it, shows its
+ * progress words, calls again while it answers `working`, and says each kind of stop plainly.
+ * The steps themselves are tested on the server (conversation-graph-suggestion-accept.test.ts).
  */
 import {afterEach,describe,it,expect,vi} from 'vitest';
 import {JSDOM} from 'jsdom';
@@ -21,95 +21,54 @@ const ok=(data:any,status=200)=>({ok:status<400,status,data});
 const nodeBody=(ref:any,{eligible=true,path=[] as any[]}={})=>({partial:false,node:{ref,title:'x'},path,children:{items:[],nextCursor:null},
  correction:{moveEligible:eligible,replacesPlacementEventIds:['place-head-'+(ref.topicId??'e')],...(ref.kind==='effort'?{headerVersion:0,headerForgotten:false,replacesFrontDoorEventIds:[]}:{})}});
 
-describe('acceptSuggestion',()=>{
- it('creates, names, previews and moves each conversation, then records the acceptance',async()=>{
+describe('acceptSuggestion (one server step)',()=>{
+ const s={id:'sg-0123456789abcdef0123',title:'Conversations rollout',reason:'',members:[{ref:tg(5),title:'Five'},{ref:tg(6),title:'Six'}]};
+ const path='/conversation-graph/suggestions/sg-0123456789abcdef0123/accept';
+ it('one call groups them and the page reports what moved',async()=>{
   const m=await boot();
-  const s={id:'sg-0123456789abcdef0123',title:'Conversations rollout',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};
-  const calls:Array<{path:string;body?:any}>=[];
-  const send=async(path:string,body?:any)=>{calls.push({path,body});
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0001'});
-   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
-   if(path==='/conversation-graph/preview')return ok({eligible:true});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
-    return ok(nodeBody(ref,{eligible:ref.topicId!==6}));}
-   if(path.endsWith('/accepted'))return ok({ok:true});
-   return ok({},404);};
-  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out).toMatchObject({done:true,moved:1,skipped:1,effort});
-  const changes=calls.filter(c=>c.path==='/conversation-graph/changes').map(c=>c.body.change);
-  expect(changes).toEqual([
-   {kind:'create-effort',projectScope:[]},
-   {kind:'set-effort-title',effort,baseVersion:0,title:'Conversations rollout'},
-   {kind:'set-primary-placement',subject:tg(5),parent:effort,replacesPlacementEventIds:['place-head-5']},
-  ]);
-  expect(calls.find(c=>c.body?.change?.kind==='create-effort')!.body.requestId).toBe('suggestion-create-0001');
-  expect(calls.filter(c=>c.path==='/conversation-graph/preview')).toHaveLength(1);
-  expect(calls.at(-1)!.path).toBe('/conversation-graph/suggestions/sg-0123456789abcdef0123/accepted');
-  expect(sessionStorage.length).toBe(0);
- });
-
- it('stops while a step is still saving, keeps only opaque progress, and resumes without creating twice',async()=>{
-  const m=await boot();
-  const s={id:'sg-0123456789abcdef0124',title:'Secret effort name',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(7),key:m.encodeNodeRef(tg(7)),title:'Seven'}]};
-  let titleCommitted=false;const creates:string[]=[];
-  const send=async(path:string,body?:any)=>{
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0002'});
-   if(path==='/conversation-graph/changes'){
-    if(body.change.kind==='create-effort'){creates.push(body.requestId);return ok({state:'committed',requestId:body.requestId,effort});}
-    if(body.change.kind==='set-effort-title')return titleCommitted?ok({state:'committed',requestId:body.requestId}):ok({state:'saved-pending',requestId:body.requestId,waitingMachines:[{name:'Laptop'}]},202);
-    return ok({state:'committed',requestId:body.requestId});}
-   if(path.startsWith('/conversation-graph/changes/'))return titleCommitted?ok({state:'committed'}):ok({state:'saved-pending',waitingMachines:[{name:'Laptop'}]},202);
-   if(path==='/conversation-graph/preview')return ok({eligible:true});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref));}
-   return ok({ok:true});};
-  const first=await m.acceptSuggestion(s,{send,onStep:()=>{},wait:5000,sleep:async()=>{}});
-  expect(first.done).toBe(false);expect(first.text).toContain('Waiting for Laptop');
-  const stored=[...Array(sessionStorage.length)].map((_,i)=>sessionStorage.getItem(sessionStorage.key(i)!)).join('');
-  expect(stored).not.toContain('Secret effort name');expect(stored).toContain(effort.id);
-  titleCommitted=true;
-  const second=await m.acceptSuggestion(s,{send,onStep:()=>{},wait:5000,sleep:async()=>{}});
-  expect(second).toMatchObject({done:true,moved:2,skipped:0});
-  expect(creates).toHaveLength(1);
- });
-
- // Topic 141385, 2026-11-16: a step waited a minute on another machine and the page said nothing new.
- it('a slow step says what it is waiting for and for how long, and each stop carries its kind',async()=>{
-  const m=await boot();
-  const s={id:'sg-0123456789abcdef0129',title:'Slow',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};
-  let mode:'pending'|'offline'|'refused'='pending';
-  const send=async(path:string,body?:any)=>{
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0009'});
-   if(path==='/conversation-graph/changes'||path.startsWith('/conversation-graph/changes/')){
-    if(mode==='offline')return{ok:false,status:0};
-    if(mode==='refused')return ok({state:'refused-local',reason:'not-allowed'},409);
-    return ok({state:'saved-pending',waitingMachines:[{name:'Laptop'}]},202);}
-   return ok({ok:true});};
-  const steps:string[]=[];
-  const waiting=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
-  expect(waiting).toMatchObject({done:false,kind:'waiting'});expect(waiting.text).toContain('Waiting for Laptop');
-  expect(steps[0]).toBe('Creating the group…');
-  expect(steps).toContain('Creating the group… Saved here. Waiting for Laptop to confirm. (5 s)');
-  expect(steps.some(t=>/\(0 s\)|\(3 s\)/.test(t))).toBe(false); // nothing extra for a step that is only a moment old
-  mode='offline';steps.length=0;
-  const offline=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),wait:10000,sleep:async()=>{}});
-  expect(offline).toMatchObject({done:false,kind:'waiting'});expect(offline.text).toContain('The agent did not answer');
-  expect(steps).toContain('Creating the group… The agent is not answering yet. (8 s)');
-  mode='refused';
-  expect(await m.acceptSuggestion(s,{send,onStep:()=>{},wait:10000,sleep:async()=>{}})).toMatchObject({done:false,kind:'refused'});
-  expect(await m.acceptSuggestion(s,{send:async()=>({ok:false,status:403,needsUnlock:true}),onStep:()=>{},sleep:async()=>{}})).toMatchObject({done:false,kind:'locked'});
- });
-
- it('a refused step stops the accept and changes nothing after it',async()=>{
-  const m=await boot();
-  const s={id:'sg-0123456789abcdef0125',title:'X',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(6),key:m.encodeNodeRef(tg(6)),title:'Six'}]};
   const calls:string[]=[];
-  const send=async(path:string,body?:any)=>{calls.push(path);
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0003'});
-   if(path==='/conversation-graph/changes')return ok({code:'project-scope-conflict',requestState:'not-recorded'},409);
-   return ok({});};
+  const send=async(p:string)=>{calls.push(p);return ok({id:s.id,state:'accepted',group:effort,moved:1,skipped:1,placedElsewhere:false});};
   const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out.done).toBe(false);expect(out.text).toContain('refused');
-  expect(calls).toEqual(['/conversation-graph/suggestions/sg-0123456789abcdef0125/start','/conversation-graph/changes']);
+  expect(out).toEqual({done:true,moved:1,skipped:1,effort});
+  expect(calls).toEqual([path]);
+  expect(sessionStorage.length).toBe(0); // progress lives on the server, never in the browser
+ });
+ it('calls again while the server answers working, with its words and how long, then stops as a wait',async()=>{
+  const m=await boot();
+  let n=0;const steps:string[]=[];
+  const working=ok({id:s.id,state:'working',step:'naming',text:'Naming it… Saved here. Waiting for Laptop to confirm.',waitingMachines:[{machineId:'m_l',name:'Laptop'}],agentNotAnswering:false,retryAfterMs:2500},202);
+  const send=async()=>{n++;return working;};
+  const out=await m.acceptSuggestion(s,{send,onStep:(t:string)=>steps.push(t),sleep:async()=>{},wait:10000});
+  expect(out).toMatchObject({done:false,kind:'waiting',unreachable:false});
+  expect(out.text).toBe('Naming it… Saved here. Waiting for Laptop to confirm. Tap Continue later; nothing is lost.');
+  expect(n).toBe(5); // 0, 2.5, 5, 7.5 s, then the stop at 10 s
+  expect(steps).toContain('Naming it… Saved here. Waiting for Laptop to confirm. (5 s)');
+  expect(steps.some(t=>/\(0 s\)|\(3 s\)/.test(t))).toBe(false);
+ });
+ it('resumes to done when a later call finishes',async()=>{
+  const m=await boot();
+  let n=0;
+  const send=async()=>++n<3?ok({state:'working',step:'moving',text:'Moving conversation 1 of 2…',waitingMachines:[],agentNotAnswering:false,retryAfterMs:2500},202)
+   :ok({state:'accepted',group:effort,moved:2,skipped:0,placedElsewhere:false});
+  expect(await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}})).toMatchObject({done:true,moved:2,effort});
+  expect(n).toBe(3);
+ });
+ it('each stop carries its kind: refused, no longer available, locked, not answering',async()=>{
+  const m=await boot();
+  const run=(r:any)=>m.acceptSuggestion(s,{send:async()=>r,onStep:()=>{},sleep:async()=>{}});
+  const refused=await run(ok({state:'refused',step:'creating',code:'project-scope-conflict',text:'This step was refused (project-scope-conflict). Nothing after it was changed.'},409));
+  expect(refused).toMatchObject({done:false,kind:'refused'});expect(refused.text).toContain('refused');
+  expect(refused).toMatchObject({code:'project-scope-conflict',step:'creating'}); // the card decides Reject from these
+  expect(await run(ok({code:'unknown-suggestion'},404))).toMatchObject({kind:'retry',text:'This suggestion is no longer available. Refresh the list.'});
+  expect(await run({needsUnlock:true,ok:false,status:401,data:{}})).toMatchObject({kind:'locked'});
+  expect(await run(ok({code:'hierarchy-owner-only'},403))).toMatchObject({kind:'locked'});
+  const silent=await run(ok({},408));
+  expect(silent).toMatchObject({kind:'waiting',unreachable:true});expect(silent.text).not.toContain('no longer available');
+ });
+ it('a project already inside another one creates nothing',async()=>{
+  const m=await boot();
+  const out=await m.acceptSuggestion({...s,frontDoor:tg(5)},{send:async()=>ok({state:'accepted',group:null,moved:0,skipped:1,placedElsewhere:true}),onStep:()=>{},sleep:async()=>{}});
+  expect(out).toMatchObject({done:true,placedElsewhere:true,effort:null});
  });
 });
 
@@ -130,67 +89,6 @@ describe('dashboard models',()=>{
   expect(m.suggestionsModel({...good,items:[{...good.items[0],members:[good.items[0].members[0]]}]}).ok).toBe(false);
   expect(m.suggestionsModel({...good,state:'weird'}).ok).toBe(false);
  });
-});
-
-describe('acceptSuggestion respects what the owner already did',()=>{
- it('reuses the server create id from a fresh tab, keeps an existing name, and skips a conversation placed elsewhere',async()=>{
-  const m=await boot();
-  const other={kind:'effort',id:'99999999-0000-4000-8000-000000000009'};
-  const s={id:'sg-0123456789abcdef0126',title:'Model name',reason:'',members:[{ref:tg(5),key:m.encodeNodeRef(tg(5)),title:'Five'},{ref:tg(8),key:m.encodeNodeRef(tg(8)),title:'Eight'}]};
-  const changes:any[]=[];
-  const send=async(path:string,body?:any)=>{
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-shared'});
-   if(path==='/conversation-graph/changes'){changes.push(body);return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});}
-   if(path==='/conversation-graph/preview')return ok({eligible:true});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
-    if(ref.kind==='effort')return ok({...nodeBody(ref),correction:{...nodeBody(ref).correction,headerVersion:1}});
-    return ok(nodeBody(ref,{path:ref.topicId===8?[{ref:other,title:'Owner effort'}]:[]}));}
-   return ok({ok:true});};
-  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out).toMatchObject({done:true,moved:1,skipped:1});
-  expect(changes[0]).toEqual({requestId:'suggestion-create-shared',change:{kind:'create-effort',projectScope:[]}});
-  expect(changes.some(c=>c.change.kind==='set-effort-title')).toBe(false);
-  expect(changes.filter(c=>c.change.kind==='set-primary-placement').map(c=>c.change.subject.topicId)).toEqual([5]);
- });
-});
-
-describe('a Chief of Staff project suggestion (work-front-doors stage 2b)',()=>{
- it('accepts with one member and makes the project conversation the front door, through the owner path',async()=>{
-  const m=await boot();
-  const s={id:'sg-0123456789abcdef0999',title:'Project: Android app',reason:'',frontDoor:tg(7),members:[{ref:tg(7),key:m.encodeNodeRef(tg(7)),title:'Android app'}]};
-  const calls:Array<{path:string;body?:any}>=[];
-  const send=async(path:string,body?:any)=>{calls.push({path,body});
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0002'});
-   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
-   if(path==='/conversation-graph/preview')return ok({eligible:true});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref));}
-   if(path.endsWith('/accepted'))return ok({ok:true});
-   return ok({},404);};
-  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out).toMatchObject({done:true,moved:1,skipped:0,effort});
-  const changes=calls.filter(c=>c.path==='/conversation-graph/changes').map(c=>c.body.change.kind);
-  expect(changes).toEqual(['create-effort','set-effort-title','set-primary-placement','set-front-door']);
-  const fd=calls.find(c=>c.body?.change?.kind==='set-front-door')!.body.change;
-  expect(fd).toMatchObject({effort,conversation:tg(7),replacesFrontDoorEventIds:[],observedPlacementEventIds:['place-head-7']});
- });
-
- it('sets no front door when the owner had already placed the project conversation elsewhere',async()=>{
-  const m=await boot();
-  const elsewhere={kind:'effort',id:'99999999-70de-4324-9ef3-22b616fc83ce'};
-  const s={id:'sg-0123456789abcdef0998',title:'Project: X',reason:'',frontDoor:tg(8),members:[{ref:tg(8),key:m.encodeNodeRef(tg(8)),title:'X'}]};
-  const calls:any[]=[];
-  const send=async(path:string,body?:any)=>{calls.push({path,body});
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0003'});
-   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
-    return ok(nodeBody(ref,ref.kind==='conversation'?{path:[{ref:elsewhere,title:'Theirs'}]}:{}));}
-   if(path.endsWith('/accepted'))return ok({ok:true});
-   return ok({},404);};
-  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out).toMatchObject({done:true,moved:0,skipped:1});
-  expect(calls.some(c=>c.body?.change?.kind==='set-front-door')).toBe(false);
- });
-
  it('the model admits a one-member project with its front door, and refuses a front door that is not a member',async()=>{
   const m=await boot();
   const item=(over:any)=>({id:'sg-0123456789abcdef0997',title:'Project: Y',reason:'r',members:[{ref:tg(9),title:'Y'}],accepting:false,...over});
@@ -199,35 +97,6 @@ describe('a Chief of Staff project suggestion (work-front-doors stage 2b)',()=>{
   expect(okModel.items[0].frontDoor).toEqual(tg(9));
   expect(m.suggestionsModel({state:'ready',items:[item({frontDoor:tg(10)})]}).ok).toBe(false);
   expect(m.suggestionsModel({state:'ready',items:[item({})]}).ok).toBe(false); // an ordinary suggestion still needs two
- });
- it('second pass: a project whose conversation is already inside another project creates nothing',async()=>{
-  const m=await boot();
-  const other={kind:'effort',id:'77777777-70de-4324-9ef3-22b616fc83ce'};
-  const s={id:'sg-0123456789abcdef0996',title:'Project: B',reason:'',frontDoor:tg(11),members:[{ref:tg(11),key:m.encodeNodeRef(tg(11)),title:'B'}]};
-  const calls:any[]=[];
-  const send=async(path:string,body?:any)=>{calls.push({path,body});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());return ok(nodeBody(ref,{path:[{ref:other,title:'Project A'}]}));}
-   return ok({},404);};
-  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out).toMatchObject({done:true,placedElsewhere:true,effort:null});
-  expect(calls.some(c=>c.path==='/conversation-graph/changes'||c.path.endsWith('/start'))).toBe(false);
- });
- it('second pass: Continue in another tab (accepting on the server, no local progress) resumes the same effort and sets the front door',async()=>{
-  const m=await boot();
-  const s={id:'sg-0123456789abcdef0995',title:'Project: C',reason:'',accepting:true,frontDoor:tg(12),members:[{ref:tg(12),key:m.encodeNodeRef(tg(12)),title:'C'}]};
-  const calls:any[]=[];
-  const send=async(path:string,body?:any)=>{calls.push({path,body});
-   if(path.endsWith('/start'))return ok({createRequestId:'suggestion-create-0004'});
-   if(path==='/conversation-graph/changes')return ok({state:'committed',requestId:body.requestId,...(body.change.kind==='create-effort'?{effort}:{})});
-   if(path.startsWith('/conversation-graph/nodes/')){const ref=JSON.parse(Buffer.from(decodeURIComponent(path.split('/').at(-1)!),'base64url').toString());
-    return ok(nodeBody(ref,ref.kind==='conversation'?{path:[{ref:effort,title:'Project: C'}]}:{}));}
-   if(path.endsWith('/accepted'))return ok({ok:true});
-   return ok({},404);};
-  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async()=>{}});
-  expect(out).toMatchObject({done:true,effort});
-  expect(out.placedElsewhere).toBeUndefined();
-  expect(calls.some(c=>c.body?.change?.kind==='set-front-door')).toBe(true);
-  expect(calls.some(c=>c.path.endsWith('/accepted'))).toBe(true);
  });
 });
 
@@ -241,5 +110,27 @@ describe('a project page lists its proposed cards (work-front-doors stage 2b)',(
   expect(withCards.proposed.map((i:any)=>i.title)).toEqual(['Pick the date']);
   expect(withCards.children.map((i:any)=>i.title)).toEqual(['Shop']);
   expect(m.nodeModel(body({})).proposed).toEqual([]);
+ });
+});
+
+// Accept all round 4 part 5: with a busy machine a change took 1-2 minutes to confirm. The page waited 60 s per change
+// and stopped after two still-waiting projects in a row, so a working run stopped at "10 of 14".
+describe('Accept all patience',()=>{
+ it('waits 2.5 minutes for each change to be confirmed by default',async()=>{
+  const m=await boot();expect(m.ACCEPT_CHANGE_CONFIRM_WAIT_MS).toBe(150000);
+  const s={id:'sg-0123456789abcdef0124',title:'Slow confirm',reason:'',members:[]};let polls=0,slept=0;
+  const send=async(path:string)=>{expect(path).toMatch(/\/accept$/);polls++;return ok({id:s.id,state:'working',text:'Saved here. Waiting for Mac M5 Pro to confirm.'},202);};
+  const out=await m.acceptSuggestion(s,{send,onStep:()=>{},sleep:async(ms:number)=>{slept+=ms;}});
+  expect(out).toMatchObject({done:false,kind:'waiting'});expect(slept).toBeGreaterThanOrEqual(150000);expect(slept).toBeLessThan(160000);expect(polls).toBeGreaterThan(50);
+ });
+ it('stops only after three projects in a row are still waiting; a finished or refused one resets the count',async()=>{
+  const m=await boot();const waiting={done:false,kind:'waiting'},done={ok:true},refused={done:false,kind:'refused'};
+  let w=0,r:any;
+  r=m.acceptAllStep(w,waiting);expect(r).toEqual({waits:1,stop:false});w=r.waits;
+  r=m.acceptAllStep(w,waiting);expect(r).toEqual({waits:2,stop:false});w=r.waits;
+  r=m.acceptAllStep(w,done);expect(r).toEqual({waits:0,stop:false});w=r.waits;
+  r=m.acceptAllStep(w,waiting);w=r.waits;r=m.acceptAllStep(w,refused);expect(r).toEqual({waits:0,stop:false});w=r.waits;
+  for(const expected of [1,2])({waits:w}=m.acceptAllStep(w,waiting)),expect(w).toBe(expected);
+  expect(m.acceptAllStep(w,waiting)).toEqual({waits:3,stop:true});
  });
 });

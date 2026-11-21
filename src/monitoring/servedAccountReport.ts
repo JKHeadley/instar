@@ -355,7 +355,7 @@ export function decodeCursor(raw: unknown): Record<string, MachineCursor> {
       out[k] = c && Number.isFinite(c.lastTs) && typeof c.sessionId === 'string' ? { lastTs: c.lastTs, sessionId: c.sessionId.slice(0, 128) } : null;
     }
     return out;
-  } catch { return {}; }
+  } catch { /* @silent-fallback-ok: a malformed client cursor restarts from the newest page */ return {}; }
 }
 
 /**

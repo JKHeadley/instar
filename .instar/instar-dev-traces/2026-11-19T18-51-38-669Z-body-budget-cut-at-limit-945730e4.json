@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "body-budget-cut-at-limit",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-19T18:51:38.669Z",
+  "artifactPath": "upgrades/side-effects/body-budget-cut-at-limit.md",
+  "artifactSha256": "4e12da4528f559100ec1e5cb0693b8b5b8dd6a2af7f02379a07a8f9d1fc800fb",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-19T18-51-31-831Z-body-budget-cut-at-limit.json",
+    "docs/specs/body-budget-cut-at-limit.eli16.md",
+    "src/server/AgentServer.ts",
+    "src/server/bodyBudget.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/unit/body-budget-before-auth.test.ts",
+    "upgrades/next/body-budget-cut-at-limit.md",
+    "upgrades/side-effects/body-budget-cut-at-limit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow security hardening of the pre-auth body budget (SEC-118); whole-PR trace.",
+  "eli16Path": "docs/specs/body-budget-cut-at-limit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/body-budget-cut-at-limit.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

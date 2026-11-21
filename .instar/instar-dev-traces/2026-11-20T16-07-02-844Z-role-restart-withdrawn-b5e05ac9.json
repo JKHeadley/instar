@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "role-restart-withdrawn",
+  "sessionId": "ddb30ebb-e8f5-45b8-89fa-7d783bb0a521",
+  "timestamp": "2026-11-20T16:07:02.844Z",
+  "artifactPath": "upgrades/side-effects/role-restart-withdrawn.md",
+  "artifactSha256": "ab986f20c5cda59bac58b689386ee93be62c18fb28610507e7edf84c47a78a8c",
+  "coveredFiles": [
+    "docs/specs/role-restart-withdrawn.eli16.md",
+    "src/commands/server.ts",
+    "src/core/roleFollowRestart.ts",
+    "tests/e2e/role-restart-wiring.test.ts",
+    "tests/unit/roleFollowRestart.test.ts",
+    "upgrades/next/role-restart-withdrawn.md",
+    "upgrades/side-effects/role-restart-withdrawn.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow bug fix with a cause seen live (a role restart that ran ten minutes after the role was back to its boot value); it only removes a restart, and a revert fully undoes it",
+  "eli16Path": "docs/specs/role-restart-withdrawn.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/role-restart-withdrawn.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

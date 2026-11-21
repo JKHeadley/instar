@@ -353,15 +353,34 @@ async function startLink(run) {
   let payload;
   try { payload = M.linkPayload({ browserPublicKey: key.publicKey, nonce: data.nonce, machineId: data.machineId, host: data.host || host }); } catch { linkFailed('Something went wrong on the agent. Try again in a moment.'); return; }
   const { qrSvg } = await import('./qr-code.js');
-  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 4, quiet: 4, label: 'Code to scan with the Instar app' })]);
-  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: 'Waiting for your phone…' });
+  const W = M.LINK_WORDS;
+  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 6, quiet: 4, label: W.qrLabel })]);
+  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: W.waiting });
+  // Steps on the left, the code to scan on the right (stacked on a narrow window); each button name is shown as the app says it.
+  const steps = el('ol', { cls: 'link-steps' }, W.steps.map((st, i) => el('li', { attrs: { 'aria-label': `Step ${i + 1}: ${M.linkStepText(st)}` } }, [
+    el('span', { cls: 'link-step-n', text: String(i + 1), attrs: { 'aria-hidden': 'true' } }),
+    el('span', { cls: 'link-step-text' }, st.button ? [st.text, el('strong', { cls: 'link-btn-name', text: st.button }), st.after || ''] : [st.text]),
+  ])));
   linkView([
-    el('h1', { cls: 'link-title', text: 'Link this computer to your phone' }),
-    el('p', { text: 'Open the Instar app on your phone, go to People → Link a computer, scan this code, and check the app shows the same code:' }),
-    el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `Check code: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
-    code,
-    status,
-    el('p', { cls: 'scope', text: LINK_SCOPE_WORDS }),
+    el('header', { cls: 'link-head' }, [
+      el('h1', { cls: 'link-title', text: W.title }),
+      el('p', { cls: 'link-lead', text: W.lead }),
+      el('p', { cls: 'link-limits', text: W.limits }),
+    ]),
+    el('div', { cls: 'link-grid' }, [
+      el('section', { cls: 'link-card link-how', attrs: { 'aria-label': W.stepsTitle } }, [
+        el('h2', { cls: 'link-eyebrow', text: W.stepsTitle }),
+        steps,
+        el('p', { cls: 'link-fallback', text: W.fallback }),
+      ]),
+      el('section', { cls: 'link-card link-scan', attrs: { 'aria-label': 'Scan this code' } }, [
+        code,
+        el('p', { cls: 'link-eyebrow', text: W.codeLabel }),
+        el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `${W.codeLabel}: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
+        el('p', { cls: 'link-hint', text: W.codeHint }),
+        el('div', { cls: 'link-wait' }, [el('span', { cls: 'link-pulse', attrs: { 'aria-hidden': 'true' } }), status]),
+      ]),
+    ]),
   ]);
   pollLink(bd, rec, deadline, run, status, code);
 }
@@ -493,7 +512,7 @@ function render() {
   if (state.compareOpen) children.push(renderCompare(page));
   if (page.version && !page.version.latest) {
     children.push(el('p', { cls: 'note older' }, [
-      'You\'re reading an older version. Comments are placed on the newest one. ',
+      'You\'re reading an older version. Each comment shows here only where its passage is in this version. ',
       button('Go to the newest version', () => load(null), 'link-btn'),
     ]));
   }
@@ -650,18 +669,16 @@ function nameOf(authorKey) {
 
 function renderThreads(aside, page) {
   const comments = page.comments || [];
-  const latest = page.version && page.version.latest;
   const placed = comments.filter((c) => !c.resolved && c.anchorState !== 'orphaned').sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
   const orphaned = comments.filter((c) => !c.resolved && c.anchorState === 'orphaned');
   const resolved = comments.filter((c) => c.resolved);
   aside.appendChild(el('h2', { cls: 'threads-title', text: M.openWords(placed.length + orphaned.length) }));
   if (!comments.length) aside.appendChild(el('p', { cls: 'empty', text: 'No comments yet.' }));
-  if (!latest && comments.length) aside.appendChild(el('p', { cls: 'note', text: 'Comments are shown without highlights on older versions.' }));
   const list = el('div', { cls: 'thread-list' });
   for (const c of placed) list.appendChild(threadCard(c));
   aside.appendChild(list);
   if (orphaned.length) {
-    aside.appendChild(el('h3', { cls: 'threads-sub', text: 'Passage changed or removed' }));
+    aside.appendChild(el('h3', { cls: 'threads-sub', text: 'Not in this version' }));
     const l2 = el('div', { cls: 'thread-list static' });
     for (const c of orphaned) l2.appendChild(threadCard(c));
     aside.appendChild(l2);
@@ -683,8 +700,9 @@ function threadCard(c, { inSheet = false } = {}) {
   const page = state.page;
   const card = el('article', { cls: `thread${c.resolved ? ' is-resolved' : ''}`, attrs: { 'data-key': inSheet ? null : c.key, tabindex: '-1', 'aria-label': `Comment by ${c.authorName || nameOf(c.author)}` } });
   if (c.quote) card.appendChild(el('blockquote', { cls: 'quote', text: c.quote.length > 280 ? `${c.quote.slice(0, 280)}…` : c.quote }));
-  const note = M.anchorNote(c.anchorState);
+  const note = M.anchorNote(c.anchorState, c, page);
   if (note) card.appendChild(el('p', { cls: 'anchor-note', text: note }));
+  if (c.nowReads) card.appendChild(el('p', { cls: 'anchor-note now-reads', text: `Now reads: ${c.nowReads.length > 280 ? `${c.nowReads.slice(0, 280)}…` : c.nowReads}` }));
   const badges = [];
   if (c.resolved) badges.push('Resolved');
   if (c.mine && c.sent) badges.push(`Sent to ${page.agentName}`);
@@ -703,8 +721,12 @@ function threadCard(c, { inSheet = false } = {}) {
 
   const actions = el('div', { cls: 'actions' });
   const err = el('p', { cls: 'error', attrs: { role: 'alert' } });
-  if (!inSheet && page.version && page.version.latest && Number.isInteger(c.start) && c.anchorState !== 'orphaned' && !c.resolved) {
+  if (!inSheet && page.version && Number.isInteger(c.start) && c.anchorState !== 'orphaned' && !c.resolved) {
     actions.appendChild(button('Show passage', () => showPassage(c.key), 'link-btn'));
+  }
+  // Not placed on this version: open the version it was made on, where it sits as highlighted.
+  if (page.version && c.anchorState === 'orphaned' && c.onVersion && c.onVersion !== page.version.id && (page.versions || []).some((v) => v.id === c.onVersion)) {
+    actions.appendChild(button(`Open version ${c.onVersionLabel ?? ''}`.trim(), () => load(c.onVersion), 'link-btn'));
   }
   if (canWrite()) {
     if (page.me && page.me.canComment) actions.appendChild(button('Reply', () => inlineEditor(card, c, 'reply'), 'btn small'));
@@ -800,7 +822,7 @@ function positionThreads() {
   for (const c of cards) c.style.top = '';
   list && (list.style.minHeight = '');
   aside.classList.remove('margin');
-  if (!isWide() || !state.page.version || !state.page.version.latest || !cards.length) return;
+  if (!isWide() || !state.page.version || !cards.length) return;
   const base = list.getBoundingClientRect().top;
   const items = [];
   for (const card of cards) {

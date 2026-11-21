@@ -13,7 +13,7 @@ import os from 'node:os';
 
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   runVerify, verifyPaths, splitScript, parseNameStatus, bareConfigTemplate,
@@ -278,7 +278,10 @@ function fake(o: FakeOpts = {}) {
         files.set(out, namedReport(namedLane));
         return r(Object.values(namedLane).some((v) => (Array.isArray(v) ? v : v.tests).some((x) => x.status === 'failed') || (!Array.isArray(v) && !!v.message)) ? 1 : 0);
       }
-      const many = o.laneFiles?.[lane];
+      // `--exclude=<path>` removes exactly that path from what the process runs (a lane's rest after its first part).
+      const excluded = new Set(args.filter((a) => a.startsWith('--exclude=')).map((a) => a.slice('--exclude='.length)));
+      const all = o.laneFiles?.[lane];
+      const many = all && excluded.size > 0 ? Object.fromEntries(Object.entries(all).filter(([f]) => !excluded.has(f))) : all;
       if (many) {
         files.set(out, vitestReportMany(many));
         return r(Object.values(many).some((x) => x.includes('failed')) ? 1 : 0);
@@ -1615,6 +1618,27 @@ describe('runVerify — balanced shards from duration history', () => {
     expect(f.shardLists).toHaveLength(0);
     expect(f.logs.some((l) => l.event === 'shard-plan' && l.balanced === false)).toBe(true);
   });
+  it('records unit files in the duration history too (borrowed-unit-slices spec, A), and logs the unit wall factor', async () => {
+    const f = fake();
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const hist = JSON.parse(f.files.get(P.durationsPath) as string) as Record<string, number>;
+    expect(Object.keys(hist)).toEqual(expect.arrayContaining(['tests/unit/a.test.ts', 'tests/integration/b.test.ts', 'tests/e2e/c.test.ts']));
+    const wf = f.logs.find((l) => l.event === 'unit-wall-factor');
+    expect(wf).toMatchObject({ workers: LOCAL_VERIFY_LIMITS.unitWorkersParallel });
+    expect(typeof wf?.factor).toBe('number');
+  });
+  it('unit entries in the history never change a slow lane\'s shard plan', async () => {
+    const withUnit = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const without = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const hist = Object.fromEntries([...INT, ...E2E].map((x, i) => [x, 1000 * (i + 1)]));
+    without.files.set(P.durationsPath, JSON.stringify(hist));
+    withUnit.files.set(P.durationsPath, JSON.stringify({ ...hist, 'tests/unit/a.test.ts': 999_999, 'tests/unit/z.test.ts': 1 }));
+    await runVerify(input(), withUnit.seams);
+    await runVerify(input(), without.seams);
+    const lists = (f: ReturnType<typeof fake>) => f.shardLists.map((s) => `${s.lane}:${s.files.join(',')}`).sort();
+    expect(lists(withUnit)).toEqual(lists(without));
+  });
   it('an unreadable history file is ignored, never a failure', async () => {
     const f = fake();
     f.files.set(P.durationsPath, '{not json');
@@ -1656,4 +1680,88 @@ describe('runVerify — balanced shards: overlapping paths and a hostile history
     expect(f.logs.some((l) => l.event === 'durations-ignored')).toBe(true);
     expect(f.shardLists).toHaveLength(0);
   });
+});
+
+describe('runVerify — first parts on the shared fake (spec local-verify-likely-failing-first.md)', () => {
+  const UNIT = { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/b.test.ts': ['passed'], 'tests/unit/c.test.ts': ['passed'] };
+  const vitestArgs = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.args.includes('--config')).map((c) => c.args);
+
+  it('the setting off, an unassigned or `without` pull request, and a main verify all run exactly the commands of a verify without the block', async () => {
+    const plain = fake({ laneFiles: { unit: UNIT } });
+    const base = await runVerify(input(), plain.seams);
+    const variants: Array<Partial<VerifyRunInput>> = [
+      { likelyFailingFirst: { setting: 'alternate', group: 'without', previous: [], list: ['tests/unit/b.test.ts'] } },
+      { likelyFailingFirst: { setting: 'alternate', previous: [], list: ['tests/unit/b.test.ts'] } },
+    ];
+    for (const v of variants) {
+      const f = fake({ laneFiles: { unit: UNIT } });
+      const r = await runVerify(input(v), f.seams);
+      expect(vitestArgs(f)).toEqual(vitestArgs(plain));
+      if (r.kind !== 'record' || base.kind !== 'record') throw new Error('expected records');
+      expect(r.record).toEqual({ ...base.record, firstPart: { setting: 'alternate', group: 'without', ran: false } });
+      expect(r.reasons).toEqual(base.reasons);
+    }
+    const mainPlain = fake({ laneFiles: { unit: UNIT } });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD }), mainPlain.seams);
+    const mainWith = fake({ laneFiles: { unit: UNIT } });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } }), mainWith.seams);
+    expect(vitestArgs(mainWith)).toEqual(vitestArgs(mainPlain));
+  });
+
+  it('with the setting on: `<lane>-first` runs the named files, the rest excludes them, and every file is reported once', async () => {
+    const f = fake({ laneFiles: { unit: UNIT }, diff: 'M\tsrc/index.ts\n' });
+    const r = await runVerify(input({ likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } }), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.record.outcome).toBe('success');
+    const unitCalls = vitestArgs(f).filter((a) => a.includes('vitest.config.ts'));
+    expect(unitCalls).toHaveLength(2);
+    expect(unitCalls[0].some((a) => a.endsWith('/unit-first.json'))).toBe(true);
+    expect(unitCalls[0].at(-1)).toBe('tests/unit/b.test.ts');
+    expect(unitCalls[1].some((a) => a.endsWith('/unit.json'))).toBe(true);
+    expect(unitCalls[1]).toContain('--exclude=tests/unit/b.test.ts');
+    expect(r.record.lanes.find((l) => l.name === 'unit')).toMatchObject({ files: 3, failed: 0 });
+    const steps = f.logs.filter((l) => l.event === 'step').map((l) => l.step);
+    expect(steps).toEqual(expect.arrayContaining(['unit-first', 'unit']));
+  });
+});
+
+
+it.each(['collection', 'assembly', 'invalid field', 'inconsistent field', 'throwing field', 'logging'])('evidence failure during %s cannot change completion', async (fault) => {
+  const opts = { laneFiles: { unit: { 'tests/unit/a.test.ts': ['failed'] } } };
+  const baseline = await runVerify(input(), fake(opts).seams);
+  const f = fake(opts); const inp = input();
+  let restore = () => {};
+  if (fault === 'collection' || fault === 'logging') {
+    if (fault === 'logging') {
+      const log = f.seams.log;
+      f.seams.log = (e) => { if (e.event === 'first-part-evidence-incomplete') throw new Error('audit unavailable'); log(e); };
+    }
+    const set = Map.prototype.set;
+    const spy = vi.spyOn(Map.prototype, 'set').mockImplementation(function(this: Map<any, any>, key, value) {
+      if (value?.result === 'failed') throw new Error('collection unavailable');
+      return set.call(this, key, value);
+    }); restore = () => spy.mockRestore();
+  } else if (fault === 'assembly') {
+    const values = Map.prototype.values;
+    const spy = vi.spyOn(Map.prototype, 'values').mockImplementation(function(this: Map<any, any>) {
+      if ([...values.call(this)].some((v) => v?.result === 'failed')) throw new Error('assembly unavailable');
+      return values.call(this);
+    }); restore = () => spy.mockRestore();
+  } else if (fault === 'invalid field') inp.firstPartEvidence = { setting: 'bad', group: 'with', ran: false } as any;
+  else if (fault === 'inconsistent field') {
+    inp.firstPartEvidence = { setting: 'off', group: 'with', ran: false };
+    inp.likelyFailingFirst = { setting: 'on', list: ['tests/unit/a.test.ts'], previous: [] };
+  }
+  else Object.defineProperty(inp, 'firstPartEvidence', { get: () => { throw new Error('unreadable evidence'); } });
+  try {
+    const result = await runVerify(inp, f.seams);
+    expect(result.kind).toBe('record'); expect(baseline.kind).toBe('record');
+    if (result.kind !== 'record' || baseline.kind !== 'record') return;
+    expect(result.record.outcome).toBe(baseline.record.outcome);
+    expect(result.record.lanes).toEqual(baseline.record.lanes);
+    expect(result.observation?.incomplete).toBe(true);
+    if (fault !== 'logging') expect(f.logs.some((e) => e.event === 'first-part-evidence-incomplete')).toBe(true);
+    if (fault.includes('field')) expect(result.record.firstPart).toBeUndefined();
+  } finally { restore(); }
 });

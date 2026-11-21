@@ -84,7 +84,7 @@ export function mountUsageAccountRoutes(router: Router, get: () => UsageRouteDep
   /** A standby forwards pool reads to the holder; returns true when it answered. */
   const viaHolder = async (d: UsageRouteDeps, req: Request, res: Response): Promise<boolean> => {
     if (req.query.scope === 'local' || d.isHolder() || req.headers[PROXY_HEADER] === '1') return false;
-    const r = await d.fromHolder(req.originalUrl).catch(() => null);
+    const r = await d.fromHolder(req.originalUrl).catch(() => { /* @silent-fallback-ok: holder unreachable, so answer from this machine's own data */ return null; });
     if (r && r.status < 500) { res.status(r.status).json(r.body); return true; }
     return false;
   };

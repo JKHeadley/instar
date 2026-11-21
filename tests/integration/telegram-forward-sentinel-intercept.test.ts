@@ -26,6 +26,8 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { MessageSentinel } from '../../src/core/MessageSentinel.js';
+import type { IntelligenceProvider } from '../../src/core/types.js';
 
 const AUTH_TOKEN = 'test-auth-token-deadbeef';
 const TOPIC = 11838;
@@ -42,7 +44,7 @@ interface Spies {
 
 function buildContext(
   stateDir: string,
-  decideImpl: (msg: string) => Promise<{ disposition: 'kill' | 'pause' | 'route-through'; category: SentinelCategory; reason?: string }>,
+  decideImpl: (msg: string, topicId?: number, messageKey?: string) => Promise<{ disposition: 'kill' | 'pause' | 'route-through'; category: SentinelCategory; reason?: string }>,
   spies: Spies,
   opts: { withSession: boolean; killOutcome?: boolean } = { withSession: true },
 ): RouteContext {
@@ -273,6 +275,30 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
     // Third state of the user-facing text: no session to stop (not "terminated",
     // not "still running").
     expect(spies.sent).toEqual(['No active session to stop.']);
+  });
+
+  // 2026-11-18, topic 144201: the lifeline re-sent one correction after its 10s
+  // forward timeout, every re-send asked the model again, and the one
+  // 'emergency-stop' among six 'redirect' answers killed the session. A re-sent
+  // forward of the same Telegram message must get the first verdict.
+  it('a re-sent forward of the same message reuses its first verdict (no second model call, no kill)', async () => {
+    const answers = ['redirect', 'emergency-stop'];
+    let calls = 0;
+    const sentinel = new MessageSentinel({
+      intelligence: { evaluate: async () => answers[Math.min(calls++, answers.length - 1)] } as unknown as IntelligenceProvider,
+    });
+    const ctx = buildContext(stateDir, (m: string, t?: number, k?: string) => sentinel.decideInboundDisposition(m, t, k) as never, spies);
+    const app = makeApp(ctx);
+    const text = 'This plan is NOT working. the wrong account is growing: dawn and NOT healdey.justin';
+
+    const first = await forward(app, text);
+    const resent = await forward(app, text);
+
+    expect(first.status).toBe(200);
+    expect(resent.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(spies.killed).toHaveLength(0);
+    expect(resent.body.sentinel).toBeUndefined();
   });
 });
 

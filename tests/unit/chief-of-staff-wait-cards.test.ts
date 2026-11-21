@@ -12,7 +12,8 @@ import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import { WorkBoardService, resolveWorkBoardSettings, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
 import { workCardRecordStoreSchema, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { buildBindingPut, buildCheckEvent, buildOwnerPauseEvent, buildLifecycleEvent, buildLastTick, foldProjectCheckState, type ProjectCheckState, type CosVerdict } from '../../src/core/ChiefOfStaffStore.js';
-import { ChiefOfStaffWaitCards, waitCardId, composeWaitCard, inertText, WAIT_CARD_ITEM, type WaitCardProject } from '../../src/core/ChiefOfStaffWaitCards.js';
+import { ChiefOfStaffWaitCards, waitCardId, composeWaitCard, inertText, waitAsk, humanTimeUtc, WAIT_CARD_ITEM, type WaitCardProject } from '../../src/core/ChiefOfStaffWaitCards.js';
+import { cardJson } from '../../src/core/workBoardViews.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
 const CK = 'telegram:135786';
@@ -71,7 +72,7 @@ describe('Chief of Staff wait cards — open', () => {
     expect(v.card.outward).toBe(false);
     expect(v.card.covers).toEqual([`cos:waiting:${CK}`]);
     expect(v.card.need).toContain('The spec waits for your yes.');
-    expect(v.card.need).toContain('PR 1 merged: fails');
+    expect(v.card.need).toContain('PR 1 merged (fails)');
     expect(v.card.approvalRequired).toBe(false);
     expect(v.status).toBe('with-person');
     expect(t.svc.lane(v, { isOwner: true, personKey: 'justin' })).toBe('waiting-on-you');
@@ -125,13 +126,120 @@ describe('Chief of Staff wait cards — open', () => {
     t.check('waiting-on-user');
     expect(t.sync().skipped[0]?.reason).toBe('daily-card-ceiling');
   });
-  it('the note renders inert: Markdown links and HTML are escaped', () => {
-    expect(inertText('[click](https://evil.example) <b>x</b> ![img](y)')).toBe('\\[click\\]\\(https://evil.example\\) \\<b\\>x\\</b\\> \\!\\[img\\]\\(y\\)');
+  it('the note renders as plain text: no backslash escapes, while link, image and tag syntax stays inert', () => {
+    expect(inertText('Keep the best features each engine (Claude Code, Codex, ...) offers_now *x*')).toBe('Keep the best features each engine (Claude Code, Codex, ...) offers_now *x*');
+    const out = inertText('[click](https://evil.example) <b>x</b> ![img](y)');
+    expect(out).not.toContain('\\');
+    expect(out).not.toMatch(/\]\(/);
+    expect(out).not.toMatch(/!\[/);
+    expect(out).not.toMatch(/<[A-Za-z/]/);
   });
-  it('two waits always differ in material (wait id), even at the same second with the same text', () => {
-    const a = composeWaitCard({ conversationKey: CK, title: 'P', goal: 'g', doneDefinition: [] }, 'answer', null, 'n', '2026-11-18T03:00:00.000Z', 'check:a');
-    const b = composeWaitCard({ conversationKey: CK, title: 'P', goal: 'g', doneDefinition: [] }, 'answer', null, 'n', '2026-11-18T03:00:00.000Z', 'check:b');
-    expect(a.need).not.toBe(b.need);
+  it('the time reads as a person reads it, the same on every machine', () => {
+    expect(humanTimeUtc('2026-11-17T22:15:31.000Z')).toBe('Nov 17, 2026, 10:15 PM UTC');
+    expect(humanTimeUtc('2026-01-02T00:05:00Z')).toBe('Jan 2, 2026, 12:05 AM UTC');
+    expect(humanTimeUtc('not a time')).toBe('a recorded time');
+  });
+});
+
+describe('Chief of Staff wait cards — the brief and a clean need', () => {
+  const ENGINE: WaitCardProject = {
+    conversationKey: 'telegram:141868', title: 'Engine Feature Optimization',
+    goal: 'Keep Instar using the best features each engine (Claude Code, Codex, ...) offers, as an ongoing effort.',
+    doneDefinition: [
+      { id: 'd1', kind: 'deterministic', text: 'Each newly found engine feature is either adopted or recorded with the reason not to.' },
+      { id: 'j1', kind: 'judgment', text: 'Justin is happy with the review routine.' },
+    ],
+  };
+  const NOTE = 'The agent is waiting for the owner to choose whether to run all three experiments, run only the guard test, or wait.';
+  it('the screenshot card: need has no escapes, no wait id, no raw UTC, no glued status; brief carries the structure', () => {
+    const c = composeWaitCard(ENGINE, 'answer', null, NOTE, '2026-11-17T22:15:31.000Z', 'check:c5c23e80');
+    expect(c.need).not.toContain('\\');
+    expect(c.need).not.toMatch(/\(wait [0-9a-f]{8}\)/);
+    expect(c.need).not.toContain('2026-11-17 22:15:31');
+    expect(c.need).not.toMatch(/\.: /);
+    expect(c.need).toContain('Goal: Keep Instar using the best features each engine (Claude Code, Codex, ...) offers');
+    expect(c.need).toContain('- Justin is happy with the review routine. (needs your judgment)');
+    expect(c.need).toContain('Waiting on you since Nov 17, 2026, 10:15 PM UTC.');
+    expect(c.brief).toEqual({
+      ask: 'Choose whether to run all three experiments, run only the guard test, or wait.',
+      goal: 'Keep Instar using the best features each engine (Claude Code, Codex, ...) offers, as an ongoing effort.',
+      checks: [
+        { text: 'Each newly found engine feature is either adopted or recorded with the reason not to.', status: 'unknown' },
+        { text: 'Justin is happy with the review routine.', status: 'needs-you' },
+      ],
+      chiefSaid: NOTE,
+      waitingSince: '2026-11-17T22:15:31.000Z',
+    });
+  });
+  it('the ask: a named decision, else a fixed sentence per kind', () => {
+    expect(waitAsk('answer', 'Blocked until you decide whether to ship it now.')).toBe('Decide whether to ship it now.');
+    expect(waitAsk('answer', 'This needs your decision on the domain name.')).toBe('Decide on the domain name.');
+    expect(waitAsk('answer', 'The build is red.')).toBe('Answer what the project needs next.');
+    expect(waitAsk('answer', null)).toBe('Answer what the project needs next.');
+    expect(waitAsk('confirm', NOTE)).toBe('Confirm this project is done.');
+  });
+  it('check statuses map passes / fails / unknown / needs-you; empty parts are left out', () => {
+    const c = composeWaitCard({ ...ENGINE, goal: ' ', doneDefinition: [{ id: 'a', kind: 'deterministic', text: 'A' }, { id: 'b', kind: 'deterministic', text: 'B' }] }, 'answer', { a: 'pass', b: 'fail' }, null, '2026-11-17T22:15:31Z', 'r');
+    expect(c.brief.checks).toEqual([{ text: 'A', status: 'passes' }, { text: 'B', status: 'fails' }]);
+    expect(c.brief.goal).toBeUndefined();
+    expect(c.brief.chiefSaid).toBeUndefined();
+  });
+  it('a synced card carries the brief in the store and in the served card JSON; the brief is not material', () => {
+    const t = rig();
+    t.check('waiting-on-user', NOTE); t.sync();
+    const v = t.card()!;
+    expect(v.card.brief?.ask).toBe('Choose whether to run all three experiments, run only the guard test, or wait.');
+    expect(v.card.brief?.waitingSince).toBe(v.card.mirror?.waitSince);
+    const json = cardJson(t.svc, v, { personKey: 'justin', isOwner: true, isAgent: false }, (k) => k);
+    expect(json.brief).toEqual(v.card.brief);
+    const hash = v.card.materialHash;
+    const r = t.svc.edit({ kind: 'agent', server: true }, waitCardId(CK), { brief: { ...v.card.brief!, ask: 'Something else.' } });
+    expect(r.ok).toBe(true);
+    expect(t.card()!.card.materialHash).toBe(hash);
+  });
+  it('only the server writer may set a brief', () => {
+    const t = rig();
+    const brief = { ask: 'x' };
+    expect(t.svc.createCard({ kind: 'agent' }, { title: 'x', need: 'y', doneWhen: [{ id: 'd', text: 'z' }], outward: false, brief })).toMatchObject({ ok: false, error: 'brief-not-allowed' });
+    expect(t.svc.createCard(OWNER, { title: 'x', need: 'y', doneWhen: [{ id: 'd', text: 'z' }], outward: false, brief })).toMatchObject({ ok: false, error: 'brief-not-allowed' });
+  });
+  it('an existing card written before the brief gets it, once, on the next newer check; a finished one without reopening', () => {
+    const t = rig();
+    t.check('waiting-on-user', NOTE); t.sync();
+    const id = waitCardId(CK);
+    // Simulate a card written by the previous build: no brief, the old need.
+    expect(t.svc.edit({ kind: 'agent', server: true }, id, { brief: null, need: 'old (wait c5c23e80)' }).ok).toBe(true);
+    t.check('waiting-on-user', 'no new evidence');
+    expect(t.sync().edited).toEqual([id]);
+    expect(t.card()!.card.brief?.ask).toMatch(/^Choose whether/);
+    expect(t.card()!.card.need).not.toContain('(wait ');
+    const n = t.board.length;
+    t.check('waiting-on-user', 'no new evidence'); t.sync();
+    expect(t.board.length).toBe(n);
+    // Finished while the same wait continues: a brief-only write, the card stays finished.
+    t.svc.addEvidence({ kind: 'agent', server: true }, id, { itemId: WAIT_CARD_ITEM, text: 'owner settled it' });
+    expect(t.svc.claimDone({ kind: 'agent', server: true }, id).ok).toBe(true);
+    expect(t.svc.edit({ kind: 'agent', server: true }, id, { brief: null }).ok).toBe(true);
+    t.check('waiting-on-user', 'no new evidence');
+    expect(t.sync().edited).toEqual([id]);
+    expect(t.card()!.card.done).toBe(true);
+    expect(t.card()!.card.brief).not.toBeNull();
+  });
+  it('a new wait on a finished card that reads word for word like the old one still changes the material', () => {
+    const t = rig();
+    const id = waitCardId(CK);
+    t.check('waiting-on-user'); t.sync();
+    // Finish it, then the same wait text comes back as a NEW episode at the same minute.
+    t.svc.addEvidence({ kind: 'agent', server: true }, id, { itemId: WAIT_CARD_ITEM, text: 'settled' });
+    expect(t.svc.claimDone({ kind: 'agent', server: true }, id).ok).toBe(true);
+    const doneHash = t.card()!.card.materialHash;
+    t.advance(-60_000); // the next check lands in the same minute as the first wait started
+    t.check('moving'); t.advance(-60_000); t.check('waiting-on-user');
+    t.sync();
+    const v = t.card()!;
+    expect(v.card.done).toBe(false);
+    expect(v.card.materialHash).not.toBe(doneHash);
+    expect(v.card.need).toContain('Waiting on you again since');
   });
 });
 

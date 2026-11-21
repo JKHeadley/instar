@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "close-unread-body-on-error",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-19T19:14:17.850Z",
+  "artifactPath": "upgrades/side-effects/close-unread-body-on-error.md",
+  "artifactSha256": "765dd520bb14f2ec675089c9a27ce9fbf503b111d3a9b09e9ba5d7d3023a657e",
+  "coveredFiles": [
+    "docs/specs/close-unread-body-on-error.eli16.md",
+    "src/server/AgentServer.ts",
+    "src/server/bodyBudget.ts",
+    "tests/unit/body-budget-before-auth.test.ts",
+    "upgrades/next/close-unread-body-on-error.md",
+    "upgrades/side-effects/close-unread-body-on-error.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small connection-handling hardening (SEC-118-R1): close an unread body on error answers; one middleware, no admission change, reversible by revert.",
+  "eli16Path": "docs/specs/close-unread-body-on-error.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/close-unread-body-on-error.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
