@@ -66,3 +66,5 @@ the imported messages completely. The live log is never touched.
 
 Nothing new needs deciding. This is a restore tool for history that was lost
 in an outage. It adds no new rule about what the agent may do.
+
+**Update (21 November 2026):** the restored messages are now saved inside the agent's private `state` folder, which is never copied into its git history. An automated check caught that the first location would have been copied there, and conversation history is private, so it must not travel that way.

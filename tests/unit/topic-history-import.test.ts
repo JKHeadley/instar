@@ -286,6 +286,7 @@ describe('topic history import (TopicMemory)', () => {
   });
 
   it('an unreadable batch archive never reads as empty', async () => {
+    fs.mkdirSync(path.dirname(batchDir(tmpDir)), { recursive: true });
     fs.writeFileSync(batchDir(tmpDir), 'not a directory');
     await expect(readPublishedBatches(tmpDir)).rejects.toThrow();
     await expect(tm.rebuild(path.join(tmpDir, 'telegram-messages.jsonl'))).rejects.toThrow();

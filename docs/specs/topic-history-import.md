@@ -61,7 +61,8 @@ supported way to put them back:
 
 TopicMemory (SQLite) is a derived index whose sources of truth are the message
 logs. Accepted rows are published as one immutable batch file per import under
-`<stateDir>/topic-history-imports/<importId>.r<rows>.jsonl`. The file is
+`<stateDir>/state/topic-history-imports/<importId>.r<rows>.jsonl` (under the
+gitignored `state/` folder, so git-sync never carries restored history). The file is
 written to a temporary name, fsynced, renamed into place, and the directory is
 fsynced. The row count in the name lets replay detect a batch that later lost
 lines (even a truncation at a line boundary or an emptied file) or that holds
@@ -361,7 +362,7 @@ Code revert: the batch files are no longer read. The rows stay in TopicMemory
 until the next `/topic/rebuild`, which drops them. A reverted build reads
 `origin = 'imported'` as unknown (`coerceTopicRowOrigin`), so before that
 rebuild those rows lose their label, but they keep `forwarded = unknown`.
-Data rollback without a code change: move `topic-history-imports/` aside and
+Data rollback without a code change: move `state/topic-history-imports/` aside and
 call `/topic/rebuild`. Neither touches the live log.
 
 ## Left behind

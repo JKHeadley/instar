@@ -14,7 +14,7 @@ Spec: `docs/specs/topic-history-import.md` (converged, approved). Tier 2. The ro
 
 ## What changes for running agents
 
-- Nothing happens until someone calls `POST /topic/import`. With no `topic-history-imports/` folder, boot's `importAllLogs` gets an ENOENT and returns immediately, so it behaves as before.
+- Nothing happens until someone calls `POST /topic/import`. With no `state/topic-history-imports/` folder, boot's `importAllLogs` gets an ENOENT and returns immediately, so it behaves as before.
 - After an import, each affected topic's rows are renumbered (deleted and re-inserted in one transaction). `/topic/rebuild` already does the same to every topic.
 - Two existing readers change:
   - `getUserCorpusRows` now admits origin-labelled rows only for `relay`/`a2a`, the only origins that existed before. The result is identical for every existing row.
@@ -70,7 +70,7 @@ Each refusal is counted and returned with a reason, so the caller can fix the ro
 ## 6. External surfaces
 
 - **New endpoint:** a bearer-token caller can use it; a paired phone (owner, team or MSP) gets 403.
-- **New state on disk:** `.instar/topic-history-imports/*.jsonl` (mode 0600, written to a temp name, fsynced, then renamed) and `.instar/logs/topic-history-imports.jsonl` (counts only).
+- **New state on disk:** `.instar/state/topic-history-imports/*.jsonl` (gitignored, never git-synced) (mode 0600, written to a temp name, fsynced, then renamed) and `.instar/logs/topic-history-imports.jsonl` (counts only).
 - **New origin value:** `imported` appears in TopicMemory rows. An older build reading this database treats the value as unknown, and the rows still have `forwarded` unknown.
 - **No outbound messages, notices or URLs.**
 
@@ -85,7 +85,7 @@ Each refusal is counted and returned with a reason, so the caller can fix the ro
 ## 8. Rollback cost
 
 - **Revert the code:** the batch folder is no longer read, and the restored rows stay until the next `/topic/rebuild` drops them. Until then a reverted build reads their origin as unknown, while `forwarded` stays unknown.
-- **Undo the data with no code change:** move `topic-history-imports/` aside and call `/topic/rebuild`.
+- **Undo the data with no code change:** move `state/topic-history-imports/` aside and call `/topic/rebuild`.
 - No migration is needed, and the live log is never touched.
 
 ## Second-pass review
@@ -93,3 +93,11 @@ Each refusal is counted and returned with a reason, so the caller can fix the ro
 High-risk surface: this writes history and changes an authority-labelling path. The spec-converge internal reviewers (six independent fresh-context rounds, read-only) reviewed the code, not only the spec.
 
 **Phase 5 reviewer:** an independent second-pass subagent, fresh context and read-only. First pass: Concern raised. Putting the supersede inside `TopicRowWriter.writeRow` let an inbound peer-carried row strip the `imported` label and widen authority. Fixed by moving it to `writeTelegramLogRow`, which only the local Telegram dual-write calls, and a test pins both paths. Re-check: **Concur with the review.** Plain `writeRow` never relabels again, supersede also requires `body.origin === undefined`, and sections 4 and 5 now state the exception.
+
+
+## Amendment 2026-11-21 (Local Verify fixes)
+
+- Batches moved from `<stateDir>/topic-history-imports/` to `<stateDir>/state/topic-history-imports/`. The write-domain ratchet surfaced that the old folder was not gitignored in agent homes, so git-sync would have committed restored private conversation history. `state/` is gitignored. No data migration is needed: no import has run anywhere yet.
+- `POST /topic/import` is classified machine-local in `buildWriteDomainRegistry` (per-machine path, not on a git-synced path), satisfying the §3.5 ratchet.
+- Error reasons from the route now pass through `operatorError`, satisfying the local storage error response ratchet.
+- Over-block / under-block / signal-vs-authority answers are unchanged: the move narrows where data lives and adds no decision point.

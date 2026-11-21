@@ -33745,10 +33745,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ ...report, stats: ctx.topicMemory.stats() });
     } catch (err) {
       if (err instanceof ImportTooLargeError) {
-        res.status(413).json({ error: 'too-large', reason: err.message });
+        res.status(413).json({ error: 'too-large', reason: operatorError(err, ctx.config.stateDir) });
         return;
       }
-      res.status(500).json({ error: 'import-failed', reason: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'import-failed', reason: operatorError(err, ctx.config.stateDir) });
     }
   });
 

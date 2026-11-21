@@ -8,7 +8,7 @@
  *   - every row is checked against the store's own schema and keyed by the
  *     §14 key rule (`deriveRowKey`), exactly as the live writer keys it;
  *   - accepted rows are published as one immutable batch file under
- *     `<stateDir>/topic-history-imports/` (tmp → fsync → rename → dir fsync),
+ *     `<stateDir>/state/topic-history-imports/` (never git-synced) (tmp → fsync → rename → dir fsync),
  *     so a crash mid-write never leaves a half batch that replay would read;
  *   - each affected topic is re-sequenced in ONE SQLite transaction so its row
  *     ids ascend in message-time order (the id-ordered readers —
@@ -226,7 +226,9 @@ export function mergeSequence<L extends { timestamp: string }, I extends { times
 const BATCH_NAME_RE = /^imp-[0-9-]+-[0-9a-f]{8}\.r(\d+)\.jsonl$/;
 
 export function batchDir(stateDir: string): string {
-  return path.join(stateDir, IMPORT_BATCH_DIRNAME);
+  // Under <stateDir>/state/, which agent homes keep out of git: restored conversation
+  // history is private and must never be carried by git-sync.
+  return path.join(stateDir, 'state', IMPORT_BATCH_DIRNAME);
 }
 
 export function newImportId(nowMs: number = Date.now()): string {
