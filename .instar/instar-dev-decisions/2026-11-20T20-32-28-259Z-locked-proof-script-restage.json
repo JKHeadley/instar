@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-20T20:32:28.259Z",
+  "slug": "locked-proof-script-restage",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/build-locked-proof.mjs",
+      "scripts/locked-proof/stage-proof-agents.sh"
+    ],
+    "addedLines": 7,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
