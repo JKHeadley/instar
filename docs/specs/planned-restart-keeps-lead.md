@@ -567,7 +567,11 @@ carries that update; the config edit itself is outside this PR.
 11. **A dark pool pays R1's verdict time, not the window, and boots awake**: peers settled silent by R1's test leave the live
     set, the boot wait runs to that verdict whatever the window's remaining time, and the survivor renews its own epoch as
     a survivor hold on that same evidence; its authority afterwards follows today's rules for a holder whose peers are all
-    dark.
+    dark. A silence that is this machine's own doing is not that evidence: when every route to a peer fails on this
+    machine's side before a byte leaves (no route to host, a Local Network permission), or the peer advertises nothing
+    this machine may dial, the probe carries a cause and the peer stays alive-and-unknown in the live set, so no survivor
+    hold is taken; the reclaim waits, keeps asking, and lapses to today's path at the window's end (the Studio's
+    192.168.87.x refusal, raised by the Chief of Staff).
 12. **The parent spec is amended in four places** and the role-restart spec's condition is corrected to the shipped one
     with its causal record and the trade-off that keeps the widening.
 13. **Lives in the existing ladder** as a composed entry, never by widening the parent's flag path.

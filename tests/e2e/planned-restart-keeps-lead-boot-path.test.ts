@@ -43,6 +43,8 @@ afterEach(() => {
 /** The one peer: answers signed with no lease of its own, or stays silent. */
 class PeerTransport implements LeaseTransport {
   answer: ProbeAnswer = 'signed';
+  /** Set when this machine's own dials fail (every route refused here): silence that is ours, not the peer's. */
+  cause: 'local-refusal' | 'no-route' | undefined = undefined;
   peerLease: LeaseRecord | null = null;
   pullTimes: number[] = [];
   broadcasts: LeaseRecord[] = [];
@@ -60,7 +62,7 @@ class PeerTransport implements LeaseTransport {
     this.roundStart = Date.now();
     this.pullTimes.push(Date.now());
     const r = this.probes.get('m_laptop') ?? { probes: [], unsignedSinceMs: null, firstSignedAtMs: null };
-    r.probes.push({ atMs: Date.now(), answer: this.answer });
+    r.probes.push(this.answer === 'silent' && this.cause ? { atMs: Date.now(), answer: this.answer, cause: this.cause } : { atMs: Date.now(), answer: this.answer });
     this.probes.set('m_laptop', r);
     if (this.answer === 'signed') {
       this.verified.set('m_laptop', { lease: this.peerLease, atMs: Date.now(), round: this.round });
@@ -188,7 +190,36 @@ describe('planned restart keeps the lead — the real boot path (feature is aliv
     expect(lc.holdsLease()).toBe(true);
     expect(lc.currentEpoch()).toBe(epoch);
     expect(coord.isAwake).toBe(true);
-    expect(logs.some((l) => l.includes('survivor hold'))).toBe(true);
+    expect(logs.some((l) => l.includes('as a survivor hold'))).toBe(true);
+    coord.stop();
+  });
+
+  it('LIVE: a peer alive but refused from this machine only (Local Network permission) — no survivor hold; standby after the wait, still asking', async () => {
+    vi.useFakeTimers();
+    const m = machine(true);
+    const epoch = await previousProcessLeftAWindowLease(m);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const tunnel = new PeerTransport();
+    tunnel.answer = 'silent';
+    tunnel.cause = 'local-refusal';
+    const { coord, lc, logs } = m.build(tunnel);
+    const init = coord.initializeLease();
+    await vi.advanceTimersByTimeAsync(60_000); // well past boot claim safety's 45 s silence span
+    expect(lc.holdsLease()).toBe(false); // the survivor hold is NOT taken on our own blindness
+    expect(logs.some((l) => l.includes('as a survivor hold'))).toBe(false);
+    expect(logs.some((l) => l.includes('alive and unknown'))).toBe(true);
+    await vi.advanceTimersByTimeAsync(65_000); // the 120 s verdict wait ends
+    await init;
+    expect(coord.isAwake).toBe(false);
+    expect(lc.bootReclaimPending()).toBe(true); // the pull tick keeps asking
+    expect(lc.currentEpoch()).toBe(epoch);
+    // The permission is granted (or the Tailscale rope comes up): the next round confirms the same epoch.
+    tunnel.answer = 'signed';
+    tunnel.cause = undefined;
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(lc.holdsLease()).toBe(true);
+    expect(lc.currentEpoch()).toBe(epoch);
+    expect(coord.isAwake).toBe(true);
     coord.stop();
   });
 

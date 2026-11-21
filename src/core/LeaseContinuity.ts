@@ -329,6 +329,22 @@ export class LeaseContinuityStore {
   }
 }
 
+// ── Silence as evidence (pure) ────────────────────────────────────────
+
+/**
+ * planned-restart-keeps-lead §2 — whether a peer's settled silence may count as death for the survivor
+ * hold. It may not when every one of the last `silentProbes` probes carries a cause: then every route
+ * this machine dialed failed on this machine's side (no route, a Local Network permission), or the peer
+ * advertises nothing dialable, and the peer is alive-and-unknown, never dead. Boot claim safety's own
+ * rules are unchanged by this: only the reclaim's survivor hold reads it.
+ */
+export function silenceIsEvidence(record: { probes: Array<{ answer: string; cause?: string }> } | undefined, silentProbes: number): boolean {
+  if (!record) return false;
+  const tail = record.probes.slice(-Math.max(1, silentProbes));
+  if (tail.length === 0) return false;
+  return !tail.every((p) => p.answer === 'silent' && !!p.cause);
+}
+
 // ── Episode end rule (pure) ───────────────────────────────────────────
 
 export interface EpisodeEndInputs {

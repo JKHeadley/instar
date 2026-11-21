@@ -27,7 +27,7 @@ import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } 
 import type { LeaseRecord } from './types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
-  resolveWindowMs, pendingCadenceMs, evaluateEpisodeEnd, bootDurationMs, ASK_DEADLINE_MS, EPISODE_CAP_MS,
+  resolveWindowMs, pendingCadenceMs, evaluateEpisodeEnd, bootDurationMs, silenceIsEvidence, ASK_DEADLINE_MS, EPISODE_CAP_MS,
   type ContinuityFile, type ContinuityMeta, type LeaseContinuityStore,
 } from './LeaseContinuity.js';
 import type { RestartAnnounce, RestartAnnounceOutcome } from './restartRequestSignal.js';
@@ -336,6 +336,8 @@ export class LeaseCoordinator {
   /** planned-restart-keeps-lead §2 — the window lease found at construction, awaiting its verdict. */
   private bootReclaim: BootReclaim | null = null;
   private reclaimWaiters: Array<(v: ReclaimVerdict) => void> = [];
+  /** Peers logged once as alive-and-unknown (every route refused on this machine's side). */
+  private reclaimUnknownLogged = new Set<string>();
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
@@ -2089,7 +2091,20 @@ export class LeaseCoordinator {
     const dead = (this.d.getLivenessEnabled?.() ?? true) ? this.d.presumedDeadHolders({ liveness: true }) : new Set<string>();
     const settings = { silentProbes: this.bootClaimSafetySettings()?.silentProbes ?? DEFAULT_BOOT_HOLD_SETTINGS.silentProbes, silentSpanMs: this.bootClaimSafetySettings()?.silentSpanMs ?? DEFAULT_BOOT_HOLD_SETTINGS.silentSpanMs };
     const settledSilent = (p: string) => classifyPeer(probes.get(p), unsignedAnswerWindowMs(this.d.peerRestartBudgetMs?.(p) ?? null), settings) === 'silent-enough';
-    const live = known.filter((p) => !dead.has(p) && !settledSilent(p));
+    // A peer whose last probes were all silent for THIS machine's reasons (every route refused here, or
+    // nothing dialable) is alive-and-unknown: it stays in the live set whatever the registry or the
+    // probe count says, so no survivor hold is taken on our own blindness. The window bounds the wait.
+    const unknownHere = (p: string) => {
+      const rec = probes.get(p);
+      if (!rec || rec.probes.length < settings.silentProbes || silenceIsEvidence(rec, settings.silentProbes)) return false;
+      if (!this.reclaimUnknownLogged.has(p)) {
+        this.reclaimUnknownLogged.add(p);
+        const cause = rec.probes[rec.probes.length - 1]?.cause ?? 'local-refusal';
+        this.log(`lease-continuity: ${p} cannot be dialed from this machine (${cause === 'no-route' ? 'it advertises no route this machine may dial' : 'every route is refused on this machine\'s side: no route to host or a network permission'}); it is treated as alive and unknown, never as dead, so no survivor hold is taken while this lasts.`);
+      }
+      return true;
+    };
+    const live = known.filter((p) => unknownHere(p) || (!dead.has(p) && !settledSilent(p)));
     const roundOutcome = (p: string) => (probes.get(p)?.probes ?? []).some((pr) => pr.atMs >= round.startedAtMs);
     const evaluable = known.every(roundOutcome) || this.now() - round.startedAtMs >= ASK_DEADLINE_MS;
     if (!evaluable) return false;

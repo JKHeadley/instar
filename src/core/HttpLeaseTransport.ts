@@ -30,6 +30,7 @@ import {
   isTunnelEdgeStatus,
   type PeerProbeRecord,
   type ProbeAnswer,
+  type ProbeSilenceCause,
 } from './BootClaimHold.js';
 
 /**
@@ -297,7 +298,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     path: '/api/lease' | '/api/lease/pull',
     bodyBase: Record<string, unknown>,
     sentEpoch: number | null,
-  ): Promise<DialOutcome & { verified?: boolean }> {
+  ): Promise<DialOutcome & { verified?: boolean; cause?: ProbeSilenceCause }> {
     const fetchImpl = this.d.fetchImpl ?? fetch;
     // mesh-endpoint-http-propagation — carry our own validated self-endpoints inside
     // the SIGNED body (covered by signRequest's body hash). Omit the field entirely
@@ -312,17 +313,24 @@ export class HttpLeaseTransport implements LeaseTransport {
       return this.legacyDial(peer, path, bodyBase, fetchImpl);
     }
     const resolved = this.d.resolver!.resolve(peer.machineId, peer.endpoints, peer.url);
-    if (resolved.length === 0) return { confirmed: false, lease: null, answer: 'silent' };
+    if (resolved.length === 0) return { confirmed: false, lease: null, answer: 'silent', cause: 'no-route' };
     // The best answer any rope got: a rope can carry Instar's unsigned answer while
     // another times out, and the hedge resolves with whichever settles last.
     let best: ProbeAnswer = 'silent';
     const note = (a: ProbeAnswer) => { if (ANSWER_RANK[a] > ANSWER_RANK[best]) best = a; };
+    // planned-restart-keeps-lead §2 — every route (Tailscale, LAN, tunnel) is dialed by the hedge. When
+    // ALL of them fail on this machine's side (no route, permission) and no byte came back from any,
+    // the silence is ours, not the peer's, and the probe says so.
+    let attempts = 0;
+    let localRefusals = 0;
+    let anyResponse = false;
 
     const attempt = async (ep: ResolvedEndpoint, signal: AbortSignal) => {
       const reqNonce = newReqNonce();
       const body = { ...bodyBase, reqNonce };
       const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, body, this.d.nextSequence());
       const started = this.now();
+      attempts += 1;
       try {
         const res = await fetchImpl(`${ep.url.replace(/\/$/, '')}${path}`, {
           method: 'POST',
@@ -330,6 +338,7 @@ export class HttpLeaseTransport implements LeaseTransport {
           body: JSON.stringify(body),
           signal: mergeSignals(signal, AbortSignal.timeout(this.requestTimeoutMs)),
         });
+        anyResponse = true;
         const httpOk = !!res && (res as Response).ok;
         const data = httpOk ? ((await (res as Response).json().catch(() => null)) as MeshAckResponse | null) : null;
         const outcome = this.interpretResponse(peer, path, reqNonce, sentEpoch, data, httpOk);
@@ -351,6 +360,8 @@ export class HttpLeaseTransport implements LeaseTransport {
         // failure (network error, or OUR per-attempt timeout — whose abort fires the
         // MERGED signal, not the hedge controller's) still records failure.
         const abortedByWinner = signal.aborted && isAbortShapedError(err);
+        if (abortedByWinner) attempts -= 1; // a loser the winner aborted says nothing either way
+        else if (isLocalRefusal(err)) localRefusals += 1;
         if (!abortedByWinner) {
           this.d.resolver!.recordResult(peer.machineId, ep.kind, false, this.now() - started, ep.url);
           this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, err instanceof Error ? err.message : String(err));
@@ -360,8 +371,9 @@ export class HttpLeaseTransport implements LeaseTransport {
     };
 
     const r = await this.hedge(resolved, attempt);
+    const cause: ProbeSilenceCause | undefined = best === 'silent' && !anyResponse && attempts > 0 && localRefusals === attempts ? 'local-refusal' : undefined;
     // On the mesh dial a confirmed pull from an ack-capable peer IS identity-verified (interpretResponse).
-    return { ...r, answer: best, verified: r.confirmed && !!peer.meshAckCapable && !!peer.publicKeyPem };
+    return { ...r, answer: best, verified: r.confirmed && !!peer.meshAckCapable && !!peer.publicKeyPem, ...(cause ? { cause } : {}) };
   }
 
   /**
@@ -384,10 +396,10 @@ export class HttpLeaseTransport implements LeaseTransport {
     return marker === instarMachineMarker(peer.machineId) ? 'unsigned' : 'silent';
   }
 
-  private recordProbe(peerId: string, answer: ProbeAnswer): void {
+  private recordProbe(peerId: string, answer: ProbeAnswer, cause?: ProbeSilenceCause): void {
     const at = this.now();
     const rec = this.probesByPeer.get(peerId) ?? { probes: [], unsignedSinceMs: null, firstSignedAtMs: null };
-    rec.probes.push({ atMs: at, answer });
+    rec.probes.push(cause && answer === 'silent' ? { atMs: at, answer, cause } : { atMs: at, answer });
     if (rec.probes.length > PROBE_TAIL) rec.probes.splice(0, rec.probes.length - PROBE_TAIL);
     if (answer === 'signed') {
       rec.unsignedSinceMs = null;
@@ -442,7 +454,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     path: '/api/lease' | '/api/lease/pull',
     bodyBase: Record<string, unknown>,
     fetchImpl: typeof fetch,
-  ): Promise<DialOutcome & { verified?: boolean }> {
+  ): Promise<DialOutcome & { verified?: boolean; cause?: ProbeSilenceCause }> {
     try {
       const canVerify = path === '/api/lease/pull' && !!peer.publicKeyPem;
       const reqNonce = canVerify ? newReqNonce() : null;
@@ -468,7 +480,7 @@ export class HttpLeaseTransport implements LeaseTransport {
       return { confirmed: true, lease: null, answer: 'silent' };
     } catch (err) {
       this.logFailure(`${path} to ${peer.machineId}`, err instanceof Error ? err.message : String(err));
-      return { confirmed: false, lease: null, answer: 'silent' };
+      return { confirmed: false, lease: null, answer: 'silent', ...(isLocalRefusal(err) ? { cause: 'local-refusal' as const } : {}) };
     }
   }
 
@@ -653,7 +665,7 @@ export class HttpLeaseTransport implements LeaseTransport {
       const lease = outcome.lease && typeof outcome.lease.epoch === 'number' ? outcome.lease : null;
       this.verifiedAnswerByPeer.set(peer.machineId, { lease, atMs: this.now(), round });
     }
-    this.recordProbe(peer.machineId, outcome.answer);
+    this.recordProbe(peer.machineId, outcome.answer, outcome.cause);
     if (!outcome.confirmed) return null;
     // A confirmed pull (verified reachability) proves the medium is live.
     this.lastPullOkAt = this.now();
@@ -724,6 +736,25 @@ interface MeshAckResponse {
  * hedge-controller `signal.aborted` check already excludes it unless a winner also
  * confirmed, in which case neutrality is the correct call anyway).
  */
+/**
+ * planned-restart-keeps-lead §2 — a dial that failed on THIS machine's side before any byte left:
+ * no route to the host, the network down, or the OS refusing the connection (macOS Local Network
+ * permission answers EHOSTUNREACH or EPERM for a home-network address). A refused port
+ * (ECONNREFUSED), a reset or a timeout is NOT local: the far side, or its absence, answered.
+ */
+export function isLocalRefusal(err: unknown): boolean {
+  const codes = new Set(['EHOSTUNREACH', 'ENETUNREACH', 'EPERM', 'EACCES', 'ENETDOWN', 'EADDRNOTAVAIL', 'EHOSTDOWN']);
+  let e: unknown = err;
+  for (let depth = 0; e && typeof e === 'object' && depth < 4; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && codes.has(code)) return true;
+    const errors = (e as { errors?: unknown }).errors; // AggregateError from a dual-stack connect
+    if (Array.isArray(errors) && errors.length > 0 && errors.every((x) => isLocalRefusal(x))) return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export function isAbortShapedError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const name = (err as { name?: unknown }).name;

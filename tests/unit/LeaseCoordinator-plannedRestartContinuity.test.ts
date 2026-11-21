@@ -21,7 +21,7 @@ import { LeaseContinuityStore } from '../../src/core/LeaseContinuity.js';
 import { UNSIGNED_WINDOW_CEILING_MS } from '../../src/core/BootClaimHold.js';
 import { findRestartRequestRecord, recordRestartRequest } from '../../src/core/restartRequestAttribution.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import type { PeerProbeRecord, ProbeAnswer } from '../../src/core/BootClaimHold.js';
+import type { PeerProbeRecord, ProbeAnswer, ProbeSilenceCause } from '../../src/core/BootClaimHold.js';
 import type { LeaseRecord } from '../../src/core/types.js';
 
 const IDS = ['studio', 'laptop', 'mini'];
@@ -43,6 +43,8 @@ const fl = (id: string) => new FencedLease(crypt(id), { leaseTtlMs: TTL, failove
 /** Scripted pull transport with rounds and identity-verified answers (what HttpLeaseTransport now exposes). */
 class ScriptedTransport implements LeaseTransport {
   answers: Record<string, ProbeAnswer> = {};
+  /** Why a peer's silence is this machine's own (every route refused here), when it is. */
+  causes: Record<string, ProbeSilenceCause | undefined> = {};
   leases: Record<string, LeaseRecord | null> = {};
   broadcastOk = true;
   broadcasts: LeaseRecord[] = [];
@@ -62,7 +64,7 @@ class ScriptedTransport implements LeaseTransport {
     for (const p of this.peers) {
       const a = this.answers[p] ?? 'silent';
       const r = this.probes.get(p) ?? { probes: [], unsignedSinceMs: null, firstSignedAtMs: null };
-      r.probes.push({ atMs: this.now(), answer: a });
+      r.probes.push(a === 'silent' && this.causes[p] ? { atMs: this.now(), answer: a, cause: this.causes[p] } : { atMs: this.now(), answer: a });
       if (a === 'signed') { r.unsignedSinceMs = null; if (r.firstSignedAtMs == null) r.firstSignedAtMs = this.now(); }
       else if (a === 'unsigned' && r.unsignedSinceMs === null) r.unsignedSinceMs = this.now();
       this.probes.set(p, r);
@@ -452,7 +454,7 @@ describe('rule 1b at boot — the window lease on disk', () => {
     expect(boot.lc.holdsLease()).toBe(true);
     expect(boot.lc.currentEpoch()).toBe(epoch);
     expect(boot.lc.bootReclaimPending()).toBe(false);
-    expect(boot.logs.some((l) => l.includes('survivor hold'))).toBe(true);
+    expect(boot.logs.some((l) => l.includes('as a survivor hold'))).toBe(true);
   });
   it('the window lease already expired at boot: no reclaim, today\'s lapsed path (rule 1 asks first)', async () => {
     const { boot } = await restartedHolder({ bootMs: WINDOW + 1_000 });
@@ -610,5 +612,70 @@ describe('second-pass fixes — the store never keeps an unmarked long-expiry re
     const r = rig();
     expect(r.lc.beginPendingRestart({ requestedBy: 'role-change', reason: 'x' })).toBeNull();
     expect(r.logs.some((l) => l.includes('is being renewed with'))).toBe(false);
+  });
+});
+
+describe('a peer that is alive but refused from this machine only (macOS Local Network permission, no route)', () => {
+  async function refusedBoot(cause: ProbeSilenceCause = 'local-refusal') {
+    const r = await holderAtEpoch41();
+    const epoch = r.lc.currentEpoch();
+    await r.lc.beginPendingRestart({ requestedBy: 'role-change', reason: 'x', requestedAt: new Date(r.clock.wall).toISOString() });
+    r.advance(60_000);
+    const boot = rig({ dir: r.dir, clock: r.clock });
+    boot.tunnel.answers.laptop = 'silent';
+    boot.tunnel.causes.laptop = cause;
+    return { r, boot, epoch };
+  }
+  it('three refused probes over the silence span are NOT death: no survivor hold, the reclaim stays pending (unknown)', async () => {
+    const { boot, epoch } = await refusedBoot();
+    for (let i = 0; i < 3; i++) { await boot.lc.pullFromPeers(); boot.advance(25_000); }
+    expect(await boot.lc.acquireIfEligible()).toBe(false);
+    expect(boot.lc.holdsLease()).toBe(false);
+    expect(boot.lc.bootReclaimPending()).toBe(true);
+    expect(boot.lc.currentEpoch()).toBe(epoch);
+    expect(boot.logs.some((l) => l.includes('as a survivor hold'))).toBe(false);
+    expect(boot.logs.some((l) => l.includes('cannot be dialed from this machine') && l.includes('alive and unknown'))).toBe(true);
+    // Even a registry that presumes the peer dead does not turn our own blindness into a hold.
+    const { boot: boot2 } = await refusedBoot();
+    const stale = rig({ dir: boot2.dir, clock: boot2.clock, presumedDead: () => new Set(['laptop']) });
+    stale.tunnel.answers.laptop = 'silent';
+    stale.tunnel.causes.laptop = 'local-refusal';
+    for (let i = 0; i < 3; i++) { await stale.lc.pullFromPeers(); stale.advance(25_000); }
+    expect(await stale.lc.acquireIfEligible()).toBe(false);
+    expect(stale.lc.holdsLease()).toBe(false);
+  });
+  it('the moment any route answers, the same epoch is confirmed as usual', async () => {
+    const { boot, epoch } = await refusedBoot();
+    for (let i = 0; i < 3; i++) { await boot.lc.pullFromPeers(); boot.advance(25_000); }
+    expect(await boot.lc.acquireIfEligible()).toBe(false);
+    boot.tunnel.answers.laptop = 'signed'; // the Tailscale rope came up, or the permission was granted
+    boot.tunnel.causes.laptop = undefined;
+    await boot.lc.pullFromPeers();
+    expect(await boot.lc.acquireIfEligible()).toBe(true);
+    expect(boot.lc.holdsLease()).toBe(true);
+    expect(boot.lc.currentEpoch()).toBe(epoch);
+  });
+  it('if the refusal lasts past the window, the lease lapses and today\'s path applies (a lapsed verdict, never a takeover row)', async () => {
+    const { boot } = await refusedBoot();
+    for (let i = 0; i < 3; i++) { await boot.lc.pullFromPeers(); boot.advance(25_000); }
+    expect(await boot.lc.acquireIfEligible()).toBe(false);
+    const verdict = boot.lc.awaitReclaimVerdict(5_000);
+    boot.advance(WINDOW);
+    await boot.lc.pullFromPeers();
+    await boot.lc.acquireIfEligible();
+    await expect(verdict).resolves.toBe('lapsed');
+    expect(boot.logs.some((l) => l.includes('was superseded by epoch'))).toBe(false);
+  });
+  it('a peer with no dialable route is unknown too; real silence (connection refused by the far side, timeouts) still counts', async () => {
+    const { boot } = await refusedBoot('no-route');
+    for (let i = 0; i < 3; i++) { await boot.lc.pullFromPeers(); boot.advance(25_000); }
+    expect(await boot.lc.acquireIfEligible()).toBe(false);
+    expect(boot.lc.bootReclaimPending()).toBe(true);
+    const { boot: real, epoch } = await refusedBoot();
+    real.tunnel.causes.laptop = undefined; // ECONNREFUSED / timeout: the far side, or its absence, answered
+    for (let i = 0; i < 3; i++) { await real.lc.pullFromPeers(); real.advance(25_000); }
+    expect(await real.lc.acquireIfEligible()).toBe(true);
+    expect(real.lc.currentEpoch()).toBe(epoch);
+    expect(real.logs.some((l) => l.includes('as a survivor hold'))).toBe(true);
   });
 });

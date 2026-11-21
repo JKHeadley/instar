@@ -23,10 +23,20 @@ import { resolveDevAgentGate } from './devAgentGate.js';
 
 /** What one probe of one peer produced. */
 export type ProbeAnswer = 'signed' | 'unsigned' | 'silent';
+/**
+ * planned-restart-keeps-lead §2 — why a probe was silent, when the silence says nothing about the peer:
+ * `local-refusal` — every route this machine dialed failed on THIS machine's side (EHOSTUNREACH,
+ * ENETUNREACH, EPERM/EACCES, ENETDOWN: a missing route or a Local Network permission), no byte came back;
+ * `no-route` — the peer advertises no endpoint this machine may dial. Boot claim safety's rules read the
+ * answer alone (unchanged); the boot reclaim's survivor hold refuses to count a caused silence as death.
+ */
+export type ProbeSilenceCause = 'local-refusal' | 'no-route';
 
 export interface PeerProbe {
   atMs: number;
   answer: ProbeAnswer;
+  /** Present only on a silent probe whose silence is this machine's own doing (see ProbeSilenceCause). */
+  cause?: ProbeSilenceCause;
 }
 
 /** The compact per-peer probe record the transport keeps. */

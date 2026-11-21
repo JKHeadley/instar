@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FencedLease, type LeaseCrypto } from '../../src/core/FencedLease.js';
 import {
-  resolveWindowMs, resolveMarginMs, pendingCadenceMs, clampSampleMs, evaluateEpisodeEnd, bootDurationMs,
+  resolveWindowMs, resolveMarginMs, pendingCadenceMs, clampSampleMs, evaluateEpisodeEnd, bootDurationMs, silenceIsEvidence,
   consumedAliveBoundMs, canonicalContinuityMeta, LeaseContinuityStore, EPISODE_CAP_MS, EPISODE_ABSENCE_MS,
   type ContinuityMeta,
 } from '../../src/core/LeaseContinuity.js';
@@ -202,6 +202,20 @@ describe('the episode end rule (§1 step 3)', () => {
   });
   it('the four-hour cap ends it whatever the file says', () => {
     expect(evaluateEpisodeEnd({ ...base, nowMs: EPISODE_CAP_MS })).toEqual({ ended: true, cause: 'cap' });
+  });
+});
+
+describe('silence as evidence (§2 survivor hold)', () => {
+  const p = (answer: string, cause?: string) => ({ atMs: 0, answer, ...(cause ? { cause } : {}) });
+  it('three plain silences are evidence; three locally caused silences are not; one real silence among them is', () => {
+    expect(silenceIsEvidence({ probes: [p('silent'), p('silent'), p('silent')] }, 3)).toBe(true);
+    expect(silenceIsEvidence({ probes: [p('silent', 'local-refusal'), p('silent', 'local-refusal'), p('silent', 'local-refusal')] }, 3)).toBe(false);
+    expect(silenceIsEvidence({ probes: [p('silent', 'no-route'), p('silent', 'no-route'), p('silent', 'no-route')] }, 3)).toBe(false);
+    expect(silenceIsEvidence({ probes: [p('silent', 'local-refusal'), p('silent'), p('silent', 'local-refusal')] }, 3)).toBe(true);
+    // Only the last N probes count: an old real silence before three caused ones does not make them evidence.
+    expect(silenceIsEvidence({ probes: [p('silent'), p('silent', 'local-refusal'), p('silent', 'local-refusal'), p('silent', 'local-refusal')] }, 3)).toBe(false);
+    expect(silenceIsEvidence(undefined, 3)).toBe(false);
+    expect(silenceIsEvidence({ probes: [] }, 3)).toBe(false);
   });
 });
 
