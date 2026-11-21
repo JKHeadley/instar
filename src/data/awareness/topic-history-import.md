@@ -1,0 +1,4 @@
+---
+title: Restoring lost conversation history
+---
+When a machine lost part of its Telegram history (a rebuild, a disk loss) and copies exist on other machines, restore them with `POST /topic/import` instead of editing the live log: `curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:{{port}}/topic/import -d '{"file":"recovery/<file>.jsonl","dryRun":true}'`, then again without `dryRun`. The file holds rows in the live log's shape (`messageId`, `topicId`, `text`, `fromUser`, `timestamp`) and must sit inside the state folder. Restored messages slot into each conversation at their message time, search finds them, they never count as a fresh owner instruction, and a second run does nothing. App-typed messages (`app:` ids) are refused, because the app keeps its own copy. The response gives per-topic counts and refusal reasons; the audit is `.instar/logs/topic-history-imports.jsonl`.

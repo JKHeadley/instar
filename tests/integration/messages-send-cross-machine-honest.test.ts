@@ -93,9 +93,17 @@ async function wire(m: Omit<Machine, 'identityManager' | 'store' | 'router' | 'i
   const router = new MessageRouter(
     store,
     new MessageDelivery(new MessageFormatter(), tmux),
-    { localAgent: 'echo', localMachine: m.id, serverUrl: 'http://localhost:0', isOwnSession: (s) => s === 'echo-topic-144319' },
+    {
+      localAgent: 'echo',
+      localMachine: m.id,
+      serverUrl: 'http://localhost:0',
+      isOwnSession: (s) => s === 'echo-topic-144319',
+      // §D.3 as server.ts wires it: the relay queue's addresses for a peer, read at call time.
+      peerAddresses: (id: string) => { const u = identityManager.getMachineUrl(id); return u ? [u] : []; },
+    },
     { identityManager, signingKeyPem: m.keys.privateKey, nonceStore, securityLog },
   );
+  await router.startRelayQueue();
   return { ...m, identityManager, store, router, injected };
 }
 
@@ -185,11 +193,17 @@ describe('POST /messages/send — cross-machine relay route and honest failure (
       .set('Authorization', `Bearer ${AUTH}`)
       .send({ from: { agent: 'echo', session: 'echo-cos', machine: O.id }, to: { agent: 'echo', session, machine: toMachine }, type: 'info', priority: 'medium', subject: 'join code', body: 'run instar join' });
 
-  it('a known peer is reached through the real Machine-HMAC relay route (201, received)', async () => {
+  const until = async (f: () => Promise<boolean>) => { for (let i = 0; i < 300; i++) { if (await f()) return; await new Promise((r) => setTimeout(r, 10)); } };
+
+  it('a known peer is reached through the real Machine-HMAC relay route (201; relaying, then received)', async () => {
     const res = await send(P.id);
     expect(res.status).toBe(201);
-    expect(res.body.phase).toBe('received');
-    expect(res.body.delivered).toBe(true);
+    // §D.5: a same-agent session message is queued for one pass and answered `relaying`;
+    // the peer's signed ack over the real relay route then settles it as `received`.
+    expect(res.body.phase).toBe('relaying');
+    expect(res.body.failureReason).toBeUndefined();
+    await until(async () => (await O.store.get(res.body.messageId))?.delivery.phase === 'received');
+    expect((await O.store.get(res.body.messageId))!.delivery.phase).toBe('received');
     expect(await P.store.exists(res.body.messageId)).toBe(true);
   });
 

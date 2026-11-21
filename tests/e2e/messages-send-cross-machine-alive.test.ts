@@ -100,6 +100,8 @@ describe('E2E: cross-machine /messages/send is alive', () => {
       localMachine: coord.identity!.machineId,
       serverUrl: 'http://localhost:0',
       isOwnSession: (s: string) => s === 'echo-topic-1',
+      // §D.3 as server.ts wires it: the relay queue's addresses for a peer, read at call time.
+      peerAddresses: (id: string) => { const u = coord.managers.identityManager.getMachineUrl(id); return u ? [u] : []; },
     }, {
       identityManager: coord.managers.identityManager,
       signingKeyPem: env.signingKeys.privateKey,
@@ -115,6 +117,8 @@ describe('E2E: cross-machine /messages/send is alive', () => {
       messageRouter: router,
     });
     await server.start();
+    // server.ts starts the §D.5 relay queue once the server is up.
+    await router.startRelayQueue();
     return { server, store };
   }
 
@@ -154,12 +158,17 @@ describe('E2E: cross-machine /messages/send is alive', () => {
       body: JSON.stringify({ from: { agent: 'echo', session: 'echo-a', machine: envA.machineId }, to: { agent: 'echo', session: 'echo-topic-1', machine: to }, type: 'info', priority: 'medium', subject: 's', body: 'b' }),
     });
 
-  it('a send to a paired peer lands on that peer (201 received, not queued as unreachable)', async () => {
+  const until = async (f: () => Promise<boolean>) => { for (let i = 0; i < 300; i++) { if (await f()) return; await new Promise((r) => setTimeout(r, 10)); } };
+
+  it('a send to a paired peer lands on that peer (201; relaying, then received — not queued as unreachable)', async () => {
     const res = await send(envB.machineId);
     const body = await res.json() as Record<string, unknown>;
     expect(res.status).toBe(201);
-    expect(body.phase).toBe('received');
-    expect(body.delivered).toBe(true);
+    // §D.5: queued for one pass and answered `relaying`; the peer's signed ack settles it.
+    expect(body.phase).toBe('relaying');
+    expect(body.failureReason).toBeUndefined();
+    await until(async () => (await storeA.get(String(body.messageId)))?.delivery.phase === 'received');
+    expect((await storeA.get(String(body.messageId)))!.delivery.phase).toBe('received');
     expect(await storeB.exists(String(body.messageId))).toBe(true);
   });
 

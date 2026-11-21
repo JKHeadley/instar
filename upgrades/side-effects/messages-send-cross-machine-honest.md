@@ -92,3 +92,7 @@ This touches outbound message dispatch. The worker fork that built it cannot sta
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable (a source code defect in the transport; no self-triggered controller added).
+
+## Merge with main (2026-11-21)
+
+`origin/main` (a7f07db3d) was merged into the branch after Local Verify reported `error:conflict`. One file conflicted, `src/messaging/MessageRouter.ts`, against PR #3426 (cross-machine session messages, phase 1): (1) in `routeCrossMachine`, this PR's registry-standing check and `failCrossMachine` (honest 502 + notice, nothing queued) are kept for a revoked or unknown target, and main's `reportTerminalFailure` call (the sender's local notifier, or a signed notice back to the machine the message came from) now runs inside `failCrossMachine` after the failed write, so both behaviours hold; (2) the relay URL is built from main's `RELAY_MACHINE_PATH` constant with this PR's trailing-slash strip. Main's §D.5 relay queue now answers a same-agent session send `relaying` and settles it `received` on the peer's signed ack, so the three happy-path tests of this PR were adapted to that contract (sender wired with `peerAddresses` and `startRelayQueue()` exactly as `server.ts` does; assert `relaying`, await `received`, peer store holds the message). The honest-failure tests (revoked, unknown, no peer knows) are unchanged and still pass. No new decision point; no new side effect.

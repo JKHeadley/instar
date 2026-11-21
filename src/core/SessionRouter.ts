@@ -269,6 +269,22 @@ export interface SessionRouterDeps {
   raiseAttention: (title: string, body: string) => void;
   markOwnerSuspect?: (machineId: string) => void;
   /**
+   * Unroutable-owner release (docs/specs/unroutable-owner-release.md): true when
+   * the recorded owner can NEVER be routed to — revoked in the machine registry,
+   * or unregistered here with a silent journal. The wiring also requires that
+   * THIS machine holds the serving lease (claims are lease-holder-only).
+   * Absent ⇒ never (today's behavior).
+   */
+  isOwnerUnroutable?: (machineId: string) => boolean;
+  /**
+   * Force-claim the session for THIS machine through the ownership CAS funnel
+   * (FSM `force-claim`) and journal the placement — ONLY if the record still
+   * matches what the router inspected (`expected` owner + epoch + status); any
+   * change since the assessment refuses. Returns true iff it landed.
+   * Only called after `isOwnerUnroutable(owner)` said yes.
+   */
+  forceClaimUnroutableForSelf?: (sessionKey: string, expected: { owner: string; epoch: number; status: 'active' | 'placing' | 'transferring' }) => boolean;
+  /**
    * A deliverMessage attempt REACHED the owner (queued/duplicate/stale acks all
    * prove the peer is responsive). Wired to OwnerSuspectBreaker.recordSuccess
    * so the per-peer suspect window closes the moment the peer answers — the
@@ -327,7 +343,15 @@ export class SessionRouter {
     // entry runs out at the queue's limits and the phone is told in words.
     if (isAppOwnershipKey(msg.sessionKey)) return false;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(() => this.takeOverFromNonReceiver(msg) ?? this.placeAndClaim(msg, 'failover', true));
+    const next = prior.catch(() => undefined).then(async () => {
+      const nonReceiver = this.takeOverFromNonReceiver(msg);
+      if (nonReceiver) return nonReceiver;
+      // Unroutable-owner release: the drain's forced attempt takes the same guarded
+      // takeover as a fresh inbound (placement policy + version + lease checks inside).
+      const taken = await this.takeOverUnroutable(msg, this.deps.resolveOwnership(msg.sessionKey));
+      if (taken) return taken;
+      return this.placeAndClaim(msg, 'failover', true);
+    });
     const tail = next.then(() => undefined, () => undefined);
     this.chains.set(msg.sessionKey, tail);
     void tail.then(() => {
@@ -485,6 +509,64 @@ export class SessionRouter {
     }
   }
 
+  private unroutable(machineId: string): boolean {
+    if (machineId === this.deps.selfMachineId) return false;
+    try { return this.deps.isOwnerUnroutable?.(machineId) === true; }
+    catch { return false; /* @silent-fallback-ok — an unreadable standing keeps today's routing (queue / re-place), never a takeover */ }
+  }
+
+  /**
+   * Unroutable-owner eligibility (spec §3.2), ONE definition for every entry point:
+   * the owner is remote, not alive and unroutable, and the record is either active
+   * or a transient that nobody else can finish (no target / target = owner / target
+   * also unroutable). A transfer toward a live target is never eligible.
+   */
+  private unroutableEligible(own: OwnershipView): own is OwnershipView & { owner: string; status: 'active' | 'placing' | 'transferring' } {
+    if (!this.deps.forceClaimUnroutableForSelf) return false;
+    if (!own.owner || !own.status || own.owner === this.deps.selfMachineId) return false;
+    if (this.deps.isMachineAlive(own.owner)) return false;
+    if (!this.unroutable(own.owner)) return false;
+    if (own.status === 'active') return true;
+    const target = own.target;
+    if (!target || target === own.owner) return true;
+    // Target liveness takes precedence: a target the liveness view reports alive owns
+    // the claim, whatever its registry standing says.
+    if (target === this.deps.selfMachineId || this.deps.isMachineAlive(target)) return false;
+    return this.unroutable(target);
+  }
+
+  /** A failed forward's fallback: the guarded unroutable-owner takeover first, then today's re-place. */
+  private async failoverAfterForward(msg: InboundMessage): Promise<RouteOutcome> {
+    const taken = await this.takeOverUnroutable(msg, this.deps.resolveOwnership(msg.sessionKey));
+    return taken ?? this.placeAndClaim(msg, 'failover', true);
+  }
+
+  /**
+   * Unroutable-owner takeover (spec §3). null ⇒ not eligible (today's path runs).
+   * Eligible but not taken (placement policy refused, or the version/lease check
+   * refused the CAS) ⇒ the message stays in durable custody — it never falls
+   * through to a re-place/takeover path that would skip the placement check.
+   */
+  private async takeOverUnroutable(msg: InboundMessage, own: OwnershipView): Promise<RouteOutcome | null> {
+    if (!this.unroutableEligible(own)) return null;
+    const owner = own.owner;
+    let landed = false;
+    // Every mandatory placement check still holds for THIS machine (workspace,
+    // quota, refusing work, a hard pin elsewhere) — the takeover skips the dead
+    // owner, never placement policy.
+    if (this.localPlacementAllowed(msg)) {
+      try { landed = this.deps.forceClaimUnroutableForSelf!(msg.sessionKey, { owner, epoch: own.epoch, status: own.status }); }
+      catch { landed = false; /* @silent-fallback-ok — not taken ⇒ custody below; the drain retries */ }
+    }
+    if (!landed) {
+      const q = this.deps.queueMessage(msg, 'unroutable-owner-not-taken');
+      return { action: 'queued', detail: 'unroutable-owner-not-taken', acked: q === 'queued' || q === 'already-queued' };
+    }
+    this.deps.log?.(`unroutable owner ${owner} for ${msg.sessionKey} — taken over by ${this.deps.selfMachineId}`);
+    await this.deps.handleLocally(msg);
+    return { action: 'owner-dead-replaced', owner: this.deps.selfMachineId, detail: 'unroutable-owner-takeover', acked: true };
+  }
+
   private async dispatchOne(msg: InboundMessage, stopGeneration: number): Promise<RouteOutcome> {
     if (isAppOwnershipKey(msg.sessionKey)) return this.dispatchApp(msg, stopGeneration);
     const own = this.deps.resolveOwnership(msg.sessionKey);
@@ -507,9 +589,21 @@ export class SessionRouter {
         }
         return this.forwardToOwner(msg, own.owner, own.epoch, 0);
       }
+      // Owner can never answer (revoked / unregistered + silent) → take it over
+      // here instead of re-placing, which can never land on a live record
+      // (`place` is refused on an active record → ownership-contention forever).
+      const taken = await this.takeOverUnroutable(msg, own);
+      if (taken) return taken;
       // Owner is not alive → owner-dead re-placement (§L4 fallback).
       this.deps.markOwnerSuspect?.(own.owner);
       return this.placeAndClaim(msg, 'failover', true);
+    }
+
+    if (own.status === 'placing' || own.status === 'transferring') {
+      // A transient record whose owner AND target are both unroutable (or that
+      // names no other target) is frozen for good — nobody is left to claim it.
+      const taken = await this.takeOverUnroutable(msg, own);
+      if (taken) return taken;
     }
 
     if (own.status === 'placing' || own.status === 'transferring') {
@@ -557,7 +651,7 @@ export class SessionRouter {
         }
         // stale-ownership → re-resolve (bounded) and route to the current owner.
         if (reResolveDepth >= this.cfg.maxReResolveDepth) {
-          return this.placeAndClaim(msg, 'failover', true);
+          return this.failoverAfterForward(msg);
         }
         const own2 = this.deps.resolveOwnership(msg.sessionKey);
         if (own2.status === 'active' && own2.owner === this.deps.selfMachineId) {
@@ -574,7 +668,7 @@ export class SessionRouter {
           return this.forwardToOwner(msg, own2.owner, own2.epoch, reResolveDepth + 1);
         }
         // Ownership moved to a transient/dead state (or a spurious same-epoch stale) → re-place.
-        return this.placeAndClaim(msg, 'failover', true);
+        return this.failoverAfterForward(msg);
       } catch (err) {
         this.deps.log?.(`deliverMessage attempt ${attempt} to ${owner} failed: ${String((err as Error)?.message ?? err)}`);
         if (attempt < this.cfg.deliverMessageMaxRetries) {
@@ -585,7 +679,7 @@ export class SessionRouter {
     }
     // Retries exhausted → owner is unreachable → owner-dead re-placement.
     this.deps.markOwnerSuspect?.(owner);
-    return this.placeAndClaim(msg, 'failover', true);
+    return this.failoverAfterForward(msg);
   }
 
   /**

@@ -313,6 +313,34 @@ describe('WorktreeMonitor', () => {
   // ── Full Scan ────────────────────────────────────────────────
 
   describe('scanWorktrees()', () => {
+    it('a second scan of an unchanged repo makes no per-worktree git calls (fb-9f890bce-bd2)', async () => {
+      createWorktree(repoDir, 'one', { addCommits: 1 });
+      createWorktree(repoDir, 'two', { addCommits: 2 });
+      const spy = vi.spyOn(monitor as unknown as { gitCommand(a: string): Promise<string> }, 'gitCommand');
+      const first = await monitor.scanWorktrees();
+      const perWorktree = (calls: string[]) => calls.filter((c) => /^(rev-list --count|diff --name-only|show -s)/.test(c)).length;
+      const firstCalls = spy.mock.calls.map((c) => String(c[0]));
+      expect(perWorktree(firstCalls)).toBeGreaterThanOrEqual(4);
+      spy.mockClear();
+      const second = await monitor.scanWorktrees();
+      expect(perWorktree(spy.mock.calls.map((c) => String(c[0])))).toBe(0);
+      expect(second.withUnmergedWork.map((w) => [w.worktree.branch, w.commitsAhead]).sort())
+        .toEqual(first.withUnmergedWork.map((w) => [w.worktree.branch, w.commitsAhead]).sort());
+      spy.mockRestore();
+    });
+
+    it('a new commit on the default branch recomputes rather than reusing the cache', async () => {
+      createWorktree(repoDir, 'feat', { addCommits: 1, files: ['f.ts'] });
+      await monitor.scanWorktrees();
+      // Merge the branch into main: the worktree has nothing ahead any more.
+      shell('git merge --no-ff -m merge worktree-feat', repoDir);
+      const spy = vi.spyOn(monitor as unknown as { gitCommand(a: string): Promise<string> }, 'gitCommand');
+      const after = await monitor.scanWorktrees();
+      expect(spy.mock.calls.some((c) => String(c[0]).startsWith('rev-list --count'))).toBe(true);
+      expect(after.withUnmergedWork).toEqual([]);
+      spy.mockRestore();
+    });
+
     it('returns clean report when no worktrees exist', async () => {
       const report = await monitor.scanWorktrees();
 

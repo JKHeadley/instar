@@ -74,6 +74,11 @@ const ALLOWLIST = new Set([
   // inference call, so there is nothing for burn-detection to attribute. Same class as
   // QuotaPoller's /api/oauth/usage call above.
   'src/core/CredentialIdentityOracle.ts',
+  // Gemini pay-per-use lane (docs/specs/gemini-payg-metered-lane.md §1 "Lint and funnel"):
+  // the ONE transport of the metered `gemini-api` door. Its host is a code constant, the
+  // key rides only in a header, and every call is admitted and settled by the money gate,
+  // which attributes it. The spec names exactly this one entry.
+  'src/providers/metered/gemini-api/geminiApiTransport.ts',
 ]);
 
 /**

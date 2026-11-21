@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "web-chat-drop-paste-connection-words",
+  "sessionId": "00e18a10-355f-4d09-850a-9ba2ac132cc8",
+  "timestamp": "2026-11-19T21:16:36.757Z",
+  "artifactPath": "upgrades/side-effects/web-chat-drop-paste-connection-words.md",
+  "artifactSha256": "66f7a9d41b45533457e2dc1ba9f46b44edfae61931642891b61594f34e53a0a2",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "dashboard/console/net-state.js",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-net-state.test.ts",
+    "upgrades/side-effects/web-chat-drop-paste-connection-words.eli16.md",
+    "upgrades/side-effects/web-chat-drop-paste-connection-words.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Static dashboard assets + tests; revert fully undoes it; no server, data or config change",
+  "eli16Path": "upgrades/side-effects/web-chat-drop-paste-connection-words.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/web-chat-drop-paste-connection-words.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

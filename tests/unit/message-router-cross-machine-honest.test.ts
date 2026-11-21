@@ -19,6 +19,8 @@ import { MessageFormatter } from '../../src/messaging/MessageFormatter.js';
 import { generateSigningKeyPair } from '../../src/core/MachineIdentity.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { signRelayAnswer } from '../../src/server/machineAuth.js';
+import type { MessageEnvelope } from '../../src/messaging/types.js';
 
 const O = 'm_origin_0000000001';
 const P = 'm_peer_00000000002';
@@ -72,7 +74,7 @@ describe('MessageRouter — cross-machine outcome honesty', () => {
     routers[self] = new MessageRouter(
       store,
       new MessageDelivery(new MessageFormatter(), ops as any),
-      { localAgent: 'echo', localMachine: self, serverUrl: URLS[self] ?? 'http://x' },
+      { localAgent: 'echo', localMachine: self, serverUrl: URLS[self] ?? 'http://x', peerAddresses: (m: string) => (URLS[m] ? [URLS[m]] : []) },
       {
         identityManager: identity(self, known, keys),
         signingKeyPem: keys[self].privateKey,
@@ -85,16 +87,25 @@ describe('MessageRouter — cross-machine outcome honesty', () => {
 
   beforeEach(async () => {
     keys = { [O]: generateSigningKeyPair(), [P]: generateSigningKeyPair(), [R]: generateSigningKeyPair() };
-    storeO = await makeRouter(O, { [O]: { status: 'active' }, [P]: { status: 'active' }, [R]: { status: 'revoked' } });
-    storeP = await makeRouter(P, { [O]: { status: 'active' }, [P]: { status: 'active' } });
     fetchCalls = [];
+    // Installed BEFORE the routers exist: the relay queue (§D.5) binds `fetch` when it is built.
+    // Answers like the real route: a signed ack (200) or a signed nack (409) from the receiver.
     global.fetch = vi.fn(async (url: string, init: any) => {
       fetchCalls.push(String(url));
       const m = /^http:\/\/(origin|peer)\.test:4042\/api\/messages\/relay-machine$/.exec(String(url));
-      if (!m) return { ok: false, status: 404 } as any;
-      const accepted = await routers[m[1] === 'origin' ? O : P].relay(JSON.parse(init.body), 'machine');
-      return { ok: accepted, status: accepted ? 200 : 409 } as any;
+      if (!m) return new Response(JSON.stringify({ error: 'not found' }), { status: 404 });
+      const target = m[1] === 'origin' ? O : P;
+      const env = JSON.parse(init.body) as MessageEnvelope;
+      const r = await routers[target].relayFromMachine(env, init.headers['X-Machine-Id']);
+      const answer = { machineId: target, messageId: env.message.id, reqNonce: init.headers['X-Nonce'], ...(r.outcome === 'refused' ? { code: r.code } : {}) };
+      const sig = signRelayAnswer(answer, keys[target].privateKey);
+      if (r.outcome === 'refused') return new Response(JSON.stringify({ nack: answer, sig, code: r.code }), { status: 409 });
+      return new Response(JSON.stringify({ ok: true, ack: answer, sig }), { status: 200 });
     }) as any;
+    storeO = await makeRouter(O, { [O]: { status: 'active' }, [P]: { status: 'active' }, [R]: { status: 'revoked' } });
+    storeP = await makeRouter(P, { [O]: { status: 'active' }, [P]: { status: 'active' } });
+    await routers[O].startRelayQueue();
+    await routers[P].startRelayQueue();
     reportSpy = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
   });
 
@@ -108,12 +119,17 @@ describe('MessageRouter — cross-machine outcome honesty', () => {
   const sendTo = (machine: string) =>
     routers[O].send({ agent: 'echo', session: 's', machine: O }, { agent: 'echo', session: 'echo-topic-1', machine }, 'info', 'medium', 'hi', 'body');
 
+  const until = async (f: () => Promise<boolean>) => { for (let i = 0; i < 200; i++) { if (await f()) return; await new Promise((res) => setTimeout(res, 10)); } };
+
   it('relays to the mounted /api/messages/relay-machine route, so a paired peer receives it', async () => {
     const r = await sendTo(P);
-    expect(fetchCalls).toEqual(['http://peer.test:4042/api/messages/relay-machine']);
-    expect(r.phase).toBe('received');
-    expect(r.delivered).toBe(true);
+    // §D.5: a same-agent session message is queued for one pass and answered `relaying`;
+    // the signed ack from the peer then settles it as `received`.
+    expect(r.phase).toBe('relaying');
     expect(r.failureReason).toBeUndefined();
+    await until(async () => (await storeO.get(r.messageId))?.delivery.phase === 'received');
+    expect(fetchCalls).toEqual(['http://peer.test:4042/api/messages/relay-machine']);
+    expect((await storeO.get(r.messageId))!.delivery.phase).toBe('received');
     expect(await storeP.exists(r.messageId)).toBe(true);
     expect(reportSpy).not.toHaveBeenCalled();
   });

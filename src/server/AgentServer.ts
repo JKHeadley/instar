@@ -1,6 +1,10 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
+import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
+import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTitle.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
@@ -223,13 +227,18 @@ import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
 import { documentsReplaceViews, publishAsDocument, safeVerdict, systemDocumentLink, type ReadablePageDeps } from '../documents/readablePages.js';
-import { createDocumentPageRoutes } from './documentPageRoutes.js';
+import { createDocumentPageRoutes, notADocumentDevice, notADocumentDeviceRow } from './documentPageRoutes.js';
+import { documentDecisionRootOf } from './documentDecisionRoot.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
+import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
+import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLiveWiring.js';
+import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
-import { PinThrottle, normalizePinSource } from '../core/PinThrottle.js';
+import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
+import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
 import { setDocumentScopedSend, deviceRouteTakesBody } from './mobilePairingRoutes.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
@@ -244,7 +253,9 @@ import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { SameNetworkListener } from './sameNetworkListener.js';
+import { sameNetworkGate, homeAddressInUse } from './phoneSetupRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
 import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
@@ -383,10 +394,9 @@ import { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
 import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
-import { meteredKeysFromChains } from '../core/routingSpendView.js';
+import { meteredKeyDoors, knownMeteredKeyRefs } from '../core/routingSpendView.js';
 import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
 import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
-import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { buildInboundIdLedgerController } from '../threadline/InboundIdLedger.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -998,6 +1008,13 @@ export class AgentServer {
    * (docs/specs/money-layer-operator-enable-surface.md).
    */
   private moneyLayerEnableSurface: MoneyLayerEnableSurface | null = null;
+  /** gemini-payg-metered-lane: the lane's server pieces (built on every machine; dark until go-live). */
+  private geminiPaygLane: GeminiPaygLane | null = null;
+  /** gemini-payg §6: the lane runtime the mesh handlers and secret sync read. */
+  meteredLaneRuntime: MeteredLaneRuntime | null = null;
+  /** gemini-payg §8: the go-live, release gate and reduce-only routes (built on every machine). */
+  geminiPaygGoLive: GeminiPaygGoLive | null = null;
+  private geminiPaygTimer: ReturnType<typeof setInterval> | null = null;
   private moneyLayerAudit: MoneyLayerAuditLog | null = null;
   /** Read EARLY — the operator flag is half of MLE-1 and decides whether the money layer constructs at all. */
   private moneyLayerEnableStore: MoneyLayerEnableStore | null = null;
@@ -1382,6 +1399,8 @@ export class AgentServer {
      * never used and the loop is not started unless a test injects these.
      */
     mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
+    /** Same-network listener overrides for tests (identity A4): network observer, port, bind address, WSL. */
+    sameNetwork?: Pick<import('./sameNetworkListener.js').SameNetworkListenerDeps, 'observe' | 'port' | 'bindHost' | 'wsl' | 'announce' | 'machineName'>;
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
     triageNurse?: StallTriageNurse;
@@ -1630,6 +1649,8 @@ export class AgentServer {
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
     kickWorkingSetOnMachine?: (machineId: string, topic: number | string) => void;
+    /** Unroutable-owner release: the recorded owner can never be routed to (revoked / unregistered + silent). */
+    isOwnerUnroutable?: (machineId: string) => boolean;
     /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
      *  machine as the topic's owner when a topic-bound session is started here,
      *  so a peer's router never treats the topic as unowned and starts a second
@@ -1976,6 +1997,7 @@ export class AgentServer {
     this.dashboardSessionStore = new DashboardSessionStore(
       (this.config as { security?: { dashboardScopedToken?: Record<string, number> } }).security?.dashboardScopedToken,
     );
+    setDashboardSessionFamilyLookup((token) => this.dashboardSessionStore.familyIdForToken(token));
     // SEC-045: scheduled sweep so a dst_ family's streams close at its absolute deadline without
     // waiting for the next unlock to run prune(). Cheap no-op on an empty store; unref'd so it never
     // holds the event loop open.
@@ -2009,6 +2031,23 @@ export class AgentServer {
     // SEC-118-R1: an error answer to a request whose body was never read closes the connection
     // instead of draining the rest (mounted first so every refusal is covered).
     this.app.use(closeUnreadBodyOnError());
+    // takeover-ready-pool R1 (boot claim safety): Instar's response marker on EVERY response,
+    // errors included, so a peer probing this machine can tell "this machine's Instar answered"
+    // from a tunnel edge or any other server. A fingerprint bound to the machine id, not the id.
+    {
+      let marker: string | null | undefined;
+      const markerFor = (): string | null => {
+        if (marker !== undefined && marker !== null) return marker;
+        const id = options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null;
+        marker = id ? instarMachineMarker(id) : null;
+        return marker;
+      };
+      this.app.use((_req, res, next) => {
+        const m = markerFor();
+        if (m) res.setHeader(INSTAR_MACHINE_HEADER, m);
+        next();
+      });
+    }
 
     // Middleware
     // Claim observation has a much smaller privacy/cost boundary than the
@@ -2148,17 +2187,20 @@ export class AgentServer {
     // generated after AgentServer construction (first-boot timing issue).
     // Config values are checked at request time via this.config which may be
     // updated by LiveConfig/PostUpdateMigrator after construction.
-    const pinAttempts = new Map<string, { count: number; resetAt: number }>();
-    const MAX_ATTEMPTS = 5;
-    const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
     const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
-    let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
     // SEC-002: per-client throttle + known-browser (cookie) bypass + hard cap + owner alert.
     // Ships ON; `security.pinThrottle.enabled: false` restores the legacy limiter exactly.
     const pinThrottleCfg = configRef.security?.pinThrottle;
-    const pinThrottle = (pinThrottleCfg?.enabled !== false) ? new PinThrottle(pinThrottleCfg) : null;
+    // identity-security-piece1c: the throttle is always on. The old off switch is ignored (nothing
+    // sets it) and reported once, so a stale setting can never weaken PIN protection.
+    const pinThrottle: PinThrottle = new PinThrottle(pinThrottleCfg);
+    if (pinThrottleCfg?.enabled === false) {
+      DegradationReporter.getInstance().report({ feature: 'DashboardPin.throttleSetting',
+        primary: 'PIN guessing limits as configured', fallback: 'security.pinThrottle.enabled: false is ignored; the limits stay on',
+        reason: 'the legacy off switch was found in this agent\'s config', impact: 'None: PIN guessing limits stay on.', internalOnly: true });
+    }
     const markerTtlMs = pinThrottleCfg?.markerTtlMs ?? 30 * 24 * 60 * 60 * 1000;
     const tunnelHostForPin = (): string | null => {
       try { return options.tunnel?.url ? new URL(options.tunnel.url).host : null; } catch { return null; } // @silent-fallback-ok — an unparseable tunnel URL means there is no own-name tunnel host
@@ -2178,6 +2220,85 @@ export class AgentServer {
       let value: string;
       try { value = decodeURIComponent(hit.slice(PIN_MARKER_COOKIE.length + 1)); } catch { return null; } // @silent-fallback-ok — a malformed cookie is treated as no marker, never a 500
       return verifyPinMarker(configRef.authToken, value, Date.now());
+    };
+
+    // identity-security-piece1c: the public PIN budget, shared by sign-in and step-up (both are
+    // reachable without a bearer). Synchronous: admission, compare and charge happen with no await
+    // between them. One context per request; the route compares the PIN itself.
+    type PublicPinCtx = { ip: string; markerId: string | null; isLocalDirect: boolean; localUnmarked: boolean };
+    // Checked on the raw address, before normalizePinSource (which turns ::1 into a /64 key).
+    const isLoopbackSource = (a: string): boolean => a === '::1' || a.startsWith('127.') || a.startsWith('::ffff:127.') || a === 'v6/0:0:0:0';
+    const publicPinContext = (req: Request): PublicPinCtx => {
+      const host = String(req.headers.host ?? '');
+      const isLocalDirect = ownLoopbackHost(req, host, configRef.port);
+      const raw = callerAddress(req, viaOwnNameForPin(host));
+      // A loopback request that is not the machine itself and carries no own-tunnel client header is
+      // unattributable (localtunnel, relays): charged to the global budget only, never to a shared key.
+      // A same-network arrival (identity A4) is never loopback; its address is already rewritten to sn:<addr>.
+      const ip = mayBeLocalArrival(req) && !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
+      const markerId = readPinMarker(req);
+      return { ip, markerId, isLocalDirect, localUnmarked: isLocalDirect && !markerId };
+    };
+    /** True when the attempt may reach the compare; otherwise the 429 is already sent. */
+    const publicPinAdmit = (c: PublicPinCtx, res: Response, now: number): boolean => {
+      if (c.localUnmarked && localPinBlocked(now)) {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
+        });
+        return false;
+      }
+      if (c.isLocalDirect && !c.markerId) return true;
+      const decision = pinThrottle.consult(c.ip, c.markerId, now);
+      if (!decision.allow) {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
+        return false;
+      }
+      if (!c.isLocalDirect && !c.markerId) {
+        // Durable cross-restart backstops, never applied to a known browser: the real client's own
+        // budget, and the shared unmarked budget (a restart no longer resets it).
+        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+          res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
+            ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
+            : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
+          return false;
+        }
+      }
+      return true;
+    };
+    const publicPinFailure = (c: PublicPinCtx, now: number): void => {
+      if (!c.isLocalDirect || c.markerId) {
+        const { alert } = pinThrottle.recordFailure(c.ip, c.markerId, now);
+        if (!c.isLocalDirect && !c.markerId) {
+          if (c.ip) this.pinAttemptStore?.recordFailure(c.ip);
+          this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
+        }
+        if (alert) {
+          // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
+          DegradationReporter.getInstance().report({
+            feature: 'DashboardPin.bruteForce',
+            primary: 'An attack on the dashboard PIN is under way',
+            fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
+            reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
+            impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
+          });
+        }
+      }
+      if (c.localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+        lastLocalPinAlertAt = now;
+        DegradationReporter.getInstance().report({
+          feature: 'DashboardPin.localGuessing',
+          primary: 'Repeated wrong PINs are being entered from this machine itself',
+          fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
+          reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
+          impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
+        });
+      }
+    };
+    /** A correct PIN clears only this source's own counters, never a shared budget. */
+    const publicPinSuccess = (c: PublicPinCtx): void => {
+      pinThrottle.recordSuccess(c.ip, c.markerId);
+      if (c.ip) this.pinAttemptStore?.recordSuccess(c.ip);
     };
 
     // One rule for whether this connection may unlock, shared by the unlock route
@@ -2230,70 +2351,10 @@ export class AgentServer {
       }
 
       const now = Date.now();
-      const host = String(req.headers.host ?? '');
-      // Genuinely-local request (owner at the machine): loopback + no cf-connecting-ip + local Host.
-      // Exempt from the throttle so the hard cap never refuses the owner's out-of-band recovery.
-      const isLocalDirect = ownLoopbackHost(req, host, configRef.port);
-      // The REAL client (cf-connecting-ip only through our own cloudflared), collapsed to its /64.
-      const ip = pinThrottle
-        ? normalizePinSource(callerAddress(req, viaOwnNameForPin(host)))
-        : (req.ip || req.socket.remoteAddress || 'unknown');
-      const markerId = readPinMarker(req);
-      let entry: { count: number; resetAt: number } | undefined;
-
-      // SEC-070: a local caller without a prior-unlock marker gets its OWN small budget. Other
-      // processes on this machine (including confined sessions, which share the loopback) are
-      // local too, so local must not mean unlimited. A browser that unlocked before (signed
-      // marker) is never capped, and this budget is separate from the remote one, so a stranger
-      // elsewhere can never lock the owner out at the machine.
-      const localUnmarked = isLocalDirect && !markerId;
-      if (pinThrottle && localUnmarked && localPinBlocked(now)) {
-        res.status(429).json({
-          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
-          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
-        });
-        return;
-      }
-      // A local browser that unlocked before is judged on its own marker, exactly like a known
-      // remote browser: its gentle backoff and the marked abuse cap apply, so a copied marker
-      // cookie is not an unlimited pass from this machine.
-      if (pinThrottle && isLocalDirect && markerId) {
-        const decision = pinThrottle.consult(ip, markerId, now);
-        if (!decision.allow) {
-          res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
-          return;
-        }
-      }
-
-      if (pinThrottle) {
-        if (!isLocalDirect) {
-          const decision = pinThrottle.consult(ip, markerId, now);
-          if (!decision.allow) {
-            res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
-            return;
-          }
-          // Durable cross-restart backstop, keyed by the REAL client (not the shared loopback) and
-          // never applied to a known browser — so it cannot reintroduce the owner lockout.
-          if (!markerId && this.pinAttemptStore?.blocked(ip)) {
-            res.status(429).json({ error: 'Too many attempts. Try again later.' });
-            return;
-          }
-        }
-      } else {
-        // Legacy limiter (rollback path, security.pinThrottle.enabled=false): unchanged.
-        if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-        if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
-          || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-          res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
-          return;
-        }
-        entry = pinAttempts.get(ip);
-        if (entry && now > entry.resetAt) { pinAttempts.delete(ip); entry = undefined; }
-        if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
-          res.status(429).json({ error: 'Too many attempts. Try again later.' });
-          return;
-        }
-      }
+      // identity-security-piece1c: the public PIN budget (shared with step-up). Admission first, so
+      // a refused attempt is never compared.
+      const pinCtx = publicPinContext(req);
+      if (!publicPinAdmit(pinCtx, res, now)) return;
 
       const { pin } = req.body;
       if (!pin || typeof pin !== 'string') {
@@ -2304,46 +2365,8 @@ export class AgentServer {
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
-        if (pinThrottle) {
-          if (!isLocalDirect) {
-            const { alert } = pinThrottle.recordFailure(ip, markerId, now);
-            // Durable backstop records only unmarked (stranger) failures by real client.
-            if (!markerId) this.pinAttemptStore?.recordFailure(ip);
-            if (alert) {
-              // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
-              DegradationReporter.getInstance().report({
-                feature: 'DashboardPin.bruteForce',
-                primary: 'An attack on the dashboard PIN is under way',
-                fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
-                reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
-                impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
-              });
-            }
-          }
-          if (isLocalDirect && markerId) pinThrottle.recordFailure(ip, markerId, now);
-          if (localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
-            lastLocalPinAlertAt = now;
-            DegradationReporter.getInstance().report({
-              feature: 'DashboardPin.localGuessing',
-              primary: 'Repeated wrong PINs are being entered from this machine itself',
-              fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
-              reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
-              impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
-            });
-          }
-          res.status(403).json({ error: 'Incorrect PIN' });
-          return;
-        }
-        // Legacy failure tracking (rollback path).
-        if (!entry) { entry = { count: 0, resetAt: now + WINDOW_MS }; pinAttempts.set(ip, entry); }
-        entry.count++;
-        globalPinAttempts.count++;
-        const remaining = this.pinAttemptStore?.recordFailure(ip) ?? (MAX_ATTEMPTS - entry.count);
-        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
-        res.status(403).json({
-          error: 'Incorrect PIN',
-          attemptsRemaining: remaining,
-        });
+        publicPinFailure(pinCtx, now);
+        res.status(403).json({ error: 'Incorrect PIN' });
         return;
       }
 
@@ -2357,22 +2380,14 @@ export class AgentServer {
           configRef.dashboardPin=policy.pin;configRef.dashboardPinGeneration=policy.generation;
         }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
       }
-      if (pinThrottle) {
-        // The local count is NOT reset by a success: an owner's unlock must not hand a guessing
-        // program a fresh budget (the same choice as the remote global budget).
-        pinThrottle.recordSuccess(ip, markerId);
-        this.pinAttemptStore?.recordSuccess(ip);
-        // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
-        // stranger cap). Signed, httpOnly, Secure, SameSite=Strict, agent-bound, expiring.
-        if (configRef.authToken) {
-          const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
-          res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
-        }
-      } else {
-        pinAttempts.delete(ip);
-        this.pinAttemptStore?.recordSuccess(ip);
-        globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-        this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
+      // The local count and the global budget are NOT reset by a success: an owner's unlock must not
+      // hand a guessing program a fresh budget.
+      publicPinSuccess(pinCtx);
+      // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
+      // stranger cap). Signed, httpOnly, Secure, SameSite=Strict, agent-bound, expiring.
+      if (configRef.authToken) {
+        const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
+        res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
       }
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
@@ -2445,38 +2460,29 @@ export class AgentServer {
       res.json({ revoked: true, scope: 'this-agent' });
     });
     // Fresh-PIN step-up for credential operations. It verifies the LIVE PIN, so it MUST share the
-    // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It consumes the
-    // SAME per-client + global budget (pinAttempts / globalPinAttempts / durable PinAttemptStore),
-    // keyed identically to /dashboard/unlock, and is gated behind the enabled flag.
+    // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It uses the
+    // SAME public budget helpers as /dashboard/unlock (identity-security-piece1c), and is gated
+    // behind the enabled flag.
     this.app.post('/dashboard/session/step-up', (req: Request, res: Response) => {
       if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
       if (unlockRefusedHere(req)) { res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' }); return; }
       if (!configRef.dashboardPin) { res.status(503).json({ error: 'PIN authentication not yet available.' }); return; }
+      // identity-security-piece1c: step-up is reachable without a bearer (the dashboard calls it with
+      // its cookie only), so it is on the public budget, exactly as sign-in: the owner's browser is
+      // judged on its own remembered-browser cookie and strangers cannot drain it.
       const now = Date.now();
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return;
-      }
-      let entry = pinAttempts.get(ip);
-      if (entry && now > entry.resetAt) { pinAttempts.delete(ip); entry = undefined; }
-      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
-        res.status(429).json({ error: 'Too many attempts. Try again later.' }); return;
-      }
+      const pinCtx = publicPinContext(req);
+      if (!publicPinAdmit(pinCtx, res, now)) return;
       const { pin } = req.body ?? {};
       if (!pin || typeof pin !== 'string') { res.status(400).json({ error: 'Missing PIN' }); return; }
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
-        if (!entry) { entry = { count: 0, resetAt: now + WINDOW_MS }; pinAttempts.set(ip, entry); }
-        entry.count++; globalPinAttempts.count++;
-        this.pinAttemptStore?.recordFailure(ip);
-        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
+        publicPinFailure(pinCtx, now);
         res.status(403).json({ error: 'Incorrect PIN' });
         return;
       }
-      pinAttempts.delete(ip);
-      this.pinAttemptStore?.recordSuccess(ip);
+      publicPinSuccess(pinCtx);
       const proof = this.dashboardStepUpSessions.issue();
       res.json({ stepUpToken: proof.token, stepUpExpiresAt: proof.expiresAt });
     });
@@ -2561,6 +2567,30 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The same-network listener for a first phone at home (identity A4): built here, closed until
+    // the owner asks at the computer; `mobilePairing.sameNetwork.enabled: false` is its kill switch.
+    if ((this.config.mobilePairing as { sameNetwork?: { enabled?: unknown } } | undefined)?.sameNetwork?.enabled !== false && this.config.stateDir) {
+      const svc = this.mobilePairing;
+      const listener: SameNetworkListener = new SameNetworkListener({
+        stateDir: this.config.stateDir,
+        agentName: String(this.config.projectName ?? 'agent'),
+        mainPort: this.config.port,
+        app: this.app,
+        gate: sameNetworkGate({
+          device: (id) => svc.devices.get(id),
+          deviceRoute: (method, pathNorm) => DEVICE_ALLOWLIST.some((r) => r.method === method && r.re.test(pathNorm)),
+          ownHost: () => (listener.listening() ? listener.host() : null),
+        }),
+        inUse: () => homeAddressInUse(svc),
+        ...(options.sameNetwork ?? {}),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'serve the agent\'s home address for a phone on the same network',
+          fallback: 'the home address stays closed', reason: err instanceof Error ? err.message : String(err),
+          impact: 'A phone added at home cannot reach the agent until the address opens again.',
+        }),
+      });
+      svc.sameNetwork = listener;
+    }
     // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
     mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
@@ -3376,7 +3406,11 @@ export class AgentServer {
               retentionDays: rsCfg?.providerReportRetentionDays ?? 400,
             });
             this.providerCostReportStore.prune(); // boot prune (batched — scal-F4)
-            const doorToKey = new Map(meteredKeysFromChains().map((m) => [m.door, m.keyRef]));
+            // gemini-payg §2: metered keys come from the caps store + defaults, never
+            // the routing chains (which no longer carry a metered gemini position).
+            const doorToKey = new Map(
+              meteredKeyDoors().filter((m) => !m.retired).map((m) => [m.door, m.keyRef]),
+            );
             const sweep = new ProviderReconciliationSweep({
               store: this.providerCostReportStore,
               // Internal-derived per (keyRef, door): the metered doors' daily token
@@ -3451,6 +3485,17 @@ export class AgentServer {
             this.meteredSpendLedger = new MeteredSpendLedger({
               stateDir: options.config.stateDir,
               reserveTtlMs: moneyCfg?.reserveTtlMs,
+              // The current period zone per key comes from the PIN caps store
+              // (gemini-payg §5); rows keep the period they were charged to.
+              zoneForKey: (keyRef) => {
+                try {
+                  return this.routingSpendCapsStore?.read().caps[keyRef]?.periodTimeZone;
+                } catch {
+                  // @silent-fallback-ok: an unreadable store makes the gate fail closed
+                  // on its own read; here it only picks which period the totals view rolls to.
+                  return undefined;
+                }
+              },
             });
             this.routingSpendCapsStore = new RoutingSpendCapsStore({
               stateDir: options.config.stateDir,
@@ -3459,11 +3504,16 @@ export class AgentServer {
               // METERED_ROUTING_DOORS / DEFAULT_METERED_CAPS: those drive the
               // operator's arming UI, the spend summaries and the bench coverage
               // map, and the probe door must appear in none of them (T41).
-              knownKeyRefs: new Set([...Object.keys(DEFAULT_METERED_CAPS), PROBE_KEY_REF]),
+              // Retired keyRefs (metered_gemini_bench) stay known so an existing
+              // caps file holding one loads unchanged (gemini-payg §10).
+              knownKeyRefs: new Set([...knownMeteredKeyRefs(), PROBE_KEY_REF]),
               knownDoors: new Set([...METERED_ROUTING_DOORS, PROBE_DOOR] as string[]),
             });
             this.spendPlanStore = new RenderedPlanStore();
-            const machineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+            // gemini-payg §6: the money layer's machine id is the MESH id. `config.machineId`
+            // is unset on most agents, so the old fallback made every machine of a pool call
+            // itself 'single-machine' — and pass the designation check together.
+            const machineId = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
             // The reserved cap-gate probe door, installed idempotently so the
             // readiness probe has an ordinary live door to be refused by.
             this.routingSpendCapsStore.ensureProbeDoor(machineId);
@@ -3484,7 +3534,10 @@ export class AgentServer {
                   // lands with the metered dispatch seam — until then the gate
                   // SELF-FENCES (fails closed) there, the safe direction, matching
                   // the spec's own "paid routing is single-machine until D".
-                  leaseConfirmedAgoMs: () => (poolOn ? null : 0),
+                  // gemini-payg §6: on a pool, the holder's active designation echo
+                  // (MeteredLaneRuntime) is the positive confirmation; absent or unknown
+                  // ⇒ null, which still self-fences.
+                  leaseConfirmedAgoMs: () => (poolOn ? (this.meteredLaneRuntime?.leaseConfirmedAgoMs() ?? null) : 0),
                 })
               : null;
             // Reserve-expiry sweep: at boot + cadence (money-side; takes the per-key mutex).
@@ -3735,7 +3788,7 @@ export class AgentServer {
       const enableStore = this.moneyLayerEnableStore ?? new MoneyLayerEnableStore({ stateDir: options.config.stateDir });
       this.moneyLayerEnableStore = enableStore;
       const enableAudit = new MoneyLayerAuditLog({ stateDir: options.config.stateDir });
-      const surfaceMachineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      const surfaceMachineId = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
       this.moneyLayerAudit = enableAudit;
       this.moneyLayerEnableSurface = new MoneyLayerEnableSurface({
         store: enableStore,
@@ -3763,6 +3816,8 @@ export class AgentServer {
         lockHeld: () => options.singleInstanceLock?.revalidate() ?? false,
         settlingCount: () => this.meteredSpendLedger?.outstandingReserveCount() ?? 0,
         limits: (options.config as { routingSpend?: { money?: { limits?: Record<string, number> } } }).routingSpend?.money?.limits,
+        // gemini-payg §8: late-bound — the go-live is built after the lane, below.
+        geminiPayg: () => this.geminiPaygGoLive?.port ?? null,
       });
       if (this.moneyConstructionFailure) {
         enableStore.recordFailure('construction-failed', `money-layer-init:${this.moneyConstructionFailure.slice(0, 200)}`);
@@ -3779,6 +3834,132 @@ export class AgentServer {
       // must not die because one surface failed to construct.
       console.error('[instar] money-layer enable surface init FAILED (its routes will 503):', err);
       this.moneyLayerEnableSurface = null;
+    }
+
+    // gemini-payg-metered-lane: build the lane on EVERY machine. A non-holder needs it to
+    // forward reviews and second opinions whatever its own money state (§6); every read is
+    // a late-bound closure, so nothing here captures freeze/serving/designation at boot.
+    try {
+      const laneSelf = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      this.geminiPaygLane = buildGeminiPaygLane({
+        stateDir: options.config.stateDir,
+        selfMachineId: laneSelf,
+        capsStore: () => this.routingSpendCapsStore,
+        gate: () => this.meteredSpendGate,
+        ledger: () => this.meteredSpendLedger,
+        servingReady: () => this.moneyLayerEnableSurface?.servingReady() ?? false,
+        peers: () => {
+          const lanePool = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
+          const mgr = options.coordinator?.managers?.identityManager;
+          // A pool agent with no readable registry is UNKNOWN (null), which fences — never "single machine".
+          if (!mgr) return lanePool ? null : [];
+          try {
+            return mgr.getActiveMachines().map((m) => m.machineId).filter((id) => id !== laneSelf);
+          } catch { return null; } // @silent-fallback-ok — unreadable registry is unknown, which fences
+        },
+        isLiveSession: (name) => {
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; } /* @silent-fallback-ok: an unverifiable session is recorded as self-reported, never trusted */
+        },
+        reviewRoots: () => [path.dirname(options.config.stateDir)],
+        // §5/§9: every lane notice goes to the spend-alert voice through the go-live's
+        // notices (late-bound: the go-live is built just below). Logged as well.
+        notify: (kind, message, meta) => {
+          console.error(`[instar] gemini-payg ${kind}: ${message}`);
+          this.geminiPaygGoLive?.laneNotify(kind, message, meta);
+        },
+        onRefusal: (err) => this.geminiPaygGoLive?.onRefusal(err),
+        releaseProof: async (origin, payload) => this.geminiPaygGoLive
+          ? this.geminiPaygGoLive.releaseProofForwarded(origin, payload)
+          : { status: 503, body: { status: 'unavailable', reason: 'release-recorder-unavailable' } },
+        renderSetup: async (requestedBy) => {
+          if (!this.geminiPaygGoLive) throw new Error('gemini-payg go-live unavailable');
+          return this.geminiPaygGoLive.renderForPeer(requestedBy);
+        },
+      });
+      this.meteredLaneRuntime = this.geminiPaygLane.runtime;
+      this.meteredLaneRuntime.resumePendingStops();
+      const lanePoolOn = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
+      if (lanePoolOn) this.meteredLaneRuntime.startEcho();
+
+      // gemini-payg §8: the go-live (setup plan port, pending-intent apply, release gate,
+      // reduce-only routes, the lane's notices). Built on every machine; dark until the
+      // operator's one PIN commit.
+      const lane = this.geminiPaygLane;
+      const lanePeers = () => {
+        const mgr = options.coordinator?.managers?.identityManager;
+        if (!mgr) return [] as string[];
+        try { return mgr.getActiveMachines().map((m) => m.machineId).filter((id) => id !== laneSelf); } catch { return [] as string[]; } // @silent-fallback-ok — used only for "is this a multi-machine agent"; unknown peers keep (b)/(e) required below
+      };
+      this.geminiPaygGoLive = buildGeminiPaygGoLive({
+        stateDir: options.config.stateDir,
+        selfMachineId: laneSelf,
+        selfMachineName: (options.config as { machineNickname?: string }).machineNickname ?? null,
+        lane,
+        capsStore: () => this.routingSpendCapsStore,
+        ledger: () => this.meteredSpendLedger,
+        prices: () => this.routingPriceAuthority,
+        servingReady: () => this.moneyLayerEnableSurface?.servingReady() ?? false,
+        moneyAudit: () => this.moneyLayerAudit,
+        failoverThresholdMs: () => ((options.config as { multiMachine?: { failoverTimeoutMinutes?: number } }).multiMachine?.failoverTimeoutMinutes ?? 15) * 60_000,
+        // A pool agent counts as multi-machine even when its registry is momentarily empty,
+        // so checks (b) and (e) can never be skipped by an unreadable registry.
+        multiMachine: () => lanePoolOn || lanePeers().length > 0,
+        isLiveSession: (name) => {
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; }
+        },
+        deliverNotice: (n) => this.deliverGeminiPaygNotice(n),
+        openCard: (c) => {
+          try {
+            const rt = options.workBoard?.();
+            if (!rt) return false;
+            const r = rt.svc.createCard({ kind: 'agent' }, {
+              title: c.title,
+              need: c.need,
+              recommendation: c.recommendation,
+              whyYou: c.whyYou,
+              doneWhen: c.doneWhen,
+              ...(c.link && c.link.startsWith('https://') ? { links: [{ url: c.link, label: 'The prefilled plan on the Spend tab' }] } : {}),
+            });
+            return r.ok === true;
+          } catch (err) { // @silent-fallback-ok: logged; the caller reports the card as not opened
+            console.error(`[instar] gemini-payg: the Work Board card could not be opened: ${String(err)}`);
+            return false;
+          }
+        },
+        spendTabLink: () => {
+          const base = options.tunnel?.url ?? null;
+          return base ? `${base.replace(/\/$/, '')}/dashboard?tab=spend` : null;
+        },
+        verifyLiveTest: options.liveTestRunnerCtx
+          ? (ref) => {
+              const v = options.liveTestRunnerCtx!.artifactStore.verifyEntry(ref.featureId, ref.runId);
+              if (!v.ok) return { ok: false, reason: v.reason };
+              const allPass = (v.artifact?.scenarios ?? []).length > 0 && v.artifact!.scenarios.every((sc) => sc.verdict === 'PASS');
+              return allPass ? { ok: true } : { ok: false, reason: 'not every scenario passed' };
+            }
+          : null,
+      });
+      this.geminiPaygGoLive.setRenderer(() => {
+        const surface = this.moneyLayerEnableSurface;
+        if (!surface) throw new Error('money-layer enable surface unavailable');
+        return surface.renderPlanAsync('gemini-payg-setup');
+      });
+      // §8 "Apply": the pending intent is applied by the money layer itself, before this
+      // server serves. A failed apply freezes the door and notices once — never a crash.
+      if (this.routingSpendCapsStore) {
+        const applied = this.geminiPaygGoLive.applyPending(this.routingSpendCapsStore);
+        if (applied.kind !== 'none') console.log(`[instar] gemini-payg go-live intent: ${applied.kind}${applied.kind === 'failed' ? ` (${applied.reason})` : ''}`);
+      }
+      this.geminiPaygGoLive.notices.start();
+      const goLive = this.geminiPaygGoLive;
+      this.geminiPaygTimer = setInterval(() => { void goLive.checkMonth().catch(() => undefined); } /* @silent-fallback-ok: retried every 5 minutes */, 5 * 60_000);
+      this.geminiPaygTimer.unref?.();
+    } catch (err) {
+      // @silent-fallback-ok: NOT silent — logged; the lane's routes are then absent and
+      // nothing can spend (the gate still requires the runtime's lease confirmation).
+      console.error('[instar] gemini-payg lane init FAILED (lane unavailable):', err);
+      this.geminiPaygLane = null;
+      this.meteredLaneRuntime = null;
     }
 
     // Close-the-Loop action reach: the dated overdue checker cannot see pending
@@ -4128,6 +4309,7 @@ export class AgentServer {
                   windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000,
                   { video: resolveWindowsDesktopVideo(options.config) });
               })();
+          const desktopAudit = new DesktopAccessAudit(options.config.stateDir);
           this.directDesktopAccess = new DirectDesktopAccess(
           this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),
           { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
@@ -4148,7 +4330,7 @@ export class AgentServer {
           },
           grantId => this.desktopStreamManager?.closeGrant(grantId),
           Date.now,
-          new DesktopAccessAudit(options.config.stateDir),
+          desktopAudit,
           'pin',
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
           this.desktopLockedController,
@@ -4171,6 +4353,7 @@ export class AgentServer {
             machineLabel: label, machineId: this.meshSelfId,
             probe: () => access.probe(),
             sourceHash: () => helperRetention.currentSourceHash(),
+            recentlyUsed: () => desktopAudit.hasStartWithin(30 * 24 * 60 * 60_000),
             // An agent that cannot post must leave the notice for one that can.
             claim: () => !!telegram && helperRetention.claimNotice(),
             release: () => helperRetention.releaseNotice(),
@@ -6607,6 +6790,8 @@ export class AgentServer {
       spendPlanStore: this.spendPlanStore,
       moneyLayerEnableSurface: this.moneyLayerEnableSurface,
       moneyLayerAudit: this.moneyLayerAudit,
+      geminiPaygGoLive: this.geminiPaygGoLive,
+      meteredLaneRuntime: this.meteredLaneRuntime,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
@@ -6928,6 +7113,7 @@ export class AgentServer {
       sendDrain: options.sendDrain ?? null,
       autonomousRunOnMachine,
       kickWorkingSetOnMachine,
+      isOwnerUnroutable: options.isOwnerUnroutable ?? null,
       claimTopicOwnershipOnSpawn: options.claimTopicOwnershipOnSpawn ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
@@ -7661,6 +7847,11 @@ export class AgentServer {
     options.viewer?.setNewViewGuard?.(() => this.documentsReplaceViews());
     // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
     this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
+    // gemini-payg-metered-lane: POST /intelligence/gemini, /intelligence/gemini/review,
+    // GET /intelligence/gemini/status (behind the Bearer middleware; loopback-only inside).
+    if (this.geminiPaygLane) this.app.use(this.geminiPaygLane.router);
+    // gemini-payg §4/§8/§9: key handoff, proposal, release proof, reduce-only stops, reconciliation.
+    if (this.geminiPaygGoLive) this.app.use(this.geminiPaygGoLive.router);
     // Linking a member's computer from their own phone (§3.6a), and that computer's one allowed send.
     {
       const pageDeps = this.documentPageDeps(options);
@@ -7763,6 +7954,11 @@ export class AgentServer {
         }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
+      /** topicId → the Chief of Staff's project title, read per call (a failed read just means no fallback). */
+      const cosProjectTitles = (): Map<number, string> => {
+        try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
+        catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
+      };
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
@@ -7784,10 +7980,14 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
+        telegramTopics: options.telegram ? () => {
+          // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
+          const projectTitles = cosProjectTitles();
+          return options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
-        }) : undefined,
+          return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
+          });
+        } : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
@@ -7795,7 +7995,7 @@ export class AgentServer {
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
         topicMemory: () => options.topicMemory ?? null,
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: m.topicName })) : undefined,
+        telegramTopics: options.telegram ? () => { const projectTitles = cosProjectTitles(); return options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) })); } : undefined,
         telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
           return row ? telegramRowId(row) : null;
@@ -9584,6 +9784,8 @@ export class AgentServer {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
         bootReadiness().markReady();
+        // Identity A4: reopen the home address only if the owner had asked and the network is an allowed one.
+        void this.mobilePairing?.sameNetwork?.start().catch((err) => console.warn('[instar] same-network listener start failed:', err));
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {
@@ -10135,6 +10337,7 @@ export class AgentServer {
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
+    await this.mobilePairing?.sameNetwork?.stop().catch(() => { /* @silent-fallback-ok — closing a listener that is already gone */ });
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
     this.conversationEmbeddings?.feeder.stop();
@@ -10350,6 +10553,7 @@ export class AgentServer {
     if (this.featureMetricsPruneTimer) {
       try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      try { if (this.geminiPaygTimer) clearInterval(this.geminiPaygTimer); this.geminiPaygGoLive?.notices.stop(); this.meteredLaneRuntime?.stopEcho(); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.spendAlertTimer) clearInterval(this.spendAlertTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { await this.spendAlertDispatcher?.flushDigest(); } catch { /* @silent-fallback-ok: a failed final digest flush loses only a coalesced NOTICE at shutdown */ }
       try { if (this.reconSweepTimer) clearInterval(this.reconSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
@@ -10753,10 +10957,10 @@ export class AgentServer {
   }
 
   /** A device's activation from the replicated key ledger: the one for this key, else its newest live key. */
-  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; client?: 'browser' } | null {
+  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; host?: string; client?: 'browser' } | null {
     const ledger = this.mobilePairing?.keyLedger;
     if (!ledger) return null;
-    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; client?: 'browser' } | null = null;
+    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; host?: string; client?: 'browser' } | null = null;
     for (const r of ledger.rows()) {
       if (r.type !== 'activation' || r.deviceId !== deviceId) continue;
       if (keyHash ? r.keyHash !== keyHash : ledger.isRevoked(r.keyHash, deviceId)) continue;
@@ -10943,17 +11147,11 @@ export class AgentServer {
   documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
     const svc = this.mobilePairing;
     if (!svc) return null;
-    let d = svc.devices.get(deviceId);
-    if (!d || !activeOwnerPhone(svc, deviceId) || !d.presenceKey) return null;
-    for (let depth = 0; depth < 8 && d; depth++) {
-      if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;
-      const via = d.approvedVia ?? 'telegram-dm';
-      if (via === 'owner-phone') { d = d.approvedBy ? svc.devices.get(d.approvedBy) : null; continue; }
-      if (via === 'telegram-dm') return 'telegram';
-      if (via === 'dashboard-pin') return this.documentAgentHasTelegramOwner() ? null : 'pin';
-      return null;
-    }
-    return null;
+    return documentDecisionRootOf({
+      device: (id) => svc.devices.get(id),
+      activeOwnerPhone: (id) => activeOwnerPhone(svc, id),
+      agentHasTelegramOwner: () => this.documentAgentHasTelegramOwner(),
+    }, deviceId);
   }
 
   private documentAgentHasTelegramOwner(): boolean {
@@ -11083,6 +11281,10 @@ export class AgentServer {
         const d = svc.devices.get(deviceId);
         if (d) {
           if (d.status !== 'active') return null;
+          // Identity A4: a phone paired on the home address works only on that listener (no document
+          // page there), and a phone let in at the computer has no approval power until piece 3b (a
+          // document decision is one). Neither is a document device.
+          if (notADocumentDevice(d)) return null;
           // A member's linked computer is valid only while its link is (expiry, the linking phone).
           if (d.scope && (!linkStillValid(d, svc, Date.now()) || !svc.browserOn())) return null;
           const key = deviceKeyOf(d) ?? null;
@@ -11095,6 +11297,9 @@ export class AgentServer {
         // reads and writes work on any awake machine, nothing needs re-approval after a lease move).
         const act = this.documentLedgerActivation(deviceId);
         if (!act) return null;
+        // The same rule from the replicated row: let in at the computer, or paired on a home address
+        // (`<name>.local:<port>`, the only hosts that end that way).
+        if (notADocumentDeviceRow(act)) return null;
         const k = this.documentDeviceKey(deviceId, act.keyHash);
         if (k.status !== 'ok' || k.role === 'unknown') return null;
         const standing = k.role === 'person' && k.personKey ? svc.teamStanding(k.personKey) : null;
@@ -11420,6 +11625,30 @@ export class AgentServer {
    * machine-local persisted record AND the pool-published registry field
    * (FD-6 — a future serving-lease holder inherits the id, never re-creates).
    */
+  /**
+   * gemini-payg §5 notices → the approved "💰 Routing & Spend Alerts" voice: the
+   * Increment-C dispatcher when it is up (its lanes, dedupe and dryRun soak), else the
+   * Increment-B resolver. Security-class and money-critical notices ride the money lane.
+   */
+  private async deliverGeminiPaygNotice(n: { kind: string; dedupeKey: string; text: string; urgent: boolean }): Promise<boolean> {
+    const kind = n.kind === 'month-full' ? 'cap-hit' : n.kind === 'invoice-drift' ? 'recon-drift' : n.urgent ? 'holder-dead' : 'door-dark';
+    try {
+      if (this.spendAlertDispatcher) {
+        const r = await this.spendAlertDispatcher.dispatch({ kind, dedupeKey: n.dedupeKey, text: n.text } as Parameters<SpendAlertDispatcher['dispatch']>[0]);
+        return r.decision === 'sent' || r.decision === 'sent-lifeline' || r.decision === 'queued-durable' || r.decision === 'quiet-recorded';
+      }
+      if (this.spendAlertResolver) {
+        const r = await this.spendAlertResolver.emit({ kind: 'observed-drift', dedupeKey: n.dedupeKey, text: n.text });
+        return r === 'sent' || r === 'sent-lifeline' || r === 'quiet-recorded';
+      }
+    } catch (err) { // @silent-fallback-ok: logged; the notice layer keeps it held for retry
+      console.error(`[instar] gemini-payg notice could not be delivered (${n.kind}): ${String(err)}`);
+      return false;
+    }
+    console.error(`[instar] gemini-payg notice (${n.kind}, no spend-alert channel on this machine): ` + n.text);
+    return false;
+  }
+
   private buildSpendAlertResolver(
     tg: TelegramAdapter,
     config: { stateDir: string; machineId?: string; routingSpend?: { alerts?: { telegramTopicId?: number | null } } },
