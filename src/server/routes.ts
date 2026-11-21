@@ -885,6 +885,7 @@ import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
+import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
 
 /**
  * Build the /whoami request handler.
@@ -38940,6 +38941,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             + 'pays, or admit a session lane that spends against an unmetered pool. Set them in '
             + '.instar/config.json (or via the '
             + 'per-framework env lever) so the change is an operator act on the machine.',
+        });
+        return;
+      }
+    }
+
+    // ── ORIGIN AND ROUTING FENCE (SEC-151): the public address, the relay addresses, what a
+    // peer-started session may touch, and which framework runs. The config file only.
+    {
+      const fencedPaths = operatorOnlyPathsInPatch(patch);
+      if (fencedPaths.length > 0) {
+        res.status(400).json({
+          error: `${fencedPaths.join(', ')} ${fencedPaths.length === 1 ? 'is' : 'are'} not patchable via the API — `
+            + 'these decide where the agent is reachable or connects, what a peer-started session may do, or which '
+            + 'framework runs. Set them in .instar/config.json so the change is an operator act on the machine.',
+          fenced: fencedPaths,
         });
         return;
       }
