@@ -66,8 +66,38 @@ describe('never-editable deny list — case folding (round-14)', () => {
     }
   });
 
+  it('SEC-144: denies the hook settings, hook scripts, scripts, job definitions and MCP config, any case', () => {
+    for (const p of [
+      '.claude/settings.json',
+      '.claude/Settings.json',
+      '.claude/settings.local.json',
+      '.instar/hooks/instar/session-start.sh',
+      '.instar/Hooks/instar/stop-gate-router.js',
+      '.instar/scripts/telegram-reply.sh',
+      '.instar/jobs.json',
+      '.instar/jobs/user/nightly-report.md',
+      '.mcp.json',
+      '.MCP.json',
+      '.instar/jobs/schedule/nightly-report.json',
+      '.codex/config.toml',
+      '.gemini/settings.json',
+      '.husky/pre-push',
+      // The same files inside a worktree, whose sessions load that copy.
+      '.worktrees/feature-x/.claude/settings.json',
+      '.worktrees/feature-x/.instar/hooks/instar/session-start.sh',
+      '.worktrees/feature-x/.mcp.json',
+      // A sibling backup of a fenced file, and a Windows-style path.
+      '.mcp.json.bak',
+      '.instar\\hooks\\instar\\session-start.sh',
+    ]) {
+      expect(neverEditable(p), `expected ${p} to be refused`).toBe(true);
+    }
+  });
+
   it('CONTROL: an ordinary editable file is not refused', () => {
     expect(neverEditable('docs/specs/some-spec.md')).toBe(false);
     expect(neverEditable('.claude/skills/spec-converge/SKILL.md')).toBe(false);
+    expect(neverEditable('.instar/MEMORY.md')).toBe(false);
+    expect(neverEditable('.instar/jobs/README.md')).toBe(false);
   });
 });
