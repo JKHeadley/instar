@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2-project-label",
+  "sessionId": "5c9f2279-f637-41e4-8655-2e705082de13",
+  "timestamp": "2026-11-21T01:40:01.808Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2-project-label.md",
+  "artifactSha256": "061b01d657fbd7af70c4f5e8f4be59480914c1cdcf3a7020cb2f5334fad1b04d",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "merge main into the project-label branch; conflict resolution only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
