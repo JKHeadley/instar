@@ -88,11 +88,12 @@ Result: a stranger gets no more guesses through confirm pages than through sign-
 | Unmarked, non-local confirm answers admitted and charged by sign-in's public limits | invariant | basis: irreversible-consequence; evidence: a guessed dashboard PIN grants owner authority (unlock, approvals, the money layer) that cannot be taken back short of changing the PIN everywhere. Every number is piece 1c's shipped sign-in policy, so no new limit is introduced and the two surfaces cannot drift apart. |
 | Exemption by caller (valid marker, local-direct) | invariant | basis: enumerable-domain; evidence: piece 1c already exempts exactly these two on sign-in. The marker is HMAC-signed with the agent token. Local-direct (`ownLoopbackHost`) is reachable by any local process or raw TCP forwarder, as on sign-in, and is bounded by `LOCAL_PIN_KEY` (10 per 5 minutes), separate from the public 20. |
 | Owner opens use their own mint allowance and outrank stranger tokens for eviction | invariant | basis: enumerable-domain; evidence: an owner open is a valid marker, or local-direct with `X-Instar-Request`, which a cross-origin page cannot send; a local process could also reach it, as on sign-in, bounded by its own 30-a-minute allowance. |
-| Owner allowance size (30 opens a minute; 50 live tokens per service, shared with stranger tokens) | invariant | basis: external-constraint; evidence: these are `confirmTokens.ts`'s existing `MAX_MINTS_PER_MINUTE` and `MAX_PER_SERVICE`, which exist because every mint rewrites `tokens.json`; they bound the token file's rewrite rate and size. A second bucket at the same rate at most doubles the worst-case rewrite rate, which is still bounded. Counterexample considered: an owner opening more than 30 confirm pages in one minute. No person does that; a reload loop that does is held at 30 a minute and recovers in the next minute. |
+| Owner allowance size (30 opens a minute; 50 live tokens per service, shared with stranger tokens) | invariant | basis: external-constraint; evidence: these are `confirmTokens.ts`'s existing `MAX_MINTS_PER_MINUTE` and `MAX_PER_SERVICE`, which exist because every mint rewrites `tokens.json`; they bound the token file's rewrite rate and size. **Measured capacity** (2026-11-21, M5 Pro, the real `ConfirmTokenStore` with six services each at the 50-row cap, 2,000 mints): one mint including the full-file rewrite takes 0.75 ms median, 19 ms p99, 53 ms worst. The combined worst case of 60 mints a minute is about one rewrite a second, under 0.1% of a second at the median and about 2% at p99, so the doubled rate is well inside capacity. The ceiling is a size and rate bound, not a capacity limit, so no measured number would justify raising it either. Counterexample considered: an owner opening more than 30 confirm pages in one minute. No person does that; a reload loop that does is held at 30 a minute and recovers in the next minute. A browser restoring a session reloads each confirm page through `service-yes.js`, whose `fetch` carries the owner header, so a restored owner page is a protected open and counts against the owner allowance, not the strangers'. |
+| Which page is evicted at the 50-token cap | invariant | basis: enumerable-domain; evidence: the order is fixed by the caller kind (section 3), and the evicted page is never a protected owner page while an unprotected one exists. The page that can be evicted is an unprotected one: a page opened by an unknown browser, which is today's behaviour for every page (oldest of 50 dropped). Its holder sees the existing expired-page answer and reopens the page, which mints a fresh token; nothing is approved or lost by the eviction. |
 
 ## Multi-machine posture
 
-- **Page tokens** (with the new `protected` field): machine-local, as today (registry entry `recommended-service-tokens`, scope `machine-local`). machine-local-justification: physical-credential-locality (a page token is a single-use credential that exists only in the serving machine's token file and is accepted only there; it lives 30 minutes, minted at page open, as today).
+- **Page tokens** (with the new `protected` field): machine-local, as today (registry entry `recommended-service-tokens`, scope `machine-local`). machine-local-justification: physical-credential-locality (a page token is a single-use credential that exists only in the serving machine's token file and is accepted only there; it lives 30 minutes, minted at page open, as today). Why no other machine honours it, beyond "that is where it is written": (1) the link that carries the token is the minting machine's own address, so no other machine ever receives it in the ordinary journey; (2) single use needs one place that spends it exactly once, and the pool has no authenticated cross-machine writer today (state journal replication is pull-based and unsigned, the SEC-088 record), so accepting a token minted elsewhere would mean trusting a peer-supplied token row, a path a compromised or impersonated peer could use to forge approvals; (3) the approval it carries is answered on the machine that offered it, which also holds that offer's PIN counters. Replicating tokens would add a forgery path to save nothing a person sees.
 - **PIN counters:** no new counter rows. Every charge uses sign-in's existing throttle and public aggregate, whose per-machine posture piece 1c §4 declares. `state/pin-attempts.json` is added to `src/data/state-coherence-registry.json` (it was missing) with category `pin-attempts`, scope `machine-local`, conflictShape `single-writer`, transport `none`, at most 4096 rows, describing piece 1c's posture.
 - **Confirm counters** (see Observability): per machine, proxied-on-read. Each machine reports its own in `GET /recommended-services`, and the graduation review reads every machine's (the pool roster in `GET /pool`) and sums them. No pool route is added.
 
@@ -112,12 +113,12 @@ Result: a stranger gets no more guesses through confirm pages than through sign-
 ## Observability
 
 Counters per machine, kept in memory and flushed to `state/recommended-service-tokens/confirm-stats.json` at most once a minute (cumulative, with a `since` timestamp), so a flood cannot drive disk writes. They are reported in the signed-in `GET /recommended-services` answer as `confirmStats`. Before the first flush the in-memory counters are reported. An unreadable file reports `confirmStats: unknown` with the reason, never zeros. The counters are:
-- `strangerRefused`: unmarked, non-local answers refused by the public limits;
-- `answersByCaller`: answers completed by a marked browser, the machine itself, and the public path;
-- `protectedOpens`: page opens that used the owner allowance, counted whether or not the strangers' allowance had room (so it shows owner use, not availability under load);
-- `ownerAnswersWhileAggregateFull`: answers completed while the public aggregate was full, counted separately as `marked` and `local` (the direct evidence that each owner exemption works under attack).
+- `publicPathRefused`: answers on the public path (no valid marker, not local-direct) refused by the public limits;
+- `answersByPath`: completed answers counted by the path they took: `marker`, `local`, `public`;
+- `exemptPathOpens`: page opens that used the second mint allowance (marker or local-direct with the header), counted whether or not the strangers' allowance had room;
+- `exemptPathAnswersWhileAggregateFull`: answers completed on the `marker` and on the `local` path while the public aggregate was full, counted separately.
 
-They show how often strangers are refused, and whether owners' own browsers keep answering through attacks.
+**What each counter does and does not prove (state vs symbol).** Every counter names a path, never a person. The public path includes the owner on a browser that never unlocked the dashboard, so `publicPathRefused` is not "strangers refused". The local path is any local process, as on sign-in, so a `local` answer is not "the owner answered". A `marker` answer proves only that the browser once unlocked the dashboard with the PIN (the marker is HMAC-signed with the agent token). The claim these counters support is narrower than identity: *the two exempt paths keep completing answers while the public aggregate is full.* The independent corroboration that the aggregate really was full is the `DashboardPin.bruteForce` alert in the degradation log for the same window. When the stats file is unreadable the result is `confirmStats: unknown` with the reason, never zeros, and the graduation review treats an unknown week as missing evidence.
 
 ## Rollout and maturation
 
@@ -125,9 +126,10 @@ They show how often strangers are refused, and whether owners' own browsers keep
 - **Development-agent rung:** Echo runs it from the merge. Graduation evidence:
   - `confirmStats` from every Echo machine with a `since` at least seven days old;
   - the independent corroboration of the `DashboardPin.bruteForce` alert history in the degradation log for the same week;
-  - at least one `ownerAnswersWhileAggregateFull.marked` and one `.local` across Echo's machines. The marked browser is the remote owner's way through, so a local success alone is not enough. Whichever the week lacks is supplied by a controlled observation on the test agent (flood to a full aggregate, then that kind of answer), recorded with its run log.
+  - at least one `exemptPathAnswersWhileAggregateFull.marker` and one `.local` across Echo's machines. The marker path is the remote owner's way through, so a local success alone is not enough. If the week lacks one, the evidence is supplied on the development-agent rung itself: a controlled observation on one Echo machine (flood to a full aggregate, then that kind of answer), recorded with its run log. A test-agent run never fills a development-agent gap; if no Echo observation is made, the evidence window extends by a week.
 - **Fleet:** meeting that evidence raises the feature to the recurring maturation review (Maturation Path). The fleet-default change is opened only when that review's model decides to graduate it.
 - **Until then, the fleet keeps today's exposure** (about 9,000 guesses an hour per machine through confirm pages). The SEC-135 ledger row records this, with a dated graduation review (commitment, due one week after merge).
+- **Operator acceptance of that interim is required, not assumed.** It is asked together with the experience decision (Open questions), as a single choice for Justin: (a) accept one dev-gated evidence week with the fleet exposure above; or (b) turn the fix on fleet-wide at merge and run the evidence week fleet-wide, with the switch as the rollback. The build does not start until one is chosen, and the PR body quotes the choice.
 - **Off** means today's behaviour exactly.
 
 ## Rollback
@@ -144,7 +146,7 @@ Revert the commit. Older code ignores the `protected` field. `confirm-stats.json
   - an exhausted per-request key refuses while public admission still allows the caller;
   - with one aggregate attempt left, two parallel wrong candidates (one sign-in, one confirm) compare exactly one;
   - a right PIN processed first leaves that last attempt available for the other request;
-  - an insecure connection is refused before any compare and is not counted in `strangerRefused`.
+  - an insecure connection is refused before any compare and is not counted in `publicPathRefused`.
 - **Unit, owner paths:**
   - with the aggregate full, a marked answer passes with the right PIN, and so does a local-direct one;
   - their wrong guesses use the marker path and the local budget;
@@ -164,4 +166,7 @@ Revert the commit. Older code ignores the `protected` field. `confirm-stats.json
 
 ## Open questions
 
-*(none)*
+For Justin, asked together by the Chief of Staff:
+
+1. **Experience cost (Security Fixes Keep the Experience Whole).** SEC-135 is rated medium. The residual case (Experience cost) is an owner on a browser that never unlocked the dashboard, away from the computer, when a public limit is reached; they see the paused message. Accept that cost for a medium finding, or re-rate SEC-135 critical.
+2. **Interim exposure (A Dark Feature Guards Nothing).** (a) one dev-gated evidence week, with the fleet keeping today's exposure; or (b) fleet-wide at merge with the switch as rollback (Rollout and maturation).
