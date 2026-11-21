@@ -817,7 +817,7 @@ export class UpdateChecker {
       try {
         const real = fs.realpathSync(candidate);
         if (real.endsWith('.js') && fs.statSync(real).isFile()) return real;
-      } catch { /* not this layout */ }
+      } catch { /* @silent-fallback-ok — not this layout; the next candidate is tried, and none found falls back to PATH npm with a note */ }
     }
     return null;
   }
