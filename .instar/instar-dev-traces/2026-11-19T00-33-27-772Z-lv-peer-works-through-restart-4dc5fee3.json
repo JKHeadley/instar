@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "lv-peer-works-through-restart",
+  "sessionId": "cff5be70-b3a4-4015-afa9-248b5a32dedc",
+  "timestamp": "2026-11-19T00:33:27.772Z",
+  "artifactPath": "upgrades/side-effects/lv-peer-works-through-restart.md",
+  "artifactSha256": "a267c2783e2da6a58ba9031624a16450eaf538add1e99ce537c3de2b58d9d025",
+  "specPath": "docs/specs/local-verify-peer-works-through-restart.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/local-verify-peer-restart.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/peerTrust.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/local-verify-peer-works-through-restart-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-works-through-restart.test.ts",
+    "tests/unit/local-verify-peer-trust.test.ts",
+    "tests/unit/localVerify/peerWorksThroughRestart.test.ts",
+    "upgrades/next/lv-peer-works-through-restart.md",
+    "upgrades/side-effects/lv-peer-works-through-restart.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "dispatch, restart-hold and import (merge-authorizing) decision points; approved converged spec",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "control-loop edges: pending restart -> peer dispatch (bounded by maxAttemptsPerEntry and one refund per entry per head); epoch change -> adopt/wait/abandon (acts once per attempt per epoch, then current; waiting bounded by the progress judgment and the 150-min backstop); 60-min review point -> end on evidence (acts once at the review point or the backstop). Steady state: no repeated action without a brake."
+    },
+    "component": "LocalVerifyService"
+  }
+}

@@ -12,6 +12,8 @@ import {
   isPeerBodyRoute,
   UNPROVEN_BODY_LIMIT_BYTES,
   type BodyBudgetDeps,
+  boundedBody,
+  closeUnreadBodyOnError,
 } from '../../src/server/bodyBudget.js';
 import { authMiddleware, errorHandler } from '../../src/server/middleware.js';
 
@@ -25,6 +27,8 @@ const deps: BodyBudgetDeps = {
   dashboardSessionValid: (t) => t === 'dst_good',
   memorySessionValid: (t) => t === 'mps_good',
   activeDevice: (id) => id === 'dev-active',
+  // SEC-118: the test's device routes that take a body (as DEVICE_ALLOWLIST rules would).
+  deviceRouteTakesBody: (m, p) => m === 'POST' && (p === '/recover' || p === '/echo'),
   activeMachine: (id) => id === 'm_active' || id === 'm_self',
   selfMachineId: () => 'm_self',
   verify: (_req, _res, buf) => { parsedBytes += buf.length; },
@@ -35,6 +39,9 @@ beforeAll(async () => {
   // A per-path parser with its own full limit, ahead of the general one (as /mobile/org/recover).
   app.use('/recover', credentialAwareJsonParser(deps, 200 * 1024));
   app.post('/recover', (req, res) => { res.json({ got: JSON.stringify(req.body).length }); });
+  // A fixed-size per-path parser (as /completion-claim/observe or /mobile/media/uploads).
+  app.use('/fixed', boundedBody(1024, express.json({ limit: '1kb' })));
+  app.post('/fixed', (req, res) => { res.json({ got: JSON.stringify(req.body).length }); });
   app.use(credentialAwareJsonParser(deps));
   // A pre-auth public route that authenticates inside its handler.
   app.post('/mesh/rpc', (req, res) => { res.json({ got: JSON.stringify(req.body).length }); });
@@ -144,6 +151,151 @@ describe('SEC-103 body budget before auth', () => {
   });
 });
 
+describe('SEC-118: a refused body is not drained', () => {
+  it('an oversized body to a fixed-size parser is answered 413 with the connection closed', async () => {
+    const res = await fetch(base + '/fixed', { method: 'POST', headers: { 'content-type': 'application/json' }, body: bigJson(4 * 1024) });
+    expect(res.status).toBe(413);
+    expect(res.headers.get('connection')).toBe('close');
+    expect(await res.json()).toEqual({ error: 'body-too-large' });
+  });
+  it('a chunked oversized upload to a fixed-size parser is refused and the server closes the connection instead of draining it', async () => {
+    const u = new URL(base + '/fixed');
+    const result = await new Promise<{ status: number; connection: string | undefined; closedByServer: boolean }>((resolve, reject) => {
+      let status = 0;
+      let connection: string | undefined;
+      let finished = false;
+      const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' } }, (res) => {
+        status = res.statusCode ?? 0; connection = res.headers.connection; res.resume();
+      });
+      const finish = (closedByServer: boolean) => { if (finished) return; finished = true; clearTimeout(guard); resolve({ status, connection, closedByServer }); };
+      // Keep streaming; a server that drains would keep reading and never close the socket.
+      req.on('error', () => finish(status === 413));
+      req.on('close', () => finish(status === 413));
+      const guard = setTimeout(() => { req.destroy(); finish(false); }, 3000);
+      req.write('{"pad":"');
+      const tick = () => { if (finished) return; req.write('x'.repeat(1024)); setTimeout(tick, 2); };
+      tick();
+      void reject;
+    });
+    expect(result.status).toBe(413);
+    expect(result.connection).toBe('close');
+    expect(result.closedByServer).toBe(true);
+  });
+});
+
+describe('SEC-118: the general budget parser cuts an endless chunked stranger upload', () => {
+  it('answers 413 and closes while the client is still sending', async () => {
+    const u = new URL(base + '/echo');
+    const r = await new Promise<{ status: number; closed: boolean }>((resolve) => {
+      let status = 0; let finished = false;
+      const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' } }, (res) => { status = res.statusCode ?? 0; res.resume(); });
+      const finish = (closed: boolean) => { if (finished) return; finished = true; clearTimeout(guard); resolve({ status, closed }); };
+      req.on('error', () => finish(status === 413));
+      req.on('close', () => finish(status === 413));
+      const guard = setTimeout(() => { req.destroy(); finish(false); }, 3000);
+      req.write('{"pad":"');
+      const tick = () => { if (finished) return; req.write('y'.repeat(8 * 1024)); setTimeout(tick, 2); };
+      tick();
+    });
+    expect(r.status).toBe(413);
+    expect(r.closed).toBe(true);
+  });
+});
+
+describe('SEC-118-R1: an error answer to an unread body closes the connection', () => {
+  async function streamTo(app: express.Express, path: string, headers: Record<string, string>) {
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const port = (srv.address() as AddressInfo).port;
+    const r = await new Promise<{ status: number; closed: boolean }>((resolve) => {
+      let status = 0; let finished = false;
+      const req = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'transfer-encoding': 'chunked', ...headers } }, (res) => { status = res.statusCode ?? 0; res.resume(); });
+      const finish = (closed: boolean) => { if (finished) return; finished = true; clearTimeout(guard); resolve({ status, closed }); };
+      req.on('error', () => finish(status > 0));
+      req.on('close', () => finish(status > 0));
+      const guard = setTimeout(() => { req.destroy(); finish(false); }, 3000);
+      const tick = () => { if (finished) return; req.write('z'.repeat(8 * 1024)); setTimeout(tick, 2); };
+      tick();
+    });
+    await new Promise((res) => srv.close(res));
+    return r;
+  }
+  it('a body no parser reads, refused by the auth gate, is not drained: the server closes', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.use(authMiddleware(() => TOKEN));
+    app.post('/echo', (_req, res) => { res.json({ ok: true }); });
+    const r = await streamTo(app, '/echo', { 'content-type': 'application/x-unknown' });
+    expect(r.status).toBe(401);
+    expect(r.closed).toBe(true);
+  });
+  it('SEC-118-R2: the error answer to an unread body says Connection: close in its headers', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.use(authMiddleware(() => TOKEN));
+    app.post('/echo', (_req, res) => { res.json({ ok: true }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const port = (srv.address() as AddressInfo).port;
+    const conn = await new Promise<string | undefined>((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/echo', method: 'POST', headers: { 'transfer-encoding': 'chunked', 'content-type': 'application/x-unknown' } }, (res) => { resolve(res.headers.connection); res.resume(); req.destroy(); });
+      req.on('error', () => {});
+      req.write('z'.repeat(1024));
+    });
+    expect(conn).toBe('close');
+    await new Promise((r) => srv.close(r));
+  });
+  it('SEC-118-R2: an error after the body was fully read keeps the connection (not an unread body)', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.post('/bad', express.json({ limit: '1mb' }), (_req, res) => { res.status(422).json({ error: 'nope' }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const r = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/bad`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"a":1}' });
+    expect(r.status).toBe(422);
+    expect(r.headers.get('connection')).not.toBe('close');
+    await new Promise((res) => srv.close(res));
+  });
+  it('a successful answer is untouched (the guard acts on error statuses only)', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.post('/ok', express.text({ type: '*/*', limit: '1mb' }), (_req, res) => { res.json({ ok: true }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const ok = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/ok`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'hello' });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('connection')).not.toBe('close');
+    await new Promise((r) => srv.close(r));
+  });
+});
+
+describe('SEC-118: a body of another content type is left for its own parser', () => {
+  it('a form-encoded body passes the JSON guard unread and reaches the later parser whole', async () => {
+    const app = express();
+    app.use(boundedBody(1024, express.json({ limit: '1kb' })));
+    app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+    app.post('/hook', (req, res) => { res.json({ len: String((req.body as { pad?: string }).pad ?? '').length }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/hook`;
+    const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `pad=${'z'.repeat(5000)}` });
+    expect(await r.json()).toEqual({ len: 5000 });
+    await new Promise((res) => srv.close(res));
+  });
+});
+
+describe('SEC-118: deviceRouteTakesBody reads the real device allowlist', () => {
+  it('a device route that takes a body is true; a no-body route, a wrong method or an unknown path is false', async () => {
+    const { deviceRouteTakesBody } = await import('../../src/server/mobilePairingRoutes.js');
+    expect(deviceRouteTakesBody('POST', '/mobile/org/publish')).toBe(true);
+    expect(deviceRouteTakesBody('post', '/mobile/org/publish/')).toBe(true);
+    expect(deviceRouteTakesBody('GET', '/mobile/org/status')).toBe(false);
+    expect(deviceRouteTakesBody('GET', '/health')).toBe(false); // a read never unlocks the large budget
+    expect(deviceRouteTakesBody('POST', '/mobile/org/status')).toBe(false);
+    expect(deviceRouteTakesBody('POST', '/api/anything')).toBe(false);
+  });
+});
+
 describe('per-path full limit', () => {
   it('an active device gets the route limit; a stranger gets the small budget', async () => {
     const signed = { 'x-instar-device': 'dev-active', 'x-instar-device-sig': 'sig', 'x-instar-device-time': String(Date.now()) };
@@ -160,7 +312,7 @@ describe('per-path full limit', () => {
 describe('presentsCredential', () => {
   const NOW = 1_800_000_000_000;
   const at = { ...deps, now: () => NOW };
-  const req = (headers: Record<string, string>, path = '/echo') => ({ headers, path }) as unknown as express.Request;
+  const req = (headers: Record<string, string>, path = '/echo') => ({ headers, path, method: 'POST' }) as unknown as express.Request;
   const dev = (over: Record<string, string> = {}) => ({ 'x-instar-device': 'dev-active', 'x-instar-device-sig': 's', 'x-instar-device-time': String(NOW), ...over });
   const mach = (over: Record<string, string> = {}) => ({ 'x-machine-id': 'm_active', 'x-timestamp': String(NOW / 1000), 'x-nonce': 'n', 'x-sequence': '1', 'x-signature': 's', ...over });
   it('tokens: each kind and its near miss', () => {
@@ -178,6 +330,15 @@ describe('presentsCredential', () => {
     expect(presentsCredential(req(dev({ 'x-instar-device': 'dev-unknown' })), at)).toBe(false);
     expect(presentsCredential(req(dev({ 'x-instar-device-time': String(NOW - 10 * 60_000) })), at)).toBe(false);
     expect(presentsCredential(req(dev(), '/internal/x'), at)).toBe(false);
+  });
+  it('SEC-118: a device id unlocks the large budget only on a device route that takes a body', () => {
+    const r = (path: string, method = 'POST') => ({ headers: dev(), path, method }) as unknown as express.Request;
+    expect(presentsCredential(r('/echo'), at)).toBe(true);
+    expect(presentsCredential(r('/not-a-device-route'), at)).toBe(false);
+    expect(presentsCredential(r('/echo', 'PUT'), at)).toBe(false);
+    // No route check wired: no device admission at all (fail closed).
+    const { deviceRouteTakesBody: _d, ...noCheck } = at;
+    expect(presentsCredential(r('/echo'), noCheck)).toBe(false);
   });
   it('a machine needs the full header set, a fresh time, a machine route, and not our own id', () => {
     expect(presentsCredential(req(mach(), '/api/documents/push'), at)).toBe(true);

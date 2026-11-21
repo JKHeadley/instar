@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "locked-proof-transport-expiry",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T04:00:31.372Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-transport-expiry.md",
+  "artifactSha256": "cc3180dd0c56844fd1a3ce45e7ff3b810f49bf6843722b3c14c83fd3dfbd8941",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T03-59-26-461Z-locked-proof-transport-expiry.json",
+    ".instar/instar-dev-decisions/2026-11-18T04-00-15-615Z-locked-proof-transport-expiry.json",
+    ".instar/instar-dev-traces/2026-11-18T03-58-30-495Z-locked-proof-transport-expiry-240b091d.json",
+    "docs/specs/locked-proof-transport-expiry.eli16.md",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-timing.test.ts",
+    "upgrades/next/locked-proof-transport-expiry.md",
+    "upgrades/side-effects/locked-proof-transport-expiry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible proof reporting change. No product runtime or authorization change.",
+  "eli16Path": "docs/specs/locked-proof-transport-expiry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-transport-expiry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

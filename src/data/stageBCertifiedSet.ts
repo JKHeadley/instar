@@ -216,6 +216,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
+      "file": "src/core/codexCapabilities.ts",
+      "reason": "Codex CLI version and flag probes, reached through the excluded CodexCliIntelligenceProvider since 2026-11-17 (it picks gpt-6-sol / gpt-6-astra on a CLI below 0.166.0). Model selection only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/core/InFlightSyncOpMarker.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
@@ -354,6 +358,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/agent-reach.ts",
       "reason": "Pure reach-record builder/renderer for the tone gate's B17 context (no I/O beyond the injected registry read, no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+    },
+    {
+      "file": "src/core/sibling-holdings.ts",
+      "reason": "Memory-only cache of what the agent's other machines hold, feeding the tone gate's OTHER MACHINES context through agent-reach (injected fetch and roster, no delivery logic, no I/O of its own); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/sibling-machine-reach.test.ts"
     },
     {
       "file": "src/core/internal-id-leak.ts",
@@ -549,7 +557,7 @@ export const STAGE_B_CERTIFIED_SET = {
   },
   "boundAt": "2026-11-08",
   "boundBy": "echo (fresh exact-candidate certification, topic 59199, 2026-09-04)",
-  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged. On 2026-11-07, storageMachineName and channelIdentity were classified as diagnostic-only exclusions; certified hashes and signed evidence remain unchanged."
+  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged. On 2026-11-07, storageMachineName and channelIdentity were classified as diagnostic-only exclusions; certified hashes and signed evidence remain unchanged. On 2026-11-17, codexCapabilities (Codex CLI model probe, newly reached through the excluded Codex provider) was classified as an exclusion; certified hashes and signed evidence remain unchanged."
 } as const;
 
 export type StageBCertifiedSet = typeof STAGE_B_CERTIFIED_SET;

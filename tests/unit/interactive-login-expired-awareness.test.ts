@@ -8,6 +8,7 @@ import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import {
   INTERACTIVE_LOGIN_EXPIRED_MARKER, INTERACTIVE_LOGIN_EXPIRED_BULLET, REROUTED_LOGIN_EXPIRED_BULLET, generateClaudeMd,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET_V1, CLAUDE_KEY_HEALTH_BULLET,
 } from '../../src/scaffold/templates.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -57,6 +58,24 @@ describe('interactive expired-login CLAUDE.md bullet', () => {
     expect(once).toContain(REROUTED_LOGIN_EXPIRED_BULLET + '\n' + INTERACTIVE_LOGIN_EXPIRED_BULLET);
     run(projectDir);
     expect(fs.readFileSync(claudeMd, 'utf8')).toBe(once);
+  });
+
+  it('an agent carrying the pre-stale-process bullet gets the stored-login check in place, key-health still right after; idempotent', () => {
+    fs.writeFileSync(claudeMd, '# CLAUDE.md\n' + REROUTED_LOGIN_EXPIRED_BULLET + '\n' + INTERACTIVE_LOGIN_EXPIRED_BULLET_V1 + '\n' + CLAUDE_KEY_HEALTH_BULLET + '\n');
+    const r1 = run(projectDir);
+    const once = fs.readFileSync(claudeMd, 'utf8');
+    expect(r1.upgraded).toContain('CLAUDE.md: interactive expired-login bullet describes the stored-login check');
+    expect(once).not.toContain(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1);
+    expect(count(once)).toBe(1);
+    expect(once).toContain(INTERACTIVE_LOGIN_EXPIRED_BULLET + '\n' + CLAUDE_KEY_HEALTH_BULLET);
+    run(projectDir);
+    expect(fs.readFileSync(claudeMd, 'utf8')).toBe(once);
+  });
+
+  it('names the stored-login check and its off switch', () => {
+    for (const s of ['QuotaPoller.freshLoginProbe', 'subscriptionPool.freshLoginProbe.enabled', 'restarted on its own account']) {
+      expect(INTERACTIVE_LOGIN_EXPIRED_BULLET).toContain(s);
+    }
   });
 
   it('names both wordings, the swap route, the cause, the kill switch and the degradation', () => {

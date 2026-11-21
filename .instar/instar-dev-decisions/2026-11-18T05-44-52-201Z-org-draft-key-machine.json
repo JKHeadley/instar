@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T05:44:52.201Z",
+  "slug": "org-draft-key-machine",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/org-members-and-keepers.md",
+      "src/server/orgPackRoutes.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

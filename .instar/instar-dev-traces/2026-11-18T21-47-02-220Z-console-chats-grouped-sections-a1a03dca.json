@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-chats-grouped-sections",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-18T21:47:02.220Z",
+  "artifactPath": "upgrades/side-effects/console-chats-grouped-sections.md",
+  "artifactSha256": "522fd6f24e18b9cb1bb5ede30d1d0fbd7b8c5b207365424a2d4ad536ad2f9b4f",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/console-chats-grouped-sections.eli16.md",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/console-chats-grouped-sections.md",
+    "upgrades/side-effects/console-chats-grouped-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "display-only console change, reverts cleanly, no server/state",
+  "eli16Path": "docs/specs/console-chats-grouped-sections.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-chats-grouped-sections.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

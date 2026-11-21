@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "pipe-thread-id-allowlist",
+  "sessionId": "1251b1e8-8c50-4f64-9c79-779ccdf36f8e",
+  "timestamp": "2026-11-20T23:18:57.320Z",
+  "artifactPath": "upgrades/side-effects/pipe-thread-id-allowlist.md",
+  "artifactSha256": "54f1b82139e5612c5a4643a9839554948b0c54058af4617b437aa9da68f621ce",
+  "coveredFiles": [
+    "docs/specs/pipe-thread-id-allowlist.eli16.md",
+    "src/threadline/PipeSessionSpawner.ts",
+    "tests/integration/foreign-process-survives-test-instance.test.ts",
+    "tests/unit/listener-daemon.test.ts",
+    "tests/unit/pipeSessionSpawnerFrameworkPortability.test.ts",
+    "tests/unit/sec-126-pipe-thread-id.test.ts",
+    "tests/unit/subscription-quota-gates.test.ts",
+    "upgrades/next/pipe-thread-id-allowlist.md",
+    "upgrades/side-effects/pipe-thread-id-allowlist.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow security fix (SEC-126): pipe spawner refuses non-canonical peer thread ids before building shell strings; one guard, falls back to normal path, reversible by revert.",
+  "eli16Path": "docs/specs/pipe-thread-id-allowlist.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pipe-thread-id-allowlist.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

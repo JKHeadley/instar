@@ -230,10 +230,21 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
+  # The message timestamp and its permalink (when buildable), so a later reminder can link this
+  # message. The line still starts "Sent N chars to ..." for existing parsers.
+  SENT_DETAIL=$(printf '%s' "$BODY" | python3 -c 'import sys,json,re
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    d={}
+ts=d.get("ts"); link=d.get("messageLink"); out=""
+if isinstance(ts,str) and re.match(r"^[0-9]+[.][0-9]+$", ts): out+=" (ts %s)" % ts
+if isinstance(link,str) and re.match(r"^https://[!-~]+$", link): out+=" link: "+link
+print(out)' 2>/dev/null || echo "")
   if [ "$SESSION_MODE" = true ]; then
-    echo "Sent ${#MESSAGE} chars to the bound Slack conversation"
+    echo "Sent ${#MESSAGE} chars to the bound Slack conversation${SENT_DETAIL}"
   else
-    echo "Sent ${#MESSAGE} chars to channel ${CHANNEL_ID}"
+    echo "Sent ${#MESSAGE} chars to channel ${CHANNEL_ID}${SENT_DETAIL}"
   fi
 elif [ "$HTTP_CODE" = "503" ] && printf '%s' "$BODY" | grep -q 'origin-recording-unavailable'; then
   # message-origin-all-platforms §3: this machine could not record which machine and model wrote

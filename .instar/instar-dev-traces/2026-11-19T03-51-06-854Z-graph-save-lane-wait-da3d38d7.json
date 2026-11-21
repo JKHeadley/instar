@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "graph-save-lane-wait",
+  "sessionId": "4e81326d-5c23-4bba-a349-427ccf37313c",
+  "timestamp": "2026-11-19T03:51:06.854Z",
+  "artifactPath": "upgrades/side-effects/graph-save-lane-wait.md",
+  "artifactSha256": "40277abad6ca150985289e47961d1b766ae09019b857fe9d53264e18d2f8151e",
+  "coveredFiles": [
+    "docs/specs/graph-save-lane-wait.eli16.md",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphDefaultSurface.ts",
+    "tests/integration/graph-default-boot.test.ts",
+    "upgrades/next/graph-save-lane-wait.md",
+    "upgrades/side-effects/graph-save-lane-wait.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounds an existing wait on the save path and spaces an existing background check; admission checks unchanged; no state or migration; a revert undoes it",
+  "eli16Path": "docs/specs/graph-save-lane-wait.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-save-lane-wait.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

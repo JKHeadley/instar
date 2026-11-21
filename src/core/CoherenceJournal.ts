@@ -44,7 +44,7 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-list-pin' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record' | 'work-card-record' | 'trust-grant-record' | 'trust-outcome-record' | 'session-transcript-checkpoint' | 'context-layer-record' | 'conversation-graph-event' | 'project-app-record' | 'project-app-blob' | 'topic-spawn-brief';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-list-pin' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record' | 'work-card-record' | 'trust-grant-record' | 'trust-outcome-record' | 'session-transcript-checkpoint' | 'context-layer-record' | 'conversation-graph-event' | 'project-app-record' | 'project-app-blob' | 'conversation-graph-suggestion-record' | 'telegram-topic-name-record' | 'topic-spawn-brief';
 
 /**
  * What happened to one `emit` call. Every branch of the private `emit` already
@@ -62,7 +62,7 @@ export type JournalEmitOutcome =
   | 'not-replicated-kind'
   | 'error';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-list-pin', 'conversation-read-marker', 'email-outbox-record', 'chief-of-staff-record', 'work-card-record', 'trust-grant-record', 'trust-outcome-record', 'session-transcript-checkpoint', 'context-layer-record', 'conversation-graph-event', 'project-app-record', 'project-app-blob', 'topic-spawn-brief'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-list-pin', 'conversation-read-marker', 'email-outbox-record', 'chief-of-staff-record', 'work-card-record', 'trust-grant-record', 'trust-outcome-record', 'session-transcript-checkpoint', 'context-layer-record', 'conversation-graph-event', 'project-app-record', 'project-app-blob', 'conversation-graph-suggestion-record', 'telegram-topic-name-record', 'topic-spawn-brief'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -380,6 +380,12 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): one brief per placed agent topic spawn,
   // updated to completed when the session ends, never deleted by the step; a few archives are kept.
   'topic-spawn-brief': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 4 },
+  // conversation-graph-suggestion-record (docs/specs/conversation-graph-suggestions-replicated-decisions.md): the owner's
+  // immutable decisions on Conversations suggestions, one row per owner tap; rotate, never delete.
+  'conversation-graph-suggestion-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
+  // telegram-topic-name-record (docs/specs/topic-name-replication.md): immutable Telegram topic-name rows,
+  // one per creation or rename (and once per machine when carried); rotate, never delete.
+  'telegram-topic-name-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
   // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
   // never-delete would be a compliance defect). Actions are FEW + bounded (the
   // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
@@ -624,7 +630,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-list-pin': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 , 'work-card-record': 1, 'trust-grant-record': 1, 'trust-outcome-record': 1, 'session-transcript-checkpoint': 1 , 'context-layer-record': 1 , 'conversation-graph-event': 1, 'project-app-record': 1, 'project-app-blob': 1, 'topic-spawn-brief': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-list-pin': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 , 'work-card-record': 1, 'trust-grant-record': 1, 'trust-outcome-record': 1, 'session-transcript-checkpoint': 1 , 'context-layer-record': 1 , 'conversation-graph-event': 1, 'project-app-record': 1, 'project-app-blob': 1, 'conversation-graph-suggestion-record': 1, 'telegram-topic-name-record': 1, 'topic-spawn-brief': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -656,6 +662,8 @@ export class CoherenceJournal {
     'project-app-record': 0,
     'project-app-blob': 0,
     'topic-spawn-brief': 0,
+    'conversation-graph-suggestion-record': 0,
+    'telegram-topic-name-record': 0,
     'conversation-read-marker': 0,
     'email-outbox-record': 0,
     'chief-of-staff-record': 0,
@@ -698,6 +706,8 @@ export class CoherenceJournal {
     'project-app-record': new Set(),
     'project-app-blob': new Set(),
     'topic-spawn-brief': new Set(),
+    'conversation-graph-suggestion-record': new Set(),
+    'telegram-topic-name-record': new Set(),
     'conversation-read-marker': new Set(),
     'email-outbox-record': new Set(),
     'chief-of-staff-record': new Set(),
@@ -770,6 +780,8 @@ export class CoherenceJournal {
       'project-app-record': config.retention?.['project-app-record'] ?? DEFAULT_RETENTION['project-app-record'],
       'project-app-blob': config.retention?.['project-app-blob'] ?? DEFAULT_RETENTION['project-app-blob'],
       'topic-spawn-brief': config.retention?.['topic-spawn-brief'] ?? DEFAULT_RETENTION['topic-spawn-brief'],
+      'conversation-graph-suggestion-record': config.retention?.['conversation-graph-suggestion-record'] ?? DEFAULT_RETENTION['conversation-graph-suggestion-record'],
+      'telegram-topic-name-record': config.retention?.['telegram-topic-name-record'] ?? DEFAULT_RETENTION['telegram-topic-name-record'],
       'conversation-read-marker': config.retention?.['conversation-read-marker'] ?? DEFAULT_RETENTION['conversation-read-marker'],
       'email-outbox-record': config.retention?.['email-outbox-record'] ?? DEFAULT_RETENTION['email-outbox-record'],
       'chief-of-staff-record': config.retention?.['chief-of-staff-record'] ?? DEFAULT_RETENTION['chief-of-staff-record'],
@@ -826,6 +838,8 @@ export class CoherenceJournal {
       'project-app-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'project-app-blob': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'topic-spawn-brief': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'conversation-graph-suggestion-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'telegram-topic-name-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'conversation-read-marker': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'email-outbox-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'chief-of-staff-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
@@ -1821,6 +1835,53 @@ export class CoherenceJournal {
       }
     }
     return out;
+  }
+
+  /**
+   * Read EVERY entry of a kind this writer holds: its archives (oldest first) and the current file, each in full.
+   * For rare decisions that must not infer "absent" from a partial read (conversation-groups-phone §3: "is this
+   * conversation already a project?"). `complete` is false when any file could not be read, the total passed
+   * `maxTotalBytes`, or a line other than a torn final line of the current file failed to parse. Never throws.
+   */
+  readKindComplete(kind: JournalKind, maxTotalBytes = 64 * 1024 * 1024): { entries: JournalEntry[]; complete: boolean } {
+    // Its own directory read: an unreadable directory is an incomplete read, never "no archives".
+    const listed = (): string[] | null => {
+      try {
+        const prefix = `${this.safeMachineId}.${kind}.`;
+        const re = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\.jsonl$`);
+        return (this.io.readdirSync(this.dirPath()) as string[]).filter((n) => re.test(n)).sort((a, b) => Number(re.exec(a)![1]) - Number(re.exec(b)![1]));
+      } catch { /* @silent-fallback-ok: answered as complete:false, which refuses */ return null; }
+    };
+    const archives = this.io.existsSync(this.dirPath()) ? listed() : [];
+    if (archives === null) return { entries: [], complete: false };
+    const files = [...archives.map((a) => ({ file: path.join(this.dirPath(), a), current: false })), { file: this.currentFilePath(kind), current: true }];
+    const entries: JournalEntry[] = [];
+    let complete = true, total = 0;
+    for (const f of files) {
+      if (!this.io.existsSync(f.file)) { if (!f.current) complete = false; continue; }
+      let text: string;
+      try {
+        total += this.io.statSync(f.file).size;
+        if (total > maxTotalBytes) return { entries, complete: false };
+        text = this.io.readFileSync(f.file, 'utf-8') as string;
+      } catch { /* @silent-fallback-ok: reported to the caller as complete:false, which refuses */ return { entries, complete: false }; }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        if (!ln) continue;
+        try {
+          const obj = JSON.parse(ln) as JournalEntry;
+          if (typeof obj.seq === 'number' && typeof obj.kind === 'string') { entries.push(obj); continue; }
+        } catch { /* counted below */ }
+        // A torn final line of the current file (a write in progress, or cut by a crash) is not a lost record.
+        const tornTail = f.current && i === lines.length - 1;
+        if (!tornTail) complete = false;
+      }
+    }
+    // A rotation between listing and reading would leave a whole archive unread: list again and compare.
+    const after = this.io.existsSync(this.dirPath()) ? listed() : [];
+    if (after === null || after.join('|') !== archives.join('|')) complete = false;
+    return { entries, complete };
   }
 
   /**

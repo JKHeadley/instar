@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-18T19:00:09.168Z",
+  "slug": "local-verify-peer-result-trust",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 763,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/local-verify-main-on-peers.md",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/peerResultSignature.ts",
+      "src/localVerify/peerTrust.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 717,
+    "deletedLines": 46
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

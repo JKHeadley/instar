@@ -114,7 +114,7 @@ describe('PipeSessionSpawner — framework-aware spawn config', () => {
     // Smoke check — eligibility logic still works (the framework field
     // doesn't break the rest of the spawner's surface).
     const result = spawner.shouldUsePipeMode({
-      threadId: 't1',
+      threadId: 'thread-t1',
       messageText: 'hi',
       fromFingerprint: 'abc',
       fromName: 'peer',

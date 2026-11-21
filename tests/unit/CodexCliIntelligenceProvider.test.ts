@@ -34,6 +34,7 @@ let tmpDir: string;
 let fakeCodexPath: string;
 let nonGitDir: string;
 let prevExecJson: string | undefined;
+let prevProbeScale: string | undefined;
 
 beforeAll(() => {
   // This file pins the PLAIN-mode (kill-switch) invocation contract — the
@@ -43,6 +44,11 @@ beforeAll(() => {
   // tests/unit/codex-cli-provider-execjson.test.ts.
   prevExecJson = process.env.INSTAR_CODEX_EXEC_JSON;
   process.env.INSTAR_CODEX_EXEC_JSON = '0';
+  // The fake CLIs here are shell scripts. On a busy machine one can take longer
+  // than the product's 2 s `--version` deadline to start, which reads as an
+  // unreadable version and keeps the newer model. Give the probe 20 s in this file.
+  prevProbeScale = process.env.INSTAR_CODEX_VERSION_PROBE_SCALE;
+  process.env.INSTAR_CODEX_VERSION_PROBE_SCALE = '10';
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-test-'));
   fakeCodexPath = path.join(tmpDir, 'fake-codex');
   fs.writeFileSync(fakeCodexPath, FAKE_CODEX_SCRIPT, { mode: 0o755 });
@@ -53,6 +59,8 @@ beforeAll(() => {
 afterAll(() => {
   if (prevExecJson === undefined) delete process.env.INSTAR_CODEX_EXEC_JSON;
   else process.env.INSTAR_CODEX_EXEC_JSON = prevExecJson;
+  if (prevProbeScale === undefined) delete process.env.INSTAR_CODEX_VERSION_PROBE_SCALE;
+  else process.env.INSTAR_CODEX_VERSION_PROBE_SCALE = prevProbeScale;
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,
     force: true,
@@ -203,6 +211,35 @@ describe('CodexCliIntelligenceProvider — fenced triage launch', () => {
     await expect(provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true, requiredRoute,
       accountOverride: { accountId: 'pool-1', configHome: tmpDir } })).resolves.toBe('DONE');
     expect(fs.readFileSync(argsFile, 'utf8')).toContain('cli_auth_credentials_store="file"');
+  });
+
+  it.each([
+    ['codex-cli 0.165.0', 'balanced', 'gpt-6-sol'],
+    ['codex-cli 0.165.0', 'capable', 'gpt-6-astra'],
+    ['codex-cli 0.169.0', 'balanced', 'gpt-6.2-sol'],
+    ['codex-cli 0.169.0', 'capable', 'gpt-6.2-astra'],
+    ['not a version', 'capable', 'gpt-6.2-astra'], // unreadable: keep; the refusal self-heal covers it
+    ['codex-cli 0.165.0', 'fast', 'gpt-6-luna'],
+  ])('CLI "%s", tier %s launches --model %s', async (versionLine, tier, expected) => {
+    const argsFile = path.join(tmpDir, `older-cli-args-${tier}-${versionLine.replace(/\W/g, '')}`);
+    const binary = path.join(tmpDir, `older-cli-codex-${tier}-${versionLine.replace(/\W/g, '')}`);
+    fs.writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "${versionLine}"; exit 0; fi\nprintf '%s\\n' "$@" > "${argsFile}"\necho DONE\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir, resolveExecJson: () => false });
+    let reported: string | undefined;
+    await expect(provider.evaluate('hello', { model: tier as 'balanced', onModel: (m) => { reported = m.model; } })).resolves.toBe('DONE');
+    const args = fs.readFileSync(argsFile, 'utf8').split('\n');
+    expect(args[args.indexOf('--model') + 1]).toBe(expected);
+    expect(reported).toBe(expected);
+  });
+
+  it('never swaps a strict pin, even on an older CLI', async () => {
+    const argsFile = path.join(tmpDir, 'older-cli-strict-args');
+    const binary = path.join(tmpDir, 'older-cli-strict-codex');
+    fs.writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.165.0"; exit 0; fi\nprintf '%s\\n' "$@" > "${argsFile}"\necho DONE\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir, resolveExecJson: () => false });
+    await expect(provider.evaluate('hello', { model: 'gpt-6.2-astra' as 'capable', strictModelPin: true })).resolves.toBe('DONE');
+    const args = fs.readFileSync(argsFile, 'utf8').split('\n');
+    expect(args[args.indexOf('--model') + 1]).toBe('gpt-6.2-astra');
   });
 
   it('requires an explicit subscription account and refuses before spawning when the launch fence fails', async () => {
