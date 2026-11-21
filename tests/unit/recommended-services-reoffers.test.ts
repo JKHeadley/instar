@@ -284,3 +284,23 @@ describe('address-repeatedly-down', () => {
     expect(serviceForProblem('voice-unreadable', spent, choice(['voice-transcription']))).toBe('voice-transcription');
   });
 });
+
+describe('provider-exhausted', () => {
+  it('re-offers the second AI subscription in fixed words', () => {
+    expect(PROBLEM_KINDS['provider-exhausted']!.service).toBe('second-ai-door');
+    const row = RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'second-ai-door')!;
+    expect(renderReoffer('provider-exhausted', row, { linkBase: 'http://x', choice: 'no', deliveredBefore: 0 })).toContain('Every AI provider I work on was out');
+  });
+
+  it('a held kind is skipped, not dropped, and does not block the others', () => {
+    const t0 = Date.parse('2026-11-20T00:00:00Z');
+    const row = (kind: string, service: string, at: number, state = 'event') => ({ type: 'reoffer', eventId: `${kind}-${at}`, service, owner: '42', kind, state, evidenceRef: 'x', at: new Date(at).toISOString() }) as never;
+    const rows = [row('provider-exhausted', 'second-ai-door', t0), row('voice-unreadable', 'voice-transcription', t0 + 1000)];
+    const f = { choice: () => ({ choice: 'no', at: '2026-11-01T00:00:00Z' }) as never, offer: () => 'none' as never, offeredAt: () => null };
+    const hold = (r: { kind: string }) => r.kind === 'provider-exhausted';
+    const d = nextReoffer(rows, RECOMMENDED_SERVICE_CATALOG, f, t0 + 2000, { hold });
+    expect(d).toMatchObject({ action: 'send', event: { kind: 'voice-unreadable' } });
+    expect(nextReoffer(rows, RECOMMENDED_SERVICE_CATALOG, f, t0 + 2000)).toMatchObject({ action: 'send', event: { kind: 'provider-exhausted' } });
+    expect(nextReoffer([rows[0]!], RECOMMENDED_SERVICE_CATALOG, f, t0 + 2000, { hold })).toEqual({ action: 'none', why: 'nothing-waiting' });
+  });
+});

@@ -53,8 +53,8 @@ export interface ProblemKind {
 /**
  * The real-problem table. Each kind is called only from its named source: `voice-unreadable` from the shared
  * transcription wrapper, `secret-lost` from the boot check over the loaded config, `state-loss-risk` from the restore marker
- * read at start, `address-repeatedly-down` from the tunnel's own give-up transitions. `provider-exhausted` joins
- * with its source and the fixed-template path it needs.
+ * read at start, `address-repeatedly-down` from the tunnel's own give-up transitions, `provider-exhausted` from
+ * the subscription pool sampled on each regular check (its yes is carried out with no model: noModelSetup.ts).
  */
 export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
   'voice-unreadable': {
@@ -69,6 +69,10 @@ export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
     service: 'tailscale',
     alternate: 'cloudflare-domain',
     why: "My web address went down three times in the last day, and each time it didn't come back on its own, so you couldn't reach me from your phone.",
+  },
+  'provider-exhausted': {
+    service: 'second-ai-door',
+    why: "Every AI provider I work on was out for more than half an hour, twice this week, so I couldn't do anything for you during those times.",
   },
   'state-loss-risk': {
     service: 'github-state-backup',
@@ -184,14 +188,16 @@ export function eventBlock(event: ReofferRow, rows: readonly ReofferRow[], catal
 
 /**
  * What the lease holder does now for one owner: resend a reservation still in flight, send the oldest eligible
- * problem, or nothing. `rows` are this owner's re-offer rows.
+ * problem, or nothing. `rows` are this owner's re-offer rows. A `hold` row is skipped for now, never dropped.
  */
-export function nextReoffer(rows: readonly ReofferRow[], catalog: readonly CatalogRow[], facts: ReofferFacts, nowMs: number): ReofferDecision {
+export function nextReoffer(rows: readonly ReofferRow[], catalog: readonly CatalogRow[], facts: ReofferFacts, nowMs: number, opts: { hold?: (row: ReofferRow) => boolean } = {}): ReofferDecision {
+  const held = (r: ReofferRow): boolean => !!opts.hold?.(r);
   const { delivered, inFlight } = liveReservations(rows, nowMs);
-  if (inFlight.length) {
-    return { action: 'resume', pending: [...inFlight].sort((a, b) => ms(a.at) - ms(b.at))[0]! };
+  const resumable = inFlight.filter((r) => !held(r));
+  if (resumable.length) {
+    return { action: 'resume', pending: [...resumable].sort((a, b) => ms(a.at) - ms(b.at))[0]! };
   }
-  const events = rows.filter((r) => r.state === 'event').sort((a, b) => ms(a.at) - ms(b.at) || (a.eventId < b.eventId ? -1 : 1));
+  const events = rows.filter((r) => r.state === 'event' && !held(r)).sort((a, b) => ms(a.at) - ms(b.at) || (a.eventId < b.eventId ? -1 : 1));
   const eligible = events.find((e) => eventBlock(e, rows, catalog, facts, nowMs) === null);
   if (!eligible) return { action: 'none', why: 'nothing-waiting' };
   if (delivered.some((r) => nowMs - ms(r.at) < REOFFER_DAILY_WINDOW_MS)) return { action: 'none', why: 'daily-cap' };

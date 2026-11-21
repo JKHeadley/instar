@@ -735,7 +735,7 @@ ${RULES('email', port)}`,
 /** How long the GitHub recipe waits before its one retry of the first push to a repository it just created. */
 export const GITHUB_FIRST_PUSH_RETRY_MS = 3000;
 
-const TAILSCALE_PROGRAMS = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale'];
+export const TAILSCALE_PROGRAMS = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale'];
 
 /**
  * Reads this machine's Tailscale state. The program on PATH comes first, so the person's own choice of
