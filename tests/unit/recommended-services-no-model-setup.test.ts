@@ -210,3 +210,23 @@ describe('review fix: nothing is claimed when the door was not switched on', () 
     expect(told.some((t) => t.includes('switched on'))).toBe(false);
   });
 });
+
+describe('an unknown sign-in state never starts a new sign-in', () => {
+  it('second door: unknown stops before any login', async () => {
+    let started = 0; const told: string[] = [];
+    const out = await runSecondDoorWithoutModel({
+      enabled: () => ['claude-code'], installed: () => true, oneTapSignIn: () => true, install: async () => true,
+      startSignIn: async () => { started += 1; return { verificationUrl: 'https://x/device' }; },
+      signedIn: async () => 'unknown', enable: () => true, tell: (t) => told.push(t), stillWanted: () => true, sleep: async () => undefined, now: () => 0,
+    });
+    expect(out.result).toBe('fail'); expect(started).toBe(0); expect(told[0]).toContain("can't tell");
+  });
+  it('Tailscale: unknown stops before the service or a login', async () => {
+    let touched = 0;
+    const out = await runTailscaleWithoutModel({
+      status: async () => 'unknown', install: async () => { touched += 1; return true; }, startService: async () => { touched += 1; return true; },
+      startSignIn: async () => { touched += 1; return 'https://login.tailscale.com/a/x'; }, tell: () => undefined, stillWanted: () => true, sleep: async () => undefined, now: () => 0,
+    });
+    expect(out.result).toBe('fail'); expect(touched).toBe(0);
+  });
+});

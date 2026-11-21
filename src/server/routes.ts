@@ -18557,7 +18557,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           doorPanes.add(session);
           await tmuxRun(tmuxPath, ['kill-session', '-t', `=${session}`]);
           // BROWSER=true: the link goes to the person's phone, never a page on this machine's screen.
-          if ((await tmuxRun(tmuxPath, ['new-session', '-d', '-s', session, `env BROWSER=true ${DEFAULT_ENROLL_LOGIN_COMMANDS[framework] ?? `${framework} login`}`])) === null) throw new Error('the login pane did not start');
+          // A pane takes the tmux server's environment, so the login home the sign-in check reads is passed explicitly.
+          const homeArgs = ['CODEX_HOME', 'CLAUDE_CONFIG_DIR'].flatMap((k) => (process.env[k] ? ['-e', `${k}=${process.env[k]}`] : []));
+          if ((await tmuxRun(tmuxPath, ['new-session', '-d', ...homeArgs, '-s', session, `env BROWSER=true ${DEFAULT_ENROLL_LOGIN_COMMANDS[framework] ?? `${framework} login`}`])) === null) throw new Error('the login pane did not start');
           return { session };
         },
         capture: async (session) => {

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "recommended-services-reoffers",
+  "sessionId": "0dee70e8-4cc4-4d19-aeac-155f026b4f68",
+  "timestamp": "2026-11-21T04:40:10.372Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-reoffers.md",
+  "artifactSha256": "4973c6092ccc0bffd2cbec444f6c08df8d95bb5c825f5798f3a29bea05253fd5",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/recommended/noModelSetup.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Safety fix in dark no-model setup: never start a shared-login sign-in on an unknown state",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
