@@ -1,3 +1,4 @@
+import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
@@ -7237,6 +7238,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const sch = config.multiMachine?.leaseSelfHeal?.soloCaptainHold;
             return sch?.enabled ? { enabled: true } : null;
           },
+          // stall-wake-lease-reconfirm (fb-fdb55c1c-a79) — read live; dark unless set explicitly.
+          stallReconfirm: () => resolveStallReconfirm(config),
           isPreferredAwakeAgreed: () => {
             const pref = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
             return !!pref && pref === selfMachineId;
