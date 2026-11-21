@@ -5110,6 +5110,12 @@ export interface InstarConfig {
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
   /**
+   * Test-only fixtures (docs/specs/throwaway-owner-chat.md). `throwawayOwnerChat.enabled` asks for the
+   * stand-in owner chat; it is honoured only on a throwaway agent in a temporary folder with no owner,
+   * no messaging adapter and no other machine. Absent everywhere by default.
+   */
+  liveTest?: { throwawayOwnerChat?: { enabled?: boolean } };
+  /**
    * Operator config for the outbound Messaging Tone Gate, read LIVE via the
    * gate's config getter (no restart needed). TOP-LEVEL by necessity:
    * `messaging` is an array of adapter configs, so the historically-documented
