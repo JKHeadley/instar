@@ -264,26 +264,35 @@ export class MessageLogger {
  */
 export class RotationLineCount {
   private count: number | null = null;
-  /** After a failed rotation, the count at which the next attempt may run (a brake, not a skip). */
-  private retryAtCount = 0;
+  /** After a failed attempt, appends still to pass before the next one. */
+  private waitAppends = 0;
 
   /** Called on each append above the size threshold: true when the cap may be passed. */
   mayExceed(logPath: string, maxLines: number): boolean {
-    if (this.count === null) this.count = countNewlines(fs.readFileSync(logPath));
-    else this.count += 1;
-    return this.count > maxLines && this.count >= this.retryAtCount;
+    if (this.waitAppends > 0) {
+      this.waitAppends -= 1;
+      if (this.count !== null) this.count += 1;
+      return false;
+    }
+    if (this.count === null) {
+      try { this.count = countNewlines(fs.readFileSync(logPath)); }
+      catch (err) { this.waitAppends = ROTATION_RETRY_LINES; throw err; }
+    } else {
+      this.count += 1;
+    }
+    return this.count > maxLines;
   }
 
-  set(lines: number): void { this.count = lines; this.retryAtCount = 0; }
+  set(lines: number): void { this.count = lines; this.waitAppends = 0; }
 
   /**
-   * The rotation read or rename failed: wait ROTATION_RETRY_LINES more appends before the next
-   * full read, instead of re-reading the whole log on every append while the failure lasts.
+   * A rotation is being attempted: unless set() reports it finished, wait ROTATION_RETRY_LINES
+   * appends before the next full read, instead of re-reading the log on every append.
    */
-  failed(): void { this.retryAtCount = (this.count ?? 0) + ROTATION_RETRY_LINES; }
+  failed(): void { this.waitAppends = ROTATION_RETRY_LINES; }
 
-  /** The file is back under the size threshold (rotated or replaced elsewhere): recount next time. */
-  forget(): void { this.count = null; }
+  /** The file is back under the size threshold (rotated or replaced elsewhere): start over. */
+  forget(): void { this.count = null; this.waitAppends = 0; }
 }
 
 /** Appends between rotation attempts after a failure: 1% of the 100 000-line cap. */

@@ -1,9 +1,8 @@
 /**
- * Feature-is-alive proof for docs/specs/main-loop-freeze-conversation-list.md: an AgentServer
- * booted through its production constructor with a REAL TelegramAdapter (history for many closed
- * topics) answers GET /mobile/conversations with every topic, reads the Telegram log zero times
- * synchronously while doing so (the 2026-11-21 Echo Studio freeze read it once per topic), and
- * shows each topic's newest message once the background index is built.
+ * Feature-is-alive proof for docs/specs/main-loop-freeze-conversation-list.md: an AgentServer built
+ * through its production constructor with a real TelegramAdapter answers the conversation list for
+ * many closed topics with zero synchronous reads of the Telegram log (the old code read it once per
+ * topic), with each topic's real newest message, and the unread source is wired to the same tails.
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -21,81 +20,52 @@ import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { wireReadMarkerStore } from '../../src/core/ConversationReadMarkersWiring.js';
 
 const N = 80;
-const servers: AgentServer[] = [];
-const adapters: TelegramAdapter[] = [];
-const dirs: string[] = [];
+const cleanup: Array<() => Promise<void> | void> = [];
+afterAll(async () => { for (const c of cleanup.reverse()) await c(); });
 
-afterAll(async () => {
-  for (const s of servers) await s.stop();
-  for (const a of adapters) await a.stop();
-  for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/conversation-list-no-log-scan-alive.test.ts' });
-});
-
-describe('conversation list — production wiring never scans the Telegram log per topic', () => {
-  it('lists every closed topic with zero synchronous log reads, previews arriving from the index', async () => {
+describe('conversation list — production wiring', () => {
+  it('lists every closed topic with no synchronous log read, and concurrent cold requests share one load', async () => {
     const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'clist-e2e-'));
-    dirs.push(dir);
+    cleanup.push(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/conversation-list-no-log-scan-alive.test.ts' }));
     const stateDir = path.join(dir, '.instar');
     for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
     await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
-
-    // History from a previous server life; every session since closed.
-    const writer = new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, stateDir);
-    let id = 1;
-    for (let t = 1; t <= N; t++) {
-      for (let k = 0; k < 3; k++, id++) writer.logInboundMessage({ messageId: id, topicId: 7000 + t, text: `note ${k} for ${t}`, timestamp: new Date(1_700_000_000_000 + id * 1000).toISOString() });
-    }
-    await writer.stop();
-    const telegram = new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, stateDir);
-    adapters.push(telegram);
-    for (let t = 1; t <= N; t++) { telegram.registerTopicSession(7000 + t, `s-${t}`, `Planning notes ${t}`); telegram.unregisterTopic(7000 + t); }
     const logPath = path.join(stateDir, 'telegram-messages.jsonl');
-    expect(fs.existsSync(logPath)).toBe(true);
-
+    const lines: string[] = []; let id = 1;
+    for (let t = 1; t <= N; t++) for (let k = 0; k < 3; k++, id++) lines.push(JSON.stringify({ messageId: id, topicId: 7000 + t, text: `note ${k} for ${t}`, fromUser: k === 0, timestamp: new Date(1_700_000_000_000 + id * 1000).toISOString(), sessionName: null }));
+    fs.writeFileSync(logPath, lines.join('\n') + '\n');
+    const telegram = new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, stateDir);
+    cleanup.push(() => telegram.stop());
+    for (let t = 1; t <= N; t++) { telegram.registerTopicSession(7000 + t, `s-${t}`, `Planning notes ${t}`); telegram.unregisterTopic(7000 + t); }
     const config = {
       projectName: 'clist-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent: true,
       mobilePairing: { multiRoute: { enabled: false } },
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
-      threadline: { ownerName: 'Justin' },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, threadline: { ownerName: 'Justin' },
     } as unknown as InstarConfig;
     const sessionManager = createMockSessionManager() as any;
     sessionManager.on = () => undefined;
     const readMarkers = wireReadMarkerStore({ stateDir, emitter: null, peerStreams: null, ownMachineId: null, report: () => undefined, removalEvidence: () => false });
     readMarkers.markCatchUpSettled();
     const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), telegram, readMarkers } as never);
-    servers.push(server);
-    const app = server.getApp();
-    const list = () => request(app).get('/mobile/conversations?limit=200').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'clist-e2e');
-
-    const spy = vi.spyOn(fs, 'readFileSync');
-    const logReads = () => spy.mock.calls.filter((c) => String(c[0]) === logPath).length;
+    cleanup.push(() => server.stop());
+    const list = () => request(server.getApp()).get('/mobile/conversations?limit=200').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'clist-e2e');
+    const reads = vi.spyOn(fs, 'readFileSync');
+    const streams = vi.spyOn(fs, 'createReadStream');
     try {
-      const first = await list();
-      expect(first.status).toBe(200);
-      const tg = first.body.conversations.filter((c: { platform: string }) => c.platform === 'telegram');
-      expect(tg.length).toBe(N);
-      expect(logReads()).toBe(0);
-
-      await telegram.buildLastEntryIndex();
-      const second = await list();
-      expect(second.status).toBe(200);
-      const row = second.body.conversations.find((c: { id: unknown; platform: string }) => c.platform === 'telegram' && c.id === 7000 + N);
-      expect(row?.lastPreview).toBe(`note 2 for ${N}`);
-      expect(typeof row?.lastActivity).toBe('string');
-      expect(logReads()).toBe(0);
-
-      // Wiring integrity: the unread counter's Telegram source is the in-memory, non-blocking read.
-      const unread = server.conversationUnread as unknown as { deps: { telegram: { history: (id: number, limit: number) => unknown[] | null } } } | null;
-      expect(unread).not.toBeNull();
-      expect(unread!.deps.telegram.history(7001, 100)).toBeNull(); // cold: unknown, queued for a background load
-      expect(logReads()).toBe(0);
-      await telegram.warmTopicTails([]);
-      expect(unread!.deps.telegram.history(7001, 100)?.length).toBe(3);
-      expect(logReads()).toBe(0);
-    } finally {
-      spy.mockRestore();
-    }
+      const [a, b] = await Promise.all([list(), list()]);
+      for (const r of [a, b]) {
+        expect(r.status).toBe(200);
+        expect(r.body.partial ?? false).toBe(false);
+        const tg = r.body.conversations.filter((c: { platform: string }) => c.platform === 'telegram');
+        expect(tg).toHaveLength(N);
+        expect(tg[0]).toMatchObject({ id: 7000 + N, lastPreview: `note 2 for ${N}` });
+      }
+      expect(streams.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(1);
+      const unread = server.conversationUnread as unknown as { deps: { telegram: { history: (i: number, l: number) => Array<{ messageId: number }> } } };
+      expect(unread.deps.telegram.history(7001, 100).map((r) => r.messageId)).toEqual([1, 2, 3]);
+      expect(reads.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(0);
+    } finally { reads.mockRestore(); streams.mockRestore(); }
   });
 });

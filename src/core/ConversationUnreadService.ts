@@ -38,12 +38,8 @@ export interface TelegramRowLike {
   via?: string; senderRole?: string; senderPerson?: { machineId: string; userId: string }; teamPhone?: boolean;
 }
 export interface UnreadTelegramSource {
-  /**
-   * The newest `limit` rows of a topic, oldest first (the in-memory tail; never a disk scan), or
-   * null when the topic's tail is not loaded yet: the count is then unknown for this request
-   * (docs/specs/main-loop-freeze-conversation-list.md).
-   */
-  history: (topicId: number, limit: number) => ReadonlyArray<TelegramRowLike> | null;
+  /** The newest `limit` rows of a topic, oldest first (the in-memory tail; never a disk scan). */
+  history: (topicId: number, limit: number) => ReadonlyArray<TelegramRowLike>;
   /** The tail's append counter: the local revision a count is cached on. */
   version: (topicId: number) => number;
   /** Is this topic one this machine lists? */
@@ -223,14 +219,7 @@ export class ConversationUnreadService {
     if (!stored) return { hasUnread: false, unreadCount: 0, readUpTo: null };
     if (!this.preFilterHasUnread(reader, ref, row.lastActivity)) return { hasUnread: false, unreadCount: 0, readUpTo: stored };
     const c = this.countFor(reader, ref);
-    if (!c) {
-      // Count unknown this time (e.g. a Telegram tail still loading in the background,
-      // main-loop-freeze-conversation-list): call it unread only when the row's activity is
-      // strictly after the marker, so a fully-read conversation does not flash an unread dot.
-      const act = row.lastActivity ? atMsOf(row.lastActivity) : null;
-      if (act !== null && act <= stored.atMs) return { hasUnread: false, unreadCount: 0, readUpTo: stored };
-      return { hasUnread: true, readUpTo: stored };
-    }
+    if (!c) return { hasUnread: true, readUpTo: stored };
     return { hasUnread: c.count > 0 || c.more, unreadCount: c.count, ...(c.more ? { unreadMore: true as const } : {}), readUpTo: c.effective ?? stored };
   }
 
@@ -286,7 +275,7 @@ export class ConversationUnreadService {
   /** Is this conversation held on this machine? (the message source is here) */
   holdsRef(ref: string): boolean {
     if (ref.startsWith('app:')) { const c = this.deps.app?.getConversation(ref.slice(4)); return !!c && !c.tombstoned; }
-    if (ref.startsWith('telegram:')) { const id = Number(ref.slice(9)); return !!this.deps.telegram && (this.deps.telegram.exists(id) || (this.deps.telegram.history(id, 1)?.length ?? 0) > 0); }
+    if (ref.startsWith('telegram:')) { const id = Number(ref.slice(9)); return !!this.deps.telegram && (this.deps.telegram.exists(id) || this.deps.telegram.history(id, 1).length > 0); }
     const m = /^slack:([\w-]+):(-\d+)$/.exec(ref);
     if (!m) return false;
     return m[1] === this.deps.machineId() && !!this.deps.slack && this.deps.slack.rows(Number(m[2])) !== null;
@@ -320,12 +309,10 @@ export class ConversationUnreadService {
       if (!tg) return null;
       const topicId = Number(ref.slice(9));
       let history = tg.history(topicId, 100);
-      if (!history) return null; // not loaded yet: the count is unknown this time, never a disk read
       let complete = history.length < 100;
       if (!complete) {
         // The whole in-memory tail, still no disk read (§3.4): the marker may be past the first page.
         const more = tg.history(topicId, 500);
-        if (!more) return null;
         complete = more.length < 500;
         history = more;
       }

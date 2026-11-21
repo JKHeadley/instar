@@ -1,6 +1,6 @@
 # Main-loop freezes from the conversation list — Plain-English Overview
 
-> The one-line version: the phone and Mac app's conversation list made the agent's server re-read its whole Telegram message history once per conversation, freezing it for 20-30 seconds; now the list reads a small in-memory "latest message per conversation" table and never touches the file while answering.
+> The one-line version: the phone and Mac app's conversation list made the agent's server re-read its whole Telegram message history once per conversation, freezing it for 20-30 seconds; now one background read fills the server's memory and the list answers from that.
 
 ## The problem in one breath
 
@@ -19,9 +19,11 @@ For each conversation in the list, the server asked "what is this conversation's
 
 ## What this adds
 
-The server now keeps a tiny table: the latest message of every conversation, one entry each. Every new message updates it the moment it is saved. To learn the history from before the server started, the server reads the file once, in the background, in small pieces, letting other work run between pieces. The conversation list reads only that table, so answering it never touches the file. Any conversation the table has no entry for (the first moment after a restart, before the background read finishes, or a conversation so old its messages have been trimmed from the file) is filled from the indexed message database with a quick lookup, or shown without its preview for that one request.
+The server now reads the message file once, in the background and in small pieces, and fills its existing short memory for every conversation. The phone and Mac requests wait for that single read, then answer from memory. Because they use the same data as before, previews, order and unread counts should not change; a comparison of the old and new servers on the same data checks that. Saved messages keep the memory current, and closing a session no longer drops a conversation from it.
 
-Review found the same mistake in two more places. The unread counts on the same list (the little "you have new messages" markers) also read the whole file for a conversation whose recent messages were not in memory; they now use memory only, and a conversation not loaded yet shows as "unread" without a number for one refresh while it loads in the background. And one step lower: every time a message was saved, the server read the whole 31 MB file just to decide whether the file was due for trimming, which only happens at 100,000 lines. It now counts the lines once and keeps the count up to date as messages are saved, and reads the file only when it is actually time to trim.
+An earlier version showed temporary answers while loading. Outside review found that those could skip a conversation or get an unread count wrong, so it was replaced.
+
+Review also found that every saved message read the whole 31 MB file just to decide whether it was due for trimming. The server now counts the lines once, keeps the count current, and reads the file only when it is actually time to trim.
 
 Two smaller fixes ride along, both found in the same recordings:
 
@@ -31,10 +33,10 @@ Two smaller fixes ride along, both found in the same recordings:
 ## The safeguards
 
 - Nothing is decided or blocked differently. This change only makes existing reads cheaper and moves start-up work off the single thread.
-- A message saved while the background read is still running is never overwritten by an older one from the file.
-- If the message file is missing or unreadable, the list still works; previews fill in from the message database and from new messages, and a failed background read is retried with a growing pause (one minute, doubling, at most 30 minutes) rather than on every refresh. A read that fails half-way is thrown away whole, so it can never leave an out-of-date preview behind.
+- A message saved during the background read appears once and is never replaced by an older copy.
+- If the background read fails, nothing partial is kept. Requests use the old read path and the server retries after a growing pause (one minute, doubling, at most 30 minutes).
 - Other parts of the server that use the old way of reading history behave exactly as before.
-- Tests prove the fix and would have caught the bug: listing 80 closed conversations through the real server used to read the file 81 times; it now reads it zero times. Saving 200 messages to a large file now reads it once instead of 200 times. Other tests prove an unchanged code map is not rewritten on restart, that a summary written during that rebuild is not lost, and that the start-up Node check no longer blocks.
+- Tests cover the old failure: the list used to read the file once per conversation and now reads it zero times on the main thread. Others cover paging, failed reads, trimming and the code map.
 
 ## What is not in this change
 

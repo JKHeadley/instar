@@ -1,108 +1,79 @@
 /**
- * GET /mobile/conversations over the real HTTP pipeline with a REAL TelegramAdapter
- * holding history for many closed topics (docs/specs/main-loop-freeze-conversation-list.md,
- * fb-52447f16-7d3). The 2026-11-21 Echo Studio freezes were this request reading the whole
- * Telegram log once per topic on the main thread. The bar: the request reads the log zero
- * times synchronously, and the previews arrive once the background index is built.
+ * GET /mobile/conversations over the real HTTP pipeline with a real TelegramAdapter
+ * (docs/specs/main-loop-freeze-conversation-list.md). A cold list pages losslessly in activity order
+ * without a synchronous log read, and a background reader gets the list's explicit partial answer
+ * while the load runs instead of scanning the log.
  */
-import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import express from 'express';
 import request from 'supertest';
-import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
-import { authMiddleware } from '../../src/server/middleware.js';
-import { MobilePairingService, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
-import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
-import { AppConversationService } from '../../src/core/AppConversationService.js';
-import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
-import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
-import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
-import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
-import { buildTelegramListRows } from '../../src/server/telegramListRows.js';
+import { AgentServer } from '../../src/server/AgentServer.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import type { InstarConfig } from '../../src/core/types.js';
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { localConversationListPage } from '../../src/server/mobileConversationRoutes.js';
 
 const N = 120;
-const dirs: string[] = [];
-const cleanups: Array<() => Promise<void> | void> = [];
-beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null); });
-afterAll(async () => {
-  ProcessIntegrity.reset();
-  for (const c of cleanups) await c();
-  for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/conversation-list-no-log-scan.test.ts' });
-});
+const cleanup: Array<() => Promise<void> | void> = [];
+afterAll(async () => { for (const c of cleanup.reverse()) await c(); });
 
-async function setup() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clist-'));
-  dirs.push(dir);
-  await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
-  const config = { projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } }, sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' } };
-  const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
-  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => true };
-  const pairing = new MobilePairingService(deps);
-  pairing.nativeOn = true;
-  cleanups.push(() => pairing.stop());
-  const signer = loadMachineSigner(dir)!;
-  const keyLookup = identityKeyLookup(dir);
-  const keyLedger = new MobileDeviceKeyLedger({ stateDir: dir, signer, keyLookup });
-  pairing.keyLedger = keyLedger;
-  const svc = new AppConversationService({
-    stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
-    signer, keyLookup, keyLedger, dispatch: () => async () => 'delivered',
-  });
-
-  // A previous server life logged history for N topics; their sessions are closed now.
-  const tgDir = path.join(dir, 'tg');
-  fs.mkdirSync(tgDir);
-  const writer = new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, tgDir);
-  let id = 1;
-  for (let t = 1; t <= N; t++) {
-    for (let k = 0; k < 5; k++, id++) writer.logInboundMessage({ messageId: id, topicId: 5000 + t, text: `msg ${k} in ${t}`, timestamp: new Date(1_700_000_000_000 + id * 1000).toISOString() });
-  }
-  await writer.stop();
-  const telegram = new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, tgDir);
-  cleanups.push(() => telegram.stop());
+async function boot() {
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'clist-int-'));
+  cleanup.push(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/conversation-list-no-log-scan.test.ts' }));
+  const stateDir = path.join(dir, '.instar');
+  for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+  await new MachineIdentityManager(stateDir).generateIdentity({ name: 'integration machine' });
+  const logPath = path.join(stateDir, 'telegram-messages.jsonl');
+  const rows: string[] = []; let id = 1;
+  for (let t = 1; t <= N; t++) for (let k = 0; k < 4; k++, id++) rows.push(JSON.stringify({ messageId: id, topicId: 5000 + t, text: `msg ${k} in ${t}`, fromUser: k % 2 === 0, timestamp: new Date(1_700_000_000_000 + id * 1000).toISOString(), sessionName: null }));
+  fs.writeFileSync(logPath, rows.join('\n') + '\n');
+  const telegram = new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, stateDir);
+  cleanup.push(() => telegram.stop());
   for (let t = 1; t <= N; t++) { telegram.registerTopicSession(5000 + t, `s-${t}`, `Planning notes ${t}`); telegram.unregisterTopic(5000 + t); }
-
-  const app = express();
-  app.use(express.json());
-  app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
-  app.use(createMobileConversationRouter({
-    config: config as never, pairing, service: svc, machineId: () => 'm1',
-    // The production producer (AgentServer.conversationFlatDeps.telegramTopics).
-    telegramTopics: () => buildTelegramListRows({
-      mappings: () => telegram.getAllTopicMappings(),
-      lastEntries: (ids) => telegram.getTopicLastEntries(ids),
-      displayName: (_id, name) => name,
-      previewText: (t) => t,
-    }),
-  }));
-  return { app, telegram, logPath: path.join(tgDir, 'telegram-messages.jsonl') };
+  const config = {
+    projectName: 'clist-int', projectDir: dir, stateDir, port: 0, authToken: 'tok-1', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } },
+    sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
+    scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, threadline: { ownerName: 'Justin' },
+  } as unknown as InstarConfig;
+  const sessionManager = createMockSessionManager() as any;
+  sessionManager.on = () => undefined;
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), telegram } as never);
+  cleanup.push(() => server.stop());
+  return { server, telegram, logPath };
 }
 
 describe('GET /mobile/conversations with many closed Telegram topics', () => {
-  it('never reads the Telegram log synchronously, and shows previews once the index is built', async () => {
-    const e = await setup();
-    expect(fs.existsSync(e.logPath)).toBe(true);
-    const spy = vi.spyOn(fs, 'readFileSync');
-    const logReads = () => spy.mock.calls.filter((c) => String(c[0]) === e.logPath).length;
+  it('a cold list pages every topic once, newest first, with no synchronous log read', async () => {
+    const e = await boot();
+    const reads = vi.spyOn(fs, 'readFileSync');
     try {
-      const first = await request(e.app).get('/mobile/conversations?limit=200').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
-      expect(first.status).toBe(200);
-      const tgRows = first.body.conversations.filter((c: { platform: string }) => c.platform === 'telegram');
-      expect(tgRows).toHaveLength(N);
-      expect(logReads()).toBe(0);
+      const seen: number[] = []; let cursor: string | null = null;
+      for (let page = 0; page < 10; page++) {
+        const r = await request(e.server.getApp()).get(`/mobile/conversations?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`).set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+        expect(r.status).toBe(200);
+        seen.push(...r.body.conversations.filter((c: { platform: string }) => c.platform === 'telegram').map((c: { id: number }) => c.id));
+        cursor = r.body.nextCursor ?? null;
+        if (!cursor) break;
+      }
+      expect(seen).toEqual(Array.from({ length: N }, (_, i) => 5000 + N - i));
+      expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath)).toHaveLength(0);
+    } finally { reads.mockRestore(); }
+  });
 
-      await e.telegram.buildLastEntryIndex();
-      const second = await request(e.app).get('/mobile/conversations?limit=200').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
-      expect(second.status).toBe(200);
-      const row = second.body.conversations.find((c: { id: unknown; platform: string }) => c.platform === 'telegram' && c.id === 5001);
-      expect(row?.lastPreview).toBe('msg 4 in 1');
-      expect(logReads()).toBe(0);
-    } finally {
-      spy.mockRestore();
-    }
+  it('a background reader during the load gets an explicit partial answer, then the full list', async () => {
+    const e = await boot();
+    const loading = e.telegram.ensureAllTopicTailsLoaded();
+    expect(e.telegram.topicTailsLoadState()).toBe('loading');
+    const throwing = { service: { store: { listConversations: () => ({ conversations: [], nextCursor: null }) } }, telegramTopics: () => { if (e.telegram.topicTailsLoadState() === 'loading') throw new Error('telegram-history-loading'); return []; } };
+    expect(localConversationListPage(throwing as never, 10, null).partial).toBe(true);
+    await loading;
+    expect(localConversationListPage(throwing as never, 10, null).partial).toBe(false);
   });
 });

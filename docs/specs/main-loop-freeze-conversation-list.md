@@ -67,10 +67,8 @@ top.
 
 No request or periodic task blocks the main loop for more than about one second. Concretely:
 
-1. The conversation list never reads the Telegram log on the request's turn. Building the rows for
-   N topics costs O(N) in-memory lookups plus at most one indexed database seek per topic the
-   adapter holds no entry for, with zero synchronous log reads (measured: 500 all-miss topics well
-   under the 1 s goal).
+1. The conversation list never reads the Telegram log synchronously on a request's turn. It waits
+   for one streamed load, then builds N rows from memory.
 2. The Cartographer boot scaffold is incremental: an unchanged node is read, not rewritten.
 3. Logging a message never reads the whole log just to decide whether to rotate.
 3a. The list's unread counts (the same request) never read the log synchronously either.
@@ -81,97 +79,41 @@ No request or periodic task blocks the main loop for more than about one second.
 
 ## Design
 
-### 1. Last-entry index in `TelegramAdapter` (the priority fix)
+### 1. One streamed load of every topic's tail
 
-- New private map `topicLastEntry: Map<topicId, LogEntry>` — the newest logged entry per topic.
-- Kept current by `rememberLoggedEntry` (the single place every successful append already passes
-  through, both the shared-logger and legacy paths). One entry per topic, so it is NOT evicted by
-  `unregisterTopic`; its size is bounded by the number of distinct topics ever logged, the same
-  bound `topicContentVersion` already lives with.
-- Filled from history by `buildLastEntryIndex()`: ONE streamed pass (`fs.createReadStream`, lines
-  split per chunk), single-flight (concurrent callers share one promise), started lazily by the
-  first `getTopicLastEntries` call. Parsing proceeds per stream chunk (64 KiB), yielding to I/O
-  between reads.
-  When the pass ends it fills only topics the map does not already hold — an entry appended while
-  the pass ran is newer than anything in the file, so it is never overwritten. A missing log is not
-  an error (`ENOENT` is silent; the index is complete and empty). Any other read error DISCARDS
-  the partial result whole (merging it could pin a topic to an older entry that a later successful
-  pass, which fills only absent topics, would then skip) and leaves the index incomplete. The retry
-  is braked: the next build may start no sooner than 1 min after the failure, doubling per
-  consecutive failure, capped at 30 min apart; the error is logged once. Log rotation during the
-  pass is safe: rotation renames a new file into place, so the open stream finishes reading the old
-  one, and anything appended meanwhile is already in the index.
-- Memory: the index holds one entry per distinct topic ever logged (the same object the append
-  path already created, shared with the tail cache when present): roughly the average entry size
-  (~0.9 KB on Echo) times the topic count (hundreds to low thousands), i.e. about a megabyte,
-  against the ~31 MB the old per-topic scans allocated on every list.
-- Single writer: this adapter is the only writer of `telegram-messages.jsonl` (checked across
-  `src/`: every other reference reads it; scripts and the lifeline reach messages through the
-  server API, and per-bot adapters write their own `botStateDir`). So every append reaches
-  `rememberLoggedEntry`, and a completed index stays current without re-reading the file. If a
-  second writer were ever added, its appends would be missed by the index until the next server
-  start, the same exposure the existing tail cache already has.
-- Consistency: the tail cache and the index are written by the same single append path
-  (`rememberLoggedEntry`), so where both hold a topic their newest entry is the same object.
-  TopicMemory is consulted only for a topic the adapter has no entry for, never to override it.
-- New public `getTopicLastEntries(topicIds)` → `{ entries, complete }`. Never touches the file:
-  per topic it answers from the tail cache's last element, else the index. `complete` is true once
-  the streamed pass finished.
+This replaces the first design (a separate latest-message index, a TopicMemory gap-fill and an
+"unknown unread" state). A whole-diff outside review showed those created new visible differences:
+pagination could skip a topic, unread could read zero or advance a marker wrongly, and dividers
+could differ. The conversation surfaces now keep reading the same tail cache, with the same answers
+as before; only how it is filled changes.
 
-### 2. The list producer reads the index, not history
+- `TelegramAdapter.ensureAllTopicTailsLoaded()` fills the existing tail cache for every topic with
+  ONE streamed pass (`fs.createReadStream`, parsed per chunk). Single flight; never rejects.
+- Entries logged during the pass are buffered and merged by dedupe key. The in-memory row replaces
+  its persisted copy because it can carry sender fields the file omits. A tail already held is kept.
+- A missing log is an empty, ready load. Any other read error discards the partial result, leaves
+  state `failed`, and waits 1 min, doubling to a 30 min cap, before another attempt. While failed,
+  readers use the previous read path, so answers stay correct at the old cost.
+- Once `ready`, a topic with no tail has no rows, so no history read of 500 or fewer scans the log;
+  `unregisterTopic` no longer evicts (eviction is what sent closed topics back to a full scan).
+  Memory: at most 500 entries per topic and never more than the log held plus later appends, which
+  is what the old list already accumulated by caching each listed topic.
+- Log rotation does not edit tails: as with every tail cached before this change, a row rotated
+  out of the file stays visible until the next restart.
+- `seedTailCacheFromLog` now seeds only topics without a tail, so it cannot duplicate rows.
 
-`AgentServer.conversationFlatDeps.telegramTopics` now calls a small pure helper,
-`buildTelegramListRows` (`src/server/telegramListRows.ts`), which:
+### 2. The conversation surfaces wait for that load
 
-- takes the mappings once and asks the adapter for every topic's newest entry in ONE call;
-- fills any topic the adapter has no entry for — the index still warming up, or every line of
-  that topic rotated out of the log — from the indexed TopicMemory store
-  (`getRecentMessages(topicId, 1)`, an index seek on `idx_messages_topic(topic_id, timestamp)`) when
-  that store is open, else leaves the preview empty. Filling regardless of warm-up keeps a preview
-  from appearing during warm-up and then vanishing. Measured: 500 topics filled from a real store
-  in well under the 1 s goal (unit test). TopicMemory rows carry the same visibility filtering as
-  every other list row: the existing per-reader row filter runs after this producer;
-- maps rows exactly as before (`topicDisplayName`, `deviceTextForRow(...).slice(0, 140)`).
+- An authenticated request to `/mobile/conversations` or `/mobile/chat` waits for the load before
+  its handler runs, so list, cursor, unread, read-mark and divider code all see the full tails.
+  The wait yields the event loop.
+- `getTopicTailRows` serves the list and unread counter from memory and skips the authorship join,
+  which adds fields these readers do not use and can synchronously parse its ledger.
+- A background reader of the list producer (the conversation-graph inventory) that arrives during
+  the load gets the existing explicit `partial` answer and asks again; it never scans the log.
 
-Row shape, sort keys, cursor behavior, and `partial` semantics are unchanged. Two visible
-differences: (1) a topic whose every log line has rotated out used to show no preview and no time
-(and so sorted as inactive); it now shows its newest TopicMemory row's text and time and sorts by
-that time, which is the truer answer; (2) before the streamed pass completes, a topic with no TopicMemory row shows no
-preview/time for that request instead of blocking the server to compute it. Previews skip
-`getTopicHistory`'s authorship join, which adds authorship fields only, never text or timestamp.
-
-### 2b. The list's unread counts read the in-memory tail only
-
-Review found a second path from the same request to the same synchronous scan: the unread counter
-(`ConversationUnreadService.rowFields` → `sourceRows` → `telegram.history(topicId, 100/500)`) was
-wired to `getTopicHistory`, so for a topic whose tail was not loaded (closed or cold) and whose
-reader holds a read marker, it scanned the whole log on the request's turn. The old preview loop had
-been filling the tail cache first, which hid this. Now:
-
-- `TelegramAdapter.getCachedTopicHistory(topicId, limit)` answers from the in-memory tail only, or
-  null when it is not loaded.
-- `TelegramAdapter.warmTopicTails(topicIds)` loads tails in the background: ONE streamed pass for
-  every topic queued before it starts (more passes only for topics queued while it ran), single
-  flight, never replacing a tail another path loaded first, keeping (de-duplicated) any entry
-  appended to a topic while it loads, discarding a pass that fails part-way, with the same retry
-  brakes as the index.
-- The unread source (`cachedTelegramHistory`, `src/server/telegramListRows.ts`) returns the cached
-  rows, or null and queues the topic for a background load. `UnreadTelegramSource.history` may now
-  answer null (its contract already said "never a disk scan"); `sourceRows` then answers null.
-  For an unknown count, `rowFields` now answers unread-without-a-count only when the row's last
-  activity is strictly after the reader's marker; activity at or before the marker answers
-  `hasUnread: false, unreadCount: 0` (the pre-filter's 1 s margin otherwise passes fully-read
-  conversations, which would flash an unread dot after every restart). Once the background load
-  succeeds, later requests get the exact count; while it is pending or braked after a failure they
-  keep the unknown answer.
-- Read reports (`applyMark`, `holdsRef`) for a cold Telegram topic also see "not loaded": the mark's
-  ceiling falls back to "now" rather than the newest held message, and a topic known only from the
-  log answers as not held until loaded. Both are safe (a mark can never be in the future and only
-  moves the reader's own marker) and resolve once the tail loads.
-- Memory: a tail loaded this way stays until the topic's next `unregisterTopic`, like any tail the
-  old preview loop loaded (it loaded one for every listed topic; this loads them only for topics
-  whose reader holds a marker and that show activity near it). Every tail is a subset of the log's
-  own lines, so all tails together never exceed the log (~31 MB on Echo).
+Row shape, previews, order, cursors, unread counts and dividers are intended to be unchanged; the
+old-versus-new client diff on identical fixture data is the proof.
 
 ### 3. Incremental Cartographer scaffold
 
@@ -201,29 +143,8 @@ always re-reads and re-counts.
 
 ### Simplest robust route
 
-The simplest alternative is to serve every preview from TopicMemory alone and drop the in-memory
-index. It was rejected as the primary source because TopicMemory is the less reliable of the two
-on this fleet: it depends on the better-sqlite3 native module (the recurring ABI breakage after
-Node upgrades leaves it closed for whole server lives), and its rows arrive by a dual-write that
-can fail per message. The log is always present. So the index (one streamed pass, then free) is
-the primary source and TopicMemory fills only what the index lacks; each covers the other's gap
-with no extra machinery beyond one map and one background read.
-
-### 4. Boot node ABI probe off the main thread
-
-New `probeNodeNativeCompat(projectDir)` in `setup.ts` resolves the node candidate list
-asynchronously (its `which node` and `brew --prefix node` — a Ruby script that can take a second
-or more — run as async children) and runs the same `node -e require(<better-sqlite3 binary>)`
-probe for every candidate plus the current symlink target with async `execFile`, at most four at
-once (each probe is a whole node process; the PATH-derived candidate list is normally under ten).
-`startServer` awaits it and passes both the answers and the candidate list to
-`ensureStableNodeSymlink(projectDir, undefined, { nativeCompat, candidates })`, which then neither
-re-resolves candidates nor probes (one millisecond-scale `which node` remains in `findNodePath`'s
-fallback); `nodeCanLoadNativeModule` uses a known answer when present and
-probes synchronously only for a path it was not given. The candidate assembly itself is shared
-(`assembleNodeCandidates`), so the sync and async paths cannot drift.
-Other callers (the lifeline, `instar setup`) pass nothing and behave exactly as before. A preserved
-recovery bootstrap short-circuits the probe, as it does the symlink step.
+Reuse the existing tail cache and fill it once, off the request's turn. No new store, no fallback
+data source and no new "unknown" state, so every reader keeps its existing semantics.
 
 No gate, filter, block or allow decision is added, removed or changed. The only fixed values introduced are tuning brakes on internal work, classified below; the 140-character preview cut, the 500-entry tail cache, the 20 MB size threshold and the 100 000 / 75 000-line rotation values are existing values, unchanged.
 
@@ -231,7 +152,7 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
 
 - Node ABI probe concurrency 4 — judgment-candidate; floor: at least 1 probe at a time, and an unprobed path falls back to the existing synchronous probe; arbiter: the boot path's measured latency. A tuning value, not a decision: each probe is a whole node process, the candidate list is PATH-derived and normally under ten, so 4 keeps most boots to one or two waves without a burst of ten processes. Changing it changes boot latency only.
 - Rotation retry after a failed rotation: 1 000 appends — judgment-candidate; floor: rotation still happens once the failure clears, and the log only grows by the brake's width (1 % of the cap) meanwhile; arbiter: the next attempt. Brake required by No Unbounded Loops; the old behavior was a full read on every append.
-- Index-build retry backoff 1 min doubling to a 30 min cap — judgment-candidate; floor: a failed build never certifies completeness and gap-fill keeps working meanwhile; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
+- Tail-load retry backoff 1 min doubling to a 30 min cap — judgment-candidate; floor: a failed load never publishes partial tails and readers keep the previous read path; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
 
 ## Out of scope, with routes
 
@@ -250,7 +171,7 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
 
 ## Multi-machine posture
 
-Proxied-on-read. The index is derived, in-memory, operational state: a view of this machine's own
+Proxied-on-read. The tail cache is derived, in-memory, operational state: a view of this machine's own
 Telegram log with no durable store, the same posture as the existing tail cache. The pool-wide list
 is served by the existing `?scope=pool` merged read, which calls each machine's own producer. This change does not alter
 what a surviving machine can show for a dark peer (that is the existing pool read's contract);
@@ -259,17 +180,7 @@ the node symlink are per-machine files. No notices, no URLs, no durable state ad
 
 ## Testing
 
-- Unit `tests/unit/telegram-conversation-list-no-log-scan.test.ts`: N closed topics listed with zero
-  synchronous log reads (and, for contrast, the old `getTopicHistory` path reads it per topic);
-  previews filled after the streamed build; TopicMemory gap-fill during warm-up and for a topic
-  with no log entry after it; an append during the build wins and survives `unregisterTopic`; a
-  read failing part-way is discarded and the retry shows the newest entry; retries are braked;
-  single-flight; missing log; 500 topics gap-filled from a real TopicMemory under the goal.
-- Unit `tests/unit/telegram-unread-no-log-scan.test.ts`: the real `ConversationUnreadService` with the
-  production unread source and a real adapter: a cold topic answers unknown with zero synchronous
-  reads and queues one load; after it, the exact count (2) with zero reads; a fully-read cold topic
-  shows no unread dot; an append during the
-  load is kept once; several cold topics share one pass; a failed load is braked.
+- Unit `tests/unit/telegram-topic-tails-load.test.ts`: tails equal the old per-topic scan; zero log reads after load; closed topics keep tails; appends during load appear once with sender fields kept; no duplicate seed; failed reads discarded and braked; single flight; missing log.
 - Unit `tests/unit/message-log-rotation-no-per-append-read.test.ts`: 200 appends above the size
   threshold read the file once (the seed), not 200 times; rotation still happens at the cap and
   keeps the newest lines; a failing rotation is braked (100 appends, zero reads) and recovers.
@@ -278,13 +189,8 @@ the node symlink are per-machine files. No notices, no URLs, no durable state ad
   scaffold chunks survives; corrupt node rewritten.
 - Unit `tests/unit/node-symlink-async-probe.test.ts`: with probed answers and candidates, zero
   synchronous probes and no synchronous `brew`; without them, behavior unchanged.
-- Integration `tests/integration/conversation-list-no-log-scan.test.ts`: real router + real adapter
-  over HTTP, 120 closed topics, zero synchronous log reads, previews after the build.
-- E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: AgentServer production constructor
-  with a real adapter and the read-marker store; the route answers 200 with every topic and zero
-  synchronous log reads (verified to fail against the old producer: 81 reads for 80 topics), and
-  the wired unread source answers null for a cold topic, then its rows after the background load,
-  with zero synchronous reads throughout.
+- Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all 120 topics once in order with no synchronous log read; a background reader gets `partial` during the load.
+- E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: production `AgentServer` and real adapter; concurrent cold requests share one load, with no synchronous log read.
 
 ## Evidence bar and live proof
 
@@ -317,4 +223,4 @@ Pure code change. Revert the commit and ship a patch; no persistent state, confi
 
 ## Frontloaded Decisions
 
-- Gap-fill source for a topic the adapter has no entry for: TopicMemory when open (always, not only during warm-up, so previews do not flip), else an empty preview for that request. Decided now.
+- Load behavior: requests wait for one streamed load rather than showing provisional data. Decided now because any provisional answer changes what apps show.

@@ -4,6 +4,10 @@
 
 A real GPT-tier external pass ran through the agent's codex CLI in all three rounds (each on the then-current spec body; hashes a29a1404…, daff811a…, 93b660ec…). Every round returned "SERIOUS ISSUES" with concrete design findings, all of which were either fixed in the code and spec or are listed below as accepted at the Tier-1 cap with reasons. The Gemini family was not authed on this machine (`gemini-not-authed`); the Anthropic clean-door family was detected but not run.
 
+## Post-convergence outside code review (added 2026-11-21)
+
+After the three spec rounds, codex reviewed the whole code diff at a05487c3b and returned eight serious findings against the first design (the index, TopicMemory gap-fill and unknown-unread state). That design was replaced: one streamed load fills the existing tail cache, and phone routes wait for it. The sections below describe the three spec rounds as they happened. The current design is in the spec, and each code-review round's verbatim verdict is kept with the pull request's evidence.
+
 ## ELI10 Overview
 
 The agent's server does everything on one thread. The phone and Mac app's conversation list asked the server, for every conversation, "what was the last message here?" For conversations without a running session the server answered by reading its whole 31 MB Telegram message file from scratch, once per conversation. With hundreds of conversations that froze the server for 20-30 seconds at a time, which cost the main machine its role as leader and stopped code merges.

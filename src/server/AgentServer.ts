@@ -1,7 +1,6 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
-import { buildTelegramListRows, cachedTelegramHistory } from './telegramListRows.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
@@ -33,7 +32,7 @@ import { computeOwnLastingEndpoints } from '../core/MeshUrlAdvertiser.js';
 import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
 import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
@@ -2959,6 +2958,14 @@ export class AgentServer {
       // token type, minted only by POST /dashboard/session/step-up).
       (req: Request) => this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined),
     ));
+    // The conversation surfaces read Telegram tails from memory: wait for the one streamed load
+    // instead of letting the first requests scan the whole log on the main thread
+    // (docs/specs/main-loop-freeze-conversation-list.md). A failed load falls through to the old read.
+    this.app.use(['/mobile/conversations', '/mobile/chat'], (_req: Request, _res: Response, next: NextFunction) => {
+      const telegram = options.telegram;
+      if (!telegram || !this.mobilePairing || telegram.topicTailsLoadState() === 'ready') { next(); return; }
+      void telegram.ensureAllTopicTailsLoaded().then(() => next(), () => next());
+    });
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
     // matching logic are the single source of truth in middleware.ts so a
@@ -7912,8 +7919,7 @@ export class AgentServer {
         machineId: () => appSvc.deps.machineId(),
         app: appSvc.store,
         telegram: telegram ? {
-          // In-memory only; an unloaded topic is loaded in the background (main-loop-freeze-conversation-list).
-          history: cachedTelegramHistory(telegram) as unknown as (topicId: number, limit: number) => TelegramRowLike[] | null,
+          history: (topicId, limit) => telegram.getTopicTailRows(topicId, limit) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
           exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
@@ -7980,17 +7986,15 @@ export class AgentServer {
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
-          // Never one log read per topic (docs/specs/main-loop-freeze-conversation-list.md): the newest
-          // entries come from the adapter's in-memory index, gaps from the indexed TopicMemory store.
-          return buildTelegramListRows({
-            mappings: () => options.telegram!.getAllTopicMappings(),
-            lastEntries: (ids) => options.telegram!.getTopicLastEntries(ids),
-            indexedLast: () => {
-              const tm = options.topicMemory;
-              return tm && tm.isReady() ? (topicId: number) => tm.getRecentMessages(topicId, 1)[0] : null;
-            },
-            displayName: (topicId, topicName) => topicDisplayName(topicId, topicName, projectTitles),
-            previewText: deviceTextForRow,
+          // Never one log read per topic on the main thread (docs/specs/main-loop-freeze-conversation-list.md).
+          // The phone routes wait for the load (below); a background reader gets the list's existing
+          // "partial" answer while it runs and asks again.
+          const tails = options.telegram!;
+          if (tails.topicTailsLoadState() === 'unloaded') void tails.ensureAllTopicTailsLoaded();
+          if (tails.topicTailsLoadState() === 'loading') throw new Error('telegram-history-loading');
+          return options.telegram!.getAllTopicMappings().map((m) => {
+          const last = options.telegram!.getTopicTailRows(m.topicId, 1)[0];
+          return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
         } : undefined,
       };

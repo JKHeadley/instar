@@ -77,4 +77,22 @@ describe('message-log rotation does not read the log per append', () => {
     c.forget();
     expect(c.mayExceed(p, 2)).toBe(false); // recounted: 2
   });
+
+  it('a failed attempt is braked, a failed first count too, and forget() clears the brake', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msglog-rot-'));
+    dirs.push(dir);
+    const p = path.join(dir, 'x.jsonl');
+    fs.writeFileSync(p, 'a\nb\nc\n');
+    const c = new RotationLineCount();
+    expect(c.mayExceed(p, 2)).toBe(true);
+    c.failed();
+    expect(c.mayExceed(p, 2)).toBe(false); // braked
+    c.forget();
+    expect(c.mayExceed(p, 2)).toBe(true); // a replaced file does not inherit the brake
+    const missing = new RotationLineCount();
+    expect(() => missing.mayExceed(path.join(dir, 'gone'), 2)).toThrow();
+    const reads = vi.spyOn(fs, 'readFileSync');
+    expect(missing.mayExceed(path.join(dir, 'gone'), 2)).toBe(false);
+    expect(reads).not.toHaveBeenCalled();
+  });
 });
