@@ -13,7 +13,7 @@ import type { TrustRecovery } from '../TrustRecovery.js';
 import type { OperationMutability, TrustLevel } from '../ExternalOperationGate.js';
 import type { AutonomyProfileLevel } from '../types.js';
 import {
-  APPROVABLE_CONFIG_PATCH_KEYS, boardPolicyRaises, configPatchRaises, isKnownTrustLevel, isTrustLevelRaise, mergedConfigValue, profileRaises,
+  APPROVABLE_CONFIG_PATCH_KEYS, approvableConfigPatch, boardPolicyRaises, configPatchRaises, isKnownTrustLevel, isTrustLevelRaise, mergedConfigValue, profileRaises,
   proofCovers, proposalHashOf, slackRoleRaises, type OperatorProof,
 } from '../TrustRaiseGuard.js';
 import { AccountPathService, proofSubject, type DeviceDirectory, type DirectChatPort, type ProposeResult, type ReceiptOutcome } from './AccountPathService.js';
@@ -251,6 +251,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         if (original !== null) { try { JSON.parse(original); } catch { return { ok: false, detail: 'the settings file could not be read, so nothing was changed' }; } }
         const runtimeBefore: Record<string, unknown> = {};
         const file = readFileConfig();
+        if (!approvableConfigPatch(c.patch)) return { ok: false, detail: 'this change is not one that can be approved' };
         for (const [k, v] of Object.entries(c.patch)) {
           if (!APPROVABLE_CONFIG_PATCH_KEYS.has(k)) return { ok: false, detail: `${k} is not an approvable setting` };
           runtimeBefore[k] = d.runtimeConfig[k];

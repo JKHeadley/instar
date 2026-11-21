@@ -22,6 +22,7 @@
  * Part of Threadline Protocol Phase 6B (Network Interop).
  */
 
+import { exposureOnRaises } from '../core/TrustRaiseGuard.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -129,6 +130,12 @@ export interface ThreadlineMCPDeps {
    * cannot reach the local server. See {@link RequestSecretParams}.
    */
   requestSecret?: (params: RequestSecretParams) => Promise<RequestSecretResult>;
+  /**
+   * SEC-163: open the owner's approval card for a settings change that is a raise (joining the agent
+   * network). Absent on a transport that cannot reach the server: the tool then refuses rather than
+   * writing the switch itself.
+   */
+  openOwnerApproval?: (change: { kind: 'config-patch'; patch: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }>;
   /**
    * a2a-required-acknowledgment D4. A stdio tool runs in a subprocess with no tracker,
    * so this calls POST /threadline/ack on the agent server, on both transports.
@@ -1597,6 +1604,24 @@ export class ThreadlineMCPServer {
             }
 
             const visibility = args.visibility ?? 'public';
+
+            // SEC-163: joining the agent network, or widening how visible the agent is on it, is a raise.
+            // A session asking for it gets the owner's approval card; this tool never writes it alone.
+            const relayPatch: Record<string, unknown> = { relayEnabled: true, ...(args.visibility ? { visibility: args.visibility } : {}) };
+            if (exposureOnRaises(config as Record<string, unknown>, { threadline: relayPatch }).length > 0) {
+              if (!this.deps.openOwnerApproval) {
+                return errorResult('Joining the agent network needs the owner\'s approval, and this tool cannot reach the agent server to ask. Nothing was changed.');
+              }
+              const asked = await this.deps.openOwnerApproval({ kind: 'config-patch', patch: { threadline: relayPatch } });
+              const ok = asked.status === 202;
+              return jsonResult({
+                action: ok ? 'approval-requested' : 'not-changed',
+                approvalRequest: asked.body,
+                userMessage: ok
+                  ? 'Joining the agent network needs your approval, so I have sent you an approval card. Nothing changes until you say yes there.'
+                  : `Joining the agent network needs the owner's approval, and the approval card could not be sent (${String(asked.body.message ?? asked.body.error ?? asked.status)}). Nothing was changed.`,
+              });
+            }
 
             if (!config.threadline) {
               config.threadline = {

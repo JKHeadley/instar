@@ -546,3 +546,24 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
     },
   };
 }
+
+
+/**
+ * SEC-163: open the owner's approval card for a settings change through the agent server's
+ * `POST /trust/requests` route (the change is a raise; the card's code is never returned here).
+ */
+export async function openOwnerApprovalViaHttp(
+  change: { kind: 'config-patch'; patch: Record<string, unknown> },
+  serverPort: number,
+  agentToken?: string | null,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await fetch(`http://localhost:${serverPort}/trust/requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(agentToken ? { Authorization: `Bearer ${agentToken}` } : {}) },
+    body: JSON.stringify({ change }),
+  });
+  const raw = await response.text();
+  let body: Record<string, unknown> = {};
+  try { body = raw ? JSON.parse(raw) : {}; } catch { /* @silent-fallback-ok — a non-JSON answer is reported by its status */ }
+  return { status: response.status, body };
+}

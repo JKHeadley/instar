@@ -674,7 +674,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { APPROVABLE_CONFIG_PATCH_KEYS, configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
+import { approvableConfigPatch, configPatchRaises, exposureOnRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import { askSentence } from '../core/trustJourney/admission.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
@@ -1257,6 +1257,11 @@ export const TRUST_ADMISSION_FORWARDED_HEADER = 'x-instar-trust-admission-forwar
 /** Below the hook's 8000 ms abort, so a forwarded admission answers before the hook gives up. */
 export const TRUST_ADMISSION_FORWARD_TIMEOUT_MS = 6000;
 
+/** SEC-163: switching the relay on from this settings file would be a raise. */
+export function relayNeedsOwnerApproval(fileConfig: Record<string, unknown>): boolean {
+  return exposureOnRaises(fileConfig, { threadline: { relayEnabled: true } }).length > 0;
+}
+
 /** Parses an exact trust change from a request body (trust-journey decision 5); null when malformed. */
 export function parseTrustChange(raw: unknown): import('../core/trustJourney/TrustJourneyStore.js').TrustChange | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -1276,7 +1281,7 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
       const patch = c.patch as Record<string, unknown> | undefined;
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
       const keys = Object.keys(patch);
-      return keys.length > 0 && keys.every((k) => APPROVABLE_CONFIG_PATCH_KEYS.has(k)) && JSON.stringify(patch).length <= 2_000
+      return keys.length > 0 && approvableConfigPatch(patch) && JSON.stringify(patch).length <= 2_000
         ? { kind: 'config-patch', patch } : null;
     }
     case 'slack-role':
@@ -24134,8 +24139,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const ready = verifiedPairingRouteEnabled() && !!ctx.pairingInvites;
     res.json({ ready, ...(connectEnable ? connectEnable.status() : { deferred: false, deferredSince: null, last: readConnectEnableStatus(ctx.config.stateDir) }) });
   });
-  router.post('/threadline/pairing/enable', (req, res) => {
+  router.post('/threadline/pairing/enable', async (req, res) => {
     if (!pairingRouteAuthorized(req, res)) return;
+    // SEC-163: joining the agent network is a raise. With the relay off, this route opens the owner's
+    // approval card for exactly `threadline.relayEnabled: true` and writes nothing; once the owner
+    // approves, calling again switches pairing on as before. With the relay already on, nothing changes.
+    {
+      let fileCfg: Record<string, unknown> = {};
+      try { fileCfg = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'config.json'), 'utf-8')); } catch { /* @silent-fallback-ok — an unreadable file reads as relay off: the owner is asked, never skipped */ }
+      if (relayNeedsOwnerApproval(fileCfg)) {
+        const refusal = raiseRefusal(['joining the agent network (the relay)']);
+        const opened = ctx.trustAccountPath
+          ? await ctx.trustAccountPath.propose({ kind: 'config-patch', patch: { threadline: { relayEnabled: true } } }).catch(() => null)
+          : null;
+        const { code: _code, ...shown } = (opened ?? {}) as { code?: string } & Record<string, unknown>;
+        const sent = !!opened && ((opened as { status?: string }).status === 'sent' || (opened as { status?: string }).status === 'awaiting-acceptance');
+        res.status(403).json({
+          ...refusal,
+          ...(opened ? { approvalRequest: shown } : {}),
+          // The one sentence the agent and the dashboard show the person (they already relay sayToPerson).
+          sayToPerson: sent
+            ? 'Joining the agent network needs your approval, so I have sent you an approval card. Nothing changes until you say yes there.'
+            : 'Joining the agent network needs your approval, and I could not send you an approval card here. Nothing has changed.',
+        });
+        return;
+      }
+    }
     if (!connectEnable) {
       connectEnable = new ConnectEnableController({
         stateDir: ctx.config.stateDir,
