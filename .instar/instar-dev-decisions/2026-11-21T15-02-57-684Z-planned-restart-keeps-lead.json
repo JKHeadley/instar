@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-21T15:02:57.684Z",
+  "slug": "planned-restart-keeps-lead",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 92,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/BootClaimHold.ts",
+      "src/core/HttpLeaseTransport.ts",
+      "src/core/LeaseContinuity.ts",
+      "src/core/LeaseCoordinator.ts"
+    ],
+    "addedLines": 82,
+    "deletedLines": 10
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      3541
+    ],
+    "notes": "Boot claim safety (PR #3541) classifies probes by answer alone, so a dial refused on this machine's side (EHOSTUNREACH from macOS Local Network permission on the Studio) reads as peer silence; the survivor hold inherited that reading. The probe now carries the cause and the hold treats a caused silence as alive-and-unknown."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "No new loop: the refused-dial cause is read inside the existing pull round; the pending renewal and poll remain the registered planned-restart-lease-continuity controller."
+    },
+    "component": "LeaseCoordinator"
+  },
+  "verdict": "blocked"
+}

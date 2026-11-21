@@ -3,7 +3,7 @@
  * suggestions (docs/specs/conversation-graph-suggestions.md).
  *
  * Advice only. Nothing here writes a graph event: the owner's Accept runs the ordinary owner
- * changes from the dashboard. This service holds three things in one small state file:
+ * changes (ConversationGraphSuggestionAccept.ts, one server step both the dashboard and the phone call). This service holds three things in one small state file:
  *   - the last built suggestion list (rebuilt from scratch, never edited by hand);
  *   - the ids the owner rejected (never offered again);
  *   - the ids the owner accepted (so a finished one is not offered again).
@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { nodeKey, untitledConversationName, type ConversationRef, type ProjectionItem } from '../core/conversationGraph.js';
+import { nodeKey, untitledConversationName, type ConversationRef, type EffortRef, type ProjectionItem } from '../core/conversationGraph.js';
 import {
   buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, SUGGESTION_LIMITS, projectSuggestionId, suggestionCreateRequestId,
   type GraphSuggestion, type SuggestionInput,
@@ -34,6 +34,60 @@ export const SUGGESTIONS_LLM_COMPONENT = 'ConversationGraphSuggestions';
 
 interface StoredMember { key: string; ref: ConversationRef; title: string }
 interface StoredSuggestion extends GraphSuggestion { members: StoredMember[] }
+
+/**
+ * Where one Accept has got to: a per-machine cache of progress, never the source of truth. The request ids are
+ * derived (acceptRequestId), so another machine without this file re-sends the same requests and finds each
+ * step already done. Only opaque ids and refs, never conversation text.
+ */
+/**
+ * The owner request id for one Accept step, derived from the suggestion id (conversation-groups-phone §2):
+ * every caller on every machine sends the same request for the same step, so the owner pipeline's replicated
+ * idempotency makes one group, never two.
+ */
+export function acceptRequestId(suggestionId: string, step: 'create' | 'name' | 'move' | 'front-door', memberKey = ''): string {
+  // The create id is the shared one (#3345 / CMT-1650 derives the same value); the others follow the same formula.
+  if (step === 'create' && !memberKey) return suggestionCreateRequestId(suggestionId);
+  return `sga-${crypto.createHash('sha256').update(`conversation-group-accept\n${suggestionId}\n${step}\n${memberKey}`).digest('hex').slice(0, 40)}`;
+}
+
+export interface SuggestionAcceptProgress {
+  createRequestId: string;
+  startedAt: string;
+  /** The group (effort) the create step made. */
+  effort?: EffortRef;
+  /** The group has been read back at least once (so a later missing read means removed, not lagging). */
+  effortSeen?: boolean;
+  /** Reads that found no group before it was ever seen (bounded: the third means removed). */
+  missedReads?: number;
+  firstMissAt?: string;
+  /** Answers the pipeline should never give (bounded: the third hands the decision back to the owner). */
+  unexpected?: number;
+  /** When a step last finished (the 5-minute no-progress brake). */
+  lastProgressAt?: string;
+  /** When the last call for this Accept arrived (an absence restarts the brake clock). */
+  lastCallAt?: string;
+  /** The name was refused and the group is still unnamed (the Accept went on without it). */
+  nameRefused?: boolean;
+  named?: boolean;
+  nameId?: string;
+  moved?: string[];
+  skipped?: string[];
+  moveIds?: Record<string, string>;
+  frontDoorId?: string;
+  frontDoorSet?: boolean;
+}
+
+/** What a finished Accept did, so a repeated Accept answers the same instead of "unknown". */
+export interface SuggestionAcceptResult { group: EffortRef | null; moved: number; skipped: number; placedElsewhere: boolean }
+
+/** One suggestion as the accept step needs it: the stored members (every one, not only the unassigned). */
+export interface SuggestionAcceptTarget {
+  id: string;
+  title: string;
+  members: StoredMember[];
+  frontDoor?: ConversationRef;
+}
 interface SuggestionState {
   v: 1;
   builtAt: string | null;
@@ -46,7 +100,11 @@ interface SuggestionState {
    * Accepts in progress: one stable create-effort request id per suggestion, so every tab and
    * every reload reuses the same owner request and the server's idempotency yields ONE effort.
    */
-  accepting: Record<string, { createRequestId: string; startedAt: string }>;
+  accepting: Record<string, SuggestionAcceptProgress>;
+  /** What each finished Accept did (absent for ones finished before this was kept). */
+  acceptResults?: Record<string, SuggestionAcceptResult>;
+  /** Accepts handed back to the owner (Accept again or Reject both work); cleared when the owner Accepts again. */
+  handedBack?: Record<string, string>;
 }
 
 export interface SuggestionViewItem {
@@ -109,13 +167,14 @@ interface Overlay {
   suggestions: Map<string, { shown: StoredSuggestion; local?: StoredSuggestion }>;
 }
 
-const empty = (): SuggestionState => ({ v: 1, builtAt: null, lastAttemptAt: null, lastFailure: null, suggestions: [], rejected: {}, accepted: {}, accepting: {} });
+const empty = (): SuggestionState => ({ v: 1, builtAt: null, lastAttemptAt: null, lastFailure: null, suggestions: [], rejected: {}, accepted: {}, accepting: {}, acceptResults: {} });
 
 function validState(raw: unknown): SuggestionState | null {
   const s = raw as Partial<SuggestionState> | null;
   if (!s || s.v !== 1 || !Array.isArray(s.suggestions) || typeof s.rejected !== 'object' || typeof s.accepted !== 'object') return null;
   const out = { ...empty(), ...s } as SuggestionState;
   if (!out.accepting || typeof out.accepting !== 'object') out.accepting = {};
+  if (!out.acceptResults || typeof out.acceptResults !== 'object') out.acceptResults = {};
   return out;
 }
 
@@ -307,8 +366,71 @@ export class ConversationGraphSuggestionService {
       this.save(state);
       const row = this.acceptingRow(state, id, state.accepting[id].createRequestId, at.getTime());
       if (row) this.recordDecision(row);
+    } else if (state.handedBack?.[id]) {
+      // Accept again after a hand-back: the Accept is live again, so Reject is refused again.
+      delete state.handedBack[id];
+      this.save(state);
     }
     return { createRequestId: state.accepting[id].createRequestId };
+  }
+
+  /**
+   * The suggestion an Accept works on, with every stored member, and whether an Accept had already
+   * started before this call. Null for an unknown or rejected suggestion. A finished one answers its result.
+   */
+  acceptTarget(id: string): { target: SuggestionAcceptTarget; started: boolean } | { finished: SuggestionAcceptResult } | null {
+    const state = this.load();
+    if (state.rejected[id]) return null;
+    if (state.accepted[id]) return { finished: state.acceptResults?.[id] ?? { group: null, moved: 0, skipped: 0, placedElsewhere: false } };
+    const stored = state.suggestions.find((s) => s.id === id);
+    if (!stored) return null;
+    const members = (stored.members ?? []).filter((m) => m && typeof m.key === 'string' && m.ref);
+    const front = stored.frontDoorKey ? members.find((m) => m.key === stored.frontDoorKey) : undefined;
+    return { target: { id, title: stored.title, members, ...(front ? { frontDoor: front.ref } : {}) }, started: Boolean(state.accepting[id]) };
+  }
+
+  /** The progress of a started Accept, or null. */
+  acceptProgress(id: string): SuggestionAcceptProgress | null {
+    const p = this.load().accepting[id];
+    return p ? { ...p } : null;
+  }
+
+  /** Saves a started Accept's progress (never starts one: beginAccept does). */
+  saveAcceptProgress(id: string, progress: SuggestionAcceptProgress): boolean {
+    const state = this.load();
+    if (!state.accepting[id] || state.accepting[id].createRequestId !== progress.createRequestId) return false;
+    state.accepting[id] = { ...progress };
+    this.save(state);
+    return true;
+  }
+
+  /** True once an Accept has sent its create (and was not handed back): from then on Reject could strand a half-made group. */
+  acceptStarted(id: string): boolean {
+    const state = this.load();
+    return Boolean(state.accepting[id]) && !state.handedBack?.[id];
+  }
+
+  /**
+   * The Accept hands the decision back to the owner (nothing known was made, or the group cannot be found): its
+   * progress is dropped and Reject works again. Recorded as a local `handedBack` mark, so an Accept row another
+   * machine shares (the replicated decisions of CMT-1650) cannot quietly make Reject refuse again.
+   */
+  dropAccept(id: string): void {
+    const state = this.load();
+    delete state.accepting[id];
+    state.handedBack = { ...(state.handedBack ?? {}), [id]: this.now().toISOString() };
+    this.save(state);
+  }
+
+  /** The group an Accept made is gone: close the suggestion (never offered again) and drop its progress. */
+  closeAccept(id: string): void {
+    const state = this.load();
+    this.claimLocal(state, 'rejected', id);
+    state.rejected[id] = state.rejected[id] ?? this.now().toISOString();
+    delete state.accepting[id];
+    this.save(state);
+    // Closed on every machine, like Reject, so another machine never offers it again (CMT-1650).
+    this.recordDecision({ suggestionId: id, decision: 'rejected', atMs: this.atMsOf(state.rejected[id]) });
   }
 
   reject(id: string): boolean {
@@ -321,12 +443,13 @@ export class ConversationGraphSuggestionService {
     return true;
   }
 
-  /** Recorded after the dashboard finished every owner change of an Accept. */
-  accepted(id: string): boolean {
+  /** Recorded after every owner change of an Accept finished (the server's accept step, or an older dashboard). */
+  accepted(id: string, result?: SuggestionAcceptResult): boolean {
     const state = this.load();
     if (!state.suggestions.some((s) => s.id === id) && !state.accepted[id]) return false;
     this.claimLocal(state, 'accepted', id);
     state.accepted[id] = state.accepted[id] ?? this.now().toISOString();
+    if (result) state.acceptResults = { ...(state.acceptResults ?? {}), [id]: result };
     delete state.accepting[id];
     this.save(state);
     this.recordDecision({ suggestionId: id, decision: 'accepted', atMs: this.atMsOf(state.accepted[id]) });

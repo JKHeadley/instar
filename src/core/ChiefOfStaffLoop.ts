@@ -327,6 +327,12 @@ export interface ChiefOfStaffLoopDeps {
   journal: {
     emit(recordKey: string, build: (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp) => Record<string, unknown> | null): { outcome: string; seq?: number };
     loadUnion(): UnionEntry[];
+    /**
+     * The union from a COMPLETE read of this machine's journal (every archive and the current file, in full, plus
+     * peer streams); null when it could not be read completely. loadUnion() reads only the newest tail, so a
+     * decision that "nothing is there" must come from this read instead.
+     */
+    loadUnionComplete?(): UnionEntry[] | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
   };
@@ -562,6 +568,20 @@ export class ChiefOfStaffLoop {
   /** §1.4: the tree (parent link per conversation) for the app list and the console. Empty when the union is unreadable. */
   tree(): Map<string, TreeNode> {
     try { return foldTreeState(this.unionMemo()); } catch { /* @silent-fallback-ok: an unreadable union draws no tree; the loop health shows lastError on its next tick */ return new Map(); }
+  }
+
+  /**
+   * Bound project goals by conversation key, or null when the journal could not be read. A read that fails
+   * CLOSED: "no projects" must never be inferred from an unreadable journal (conversation-groups-phone §3,
+   * whose confirm would otherwise overwrite an existing binding).
+   */
+  boundProjectContents(): Map<string, { goal: string; doneDefinition: Array<{ id: string; kind: string; text: string; certify?: string }>; repos: string[] }> | null {
+    // Only a complete read may say "not bound" (the tail read loadUnion() makes drops older bindings). No complete
+    // reader wired, unreadable, or incomplete: null, and the caller refuses (fail closed).
+    let union: UnionEntry[] | null;
+    try { union = this.d.journal.loadUnionComplete?.() ?? null; } catch { /* @silent-fallback-ok: null IS the reported answer; the caller refuses with could-not-check */ return null; }
+    if (!union) return null;
+    return new Map(boundProjects(union).map((p) => [p.conversationKey, { goal: p.goal, doneDefinition: p.doneDefinition, repos: p.linked?.repos ?? [] }]));
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */

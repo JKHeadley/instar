@@ -191,6 +191,7 @@ import { LlmQueue } from '../monitoring/LlmQueue.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
@@ -558,6 +559,8 @@ export class AgentServer {
   private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
+  readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
   /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
@@ -694,11 +697,11 @@ export class AgentServer {
    * Turn one team setting on here, from the owner's tap on any machine of this agent. Only ever on.
    * Restarts this machine (a supervised, planned restart) when what is running is not yet on.
    */
-  private applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
+  private async applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
     config: InstarConfig;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     sessionManager: { memoryPrivacyStatus?(): { enabled?: boolean } | null | undefined };
-  }, by: string): LocalApply {
+  }, by: string): Promise<LocalApply> {
     const live = options.liveConfig;
     if (!live?.get) throw new Error('team-switch-no-live-config');
     let changed = false;
@@ -724,7 +727,7 @@ export class AgentServer {
     }
     console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
     if (running && !changed) return { changed: false, restarting: false };
-    if (!this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`)) throw new Error('team-switch-restart-unavailable');
+    if (!(await this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`))) throw new Error('team-switch-restart-unavailable');
     return { changed, restarting: true };
   }
 
@@ -941,6 +944,8 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** sibling-machine-reach: stops the holdings cache's refresh timers on shutdown. */
+  private siblingHoldingsStop: (() => void) | null = null;
   /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
   private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
   private deliverA2aToMachine?: (input: {
@@ -992,6 +997,8 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
+  /** The token ledger (read-only), for in-process consumers built after the server (the context budget's shadow runner). */
+  getTokenLedger(): TokenLedger | null { return this.tokenLedger; }
   private usageLedger: UsageLedger | null = null;
   private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
@@ -7011,6 +7018,7 @@ export class AgentServer {
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      groupProjectConfirm: this.groupProjectConfirm,
       projectAppsRuntime: options.projectAppsRuntime,
       projectAppSandbox: options.projectAppSandbox,
       projectAppCustom: options.projectAppCustom,
@@ -7413,6 +7421,8 @@ export class AgentServer {
       }
     }
     const routes = createRoutes(routeCtx);
+    // sibling-machine-reach: the background holdings cache's timers stop with the server.
+    this.siblingHoldingsStop = () => (routes as unknown as { siblingHoldings?: { stop(): void } }).siblingHoldings?.stop();
     this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -8357,12 +8367,15 @@ export class AgentServer {
     projects:()=>options.chiefOfStaffLoop?projectSuggestionSources(options.chiefOfStaffLoop,graphTelegramChatId()):[],
     // conversation-graph-suggestions-replicated-decisions: the owner's decisions shared with the agent's other machines.
     decisions:options.conversationGraphSuggestionDecisions??null};
+    // "Make this group a project" (docs/specs/conversation-groups-phone.md §3): the draft route needs the bound keys.
+    const graphGroupProjects={chiefOfStaffOn:()=>Boolean(options.chiefOfStaffLoop),boundProjects:()=>options.chiefOfStaffLoop?options.chiefOfStaffLoop.boundProjectContents():null,
+      bindProject:(input:Parameters<NonNullable<typeof options.chiefOfStaffLoop>['bindProject']>[0])=>options.chiefOfStaffLoop?options.chiefOfStaffLoop.bindProject(input):{ok:false as const,reason:'write-refused' as const},confirmHolder:this.groupProjectConfirm};
     if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
       graphSurfaceMounted=true;
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -8373,7 +8386,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
@@ -8384,6 +8397,8 @@ export class AgentServer {
     // Mounted at the end of route setup, just before the error handler, so it
     // only ever answers a graph request nothing else handled.
     const graphOff=!graphSurfaceMounted;
+    // No graph surface here: a phone project confirm answers a lasting refusal, never "try again" forever.
+    if(graphOff)this.groupProjectConfirm.off=true;
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -9688,12 +9703,16 @@ export class AgentServer {
    * `503` naming the reason and leaves the state unchanged rather than
    * reporting a restart that will never happen.
    */
-  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
+  private async requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): Promise<boolean> {
+    const requestedAt = new Date().toISOString();
+    // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+    // before the request is visible. Never throws; resolves at once when there is nothing to extend.
+    await announceRestartRequested({ requestedBy, reason, requestedAt });
     try {
       const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
       fs.mkdirSync(path.dirname(flagPath), { recursive: true });
       const data = {
-        requestedAt: new Date().toISOString(),
+        requestedAt,
         requestedBy,
         reason,
         plannedRestart: true, // maintenance, not a crash — the supervisor reads this
@@ -10330,6 +10349,7 @@ export class AgentServer {
 
   async stop(): Promise<void> {
     await this.stopGraphSourceInventory();
+    this.siblingHoldingsStop?.();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }
     if (this.documentPullTimer) clearInterval(this.documentPullTimer);
