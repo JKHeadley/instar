@@ -883,7 +883,14 @@ export class IMessageAdapter implements MessagingAdapter {
   private _logMessage(entry: LogEntry): void {
     this.logger.append(entry);
     if (this.onMessageLogged) {
-      this.onMessageLogged(entry);
+      try {
+        this.onMessageLogged(entry);
+      } catch (err) {
+        // A subscriber's failure is its own. `MessageLogger.append` already contains the
+        // callback it owns; this adapter-level callback had no such guard, so a throw here
+        // escaped into the three `_logMessage` callers (inbound and outbound alike).
+        console.error(`[imessage] onMessageLogged callback failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
