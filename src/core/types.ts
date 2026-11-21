@@ -5100,6 +5100,8 @@ export interface InstarConfig {
      * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
      */
     waitingAskLinks?: { enabled?: boolean };
+    /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
+    siblingReach?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
