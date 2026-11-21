@@ -3,7 +3,7 @@ title: "Confirm-page PIN guesses from strangers go through the sign-in limits"
 slug: sec135-approval-link-guess-bound
 author: Echo
 tier: 2
-status: draft
+status: approved
 eli16-overview: sec135-approval-link-guess-bound.eli16.md
 parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
 sibling-principles: "No Single Device Lockout; Security Fixes Keep the Experience Whole; Judgment Within Floors"
@@ -11,7 +11,10 @@ parent-spec: "identity-security-piece1c-pin-policy.md (approved 2026-11-18), the
 amends: "identity-security-piece1c-pin-policy.md, 'Per-request budget' bullet: for recommended-service confirm pages only, an answer from a browser that never unlocked the dashboard, away from the machine, is admitted and charged exactly like sign-in; a browser that unlocked the dashboard and the machine itself keep their own budgets, as on sign-in"
 decision-source: "Chief of Staff, 2026-11-21 03:00Z (message 77d972f7): option C with two conditions (owner never subject to the backstop; per-source key from the tunnel-trusted address or the socket, never a client-supplied header)"
 security-ledger: "SEC-135 (medium)"
-approved: false
+review-convergence: "spec-converge 6 rounds (Tier 2 cap), cross-model codex-cli:gpt-6.2-astra every round; report docs/specs/reports/sec135-approval-link-guess-bound-convergence.md. The round-6 security finding (per-token limit survives a store outage) was applied as specified; the cap's operator acceptance was given with the approval below."
+approved: true
+approved-by: "Justin (owner), 2026-11-21 10:16 PST, Telegram topic 141385: 'Please proceed as you recommend' on the ask recommending 'accept, faster'"
+approval-answers: "Open question 1: accept the experience cost at medium. Open question 2: the faster staged path (b)."
 ---
 # Confirm-page PIN guesses from strangers go through the sign-in limits
 
@@ -161,7 +164,7 @@ Revert the commit. Older code ignores the `protected` field. `confirm-stats.json
   - a marked or local `GET` with `X-Instar-Request` loads with the mint cap full, and an unprotected flood never evicts a protected token;
   - a marked `GET` without the header is a stranger open: it uses the strangers' cap and makes an unprotected row;
   - a CORS preflight for the confirm path does not list `X-Instar-Request` in `Access-Control-Allow-Headers`, which pins the assumption the owner-open check rests on (with a comment at that header list in `middleware.ts`);
-  - at capacity with all 50 protected, an unprotected mint is refused with no row changed, and a protected mint replaces the oldest protected row.
+  - at capacity with all 50 protected, an unprotected mint and a protected mint are both refused with no row changed (section 3: a 51st owner open never evicts a live owner page). This bullet earlier said a protected mint replaces the oldest protected row, which contradicted section 3; the build follows section 3.
 - **Unit, no wrong exemptions:** an `mps_` token or bearer gives no exemption, and a forged `cf-connecting-ip` sent straight to the port is ignored.
 - **Unit, sign-in unchanged:** sign-in's answers and wording are identical after the hook refactor.
 - **Unit, store outage:** with the store unavailable and public capacity left, five wrong answers on one token make its next answer refused before comparison, for a stranger and for a marked caller.
@@ -172,7 +175,17 @@ Revert the commit. Older code ignores the `protected` field. `confirm-stats.json
 - **Integration:** a stranger flood on the confirm routes, after which a marked browser and a local caller both still complete an answer.
 - **E2E:** the real server with the aggregate full; a marked-browser confirm completes and an unmarked one gets `pin-paused`.
 
-## Open questions
+## Build notes
+
+- The verdict also has `{ ok: false, reason: 'unavailable' }` (no PIN can be read: the route answers today's 503) and `{ ok: false, reason: 'missing', path }` (no PIN sent: today's 403, nothing compared or counted). An ok verdict also carries `path` and `aggregateFull`, which the counters need.
+- The confirm route reaches the verifier through a `verifyConfirmPin(req)` dep beside `checkConfirmPin`; it returns null when the switch is off or the hook is absent, and then `checkConfirmPin` runs exactly as before.
+- Graduation evidence: each exempt-path answer completed while the public aggregate was full also writes a `fired` row (`marker-answer-while-aggregate-full` or `local-answer-while-aggregate-full`) to `logs/feature-evidence.jsonl`, which the `security.approvalLinks` ladder entry reads.
+
+## Open questions (answered)
+
+Justin answered both on 2026-11-21 at 10:16 PST (Telegram topic 141385), quoting the ask that recommended "accept, faster": "Please proceed as you recommend". So: (1) the experience cost is accepted at medium; (2) the faster staged path (b).
+
+### As asked
 
 For Justin, asked together by the Chief of Staff:
 

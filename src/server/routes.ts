@@ -1904,6 +1904,8 @@ export interface RouteContext {
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefusedHere?: (req: import('express').Request) => boolean;
+  /** SEC-135: sign-in's public PIN limits as one hook (context + one synchronous verifier). Absent in bare test contexts. */
+  publicPin?: import('./publicPinHook.js').PublicPinHook | null;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
   providerCostReportStore?: import('../monitoring/ProviderCostReportStore.js').ProviderCostReportStore | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
@@ -17302,6 +17304,12 @@ export function createRoutes(ctx: RouteContext): Router {
   const publicCapPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
     pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
   const PIN_ALERT_ONLY_KEY = '__pin_alert_only__';
+  // SEC-135: one switch, dev-gated (live on a development agent, dark on the fleet). Off = piece 1c exactly.
+  const approvalLinksOn = (): boolean => resolveDevAgentGate(
+    ctx.liveConfig?.get<boolean | undefined>('security.approvalLinks.enabled', undefined)
+      ?? (ctx.config as { security?: { approvalLinks?: { enabled?: boolean } } }).security?.approvalLinks?.enabled,
+    ctx.config,
+  );
   function checkPublicPin(req: import('express').Request, res: import('express').Response, requestKey?: string): boolean {
     if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
     if (!requestKey) return publicCapPinCheck(req, res);
@@ -18914,6 +18922,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Reachable with no bearer token: refused on an insecure connection, and limited per live
     // confirm token (checked live before this call), so strangers cannot use it up (piece 1c).
     checkConfirmPin: (req, res) => checkPublicPin(req, res, `recsvc:${String(req.params.id ?? '')}:${String(((req.body ?? {}) as { token?: unknown }).token ?? '')}`),
+    // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md): with the switch on, a confirm answer goes
+    // through sign-in's own public limits via the shared verifier; null (switch off, or no hook) keeps
+    // checkConfirmPin above exactly as before. The per-request key is the same key piece 1c already charges.
+    verifyConfirmPin: (req) => {
+      if (!approvalLinksOn() || !ctx.publicPin) return null;
+      const requestKey = `req:${createHash('sha256').update(`recsvc:${String(req.params.id ?? '')}:${String(((req.body ?? {}) as { token?: unknown }).token ?? '')}`).digest('hex').slice(0, 32)}`;
+      return ctx.publicPin.verify(req, ((req.body ?? {}) as { pin?: unknown }).pin, { requestKey, alertKey: PIN_ALERT_ONLY_KEY });
+    },
+    // An owner open: the page's own header (a cross-origin page cannot send it: see the CORS list in
+    // middleware.ts) AND a valid remembered-browser marker or the machine itself. Never identity.
+    ownerOpen: (req) => {
+      if (!approvalLinksOn() || !ctx.publicPin) return false;
+      if (req.headers['x-instar-request'] !== '1') return false;
+      const c = ctx.publicPin.context(req);
+      return !!c.markerId || c.isLocalDirect;
+    },
+    approvalLinksEnabled: () => approvalLinksOn() && !!ctx.publicPin,
     owner: () => { const uid = callbackApprover(); return uid === undefined ? null : String(uid); },
     recordApproval: (subject, evidenceRef) => {
       if (!ctx.approvalLedger) throw new Error('approval ledger unavailable');

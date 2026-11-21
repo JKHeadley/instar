@@ -86,6 +86,10 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md §3): X-Instar-Request must NEVER be added
+  // to this list. A recommended-services confirm GET counts as an owner open only when it carries
+  // X-Instar-Request: 1, and the reason a page on another origin cannot send it is that its preflight
+  // fails here. tests/unit/sec135-owner-open-cors.test.ts pins this.
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
