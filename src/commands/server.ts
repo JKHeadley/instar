@@ -1459,6 +1459,9 @@ let _transcriptCopyIngest: ((sender: string, entries: Array<{ data: Record<strin
 // Unread (mobile-unread-messages §3.3): the read-marker store and, once the server is up, its service.
 let _readMarkerStore: import('../core/ConversationReadMarkers.js').ConversationReadMarkerStore | null = null;
 let _listPinStore: import('../core/ConversationListPins.js').ConversationListPinStore | null = null;
+/** Telegram topic names reach every machine (docs/specs/topic-name-replication.md); null when off or unwired. */
+let _telegramTopicNames: import('../messaging/TelegramTopicNameReplicationWiring.js').WiredTelegramTopicNames | null = null;
+let _telegramTopicNamesOn = false;
 // docs/specs/conversation-graph-suggestions-replicated-decisions.md: the owner's suggestion decisions on every machine.
 // Module-level because the peer-commit observer is installed before the wiring below runs.
 let _suggestionDecisions: import('../core/ConversationGraphSuggestionDecisions.js').WiredSuggestionDecisions | null = null;
@@ -6261,6 +6264,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // feature gate below.
     const { TOPIC_CLAIM_ANNOTATION_KIND_REGISTRATION } = await import('../core/TopicClaimAnnotationStore.js');
     replicatedKindRegistry.register(TOPIC_CLAIM_ANNOTATION_KIND_REGISTRATION);
+    // Telegram topic names (docs/specs/topic-name-replication.md): only the lead polls Telegram, so names and
+    // renames ride `telegram-topic-name-record` to every machine. A new KIND; older machines skip it.
+    const { TOPIC_NAMES_KIND_REGISTRATION } = await import('../messaging/TelegramTopicNameReplication.js');
+    replicatedKindRegistry.register(TOPIC_NAMES_KIND_REGISTRATION);
 
     // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
     //    substrate above ships the registry + receive/serve machinery + advert; THIS
@@ -6392,6 +6399,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (kind === 'conversation-list-pin') _listPinStore?.ingestReplicatedAll(entries.map((e) => (e.data as { row?: unknown }).row));
           // Conversations suggestions: a peer's decisions hide or continue suggestions here.
           if (kind === 'conversation-graph-suggestion-record') _suggestionDecisions?.store.ingestReplicatedAll(entries.map((e) => (e.data as { row?: unknown }).row));
+          // Telegram topic names: a peer's names land in this machine's topic registry and are carried once.
+          if (kind === 'telegram-topic-name-record') _telegramTopicNames?.store.ingestReplicatedAll(entries.map((e) => (e.data as { row?: unknown }).row));
           // Device-key ledger rows: each lands only when it verifies under the pinned key of the machine it names.
           if (kind === 'mobile-device-key-ledger-row' && _appConversationService?.deps.keyLedger) {
             const ledger = _appConversationService.deps.keyLedger;
@@ -6521,6 +6530,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { customProjectAppsEnabled: _customProjectAppsEnabledFn } = await import('../server/ProjectAppSandbox.js');
     const _projectAppsCustomOn = _projectAppsOn && _customProjectAppsEnabledFn(config);
     const _suggestionDecisionsOn = !!coherenceJournal && _stateSyncStoresBase?.conversationGraphSuggestions?.enabled !== false;
+    // Telegram topic names (docs/specs/topic-name-replication.md): on wherever the journal runs; `enabled: false` is the kill switch.
+    _telegramTopicNamesOn = !!coherenceJournal && _stateSyncStoresBase?.telegramTopicNames?.enabled !== false;
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
       s = { ...s, failureCallout: { enabled: !!coherenceJournal && resolveCorrectionLearningMode(config).failureCalloutsEnabled && (config.multiMachine?.stateSync?.failureCallout as { enabled?: boolean } | undefined)?.enabled !== false } };
@@ -6554,7 +6565,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Conversations suggestions (docs/specs/conversation-graph-suggestions-replicated-decisions.md): the owner's
       // decisions are the agent's, so the store is on wherever the journal runs; `enabled: false` is the kill switch.
       if (_suggestionDecisionsOn) s = { ...s, conversationGraphSuggestions: { enabled: true } };
-      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _projectAppsOn || _trustJourneyStoreOn || _suggestionDecisionsOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      if (_telegramTopicNamesOn) s = { ...s, telegramTopicNames: { enabled: true } };
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _projectAppsOn || _trustJourneyStoreOn || _suggestionDecisionsOn || _telegramTopicNamesOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -9843,6 +9855,37 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (machines.filter(m => !m.revokedAt).length >= 2) adapter.holderForwardReady = holderForwardWiring;
       } catch { /* @silent-fallback-ok — an unreadable registry keeps the old immediate send */ }
     };
+    // Telegram topic names reach every machine (docs/specs/topic-name-replication.md). Wired before the
+    // adapter starts polling, so no name learned from Telegram goes unpublished; on a standby (send-only)
+    // too, where names only ever arrive from the other machines. A failure leaves names machine-local.
+    const wireTopicNameReplication = async (adapter: TelegramAdapter): Promise<void> => {
+      const chat = (telegramConfig?.config as { chatId?: unknown } | undefined)?.chatId;
+      if (!_telegramTopicNamesOn || !replicatedRecordEmitter || !replicatedPeerStreamReader || !cjOwnMachineId || (typeof chat !== 'string' && typeof chat !== 'number')) return;
+      const tn = await import('../messaging/TelegramTopicNameReplicationWiring.js');
+      const { clampMaxDriftMs } = await import('../core/HybridLogicalClock.js');
+      _telegramTopicNames = tn.wireTelegramTopicNamesSafe({
+        enabled: true, stateDir: config.stateDir, chat: String(chat), telegramLead: coordinator.isAwake, adapter, emitter: replicatedRecordEmitter, peerStreams: replicatedPeerStreamReader, ownMachineId: cjOwnMachineId,
+        // The wall clock, comparable with Telegram's own message times (an HLC can run ahead by a peer's skew).
+        now: () => Date.now(),
+        maxFutureMs: clampMaxDriftMs((config.multiMachine?.stateSync as { maxDriftMs?: number } | undefined)?.maxDriftMs),
+        report: (what, detail) => DegradationReporter.getInstance().report({ feature: what, primary: 'Telegram topic names reach every machine', fallback: 'a name is shared with the other machines later', reason: detail, impact: 'A conversation may show without its name on another machine for a while.' }),
+        log: (line) => console.log(pc.dim(line)), warn: (line) => console.warn(line),
+      });
+      if (!failureReplicationTransport.replicationEnabled || failureReplicationTransport.failureOnly) {
+        featureEvidence.record('multiMachine.stateSync.telegramTopicNames', { kind: 'held', reason: 'journal-replication-not-on', context: {} });
+      }
+    };
+    // A session's display label follows its topic's rename, on every machine (names can arrive from a peer).
+    const wireTopicRenameLabel = (adapter: TelegramAdapter): void => {
+      adapter.setTopicRenamedHandler((topicId, newName) => {
+        const tmuxSession = adapter.getSessionForTopic(topicId);
+        if (!tmuxSession) return;
+        const renamed = sessionManager.renameSessionByTmux(tmuxSession, newName);
+        if (renamed) {
+          console.log(`[session-rename] Updated bound session "${tmuxSession}" display name → "${newName}" (topic ${topicId})`);
+        }
+      });
+    };
     const telegramTopology = resolveTelegramStartupTopology({
       telegramConfigured: telegramConfig != null,
       skipTelegram,
@@ -9989,6 +10032,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
+      wireTopicRenameLabel(telegram);
+      await wireTopicNameReplication(telegram);
     }
 
     if (telegramTopology?.mode === 'server-polling' && telegramConfig) {
@@ -10036,6 +10081,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       armHolderForwardWait(telegram);
       _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
+      await wireTopicNameReplication(telegram);
       await telegram.start();
       bootReadiness().mark('messaging');
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
@@ -10045,14 +10091,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // session's display `name` ONLY (never tmuxSession or id). Fire-and-
       // forget; rename-display is non-critical.
       telegram.setMachineNameResolver((machineId) => _listPoolMachines?.().find((m) => m.machineId === machineId)?.nickname ?? null);
-      telegram.setTopicRenamedHandler((topicId, newName) => {
-        const tmuxSession = telegram?.getSessionForTopic(topicId);
-        if (!tmuxSession) return;
-        const renamed = sessionManager.renameSessionByTmux(tmuxSession, newName);
-        if (renamed) {
-          console.log(`[session-rename] Updated bound session "${tmuxSession}" display name → "${newName}" (topic ${topicId})`);
-        }
-      });
+      wireTopicRenameLabel(telegram);
 
       // Wire Prompt Gate callbacks — connect Telegram relay responses to sessions
       if (promptGateConfig?.enabled) {
