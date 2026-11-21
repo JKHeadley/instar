@@ -10193,6 +10193,15 @@
       h.className = 'spend-arm-h';
       root.appendChild(h);
 
+      // gemini-payg §7: the monthly row (shown, never pushed at 50%/80%).
+      const monthly = typeof M.monthlyRowWords === 'function' ? M.monthlyRowWords(caps) : null;
+      if (monthly) {
+        const box = document.createElement('div');
+        box.className = 'spend-arm-note';
+        for (const line of monthly) { const d = document.createElement('div'); d.textContent = line; box.appendChild(d); }
+        root.appendChild(box);
+      }
+
       const rows = M.armableDoors(caps);
       if (rows.length === 0) {
         const n = document.createElement('div');

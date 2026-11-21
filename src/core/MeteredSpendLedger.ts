@@ -685,6 +685,37 @@ export class MeteredSpendLedger {
     return n;
   }
 
+  /**
+   * The current-month picture of one key for the caps view (gemini-payg §7): settled vs
+   * outstanding, and the per-caller breakdown — folded from the LEDGER rows (never the
+   * pruned reporting table), so the month breakdown by caller is exact.
+   */
+  monthBreakdown(keyRef: string, month?: string): { monthEpoch: string; settledUsd: number; outstandingUsd: number; byCaller: Array<{ caller: string; committedUsd: number; calls: number }> } {
+    this.checkHighWater();
+    // Each row keeps the month it was CHARGED to, so a past month is exact too.
+    const monthEpoch = month ?? periodEpochs(this.now(), this.zoneFor(keyRef)).monthEpoch;
+    let settled = 0;
+    let outstanding = 0;
+    const by = new Map<string, { committedUsd: number; calls: number }>();
+    for (const st of this.reserves.values()) {
+      if (st.keyRef !== keyRef || st.month !== monthEpoch) continue;
+      const c = this.contribution(st);
+      if (st.state === 'reserved') outstanding += c;
+      else settled += c;
+      const k = st.caller ?? 'unattributed';
+      const row = by.get(k) ?? { committedUsd: 0, calls: 0 };
+      row.committedUsd += c;
+      row.calls += 1;
+      by.set(k, row);
+    }
+    return {
+      monthEpoch,
+      settledUsd: round6(settled),
+      outstandingUsd: round6(outstanding),
+      byCaller: [...by.entries()].map(([caller, v]) => ({ caller, committedUsd: round6(v.committedUsd), calls: v.calls })).sort((a, b) => b.committedUsd - a.committedUsd),
+    };
+  }
+
   /** E1 pass slots in use for a `${specSha256}#${round}` key (released only by a confirmed no-charge settle). */
   e1PassesUsed(keyRef: string, e1PassKey: string): number {
     let n = 0;

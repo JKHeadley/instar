@@ -93,6 +93,50 @@ export class GeminiApiKeyReader {
     return fn(raw);
   }
 
+  /**
+   * The go-live transcript check (spec §4 "A holder-side check"): does the stored key's
+   * EXACT value appear in any of these files (directories are walked)? The value never
+   * leaves this module. A path that is missing, unreadable or too large is reported in
+   * `unreadable` — never counted as "no hit". No key in the vault ⇒ every path is
+   * reported unreadable (the check cannot be made).
+   */
+  async scanForStoredKey(paths: string[], opts: { maxFileBytes?: number; maxFiles?: number } = {}): Promise<{ hit: boolean; unreadable: string[]; scannedFiles: number }> {
+    // A transcript bigger than this is reported unreadable (a named blocker), never skipped as clean.
+    const maxBytes = opts.maxFileBytes ?? 128 * 1024 * 1024;
+    const maxFiles = opts.maxFiles ?? 20_000;
+    let raw: unknown;
+    try { raw = this.opts.vaultGet(GEMINI_PAYG_SECRET_NAME); } catch { raw = null; } // @silent-fallback-ok — no key: every path is reported unreadable below
+    if (typeof raw !== 'string' || raw.length === 0) return { hit: false, unreadable: [...paths], scannedFiles: 0 };
+    const needle = Buffer.from(raw, 'utf8');
+    const unreadable: string[] = [];
+    let scanned = 0;
+    let hit = false;
+    const seen = new Set<string>();
+    const visit = (p: string): void => {
+      if (hit) return;
+      let st: fs.Stats;
+      let real: string;
+      try { st = fs.statSync(p); real = fs.realpathSync(p); } catch { unreadable.push(p); return; } // @silent-fallback-ok — reported as unreadable, a named blocker
+      if (seen.has(real)) return; // a symlink loop or a path listed twice
+      seen.add(real);
+      if (seen.size > maxFiles) { unreadable.push(p); return; } // directories count toward the budget too
+      if (st.isDirectory()) {
+        let names: string[];
+        try { names = fs.readdirSync(p); } catch { unreadable.push(p); return; } // @silent-fallback-ok — reported as unreadable
+        for (const n of names) visit(path.join(p, n));
+        return;
+      }
+      if (!st.isFile()) return;
+      if (scanned >= maxFiles || st.size > maxBytes) { unreadable.push(p); return; }
+      scanned += 1;
+      try {
+        if (fs.readFileSync(p).indexOf(needle) !== -1) hit = true;
+      } catch { unreadable.push(p); } // @silent-fallback-ok — reported as unreadable
+    };
+    for (const p of paths) visit(p);
+    return { hit, unreadable, scannedFiles: scanned };
+  }
+
   /** The stored key's fingerprint, computed inside the reader (for the handoff check). */
   async storedFingerprint(): Promise<string | null> {
     try {

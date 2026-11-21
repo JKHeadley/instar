@@ -15,7 +15,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { HolderCallStore, forwardMeteredCall, DesignationEchoTracker, answerDesignationEcho, DESIGNATION_ECHO_INTERVAL_MS, type MeteredSend, type ForwardedCall, type DesignationClaim } from '../core/meteredLaneMesh.js';
+import { HolderCallStore, forwardMeteredCall, classifyForwardFailure, DesignationEchoTracker, answerDesignationEcho, DESIGNATION_ECHO_INTERVAL_MS, type MeteredSend, type ForwardedCall, type DesignationClaim } from '../core/meteredLaneMesh.js';
 import type { MeteredDesignation } from '../core/meteredSecrets.js';
 import { executeReview, executeSecondOpinion, type GeminiPaygRouteDeps, type GeminiReviewBinding, type ExecResult } from './geminiPaygRoutes.js';
 import type { GeminiCallRequest } from '../providers/metered/gemini-api/GeminiApiProvider.js';
@@ -62,6 +62,17 @@ export interface MeteredLaneRuntimeDeps {
    * review driver can tell the door is configured without asking the server.
    */
   seenDesignationPath?: string;
+  /**
+   * The holder side of `release-proof-forward` (§8): the release-proof recorder, which
+   * stamps the proof marker ITSELF. The payload is evidence pointers only; nothing in it
+   * reaches the paid call. Absent ⇒ the op is unsupported here.
+   */
+  releaseProof?: (originMachine: string, payload: Record<string, unknown>) => Promise<ExecResult>;
+  /**
+   * Render the `gemini-payg-setup` plan on THIS machine for a peer that asked (§8 "A
+   * request from another machine is forwarded there"). Absent ⇒ refused.
+   */
+  renderSetup?: (requestedBy: string) => Promise<unknown>;
   now?: () => number;
 }
 
@@ -178,7 +189,17 @@ export class MeteredLaneRuntime {
       if (!p.binding || typeof p.promptText !== 'string') return { status: 400, body: { status: 'unavailable', reason: 'bad-request' } };
       return executeReview(this.d.exec, p.binding, p.promptText, call.session);
     }
-    // release-proof-forward is stamped by the holder's own recorder (go-live slice).
+    if (call.op === 'release-proof-forward') {
+      // The holder's recorder stamps the marker itself; the origin machine is the
+      // AUTHENTICATED sender. Only the live-test evidence pointer is read from the payload.
+      if (!this.d.releaseProof) return { status: 503, body: { status: 'unavailable', reason: 'release-recorder-unavailable' } };
+      const p = call.payload as Record<string, unknown>;
+      const lt = p.liveTestArtifact as { featureId?: unknown; runId?: unknown } | undefined;
+      const payload: Record<string, unknown> = lt && typeof lt.featureId === 'string' && typeof lt.runId === 'string'
+        ? { liveTestArtifact: { featureId: lt.featureId.slice(0, 160), runId: lt.runId.slice(0, 160) } }
+        : {};
+      return this.d.releaseProof(call.originMachine, payload);
+    }
     return { status: 400, body: { status: 'unavailable', reason: 'unsupported-op' } };
   }
 
@@ -226,9 +247,72 @@ export class MeteredLaneRuntime {
         return answerDesignationEcho(cmd as { nonce?: unknown }, seen);
       }
       case 'secret-names':
-        return { names: this.d.secretNames() };
+        try {
+          return { names: this.d.secretNames() };
+        } catch { /* @silent-fallback-ok: NOT a pass — the asker gets an explicit error answer, which blocks a go-live render */
+          return { error: 'vault-unreadable' };
+        }
+      case 'gemini-payg-setup-render': {
+        if (!this.d.renderSetup) return { ok: false, reason: 'render-unavailable' };
+        try {
+          return { ok: true, plan: await this.d.renderSetup(sender) };
+        } catch (err) { /* @silent-fallback-ok: the refusal is RETURNED to the asking machine, never swallowed */
+          const e = err as { code?: unknown; message?: unknown; detail?: unknown };
+          return { ok: false, reason: typeof e.code === 'string' ? e.code : 'render-refused', message: typeof e.message === 'string' ? e.message.slice(0, 600) : '', ...(e.detail ? { detail: e.detail } : {}) };
+        }
+      }
       default:
         return { ok: false, reason: 'unknown-verb' };
+    }
+  }
+
+  /** The designation this machine last heard from a holder's echo (null before any). */
+  heardDesignation(): DesignationClaim | null {
+    return this.lastSeen ? { ...this.lastSeen } : null;
+  }
+
+  /**
+   * `secret-names` on every registered peer (§4 go-live precondition). A peer the rope
+   * cannot reach is `unreachable` (offline: cleared by mint-after-filter); a peer that
+   * answers without a names list is `error`. Null when the registry cannot be read.
+   */
+  async peerSecretNames(timeoutMs = 8_000): Promise<Array<{ machineId: string; outcome: 'names' | 'unreachable' | 'error'; names?: string[]; detail?: string }> | null> {
+    const peers = this.d.peers();
+    if (peers === null) return null;
+    return Promise.all(peers.map(async (machineId) => {
+      if (!this.send) return { machineId, outcome: 'unreachable' as const, detail: 'no mesh transport' };
+      try {
+        const r = (await this.send(machineId, { type: 'secret-names' }, { timeoutMs })) as { names?: unknown } | null;
+        if (r && Array.isArray(r.names) && r.names.every((n) => typeof n === 'string')) return { machineId, outcome: 'names' as const, names: r.names as string[] };
+        return { machineId, outcome: 'error' as const, detail: 'answered without a names list' };
+      } catch (err) { /* @silent-fallback-ok: classified below — an old peer is an error, an unreachable one is offline */
+        const cls = classifyForwardFailure(err);
+        return cls === 'peer-version'
+          ? { machineId, outcome: 'error' as const, detail: 'peer-version (an older build that cannot answer secret-names)' }
+          : { machineId, outcome: 'unreachable' as const };
+      }
+    }));
+  }
+
+  /** Forward the release proof to the holder (§8 check (a)+(e) on a multi-machine agent). */
+  async forwardReleaseProof(session: string, payload: Record<string, unknown>): Promise<ExecResult> {
+    if (!this.holder()) return { status: 503, body: { status: 'unavailable', reason: 'money-layer-off' } };
+    if (!this.send) return { status: 503, body: { status: 'unavailable', reason: 'holder-unreachable' } };
+    const r = await forwardMeteredCall(
+      { send: this.send, holder: () => this.holder(), originMachine: this.d.selfMachineId },
+      { op: 'release-proof-forward', session, requestSha256: hashPayload({ op: 'release-proof-forward', payload }), payload, deadlineMs: this.deadlineFor(64 + 128) },
+    );
+    return { status: r.status, body: r.body };
+  }
+
+  /** Ask the named machine to render the go-live plan there (it renders only where its proposal names). */
+  async forwardSetupRender(machineId: string): Promise<{ ok: boolean; reason?: string; message?: string; plan?: unknown; detail?: unknown }> {
+    if (!this.send) return { ok: false, reason: 'holder-unreachable', message: 'no mesh transport to reach that machine' };
+    try {
+      const r = (await this.send(machineId, { type: 'gemini-payg-setup-render' }, { timeoutMs: 30_000 })) as { ok?: boolean; reason?: string; message?: string; plan?: unknown; detail?: unknown } | null;
+      return r && typeof r === 'object' ? { ok: r.ok === true, ...(r.reason ? { reason: r.reason } : {}), ...(r.message ? { message: r.message } : {}), ...(r.plan !== undefined ? { plan: r.plan } : {}), ...(r.detail ? { detail: r.detail } : {}) } : { ok: false, reason: 'bad-reply' };
+    } catch (err) { /* @silent-fallback-ok: the failure is returned and shown, never a local render */
+      return { ok: false, reason: classifyForwardFailure(err) };
     }
   }
 

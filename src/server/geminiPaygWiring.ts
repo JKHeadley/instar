@@ -40,16 +40,29 @@ export interface GeminiPaygWiringDeps {
   isLiveSession: (name: string) => boolean;
   /** Roots a reviewed spec may live under (agent home, cartographer root). */
   reviewRoots: () => string[];
-  /** One notice (security class or plain) — the caller routes it to the spend-alert voice. */
-  notify?: (kind: 'designation-conflict' | 'key-in-plain-config' | 'stop-action', text: string) => void;
+  /**
+   * One notice (security class or plain) — the caller routes it to the spend-alert voice
+   * (GeminiPaygNotices). `epoch` rides the designation-conflict notice for its dedupe key.
+   */
+  notify?: (kind: 'designation-conflict' | 'key-in-plain-config' | 'stop-action', text: string, meta?: { epoch?: number }) => void;
+  /** A gate refusal on the reserve path (the provisional-ceiling trip raises one card). */
+  onRefusal?: (err: MoneyGateRefusal) => void;
+  /** The holder side of `release-proof-forward` (the release-proof recorder). */
+  releaseProof?: (originMachine: string, payload: Record<string, unknown>) => Promise<{ status: number; body: unknown }>;
+  /** Render the go-live plan here for a peer that asked. */
+  renderSetup?: (requestedBy: string) => Promise<unknown>;
   /** Credential env var names whose VALUES are checked against prompts (exact match). */
   credentialEnv?: NodeJS.ProcessEnv;
   /** TEST-ONLY fake Google origin. */
   testOrigin?: string;
+  /** TEST-ONLY vault read of one name (production reads the agent's SecretStore). */
+  vaultGet?: (name: string) => unknown;
 }
 
 export interface GeminiPaygLane {
   provider: () => GeminiApiProvider | null;
+  /** The ONE named reader (fingerprint and the go-live transcript scan go through it). */
+  keyReader: GeminiApiKeyReader;
   runtime: MeteredLaneRuntime;
   router: Router;
   doorStatus: () => { configured: boolean; ready: boolean; reason?: string };
@@ -101,7 +114,7 @@ export function buildGeminiPaygLane(d: GeminiPaygWiringDeps): GeminiPaygLane {
       const pf = await preflightMeteredCall(entryDeps(), {
         door: GEMINI_API_DOOR, modelId: req.modelId, inputTokens: 0, maxOutputTokens: 1,
         component: req.component, caller: req.caller as MeteredCallerId, ...(req.callId ? { callId: req.callId } : {}),
-      });
+      }, req.proofMarker ? { proofMarker: req.proofMarker } : undefined);
       if (pf.kind === 'deduped') {
         // Already admitted (and paid for): never a second call. The caller gets the state.
         throw new GeminiApiRefusal('already-admitted', `call ${req.callId} was already admitted (${pf.reservation.state})`);
@@ -120,6 +133,12 @@ export function buildGeminiPaygLane(d: GeminiPaygWiringDeps): GeminiPaygLane {
         ...(req.callId ? { callId: req.callId } : {}),
         ...(req.run ? { run: req.run } : {}),
         ...(req.e1Slot ? { e1Pass: req.e1Slot } : {}),
+      }, req.proofMarker ? { proofMarker: req.proofMarker } : undefined).catch((err: unknown) => {
+        // The provisional-ceiling trip is an operator decision (§5): one card, one notice.
+        if (err instanceof MoneyGateRefusal) {
+          try { d.onRefusal?.(err); } catch { /* @silent-fallback-ok: the notice is signal-only; the refusal still returns */ }
+        }
+        throw err;
       });
       if (r.deduped) throw new GeminiApiRefusal('already-admitted', `call ${req.callId} was already admitted`);
       return { reserveId: r.reserveId, keyRef: r.keyRef, reserveUsd: r.reserveUsd, bookedInPerMtok: r.bookedInPerMtok, bookedOutPerMtok: r.bookedOutPerMtok };
@@ -139,7 +158,7 @@ export function buildGeminiPaygLane(d: GeminiPaygWiringDeps): GeminiPaygLane {
 
   const keyReader = new GeminiApiKeyReader({
     stateDir: d.stateDir,
-    vaultGet: (name) => new SecretStore({ stateDir: d.stateDir }).get(name),
+    vaultGet: d.vaultGet ?? ((name) => new SecretStore({ stateDir: d.stateDir }).get(name)),
     expectedKeyGeneration: () => {
       try { return d.capsStore()?.read().doorPolicy?.[GEMINI_API_DOOR]?.keyGeneration ?? null; } catch { /* @silent-fallback-ok: fail-closed — the caller gets an explicit refusal or unknown, never a pass */ return null; }
     },
@@ -188,17 +207,21 @@ export function buildGeminiPaygLane(d: GeminiPaygWiringDeps): GeminiPaygLane {
       return v ? { requestSha256: v.requestSha256 ?? '', bookedUsd: v.contributionUsd } : null;
     },
     applyStop,
+    ...(d.releaseProof ? { releaseProof: d.releaseProof } : {}),
+    ...(d.renderSetup ? { renderSetup: d.renderSetup } : {}),
     secretNames: () => {
-      try {
-        const out: string[] = [];
-        const walk = (o: Record<string, unknown>, p: string) => { for (const [k, v] of Object.entries(o)) { const n = p ? `${p}.${k}` : k; if (v && typeof v === 'object' && !Array.isArray(v)) walk(v as Record<string, unknown>, n); else out.push(n); } };
-        walk(new SecretStore({ stateDir: d.stateDir }).read() as Record<string, unknown>, '');
-        return out;
-      } catch { /* @silent-fallback-ok: fail-closed — the caller gets an explicit refusal or unknown, never a pass */ return []; }
+      // No vault at all is a real, empty answer. A vault that EXISTS but cannot be read is
+      // not: it throws, so the asking holder records an error (a go-live blocker), never a
+      // clean "key absent" (§4 — a precondition never passes by absence).
+      if (!fs.existsSync(path.join(d.stateDir, 'secrets', 'config.secrets.enc'))) return [];
+      const out: string[] = [];
+      const walk = (o: Record<string, unknown>, p: string) => { for (const [k, v] of Object.entries(o)) { const n = p ? `${p}.${k}` : k; if (v && typeof v === 'object' && !Array.isArray(v)) walk(v as Record<string, unknown>, n); else out.push(n); } };
+      walk(new SecretStore({ stateDir: d.stateDir }).read() as Record<string, unknown>, '');
+      return out;
     },
     onConflict: (claim) => {
       try { d.capsStore()?.freeze('designation-conflict', GEMINI_PAYG_KEY_REF); } catch { /* @silent-fallback-ok: the gate's lease fence still refuses */ }
-      d.notify?.('designation-conflict', `Gemini spending stopped on this machine: machine ${claim.machineId} claims the Gemini lane with a newer designation (epoch ${claim.designationEpoch}). Only one machine may spend.`);
+      d.notify?.('designation-conflict', `Gemini spending stopped on this machine: machine ${claim.machineId} claims the Gemini lane with a newer designation (epoch ${claim.designationEpoch}). Only one machine may spend.`, { epoch: claim.designationEpoch });
     },
   });
 
@@ -228,5 +251,5 @@ export function buildGeminiPaygLane(d: GeminiPaygWiringDeps): GeminiPaygLane {
     forwardReview: (r) => runtime.forwardReview(r),
   });
 
-  return { provider: getProvider, runtime, router, doorStatus };
+  return { provider: getProvider, keyReader, runtime, router, doorStatus };
 }

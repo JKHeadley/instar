@@ -143,6 +143,9 @@ export function commitRoute(plan) {
   if (action === 'go-live') return '/routing-spend/go-live';
   if (action === 'unfreeze') return '/routing-spend/unfreeze';
   if (action === 'caps-adjust') return '/routing-spend/caps/adjust';
+  // gemini-payg §8: the one-PIN go-live is a money-layer PRE-GATE action; its commit
+  // route also schedules the restart its plan text disclosed (no second PIN).
+  if (action === 'gemini-payg-setup') return '/routing-spend/money-layer/commit';
   // An unknown action gets NO route rather than a default one: posting an unrecognised plan
   // to the caps route is how this defect happened, and the server would refuse it anyway.
   return null;
@@ -179,6 +182,8 @@ export function armableDoors(caps) {
       provider: k.provider,
       door: k.door,
       lifetimeCapUsd: k.lifetimeCapUsd,
+      monthlyCapUsd: k.monthlyCapUsd ?? null,
+      committedMonthUsd: k.committedMonthUsd ?? 0,
       dailyCapUsd: k.dailyCapUsd,
       frozen: k.frozen === true,
       goLiveState: k.goLiveState,
@@ -192,4 +197,27 @@ export function doorStateWords(row) {
   if (row.frozen) return 'Frozen — spending is halted';
   if (row.live) return 'Live — this door can spend';
   return 'Not live — this door cannot spend';
+}
+
+/**
+ * The monthly row for a pay-per-use door (gemini-payg §7). Plain words from the server's
+ * figures; null when the door has no monthly cap. 50% and 80% are SHOWN here and never
+ * pushed (Near-Silent): spending within the authorization needs no action.
+ */
+export function monthlyRowWords(caps) {
+  const g = caps && caps.geminiPayg;
+  if (!g || !g.month || typeof g.month.capUsd !== 'number') return null;
+  const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+  const lines = [];
+  const where = caps.proxiedFrom ? ` (read from ${caps.proxiedFrom}${typeof caps.ageMs === 'number' ? `, ${Math.round(caps.ageMs / 1000)}s ago` : ''})` : '';
+  lines.push(`Gemini this month: ${money(g.month.committedUsd)} of ${money(g.month.capUsd)} (${g.month.pct}%)${where}.`);
+  if (g.thresholds && g.thresholds.reached100) lines.push('The monthly limit is reached — Gemini has stopped spending until the month resets.');
+  else if (g.thresholds && g.thresholds.reached80) lines.push('Over 80% of the month is used.');
+  else if (g.thresholds && g.thresholds.reached50) lines.push('Over half of the month is used.');
+  if (g.day && typeof g.day.guardUsd === 'number') lines.push(`Today: ${money(g.day.committedUsd)} of ${money(g.day.guardUsd)}.`);
+  if (g.e2 && typeof g.e2.shareCapUsd === 'number') lines.push(`Second opinions this month: ${money(g.e2.monthUsd)} of ${money(g.e2.shareCapUsd)}.`);
+  if (g.provisionalMonthUsd > 0) lines.push(`Uncertain charges this month: ${money(g.provisionalMonthUsd)}${typeof g.provisionalCeilingUsd === 'number' ? ` of ${money(g.provisionalCeilingUsd)}` : ''}.`);
+  lines.push(g.releaseState === 'live' ? 'The door is live.' : g.releaseState === 'armed-pending-proof' ? 'The door is set up and waiting for its proof call.' : 'The door is not set up.');
+  if (caps.holderUnreachable) lines.push('The spending machine could not be reached; these are the last known figures.');
+  return lines;
 }

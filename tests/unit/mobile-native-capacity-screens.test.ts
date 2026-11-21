@@ -364,7 +364,7 @@ describe('spend', () => {
     ], storeError: 'caps store unreadable: /Users/x/caps.json' } }, { ok: true, data: { lifecycleState: 'enabled', enforcementReady: true, anyKeyFrozen: true, machineId: 'm_self', machineNickname: 'Studio' } }, (id) => (id === 'm_holder' ? 'Studio' : null));
     expect(l.routes).toEqual([
       // Designated to another machine: its committed figures are not this machine's to show.
-      { key: rowKey('route', 'or-key-REF'), name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: null, dailyCapUsd: 25, committedLifetimeUsd: null, lifetimeCapUsd: 60, heldBy: 'Studio', committedElsewhere: true },
+      { key: rowKey('route', 'or-key-REF'), name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: null, dailyCapUsd: 25, committedLifetimeUsd: null, lifetimeCapUsd: 60, committedMonthUsd: null, monthlyCapUsd: null, heldBy: 'Studio', committedElsewhere: true },
       expect.objectContaining({ name: 'Groq · Groq', status: 'Frozen', heldBy: 'another machine' }),
     ]);
     const here = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 3, committedLifetimeUsd: 40, meteredLeaseHolder: 'm_self' }, { keyRef: 'k2', provider: 'groq', door: 'groq', committedDayUsd: 1 }] } }, { ok: false, off: true }, () => null, ['single-machine', 'm_self']);

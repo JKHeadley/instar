@@ -228,6 +228,7 @@ import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
+import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLiveWiring.js';
 import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
 import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
@@ -1004,6 +1005,9 @@ export class AgentServer {
   private geminiPaygLane: GeminiPaygLane | null = null;
   /** gemini-payg §6: the lane runtime the mesh handlers and secret sync read. */
   meteredLaneRuntime: MeteredLaneRuntime | null = null;
+  /** gemini-payg §8: the go-live, release gate and reduce-only routes (built on every machine). */
+  geminiPaygGoLive: GeminiPaygGoLive | null = null;
+  private geminiPaygTimer: ReturnType<typeof setInterval> | null = null;
   private moneyLayerAudit: MoneyLayerAuditLog | null = null;
   /** Read EARLY — the operator flag is half of MLE-1 and decides whether the money layer constructs at all. */
   private moneyLayerEnableStore: MoneyLayerEnableStore | null = null;
@@ -3759,6 +3763,8 @@ export class AgentServer {
         lockHeld: () => options.singleInstanceLock?.revalidate() ?? false,
         settlingCount: () => this.meteredSpendLedger?.outstandingReserveCount() ?? 0,
         limits: (options.config as { routingSpend?: { money?: { limits?: Record<string, number> } } }).routingSpend?.money?.limits,
+        // gemini-payg §8: late-bound — the go-live is built after the lane, below.
+        geminiPayg: () => this.geminiPaygGoLive?.port ?? null,
       });
       if (this.moneyConstructionFailure) {
         enableStore.recordFailure('construction-failed', `money-layer-init:${this.moneyConstructionFailure.slice(0, 200)}`);
@@ -3802,12 +3808,99 @@ export class AgentServer {
           try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; }
         },
         reviewRoots: () => [path.dirname(options.config.stateDir)],
-        notify: (kind, message) => console.error(`[instar] gemini-payg ${kind}: ${message}`),
+        // §5/§9: every lane notice goes to the spend-alert voice through the go-live's
+        // notices (late-bound: the go-live is built just below). Logged as well.
+        notify: (kind, message, meta) => {
+          console.error(`[instar] gemini-payg ${kind}: ${message}`);
+          this.geminiPaygGoLive?.laneNotify(kind, message, meta);
+        },
+        onRefusal: (err) => this.geminiPaygGoLive?.onRefusal(err),
+        releaseProof: async (origin, payload) => this.geminiPaygGoLive
+          ? this.geminiPaygGoLive.releaseProofForwarded(origin, payload)
+          : { status: 503, body: { status: 'unavailable', reason: 'release-recorder-unavailable' } },
+        renderSetup: async (requestedBy) => {
+          if (!this.geminiPaygGoLive) throw new Error('gemini-payg go-live unavailable');
+          return this.geminiPaygGoLive.renderForPeer(requestedBy);
+        },
       });
       this.meteredLaneRuntime = this.geminiPaygLane.runtime;
       this.meteredLaneRuntime.resumePendingStops();
       const lanePoolOn = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
       if (lanePoolOn) this.meteredLaneRuntime.startEcho();
+
+      // gemini-payg §8: the go-live (setup plan port, pending-intent apply, release gate,
+      // reduce-only routes, the lane's notices). Built on every machine; dark until the
+      // operator's one PIN commit.
+      const lane = this.geminiPaygLane;
+      const lanePeers = () => {
+        const mgr = options.coordinator?.managers?.identityManager;
+        if (!mgr) return [] as string[];
+        try { return mgr.getActiveMachines().map((m) => m.machineId).filter((id) => id !== laneSelf); } catch { return [] as string[]; } // @silent-fallback-ok — used only for "is this a multi-machine agent"; unknown peers keep (b)/(e) required below
+      };
+      this.geminiPaygGoLive = buildGeminiPaygGoLive({
+        stateDir: options.config.stateDir,
+        selfMachineId: laneSelf,
+        selfMachineName: (options.config as { machineNickname?: string }).machineNickname ?? null,
+        lane,
+        capsStore: () => this.routingSpendCapsStore,
+        ledger: () => this.meteredSpendLedger,
+        prices: () => this.routingPriceAuthority,
+        servingReady: () => this.moneyLayerEnableSurface?.servingReady() ?? false,
+        moneyAudit: () => this.moneyLayerAudit,
+        failoverThresholdMs: () => ((options.config as { multiMachine?: { failoverTimeoutMinutes?: number } }).multiMachine?.failoverTimeoutMinutes ?? 15) * 60_000,
+        // A pool agent counts as multi-machine even when its registry is momentarily empty,
+        // so checks (b) and (e) can never be skipped by an unreadable registry.
+        multiMachine: () => lanePoolOn || lanePeers().length > 0,
+        isLiveSession: (name) => {
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; }
+        },
+        deliverNotice: (n) => this.deliverGeminiPaygNotice(n),
+        openCard: (c) => {
+          try {
+            const rt = options.workBoard?.();
+            if (!rt) return false;
+            const r = rt.svc.createCard({ kind: 'agent' }, {
+              title: c.title,
+              need: c.need,
+              recommendation: c.recommendation,
+              whyYou: c.whyYou,
+              doneWhen: c.doneWhen,
+              ...(c.link && c.link.startsWith('https://') ? { links: [{ url: c.link, label: 'The prefilled plan on the Spend tab' }] } : {}),
+            });
+            return r.ok === true;
+          } catch (err) {
+            console.error(`[instar] gemini-payg: the Work Board card could not be opened: ${String(err)}`);
+            return false;
+          }
+        },
+        spendTabLink: () => {
+          const base = options.tunnel?.url ?? null;
+          return base ? `${base.replace(/\/$/, '')}/dashboard?tab=spend` : null;
+        },
+        verifyLiveTest: options.liveTestRunnerCtx
+          ? (ref) => {
+              const v = options.liveTestRunnerCtx!.artifactStore.verifyEntry(ref.featureId, ref.runId);
+              if (!v.ok) return { ok: false, reason: v.reason };
+              const allPass = (v.artifact?.scenarios ?? []).length > 0 && v.artifact!.scenarios.every((sc) => sc.verdict === 'PASS');
+              return allPass ? { ok: true } : { ok: false, reason: 'not every scenario passed' };
+            }
+          : null,
+      });
+      this.geminiPaygGoLive.setRenderer(() => {
+        const surface = this.moneyLayerEnableSurface;
+        if (!surface) throw new Error('money-layer enable surface unavailable');
+        return surface.renderPlanAsync('gemini-payg-setup');
+      });
+      // §8 "Apply": the pending intent is applied by the money layer itself, before this
+      // server serves. A failed apply freezes the door and notices once — never a crash.
+      if (this.routingSpendCapsStore) {
+        const applied = this.geminiPaygGoLive.applyPending(this.routingSpendCapsStore);
+        if (applied.kind !== 'none') console.log(`[instar] gemini-payg go-live intent: ${applied.kind}${applied.kind === 'failed' ? ` (${applied.reason})` : ''}`);
+      }
+      this.geminiPaygGoLive.notices.start();
+      const goLive = this.geminiPaygGoLive;
+      this.geminiPaygTimer = setInterval(() => { void goLive.checkMonth().catch(() => undefined); }, 5 * 60_000);
+      this.geminiPaygTimer.unref?.();
     } catch (err) {
       // @silent-fallback-ok: NOT silent — logged; the lane's routes are then absent and
       // nothing can spend (the gate still requires the runtime's lease confirmation).
@@ -6642,6 +6735,8 @@ export class AgentServer {
       spendPlanStore: this.spendPlanStore,
       moneyLayerEnableSurface: this.moneyLayerEnableSurface,
       moneyLayerAudit: this.moneyLayerAudit,
+      geminiPaygGoLive: this.geminiPaygGoLive,
+      meteredLaneRuntime: this.meteredLaneRuntime,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
@@ -7699,6 +7794,8 @@ export class AgentServer {
     // gemini-payg-metered-lane: POST /intelligence/gemini, /intelligence/gemini/review,
     // GET /intelligence/gemini/status (behind the Bearer middleware; loopback-only inside).
     if (this.geminiPaygLane) this.app.use(this.geminiPaygLane.router);
+    // gemini-payg §4/§8/§9: key handoff, proposal, release proof, reduce-only stops, reconciliation.
+    if (this.geminiPaygGoLive) this.app.use(this.geminiPaygGoLive.router);
     // Linking a member's computer from their own phone (§3.6a), and that computer's one allowed send.
     {
       const pageDeps = this.documentPageDeps(options);
@@ -10388,6 +10485,7 @@ export class AgentServer {
     if (this.featureMetricsPruneTimer) {
       try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      try { if (this.geminiPaygTimer) clearInterval(this.geminiPaygTimer); this.geminiPaygGoLive?.notices.stop(); this.meteredLaneRuntime?.stopEcho(); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.spendAlertTimer) clearInterval(this.spendAlertTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { await this.spendAlertDispatcher?.flushDigest(); } catch { /* @silent-fallback-ok: a failed final digest flush loses only a coalesced NOTICE at shutdown */ }
       try { if (this.reconSweepTimer) clearInterval(this.reconSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
@@ -11458,6 +11556,30 @@ export class AgentServer {
    * machine-local persisted record AND the pool-published registry field
    * (FD-6 — a future serving-lease holder inherits the id, never re-creates).
    */
+  /**
+   * gemini-payg §5 notices → the approved "💰 Routing & Spend Alerts" voice: the
+   * Increment-C dispatcher when it is up (its lanes, dedupe and dryRun soak), else the
+   * Increment-B resolver. Security-class and money-critical notices ride the money lane.
+   */
+  private async deliverGeminiPaygNotice(n: { kind: string; dedupeKey: string; text: string; urgent: boolean }): Promise<boolean> {
+    const kind = n.kind === 'month-full' ? 'cap-hit' : n.kind === 'invoice-drift' ? 'recon-drift' : n.urgent ? 'holder-dead' : 'door-dark';
+    try {
+      if (this.spendAlertDispatcher) {
+        const r = await this.spendAlertDispatcher.dispatch({ kind, dedupeKey: n.dedupeKey, text: n.text } as Parameters<SpendAlertDispatcher['dispatch']>[0]);
+        return r.decision === 'sent' || r.decision === 'sent-lifeline' || r.decision === 'queued-durable' || r.decision === 'quiet-recorded';
+      }
+      if (this.spendAlertResolver) {
+        const r = await this.spendAlertResolver.emit({ kind: 'observed-drift', dedupeKey: n.dedupeKey, text: n.text });
+        return r === 'sent' || r === 'sent-lifeline' || r === 'quiet-recorded';
+      }
+    } catch (err) {
+      console.error(`[instar] gemini-payg notice could not be delivered (${n.kind}): ${String(err)}`);
+      return false;
+    }
+    console.error(`[instar] gemini-payg notice (${n.kind}, no spend-alert channel on this machine): ` + n.text);
+    return false;
+  }
+
   private buildSpendAlertResolver(
     tg: TelegramAdapter,
     config: { stateDir: string; machineId?: string; routingSpend?: { alerts?: { telegramTopicId?: number | null } } },

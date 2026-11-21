@@ -24,7 +24,7 @@
 
 import crypto from 'node:crypto';
 import type { IntelligenceOptions, IntelligenceProvider } from '../../../core/types.js';
-import { billedOutputTokens } from '../../../core/MeteredSpendGate.js';
+import { billedOutputTokens, type ReleaseProofMarker } from '../../../core/MeteredSpendGate.js';
 import { GeminiApiTransport, deriveGenerateTimeoutMs, type GeminiRequestBody, type GeminiTransportOutcome } from './geminiApiTransport.js';
 import type { GeminiApiKeyReader } from './geminiApiKeyReader.js';
 import { GEMINI_API_DEFAULT_SIZES, resolveGeminiApiModel, type GeminiApiModel } from './geminiApiModels.js';
@@ -51,7 +51,7 @@ export interface GeminiReservation {
 
 /** What the door needs from the money layer. Slice B's admission implements it. */
 export interface GeminiMoneyPort {
-  preflight(req: { caller: GeminiCallerId; component: string; modelId: string; callId?: string }): Promise<void>;
+  preflight(req: { caller: GeminiCallerId; component: string; modelId: string; callId?: string; proofMarker?: ReleaseProofMarker }): Promise<void>;
   reserve(req: {
     caller: GeminiCallerId;
     component: string;
@@ -62,7 +62,8 @@ export interface GeminiMoneyPort {
     callId?: string;
     requestSha256: string;
     run?: string;
-    proofMarker?: boolean;
+    /** The recorder-minted marker (an in-process object; JSON can never produce one). */
+    proofMarker?: ReleaseProofMarker;
     /** E1 only: the (spec hash, round) pass slot, reserved under the same lock (§2). */
     e1Slot?: { specSha256: string; round: number };
   }): Promise<GeminiReservation>;
@@ -84,8 +85,12 @@ export interface GeminiCallRequest {
   temperature?: number;
   callId?: string;
   run?: string;
-  /** INTERNAL: set only by the release-proof recorder, never from request input. */
-  proofMarker?: boolean;
+  /**
+   * INTERNAL: minted only by the release-proof recorder (`mintReleaseProofMarker`), never
+   * from request input — every route rebuilds its call from an allowlist that has no such
+   * field, and a JSON value can never be a registered marker object.
+   */
+  proofMarker?: ReleaseProofMarker;
   /** E1 only: the (spec hash, round) pass slot (§2 "one pass per round"). */
   e1Slot?: { specSha256: string; round: number };
 }
@@ -226,7 +231,7 @@ export class GeminiApiProvider implements IntelligenceProvider {
     const sha = requestSha256(model.id, body);
 
     // 1) Preflight — before the key is touched.
-    await this.opts.money.preflight({ caller: req.caller, component: req.component, modelId: model.id, ...(req.callId ? { callId: req.callId } : {}) });
+    await this.opts.money.preflight({ caller: req.caller, component: req.component, modelId: model.id, ...(req.callId ? { callId: req.callId } : {}), ...(req.proofMarker ? { proofMarker: req.proofMarker } : {}) });
 
     // 2) Exact-value live-secret check (refuses); key-shaped text is a signal only.
     if (requestContainsLiveSecret(body, this.opts.liveSecretValues())) {
@@ -257,7 +262,7 @@ export class GeminiApiProvider implements IntelligenceProvider {
         requestSha256: sha,
         ...(req.callId ? { callId: req.callId } : {}),
         ...(req.run ? { run: req.run } : {}),
-        ...(req.proofMarker ? { proofMarker: true } : {}),
+        ...(req.proofMarker ? { proofMarker: req.proofMarker } : {}),
         ...(req.e1Slot ? { e1Slot: req.e1Slot } : {}),
       });
 

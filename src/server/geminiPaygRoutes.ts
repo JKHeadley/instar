@@ -161,7 +161,7 @@ export function validateReviewRequest(
   };
 }
 
-function sessionOf(req: Request, isLive: (n: string) => boolean): string {
+export function sessionOf(req: Request, isLive: (n: string) => boolean): string {
   const raw = String(req.get('X-Instar-Session') ?? '').trim().slice(0, 120); // bounded-input-reviewed: a session-name attribution label for the ledger row, never prompt content
   if (!raw) return 'self-reported:unknown';
   return isLive(raw) ? raw : `self-reported:${raw}`;

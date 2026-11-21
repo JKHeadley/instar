@@ -1884,6 +1884,12 @@ export interface RouteContext {
   moneyLayerEnableSurface?: import('../core/MoneyLayerEnableSurface.js').MoneyLayerEnableSurface | null;
   /** The audit log behind that surface — flushed before the restart supervisor handoff (§4/§7). */
   moneyLayerAudit?: import('../core/MoneyLayerAuditLog.js').MoneyLayerAuditLog | null;
+  /**
+   * gemini-payg §7/§8: the go-live (caps detail, release gate) and the lane runtime
+   * (designation, forwarding a setup render, the caps proxy to the holder).
+   */
+  geminiPaygGoLive?: import('./geminiPaygGoLiveWiring.js').GeminiPaygGoLive | null;
+  meteredLaneRuntime?: import('./meteredLaneRuntime.js').MeteredLaneRuntime | null;
   /** Initiate the server's existing SUPERVISED restart (the auto-updater's path, under launchd keepalive). No new restart machinery. */
   requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
@@ -19148,9 +19154,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.status(r.status).json(r.body);
   });
 
-  router.get('/routing-spend/caps', (_req, res) => {
+  // gemini-payg §7: on a machine that is not the spender, the caps answer is the
+  // HOLDER's, proxied (cached ≤ 30 s, its age shown; `holderUnreachable` with the last
+  // known values when it cannot be reached).
+  let holderCapsCache: { at: number; holder: string; body: Record<string, unknown> } | null = null;
+  async function holderCapsView(holder: string): Promise<Record<string, unknown>> {
+    const nowMs = Date.now();
+    if (holderCapsCache && holderCapsCache.holder === holder && nowMs - holderCapsCache.at <= 30_000) {
+      return { ...holderCapsCache.body, proxiedFrom: holder, ageMs: nowMs - holderCapsCache.at };
+    }
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === holder);
+    if (peer) {
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/routing-spend/caps?local=1', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (r.ok) {
+          const body = await r.json() as Record<string, unknown>;
+          holderCapsCache = { at: nowMs, holder, body };
+          return { ...body, proxiedFrom: holder, ageMs: 0 };
+        }
+      } catch {
+        // @silent-fallback-ok — an unreachable holder is reported as holderUnreachable below, never as local figures.
+      }
+    }
+    const local = composeCapsView() as unknown as Record<string, unknown>;
+    return holderCapsCache && holderCapsCache.holder === holder
+      ? { ...holderCapsCache.body, proxiedFrom: holder, ageMs: nowMs - holderCapsCache.at, holderUnreachable: true }
+      : { ...local, proxiedFrom: holder, holderUnreachable: true, note: 'the spending machine could not be reached; committed figures live there' };
+  }
+
+  router.get('/routing-spend/caps', async (req, res) => {
     if (!resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
+      return;
+    }
+    const rt = ctx.meteredLaneRuntime;
+    const holder = rt?.holder() ?? null;
+    if (req.query.local !== '1' && rt && holder && !rt.isDesignatedHere()) {
+      res.json(await holderCapsView(holder));
       return;
     }
     res.json(composeCapsView());
@@ -19171,6 +19214,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const limit = req.query.limit ? Number(req.query.limit) : 100;
     res.json({
       records: ctx.providerCostReportStore.recentRecon(Number.isFinite(limit) && limit > 0 ? limit : 100),
+      // gemini-payg §7: the browser-read invoice figures (holder-local; reporting only).
+      geminiPaygBrowserReads: ctx.geminiPaygGoLive?.reconciliation.list(Number.isFinite(limit) && limit > 0 ? limit : 100) ?? [],
       note:
         'Layer 1c reconciliation (REPORTING-only — never a gate input): signed driftPct compares provider-reported vs ' +
         'internally-derived spend per (keyRef, door) window; committedUsd appears only on the metered-lease holder. ' +
@@ -19240,12 +19285,48 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   /** Render a canonical plan (Bearer). Rendering is not authority — the PIN commit is. */
-  router.post('/routing-spend/plan-money-layer', (req, res) => {
+  router.post('/routing-spend/plan-money-layer', async (req, res) => {
     const surface = moneySurface(res);
     if (!surface) return;
+    const b = (req.body ?? {}) as { action?: unknown; designatedMachineId?: unknown; expectedProposalHash?: unknown };
     try {
-      res.json(surface.renderPlan((req.body ?? {}).action));
+      if (b.action === 'gemini-payg-setup') {
+        // gemini-payg §8: the plan renders on the machine that will spend. A request
+        // naming another machine is forwarded THERE; its plan is committed there.
+        const target = typeof b.designatedMachineId === 'string' && b.designatedMachineId ? b.designatedMachineId : null;
+        const self = ctx.meshSelfId ?? null;
+        if (target && self && target !== self) {
+          const rt = ctx.meteredLaneRuntime;
+          if (!rt) { res.status(503).json({ error: 'lane-unavailable', message: 'the Gemini lane runtime is not built on this machine' }); return; }
+          const fwd = await rt.forwardSetupRender(target);
+          if (!fwd.ok) {
+            res.status(fwd.reason === 'holder-unreachable' || fwd.reason === 'peer-version' ? 503 : 409).json({ error: fwd.reason ?? 'render-refused', message: fwd.message ?? `machine ${target} could not render the plan`, renderedOn: target, ...(fwd.detail ? { detail: fwd.detail } : {}) });
+            return;
+          }
+          res.json({ ...(fwd.plan as Record<string, unknown>), renderedOn: target, forwarded: true, note: `rendered on ${target}; approve it there (its Spend tab), not here` });
+          return;
+        }
+        try {
+          res.json(await surface.renderPlanAsync('gemini-payg-setup', typeof b.expectedProposalHash === 'string' ? { expectedProposalHash: b.expectedProposalHash } : {}));
+        } catch (err) {
+          // The local proposal names another machine: forward the render THERE (§8).
+          const named = err instanceof MoneyLayerRefusal && err.code === 'wrong-machine' && typeof err.detail?.designatedMachineId === 'string' ? err.detail.designatedMachineId : null;
+          if (!named || !ctx.meteredLaneRuntime || named === self) throw err;
+          const fwd = await ctx.meteredLaneRuntime.forwardSetupRender(named);
+          if (!fwd.ok) {
+            res.status(fwd.reason === 'holder-unreachable' || fwd.reason === 'peer-version' ? 503 : 409).json({ error: fwd.reason ?? 'render-refused', message: fwd.message ?? `machine ${named} could not render the plan`, renderedOn: named, ...(fwd.detail ? { detail: fwd.detail } : {}) });
+            return;
+          }
+          res.json({ ...(fwd.plan as Record<string, unknown>), renderedOn: named, forwarded: true, note: `rendered on ${named}; approve it there (its Spend tab), not here` });
+        }
+        return;
+      }
+      res.json(surface.renderPlan(b.action));
     } catch (err) {
+      if (err instanceof MoneyLayerRefusal && err.detail) {
+        res.status(err.status).json({ error: err.code, message: err.message, ...err.detail });
+        return;
+      }
       sendMoneyLayerError(res, err);
     }
   });
@@ -19260,13 +19341,58 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const surface = moneySurface(res);
     if (!surface) return;
     const b = req.body ?? {};
+    let out: Awaited<ReturnType<typeof surface.commit>>;
     try {
-      const out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(req, b) });
-      res.json(out);
+      out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(req, b), proposalHash: b.proposalHash });
     } catch (err) {
       sendMoneyLayerError(res, err);
+      return;
     }
+    if (!out.restartRequired) {
+      res.json(out);
+      return;
+    }
+    // gemini-payg §8 item 3: the commit schedules the supervised restart under the SAME
+    // PIN, through the SAME safeguards as the restart route. A refused safeguard
+    // restarts nothing and says why and when it will retry (once, automatically).
+    const restart = await scheduleGoLiveRestart(surface, 0);
+    res.json({
+      ...out,
+      restart,
+      ...(restart.scheduled ? {} : { message: `approved and saved — the restart that applies it has not happened yet (${String(restart.message ?? restart.reason)})${restart.retryAt ? `; it retries at ${String(restart.retryAt)}` : '; it applies at the next restart of this machine'}` }),
+    });
   });
+
+  /**
+   * One safeguarded restart attempt for a go-live commit: eligibility + cooldown +
+   * settling (surface.admitCommitRestart), then the audit FLUSH before the supervisor
+   * handoff. A refusal with a retry time schedules up to 3 further attempts.
+   */
+  async function scheduleGoLiveRestart(surface: import('../core/MoneyLayerEnableSurface.js').MoneyLayerEnableSurface, attempt: number): Promise<Record<string, unknown>> {
+    try {
+      surface.admitCommitRestart();
+    } catch (err) {
+      if (!(err instanceof MoneyLayerRefusal)) throw err;
+      const retryAt = typeof err.detail?.retryAt === 'string' ? err.detail.retryAt : null;
+      if (retryAt && attempt < 3) {
+        const t = setTimeout(() => { void scheduleGoLiveRestart(surface, attempt + 1).catch((e) => console.error('[money-layer] go-live restart retry failed:', e)); }, Math.max(1000, Date.parse(retryAt) - Date.now()));
+        t.unref?.();
+      } else if (attempt > 0) {
+        // The automatic retries are used up: say so once, so an approval never waits unseen.
+        void ctx.geminiPaygGoLive?.notices.laneNotice(`go-live-restart-pending:${Date.now()}`, `Your Gemini approval is saved, but the restart that applies it was refused (${err.message}). It applies at the next restart of this machine.`).catch(() => undefined);
+      }
+      return { scheduled: false, reason: err.code, message: `nothing restarted: ${err.message}`, ...(retryAt && attempt < 3 ? { retryAt } : {}) };
+    }
+    try {
+      await ctx.moneyLayerAudit?.flush();
+    } catch (err) {
+      return { scheduled: false, reason: 'audit-flush-failed', message: `the restart was NOT initiated because its record could not be flushed first: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const initiated = ctx.requestSupervisedRestart ? await ctx.requestSupervisedRestart('gemini-payg go-live — operator PIN commit') : false;
+    if (!initiated) return { scheduled: false, reason: 'restart-not-initiated', message: 'the restart request could not be written; the approval is saved and applies at the next restart' };
+    surface.noteRestartInitiated();
+    return { scheduled: true, message: 'the agent server on this machine is restarting to apply the approved setup' };
+  }
 
   /** Mint the single-use restart nonce + its canonical confirmation text (Bearer). Refused outside the three restartable states. */
   router.post('/routing-spend/money-layer/restart-nonce', (req, res) => {
@@ -19462,7 +19588,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (const t of ctx.meteredSpendLedger.allCommitted()) {
       committed[t.keyRef] = { committedLifetimeUsd: t.committedLifetimeUsd, committedDayUsd: t.committedDayUsd, committedMonthUsd: t.committedMonthUsd };
     }
-    return { ...buildRoutingSpendCaps({ capsOverride, committed, moneyLive: true }), storeVersion: store.version };
+    let geminiPayg: unknown = null;
+    try { geminiPayg = ctx.geminiPaygGoLive?.capsDetail() ?? null; } catch { /* @silent-fallback-ok: the §7 block is an enrichment; the caps rows above still answer */ geminiPayg = null; }
+    return { ...buildRoutingSpendCaps({ capsOverride, committed, moneyLive: true }), storeVersion: store.version, ...(geminiPayg ? { geminiPayg } : {}) };
   }
 
   /** Render the canonical plan for a money action (Bearer — rendering is not authority; the PIN commit is). */
@@ -19494,6 +19622,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         if (lifetimeCapUsd === null && monthlyCapUsd === null) throw new Error('a lifetimeCapUsd or a monthlyCapUsd is required');
         if (periodTimeZone !== null && !isValidTimeZone(periodTimeZone)) throw new Error('periodTimeZone must be an IANA zone name');
+        // gemini-payg §5: the provisional-ceiling card's prefilled plan also resets/raises
+        // the door's uncertain-charge limit — a door-policy field, so it names its door.
+        const door: string | null = typeof b.door === 'string' && b.door.trim() ? b.door : null;
+        const provisionalCeilingUsd: number | null = b.provisionalCeilingUsd ?? null;
+        if (provisionalCeilingUsd !== null && (typeof provisionalCeilingUsd !== 'number' || !Number.isFinite(provisionalCeilingUsd) || provisionalCeilingUsd <= 0)) throw new Error('provisionalCeilingUsd must be a number > 0 when given');
+        if (provisionalCeilingUsd !== null && (!door || !ctx.routingSpendCapsStore.read().doorPolicy?.[door])) throw new Error('provisionalCeilingUsd needs the door whose policy it changes');
+        const currentPolicy = door ? ctx.routingSpendCapsStore.read().doorPolicy?.[door] : undefined;
         const current = ctx.routingSpendCapsStore.read().caps[keyRef];
         // Never `.toFixed` an absent cap (a monthly-only record has no lifetime).
         const money = (v: number | null | undefined) => (typeof v === 'number' ? `$${v.toFixed(2)}` : 'none');
@@ -19510,8 +19645,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           changeLine('monthly cap', current?.monthlyCapUsd, monthlyCapUsd) +
           changeLine('lifetime cap', current?.lifetimeCapUsd, lifetimeCapUsd) +
           (periodTimeZone !== null ? `period zone ${current?.periodTimeZone ?? 'UTC'} → ${periodTimeZone}; ` : '') +
+          (provisionalCeilingUsd !== null && currentPolicy ? `uncertain-charge limit on door '${door}' ${money(currentPolicy.provisionalCeilingUsd)} → ${money(provisionalCeilingUsd)}; ` : '') +
           `No other field changes. ${lowers ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
-        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, monthlyCapUsd, dailyCapUsd, periodTimeZone }, { capsStore: storeVersion });
+        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, monthlyCapUsd, dailyCapUsd, periodTimeZone, ...(provisionalCeilingUsd !== null && door ? { door, provisionalCeilingUsd } : {}) }, { capsStore: storeVersion });
         // `action` rides the response so the client can post the commit to the route that
         // ACTION names. Without it the dashboard had to guess, guessed the caps route for
         // everything, and a go-live commit was refused 400 by the plan-binding check —
@@ -19559,14 +19695,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   /** PIN commit of a rendered caps-adjust plan. The commit derives SOLELY from the plan snapshot (S2-3). */
   router.post('/routing-spend/caps/adjust', (req, res) => {
-    commitMoneyPlan(req, res, 'caps-adjust', (fields, expectedVersion, actor) =>
-      ctx.routingSpendCapsStore!.adjustCaps(actor, expectedVersion, fields.keyRef as string, fields.provider as string, {
+    commitMoneyPlan(req, res, 'caps-adjust', (fields, expectedVersion, actor) => {
+      // Both writes of one approved plan, or neither: the door-policy half is checked
+      // BEFORE the caps half lands, so its expected failure cannot leave a half-applied plan.
+      if (typeof fields.door === 'string' && typeof fields.provisionalCeilingUsd === 'number' && !ctx.routingSpendCapsStore!.read().doorPolicy?.[fields.door]) {
+        throw new Error(`no door policy for '${fields.door}'`);
+      }
+      const after = ctx.routingSpendCapsStore!.adjustCaps(actor, expectedVersion, fields.keyRef as string, fields.provider as string, {
         lifetimeCapUsd: (fields.lifetimeCapUsd as number | null | undefined) ?? null,
         monthlyCapUsd: (fields.monthlyCapUsd as number | null | undefined) ?? null,
         dailyCapUsd: fields.dailyCapUsd as number,
         periodTimeZone: (fields.periodTimeZone as string | null | undefined) ?? null,
-      }),
-    );
+      });
+      // The same PIN-approved plan's door-policy line (gemini-payg §5 provisional ceiling).
+      const door = typeof fields.door === 'string' ? fields.door : null;
+      const pc = typeof fields.provisionalCeilingUsd === 'number' ? fields.provisionalCeilingUsd : null;
+      if (door && pc !== null) {
+        const policy = after.doorPolicy?.[door];
+        if (!policy) throw new Error(`no door policy for '${door}'`);
+        return ctx.routingSpendCapsStore!.setDoorPolicy(actor, after.version, door, { ...policy, provisionalCeilingUsd: pc });
+      }
+      return after;
+    });
   });
 
   /** PIN commit of a rendered go-live plan (arms/disarms + designates the metered-lease machine). */

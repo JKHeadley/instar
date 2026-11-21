@@ -30711,6 +30711,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             'metered-stop-action': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { ok: false, reason: 'lane-unavailable' }),
             'designation-echo': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { error: 'lane-unavailable' }),
             'secret-names': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { names: [] }),
+            'gemini-payg-setup-render': async (cmd, sender) => (_agentServerRef?.meteredLaneRuntime?.handleMesh(cmd as unknown as Record<string, unknown>, sender) ?? { ok: false, reason: 'lane-unavailable' }),
             'email-send-forward': async (cmd) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'email-send-forward' };
               const svc = _agentServerRef?.emailService ?? null;

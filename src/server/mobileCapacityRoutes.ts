@@ -519,7 +519,8 @@ export function routeStatusWord(k: Rec): 'Frozen' | 'Open' | 'Closed' | 'Not ope
 }
 
 export interface MobileSpendRow { key: string; model: string; route: string; basis: string; usd: number | null; tokens: number; unpricedTokens: number; priceStale: boolean; notLiveYet: boolean }
-export interface MobilePaidRoute { key: string; name: string; status: 'Frozen' | 'Open' | 'Closed' | 'Not open'; committedDayUsd: number | null; dailyCapUsd: number | null; committedLifetimeUsd: number | null; lifetimeCapUsd: number | null; heldBy: string | null; committedElsewhere: boolean }
+/** `committedMonthUsd` / `monthlyCapUsd`: the monthly row (gemini-payg §7); null on a lifetime-only route. */
+export interface MobilePaidRoute { key: string; name: string; status: 'Frozen' | 'Open' | 'Closed' | 'Not open'; committedDayUsd: number | null; dailyCapUsd: number | null; committedLifetimeUsd: number | null; lifetimeCapUsd: number | null; committedMonthUsd: number | null; monthlyCapUsd: number | null; heldBy: string | null; committedElsewhere: boolean }
 /** One machine's ledger read for the spend answer. `name` is the registry nickname (unverified; verified against `machineId` here). */
 export interface SpendMachine { name: string | null; machineId?: string; isSelf: boolean; summary: SpendPart; tokens: SpendPart }
 function machineName(m: SpendMachine): string {
@@ -644,6 +645,8 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
           dailyCapUsd: num(k.dailyCapUsd),
           committedLifetimeUsd: elsewhere ? null : nonNeg(k.committedLifetimeUsd),
           lifetimeCapUsd: num(k.lifetimeCapUsd),
+          committedMonthUsd: elsewhere || num(k.monthlyCapUsd) === null ? null : nonNeg(k.committedMonthUsd),
+          monthlyCapUsd: num(k.monthlyCapUsd),
           heldBy: holder === null ? null : isSelf(holder) ? (selfName ?? 'the machine the app reached') : (phoneText(verifiedEntityName(holder, nicknameOf(holder)), 60) ?? 'another machine'),
           committedElsewhere: elsewhere,
         };

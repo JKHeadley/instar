@@ -491,6 +491,12 @@ export type MeshCommand =
       // The holder → any peer: vault key NAMES only (never values). Read-class; the
       // go-live precondition that the key is on the designated machine only.
       type: 'secret-names';
+    }
+  | {
+      // Any peer → the machine a go-live proposal names: render the `gemini-payg-setup`
+      // plan THERE (§8 "A request from another machine is forwarded there"). Rendering
+      // is not authority (the PIN commit on that machine is); read-class.
+      type: 'gemini-payg-setup-render';
     };
 
 export interface MeshEnvelope {
@@ -683,6 +689,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'metered-stop-action':
     case 'designation-echo':
     case 'secret-names':
+    case 'gemini-payg-setup-render':
       return { ok: true, reason: 'ok' };
     case 'commitment-mutate':
     case 'telegram-origin':

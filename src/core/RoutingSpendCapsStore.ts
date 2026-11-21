@@ -140,6 +140,22 @@ export interface CapsStoreFile {
   leaseEpoch: number;
   /** Per-door policy (gemini-payg §5). Optional so a pre-change file loads unchanged. */
   doorPolicy?: Record<string, MeteredDoorPolicy>;
+  /**
+   * door → the hash of the go-live intent applied to it (gemini-payg §8 "Apply").
+   * Makes the boot-time apply idempotent by intent hash: a crash between the
+   * write and the intent's deletion re-applies nothing. Optional (pre-change files).
+   */
+  appliedIntents?: Record<string, { intentHash: string; appliedAt: string }>;
+}
+
+/** The setup a go-live intent applies in ONE write (gemini-payg §8 "Apply"). */
+export interface GoLiveSetupApply {
+  door: string;
+  keyRef: string;
+  provider: string;
+  designatedMachineId: string;
+  caps: { monthlyCapUsd: number; dailyCapUsd: number; periodTimeZone: string };
+  policy: MeteredDoorPolicy;
 }
 
 export interface CapsAuditRow {
@@ -243,6 +259,12 @@ export function validateCapsFile(f: unknown, knownKeyRefs?: ReadonlySet<string>,
       if (err) return err;
     }
   }
+  if (file.appliedIntents !== undefined) {
+    if (!file.appliedIntents || typeof file.appliedIntents !== 'object' || Array.isArray(file.appliedIntents)) return 'appliedIntents must be an object';
+    for (const [door, a] of Object.entries(file.appliedIntents)) {
+      if (!a || typeof a !== 'object' || typeof a.intentHash !== 'string' || !/^[0-9a-f]{64}$/.test(a.intentHash)) return `appliedIntents['${door}'].intentHash must be a sha256 hex`;
+    }
+  }
   return null;
 }
 
@@ -323,7 +345,7 @@ export class RoutingSpendCapsStore {
    * (pass null to skip ONLY for the Bearer freeze path — halting money must never
    * be blocked by a concurrent PIN plan).
    */
-  private mutate(action: string, actor: string, expectedVersion: number | null, fn: (f: CapsStoreFile) => void): CapsStoreFile {
+  private mutate(action: string, actor: string, expectedVersion: number | null, fn: (f: CapsStoreFile) => void, opts?: { durable?: boolean }): CapsStoreFile {
     const before = this.read();
     if (expectedVersion !== null && before.version !== expectedVersion) {
       throw new Error(`caps store version drift (expected ${expectedVersion}, is ${before.version}) — re-render the plan`);
@@ -334,8 +356,29 @@ export class RoutingSpendCapsStore {
     const err = validateCapsFile(after, this.knownKeyRefs, this.knownDoors);
     if (err) throw new Error(`caps mutation rejected by schema validator (C4-4): ${err}`);
     const tmp = this.filePath + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(after, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, this.filePath);
+    if (opts?.durable) {
+      // The go-live apply deletes its intent only after THIS write is on disk, so the
+      // bytes and the rename are fsync'd (gemini-payg §8 "deletes the intent only after
+      // that write has been fsync'd").
+      const fd = fs.openSync(tmp, 'w', 0o600);
+      try {
+        fs.writeSync(fd, JSON.stringify(after, null, 2));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmp, this.filePath);
+      try {
+        const dfd = fs.openSync(path.dirname(this.filePath), 'r');
+        try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
+      } catch {
+        // @silent-fallback-ok: a directory fsync is unsupported on some platforms; the
+        // file's own bytes are already synced and the rename is atomic.
+      }
+    } else {
+      fs.writeFileSync(tmp, JSON.stringify(after, null, 2), { mode: 0o600 });
+      fs.renameSync(tmp, this.filePath);
+    }
     this.appendAudit({ ts: new Date(this.now()).toISOString(), action, actor, before, after });
     return after;
   }
@@ -420,6 +463,50 @@ export class RoutingSpendCapsStore {
       if (p.releaseState !== 'armed-pending-proof') throw new Error(`recordReleaseLive: door '${door}' is not armed-pending-proof`);
       p.releaseState = 'live';
     });
+  }
+
+  /**
+   * The go-live APPLY (gemini-payg §8 "Apply"): caps, the GoLiveRecord, the door
+   * policy (releaseState `armed-pending-proof`) and the period zone in ONE durable
+   * write, stamped with the intent hash it applied. Called only by the pending-intent
+   * apply (boot, or hot when money is already enforcing) — the PIN commit that wrote
+   * the intent is the authority; this is its single writer.
+   *
+   * Idempotent by intent hash: a door already stamped with this hash is returned
+   * unchanged. A fresh go-live (a new intent hash) starts the door at
+   * `armed-pending-proof` again, so the proof is repeated. An existing freeze is kept
+   * (an apply never releases a frozen key).
+   */
+  applyGoLiveSetup(actor: string, intentHash: string, setup: GoLiveSetupApply): CapsStoreFile {
+    refuseIfReservedProbe('applying a go-live setup to', setup.door);
+    refuseIfReservedProbe('applying a go-live setup to', setup.keyRef);
+    if (!/^[0-9a-f]{64}$/.test(intentHash)) throw new Error('applyGoLiveSetup: intentHash must be a sha256 hex');
+    if (setup.policy.releaseState !== 'armed-pending-proof') throw new Error('applyGoLiveSetup: a go-live starts armed-pending-proof — only the recorder sets live');
+    const current = this.read();
+    if (current.appliedIntents?.[setup.door]?.intentHash === intentHash) return current;
+    return this.mutate('go-live-setup-apply', `${actor} intent=${intentHash}`, null, (f) => {
+      const prevCaps = f.caps[setup.keyRef];
+      f.caps[setup.keyRef] = {
+        provider: setup.provider,
+        monthlyCapUsd: setup.caps.monthlyCapUsd,
+        dailyCapUsd: setup.caps.dailyCapUsd,
+        periodTimeZone: setup.caps.periodTimeZone,
+        frozen: prevCaps?.frozen ?? false,
+        ...(prevCaps?.frozenBy ? { frozenBy: prevCaps.frozenBy } : {}),
+        ...(prevCaps?.frozenAt ? { frozenAt: prevCaps.frozenAt } : {}),
+      };
+      const prevEpoch = f.goLive[setup.door]?.epoch ?? 0;
+      f.goLive[setup.door] = {
+        enabled: true,
+        keyRef: setup.keyRef,
+        designatedMachineId: setup.designatedMachineId,
+        designatedAt: new Date(this.now()).toISOString(),
+        epoch: prevEpoch + 1,
+      };
+      f.doorPolicy = { ...(f.doorPolicy ?? {}), [setup.door]: structuredClone(setup.policy) };
+      f.appliedIntents = { ...(f.appliedIntents ?? {}), [setup.door]: { intentHash, appliedAt: new Date(this.now()).toISOString() } };
+      f.leaseEpoch += 1;
+    }, { durable: true });
   }
 
   /**

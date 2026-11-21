@@ -10168,6 +10168,14 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
     }
 
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
+    }
+
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
     if (!content.includes('| Can I use a browser?') && content.includes('| What can I do?')) {
       const row = `| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |`;
