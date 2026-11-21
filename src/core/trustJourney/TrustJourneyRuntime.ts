@@ -13,7 +13,7 @@ import type { TrustRecovery } from '../TrustRecovery.js';
 import type { OperationMutability, TrustLevel } from '../ExternalOperationGate.js';
 import type { AutonomyProfileLevel } from '../types.js';
 import {
-  boardPolicyRaises, configPatchRaises, isKnownTrustLevel, isTrustLevelRaise, mergedConfigValue, profileRaises,
+  APPROVABLE_CONFIG_PATCH_KEYS, boardPolicyRaises, configPatchRaises, isKnownTrustLevel, isTrustLevelRaise, mergedConfigValue, profileRaises,
   proofCovers, proposalHashOf, slackRoleRaises, type OperatorProof,
 } from '../TrustRaiseGuard.js';
 import { AccountPathService, proofSubject, type DeviceDirectory, type DirectChatPort, type ProposeResult, type ReceiptOutcome } from './AccountPathService.js';
@@ -244,7 +244,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         const runtimeBefore: Record<string, unknown> = {};
         const file = readFileConfig();
         for (const [k, v] of Object.entries(c.patch)) {
-          if (k !== 'externalOperations' && k !== 'evolution') return { ok: false, detail: `${k} is not an approvable setting` };
+          if (!APPROVABLE_CONFIG_PATCH_KEYS.has(k)) return { ok: false, detail: `${k} is not an approvable setting` };
           runtimeBefore[k] = d.runtimeConfig[k];
           file[k] = mergedConfigValue(file[k], v);
           d.runtimeConfig[k] = mergedConfigValue(d.runtimeConfig[k], v);

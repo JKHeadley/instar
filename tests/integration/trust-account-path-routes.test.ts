@@ -118,6 +118,21 @@ describe('trust account path over HTTP', () => {
     expect(sent.at(-1)!.replyTo).toBeDefined();
   });
 
+  it('SEC-162: a guard switched off with the token is refused, and the owner approving the card switches it off', async () => {
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ inputGuard: { enabled: true } }));
+    const patch = { inputGuard: { enabled: false } };
+    const r = await request(app).post('/trust/requests').set('Authorization', `Bearer ${AUTH}`).send({ change: { kind: 'config-patch', patch } });
+    expect(r.status).toBe(202);
+    const a = await forward(statement);
+    expect(a.body.trustAccountPath).toBe('acceptance-recorded');
+    const card = sent.find((m) => m.text.includes('reply to this message with: approve') && m.text.includes('input guard'))!;
+    expect(card).toBeTruthy();
+    const code = /approve ([0-9A-Z]{6})/.exec(card.text)![1];
+    const ok = await forward(`approve ${code}`, { replyTo: card.messageId });
+    expect(ok.body.trustAccountPath).toBe('approved');
+    expect(JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')).inputGuard).toEqual({ enabled: false });
+  });
+
   it('without the lifeline secret, from the server\'s own re-forward, or in a group, nothing is approved', async () => {
     const { code, cardId } = await openAndAccept();
     const noSecret = await forward(`approve ${code}`, { replyTo: cardId, secret: false });

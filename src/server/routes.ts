@@ -674,7 +674,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
+import { APPROVABLE_CONFIG_PATCH_KEYS, configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import { askSentence } from '../core/trustJourney/admission.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
@@ -1276,7 +1276,7 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
       const patch = c.patch as Record<string, unknown> | undefined;
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
       const keys = Object.keys(patch);
-      return keys.length > 0 && keys.every((k) => k === 'externalOperations' || k === 'evolution') && JSON.stringify(patch).length <= 2_000
+      return keys.length > 0 && keys.every((k) => APPROVABLE_CONFIG_PATCH_KEYS.has(k)) && JSON.stringify(patch).length <= 2_000
         ? { kind: 'config-patch', patch } : null;
     }
     case 'slack-role':

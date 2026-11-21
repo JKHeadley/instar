@@ -119,6 +119,26 @@ describe('PATCH /config', () => {
   });
 });
 
+describe('PATCH /config: switching a guard off (SEC-162)', () => {
+  it('a monitoring guard, the input guard and the response review switched off are refused, and nothing is written', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ ...startConfig, monitoring: { watchdog: { enabled: true } }, responseReview: { enabled: true } }, null, 2));
+    const before = fileConfig();
+    const g = await request(app).patch('/config').send({ monitoring: { watchdog: { enabled: false } } });
+    expect(g.status).toBe(403);
+    expect(g.body.error).toBe('operator-approval-required');
+    expect(g.body.raises).toContain('turning off the watchdog guard');
+    expect((await request(app).patch('/config').send({ inputGuard: { enabled: false } })).status).toBe(403);
+    expect((await request(app).patch('/config').send({ responseReview: { enabled: false } })).status).toBe(403);
+    expect(fileConfig()).toEqual(before);
+  });
+  it('switching a guard on, and tuning one that stays on, still apply', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ ...startConfig, monitoring: { watchdog: { enabled: false } } }, null, 2));
+    const on = await request(app).patch('/config').send({ monitoring: { watchdog: { enabled: true, intervalMs: 60000 } } });
+    expect(on.status).toBe(200);
+    expect(fileConfig().monitoring.watchdog).toEqual({ enabled: true, intervalMs: 60000 });
+  });
+});
+
 describe('Slack roles', () => {
   it('registering or approving owner/admin is refused; member is not', async () => {
     expect((await request(app).post('/permissions/registrations/register').send({ slackUserId: 'U1', displayName: 'A', role: 'owner' })).status).toBe(403);
