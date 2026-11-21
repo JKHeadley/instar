@@ -6390,10 +6390,9 @@ export function createRoutes(ctx: RouteContext): Router {
       uptime: uptimeMs,
       uptimeHuman: formatUptime(uptimeMs),
       degradations: degradations.length,
-      ...(llmReliability ? { llmReliability } : {}),
-      ...(degradations.length > 0 && {
-        degradationSummary: degradations.map(e => DegradationReporter.narrativeFor(e)),
-      }),
+      // SEC-130: llmReliability and degradationSummary are authed-only (below). Their text is built
+      // from runtime values (local paths, account ids, session names, merge-conflict summaries), and
+      // /health is public. The status and the degradation COUNT stay public.
       // Stop-gate route contract (P0.7). Always present, unauthenticated:
       // hook-lib reads this on startup before sending the auth token.
       gateRouteVersion: GATE_ROUTE_VERSION,
@@ -6406,6 +6405,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // (`bearerMatches`): byte-identical to the inline check it replaced.
     const isAuthed = bearerMatches(req, ctx.config.authToken);
     if (isAuthed) {
+      if (llmReliability) base.llmReliability = llmReliability;
+      if (degradations.length > 0) base.degradationSummary = degradations.map(e => DegradationReporter.narrativeFor(e));
       const claudeKey = activeClaudeKeyHealth()?.status();
       if (claudeKey) base.claudeKey = claudeKey;
       const claudeUsage = activeUsageLimitWatch()?.status();
