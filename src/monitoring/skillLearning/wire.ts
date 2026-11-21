@@ -106,6 +106,11 @@ export interface StartSkillLearningInput {
   slack?: { onMessageLogged: ((entry: never) => void) | null } | null;
   /** Lazy: the AgentServer (and its TopicOperatorStore) is constructed after this runs. */
   operatorStore: () => OperatorStoreLike | null | undefined;
+  /**
+   * SEC-109: whose Telegram words may teach (TelegramAdapter.getLearningOwner, SEC-105). A topic's
+   * verified operator feeds skill learning only when it IS this owner. Absent or undefined = nobody.
+   */
+  learningOwner?: () => number | undefined;
   /** Lazy: JudgmentProvenanceLog is constructed later in boot. */
   provenance: () => ProvenanceLike | null | undefined;
   userManager?: { listUsers(): Array<{ permissions: string[]; channels: Array<{ type: string; identifier: string }> }> } | null;
@@ -141,6 +146,29 @@ export function resolveSkillLearningConfig(raw: unknown): SkillLearningConfig {
   };
 }
 
+/**
+ * SEC-109: the topic's verified operator, but only when that person is the learning owner
+ * (SEC-105's `learningOwnerId`: the verified owner, else a single-person agent's one allowed
+ * sender). A topic's operator is whoever first wrote there from an allowed account, so on an
+ * agent several people can message, another person is the operator of their own topics; their
+ * requests must not become proposals for the owner's skills. No resolver, no owner, an unreadable
+ * store or a different uid all mean "not the operator" (fail closed), the same drop the filter
+ * already counts as `not-operator`.
+ */
+export function ownerOnlyOperator(
+  readBinding: () => { uid: string } | null,
+  learningOwner: (() => number | undefined) | undefined,
+): { uid: string } | null {
+  let binding: { uid: string } | null;
+  let owner: number | undefined;
+  try { binding = readBinding(); } catch { return null; } // @silent-fallback-ok — no store yet ⇒ not operator (conservative)
+  try { owner = learningOwner?.(); } catch { return null; } // @silent-fallback-ok — an unresolvable owner ⇒ nobody teaches (SEC-105)
+  if (!binding || owner === undefined || typeof binding.uid !== 'string') return null;
+  // Returned trimmed: the filter compares it to the sender id exactly.
+  const uid = binding.uid.trim();
+  return uid === String(owner) ? { ...binding, uid } : null;
+}
+
 /** Synchronous: the sentinel's own `start()` opens its ledger cache off the boot path. */
 /**
  * The server-side pieces of `StartSkillLearningInput` that need optional chaining or a branch.
@@ -152,11 +180,11 @@ export function skillLearningEnv(a: {
   config: InstarConfig;
   /** The mesh identity, when the coordinator has one. Falls back to the hostname. */
   identity: { machineId?: string } | null | undefined;
-  telegram: { createAttentionItem(item: never): unknown; clearAttentionCondition(sel: { conditionKey: string }, reason: string, opts: { reconcile: true }): unknown } | null | undefined;
+  telegram: { createAttentionItem(item: never): unknown; clearAttentionCondition(sel: { conditionKey: string }, reason: string, opts: { reconcile: true }): unknown; getLearningOwner?(): number | undefined } | null | undefined;
   slack: StartSkillLearningInput['slack'] | undefined;
   sharedIntelligence: IntelligenceProvider | null | undefined;
   topicMemory: StartSkillLearningInput['topicMemory'];
-}): Pick<StartSkillLearningInput, 'machineId' | 'frameworks' | 'sharedIntelligence' | 'topicMemory' | 'createAttentionItem' | 'clearAttentionCondition' | 'slack' | 'userManager' | 'degradationReporter'> {
+}): Pick<StartSkillLearningInput, 'machineId' | 'frameworks' | 'sharedIntelligence' | 'topicMemory' | 'createAttentionItem' | 'clearAttentionCondition' | 'slack' | 'userManager' | 'degradationReporter' | 'learningOwner'> {
   const { config, telegram } = a;
   return {
     machineId: a.identity?.machineId ?? os.hostname(),
@@ -165,6 +193,8 @@ export function skillLearningEnv(a: {
     topicMemory: a.topicMemory ?? null,
     createAttentionItem: telegram ? ((item) => telegram.createAttentionItem(item as never)) : undefined,
     clearAttentionCondition: telegram ? ((sel, reason, opts) => telegram.clearAttentionCondition(sel, reason, opts)) : undefined,
+    // SEC-109: no Telegram adapter, or one without the resolver, means no owner: nobody's Telegram words teach.
+    learningOwner: typeof telegram?.getLearningOwner === 'function' ? (() => telegram.getLearningOwner!()) : undefined,
     slack: a.slack ?? null,
     userManager: new UserManager(config.stateDir, config.users),
     degradationReporter: DegradationReporter.getInstance(),
@@ -226,9 +256,10 @@ export function startSkillLearning(
       topicMemory: input.topicMemory ? { getMessagesSince: input.topicMemory.getMessagesSince.bind(input.topicMemory) as never } : null,
       slack: input.slack as never,
       topicOperatorStore: {
-        asVerifiedOperator: (topicId) => {
-          try { return input.operatorStore()?.asVerifiedOperator(topicId) ?? null; } catch { return null; } // @silent-fallback-ok — no store yet ⇒ not operator (conservative)
-        },
+        asVerifiedOperator: (topicId) => ownerOnlyOperator(
+          () => input.operatorStore()?.asVerifiedOperator(topicId) ?? null,
+          input.learningOwner,
+        ),
       },
       userManager: input.userManager ?? null,
       slackTopicId: input.slackTopicId,
