@@ -19324,7 +19324,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json(surface.renderPlan(b.action));
     } catch (err) {
       if (err instanceof MoneyLayerRefusal && err.detail) {
-        res.status(err.status).json({ error: err.code, message: err.message, ...err.detail });
+        res.status(err.status).json({ error: err.code, message: operatorError(err, res.app?.locals?.stateDir), ...err.detail });
         return;
       }
       sendMoneyLayerError(res, err);

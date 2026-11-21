@@ -607,11 +607,11 @@ export function applyPendingGeminiPaygIntent(d: ApplyDeps): ApplyOutcome {
     // Deleted only after the durable (fsync'd) write above returned.
     d.files.deleteIntent();
     if (setup.reconcileJobEnabled) {
-      try { d.enableReconcileJob?.(); } catch (err) { console.error(`[instar] gemini-payg: could not enable the reconcile job: ${String(err)}`); }
+      try { d.enableReconcileJob?.(); } catch (err) { /* @silent-fallback-ok: logged; the job stays disabled, which is the fleet default */ console.error(`[instar] gemini-payg: could not enable the reconcile job: ${String(err)}`); }
     }
     return { kind: 'applied', intentHash: hash };
-  } catch (err) {
-    return fail(err instanceof Error ? err.message.slice(0, 200) : String(err), hash);
+  } catch (err) { // @silent-fallback-ok: fail() freezes the door and raises one notice
+    return fail(err instanceof Error ? err.message.slice(0, 200) : String(err), hash); // bounded-input-reviewed: an error label for the frozen-door notice, never prompt content
   }
 }
 

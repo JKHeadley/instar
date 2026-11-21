@@ -134,3 +134,11 @@ Freeze (Bearer), then disable the money layer, then revert. A reverted build ign
 8. [minor] **Folded (partly).** The transcript scan keeps a visited set of real paths (symlink loops), counts directories toward the budget, and lowers the per-file limit to 128 MB (larger ⇒ unreadable, a blocker). Reads stay synchronous: render is an operator-triggered, rate-limited action, not a hot path.
 9. [minor] **Folded.** A local proposal naming another machine now forwards the render there automatically (the route catches the surface's `wrong-machine` refusal and forwards to the machine it names). Integration test updated.
 10. [minor] **Folded.** `GET /routing-spend/gemini-payg/release` evaluates read-only (`evaluate(undefined, { write: false })`); only the audited POST paths record the release. Test added.
+
+## Ratchet fixes after the first Local Verify run (2026-11-20, coordinator)
+Local Verify of #3571 failed 5 unit tests out of 72,710. Four were ratchets this slice tripped, all fixed with no behaviour change beyond error text:
+- `storage-error-response-ratchet`: three caught-exception JSON responses in `geminiPaygGoLiveWiring.ts`, plus the plan-money-layer refusal in `routes.ts`, now pass the message through `operatorError` (a local OS error never reaches HTTP raw).
+- `no-silent-fallbacks`: nine new catches carry their fail-closed / retried-later reason as `@silent-fallback-ok` markers. Back to the 494 baseline.
+- `template-agent-id-header`: the `gemini-payg-reconcile` job template sends `X-Instar-AgentId` on its three local API calls, like every other job template.
+- `feature-delivery-completeness`: the new Registry First row is tracked in `legacyMigratorSections`, with its reason.
+The fifth failure in that run could not be named: the Studio was unreachable at the time. A local full unit run on the Mama PC shows 29 failing files. 28 of them fail identically on the slice-B base or are timing-flaky under load: environment, install, tmux and redirected-HOME tests. The four above were the only ones attributable to this change.

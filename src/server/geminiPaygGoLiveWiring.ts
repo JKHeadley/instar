@@ -24,6 +24,7 @@
  *                  POST /routing-spend/reconciliation           (browser-read, reporting only)
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
@@ -184,7 +185,7 @@ export function buildGeminiPaygGoLive(d: GeminiPaygGoLiveDeps): GeminiPaygGoLive
       capsStore: caps,
       selfMachineId: d.selfMachineId,
       commitAuditHas,
-      notify: (text) => { void notices.laneNotice(`gemini-payg-apply-failed:${files.readIntent()?.hash ?? 'unreadable'}`, text).catch(() => undefined); },
+      notify: (text) => { void notices.laneNotice(`gemini-payg-apply-failed:${files.readIntent()?.hash ?? 'unreadable'}`, text).catch(() => undefined); }, /* @silent-fallback-ok: the door is already frozen; the notice is best-effort */
       enableReconcileJob: () => { enableReconcileJobManifest(d.stateDir); },
     });
     try {
@@ -391,7 +392,7 @@ export function buildGeminiPaygGoLive(d: GeminiPaygGoLiveDeps): GeminiPaygGoLive
       const at = files.recordMintStart();
       res.json({ ok: true, mintStartedAt: at, note: 'recorded by the server; a handoff whose reads predate this is refused at render' });
     } catch (err) {
-      res.status(500).json({ error: 'mint-start-not-recorded', message: String(err instanceof Error ? err.message : err) });
+      res.status(500).json({ error: 'mint-start-not-recorded', message: operatorError(err, d.stateDir) });
     }
   });
 
@@ -411,7 +412,7 @@ export function buildGeminiPaygGoLive(d: GeminiPaygGoLiveDeps): GeminiPaygGoLive
       files.writeHandoff(h);
       res.json({ ok: true, path: path.relative(d.stateDir, files.handoffPath), note: 'validated in full at render (screenshots, mint start, designation, key fingerprint, transcripts)' });
     } catch (e) {
-      res.status(500).json({ error: 'handoff-not-written', message: String(e instanceof Error ? e.message : e) });
+      res.status(500).json({ error: 'handoff-not-written', message: operatorError(e, d.stateDir) });
     }
   });
 
@@ -437,7 +438,7 @@ export function buildGeminiPaygGoLive(d: GeminiPaygGoLiveDeps): GeminiPaygGoLive
       const rec = files.writeProposal(setup);
       res.json({ ok: true, proposalHash: rec.hash, setup: rec.setup });
     } catch (e) {
-      res.status(400).json({ error: 'bad-proposal', message: String(e instanceof Error ? e.message : e) });
+      res.status(400).json({ error: 'bad-proposal', message: operatorError(e, d.stateDir) });
     }
   });
 

@@ -3805,7 +3805,7 @@ export class AgentServer {
           } catch { return null; } // @silent-fallback-ok — unreadable registry is unknown, which fences
         },
         isLiveSession: (name) => {
-          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; }
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; } /* @silent-fallback-ok: an unverifiable session is recorded as self-reported, never trusted */
         },
         reviewRoots: () => [path.dirname(options.config.stateDir)],
         // §5/§9: every lane notice goes to the spend-alert voice through the go-live's
@@ -3868,7 +3868,7 @@ export class AgentServer {
               ...(c.link && c.link.startsWith('https://') ? { links: [{ url: c.link, label: 'The prefilled plan on the Spend tab' }] } : {}),
             });
             return r.ok === true;
-          } catch (err) {
+          } catch (err) { // @silent-fallback-ok: logged; the caller reports the card as not opened
             console.error(`[instar] gemini-payg: the Work Board card could not be opened: ${String(err)}`);
             return false;
           }
@@ -3899,7 +3899,7 @@ export class AgentServer {
       }
       this.geminiPaygGoLive.notices.start();
       const goLive = this.geminiPaygGoLive;
-      this.geminiPaygTimer = setInterval(() => { void goLive.checkMonth().catch(() => undefined); }, 5 * 60_000);
+      this.geminiPaygTimer = setInterval(() => { void goLive.checkMonth().catch(() => undefined); } /* @silent-fallback-ok: retried every 5 minutes */, 5 * 60_000);
       this.geminiPaygTimer.unref?.();
     } catch (err) {
       // @silent-fallback-ok: NOT silent — logged; the lane's routes are then absent and
@@ -11572,7 +11572,7 @@ export class AgentServer {
         const r = await this.spendAlertResolver.emit({ kind: 'observed-drift', dedupeKey: n.dedupeKey, text: n.text });
         return r === 'sent' || r === 'sent-lifeline' || r === 'quiet-recorded';
       }
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: logged; the notice layer keeps it held for retry
       console.error(`[instar] gemini-payg notice could not be delivered (${n.kind}): ${String(err)}`);
       return false;
     }

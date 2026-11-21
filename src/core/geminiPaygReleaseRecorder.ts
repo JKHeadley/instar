@@ -156,7 +156,7 @@ export class GeminiPaygReleaseRecorder {
    * concurrent submission waits for the in-flight one and gets its recorded outcome.
    */
   async runProof(opts: { forwardedFrom: string | null }): Promise<{ attempt: ProofAttempt | null; evaluation: ReleaseEvaluation }> {
-    while (this.inFlight) await this.inFlight.catch(() => undefined);
+    while (this.inFlight) await this.inFlight.catch(() => undefined); /* @silent-fallback-ok: serialization only; the in-flight proof records its own outcome */
     const p = this.runProofOnce(opts);
     this.inFlight = p;
     try { return await p; } finally { this.inFlight = null; }

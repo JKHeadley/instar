@@ -226,8 +226,8 @@ export class GeminiPaygNotices {
 
   start(intervalMs = 10 * 60 * 1000): void {
     if (this.timer) return;
-    void this.flushHeld().catch(() => undefined);
-    this.timer = setInterval(() => { void this.flushHeld().catch(() => undefined); }, intervalMs);
+    void this.flushHeld().catch(() => undefined); /* @silent-fallback-ok: a held notice stays held and is retried on the next tick */
+    this.timer = setInterval(() => { void this.flushHeld().catch(() => undefined); }, intervalMs); /* @silent-fallback-ok: retried every tick; nothing is dropped */
     this.timer.unref?.();
   }
 
