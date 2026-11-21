@@ -646,6 +646,23 @@ removeAdapterCmd
     return removeSlack();
   });
 
+// ── Dashboard: the one-time local link (identity-security-piece1a-local-link.md) ──
+
+const dashboardCmd = program
+  .command('dashboard')
+  .description('Dashboard access from this computer.');
+
+dashboardCmd
+  .command('open')
+  .description('Open this agent\'s dashboard through a one-time local link (you still enter your PIN).')
+  .option('--dir <dir>', 'Agent folder (defaults to the enclosing agent, or the only agent on this computer)')
+  .option('--print', 'Print the link for an SSH forward instead of opening a browser (needs --port)')
+  .option('--port <port>', 'With --print: the forwarded port on the machine you are browsing from')
+  .action(async (opts: { dir?: string; print?: boolean; port?: string }) => {
+    const { dashboardOpen } = await import('./commands/dashboardOpen.js');
+    process.exitCode = await dashboardOpen(opts);
+  });
+
 // ── Worktree (parallel-dev isolation) ────────────────────────────
 
 const worktreeCmd = program
