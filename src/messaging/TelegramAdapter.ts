@@ -4727,6 +4727,18 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.historyViewOn() && this.logView !== null;
   }
 
+  /**
+   * A request is about to read without the view: it takes the old read path (the file), exactly as
+   * with the switch off. Logged at most once a minute so a persistent failure does not flood the log.
+   */
+  private noteHistoryFallback(): void {
+    const now = Date.now();
+    if (now - this.lastHistoryFallbackLogAt < 60_000) return;
+    this.lastHistoryFallbackLogAt = now;
+    console.warn('[telegram] message-history view unavailable: answering from the log file (the old read path); the view is rebuilt with backoff');
+  }
+  private lastHistoryFallbackLogAt = 0;
+
   /** Wake everything waiting for the view: request waits re-check, background work starts. */
   private releaseHistoryWaiters(): void {
     for (const wake of this.logViewWaiters.splice(0)) wake();
@@ -4861,17 +4873,26 @@ export class TelegramAdapter implements MessagingAdapter {
     if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
   }
 
-  /** Wait, without blocking the event loop, until the log view is usable. False after `timeoutMs`. */
+  /**
+   * Wait, without blocking the event loop, for the log view. True when it is in use (or switched
+   * off); false when it is still loading after `timeoutMs` or its last load failed. Either way the
+   * caller then proceeds: without the view every read takes the old path, from the file.
+   */
   async waitForHistory(timeoutMs: number = 15_000): Promise<boolean> {
     if (!this.historyViewOn()) return true; // switched off: callers use the old read path, no wait
     if (this.logView) return true;
     void this.loadHistory();
-    if (!this.logViewBuild) return false; // the last pass failed and the next is not due yet
+    if (!this.logViewBuild) { this.noteHistoryFallback(); return false; } // the last pass failed and the next is not due yet
     return new Promise<boolean>((resolve) => {
-      const wake = (): void => { clearTimeout(timer); resolve(this.logView !== null || !this.historyViewOn()); };
+      const settle = (): void => {
+        const ready = this.logView !== null || !this.historyViewOn();
+        if (!ready) this.noteHistoryFallback();
+        resolve(ready);
+      };
+      const wake = (): void => { clearTimeout(timer); settle(); };
       const timer = setTimeout(() => {
         this.logViewWaiters = this.logViewWaiters.filter((w) => w !== wake);
-        resolve(this.logView !== null || !this.historyViewOn()); // switched off meanwhile: take the old path
+        settle();
       }, timeoutMs);
       timer.unref?.();
       this.logViewWaiters.push(wake);
@@ -4926,7 +4947,8 @@ export class TelegramAdapter implements MessagingAdapter {
    * parse its whole ledger synchronously.
    */
   getTopicTailRows(topicId: number, limit: number = 20): LogEntry[] {
-    if (!this.historyViewOn()) return this.getTopicHistory(topicId, limit); // the old read, exactly
+    // Switched off, or the view is not there (loading, or its rebuild failed): the old read, exactly.
+    if (!this.historyViewOn() || !this.logView) return this.getTopicHistory(topicId, limit);
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
       if (cached) return cached.slice(-limit);

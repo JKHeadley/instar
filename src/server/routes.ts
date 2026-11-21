@@ -23421,10 +23421,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const viaDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     const remoteContinuation = req.query.row !== undefined || req.query.byteFrom !== undefined;
     const needsHistoryView = !remoteContinuation && (beforeMs === null || (viaDevice && !!ctx.conversationUnread?.enabled()));
-    // A peer's fan-out read has about 5 s: answer inside it, so a warming peer is reported, not lost.
-    if (needsHistoryView && ctx.telegram.waitForHistory && !(await ctx.telegram.waitForHistory(viaDevice ? 15_000 : 4_000))) {
-      res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return;
-    }
+    // Wait (bounded; 4 s for a peer's fan-out read, inside its 5 s budget) for the in-memory view.
+    // Without it (still loading, or its rebuild failed) the reads below take the old path, the file.
+    if (needsHistoryView && ctx.telegram.waitForHistory) await ctx.telegram.waitForHistory(viaDevice ? 15_000 : 4_000);
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
       : typeof ctx.telegram.getTopicHistoryBeforeAsync === 'function' && (ctx.telegram as { historyViewOn?: () => boolean }).historyViewOn?.() !== false
         ? await ctx.telegram.getTopicHistoryBeforeAsync(topicId, beforeMs, limit, beforeMessageId ?? undefined)

@@ -262,7 +262,7 @@ export interface MobileConversationRouteDeps {
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
-  /** Waits, off the event loop, until Telegram history can be read from memory. False: answer "try again". */
+  /** Waits, off the event loop, for Telegram history in memory. Without it, reads take the old path. */
   telegramHistoryReady?: (timeoutMs?: number) => Promise<boolean>;
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
@@ -613,7 +613,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     { const u = unreadOn(); const r = readerOf(req); if (u && r) u.touchBaseline(r); }
     // A peer's fan-out read has about 5 s: answer inside it, so a warming peer is reported, not lost.
     const historyWait = principalOf(req).kind === 'device' ? 15_000 : 4_000;
-    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady(historyWait))) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
+    // Without the view (still loading, or its rebuild failed) the reads below take the old path.
+    if (deps.telegramHistoryReady) await deps.telegramHistoryReady(historyWait);
     const local = localListPage(limit, cursor);
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
@@ -730,9 +731,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         };
       })
       : { results: [], failed: [] };
-    // The view can be dropped (a log rotation) while the peers answer: check again before the
-    // unread and pinned passes below read Telegram rows.
-    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady(historyWait))) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
+    // The view can be dropped (a log rotation) while the peers answer: wait for it again before the
+    // unread and pinned passes below; without it they take the old read path.
+    if (deps.telegramHistoryReady) await deps.telegramHistoryReady(historyWait);
     // A peer's Slack rows are never listed: a Slack conversation id is local to the machine that
     // minted it, and the Slack routes on this machine look ids up here, so a peer row could name a
     // different conversation that shares the number (and would otherwise collapse onto this

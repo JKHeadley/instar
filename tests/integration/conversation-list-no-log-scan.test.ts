@@ -85,18 +85,46 @@ describe('GET /mobile/conversations with many closed Telegram topics', () => {
     } finally { reads.mockRestore(); syncScrollBack.mockRestore(); }
   });
 
-  it('while history cannot be read, the list says try again instead of scanning or hanging', async () => {
+  it('injected: when the view cannot be rebuilt after a trim, chats and the list answer from the file, as the old code does', async () => {
     const e = await boot();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const wait = vi.spyOn(e.telegram, 'waitForHistory').mockResolvedValue(false);
-    const reads = vi.spyOn(fs, 'readFileSync');
-    try {
-      const r = await request(e.server.getApp()).get('/mobile/conversations').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
-      expect(r.status).toBe(503);
-      expect(r.body).toEqual({ error: 'conversations-loading', retryable: true });
-      expect(r.headers['retry-after']).toBe('5');
-      expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath)).toHaveLength(0);
-    } finally { wait.mockRestore(); reads.mockRestore(); vi.restoreAllMocks(); }
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const auth = (q: request.Test) => q.set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+    expect(await e.telegram.loadHistory()).toBe(true);
+    // A trim: the file loses topic 5001's rows, then the view's rebuild fails to read it.
+    const kept = fs.readFileSync(e.logPath, 'utf-8').split('\n').filter(Boolean).filter((l) => !l.includes('"topicId":5001,'));
+    fs.writeFileSync(e.logPath, kept.join('\n') + '\n');
+    const open = vi.spyOn(fs.promises, 'open').mockRejectedValue(Object.assign(new Error('simulated read failure'), { code: 'EIO' }));
+    (e.telegram as unknown as { noteLogRotated(): void }).noteLogRotated();
+    const chat = await auth(request(e.server.getApp()).get('/telegram/topics/5002/messages?limit=2'));
+    expect(chat.status).toBe(200);
+    expect(chat.body.messages.map((m: { text: string }) => m.text)).toEqual(['msg 2 in 2', 'msg 3 in 2']);
+    const trimmed = await auth(request(e.server.getApp()).get('/telegram/topics/5001/messages?limit=2'));
+    expect(trimmed.status).toBe(200);
+    expect(trimmed.body.messages).toEqual([]); // what the file now holds, as a file read returns
+    const list = await auth(request(e.server.getApp()).get('/mobile/conversations?limit=200'));
+    expect(list.status).toBe(200);
+    const rows = list.body.conversations.filter((c: { platform: string }) => c.platform === 'telegram');
+    expect(rows).toHaveLength(N);
+    expect(rows.find((r: { id: number }) => r.id === 5000 + N)?.lastPreview).toBe(`msg 3 in ${N}`);
+    expect(e.telegram.isHistoryLoaded()).toBe(false);
+    open.mockRestore();
+  });
+
+  it('injected: a persistent rebuild failure does not rebuild on every request', async () => {
+    const e = await boot();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const open = vi.spyOn(fs.promises, 'open').mockRejectedValue(Object.assign(new Error('simulated read failure'), { code: 'EIO' }));
+    const auth = (q: request.Test) => q.set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+    for (let i = 0; i < 10; i++) {
+      const r = await auth(request(e.server.getApp()).get('/telegram/topics/5003/messages?limit=1'));
+      expect(r.status).toBe(200);
+      expect(r.body.messages.map((m: { text: string }) => m.text)).toEqual(['msg 3 in 3']);
+    }
+    const attempts = open.mock.calls.filter((c) => String(c[0]) === e.logPath).length;
+    expect(attempts).toBe(1); // braked: the next rebuild waits 5 s, doubling to 5 min
+    open.mockRestore();
   });
 
   it('injected: a peer still loading its history is reported as loading, never as off', async () => {

@@ -101,9 +101,11 @@ rules as they were and replaces only the slow step underneath them.
 
 - The list, a read report that names a Telegram conversation, and `GET /telegram/topics/:id/messages`
   (the app's chat history; a Bearer scroll-back needs no view) wait after their own validation, up
-  to 15 s (4 s for a peer's fan-out read, inside its 5 s budget) and off the event loop. A first-time reader's baseline is set on arrival, before the wait. If the view is still
-  unavailable the list and chat answer `503 conversations-loading` with `Retry-After: 5`; a read
-  report proceeds with its ordinary per-mark results.
+  to 15 s (4 s for a peer's fan-out read, inside its 5 s budget) and off the event loop. A first-time reader's baseline is set on arrival, before the wait. Without the view (still
+  loading after the wait, or its rebuild failed) the request falls back to the old read path, the
+  same code `telegramHistoryView.enabled: false` uses, and answers from the file as the old code
+  does. The fallback is logged at most once a minute; the rebuild is retried when a request comes
+  in after 5 s, doubling to 5 min, so a persistent failure does not rebuild on every request.
 - Scroll-back uses `getTopicHistoryBeforeAsync`, the same backward read awaited per 1 MB block.
 - The list and unread counter use `getTopicTailRows`, which skips the authorship join: it adds only
   authorship fields and can synchronously parse its ledger.
@@ -131,7 +133,7 @@ Measured on the Studio (2026-11-21): the old per-save check (stat, full synchron
 - An append that fails part-way drops the view and re-reads the file, so a message is never
   visible only in memory.
 - Rotation is the old code (§3b), so a failed rotation behaves exactly as before.
-- A peer that answers `503 conversations-loading` is reported in `pool.failed` as `loading`, not
+- A peer that answers `503 conversations-loading` (an earlier build of this change) is reported in `pool.failed` as `loading`, not
   `off`. The pool list re-checks the view after the peers answer and before its unread and pin passes.
 - A forwarded read report waits at most 4 s, inside the sender's 5 s budget.
 
@@ -157,8 +159,8 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
 
 ## Decision points touched
 
-- Request waits 15 s (4 s for a peer machine's request) — judgment-candidate; floor: on expiry the request answers a retryable 503 and never reads the log synchronously; arbiter: the client's retry. The 4 s keeps a peer's answer inside the 5 s pool budget.
-- History-load retry backoff 5 s doubling to a 5 min cap — judgment-candidate; floor: a failed load publishes nothing and readers get a retryable answer; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
+- Request waits 15 s (4 s for a peer machine's request) — judgment-candidate; floor: on expiry the request answers from the file through the old read path, exactly as the old code; arbiter: the client's retry. The 4 s keeps a peer's answer inside the 5 s pool budget.
+- History-load retry backoff 5 s doubling to a 5 min cap — judgment-candidate; floor: a failed load publishes nothing and readers take the old read path; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
 
 ## Known limits (accepted)
 
@@ -166,7 +168,7 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
   line count follow the file the server writes, and catch up at the next rotation or restart.
 - Timing budgets: a peer that needs more than 4 s to load reports `loading` for that request; the
   15 s wait can race a shorter server request timeout; the graph inventory waits for the first load
-  or its first failure. In each case the answer is late or "try again", never different data.
+  or its first failure. In each case the answer is late or comes from the old read path, never different data.
 - About fifteen callers of `getTopicHistory(topicId, 1_000)` (above the 500-row view) and an actual
   rotation still read the file synchronously, as before. (feedback item fb-9193b40c-880)
 
@@ -184,7 +186,7 @@ it only makes each machine's own answer cheap.  No notices, no URLs, no durable 
 - Unit `tests/unit/message-log-rotation-matches-old-code.test.ts`: under injected read, rename and
   append failures and with blank or unterminated lines, the file holds exactly the lines an oracle
   replay of the old algorithm keeps, in the same order, and each rotation notifies the view.
-- Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all topics in order; chats and scroll-back avoid synchronous log reads; unavailable history answers a retryable 503.
+- Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all topics in order; chats and scroll-back avoid synchronous log reads; unavailable history answers a retryable 503. With the rebuild failing right after a trim, chats and the list answer from the file through the route; a persistent failure retries the rebuild once, not on every request.
 - E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: production `AgentServer` and real adapter; concurrent cold requests share one load, with no synchronous log read.
 
 ## Evidence bar and live proof
@@ -218,4 +220,4 @@ Pure code change. Revert the commit and ship a patch; no persistent state, confi
 
 ## Frontloaded Decisions
 
-- Load behavior: requests wait up to 15 s for one streamed load, then answer retryable 503, rather than showing provisional data or scanning the log.
+- Load behavior: requests wait up to 15 s for one streamed load, then answer from the file through the old read path; a failed rebuild behaves the same, by construction.
