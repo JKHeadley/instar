@@ -307,6 +307,8 @@ describe('the approvers list the apps read (mobile-approver-mark §3.10)', () =>
     const after = await get(c.app, p, '/mobile/approvers');
     expect(after.body).toMatchObject({ self: { mayApprove: true }, opening: { state: 'closed', reason: 'approver-exists' } });
     expect(after.body.holders).toEqual([expect.objectContaining({ deviceId: p.id, via: 'record', self: true })]);
+    // A record holder carries the keyId that revoke/draft takes (the app shows Remove only when it is there).
+    expect(after.body.holders[0].keyId).toMatch(/^o_/);
     const q = c.pair();
     const ask = await post(c.app, q, '/mobile/approver/request', { presenceKey: q.presence.publicKey, presenceProof: q.presence.sign(presenceEnrollMessage(q.id, HOST, q.presence.publicKey)) });
     const mine = await get(c.app, q, '/mobile/approvers');
