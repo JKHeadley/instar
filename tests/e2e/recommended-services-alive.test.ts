@@ -17,6 +17,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
 import { reportVoiceUnreadable } from '../../src/core/VoiceTranscription.js';
 import { readRestoreMarker, writeRestoreMarker } from '../../src/core/restoreMarker.js';
+import { EventEmitter } from 'node:events';
 import type { InstarConfig } from '../../src/core/types.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -30,7 +31,7 @@ const signer: MachineSigner = {
 const AUTH = 'e2e-token';
 const PIN = '123456';
 
-function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (stateDir: string) => void) {
+function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (stateDir: string) => void, tunnel?: unknown) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -48,6 +49,7 @@ function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (
   const server = new AgentServer({
     config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir),
     ...(withLedger ? { recommendedServicesLedger: makeLedger() } : {}),
+    ...(tunnel ? { tunnel } : {}),
   } as any);
   servers.push(server);
   return { server, makeLedger };
@@ -263,6 +265,18 @@ describe('recommended services: production wiring', () => {
     const rows = on.makeLedger().reofferRows('42');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ service: 'github-state-backup', kind: 'state-loss-risk', state: 'event', evidenceRef: 'restore' });
+  });
+
+  it('address-repeatedly-down: three tunnel give-ups through the real wiring record one Tailscale problem', async () => {
+    const tunnel = Object.assign(new EventEmitter(), { url: null, getExternalUrl: () => null });
+    const on = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } } }, undefined, tunnel);
+    for (let i = 0; i < 3; i++) {
+      tunnel.emit('lifecycle', { from: 'self-healing', to: 'exhausted' });
+      tunnel.emit('lifecycle', { from: 'exhausted', to: 'exhausted' });
+    }
+    const rows = on.makeLedger().reofferRows('42');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service: 'tailscale', kind: 'address-repeatedly-down', state: 'event', evidenceRef: 'tunnel' });
   });
 
   it('refuses to surface a retired offer', async () => {

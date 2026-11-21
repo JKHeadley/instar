@@ -10,6 +10,8 @@ A second problem is wired in too: when the agent starts, it checks whether any o
 
 A third problem: when the agent is restored from a snapshot kept on its own machine, it leaves itself a note. At its next start it reads the note and checks whether a copy of its memory and settings exists anywhere else, either a working GitHub backup or another machine it runs on. If there's none and the person said no to the GitHub backup, it asks once more. The note is cleared even when the feature is off, so turning it on later never brings up an old restore.
 
+A fourth problem: the agent's web address (the link you use from your phone) going down three times in one day without fixing itself. If you said no to Tailscale, it asks about Tailscale once more. If Tailscale is already set up, or was already asked about for this, it asks about a Cloudflare fixed address instead.
+
 ## The rules, all in code
 
 - Only a no, or an offer the person never answered, can be asked about again. The problem must have happened after that no.

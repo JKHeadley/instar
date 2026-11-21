@@ -17,7 +17,7 @@ import { RecommendedServicesLedger, foldChoice, validateRow } from '../../src/re
 import { RECOMMENDED_SERVICE_CATALOG, type CatalogRow } from '../../src/recommended/catalog.js';
 import {
   EVENT_FRESH_MS, PROBLEM_KINDS, REOFFER_DAILY_WINDOW_MS, REOFFER_PENDING_TTL_MS, cooloffMs, eventBlock, isDuplicateEvent,
-  findUnresolvedSecrets, nextReoffer, renderReoffer, type ReofferFacts,
+  ADDRESS_OUTAGE_WINDOW_MS, findUnresolvedSecrets, noteOutage, problemServices, serviceForProblem, nextReoffer, renderReoffer, type ReofferFacts,
 } from '../../src/recommended/reoffers.js';
 import {
   TranscriptionUnavailableError, registerVoiceUnreadableListener, reportVoiceUnreadable, transcribeAudioFileDetailed,
@@ -254,5 +254,33 @@ describe('state-loss-risk: the restore marker', () => {
     expect(PROBLEM_KINDS['state-loss-risk']!.service).toBe('github-state-backup');
     const row = RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'github-state-backup')!;
     expect(renderReoffer('state-loss-risk', row, { linkBase: null, choice: 'no', deliveredBefore: 0 })).toContain('no copy of my memory and settings anywhere else');
+  });
+});
+
+describe('address-repeatedly-down', () => {
+  const H = 60 * 60_000;
+  it('three outages inside a day are one problem, and the count starts over after it', () => {
+    let t: number[] = [];
+    let r = noteOutage(t, 0); t = r.times; expect(r.problem).toBe(false);
+    r = noteOutage(t, H); t = r.times; expect(r.problem).toBe(false);
+    r = noteOutage(t, 2 * H); expect(r.problem).toBe(true); expect(r.times).toEqual([]);
+  });
+
+  it('old outages fall out of the window, and odd values are ignored', () => {
+    const r = noteOutage([0, NaN, H], ADDRESS_OUTAGE_WINDOW_MS + 2 * H);
+    expect(r.problem).toBe(false);
+    expect(r.times).toEqual([ADDRESS_OUTAGE_WINDOW_MS + 2 * H]);
+    expect(noteOutage([5 * H, 6 * H], 0).times).toEqual([0]);
+  });
+
+  it('offers Tailscale first, Cloudflare once Tailscale is a yes or already re-offered, nothing once both are yes', () => {
+    const choice = (yes: string[]) => (s: string) => ({ choice: yes.includes(s) ? 'yes' : 'no', at: '2026-11-01T00:00:00Z' }) as never;
+    expect(problemServices('address-repeatedly-down')).toEqual(['tailscale', 'cloudflare-domain']);
+    expect(serviceForProblem('address-repeatedly-down', [], choice([]))).toBe('tailscale');
+    expect(serviceForProblem('address-repeatedly-down', [], choice(['tailscale']))).toBe('cloudflare-domain');
+    const spent = [{ state: 'offered', kind: 'address-repeatedly-down', service: 'tailscale' }] as never;
+    expect(serviceForProblem('address-repeatedly-down', spent, choice([]))).toBe('cloudflare-domain');
+    expect(serviceForProblem('address-repeatedly-down', [], choice(['tailscale', 'cloudflare-domain']))).toBeNull();
+    expect(serviceForProblem('voice-unreadable', spent, choice(['voice-transcription']))).toBe('voice-transcription');
   });
 });

@@ -7,11 +7,13 @@
  * answers 503.
  */
 import { storageErrorResponse } from '../core/storageMachineName.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Request, Response, Router } from 'express';
 import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger, type ReofferRow } from '../recommended/RecommendedServicesLedger.js';
-import { EVENT_FRESH_MS, PROBLEM_KINDS, isDuplicateEvent, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
+import { EVENT_FRESH_MS, isDuplicateEvent, noteOutage, serviceForProblem, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
@@ -147,10 +149,12 @@ export interface RecommendedServiceRoutesHandle {
    * Signal only: never throws, never blocks the caller, and records nothing while re-offers are off.
    */
   recordProblem: (kind: string, evidenceRef: string) => void;
+  /** The tunnel's self-heal gave up on an outage (`exhausted`). Three in a day is the `address-repeatedly-down` problem. */
+  recordAddressOutage: () => void;
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): RecommendedServiceRoutesHandle {
-  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {} };
+  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {}, recordAddressOutage: () => {} };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
@@ -654,8 +658,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       const owner = deps.owner();
       if (!ledger || owner === null) return;
       const nowMs = deps.now?.() ?? Date.now();
-      if (isDuplicateEvent(ledger.reofferRows(owner), kind, nowMs)) return;
-      ledger.recordReofferEvent({ service: PROBLEM_KINDS[kind]!.service, owner, kind, evidenceRef });
+      const rows = ledger.reofferRows(owner);
+      if (isDuplicateEvent(rows, kind, nowMs)) return;
+      const service = serviceForProblem(kind, rows, (id) => ledger.effective(id));
+      if (service === null) return;
+      ledger.recordReofferEvent({ service, owner, kind, evidenceRef });
     } catch (err) { // @silent-fallback-ok — reported through report(); a problem signal never breaks its source
       report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
@@ -692,6 +699,25 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       if (!backedUp && otherMachines === 0) handle.recordProblem('state-loss-risk', 'restore');
     } catch (err) { // @silent-fallback-ok — reported through fail()
       fail('Check for an off-machine copy after a restore', err);
+    }
+  };
+  // `address-repeatedly-down`: the tunnel reports each outage its own self-heal gave up on. The times are kept per
+  // machine (an address belongs to one machine), so a restart doesn't forget the day's count.
+  handle.recordAddressOutage = (): void => {
+    try {
+      if (!deps.reoffersEnabled?.()) return;
+      const file = path.join(deps.stateDir, 'state', 'recommended-service-setup', 'address-outages.json');
+      let times: number[] = [];
+      try {
+        const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (Array.isArray(raw)) times = raw.filter((t): t is number => typeof t === 'number');
+      } catch { /* @silent-fallback-ok — no file yet means no outages counted yet */ }
+      const next = noteOutage(times, deps.now?.() ?? Date.now());
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(next.times));
+      if (next.problem) handle.recordProblem('address-repeatedly-down', 'tunnel');
+    } catch (err) { // @silent-fallback-ok — reported; a problem signal never breaks its source
+      report('Count an address outage', err, 'This outage is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
   let lastReofferAttemptAt = 0;
