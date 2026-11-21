@@ -498,6 +498,58 @@ describe('MessageStore', () => {
 
   // ── Thread Management ──────────────────────────────────────────
 
+  describe('SEC-127: ids that are not plain file names', () => {
+    const UNSAFE = ['../escape', '../../outside', '/tmp/abs', 'a/b', 'a\\b', '..', '.', '', 'x\u0000y', 'y'.repeat(230), '\u00e9'.repeat(120)];
+
+    it('saveThread refuses an unsafe thread id and writes nothing outside threads/', async () => {
+      for (const id of UNSAFE) {
+        await expect(store.saveThread(makeThread({ id }))).rejects.toThrow(/unsafe thread id/);
+      }
+      expect(fs.existsSync(path.join(tmpDir, 'escape.json'))).toBe(false);
+      expect(fs.existsSync(path.join(path.dirname(tmpDir), 'outside.json'))).toBe(false);
+    });
+
+    it('getThread with a traversal id returns null instead of reading the outside file', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'secret.json'), JSON.stringify(makeThread({ id: 'secret' })));
+      expect(await store.getThread('../secret')).toBeNull();
+      expect(await store.getThread('../../secret')).toBeNull();
+    });
+
+    it('archiveThread with a traversal id moves nothing', async () => {
+      const outside = path.join(tmpDir, 'keep.json');
+      fs.writeFileSync(outside, '{}');
+      await store.archiveThread('../keep');
+      expect(fs.existsSync(outside)).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'threads', 'archive', 'keep.json'))).toBe(false);
+    });
+
+    it('save refuses a message whose id would leave store/; get, exists and deadLetter stay inside', async () => {
+      await expect(store.save(makeEnvelope({ id: '../planted' }))).rejects.toThrow(/unsafe message id/);
+      expect(fs.existsSync(path.join(tmpDir, 'planted.json'))).toBe(false);
+      fs.writeFileSync(path.join(tmpDir, 'planted.json'), JSON.stringify(makeEnvelope({ id: 'planted' })));
+      expect(await store.get('../planted')).toBeNull();
+      expect(await store.exists('../planted')).toBe(false);
+      await store.deadLetter('../planted', 'x');
+      expect(fs.existsSync(path.join(tmpDir, 'planted.json'))).toBe(true);
+      await expect(store.updateDelivery('../planted', { phase: 'sent', transitions: [], attempts: 0 })).rejects.toThrow(/not found/);
+    });
+
+    it('ordinary ids still work: UUIDs, msg-/thr- ids and ids with dots or colons', async () => {
+      for (const id of [crypto.randomUUID(), 'thr-1-abc', 'relay:peer.thread_1', 'a..b']) {
+        await store.saveThread(makeThread({ id }));
+        expect((await store.getThread(id))?.id).toBe(id);
+      }
+      const env = makeEnvelope({ id: 'msg-ok.1' });
+      await store.save(env);
+      expect((await store.get('msg-ok.1'))?.message.id).toBe('msg-ok.1');
+      expect(MessageStore.isSafeFileId('a..b')).toBe(true);
+      expect(MessageStore.isSafeFileId('../a')).toBe(false);
+      expect(MessageStore.MAX_FILE_ID_BYTES).toBe(229);
+      expect(MessageStore.isSafeFileId('y'.repeat(229))).toBe(true);
+      expect(MessageStore.isSafeFileId('m'.repeat(128))).toBe(true); // the longest wire message id
+    });
+  });
+
   describe('thread management', () => {
     it('saveThread creates a thread file', async () => {
       const thread = makeThread();
