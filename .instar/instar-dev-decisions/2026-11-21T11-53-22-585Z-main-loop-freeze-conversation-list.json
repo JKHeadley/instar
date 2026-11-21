@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-21T11:53:22.585Z",
+  "slug": "main-loop-freeze-conversation-list",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/MessageLogger.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 53
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "rotation retries on the next append exactly as before; no new loop or timer-driven action"
+  },
+  "verdict": "pass"
+}

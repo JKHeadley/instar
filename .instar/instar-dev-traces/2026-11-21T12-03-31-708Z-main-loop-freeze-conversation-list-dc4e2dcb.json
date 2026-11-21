@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T12:03:31.708Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "d30ccc9805f9e939e9b3768da79dce8364389e50aad921ebd84818c163e1ccc7",
+  "coveredFiles": [
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "tests/unit/message-log-rotation-real-size.test.ts",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tests only: a stronger guard that rotation is the old code.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

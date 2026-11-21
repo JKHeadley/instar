@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:52:49.702Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "2b5d15ea3d19135ab5f46418567c3e62b93f2f03281e61bd3f1ce8cc54312583",
+  "coveredFiles": [
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "docs/specs/main-loop-freeze-conversation-list.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/MessageLogger.ts",
+    "tests/unit/message-log-rotation-no-per-append-read.test.ts",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fixes from the narrow review; no state or migration.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "rotation retries on the next append exactly as before; no new loop or timer-driven action"
+  }
+}

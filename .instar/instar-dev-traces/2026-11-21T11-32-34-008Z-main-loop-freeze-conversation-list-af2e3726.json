@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:32:34.008Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "f1de64c0d616575260bfd4c41161f0f8daa799c78aef3e5b13d7f6f3bb7e6280",
+  "coveredFiles": [
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "docs/specs/main-loop-freeze-conversation-list.md",
+    "src/commands/server.ts",
+    "src/commands/setup.ts",
+    "src/core/CartographerTree.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/MessageLogger.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/conversation-list-no-log-scan.test.ts",
+    "tests/unit/cartographer-scaffold-incremental.test.ts",
+    "tests/unit/message-log-rotation-no-per-append-read.test.ts",
+    "tests/unit/node-symlink-async-probe.test.ts",
+    "tests/unit/telegram-log-view.test.ts",
+    "upgrades/next/main-loop-freeze-conversation-list.md",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path repair with an off switch; no state or migration; a revert restores prior behavior.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a request-started history load with a time brake and no timer; not a self-triggered loop"
+  }
+}

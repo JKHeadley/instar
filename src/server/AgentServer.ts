@@ -7916,7 +7916,7 @@ export class AgentServer {
         machineId: () => appSvc.deps.machineId(),
         app: appSvc.store,
         telegram: telegram ? {
-          history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
+          history: (topicId, limit) => telegram.getTopicTailRows(topicId, limit) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
           exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
@@ -7980,15 +7980,26 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
+        telegramHistoryReady: options.telegram ? (timeoutMs) => options.telegram!.waitForHistory(timeoutMs) : undefined,
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
           return options.telegram!.getAllTopicMappings().map((m) => {
-          const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
+          const last = options.telegram!.getTopicTailRows(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
         } : undefined,
       };
+      // Conversation reads wait for one streamed load of the log instead of scanning it on the main
+      // thread (docs/specs/main-loop-freeze-conversation-list.md). Loaded early where the app is on.
+      // Off switch: `telegramHistoryView.enabled: false` returns every read to the old path, read live.
+      if (options.telegram) {
+        const lc = options.liveConfig;
+        options.telegram.setHistoryViewSwitch(() => (lc?.get
+          ? lc.get<boolean | undefined>('telegramHistoryView.enabled', undefined)
+          : (this.config as { telegramHistoryView?: { enabled?: boolean } }).telegramHistoryView?.enabled) !== false);
+      }
+      if (options.telegram && (options.mobileRoutes?.start ?? !process.env.VITEST)) void options.telegram.loadHistory();
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
       const searchDeps: ConversationSearchRouteDeps = {
@@ -8036,11 +8047,12 @@ export class AgentServer {
       }
       this.app.use(createConversationSearchRouter(searchDeps));
       if(routeCtx.conversationRegistry){
-        startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
+        // The inventory reads every topic's newest row: it starts once that needs no log scan.
+        startOwnedGraphInventory=(runtime,identity)=>{void (options.telegram?.whenHistoryLoaded()??Promise.resolve()).then(()=>{if(this.graphInventoryStopped)return;this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
           return new ConversationGraphSourceInventoryRuntime({flatDeps:{...conversationFlatDeps,machineId:()=>{const flat=conversationFlatDeps.machineId();return flat==='local'?identity.loadIdentity().machineId:flat;}},conversations:routeCtx.conversationRegistry!,runtime:active,identity,membership:()=>active.installedMembership,ownerPublicKey:active.ownerPublicKey,
             telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'')||null});
-        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});};
+        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});});};
         const existing=options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime,identity=options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager;
         if(existing&&identity)startOwnedGraphInventory(existing,identity);
       }
@@ -10272,7 +10284,8 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
-  async stopGraphSourceInventory():Promise<void>{await this.graphSourceInventory.close();}
+  private graphInventoryStopped=false;
+  async stopGraphSourceInventory():Promise<void>{this.graphInventoryStopped=true;await this.graphSourceInventory.close();}
   /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
   private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
     const config = options.config;
