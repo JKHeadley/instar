@@ -41045,7 +41045,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * P1.5b §3.4 — owner-routing decision for a mutation route. Returns:
    *  'local'      → the record is OWN (or the layer is dark): mutate locally.
    *  {forward}    → the record lives ONLY in a replica: forward to its owner.
-   *  'ambiguous'  → a bare id matches own AND replica rows (409, §3.1).
+   *  'ambiguous'  → a bare id matches rows from DIFFERENT origins (409, §3.1);
+   *                 same-origin copies collapse to the origin's own row.
    *  'absent'     → nowhere in the merged view (404 falls through to local).
    */
   async function resolveCommitmentRoute(id: string, origin: string | undefined): Promise<
@@ -41058,7 +41059,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       own: ctx.commitmentTracker.getAll(),
       replicas: ctx.commitmentReplicaStore.allReplicas(),
     });
-    const resolved = syncMod.resolveBareId(rows, id, origin);
+    const resolved = syncMod.resolveBareId(rows, id, origin, ctx.meshSelfId ?? 'local');
     if (resolved === 'ambiguous') return 'ambiguous';
     if (resolved === null) return 'absent';
     if (resolved.viewSource === 'own') return 'local';
