@@ -780,6 +780,57 @@ describe('a re-run alone cut off by another lane’s failure', () => {
   });
 });
 
+// ── Unit file durations (docs/specs/local-verify-borrowed-unit-slices.md, A) with first parts ──
+
+describe('unit file durations and the unit wall factor, with a lane run in two parts', () => {
+  it('both parts of the unit lane are recorded in the duration history, and the wall factor is written once, marked firstPart', async () => {
+    const h = await run({ files: { unit: range(6, u) } }, on({ list: [u(2), u(4)] }));
+    expect(h.r.record.outcome).toBe('success');
+    const hist = JSON.parse(h.files.get(P.durationsPath) as string) as Record<string, number>;
+    expect(Object.keys(hist)).toEqual(expect.arrayContaining(range(6, u)));
+    const wf = h.logs.filter((l) => l.event === 'unit-wall-factor');
+    expect(wf).toHaveLength(1);
+    expect(wf[0]).toMatchObject({ workers: LOCAL_VERIFY_LIMITS.unitWorkersParallel, firstPart: true });
+    expect(typeof wf[0].factor).toBe('number');
+  });
+
+  it('a unit lane run in one part writes the wall factor without the mark', async () => {
+    const h = await run({ files: { unit: range(6, u) } });
+    const wf = h.logs.filter((l) => l.event === 'unit-wall-factor');
+    expect(wf).toHaveLength(1);
+    expect(wf[0]).not.toHaveProperty('firstPart');
+    expect(wf[0]).not.toHaveProperty('reran');
+  });
+
+  it('a row whose lane re-ran files alone is marked reran (its wall time and file time are not a clean sample)', async () => {
+    const h = await run({ files: { unit: range(6, u) }, behaviour: { [u(3)]: 'flaky' } });
+    expect(h.r.record.outcome).toBe('success');
+    const wf = h.logs.filter((l) => l.event === 'unit-wall-factor');
+    expect(wf).toHaveLength(1);
+    expect(wf[0]).toMatchObject({ reran: true });
+    expect(wf[0]).not.toHaveProperty('firstPart');
+    // A flaky file in another lane does not mark the unit row.
+    const other = await run({ files: { unit: range(6, u), integration: range(3, i) }, behaviour: { [i(2)]: 'flaky' } });
+    expect(other.logs.filter((l) => l.event === 'unit-wall-factor')[0]).not.toHaveProperty('reran');
+  });
+
+  it('a unit lane cut short after a failed first part writes no wall factor', async () => {
+    const h = await run({ files: { unit: range(6, u) }, behaviour: { [u(2)]: 'fail' } }, on({ list: [u(2)] }));
+    expect(h.r.record.outcome).toBe('failure');
+    expect(h.logs.some((l) => l.event === 'unit-wall-factor')).toBe(false);
+  });
+
+  it('recorded unit times never change which files a unit first part holds', async () => {
+    const files = { unit: range(8, u) };
+    const list = [u(2), u(4), u(7)];
+    const plain = await run({ files }, on({ list }));
+    const timed = await run({ files, durations: Object.fromEntries(range(8, u).map((f, k) => [f, 600_000 * (k + 1)])) }, on({ list }));
+    const firstOf = (x: { calls: VitestCall[] }) => laneCalls(x, 'unit').find((c) => c.key === 'unit-first')!.positional;
+    expect(firstOf(timed)).toEqual(firstOf(plain));
+    expect(firstOf(timed)).toEqual(list);
+  });
+});
+
 
 describe('amended observations beside the unchanged no-early-pass property', () => {
   it('a skipped-only first part continues to the passing tests in the rest', async () => {

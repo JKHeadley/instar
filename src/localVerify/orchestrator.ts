@@ -697,12 +697,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const excludes = first ? first.files.map((f) => `--exclude=${f}`) : [];
       if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
+      let unitWorkers: number | null = null;
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
         // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
         const uw = input.laneShards?.unitWorkers;
         const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
         laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        unitWorkers = workers;
         // This run already holds the host suite slot. Its own unit lane is a child of that
         // holder, so the host test-runner bound's nested clamp capped it at 4 workers whatever
         // was asked (2026-11-12: 8 workers ran no faster, 1159 s). Declare the lane as the
@@ -804,7 +806,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         for (const part of parts) {
           if (!part.report || !report) { report = null; continue; }
           for (const [f, c] of part.report.files) {
-            if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
+            // Every lane's files are recorded, unit included (docs/specs/local-verify-borrowed-unit-slices.md, A):
+            // planShards only ever reads a lane's own files, and a unit first part is sized by file count
+            // alone (firstPart.ts: unit is not a timed lane), so unit entries change no plan and no first part
+            // while the history stays under its caps (20,000 files, 2 MB: about 5,600 files and 0.3 MB with
+            // the unit lane in, 2026-11-19). Past 20,000 files the oldest-inserted entries go first, whatever
+            // their lane; a history file over 2 MB is not read at all for that run (`durations-ignored`).
+            if (typeof c.ms === 'number') observed[f] = c.ms;
             if (report.files.has(f)) {
               seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
               report = null;
@@ -821,6 +829,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const nonZero = codes.find((x) => typeof x === 'number' && x !== 0);
         return nonZero !== undefined ? nonZero : codes.some((x) => x === null) ? null : 0;
       };
+      /** Whether any file of this lane was re-run alone (marks the unit wall-factor row, below). */
+      let reran = false;
       const combineUnhandled = (counts: ReadonlyArray<number | null>): number | null => (counts.some((x) => x === null) ? null : counts.reduce<number>((n, x) => n + (x as number), 0));
       /**
        * Isolation re-run: a lane (or one part of it) whose only problem is 1..3 failed files re-runs
@@ -844,6 +854,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         });
         if (decision.reason === 'eligible' && decision.rerun.length > 0 && report) {
           rerunBudget -= decision.rerun.length; // an import-related file counts as one file, whatever its number of runs
+          reran = true;
           const threePass = new Map(decision.threePass.map((f) => [f, classed.importRelated.get(f)!]));
           const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal, threePass, part ? `${lane.name}-${part}` : lane.name);
           // The exit code is cleared only when the failed files explain it: they all passed alone
@@ -855,6 +866,22 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         return exitCode;
       };
       const seconds = () => Math.round((seams.now() - t) / 1000);
+      /**
+       * Same spec, A: how far the unit lane's wall time is from its file time spread over the workers
+       * (1.22 on the Studio, 11-18). Later slice and lane projections scale by it. Written once, for a
+       * unit lane that ran to its end with a readable report. Two marks say when a row is not a clean
+       * sample, so a reader can leave it out: `firstPart` (the lane used a first part, whose own run is
+       * inside the wall time) and `reran` (files were re-run alone: the wall time holds those re-runs,
+       * and the report holds a re-run file's solo time in place of its time in the lane).
+       */
+      const noteUnitWallFactor = (report: ParsedLaneReport | null, firstPartUsed: boolean): void => {
+        if (lane.name !== 'unit' || !report || unitWorkers === null) return;
+        const laneMs = seams.now() - t;
+        let fileMs = 0;
+        for (const c of report.files.values()) if (typeof c.ms === 'number') fileMs += c.ms;
+        const ideal = fileMs / unitWorkers;
+        if (ideal > 0) seams.log({ event: 'unit-wall-factor', workers: unitWorkers, fileSeconds: Math.round(fileMs / 1000), laneSeconds: Math.round(laneMs / 1000), factor: Math.round((laneMs / ideal) * 100) / 100, ...(firstPartUsed ? { firstPart: true } : {}), ...(reran ? { reran: true } : {}) });
+      };
 
       if (!first) {
         const parts = await runProcs(false);
@@ -869,6 +896,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           seams.log({ event: 'lanes-stop', after: lane.name });
           stopLanes.abort();
         }
+        noteUnitWallFactor(report, false);
         return { lane: lane.name, report, seconds: seconds(), exitCode };
       }
 
@@ -903,7 +931,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
       seams.log({ event: 'first-part', lane: lane.name, files: first.files.length, ms: note.ms, failedFinally: firstFinal, endedHere: false });
       // The whole lane fitted in its first part: the lane is completed from that one report.
-      if (restFiles.length === 0) return { lane: lane.name, report: firstReport, seconds: seconds(), exitCode: firstExit };
+      if (restFiles.length === 0) { noteUnitWallFactor(firstReport, true); return { lane: lane.name, report: firstReport, seconds: seconds(), exitCode: firstExit }; }
       if (stopLanes.signal.aborted) {
         seams.log({ event: 'lane-stopped-early', lane: lane.name, part: 'rest' });
         return cutShort();
@@ -935,6 +963,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         seams.log({ event: 'lanes-stop', after: lane.name });
         stopLanes.abort();
       }
+      noteUnitWallFactor(report, true);
       return { lane: lane.name, report, seconds: seconds(), exitCode };
     }
 

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "lv-unit-durations",
+  "sessionId": "dfb1efdb-0155-401a-ad85-cb9b36e9b815",
+  "timestamp": "2026-11-19T13:23:36.220Z",
+  "artifactPath": "upgrades/side-effects/lv-unit-durations.md",
+  "artifactSha256": "8399e1b38d38c17ce71927e503e8ce9bfdbb4b85237613287d82679b508de5bf",
+  "specPath": "docs/specs/local-verify-borrowed-unit-slices.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-borrowed-unit-slices.eli16.md",
+    "docs/specs/local-verify-borrowed-unit-slices.md",
+    "docs/specs/reports/local-verify-borrowed-unit-slices-convergence.md",
+    "src/data/feature-ladders.json",
+    "src/localVerify/orchestrator.ts",
+    "tests/unit/localVerify/firstPartFlow.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/lv-unit-durations.md",
+    "upgrades/side-effects/lv-unit-durations.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "part A of the approved spec; measurement only (duration history gains unit files, one log row); independent second pass concurred after the merge with likely-failing files first (two rounds, one fix)",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
