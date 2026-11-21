@@ -304,6 +304,29 @@ describe('LeaseCoordinator', () => {
     expect(store.lease?.holder).toBe('B');
   });
 
+  // lease-freshness-lapse-retry — a send refused for the lease reads which check answered and the renewal gap.
+  it('reports the hold verdict and renewal freshness: a late renewal within the lifetime holds, a gap past it lapses', async () => {
+    const store = new FakeStore();
+    let now = 1_000;
+    const tunnel: LeaseTransport = { broadcast: async () => true, observed: () => ({ lease: null, lastNonceByHolder: {} }), isReachable: () => true };
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(), now: () => now, monotonicNow: () => now });
+    expect(lc.holdVerdict()).toBe('not-current-holder'); // nothing acquired yet
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(lc.holdVerdict()).toBe('holding');
+    expect(lc.renewalFreshness()).toEqual({ msSinceConfirmedRenewal: 0, ttlMs: TTL, verdict: 'holding' });
+    // Timeline 1: the renewal due at 30 s lands at 35 s — 25 s of lifetime remained, nothing lapsed.
+    now = 1_000 + 35_000;
+    expect(lc.holdsLease()).toBe(true);
+    expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: 35_000, verdict: 'holding' });
+    expect(await lc.renew()).toBe(true);
+    expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: 0, verdict: 'holding' });
+    // Timeline 2: no confirmation for longer than the lifetime — the renewal fence answers.
+    now += TTL + 1;
+    expect(lc.holdsLease()).toBe(false);
+    expect(lc.holdVerdict()).toBe('renewal-lapsed');
+    expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: TTL + 1, ttlMs: TTL, verdict: 'renewal-lapsed' });
+  });
+
   it('self-suspends when the tunnel is unreachable past leaseTtlMs', async () => {
     const store = new FakeStore();
     let reachable = true;
