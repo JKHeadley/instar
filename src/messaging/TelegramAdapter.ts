@@ -4707,14 +4707,12 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** The one history scan in progress for the conversation list; concurrent requests share it. */
   private tailWarm: Promise<boolean> | null = null;
-  /** Topics waiting for a scan: the next scan to start takes all of them. */
-  private tailWarmPending = new Set<number>();
   /** Per topic, how many times unregisterTopic evicted its tail; a scan never saves over a newer eviction. */
   private tailEvictions = new Map<number, number>();
   /** Test seam: how many scans have started (concurrent requests must share one). */
   private tailWarmScans = 0;
-  /** A scan's deadline: past it, waiters stop waiting (the old read answers) and the scan saves
-   *  nothing. Inside the 5 s budget another of this agent's machines gives a list read. */
+  /** One request's wait budget, and a scan's own deadline: past it, the request stops waiting (the old
+   *  read answers) and the scan saves nothing. Inside the 5 s budget another machine gives a list read. */
   private tailWarmDeadlineMs = 3_500;
   private static readonly TAIL_WARM_BLOCK_BYTES = 64 * 1024;
   /** Rounds of "read to the size seen, re-check" before a busy file is left to the old read. */
@@ -4730,41 +4728,59 @@ export class TelegramAdapter implements MessagingAdapter {
    * match and malformed-line skip, the newest TAIL_CACHE_LIMIT rows per topic in file order. The
    * scan saves only in the turn that confirms the file is still the same file with the same bytes
    * (same identity, size and change times, and a re-read whose hash matches the bytes parsed), after
-   * its handle is closed, so the caller reads the cache in that same turn. A trim that replaces the
-   * file mid-scan is followed: the rows the old read would already have held from the file before
-   * the trim are kept and the trimmed file's new lines appended, or nothing is saved. Concurrent
-   * callers share one scan. On any failure, a deadline, or a file still changing after
-   * TAIL_WARM_MAX_ROUNDS, nothing is saved and the unchanged synchronous code reads the file as
-   * before. A caller whose topics are all cached returns at once, never waiting on a scan. Resolves
-   * true when every requested topic is cached afterwards. Never throws.
+   * its handle is closed, so the caller reads the cache in that same turn. A file replaced or trimmed
+   * for any reason, any failure, the deadline, or a file still changing after TAIL_WARM_MAX_ROUNDS:
+   * nothing is saved and the unchanged synchronous code reads the file as before. One scan at a time
+   * (held until it really ends); a request waits for at most one scan and at most its own budget. A
+   * caller whose topics are all cached returns at once, never waiting. Resolves true when every
+   * requested topic is cached afterwards. Never throws.
    */
   async warmTopicTails(topicIds: Iterable<number>): Promise<boolean> {
     const ids = [...new Set(topicIds)];
     const missing = (): number[] => ids.filter((id) => !this.topicTailCache.has(id));
     if (missing().length === 0) return true;
-    for (const id of missing()) this.tailWarmPending.add(id);
-    // Pass 0 joins a scan already running (it may cover these topics); pass 1 joins or starts the
-    // scan that takes every pending topic, these included. Two passes at most.
-    for (let pass = 0; pass < 2; pass++) {
-      if (!this.tailWarm) {
-        const want = new Set([...this.tailWarmPending].filter((id) => !this.topicTailCache.has(id)));
-        this.tailWarmPending.clear();
-        if (want.size === 0) break;
-        this.tailWarmScans++;
-        const run = { abandoned: false };
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        const deadline = new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => { run.abandoned = true; resolve(false); }, this.tailWarmDeadlineMs);
-          timer.unref?.();
-        });
-        this.tailWarm = Promise.race([this.scanTailsOffTurn(want, run), deadline])
-          .finally(() => { if (timer) clearTimeout(timer); this.tailWarm = null; });
-      }
-      const done = await this.tailWarm;
-      if (missing().length === 0) return true;
-      if (!done) return false; // the scan saved nothing: the old read answers now, without a second wait
+    // Every request checks for an unfinished last line itself, before any wait, so its old read runs
+    // in its own turn, exactly when the old code would have read (also when a scan is already running).
+    if (this.logLastLineUnfinished()) return false;
+    // One wait budget per request, across everything it waits for. Past it, the old read answers.
+    const budget = new Promise<false>((resolve) => { const t = setTimeout(() => resolve(false), this.tailWarmDeadlineMs); t.unref?.(); });
+    if (this.tailWarm) {
+      // A scan is running (or stuck): wait for it within the budget, and never start a second one
+      // behind it. Topics it does not cover fall to the old read.
+      await Promise.race([this.tailWarm, budget]);
+      return missing().length === 0;
     }
+    const want = new Set(missing());
+    this.tailWarmScans++;
+    const run = { expiresAt: performance.now() + this.tailWarmDeadlineMs };
+    // The slot is held until the scan really ends, so a stuck scan can never be joined by a second.
+    this.tailWarm = this.scanTailsOffTurn(want, run).finally(() => { this.tailWarm = null; });
+    await Promise.race([this.tailWarm, budget]);
     return missing().length === 0;
+  }
+
+  /** Whether any of these topics has no cached tail yet (a list or chat would wait on a scan). */
+  hasUncachedTopicTails(topicIds: Iterable<number>): boolean {
+    for (const id of topicIds) if (!this.topicTailCache.has(id)) return true;
+    return false;
+  }
+
+  /** The log's last byte is not a newline: a writer mid-line, or a crash. Errors read as unfinished. */
+  private logLastLineUnfinished(): boolean {
+    let fd: number | null = null;
+    try {
+      if (!fs.existsSync(this.messageLogPath)) return false;
+      fd = fs.openSync(this.messageLogPath, 'r');
+      const size = fs.fstatSync(fd).size;
+      if (size === 0) return false;
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, size - 1);
+      return last[0] !== 0x0a;
+    } catch {
+      return true; // @silent-fallback-ok — an unreadable log is left to the old read, which reports it
+    } finally {
+      if (fd !== null) { try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ } }
+    }
   }
 
   /** unregisterTopic evicted this topic's tail: a scan that started earlier must not save it back. */
@@ -4772,18 +4788,8 @@ export class TelegramAdapter implements MessagingAdapter {
     this.tailEvictions.set(topicId, (this.tailEvictions.get(topicId) ?? 0) + 1);
   }
 
-  /** Two independent 32-bit hashes of a line, for matching a trimmed file's lines to the file it came from. */
-  private static lineHashes(line: string): [number, number] {
-    let a = 0x811c9dc5; let b = 0x9747b28c;
-    for (let i = 0; i < line.length; i++) {
-      const c = line.charCodeAt(i);
-      a = Math.imul(a ^ c, 0x01000193);
-      b = Math.imul(b ^ c, 0x5bd1e995); b ^= b >>> 15;
-    }
-    return [a >>> 0, b >>> 0];
-  }
-
-  private async scanTailsOffTurn(asked: Set<number>, run: { abandoned: boolean }): Promise<boolean> {
+  private async scanTailsOffTurn(asked: Set<number>, run: { expiresAt: number }): Promise<boolean> {
+    const expired = (): boolean => performance.now() > run.expiresAt;
     // The old first-miss seed fills every live topic in the same pass; so does this one, so that the
     // seed never runs later over tails this scan saved (it appends every disk row to existing tails).
     const want = new Set(asked);
@@ -4793,7 +4799,7 @@ export class TelegramAdapter implements MessagingAdapter {
     for (const id of want) { found.set(id, []); evictionsAtStart.set(id, this.tailEvictions.get(id) ?? 0); }
     const failed = (why: string): false => { console.error(`[telegram] off-turn history scan saved nothing (${why}); the old read runs`); return false; };
     const save = (): boolean => {
-      if (run.abandoned) return failed('past its deadline');
+      if (expired()) return failed('past its deadline'); // the final time check, in the saving turn
       for (const [id, tail] of found) {
         if (this.topicTailCache.has(id)) continue; // filled meanwhile by another read: keep that copy
         if ((this.tailEvictions.get(id) ?? 0) !== evictionsAtStart.get(id)) continue; // evicted meanwhile
@@ -4805,21 +4811,12 @@ export class TelegramAdapter implements MessagingAdapter {
     const logPath = this.messageLogPath;
     if (!fs.existsSync(logPath)) return save(); // no log: the old read caches [] for each topic too
     // A last line without its newline is not finished (a writer mid-line, or a crash): leave this
-    // read to the old code, now, in the caller's turn, exactly as the old read would have run.
-    try {
-      const size = fs.statSync(logPath).size;
-      if (size > 0) {
-        const fd = fs.openSync(logPath, 'r');
-        try {
-          const last = Buffer.alloc(1);
-          fs.readSync(fd, last, 0, 1, size - 1);
-          if (last[0] !== 0x0a) return failed('the last line is not finished');
-        } finally { fs.closeSync(fd); }
-      }
-    } catch (err) { return failed(String(err)); }
+    // read to the old code (each request also checks this itself before waiting).
+    if (this.logLastLineUnfinished()) return failed('the last line is not finished');
 
     // The parse below is scanLogForTopic's, applied to every wanted topic in one pass.
     const take = (line: string): void => {
+      if (!line) return;
       try {
         const entry: LogEntry = JSON.parse(line);
         const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
@@ -4829,119 +4826,63 @@ export class TelegramAdapter implements MessagingAdapter {
         if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
       } catch { /* @silent-fallback-ok — skip a malformed line, exactly as scanLogForTopic does */ }
     };
-
-    /** One file the scan reads: the log, or the file a trim renamed into its place. */
-    type Gen = {
-      identity: { dev: bigint; ino: bigint } | null; offset: number; carry: string; decoder: StringDecoder;
-      parsedHash: crypto.Hash; hashA: number[]; hashB: number[];
-      /** After a trim: the earlier file's line hashes, where its lines start in this file, and how many lines seen. */
-      prior: { hashA: number[]; hashB: number[]; from: number } | null; seen: number; mismatch: boolean;
-    };
-    const newGen = (prior: Gen | null): Gen => ({
-      identity: null, offset: 0, carry: '', decoder: new StringDecoder('utf8'), parsedHash: crypto.createHash('sha256'),
-      hashA: [], hashB: [], prior: prior ? { hashA: prior.hashA, hashB: prior.hashB, from: -1 } : null, seen: 0, mismatch: false,
-    });
-    /** A complete line of the current file: lines a trim carried over from the earlier file are matched, not counted twice. */
-    const line = (g: Gen, text: string): void => {
-      if (!text) return; // empty lines: skipped by the old read and dropped by the trim
-      const [a, b] = TelegramAdapter.lineHashes(text);
-      g.hashA.push(a); g.hashB.push(b);
-      const i = g.seen++;
-      if (g.prior) {
-        const p = g.prior;
-        if (i === 0) {
-          // The trim keeps the newest lines: find where this file's first line sits in the earlier file.
-          let at = -1;
-          for (let k = p.hashA.length - 1; k >= 0; k--) if (p.hashA[k] === a && p.hashB[k] === b) { if (at !== -1) { g.mismatch = true; return; } at = k; }
-          if (at === -1) { g.mismatch = true; return; }
-          p.from = at;
-        }
-        if (g.mismatch) return;
-        const k = p.from + i;
-        if (k < p.hashA.length) {
-          if (p.hashA[k] !== a || p.hashB[k] !== b) g.mismatch = true;
-          return; // a line the earlier file already gave
-        }
-      }
-      take(text);
-    };
+    const decoder = new StringDecoder('utf8');
+    const parsedHash = crypto.createHash('sha256');
     const block = Buffer.allocUnsafe(TelegramAdapter.TAIL_WARM_BLOCK_BYTES);
-    const sameFile = (g: Gen, s: fs.BigIntStats): boolean => g.identity !== null && s.ino === g.identity.ino && s.dev === g.identity.dev;
-    /** Read the bytes of `g` not yet parsed, up to `target`. */
-    const readTo = async (fh: fs.promises.FileHandle, g: Gen, target: number): Promise<boolean> => {
-      while (g.offset < target) {
-        if (run.abandoned) return false;
-        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, target - g.offset), g.offset);
+    let identity: { dev: bigint; ino: bigint } | null = null;
+    let offset = 0; let carry = '';
+    const sameFile = (s: fs.BigIntStats): boolean => identity !== null && s.ino === identity.ino && s.dev === identity.dev;
+    /** Read the bytes not yet parsed, up to `target`. */
+    const readTo = async (fh: fs.promises.FileHandle, target: number): Promise<boolean> => {
+      while (offset < target) {
+        if (expired()) return false;
+        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, target - offset), offset);
         if (bytesRead === 0) return false;
         const bytes = block.subarray(0, bytesRead);
-        g.parsedHash.update(bytes);
-        g.offset += bytesRead;
-        const lines = (g.carry + g.decoder.write(bytes)).split('\n');
-        g.carry = lines.pop() ?? '';
-        for (const text of lines) line(g, text);
+        parsedHash.update(bytes);
+        offset += bytesRead;
+        const lines = (carry + decoder.write(bytes)).split('\n');
+        carry = lines.pop() ?? '';
+        for (const text of lines) take(text);
       }
       return true;
     };
-    /** Re-read what was parsed of `g` and compare: a same-length rewrite of read bytes changes the hash. */
-    const verify = async (fh: fs.promises.FileHandle, g: Gen): Promise<boolean> => {
+    /** Re-read what was parsed and compare: a same-length rewrite of read bytes changes the hash. */
+    const verify = async (fh: fs.promises.FileHandle): Promise<boolean> => {
       const verifyHash = crypto.createHash('sha256');
-      for (let at = 0; at < g.offset;) {
-        if (run.abandoned) return false;
-        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, g.offset - at), at);
+      for (let at = 0; at < offset;) {
+        if (expired()) return false;
+        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, offset - at), at);
         if (bytesRead === 0) return false;
         verifyHash.update(block.subarray(0, bytesRead));
         at += bytesRead;
       }
-      return verifyHash.digest().equals(g.parsedHash.copy().digest());
+      return verifyHash.digest().equals(parsedHash.copy().digest());
     };
     const closeOk = async (fh: fs.promises.FileHandle): Promise<boolean> => {
       try { await fh.close(); return true; } catch { return false; } // @silent-fallback-ok — reported by the caller as a failed scan
     };
 
-    let gen = newGen(null);
-    let trims = 0;
-    /** Follow a trim: `gen` must be read and verified to its end. Returns false when it cannot be followed. */
-    const followTrim = (): boolean => {
-      if (gen.prior || ++trims > 1) return failed('the file was replaced twice');
-      if (gen.carry + gen.decoder.end()) return failed('the file before the trim ended mid-line');
-      gen = newGen(gen);
-      return true;
-    };
+    // A file replaced or trimmed for ANY reason (the trim renames a new file into place) ends the scan
+    // with nothing saved; the request's old read then runs on the file as it is.
     let fh: fs.promises.FileHandle | null = null;
     try {
-      for (let round = 0; round < 2 * TelegramAdapter.TAIL_WARM_MAX_ROUNDS; round++) {
-        if (run.abandoned) return failed('past its deadline');
+      for (let round = 0; round < TelegramAdapter.TAIL_WARM_MAX_ROUNDS; round++) {
+        if (expired()) return failed('past its deadline');
         if (!fh) {
           fh = await fs.promises.open(logPath, 'r');
           const opened = await fh.stat({ bigint: true });
-          if (gen.identity === null) gen.identity = { dev: opened.dev, ino: opened.ino };
-          else if (!sameFile(gen, opened)) {
-            // Replaced while no handle was open. The handle is closed only after a verified pass,
-            // so everything read was verified: follow the trim with this handle on the new file.
-            if (!followTrim()) return false;
-            gen.identity = { dev: opened.dev, ino: opened.ino };
-          }
+          if (identity === null) identity = { dev: opened.dev, ino: opened.ino };
+          else if (!sameFile(opened)) return failed('the file was replaced');
         }
         // 1. Read up to the size this handle sees now (a writer cannot keep a round going).
         const size = Number((await fh.stat({ bigint: true })).size);
-        if (size < gen.offset) return failed('the file shrank');
-        if (!await readTo(fh, gen, size)) return failed(run.abandoned ? 'past its deadline' : 'the file shrank while being read');
+        if (size < offset) return failed('the file shrank');
+        if (!await readTo(fh, size)) return failed(expired() ? 'past its deadline' : 'the file shrank while being read');
         const atEnd = fs.statSync(logPath, { bigint: true });
-        if (!sameFile(gen, atEnd)) {
-          // 1a. A trim renamed a new file into place. This handle still reads the file from before
-          //     the trim, which no longer grows: finish it, verify it, then read the new file,
-          //     counting only its lines that came after the earlier file's.
-          if (gen.prior || trims > 0) return failed('the file was replaced twice');
-          const rest = Number((await fh.stat({ bigint: true })).size);
-          if (!await readTo(fh, gen, rest)) return failed('the file before the trim could not be finished');
-          if (!await verify(fh, gen)) return failed('the file before the trim was rewritten');
-          const closing = fh; fh = null;
-          if (!await closeOk(closing)) return failed('the file could not be closed');
-          if (!followTrim()) return false;
-          continue;
-        }
-        if (atEnd.size < BigInt(gen.offset)) return failed('the file shrank');
-        if (atEnd.size > BigInt(gen.offset)) continue; // appended to while reading: read the rest next round
+        if (!sameFile(atEnd)) return failed('the file was replaced');
+        if (atEnd.size < BigInt(offset)) return failed('the file shrank');
+        if (atEnd.size > BigInt(offset)) continue; // appended to while reading: read the rest next round
         // 2. Coarse change times cannot tell two writes in the same tick apart: start the re-read
         //    only when the last change is old enough that any later write moves the change time.
         if (atEnd.ctimeNs % 1_000_000n === 0n) {
@@ -4950,19 +4891,18 @@ export class TelegramAdapter implements MessagingAdapter {
           if (age < settle) await new Promise<void>((r) => setTimeout(r, Math.min(settle, settle - age)));
         }
         // 3. Re-read what was parsed and compare.
-        if (!await verify(fh, gen)) return failed(run.abandoned ? 'past its deadline' : 'the file was rewritten');
+        if (!await verify(fh)) return failed(expired() ? 'past its deadline' : 'the file was rewritten');
         // 4. Close (a failed close counts as a failed scan), then the final check.
         const closing = fh; fh = null;
         if (!await closeOk(closing)) return failed('the file could not be closed');
         const now = fs.statSync(logPath, { bigint: true });
-        if (sameFile(gen, now) && now.size === atEnd.size && now.mtimeNs === atEnd.mtimeNs && now.ctimeNs === atEnd.ctimeNs) {
+        if (sameFile(now) && now.size === atEnd.size && now.mtimeNs === atEnd.mtimeNs && now.ctimeNs === atEnd.ctimeNs) {
           // Nothing written since step 1 (any write moves the change time): save in this turn, so the
           // waiting request reads the cache before any other I/O callback runs.
-          if (gen.carry + gen.decoder.end()) return failed('the last line is not finished');
-          if (gen.mismatch) return failed('the trimmed file does not continue the file before it');
+          if (carry + decoder.end()) return failed('the last line is not finished');
           return save();
         }
-        if (!sameFile(gen, now)) { if (!followTrim()) return false; continue; } // a trim after the check: all read was verified
+        if (!sameFile(now)) return failed('the file was replaced');
         if (now.size < atEnd.size) return failed('the file changed during the check');
         // appended to during the check: the next round reopens the file, reads the rest and checks again
       }

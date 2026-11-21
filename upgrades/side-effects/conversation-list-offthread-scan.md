@@ -69,14 +69,16 @@ it. No second store; every reader still goes through `getTopicHistory`.
   and sets the flag when it saves (tested, mutation-checked).
 - `unregisterTopic` drops a topic's cache and now counts the eviction; a scan that started earlier
   does not save that topic back (tested, mutation-checked).
-- The log trim: a scan that sees the file replaced follows the trim (keeps what it read before, adds
-  the trimmed file's lines after the overlap, located by line hashes) or saves nothing (tested,
-  mutation-checked). The trim code itself is unchanged.
-- An unfinished last line: the scan defers to the old read in the caller's turn (tested,
+- The log trim: a scan that sees the file replaced or trimmed keeps nothing; the request's old read
+  runs (tested). The trim code itself is unchanged. Known limit in the spec: a conversation whose
+  every message the trim dropped shows none, as the old code shows after any restart.
+- An unfinished last line: every request, joiners included, defers to the old read in its own turn
+  (tested, mutation-checked).
+- One 3.5 s wait budget per request, at most one scan per request, one tracked scan at a time, and a
+  final time check before saving (tested, mutation-checked). A failed close saves nothing (tested,
   mutation-checked).
-- A 3.5 s deadline keeps a stalled scan inside other machines' 5 s list budget; an abandoned scan
-  never saves (tested, mutation-checked). A failed close saves nothing (tested, mutation-checked).
-- Unread: the list's first baseline is set before the wait (tested, mutation-checked).
+- Unread: the list's first baseline moves before the wait only when the list waits (tested both
+  ways, mutation-checked).
 - Team access: the chat read re-checks the phone's access after the wait, as the old code checked it
   in the same turn as the read (tested in `team-access-guards`, mutation-checked).
 - The trim renames a new file into place; a scan in flight gives up and the next request scans the

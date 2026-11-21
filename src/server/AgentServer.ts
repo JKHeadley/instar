@@ -7141,16 +7141,16 @@ export class AgentServer {
     // An optional capability: an adapter without it (a stand-in in tests, an older build) keeps the old read.
     if (options.telegram && typeof options.telegram.warmTopicTails === 'function') {
       const tg = options.telegram;
-      routeCtx.telegramHistoryWarm = async (topicIds: number[]) => {
+      const scanOn = (): boolean => {
         const lc = options.liveConfig;
-        let on = true;
         try {
-          on = (lc?.get
+          return (lc?.get
             ? lc.get<boolean | undefined>('telegramHistoryScan.offMainThread', undefined)
             : (this.config as { telegramHistoryScan?: { offMainThread?: boolean } }).telegramHistoryScan?.offMainThread) !== false;
-        } catch { on = true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
-        if (on) await tg.warmTopicTails(topicIds);
+        } catch { return true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
       };
+      routeCtx.telegramHistoryWarm = async (topicIds: number[]) => { if (scanOn()) await tg.warmTopicTails(topicIds); };
+      routeCtx.telegramHistoryWarmNeeded = (topicIds: number[]) => scanOn() && tg.hasUncachedTopicTails(topicIds);
     }
     this.routeContext = routeCtx;
     routeCtx.blockerLifecycleService?.setMeasurementReaders({
@@ -8001,6 +8001,9 @@ export class AgentServer {
         // (docs/specs/conversation-list-offthread-scan.md); the same switch as the chat read.
         telegramWarm: routeCtx.telegramHistoryWarm
           ? async () => { await routeCtx.telegramHistoryWarm!(options.telegram!.getAllTopicMappings().map((m) => m.topicId)); }
+          : undefined,
+        telegramWarmNeeded: routeCtx.telegramHistoryWarmNeeded
+          ? () => routeCtx.telegramHistoryWarmNeeded!(options.telegram!.getAllTopicMappings().map((m) => m.topicId))
           : undefined,
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).

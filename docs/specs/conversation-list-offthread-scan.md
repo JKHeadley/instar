@@ -73,25 +73,21 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
    `tailCacheSeeded` is false the scan also fills every live topic and, on saving, sets the flag:
    from then on the cache holds exactly what the old seed would have produced.
 5. **Shared scan.** A request whose topics are all cached returns at once and never waits on a
-   scan. Otherwise its topics join a pending set; a request arriving while a scan runs waits for it,
-   and the next scan takes every pending topic together. Two scans at most per request.
-6. **A trim during the scan is followed, not dropped.** The trim (`maybeRotateLog`,
-   `MessageLogger.maybeRotate`) writes the newest lines to a new file and renames it into place.
-   The old code's request read the file before the trim and kept that tail, adding later appends
-   to it. When the scan sees the file replaced, it finishes the file it has open (which no longer
-   grows), verifies it, then reads the new file and counts only the lines after the ones it already
-   has: the new file's first line is located in the earlier file by two independent 32-bit line
-   hashes (a second identical match, no match, or any later mismatch saves nothing), and every
-   following line must match the earlier file until the earlier file ends. A second replacement saves
-   nothing. If the replacement is seen only after the handle was closed, everything read was already
-   verified, and the same follow applies.
-7. **An unfinished last line.** If the log's last byte is not a newline when a scan starts (a writer
-   mid-line, or a crash), the scan saves nothing and returns before any wait, so the request's old
-   read runs in the caller's same turn, exactly when the old code would have read. A scan that ends
-   on an unfinished line also saves nothing.
-8. **A deadline.** Every scan has a 3.5 s deadline, inside the 5 s budget another of this agent's
-   machines gives a list read. At the deadline the waiters stop waiting and the old read answers;
-   the scan stops at its next read and never saves.
+   scan. A request arriving while a scan runs waits for it (item 8).
+6. **A replaced or trimmed file.** The trim (`maybeRotateLog`, `MessageLogger.maybeRotate`) renames
+   a new file into place. If a scan sees the file replaced or trimmed for any reason, at any point,
+   it keeps nothing from that scan and the request's old read runs on the file as it is. No partial
+   result is ever saved.
+7. **An unfinished last line.** Every request, including one joining a running scan, checks the
+   log's last byte itself before any wait (on the descriptor it opened). If it is not a newline (a
+   writer mid-line, or a crash), the request does not wait and its old read runs in its own turn,
+   exactly when the old code would have read. A scan that ends on an unfinished line saves nothing.
+8. **One wait budget per request, one scan at a time.** A request waits at most 3.5 s in all (inside
+   the 5 s budget another of this agent's machines gives a list read), and for at most one scan: a
+   request that finds a scan running waits for it, and topics it does not cover fall to the old
+   read; it never starts a second scan behind it. The scan slot is held until the scan really ends,
+   so a stuck scan is never joined by another. A scan also carries its own 3.5 s expiry, checked
+   before each read and again in the turn that would save, so a late scan never saves.
 9. **Fallback.** On a read error, an open error, a replaced or shrunk file, a hash mismatch, a
    change during the check, or a file still changing after 3 rounds, nothing is saved, the error is
    logged, and the unchanged synchronous code reads the file exactly as before.
@@ -104,9 +100,10 @@ the old code fills, and every reader keeps reading through the unchanged `getTop
   example a notification tapped right after a restart) awaits `warmTopicTails([topicId])` before
   the unchanged `getTopicHistory`, and then checks the phone's access to that topic again, because
   the old code checked it in the same turn as the read and a grant may be removed during the wait.
-  The list computes its per-person visibility after the wait, as before, and sets a phone's first
-  unread baseline before the wait, as the old code set it in the same turn as admission, so a reply
-  saved during the wait stays unread. The pool form of a chat read reaches the same route on the
+  The list computes its per-person visibility after the wait, as before. When the list will actually
+  wait on a scan, a phone's first unread baseline is set before the wait, as the old code set it with
+  no wait in between, so a reply saved during the wait stays unread; when it will not wait (switched
+  off, or everything cached), the baseline is set exactly where the old code set it. The pool form of a chat read reaches the same route on the
   machine that holds the topic, so it waits there too.
 
 ### Off switch
@@ -141,6 +138,13 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
   time; on a file system with coarse times the settle wait above makes sure a write during the
   re-read lands on a later tick (up to 2 s granularity). The hash catches every rewrite made
   before the re-read starts.
+- **A trim during a cold scan.** About once per 25,000 messages the trim drops the oldest lines. If
+  it lands during a cold scan, the scan keeps nothing and the request's old read runs on the trimmed
+  file. A conversation whose every message lay in the trimmed part then shows no messages: its
+  messages are no longer in the log, so the old read finds none, and every later read (and every
+  read after a restart) finds none either. This is exactly what the old code shows for that
+  conversation after any restart; the old code differs only when its cold read happened to run in
+  the instant before the trim, keeping the dropped rows in memory until the next restart.
 - **A stalled disk.** A request with an uncached topic waits at most for the scan's 3.5 s deadline,
   then the old read runs (which a hung disk would hang, as in the old code). Requests whose topics
   are cached do not wait.
@@ -177,10 +181,12 @@ topic saved back (the eviction count), cache hits waiting on a stalled scan, an 
 finding (topics asked during a scan going to separate scans) is fixed by the pending set.
 
 A second strict review of the fixes found seven more. The five that were new differences from the
-old code are fixed in the third commit, each with a test that fails without its fix: the unread
-baseline set after the wait, a failed close, no deadline, a trim during the scan leaving a
-conversation blank (item 6), and an unfinished last line plus an append hiding both rows (item 7).
-The three that behave as the old code does are listed under Limits.
+old code were fixed in the third commit. A narrow review of those fixes found nine more, mostly in
+following a trim; the Chief of Staff ruled to remove the trim-follow (item 6) and the fourth commit
+does so, with the deadline replaced by one wait budget per request and one tracked scan with a final
+time check (item 8), the unfinished-line check made per request (item 7), and the baseline moved
+only when the list really waits. Each has a test that fails without its fix. The three findings that
+behave as the old code does are listed under Limits.
 
 ## Rollback
 

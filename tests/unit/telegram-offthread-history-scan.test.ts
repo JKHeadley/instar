@@ -92,12 +92,12 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(inner(adapter).tailWarmScans).toBe(1);
   });
 
-  it('a topic listed while a scan runs gets one more scan, not a synchronous read', async () => {
+  it('a request never waits for two scans: a topic the running scan does not cover falls to the old read', async () => {
     const first = adapter.warmTopicTails([1001]);
     const second = adapter.warmTopicTails([1001, 1003]);
     expect(await first).toBe(true);
-    expect(await second).toBe(true);
-    expect(inner(adapter).tailWarmScans).toBe(2);
+    expect(await second).toBe(false); // 1003 was not in the running scan: no second scan behind it
+    expect(inner(adapter).tailWarmScans).toBe(1);
     expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003));
   });
 
@@ -110,7 +110,7 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003));
   });
 
-  it('a file replaced mid-scan by one that does not continue the log saves nothing', async () => {
+  it('a file replaced mid-scan saves nothing', async () => {
     onRead(2, () => {
       const tmp = `${logPath}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify({ messageId: 1, topicId: 1001, text: 'after rotation', fromUser: true, timestamp: at(1), sessionName: null }) + '\n');
@@ -217,14 +217,6 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(await slow).toBe(true);
   });
 
-  it('topics asked for while a scan runs all go into the next scan together', async () => {
-    const first = adapter.warmTopicTails([1001]);
-    const others = [adapter.warmTopicTails([1003]), adapter.warmTopicTails([1004]), adapter.warmTopicTails([1003, 1005])];
-    expect(await first).toBe(true);
-    expect(await Promise.all(others)).toEqual([true, true, true]);
-    expect(inner(adapter).tailWarmScans).toBe(2);
-  });
-
   it('on coarse change times, the re-read waits until the last change is old enough to be told apart', async () => {
     const realStat = fs.statSync;
     vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, o?: fs.StatSyncOptions) => {
@@ -266,44 +258,33 @@ describe('off-main-thread history scan for the conversation list', () => {
   };
   const row = (messageId: number, topicId: number, text: string) => JSON.stringify({ messageId, topicId, text, fromUser: true, timestamp: at(messageId), sessionName: null });
 
-  it('a trim during the scan does not leave a conversation blank: the rows from before the trim are kept, and lines after it added', async () => {
-    // Topic 1003's rows are all in the part the trim drops.
-    const before = all.map((t) => oldRead(t));
-    expect(before[2].length).toBeGreaterThan(0);
-    const a1 = row(900_001, 1004, 'appended before the trim'); const a2 = row(900_002, 1005, 'appended after the trim');
+  it('a trim during a cold scan keeps nothing from that scan, so no conversation is recorded as empty by it', async () => {
+    const before = oldRead(1003);
+    expect(before.length).toBeGreaterThan(0);
     onRead(3, () => {
-      fs.appendFileSync(logPath, a1 + '\n');
-      trimLike(400); // keeps only the newest 400 lines: topic 1003's rows are gone from the file
-      fs.appendFileSync(logPath, a2 + '\n');
+      fs.appendFileSync(logPath, row(900_001, 1004, 'appended before the trim') + '\n');
+      trimLike(400); // keeps only the newest 400 lines: every row of topic 1003 is dropped from the file
     });
-    expect(await adapter.warmTopicTails(all)).toBe(true);
-    vi.restoreAllMocks();
-    expect(oldRead(1003)).toEqual([]); // a read after the trim alone would show nothing
-    // The old code read before the trim, then each later append joined the cached tail.
-    const extra: Record<number, unknown[]> = { 1004: [JSON.parse(a1)], 1005: [JSON.parse(a2)] };
-    const ids = (rows: unknown[]) => rows.map((r) => { const e = r as { messageId: number; text: string }; return `${e.messageId}:${e.text}`; });
-    all.forEach((t, i) => expect(ids(adapter.getTopicHistory(t, 500))).toEqual(ids([...before[i], ...(extra[t] ?? [])].slice(-500))));
-    all.filter((t) => !extra[t]).forEach((t) => expect(adapter.getTopicHistory(t, 500)).toEqual(before[all.indexOf(t)]));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await adapter.warmTopicTails(all)).toBe(false);
+    // Nothing from the scan was kept: no cache entry at all, empty or not, for any topic.
+    expect(inner(adapter).topicTailCache.size).toBe(0);
+    expect(inner(adapter).topicTailCache.has(1003)).toBe(false);
   });
 
-  it('a trim that lands while the final check closes the file is followed too', async () => {
-    const before = all.map((t) => oldRead(t));
+  it('a trim that lands while the final check closes the file keeps nothing either', async () => {
     const realOpen = fs.promises.open.bind(fs.promises);
     let trimmed = false;
     vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
       const fh = await realOpen(...args);
       const realClose = fh.close.bind(fh);
-      (fh as unknown as { close: () => Promise<void> }).close = async () => {
-        await realClose();
-        if (!trimmed) { trimmed = true; fs.appendFileSync(logPath, row(900_003, 1001, 'appended at the close') + '\n'); trimLike(400); }
-      };
+      (fh as unknown as { close: () => Promise<void> }).close = async () => { await realClose(); if (!trimmed) { trimmed = true; trimLike(400); } };
       return fh;
     });
-    expect(await adapter.warmTopicTails(all)).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await adapter.warmTopicTails(all)).toBe(false);
     expect(trimmed).toBe(true);
-    expect(adapter.getTopicHistory(1003, 500)).toEqual(before[2]);
-    expect(adapter.getTopicHistory(1001, 1)[0]).toMatchObject({ text: 'appended at the close' });
-    expect(adapter.getTopicHistory(1001, 500).slice(0, -1)).toEqual(before[0].slice(1));
+    expect(inner(adapter).topicTailCache.size).toBe(0);
   });
 
   it('a failed close counts as a failed scan: nothing is saved', async () => {
@@ -336,6 +317,53 @@ describe('off-main-thread history scan for the conversation list', () => {
     expect(inner(adapter).topicTailCache.size).toBe(0); // the abandoned scan saved nothing
     vi.restoreAllMocks();
     expect(adapter.getTopicHistory(1003, 500)).toEqual(oldRead(1003));
+  });
+
+  it('a scan that passes its deadline while closing saves nothing (the final time check)', async () => {
+    (adapter as unknown as { tailWarmDeadlineMs: number }).tailWarmDeadlineMs = 400;
+    const realOpen = fs.promises.open.bind(fs.promises);
+    let closed!: () => void;
+    const closeDone = new Promise<void>((r) => { closed = r; });
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const fh = await realOpen(...args);
+      const realClose = fh.close.bind(fh);
+      (fh as unknown as { close: () => Promise<void> }).close = async () => { await new Promise((r) => setTimeout(r, 600)); await realClose(); setTimeout(closed, 20); };
+      return fh;
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await adapter.warmTopicTails([1003])).toBe(false); // the request's budget ran out first
+    await closeDone;
+    expect(inner(adapter).topicTailCache.size).toBe(0); // and the scan, finishing late, saved nothing
+  });
+
+  it('a stuck scan is never joined by a second: later requests wait their budget, then the old read', async () => {
+    (adapter as unknown as { tailWarmDeadlineMs: number }).tailWarmDeadlineMs = 200;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    onRead(2, () => gate);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await adapter.warmTopicTails([1001])).toBe(false);
+    expect(await adapter.warmTopicTails([1003])).toBe(false);
+    expect(await adapter.warmTopicTails([1004])).toBe(false);
+    expect(inner(adapter).tailWarmScans).toBe(1); // no pile-up behind the stuck scan
+    release();
+  });
+
+  it('a request joining a running scan checks for an unfinished last line itself, and does not wait', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    onRead(2, () => gate);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const first = adapter.warmTopicTails([1001]);
+    await new Promise((r) => setTimeout(r, 30)); // the scan is now waiting at its second read
+    fs.appendFileSync(logPath, row(920_001, 1003, 'half written')); // no newline
+    let joinedDone = false;
+    const joined = adapter.warmTopicTails([1001]).then((v) => { joinedDone = true; return v; });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(joinedDone).toBe(true);
+    expect(await joined).toBe(false);
+    release();
+    await first;
   });
 
   it('a log whose last line is unfinished is left to the old read at once, so an append during the wait hides nothing', async () => {
