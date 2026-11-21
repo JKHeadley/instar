@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "slug": "agent-work-cards-slice2",
+  "sessionId": "61e5c2a0-e245-4cf7-92a9-e660c912a3ec",
+  "timestamp": "2026-11-21T10:29:01.911Z",
+  "artifactPath": "upgrades/side-effects/agent-work-cards-slice2.md",
+  "artifactSha256": "179271c02d1e90b8f25fbca206a7aa13e937752e499b630fbaa7d235926512f8",
+  "specPath": "docs/specs/agent-work-cards-default.md",
+  "coveredFiles": [
+    "src/core/WorkBoardPickupController.ts",
+    "src/core/WorkBoardRuntime.ts",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "src/data/awareness/agent-work-cards-owners-blockers.md",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/memorySessionGuard.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/routes.ts",
+    "src/server/workBoardRoutes.ts",
+    "src/server/workBoardTeamSeams.ts",
+    "tests/e2e/agent-work-cards-owners-blockers-alive.test.ts",
+    "tests/integration/agent-work-cards-owners-blockers-routes.test.ts",
+    "tests/integration/work-board-routes.test.ts",
+    "tests/unit/WorkBoardService.test.ts",
+    "tests/unit/agent-work-cards-owners-blockers.test.ts",
+    "tests/unit/work-board-cards-appear.test.ts",
+    "tests/unit/work-board-team-seams.test.ts",
+    "tests/unit/work-board-wiring.test.ts",
+    "upgrades/next/agent-work-cards-slice2.md",
+    "upgrades/side-effects/agent-work-cards-slice2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Approval and visibility surfaces across the team (who may pass or close a card, who sees it), a self-triggered holder reconciliation and four new replicated record kinds: converged + approved spec, second-pass review required and concurred",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

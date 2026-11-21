@@ -150,7 +150,10 @@ export const BINDING_REF_PATTERN = /^[0-9]{1,16}\.[0-9]{1,10}\.[A-Za-z0-9_-]{1,6
 export const MAX_PROJECT_NOTE_CHARS = 4096;
 
 /** The fields one work-card tap binds to; the title enters the signature only through its hash. */
-export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }
+export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string; /** agent-work-cards-default §8: a `pass` names who the card goes to ("agent", "owner" or a member's personKey). */ to?: string }
+/** The one phone action on a work card that is not a tap record: a pass (a `carrier` edit by the carrier or the owner; §8). */
+const PASS_ACTION = 'pass';
+const PASS_TO_RE = /^(agent|owner|[A-Za-z0-9_.:@-]{1,128})$/;
 
 export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
@@ -224,8 +227,13 @@ export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: u
   // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
   if (kind === 'work-card-tap') {
     if (!isCardId(target)) return { ok: false, error: 'bad-target' };
-    if (typeof extra.tapAction !== 'string' || !(TAP_ACTIONS as ReadonlyArray<string>).includes(extra.tapAction)) return { ok: false, error: 'bad-tap-action' };
+    if (typeof extra.tapAction !== 'string' || !((TAP_ACTIONS as ReadonlyArray<string>).includes(extra.tapAction) || extra.tapAction === PASS_ACTION)) return { ok: false, error: 'bad-tap-action' };
     const tap: WorkCardTapFields = { action: extra.tapAction };
+    // A pass (§8) names its new carrier on the signed line; `to` on any other action is refused before a challenge is spent.
+    if (!absent(extra.to) || extra.tapAction === PASS_ACTION) {
+      if (extra.tapAction !== PASS_ACTION || typeof extra.to !== 'string' || !PASS_TO_RE.test(extra.to)) return { ok: false, error: 'bad-pass-to' };
+      tap.to = extra.to;
+    }
     const hex = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
     if (!absent(extra.materialHash)) { if (!hex(extra.materialHash)) return { ok: false, error: 'bad-material-hash' }; tap.materialHash = extra.materialHash; }
     if (!absent(extra.titleHash)) { if (!hex(extra.titleHash)) return { ok: false, error: 'bad-title-hash' }; tap.titleHash = extra.titleHash; }

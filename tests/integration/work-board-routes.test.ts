@@ -65,7 +65,9 @@ function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | n
       return { outcome: 'emitted', seq: journal.length, hlc };
     },
     loadUnion: () => journal, now: () => clock, settings: () => settings, ownerPersonKey: () => 'justin',
-    detectCredential: () => null, dayOf: (ms) => ({ day: new Date(ms).toISOString().slice(0, 10), resetsAt: '' }), displayName: (k) => (k === 'justin' ? 'Justin' : k),
+    detectCredential: () => null, dayOf: (ms) => ({ day: new Date(ms).toISOString().slice(0, 10), resetsAt: '' }), displayName: (k) => (k === 'justin' ? 'Justin' : k === 'adriana' ? 'Adriana' : k),
+    // agent-work-cards-default §8: Adriana is on the team (a member), nobody else; no conversation grant is readable here.
+    teamMember: (k) => (k === 'justin' ? 'owner' : k === 'adriana' ? 'member' : 'not-a-member'), personMayRead: () => false,
   });
   const sessions = new Map<string, { sessionId: string; audience: never; placeKey: string | null }>();
   const requirePin = createMandatePinCheck({ dashboardPin: () => PIN });
@@ -82,7 +84,7 @@ function setup(opts: { testCaller?: (req: express.Request) => ResolvedCaller | n
     },
     ownerPersonKey: () => 'justin',
     requirePin: (req, res, message) => requirePin(req, res, { message }),
-    displayName: (k) => (k === 'justin' ? 'Justin' : k),
+    displayName: (k) => (k === 'justin' ? 'Justin' : k === 'adriana' ? 'Adriana' : k),
     appendLine: async (_ck, _id, text) => { lines.push(text); },
     ensureConversation: async () => {}, removeConversation: async (ck) => { removed.push(ck); },
     behind: () => null, lastWrittenOn: () => null, repliedAfterQuestion: () => false, brokenAttachments: () => [], when: (iso) => iso,
@@ -410,5 +412,56 @@ describe('Work Board routes — cards appear (docs/specs/work-board-cards-appear
     expect(claim.status).toBe(409);
     const hold = await request(c.app).post('/work-board/cards/wc_00000000000000cc/tap').set(bearer()).send({ action: 'hold', pin: PIN });
     expect(hold.status).toBe(200);
+  });
+});
+
+describe('card owners from the phone (agent-work-cards-default §8)', () => {
+  async function challengeAndTap(c: ReturnType<typeof setup>, phone: Phone, cardId: string, fields: Record<string, string>) {
+    const ch = await send(c.app, phone, 'POST', '/mobile/permissions/challenge', { action: 'work-card-tap', target: cardId, tapAction: fields.action, ...Object.fromEntries(Object.entries(fields).filter(([k]) => k !== 'action')) });
+    if (ch.status !== 200) return ch;
+    const line = tapActionLine({ cardId, ...fields } as Parameters<typeof tapActionLine>[0]);
+    const presenceSig = phone.presence.sign(permissionPresenceMessage(phone.id, HOST, ch.body.challenge, line));
+    return send(c.app, phone, 'POST', `/mobile/work-board/cards/${cardId}/tap`, { ...fields, challenge: ch.body.challenge, presenceSig });
+  }
+
+  it('the owner\'s phone passes a card to a member over the signed line; the member then sees it in its own Waiting on you, and sees a blocker only as "a card you cannot see"', async () => {
+    // The member's reads go through the device principal (as the visibility test does); the owner's pass is a real phone's signed tap.
+    const c = setup({ testCaller: (req) => (req.headers['x-test-person'] === 'adriana' ? { kind: 'device', personKey: 'adriana', isOwner: false, mayRead: () => false } : null) });
+    const owner = c.pair(); const card = agentCard(c.svc, { carrier: 'agent' });
+    const h = { ...bearer(), 'x-test-person': 'adriana' };
+    // Before the pass the member cannot see the card at all.
+    expect((await request(c.app).get(`/work-board/cards/${card.id}`).set(h)).status).toBe(404);
+    // `to` is on the signed line: a signature over a different recipient is refused.
+    const wrong = await (async () => {
+      const ch = await send(c.app, owner, 'POST', '/mobile/permissions/challenge', { action: 'work-card-tap', target: card.id, tapAction: 'pass', to: 'adriana', titleHash: card.titleHash });
+      const line = tapActionLine({ cardId: card.id, action: 'pass', to: 'bob', titleHash: card.titleHash });
+      return send(c.app, owner, 'POST', `/mobile/work-board/cards/${card.id}/tap`, { action: 'pass', to: 'adriana', titleHash: card.titleHash, challenge: ch.body.challenge, presenceSig: owner.presence.sign(permissionPresenceMessage(owner.id, HOST, ch.body.challenge, line)) });
+    })();
+    expect(wrong.status).toBe(401); expect(wrong.body.error).toBe('presence-invalid');
+    expect((await challengeAndTap(c, owner, card.id, { action: 'pass', to: 'zed', titleHash: card.titleHash })).body.error).toBe('not-a-team-member');
+    const r = await challengeAndTap(c, owner, card.id, { action: 'pass', to: 'adriana', titleHash: card.titleHash });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.card).toMatchObject({ status: 'with-person', carrier: { personKey: 'adriana', name: 'Adriana' }, lane: 'waiting-on-others' });
+    expect(c.lines.filter((l) => l.startsWith('Work board: passed to Adriana by Justin'))).toHaveLength(1);
+    // The member sees the card as its carrier (no conversation grant exists): their own lane, their own view, no source or project.
+    const mine = await request(c.app).get(`/work-board/cards/${card.id}`).set(h);
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    expect(mine.body.card).toMatchObject({ lane: 'waiting-on-you', needLine: 'Yours to do', carrierName: 'Adriana', turn: 'you' });
+    expect(mine.body.card.source).toBeUndefined(); expect(mine.body.card.projectKey).toBeUndefined();
+    const board = await request(c.app).get('/work-board').set(h);
+    expect(board.body.lanes.find((l: { lane: string }) => l.lane === 'waiting-on-you').cards.map((x: { id: string }) => x.id)).toEqual([card.id]);
+    // A blocker the member may not read is never named to them; the owner reads its title.
+    const secret = agentCard(c.svc, { title: 'Board salaries review' });
+    expect(c.svc.addBlockedBy({ kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true }, card.id, { blockerCardId: secret.id }).ok).toBe(true);
+    const blocked = await request(c.app).get(`/work-board/cards/${card.id}`).set(h);
+    expect(blocked.body.card).toMatchObject({ status: 'blocked', blockedWords: 'Blocked by a card you cannot see', lane: 'waiting-on-others' });
+    expect(JSON.stringify(blocked.body)).not.toContain('salaries'); expect(JSON.stringify(blocked.body)).not.toContain(secret.id);
+    expect((await request(c.app).get(`/work-board/cards/${secret.id}`).set(h)).status).toBe(404);
+    const ownerView = await request(c.app).get(`/work-board/cards/${card.id}`).set(bearer());
+    expect(ownerView.body.card.blockedWords).toBe('Blocked by: Board salaries review');
+    // A member's phone still cannot tap through the owner-only phone gate (the member write path is a later slice).
+    const member = c.pair({ userId: 'adriana', role: 'team' });
+    const ch = await send(c.app, member, 'POST', '/mobile/permissions/challenge', { action: 'work-card-tap', target: card.id, tapAction: 'pass', to: 'justin', titleHash: card.titleHash });
+    expect(ch.status).toBe(403);
   });
 });

@@ -28,6 +28,12 @@
  *   hold-lifted   the pickup hold on a gate-written card was lifted (system only; §3); key `wc:<id>:hl:once`
  *   quiet-repickup the one automatic re-pickup of a quiet card (system only; §3); key `wc:<id>:qr:<newest agent record hash>`
  *   enabled-at    the request-to-card gate's first run for a team (system only, non-card; §3); key `wb-request-cards:enabled-at:<teamKey>`
+ *   blocked-by    this card is blocked by another (agent-work-cards-default §9; agent or person with write authority on
+ *                 THIS card); key `wc:<id>:bb:<hash of blocker + episode>`
+ *   unblocked     one `blocked-by` link ends: a writer's `cleared`, or the holder's `blocker-done | blocker-archived |
+ *                 blocker-removed | cycle` (ids and the reason only); key `wc:<id>:u:<blockedByRecordId>`
+ *   blocker-reopened a finished blocker was reopened; nothing re-blocks (system only; §9); key `wc:<id>:br:<hash of the reopen record>`
+ *   carrier-departed the card's person carrier left the team (system only; §8); key `wc:<id>:cd:<carrierEditRecordId>`
  *
  * This module is PURE: schema, builders and folds. No I/O.
  */
@@ -48,12 +54,23 @@ export function workBoardEnabled(config: { developmentAgent?: boolean; workBoard
   return resolveDevAgentGate(config?.workBoard?.enabled, config);
 }
 
-export const WORK_RECORD_TYPES = ['created', 'edited', 'waiting-on', 'tap', 'evidence', 'claimed-done', 'dispatching', 'dispatched', 'policy', 'graduation', 'note', 'hold-lifted', 'quiet-repickup', 'enabled-at'] as const;
+export const WORK_RECORD_TYPES = ['created', 'edited', 'waiting-on', 'tap', 'evidence', 'claimed-done', 'dispatching', 'dispatched', 'policy', 'graduation', 'note', 'hold-lifted', 'quiet-repickup', 'enabled-at', 'blocked-by', 'unblocked', 'blocker-reopened', 'carrier-departed'] as const;
 export type WorkRecordType = typeof WORK_RECORD_TYPES[number];
 /** Record kinds that name no card (board-level). */
 export const NON_CARD_RECORD_TYPES: ReadonlySet<string> = new Set(['policy', 'graduation', 'enabled-at']);
-/** System-written record kinds the lease holder's runtime writes (never a route). */
-export type SystemRecordType = 'dispatching' | 'dispatched' | 'note' | 'hold-lifted' | 'quiet-repickup' | 'enabled-at';
+/** System-written record kinds the lease holder's runtime writes (never a route). `unblocked` is also a writer's (`cleared`). */
+export type SystemRecordType = 'dispatching' | 'dispatched' | 'note' | 'hold-lifted' | 'quiet-repickup' | 'enabled-at' | 'unblocked' | 'blocker-reopened' | 'carrier-departed';
+
+/** Why a `blocked-by` link ended (agent-work-cards-default §9). A writer may say only `cleared`; the holder says the rest. */
+export const UNBLOCK_REASONS = ['cleared', 'blocker-done', 'blocker-archived', 'blocker-removed', 'cycle'] as const;
+export type UnblockReason = typeof UNBLOCK_REASONS[number];
+export const SYSTEM_UNBLOCK_REASONS: ReadonlySet<string> = new Set(['blocker-done', 'blocker-archived', 'blocker-removed', 'cycle']);
+/** The `askKey` of the asks operation (§9): a caller-chosen key, so a retry derives the same ask id. */
+export const ASK_KEY_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+/** The ask a parent card gets for an `askKey`: `wc_` + the first sixteen hex of sha256(parentId + ':' + askKey). */
+export function askCardId(parentId: string, askKey: string): string {
+  return `wc_${createHash('sha256').update(`${parentId}:${askKey}`).digest('hex').slice(0, 16)}`;
+}
 
 export const MATERIAL_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links'] as const;
 export type MaterialField = typeof MATERIAL_FIELDS[number];
@@ -361,6 +378,8 @@ const KNOWN_FIELDS = [
   'day', 'decision', 'metrics',
   // agent-work-cards-default: request-to-card fields, notes, holds, re-pickups and the gate's first run.
   'refs', 'requester', 'requestTextHash', 'recordedAsHash', 'pickupHold', 'eventId', 'eventIds', 'writerBinding', 'teamKey', 'newestAgentRecordId',
+  // agent-work-cards-default §8/§9: blocker links (ids and reasons only; words are resolved at read) and the departed carrier.
+  'blockerCardId', 'blockedByRecordId', 'closedByPerson', 'carrierEditRecordId',
 ] as const;
 
 export const workCardRecordStoreSchema: StoreFieldSchema = {
@@ -428,6 +447,31 @@ export const workCardRecordStoreSchema: StoreFieldSchema = {
         if (by.kind !== 'system') return null;
         if (!isRecordId(r.newestAgentRecordId)) return null;
         return { ...base, newestAgentRecordId: r.newestAgentRecordId };
+      }
+      case 'blocked-by': {
+        // §9: written by a principal with write authority on THIS card (never the system); a card never blocks itself.
+        if (by.kind === 'system') return null;
+        if (!isCardId(r.blockerCardId) || r.blockerCardId === r.cardId) return null;
+        if (r.note !== undefined && !isStr(r.note, SCHEMA_MAX.noteText)) return null;
+        return { ...base, blockerCardId: r.blockerCardId, ...(r.note !== undefined ? { note: r.note } : {}) };
+      }
+      case 'unblocked': {
+        // Ends exactly one link on this card. A writer says only `cleared`; the holder's reasons are its own.
+        if (!isRecordId(r.blockedByRecordId) || !String(r.blockedByRecordId).startsWith(`wc:${String(r.cardId)}:bb:`)) return null;
+        if (typeof r.reason !== 'string' || !(UNBLOCK_REASONS as ReadonlyArray<string>).includes(r.reason)) return null;
+        if (by.kind === 'system' ? r.reason === 'cleared' : r.reason !== 'cleared') return null;
+        if (r.closedByPerson !== undefined && typeof r.closedByPerson !== 'boolean') return null;
+        return { ...base, blockedByRecordId: r.blockedByRecordId, reason: r.reason, ...(typeof r.closedByPerson === 'boolean' ? { closedByPerson: r.closedByPerson } : {}) };
+      }
+      case 'blocker-reopened': {
+        if (by.kind !== 'system') return null;
+        if (!isCardId(r.blockerCardId) || !isRecordId(r.for)) return null;
+        return { ...base, blockerCardId: r.blockerCardId, for: r.for };
+      }
+      case 'carrier-departed': {
+        if (by.kind !== 'system') return null;
+        if (!isRecordId(r.carrierEditRecordId) || !String(r.carrierEditRecordId).startsWith(`wc:${String(r.cardId)}:`)) return null;
+        return { ...base, carrierEditRecordId: r.carrierEditRecordId };
       }
       case 'edited': {
         if (by.kind === 'system') return null;
@@ -526,9 +570,18 @@ export type Build = (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp)
  * before it ticks the clock, for its witness read); `created` is fixed per card, and the
  * pickup controller's records are derived from the cause and attempt so a repeat is a no-op.
  */
-export function mintRecordKey(recordType: WorkRecordType, cardId: string | null, extra?: { for?: string; attempt?: number; outcome?: string; eventId?: string; teamKey?: string; newestAgentRecordId?: string }): string {
+export function mintRecordKey(recordType: WorkRecordType, cardId: string | null, extra?: { for?: string; attempt?: number; outcome?: string; eventId?: string; teamKey?: string; newestAgentRecordId?: string; blockerCardId?: string; episode?: number; blockedByRecordId?: string; carrierEditRecordId?: string }): string {
   const rnd = randomBytes(8).toString('hex');
   switch (recordType) {
+    // One link per blocker per episode (§9): a retry of the same link is one record; a second blocking episode after an
+    // `unblocked` is a new key.
+    case 'blocked-by': return `wc:${cardId}:bb:${shortId(`${extra?.blockerCardId ?? rnd}:${extra?.episode ?? 0}`)}`;
+    // Bound to the one link it ends: the writer's `cleared` and the holder's reason share the key, so a link ends once.
+    case 'unblocked': return `wc:${cardId}:u:${extra?.blockedByRecordId ?? rnd}`;
+    // One record per reopen of the blocker (the reopen tap's id).
+    case 'blocker-reopened': return `wc:${cardId}:br:${shortId(extra?.for ?? rnd)}`;
+    // One per carrier assignment (§8): a later carrier's departure is a new record.
+    case 'carrier-departed': return `wc:${cardId}:cd:${extra?.carrierEditRecordId ?? rnd}`;
     case 'policy': return `wb-policy:${rnd}`;
     case 'graduation': return `wb-graduation:day${extra?.attempt ?? 7}`;
     case 'enabled-at': return `wb-request-cards:enabled-at:${(extra?.teamKey ?? 'team').replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 120)}`;
@@ -553,7 +606,7 @@ function shortId(id: string): string { return createHash('sha256').update(id).di
 
 /** Builder for the emitter: (hlc, origin, observed) → envelope data. */
 export function buildRecord(recordType: WorkRecordType, cardId: string | null, fields: Record<string, unknown>, recordKey?: string): Build {
-  const key = recordKey ?? mintRecordKey(recordType, cardId, { for: fields.for as string | undefined, attempt: fields.attempt as number | undefined, outcome: fields.outcome as string | undefined, eventId: fields.eventId as string | undefined, teamKey: fields.teamKey as string | undefined, newestAgentRecordId: fields.newestAgentRecordId as string | undefined });
+  const key = recordKey ?? mintRecordKey(recordType, cardId, { for: fields.for as string | undefined, attempt: fields.attempt as number | undefined, outcome: fields.outcome as string | undefined, eventId: fields.eventId as string | undefined, teamKey: fields.teamKey as string | undefined, newestAgentRecordId: fields.newestAgentRecordId as string | undefined, blockerCardId: fields.blockerCardId as string | undefined, blockedByRecordId: fields.blockedByRecordId as string | undefined, carrierEditRecordId: fields.carrierEditRecordId as string | undefined });
   return (hlc, origin, observed) => {
     if (!NON_CARD_RECORD_TYPES.has(recordType) && !isCardId(cardId)) return null;
     return { ...fields, recordType, ...(cardId ? { cardId } : {}), recordKey: key, hlc, op: 'put', origin, ...(observed ? { observed } : {}) };
@@ -580,15 +633,16 @@ export function materialHashOf(m: MaterialFields): string {
 export function sameValue(a: unknown, b: unknown): boolean { return canonicalJson(a) === canonicalJson(b); }
 
 /** The closed set of fields a phone presence signature covers (§4). */
-export function tapActionLine(t: { action: string; cardId: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }): string {
-  // `closeAs` and `note` enter the digest only when present, so every line an existing app signs is unchanged.
+export function tapActionLine(t: { action: string; cardId: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string; to?: string }): string {
+  // `closeAs`, `note` and `to` enter the digest only when present, so every line an existing app signs is unchanged.
   const close = t.closeAs !== undefined || t.note !== undefined ? { closeAs: t.closeAs ?? null, note: t.note ?? null } : {};
+  const pass = t.to !== undefined ? { to: t.to } : {};
   const digest = sha256Hex(canonicalJson({
     action: t.action, cardId: t.cardId, materialHash: t.materialHash ?? null, questionId: t.questionId ?? null,
     answer: t.answer ?? null, claimId: t.claimId ?? null, retryOf: t.retryOf ?? null, names: t.names ?? null, titleHash: t.titleHash ?? null,
-    ...close,
+    ...close, ...pass,
   }));
-  const label = t.closeAs === 'done' ? 'close as done' : t.closeAs === 'not-important' ? 'close as not important' : t.action;
+  const label = t.closeAs === 'done' ? 'close as done' : t.closeAs === 'not-important' ? 'close as not important' : t.action === 'pass' ? `pass to ${t.to ?? '?'}` : t.action;
   return `Work card ${t.cardId}: ${label} [${digest}]`;
 }
 
@@ -599,8 +653,11 @@ export interface UnionEntry { data: Record<string, unknown>; origin: string }
 /** A record as the fold sees it: validated, with its record id (= record key) and HLC. */
 export interface FoldRecord { id: string; hlc: HlcTimestamp; origin: string; d: Record<string, unknown> }
 
-export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-approval' | 'not-started' | 'claims-done' | 'done' | 'parked'
+export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-approval' | 'not-started' | 'claims-done' | 'done' | 'carrier-departed' | 'blocked' | 'parked'
   | 'waiting-on-person' | 'with-person' | 'quiet' | 'with-agent';
+
+/** One `blocked-by` link as the fold sees it (§9): ids only; the blocker's words are resolved at read under the viewer's access. */
+export interface BlockedByState { id: string; blockerCardId: string; note?: string; at: string; by: By; unblocked: { id: string; reason: UnblockReason; at: string; closedByPerson?: boolean } | null }
 
 export interface QuestionState { id: string; text: string; options?: string[]; principal: Principal; state: 'open' | 'answered' | 'replaced'; replacedBy?: string; reason?: string; answer?: string; answeredBy?: string; at: string }
 export interface EvidenceState { id: string; itemId: string; text: string; attachmentIds?: string[]; materialHash: string; reopens: string[]; at: string; by: By; counts: boolean }
@@ -636,7 +693,8 @@ export interface CardFold {
   waitingOn: Principal;
   materialHash: string;
   lastWriter: Record<MaterialField, 'person' | 'agent'>;
-  carrierTrail: Array<{ carrier: Carrier; by: By; at: string }>;
+  /** Every carrier the card has had, with the record that set it (`id`: the `created` or `edited` record). */
+  carrierTrail: Array<{ carrier: Carrier; by: By; at: string; id: string }>;
   questions: QuestionState[];
   openQuestion: QuestionState | null;
   evidence: EvidenceState[];
@@ -700,6 +758,18 @@ export interface CardFold {
   quietRepickups: Array<{ id: string; newestAgentRecordId: string; at: string }>;
   /** The `hold-lifted` record, when one exists. */
   holdLifted: { id: string; reason: HoldLiftReason; at: string } | null;
+  // ── agent-work-cards-default §8/§9 ──
+  /** Every `blocked-by` link in fold order, each with the `unblocked` that ended it (null while open). */
+  blockedBy: BlockedByState[];
+  /** The blocker card ids of the open links (deduplicated). `blocked` = at least one. */
+  openBlockers: string[];
+  blocked: boolean;
+  /** `blocker-reopened` records in fold order: a former blocker was reopened; nothing re-blocked. */
+  blockerReopened: Array<{ id: string; blockerCardId: string; at: string }>;
+  /** The `carrier-departed` record naming the NEWEST carrier edit, so it ends by itself when the owner passes the card. */
+  carrierDeparted: { id: string; carrierEditRecordId: string; at: string } | null;
+  /** A non-owner person wrote `carrier` at some point (§8): a request approval never covers a card a member passed. */
+  memberPassed: boolean;
 }
 
 const EMPTY_LAST_WRITER = (): Record<MaterialField, 'person' | 'agent'> => ({ title: 'agent', need: 'agent', doneWhen: 'agent', carrier: 'agent', outward: 'agent', links: 'agent' });
@@ -750,7 +820,11 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
     unknown: [], newestRecordAt: 0, newestAgentRecordAt: 0, newestAgentRecordId: null, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
     refs: [], requester: null, requestTextHash: null, recordedAsHash: null, pickupHold: null, pickupHeld: false, needLockedToRequest: false, requestApproved: false,
     recordedInAgentWords: false, changedSinceAsked: false, agentWork: false, notes: [], quietRepickups: [], holdLifted: null,
+    blockedBy: [], openBlockers: [], blocked: false, blockerReopened: [], carrierDeparted: null, memberPassed: false,
   };
+  /** A non-owner person's record (§8): only `carrier` (a pass), a `done` close as the current carrier and an answer to their own question count. */
+  const memberWrite = (b: By): boolean => byIsPerson(b) && b.isOwner === false;
+  const departed: Array<{ id: string; carrierEditRecordId: string; at: string }> = [];
   const validate = workCardRecordStoreSchema.validate;
   const ctx: StoreValidateContext = { countDroppedField: () => { /* counted by the envelope layer */ } } as unknown as StoreValidateContext;
   // Approval bookkeeping (fold order index of each relevant record).
@@ -763,6 +837,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   const titlesSeen: string[] = [];
   const evidenceIdx = new Map<string, number>(); const claimIdx = new Map<string, number>();
   const confirms: Array<{ tap: TapState; idx: number; reopens: string[] }> = [];
+  const pendingUnblocks: Array<{ id: string; blockedByRecordId: string; reason: UnblockReason; at: string; closedByPerson?: boolean }> = [];
   let idx = -1;
   // A card's `created` record is folded first whatever its clock: a fixed-id card's `created` written
   // again in a lease race (before the first replicated) takes the newer clock under its one key, and must
@@ -804,15 +879,20 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         f.needLockedToRequest = !!(f.requester?.isOwner && f.requestTextHash);
         const w = byIsPerson(by) ? 'person' : 'agent';
         for (const k of MATERIAL_FIELDS) f.lastWriter[k] = w;
-        f.carrierTrail.push({ carrier: f.carrier, by, at });
+        f.carrierTrail.push({ carrier: f.carrier, by, at, id: rec.id });
         f.lastMaterialIdx = idx; // creation is the first material write
         break;
       }
       case 'edited': {
         if (!f.created) { f.unknown.push(rec.id); break; }
+        // A member's edit is a pass and nothing else (§8): any other field on it is dropped here, the route having refused it.
+        const member = memberWrite(by);
         const changed: string[] = [];
         for (const k of EDITABLE_FIELDS) {
           if (v[k] === undefined) continue;
+          if (member && k !== 'carrier') continue;
+          // A member's pass counts only as the carrier at that position (the fold is the authority over another machine's record).
+          if (member && k === 'carrier' && !(typeof f.carrier === 'object' && f.carrier.personKey === (by as { personKey: string }).personKey)) continue;
           // A locked `need` never moves, whichever machine's record says so (the route refuses; the fold is the authority).
           if (k === 'need' && f.needLockedToRequest) continue;
           const cur = (f as unknown as Record<string, unknown>)[k];
@@ -820,14 +900,43 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
           (f as unknown as Record<string, unknown>)[k] = v[k];
           if ((MATERIAL_FIELDS as ReadonlyArray<string>).includes(k)) {
             changed.push(k);
-            f.lastWriter[k as MaterialField] = byIsPerson(by) ? 'person' : 'agent';
+            // A `carrier` a non-owner person wrote counts as agent-written for approval (§8): the owner never tapped it.
+            f.lastWriter[k as MaterialField] = byIsPerson(by) && !(member && k === 'carrier') ? 'person' : 'agent';
           }
         }
         if (v.title !== undefined && titlesSeen[titlesSeen.length - 1] !== f.title) titlesSeen.push(f.title);
-        if (v.carrier !== undefined && changed.includes('carrier')) f.carrierTrail.push({ carrier: f.carrier, by, at });
+        if (v.carrier !== undefined && changed.includes('carrier')) {
+          f.carrierTrail.push({ carrier: f.carrier, by, at, id: rec.id });
+          // §8: a request approval never covers a card a member passed, even once it is back with the agent.
+          if (member) f.memberPassed = true;
+        }
         if (changed.length) { f.lastMaterialIdx = idx; f.lastMaterialChangeFields = changed; }
         // "changed since asked" (§1): a deterministic label on a request-approved card, never a judgment of meaning.
         if (!byIsPerson(by) && (changed.includes('title') || changed.includes('doneWhen'))) f.changedSinceAsked = true;
+        break;
+      }
+      case 'blocked-by': {
+        if (!f.created) break;
+        f.blockedBy.push({ id: rec.id, blockerCardId: String(v.blockerCardId), ...(typeof v.note === 'string' ? { note: v.note } : {}), at, by, unblocked: null });
+        break;
+      }
+      case 'unblocked': {
+        if (!f.created) break;
+        const link = f.blockedBy.find((b) => b.id === v.blockedByRecordId);
+        // An `unblocked` that arrives before its link (another machine's order) binds when the link folds: both are kept
+        // by id, so the second pass below resolves it; here it binds only an already-folded link.
+        if (link && !link.unblocked) link.unblocked = { id: rec.id, reason: v.reason as UnblockReason, at, ...(typeof v.closedByPerson === 'boolean' ? { closedByPerson: v.closedByPerson } : {}) };
+        else if (!link) pendingUnblocks.push({ id: rec.id, blockedByRecordId: String(v.blockedByRecordId), reason: v.reason as UnblockReason, at, closedByPerson: v.closedByPerson as boolean | undefined });
+        break;
+      }
+      case 'blocker-reopened': {
+        if (!f.created) break;
+        f.blockerReopened.push({ id: rec.id, blockerCardId: String(v.blockerCardId), at });
+        break;
+      }
+      case 'carrier-departed': {
+        if (!f.created) break;
+        departed.push({ id: rec.id, carrierEditRecordId: String(v.carrierEditRecordId), at });
         break;
       }
       case 'note': {
@@ -866,6 +975,16 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
           ...(v.retryOf ? { retryOf: v.retryOf as string } : {}), ...(v.names ? { names: v.names as string } : {}),
           ...(v.closeAs ? { closeAs: v.closeAs as CloseAs, note: v.note as string } : {}), ...(v.titleHash ? { titleHash: v.titleHash as string } : {}) };
         f.taps.push(t);
+        // A member's tap (§8) is counted only as `done` by the CURRENT carrier bound to the material hash (so a tap after
+        // a reassignment is nothing), or as the answer to a question addressed to them. Every other tap is the owner's.
+        if (memberWrite(by)) {
+          const me = (by as { personKey: string }).personKey;
+          const carrierIsMe = typeof f.carrier === 'object' && f.carrier.personKey === me;
+          const okClose = t.action === 'archive' && t.closeAs === 'done' && carrierIsMe && !!t.materialHash && t.materialHash === (f.created ? materialHashOf(f) : '');
+          const q = t.action === 'answer' ? f.questions.find((x) => x.id === t.questionId) : undefined;
+          const okAnswer = !!q && typeof q.principal === 'object' && q.principal.personKey === me;
+          if (!okClose && !okAnswer) break;
+        }
         switch (t.action) {
           case 'approve': {
             // Permitting: counts only when it covers the card as folded at this point.
@@ -916,6 +1035,16 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
       case 'dispatching': case 'dispatched': case 'policy': case 'graduation': case 'enabled-at': break;
     }
   }
+  // ── blockers and the departed carrier (§8/§9) ──
+  for (const u of pendingUnblocks) {
+    const link = f.blockedBy.find((b) => b.id === u.blockedByRecordId);
+    if (link && !link.unblocked) link.unblocked = { id: u.id, reason: u.reason, at: u.at, ...(typeof u.closedByPerson === 'boolean' ? { closedByPerson: u.closedByPerson } : {}) };
+  }
+  f.openBlockers = [...new Set(f.blockedBy.filter((b) => !b.unblocked).map((b) => b.blockerCardId))];
+  f.blocked = f.openBlockers.length > 0;
+  // The record counts only while the newest carrier edit is the one it names: the owner's Pass ends it by itself.
+  const newestCarrier = f.carrierTrail.length ? f.carrierTrail[f.carrierTrail.length - 1] : null;
+  f.carrierDeparted = newestCarrier && typeof newestCarrier.carrier === 'object' ? departed.find((d) => d.carrierEditRecordId === newestCarrier.id) ?? null : null;
   f.reopens.sort();
   f.holds = holdIds.filter((h) => !releasedHolds.has(h));
   f.archives = archiveIds.filter((a) => !releasedArchives.has(a));
@@ -944,7 +1073,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   // (agent-work-cards-default §1) counts while the card stays inward and agent-carried with no withdrawal: it
   // approved "do what I asked" (the locked `need`), so the agent's edits to title, items and links keep it.
   const tapValid = approveIdx >= 0 && approveIdx > f.lastMaterialIdx && approveRec !== null;
-  f.requestApproved = !f.withdrawn && !!f.requester?.isOwner && f.needLockedToRequest && f.carrier === 'agent' && !f.outward;
+  f.requestApproved = !f.withdrawn && !f.memberPassed && !!f.requester?.isOwner && f.needLockedToRequest && f.carrier === 'agent' && !f.outward;
   f.approvalValid = !f.withdrawn && (tapValid || f.requestApproved);
   if (f.approvalValid && tapValid && approveRec) f.approvedBy = { by: approveRec.by, at: approveRec.at, id: approveRec.id, source: 'tap' };
   else if (f.approvalValid && f.requestApproved && f.requester) {
@@ -987,7 +1116,8 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   if (f.done) f.waitingOn = 'none';
   // A held card (§3 "Pickup hold") is not handed to a card session: the recording conversation owns the work.
   // Its `hold-lifted` record is the transition into workable, and so the pickup's cause.
-  f.workable = f.carrier === 'agent' && f.unknown.length === 0 && !f.redacted && !held && f.archives.length === 0 && !f.done && approvalOk && !f.pickupHeld;
+  // A blocked card is not workable (§9): the `unblocked` that ends its last open link is the transition back, and so the pickup's cause.
+  f.workable = f.carrier === 'agent' && f.unknown.length === 0 && !f.redacted && !held && f.archives.length === 0 && !f.done && approvalOk && !f.pickupHeld && !f.blocked;
   return f;
 }
 
@@ -1007,6 +1137,11 @@ export function deriveStatus(f: CardFold, pickup: { pendingOrParked: boolean; pa
   if (f.approvalRequired && !f.approvalValid) return f.agentWork && !f.withdrawn ? 'not-started' : 'needs-approval';
   if (f.currentClaim && f.needsConfirm && !f.done) return 'claims-done';
   if (f.done) return 'done';
+  // §8: the card has no owner on the team; the team owner's Pass (a newer carrier edit) ends it. A person's pending action
+  // is never hidden by a block, so it ranks before `blocked`.
+  if (f.carrierDeparted) return 'carrier-departed';
+  // §9: not workable and not a waiting status; it precedes `quiet`, so a blocked card never reads quiet.
+  if (f.blocked) return 'blocked';
   if (pickup.quietParked) return 'quiet';
   if (pickup.parked) return 'parked';
   if (f.openQuestion && typeof f.openQuestion.principal === 'object') return 'waiting-on-person';
@@ -1019,22 +1154,33 @@ export function deriveStatus(f: CardFold, pickup: { pendingOrParked: boolean; pa
 
 export type Lane = 'waiting-on-you' | 'with-agent' | 'waiting-on-others' | 'done' | 'archived';
 
-/** `not-started` is deliberately NOT here (§1): it is never a per-card Needs-you row; its lane is `with-agent`. */
-export const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown', 'held', 'needs-approval', 'claims-done', 'parked', 'waiting-on-person', 'with-person', 'quiet']);
+/** `not-started` and `blocked` are deliberately NOT here (§1, §9): neither is ever a per-card Needs-you row. */
+export const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown', 'held', 'needs-approval', 'claims-done', 'parked', 'waiting-on-person', 'with-person', 'quiet', 'carrier-departed']);
 
-/** The lane for a viewer. Phase 1: only the team owner acts, so only the owner has "Waiting on you". */
+/**
+ * The lane for a viewer. agent-work-cards-default §8 amends phase 1's "only the owner has Waiting on you" to "the card's
+ * CARRIER has Waiting on you": a card a member carries, or a question addressed to a member, is in that member's lane and
+ * in the owner's "Waiting on others". Every other waiting status is the owner's. A blocked card is in nobody's.
+ */
 export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false): Lane {
   if (status === 'removed') return 'archived';
   // A person's "Done" close shows with the done cards; "Not important" and a plain archive stay archived.
   if (status === 'archived') return f.closeout?.as === 'done' ? 'done' : 'archived';
   if (status === 'done') return 'done';
+  const carrierPerson = typeof f.carrier === 'object' ? f.carrier.personKey : null;
+  const askedPerson = f.openQuestion && typeof f.openQuestion.principal === 'object' ? f.openQuestion.principal.personKey : null;
   if (viewerIsOwner) {
+    // Another person's card or question: theirs to act on, the owner watches it.
+    if (status === 'with-person' && carrierPerson !== null && carrierPerson !== viewerPersonKey) return 'waiting-on-others';
+    if (status === 'waiting-on-person' && askedPerson !== null && askedPerson !== viewerPersonKey) return 'waiting-on-others';
+    if (status === 'blocked') return carrierPerson === null ? 'with-agent' : 'waiting-on-others';
     if (WAITING_STATUSES.has(status) || capacityWaitSurfaced) return 'waiting-on-you';
     return 'with-agent';
   }
-  // A member or guest: a question addressed to them would be theirs; phase 1 never addresses one.
-  const addressed = f.openQuestion && typeof f.openQuestion.principal === 'object' && f.openQuestion.principal.personKey === viewerPersonKey;
-  if (addressed) return 'waiting-on-you';
+  // A member or guest: their own card, or a question addressed to them, is theirs.
+  if (viewerPersonKey !== null && status === 'waiting-on-person' && askedPerson === viewerPersonKey) return 'waiting-on-you';
+  if (viewerPersonKey !== null && status === 'with-person' && carrierPerson === viewerPersonKey) return 'waiting-on-you';
+  if (status === 'blocked') return carrierPerson === null ? 'with-agent' : 'waiting-on-others';
   return WAITING_STATUSES.has(status) ? 'waiting-on-others' : 'with-agent';
 }
 
@@ -1049,7 +1195,7 @@ export type CauseKind = 'work' | 'answer' | 'retry' | 'stop';
  * automatic re-pickup of a quiet card, counted inside the churn budget as its own kind, so the first one runs and
  * the second parks into the quiet row. `holdLift`: the cause is a `hold-lifted` record.
  */
-export interface PickupCause { id: string; cardId: string; kind: CauseKind; agentCaused: boolean; at: string; hlc: HlcTimestamp; by: By; answerOnly?: boolean; redact?: boolean; repickup?: boolean; holdLift?: boolean }
+export interface PickupCause { id: string; cardId: string; kind: CauseKind; agentCaused: boolean; at: string; hlc: HlcTimestamp; by: By; answerOnly?: boolean; redact?: boolean; repickup?: boolean; holdLift?: boolean; /** The cause is an `unblocked` record (§9): the brief names what unblocked the card. */ unblocked?: { linkId: string; reason: string } }
 
 /**
  * Walk the card's records in fold order and emit one cause per transition: a record after
@@ -1078,10 +1224,14 @@ export function derivePickupCauses(cardId: string, records: FoldRecord[], polici
     // Evidence, questions and note pointers can never change whether a card is workable (a finish needs a
     // claim, an answer is a tap), so no fold is needed at them: the walk is quadratic only in taps, edits
     // and claims, not in a long run of evidence or notes (agent-work-cards-default §2 excludes `note`).
-    if (type === 'evidence' || type === 'waiting-on' || type === 'note') continue;
+    if (type === 'evidence' || type === 'waiting-on' || type === 'note' || type === 'blocker-reopened' || type === 'carrier-departed') continue;
     const f = foldCard(cardId, seenCard, seenPol);
     const by = (rec.d.by as By) ?? { kind: 'system' };
     const at = String(rec.d.at ?? '');
+    // §9: a card re-entering workable through the holder's `unblocked` is agent-caused only when the blocker was agent-closed,
+    // so blocking and self-closing cannot buy pickups outside the churn budget; a person's close of the blocker is theirs.
+    const unblock = type === 'unblocked' ? { linkId: String(rec.d.blockedByRecordId), reason: String(rec.d.reason) } : null;
+    const unblockByPerson = !!unblock && (by.kind === 'person' || rec.d.closedByPerson === true);
     // The holder's one automatic re-pickup (§3 "Quiet"): a work cause on a card that is already workable,
     // keyed by the record id so the churn brake and foldPickups see it.
     if (type === 'quiet-repickup') {
@@ -1090,7 +1240,7 @@ export function derivePickupCauses(cardId: string, records: FoldRecord[], polici
       continue;
     }
     if (f.workable && !prevWorkable) {
-      causes.push({ id: rec.id, cardId, kind: 'work', agentCaused: by.kind !== 'person', at, hlc: rec.hlc, by, ...(type === 'hold-lifted' ? { holdLift: true } : {}) });
+      causes.push({ id: rec.id, cardId, kind: 'work', agentCaused: by.kind !== 'person' && !unblockByPerson, at, hlc: rec.hlc, by, ...(type === 'hold-lifted' ? { holdLift: true } : {}), ...(unblock ? { unblocked: unblock } : {}) });
     } else if (!f.workable && prevWorkable && !(f.done && !prevDone)) {
       causes.push({ id: rec.id, cardId, kind: 'stop', agentCaused: by.kind !== 'person', at, hlc: rec.hlc, by, ...(f.redacted ? { redact: true } : {}) });
     }
@@ -1198,7 +1348,7 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
 export function redactedView(f: CardFold, name: string): Partial<CardFold> & { removedBy: string } {
   return {
     cardId: f.cardId, conversationKey: f.conversationKey, redacted: f.redacted, removedBy: name,
-    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [], refs: [],
+    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [], refs: [], blockedBy: [], openBlockers: [], blockerReopened: [],
   };
 }
 

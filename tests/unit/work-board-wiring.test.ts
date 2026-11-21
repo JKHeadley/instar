@@ -68,12 +68,22 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     expect(src).toContain('ctx.workBoardLate.ownerPersonKey = workBoardOwnerKey;');
     expect(src).toContain('workCardTap: async (cardId, tap) => {');
     expect(read('src/server/AgentServer.ts')).toContain('workBoard: options.workBoard ?? null,');
+    // agent-work-cards-default §8: the team seams come from the pairing service (never overwriting a rig's), and a team-record change reconciles departed carriers.
+    const srv = read('src/server/AgentServer.ts');
+    expect(srv).toContain('this.attachWorkBoardTeam(options);');
+    expect(srv).toContain('runtime.attachTeam(workBoardTeamSeams(pairing));');
+    expect(srv).toContain('runtime.teamAttached()) return;');
+    expect(srv).toContain('this.workBoardRuntime?.()?.onTeamRecordChanged();');
+    expect(src).toContain('afterBlockerWrite: () => { ctx.workBoard?.()?.reconcileBlockersNow(); },');
   });
-  it('the session guard names exactly the three card routes a scoped session may reach', () => {
+  it('the session guard names exactly the four card routes a scoped session may reach', () => {
     const rows = MEMORY_SESSION_ROUTES.filter((r) => String(r.pattern).includes('work-board'));
-    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST', 'POST']);
+    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST', 'POST', 'POST']);
     // agent-work-cards-default §2: progress notes from the session doing the work.
     expect(rows.some((r) => r.method === 'POST' && r.pattern.test('/work-board/cards/wc_0123456789abcdef/notes'))).toBe(true);
+    // agent-work-cards-default §9: the working session's ask + blocked-by link, one step; the capability index names it.
+    expect(rows.some((r) => r.method === 'POST' && r.pattern.test('/work-board/cards/wc_0123456789abcdef/asks'))).toBe(true);
+    expect(read('src/server/CapabilityIndex.ts')).toContain('/work-board/cards/:id/asks');
     expect(rows.some((r) => r.pattern.test('/work-board'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards/wc_0123456789abcdef/tap'))).toBe(false);

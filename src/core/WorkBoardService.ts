@@ -19,11 +19,18 @@ import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
   materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
-  normalizeRequestText,
-  MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX,
+  normalizeRequestText, askCardId, canonicalJson,
+  MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX, ASK_KEY_RE,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
-  type WorkRecordType, type SystemRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal, type CardRef, type HoldLiftReason,
+  type WorkRecordType, type SystemRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal, type CardRef, type HoldLiftReason, type UnblockReason, type BlockedByState,
 } from './WorkCardStore.js';
+
+/**
+ * A person's standing on the team as the service reads it (agent-work-cards-default §8), from the REPLICATED team
+ * record through the sync lookup, never `GET /team/people`: `owner`, `member` (`team` standing), `not-a-member`, or
+ * `unavailable` when the record cannot be read (no card changes hands on a guess).
+ */
+export type TeamMembership = 'owner' | 'member' | 'not-a-member' | 'unavailable';
 
 export interface WorkBoardLimits { recordBytes: number; title: number; need: number; recommendation: number; doneItemText: number; optionText: number; /** agent-work-cards-default §2: a progress note's text ceiling (owner-set, hard-capped by `SCHEMA_MAX.noteText`). */ noteText: number }
 export interface WorkBoardPickupSettings { tickSeconds: number; freeCheckMinSeconds: number; freeCheckMaxSeconds: number; maxSpendingAttempts: number; surfaceAfterHours: number; ownerCatchUpSeconds: number }
@@ -147,6 +154,16 @@ export interface WorkBoardDeps {
   /** Called after a local write lands; the pickup controller and transcript writer hook here. */
   onLocalWrite?: (cardId: string, recordType: WorkRecordType, data: Record<string, unknown>) => void;
   log?: (event: string, detail: Record<string, unknown>) => void;
+  /**
+   * §8: who is on the team, from the replicated team record. Absent ⇒ a team of one: the owner is the only person
+   * (the owner's key answers `owner`, anyone else `not-a-member`).
+   */
+  teamMember?: (personKey: string) => TeamMembership;
+  /**
+   * §8 "Visibility floor on a pass": may this person read this conversation under the owner's grant? `null` = this
+   * machine cannot tell, which counts as no (the pass is refused unless the owner makes it). Absent ⇒ null.
+   */
+  personMayRead?: (personKey: string, conversationKey: string) => boolean | null;
 }
 
 export interface CardView {
@@ -209,6 +226,9 @@ export class WorkBoardService {
   private refIndex = new Map<string, string>();
   /** The index keys each card currently holds, so a refold drops the entries an edit removed. */
   private refsByCard = new Map<string, string[]>();
+  /** §9 the reverse index: blocker card id → the cards with an OPEN `blocked-by` naming it. Rebuilt with the index. */
+  private blockedByBlocker = new Map<string, Set<string>>();
+  private openBlockersByCard = new Map<string, string[]>();
   /** Counted refusals the graduation record reads (§1: refused agent writes on `not-started` cards). */
   readonly stats = { notStartedRefusals: 0 };
 
@@ -223,6 +243,7 @@ export class WorkBoardService {
     this.byCard = byCard; this.policies = policies;
     this.views.clear();
     this.refIndex.clear(); this.refsByCard.clear();
+    this.blockedByBlocker.clear(); this.openBlockersByCard.clear();
     for (const id of byCard.keys()) this.refold(id);
   }
 
@@ -262,6 +283,70 @@ export class WorkBoardService {
     const keys = card.refs.map((r) => `${r.kind}:${r.id}`);
     for (const k of keys) this.refIndex.set(k, cardId);
     this.refsByCard.set(cardId, keys);
+    for (const b of this.openBlockersByCard.get(cardId) ?? []) this.blockedByBlocker.get(b)?.delete(cardId);
+    for (const b of card.openBlockers) (this.blockedByBlocker.get(b) ?? this.blockedByBlocker.set(b, new Set()).get(b)!).add(cardId);
+    this.openBlockersByCard.set(cardId, card.openBlockers);
+  }
+
+  /** §9 "The blocker shows what it blocks": the cards with an open `blocked-by` naming this one (ids; words are the reader's). */
+  blocks(blockerCardId: string): string[] { return [...(this.blockedByBlocker.get(blockerCardId) ?? [])].sort(); }
+
+  /** The open asks of a parent (§9 `maxOpenAsksPerCard`): cards carrying its `parent-card` ref that are not finished, archived or removed. */
+  openAsksOf(parentId: string): string[] {
+    const out: string[] = [];
+    for (const [id, v] of this.views) {
+      const c = v.card;
+      if (!c.created || c.redacted || c.archives.length || c.done) continue;
+      if (c.refs.some((r) => r.kind === 'parent-card' && r.id === parentId)) out.push(id);
+    }
+    return out.sort();
+  }
+
+  /** The team standing of a person (§8): the dep's answer, or a team of one. */
+  teamMember(personKey: string): TeamMembership {
+    if (this.deps.teamMember) return this.deps.teamMember(personKey);
+    return personKey === this.deps.ownerPersonKey() ? 'owner' : 'not-a-member';
+  }
+
+  /**
+   * §8 "Who sees a card": the card-level rule for a PERSON who is not the owner, besides the owner's grant on its
+   * conversation (which the route checks with the device): its current carrier, or its row-named requester, each only
+   * while they stand on the team. No machine writes a grant.
+   */
+  roleVisible(personKey: string | null, card: CardFold): boolean {
+    if (!personKey) return false;
+    const standing = this.teamMember(personKey);
+    if (standing === 'owner') return true;
+    if (standing !== 'member') return false;
+    if (typeof card.carrier === 'object' && card.carrier.personKey === personKey) return true;
+    // A question addressed to them (§8 "answer an open question addressed to them"): a card they must be able to see to answer.
+    if (card.openQuestion && typeof card.openQuestion.principal === 'object' && card.openQuestion.principal.personKey === personKey) return true;
+    return card.requester?.personKey === personKey;
+  }
+
+  /** A member sees this card (the role rule, or the grant this machine can read); the owner and the agent always do. Used before any authority refusal, so a refusal is never an existence oracle. */
+  private memberSees(p: WorkPrincipal, card: CardFold): boolean {
+    if (p.kind !== 'person' || p.isOwner) return true;
+    return this.roleVisible(p.personKey, card) || this.deps.personMayRead?.(p.personKey, card.conversationKey) === true;
+  }
+
+  /** §8 "Visibility floor on a pass": could this person already see the card (a reader of its conversation, or its requester)? */
+  private personCanSee(personKey: string, card: CardFold): boolean {
+    if (this.teamMember(personKey) === 'owner') return true;
+    if (card.requester?.personKey === personKey) return true;
+    return this.deps.personMayRead?.(personKey, card.conversationKey) === true;
+  }
+
+  /** §8 "Carrier may be any team member": the service's check at write, against the replicated team record. */
+  private carrierRefusal(carrier: unknown): Refusal | null {
+    if (carrier === 'agent') return null;
+    const key = (carrier as { personKey?: string } | null)?.personKey;
+    if (typeof key !== 'string') return refuse(400, 'invalid-record', { field: 'carrier' });
+    switch (this.teamMember(key)) {
+      case 'owner': case 'member': return null;
+      case 'unavailable': return refuse(503, 'team-unavailable', { retryable: true, message: 'The team record cannot be read on this machine just now, so no card changes hands. Try again in a moment.' });
+      default: return refuse(400, 'not-a-team-member', { personKey: key, message: 'A card is carried by the agent or by a person on the team (the owner, or a member the owner added).' });
+    }
   }
 
   cardIds(): string[] { return [...this.views.keys()]; }
@@ -544,7 +629,7 @@ export class WorkBoardService {
    * `enabled-at`. Idempotent where the key is derived (a repeat answers `card-exists`-style `duplicate-record`, writes nothing).
    */
   writeHolder(recordType: Exclude<SystemRecordType, 'dispatching' | 'dispatched'>, cardId: string | null, fields: Record<string, unknown>, keyFrom?: { eventId?: string }): Result<{ recordId: string; data: Record<string, unknown>; seq?: number; duplicate?: boolean }> {
-    const key = mintRecordKey(recordType, cardId, { eventId: (keyFrom?.eventId ?? fields.eventId) as string | undefined, teamKey: fields.teamKey as string | undefined, newestAgentRecordId: fields.newestAgentRecordId as string | undefined });
+    const key = mintRecordKey(recordType, cardId, { eventId: (keyFrom?.eventId ?? fields.eventId) as string | undefined, teamKey: fields.teamKey as string | undefined, newestAgentRecordId: fields.newestAgentRecordId as string | undefined, blockedByRecordId: fields.blockedByRecordId as string | undefined, for: fields.for as string | undefined, carrierEditRecordId: fields.carrierEditRecordId as string | undefined });
     if (this.keys.has(key)) return { ok: true, recordId: key, data: this.records.find((r) => r.id === key)?.d ?? {}, duplicate: true };
     return this.write(recordType, cardId, { ...fields, by: { kind: 'system' }, at: new Date(this.deps.now()).toISOString() }, key) as Result<{ recordId: string; data: Record<string, unknown>; seq?: number; duplicate?: boolean }>;
   }
@@ -619,11 +704,8 @@ export class WorkBoardService {
     if (fields.carrier !== undefined) fields.carrier = this.resolveOwnerAlias(fields.carrier);
     if (Array.isArray(fields.doneWhen) && fields.doneWhen.length === 0) return refuse(400, 'done-item-required');
     if (!Array.isArray(fields.doneWhen)) return refuse(400, 'done-item-required');
-    const owner = this.deps.ownerPersonKey();
-    if (fields.carrier !== undefined && fields.carrier !== 'agent') {
-      const ck = (fields.carrier as { personKey?: string })?.personKey;
-      if (!owner || ck !== owner) return refuse(400, 'carrier-not-allowed', { message: 'In this phase a card is carried by the agent or by the team owner.' });
-    }
+    // §8: any team member may carry a card, checked against the replicated team record.
+    if (fields.carrier !== undefined) { const cr = this.carrierRefusal(fields.carrier); if (cr) return cr; }
     // `outward` defaults to `false` for the agent and `true` for a person (agent-work-cards-default §1, amending
     // work-board-asks §1): the external-operation gate and the outbound guards hold whatever the flag says, so a wrong
     // `false` cannot by itself send or spend; the awareness entry tells the agent to set `true` when unsure.
@@ -644,7 +726,237 @@ export class WorkBoardService {
     const cardId = serverCard?.cardId ?? newCardId();
     const w = this.write('created', cardId, { ...fields, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() });
     if (!w.ok) return w;
-    return { ok: true, cardId, conversationKey: cardConversationKey(cardId), ...this.softBudget() };
+    return { ok: true, cardId, conversationKey: cardConversationKey(cardId), ...this.softBudget(fields.carrier as Carrier) };
+  }
+
+  /**
+   * §9 "The working session writes the ask": ONE idempotent step that creates the ask card for a person (id derived from
+   * the parent and `askKey`) and the `blocked-by` link on the parent. A retry between creation and linking completes the
+   * link, never a second ask; a retry whose body differs answers `ask-exists` with the existing id. Counted toward the
+   * daily ceiling whatever principal wrote it; capped per parent by `maxOpenAsksPerCard`.
+   */
+  createAsk(p: WorkPrincipal, parentId: string, input: Record<string, unknown>): Result<{ cardId: string; conversationKey: string; blockedByRecordId: string | null; existed: boolean; linkNote?: string; overBlockerBudget?: { count: number; softOpenBlockers: number; words: string }; overSoftBudget?: { waiting: number; softOpenCards: number; personKey?: string } }> {
+    if (p.kind === 'person') return refuse(403, 'agent-only', { message: 'An ask is written by the agent (or the session doing the work) on a card it carries; a person passes a card instead.' });
+    const g = this.guardCard(p, parentId); if ('ok' in g) return g;
+    const parent = g.v.card;
+    if (!this.writesLinksOn(p, parent)) return refuse(403, 'not-the-carrier', { message: 'An ask is raised from a card the agent carries or wrote.' });
+    if (typeof input.askKey !== 'string' || !ASK_KEY_RE.test(input.askKey)) return refuse(400, 'ask-key-required', { pattern: String(ASK_KEY_RE), message: 'Send a short askKey (letters, digits, . _ : -) so a retry finds the same ask.' });
+    const askId = askCardId(parentId, input.askKey);
+    const carrier = this.resolveOwnerAlias(input.carrier);
+    if (carrier === undefined || carrier === 'agent') return refuse(400, 'ask-carrier-must-be-person', { message: 'An ask is carried by a person on the team ("owner", or a member\'s personKey).' });
+    const cr = this.carrierRefusal(carrier); if (cr) return cr;
+    if (!nonEmpty(input.recommendation)) return refuse(400, 'recommendation-required', { message: 'An ask says what the agent recommends. Add a recommendation.' });
+    if (!nonEmpty(input.whyYou)) return refuse(400, 'why-you-required', { message: 'An ask says why it needs this person and not the agent. Add whyYou.' });
+    if (!Array.isArray(input.doneWhen) || input.doneWhen.length === 0) return refuse(400, 'done-item-required');
+    const fields: Record<string, unknown> = {
+      title: input.title, need: input.need, doneWhen: input.doneWhen, carrier, outward: input.outward === true,
+      recommendation: input.recommendation, whyYou: input.whyYou,
+      ...(input.links !== undefined ? { links: input.links } : {}), ...(input.due !== undefined ? { due: input.due } : {}),
+      // The ask inherits the parent's project and points back at it (non-material).
+      ...(parent.projectKey ? { projectKey: parent.projectKey } : {}), refs: [{ kind: 'parent-card', id: parentId }],
+    };
+    const existing = this.view(askId);
+    if (existing?.card.created) {
+      const e = existing.card;
+      const same = canonicalJson({ t: e.title, n: e.need, d: e.doneWhen.map((d) => ({ id: d.id, text: d.text, certify: d.certify })), c: e.carrier, r: e.recommendation, w: e.whyYou })
+        === canonicalJson({ t: fields.title, n: fields.need, d: (fields.doneWhen as Array<Record<string, unknown>>).map((d) => ({ id: d.id, text: d.text, certify: d.certify ?? 'owner-confirms' })), c: carrier, r: fields.recommendation, w: fields.whyYou });
+      if (!same) return refuse(409, 'ask-exists', { cardId: askId, message: 'An ask with this askKey already exists on this card with different words. Use a new askKey for a different ask.' });
+      // Complete the link if the first attempt stopped between creation and linking; a link deliberately cleared since is not remade.
+      const prior = parent.blockedBy.filter((b) => b.blockerCardId === askId);
+      const open = prior.find((b) => !b.unblocked);
+      if (open) return { ok: true, cardId: askId, conversationKey: e.conversationKey, blockedByRecordId: open.id, existed: true };
+      if (prior.length) return { ok: true, cardId: askId, conversationKey: e.conversationKey, blockedByRecordId: null, existed: true, linkNote: 'the earlier link to this ask was cleared; write a new blocked-by if the work is blocked again' };
+      const l = this.addBlockedBy(p, parentId, { blockerCardId: askId });
+      if (!l.ok) return l;
+      return { ok: true, cardId: askId, conversationKey: e.conversationKey, blockedByRecordId: l.blockedByRecordId, existed: true, ...(l.overBlockerBudget ? { overBlockerBudget: l.overBlockerBudget } : {}) };
+    }
+    const s = this.deps.settings();
+    const openAsks = this.openAsksOf(parentId).length;
+    if (openAsks >= s.maxOpenAsksPerCard) return refuse(429, 'too-many-open-asks', { limit: s.maxOpenAsksPerCard, open: openAsks, message: `This card already has ${openAsks} open asks (the limit is ${s.maxOpenAsksPerCard}; the team owner raises it on the Work page). Close one, or wait.` });
+    // The ask is an ordinary agent-written card (the daily ceiling, the text checks and the team check apply inside).
+    const created = this.createCard({ kind: 'agent' }, fields, { cardId: askId, counted: true });
+    if (!created.ok) return created;
+    const l = this.addBlockedBy(p, parentId, { blockerCardId: askId });
+    // The ask exists even if the link failed (a retry completes the link); the refusal is reported with the id.
+    if (!l.ok) return { ...l, detail: { ...(l.detail ?? {}), cardId: askId, askCreated: true } };
+    return { ok: true, cardId: askId, conversationKey: created.conversationKey, blockedByRecordId: l.blockedByRecordId, existed: false, ...(l.overBlockerBudget ? { overBlockerBudget: l.overBlockerBudget } : {}), ...(created.overSoftBudget ? { overSoftBudget: created.overSoftBudget } : {}) };
+  }
+
+  /** §9: write authority on a card's blocker links: the agent for a card it carries or wrote; the card's person carrier; the team owner. */
+  private writesLinksOn(p: WorkPrincipal, card: CardFold): boolean {
+    if (p.kind === 'person') return p.isOwner || (typeof card.carrier === 'object' && card.carrier.personKey === p.personKey);
+    return card.carrier === 'agent' || card.createdBy?.kind === 'agent';
+  }
+
+  /** Does this principal read the blocker? The agent and the owner read every card; a member reads under the card-level rule plus the grant. */
+  private readsCard(p: WorkPrincipal, card: CardFold): boolean { return this.memberSees(p, card); }
+
+  /** Would a link `cardId ← blockerCardId` close a cycle through the open links? (The writer's own index; §9.) */
+  private wouldCycle(cardId: string, blockerCardId: string): boolean {
+    if (cardId === blockerCardId) return true;
+    const seen = new Set<string>(); const stack = [blockerCardId];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (cur === cardId) return true;
+      if (seen.has(cur)) continue; seen.add(cur);
+      for (const b of this.views.get(cur)?.card.openBlockers ?? []) stack.push(b);
+    }
+    return false;
+  }
+
+  /**
+   * §9 `blocked-by { blockerCardId, note? }` on the BLOCKED card. Idempotent per blocker and episode: an open link to the
+   * same blocker is returned, not duplicated. A blocker the writer may not read answers `not-found` (no existence oracle);
+   * a self-link or a cycle through open links answers `blocker-cycle`.
+   */
+  addBlockedBy(p: WorkPrincipal, cardId: string, input: { blockerCardId?: unknown; note?: unknown }): Result<{ blockedByRecordId: string; duplicate?: boolean; overBlockerBudget?: { count: number; softOpenBlockers: number; words: string } }> {
+    const g = this.guardCard(p, cardId); if ('ok' in g) return g;
+    const card = g.v.card;
+    if (!this.memberSees(p, card)) return refuse(404, 'not-found');
+    if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
+    if (!this.writesLinksOn(p, card)) return refuse(403, 'not-the-carrier', { message: 'A blocker is written on a card you carry or wrote (the team owner on any card).' });
+    if (!isCardId(input.blockerCardId)) return refuse(400, 'blocker-required', { message: 'Name the blocking card (blockerCardId).' });
+    const blockerId = input.blockerCardId;
+    const blocker = this.view(blockerId);
+    if (!blocker || !blocker.card.created || !this.readsCard(p, blocker.card)) return refuse(404, 'not-found');
+    if (this.wouldCycle(cardId, blockerId)) return refuse(409, 'blocker-cycle', { message: 'That card is already waiting on this one (directly or through other cards); a loop would block both for good.' });
+    if (input.note !== undefined) {
+      if (typeof input.note !== 'string' || !input.note.trim()) return refuse(400, 'invalid-record', { field: 'note' });
+      const kind = this.deps.detectCredential(input.note);
+      if (kind) return refuse(422, 'credential-refused', { field: 'note', credentialKind: kind, message: `The note looks like it contains a credential (${kind}). Reword it, or send the secret through Secret Drop.` });
+      const limit = this.deps.settings().limits.noteText;
+      if (input.note.length > limit) return refuse(413, 'over-limit', { field: 'note', limit, length: input.note.length });
+    }
+    const prior = card.blockedBy.filter((b) => b.blockerCardId === blockerId);
+    const open = prior.find((b) => !b.unblocked);
+    if (open) return { ok: true, blockedByRecordId: open.id, duplicate: true, ...this.blockerBudget(card.openBlockers.length) };
+    const key = mintRecordKey('blocked-by', cardId, { blockerCardId: blockerId, episode: prior.length });
+    const w = this.write('blocked-by', cardId, { blockerCardId: blockerId, ...(typeof input.note === 'string' ? { note: input.note } : {}), by: this.byOf(p), at: new Date(this.deps.now()).toISOString() }, key);
+    if (!w.ok) return w;
+    return { ok: true, blockedByRecordId: w.recordId, ...this.blockerBudget(this.view(cardId)!.card.openBlockers.length) };
+  }
+
+  /** §9 "Budget, not a refusal": past `softOpenBlockers` the write stands and the response says so. */
+  private blockerBudget(count: number): { overBlockerBudget?: { count: number; softOpenBlockers: number; words: string } } {
+    const limit = this.deps.settings().softOpenBlockers;
+    return count > limit ? { overBlockerBudget: { count, softOpenBlockers: limit, words: 'a chain this deep is usually a project' } } : {};
+  }
+
+  /** §9 a writer's `unblocked { blockedByRecordId, reason: cleared }`: ends exactly that open link. */
+  clearBlockedBy(p: WorkPrincipal, cardId: string, input: { blockedByRecordId?: unknown; reason?: unknown }): Result<{ recordId: string }> {
+    const g = this.guardCard(p, cardId); if ('ok' in g) return g;
+    const card = g.v.card;
+    if (!this.memberSees(p, card)) return refuse(404, 'not-found');
+    if (this.serverOwnedBlocks(p, card)) return refuse(409, 'server-owned-card');
+    if (!this.writesLinksOn(p, card)) return refuse(403, 'not-the-carrier');
+    if (input.reason !== undefined && input.reason !== 'cleared') return refuse(400, 'reason-not-allowed', { allowed: ['cleared'], message: 'A writer clears a link; the other reasons are written by the board itself when the blocker finishes.' });
+    if (!isRecordId(input.blockedByRecordId)) return refuse(400, 'link-required', { message: 'Name the blocked-by record to clear (blockedByRecordId).' });
+    const link = card.blockedBy.find((b) => b.id === input.blockedByRecordId);
+    if (!link) return refuse(404, 'link-not-found');
+    if (link.unblocked) return refuse(409, 'link-not-open', { endedBy: link.unblocked.id, reason: link.unblocked.reason });
+    const key = mintRecordKey('unblocked', cardId, { blockedByRecordId: link.id });
+    const w = this.write('unblocked', cardId, { blockedByRecordId: link.id, reason: 'cleared', by: this.byOf(p), at: new Date(this.deps.now()).toISOString() }, key);
+    if (!w.ok) return w;
+    return { ok: true, recordId: w.recordId };
+  }
+
+  /**
+   * §9 "The holder reconciles": for every open link whose blocker is finished, archived or removed, one system `unblocked`
+   * bound to that link (ids and the reason only; `closedByPerson` says whose close it was, for the churn budget); a cycle
+   * closed by concurrent writes ends at the link with the later clock; a reopened former blocker gets one `blocker-reopened`
+   * on each former dependent and re-blocks nothing. Runs at arrival, transition and boot; at most `max` writes per call.
+   */
+  reconcileBlockers(max = Number.POSITIVE_INFINITY): { unblocked: Array<{ cardId: string; recordId: string; blockerCardId: string; reason: UnblockReason }>; reopened: Array<{ cardId: string; recordId: string; blockerCardId: string }> } {
+    const out = { unblocked: [] as Array<{ cardId: string; recordId: string; blockerCardId: string; reason: UnblockReason }>, reopened: [] as Array<{ cardId: string; recordId: string; blockerCardId: string }> };
+    let left = max;
+    const end = (cardId: string, link: BlockedByState, reason: UnblockReason, closedByPerson: boolean): void => {
+      if (left <= 0) return;
+      const r = this.writeHolder('unblocked', cardId, { blockedByRecordId: link.id, reason, closedByPerson });
+      if (r.ok && !r.duplicate) { left--; out.unblocked.push({ cardId, recordId: r.recordId, blockerCardId: link.blockerCardId, reason }); }
+    };
+    // 1. terminal blockers
+    for (const [cardId, v] of [...this.views]) {
+      const c = v.card;
+      if (!c.created || c.redacted) continue;
+      for (const link of c.blockedBy) {
+        if (link.unblocked) continue;
+        const b = this.views.get(link.blockerCardId)?.card;
+        if (!b || !b.created || b.unknown.length) continue; // an unreadable or absent blocker keeps the card blocked
+        if (b.redacted) end(cardId, link, 'blocker-removed', true);
+        else if (b.archives.length) end(cardId, link, 'blocker-archived', true);
+        else if (b.done) end(cardId, link, 'blocker-done', !b.doneByAgentOwnEvidence);
+      }
+    }
+    // 2. cycles through open links (two machines each wrote a link the other had not seen): the later link ends.
+    for (const cycle of this.openCycles()) {
+      let latest: { cardId: string; link: BlockedByState; hlc: HlcTimestamp } | null = null;
+      for (const { cardId, link } of cycle) {
+        const rec = this.recordsOf(cardId).find((r) => r.id === link.id); if (!rec) continue;
+        if (!latest || compareHlc(rec.hlc, latest.hlc) > 0) latest = { cardId, link, hlc: rec.hlc };
+      }
+      if (latest) end(latest.cardId, latest.link, 'cycle', false);
+    }
+    // 3. reopened former blockers: one record per reopen, nothing re-blocked
+    for (const [cardId, v] of [...this.views]) {
+      const c = v.card;
+      if (!c.created || c.redacted) continue;
+      for (const link of c.blockedBy) {
+        if (!link.unblocked || (link.unblocked.reason !== 'blocker-done' && link.unblocked.reason !== 'blocker-archived')) continue;
+        const b = this.views.get(link.blockerCardId)?.card;
+        if (!b || !b.created || b.redacted || b.archives.length || b.done) continue;
+        const endedAt = this.recordsOf(cardId).find((r) => r.id === link.unblocked!.id)?.hlc; if (!endedAt) continue;
+        const reopen = [...b.taps].reverse().find((t) => (t.action === 'reopen' || t.action === 'unarchive') && compareHlc(t.hlc, endedAt) > 0);
+        if (!reopen) continue;
+        if (left <= 0) return out;
+        const r = this.writeHolder('blocker-reopened', cardId, { blockerCardId: b.cardId, for: reopen.id });
+        if (r.ok && !r.duplicate) { left--; out.reopened.push({ cardId, recordId: r.recordId, blockerCardId: b.cardId }); }
+      }
+    }
+    return out;
+  }
+
+  /** Every cycle through the OPEN links, as the list of (blocked card, link) pairs that form it. */
+  private openCycles(): Array<Array<{ cardId: string; link: BlockedByState }>> {
+    const cycles: Array<Array<{ cardId: string; link: BlockedByState }>> = [];
+    const colour = new Map<string, 'grey' | 'black'>();
+    const path: Array<{ cardId: string; link: BlockedByState }> = [];
+    const visit = (cardId: string): void => {
+      colour.set(cardId, 'grey');
+      for (const link of this.views.get(cardId)?.card.blockedBy ?? []) {
+        if (link.unblocked) continue;
+        const next = link.blockerCardId;
+        const c = colour.get(next);
+        if (c === 'grey') {
+          const start = path.findIndex((p) => p.cardId === next);
+          cycles.push([...path.slice(start), { cardId, link }]);
+          continue;
+        }
+        if (c === 'black') continue;
+        path.push({ cardId, link }); visit(next); path.pop();
+      }
+      colour.set(cardId, 'black');
+    };
+    for (const id of this.views.keys()) if (!colour.has(id)) visit(id);
+    return cycles;
+  }
+
+  /**
+   * §8 "A carrier who leaves the team": every open card whose person carrier is no longer in the replicated team record
+   * gets one `carrier-departed` naming the newest carrier edit (the owner's Pass ends it). `team-unavailable` ⇒ nothing.
+   */
+  reconcileDepartedCarriers(max = Number.POSITIVE_INFINITY): Array<{ cardId: string; recordId: string; personKey: string }> {
+    const out: Array<{ cardId: string; recordId: string; personKey: string }> = [];
+    for (const [cardId, v] of [...this.views]) {
+      if (out.length >= max) break;
+      const c = v.card;
+      if (!c.created || c.redacted || c.archives.length || c.done || typeof c.carrier !== 'object' || c.carrierDeparted) continue;
+      const standing = this.teamMember(c.carrier.personKey);
+      if (standing !== 'not-a-member') continue; // owner, member, or unavailable: no change
+      const newest = c.carrierTrail[c.carrierTrail.length - 1];
+      const r = this.writeHolder('carrier-departed', cardId, { carrierEditRecordId: newest.id });
+      if (r.ok && !r.duplicate) out.push({ cardId, recordId: r.recordId, personKey: c.carrier.personKey });
+    }
+    return out;
   }
 
   /** The owner-set field limits now in force (a server writer composes within them). */
@@ -653,10 +965,19 @@ export class WorkBoardService {
   /** True when the owner's "Waiting on you" lane already holds `softOpenCards` cards (a server writer opens no more). */
   atSoftBudget(): boolean { return this.waitingOnOwnerCount() >= this.deps.settings().softOpenCards; }
 
-  private softBudget(): { overSoftBudget?: { waiting: number; softOpenCards: number } } {
+  /** Cards in a member's own "Waiting on you" lane (§8: `overSoftBudget` is per carrier lane). */
+  waitingOnPersonCount(personKey: string): number {
+    let n = 0;
+    for (const id of this.views.keys()) { const v = this.view(id); if (v && this.lane(v, { isOwner: false, personKey }) === 'waiting-on-you') n++; }
+    return n;
+  }
+
+  private softBudget(carrier?: Carrier): { overSoftBudget?: { waiting: number; softOpenCards: number; personKey?: string } } {
     const s = this.deps.settings();
-    const waiting = this.waitingOnOwnerCount();
-    return waiting >= s.softOpenCards ? { overSoftBudget: { waiting, softOpenCards: s.softOpenCards } } : {};
+    const owner = this.deps.ownerPersonKey();
+    const member = carrier && typeof carrier === 'object' && carrier.personKey !== owner ? carrier.personKey : null;
+    const waiting = member ? this.waitingOnPersonCount(member) : this.waitingOnOwnerCount();
+    return waiting >= s.softOpenCards ? { overSoftBudget: { waiting, softOpenCards: s.softOpenCards, ...(member ? { personKey: member } : {}) } } : {};
   }
 
   /** Attachment links must name a file in the card's own conversation; the route resolves the file. */
@@ -773,9 +1094,14 @@ export class WorkBoardService {
    * hash), so the card reads as needing approval again. No HTTP route passes it.
    */
   edit(p: WorkPrincipal, cardId: string, input: Record<string, unknown>, opts: { serverOwnedRewrite?: boolean } = {}): Result<{ recordId: string; changed: string[] }> {
-    if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
+    // §8: a member's only edit is a pass (`carrier`) of a card they carry; anything else on the record is the owner's.
+    if (p.kind === 'person' && !p.isOwner) {
+      const other = Object.keys(input).filter((k) => k !== 'carrier' && input[k] !== undefined);
+      if (other.length || input.carrier === undefined) return refuse(403, 'owner-required', { message: 'A member passes a card they carry (carrier); every other change is the team owner\'s.' });
+    }
     const g = this.guardCard(p, cardId); if ('ok' in g) return g;
     const card = g.v.card;
+    if (!this.memberSees(p, card)) return refuse(404, 'not-found'); // a card they cannot see does not exist for them
     const own = this.ownershipRefusal(p, input, card); if (own) return own;
     const gateOnly = this.gateOnlyRefusal(p, input); if (gateOnly) return gateOnly;
     const changed: Record<string, unknown> = {};
@@ -792,9 +1118,24 @@ export class WorkBoardService {
     if (!names.length) return { ok: true, recordId: '', changed: [] };
     const material = names.filter((n) => (MATERIAL_FIELDS as ReadonlyArray<string>).includes(n));
     if (p.kind !== 'person' && material.length && card.done && !(opts.serverOwnedRewrite && p.kind === 'agent')) return refuse(409, 'reopen-required', { message: 'A finished card can be unfinished only by a person.' });
-    if (changed.carrier !== undefined && changed.carrier !== 'agent') {
-      const owner = this.deps.ownerPersonKey();
-      if (!owner || (changed.carrier as { personKey?: string })?.personKey !== owner) return refuse(400, 'carrier-not-allowed');
+    if (changed.carrier !== undefined) {
+      // §8 "Passing a card". The new carrier is a team member (or the agent), checked against the replicated record.
+      const next = changed.carrier as Carrier;
+      const cr = this.carrierRefusal(next); if (cr) return cr;
+      const isCurrentCarrier = p.kind === 'person' && typeof card.carrier === 'object' && card.carrier.personKey === p.personKey;
+      if (p.kind === 'person' && !p.isOwner && !isCurrentCarrier) return refuse(403, 'not-the-carrier', { message: 'Only the card\'s current carrier or the team owner passes it.' });
+      if (p.kind !== 'person') {
+        // The agent never takes a card from a person, and passes only a card it carries, as an ask.
+        if (next === 'agent') return refuse(403, 'agent-cannot-take-card', { message: 'A person passes a card to the agent; the agent cannot take it.' });
+        if (card.carrier !== 'agent') return refuse(403, 'not-the-carrier', { message: 'The agent passes only a card it carries.' });
+        const has = (k: 'recommendation' | 'whyYou') => (input[k] !== undefined ? nonEmpty(input[k]) : nonEmpty(card[k]));
+        if (!has('recommendation')) return refuse(400, 'recommendation-required', { message: 'Passing a card to a person makes it an ask: say what you recommend (recommendation) on this edit or on the card first.' });
+        if (!has('whyYou')) return refuse(400, 'why-you-required', { message: 'Passing a card to a person makes it an ask: say why it needs them (whyYou) on this edit or on the card first.' });
+      }
+      // Visibility floor: a pass never widens access, except the owner's (whose own grant shares the conversation from the phone).
+      if (typeof next === 'object' && !(p.kind === 'person' && p.isOwner) && !this.personCanSee(next.personKey, card)) {
+        return refuse(409, 'new-carrier-cannot-see-card', { personKey: next.personKey, message: 'That person cannot see this card (they are not a reader of its conversation and did not ask for it). Ask the team owner to pass it, which shares the conversation with them.' });
+      }
     }
     if (Array.isArray(changed.doneWhen) && (changed.doneWhen as DoneWhenItem[]).length === 0) return refuse(400, 'done-item-required');
     const t = this.checkText(changed); if (t) return t;
@@ -812,8 +1153,8 @@ export class WorkBoardService {
     const principal = this.resolveOwnerAlias(input.principal) as Principal | undefined;
     if (!principal) return refuse(400, 'principal-required');
     if (typeof principal === 'object') {
-      const owner = this.deps.ownerPersonKey();
-      if (!owner || principal.personKey !== owner) return refuse(400, 'principal-not-allowed', { message: 'In this phase the agent waits only on the team owner.' });
+      // §8: a question may be addressed to any person on the team (they answer it from their own lane); checked against the replicated record.
+      const cr = this.carrierRefusal(principal); if (cr) return cr.error === 'not-a-team-member' ? refuse(400, 'principal-not-allowed', { ...cr.detail, message: 'The agent waits on the team owner or a team member.' }) : cr;
       if (!input.question) return refuse(400, 'question-required');
     }
     const open = card.openQuestion;
@@ -881,12 +1222,14 @@ export class WorkBoardService {
    */
   tap(p: WorkPrincipal, cardId: string, input: { action?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; closeAs?: unknown; note?: unknown }): Result<{ recordId: string }> {
     if (p.kind !== 'person') return refuse(403, 'person-required');
-    if (!p.isOwner) return refuse(403, 'owner-required', { message: 'In this phase only the team owner taps.' });
+    const action = input.action as TapAction;
+    // §8 "What a member carrier may do": `done` on a card they carry, or an answer to a question addressed to them.
+    if (!p.isOwner && action !== 'archive' && action !== 'answer') return refuse(403, 'owner-required', { message: 'A member closes a card they carry as done, or answers a question addressed to them; approving, confirming, reopening, holding, archiving and removing are the team owner\'s.' });
     if (!isCardId(cardId)) return refuse(404, 'not-found');
     const v = this.view(cardId);
     if (!v || !v.card.created) return refuse(404, 'not-found');
-    const action = input.action as TapAction;
     const card = v.card;
+    if (!this.memberSees(p, card)) return refuse(404, 'not-found');
     const restricting = isRestrictingTap(String(action));
     if (card.redacted && action !== 'redact') return refuse(409, 'card-removed');
     if (card.redacted && action === 'redact') return { ok: true, recordId: '' };
@@ -899,6 +1242,7 @@ export class WorkBoardService {
       case 'answer': {
         const q = card.questions.find((x) => x.id === input.questionId);
         if (!q) return stale();
+        if (!p.isOwner && !(typeof q.principal === 'object' && q.principal.personKey === p.personKey)) return refuse(403, 'not-your-question', { message: 'This question is addressed to someone else.' });
         if (q.state === 'replaced') return refuse(409, 'question-replaced', { replacement: card.openQuestion?.id ?? null });
         if (q.state !== 'open') return stale();
         if (typeof input.answer !== 'string' || !input.answer.trim()) return refuse(400, 'answer-required');
@@ -924,6 +1268,13 @@ export class WorkBoardService {
         if (!isRecordId(input.claimId)) return refuse(400, 'claim-required');
         fields.claimId = input.claimId; break; // restricting: recorded even when not current
       case 'archive': {
+        if (!p.isOwner) {
+          // §8: a member's close is `done`, as the CURRENT carrier, bound to the material hash (a tap after a reassignment is stale).
+          if (input.closeAs !== 'done') return refuse(403, 'owner-required', { message: 'A member closes a card they carry as done; "Not important" and a plain archive are the team owner\'s.' });
+          if (!(typeof card.carrier === 'object' && card.carrier.personKey === p.personKey)) return refuse(403, 'not-the-carrier', { message: 'Only the card\'s current carrier closes it as done.' });
+          if (input.materialHash !== card.materialHash) return stale({ materialHash: card.materialHash });
+          fields.materialHash = card.materialHash;
+        }
         // A person's close (work-front-doors §6): "Done" needs its closeout note, "Not important" its reason.
         if (input.closeAs === undefined && input.note === undefined) break;
         if (typeof input.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(input.closeAs)) return refuse(400, 'unknown-close', { allowed: [...CLOSE_AS] });
@@ -1068,15 +1419,18 @@ export function lineWorthy(r: FoldRecord): boolean {
   if (t === 'edited') return true; // only material edits produce a line; the writer decides (see transcriptLineFor)
   if (t === 'waiting-on') return !!r.d.supersedes;
   if (t === 'dispatched') return r.d.outcome === 'parked' || r.d.outcome === 'void';
+  if (t === 'carrier-departed') return true;
   return false;
 }
 
-/** Fixed `Work board:` templates (§2). Returns null when the record leaves no line. */
-export function transcriptLineFor(recordType: WorkRecordType, data: Record<string, unknown>, ctx: { name: (personKey: string) => string; when: (iso: string) => string; materialChanged?: string[]; voidedApproval?: boolean }): string | null {
+/** Fixed `Work board:` templates (§2). Returns null when the record leaves no line. `carrierName`: the departed carrier's name (§8). */
+export function transcriptLineFor(recordType: WorkRecordType, data: Record<string, unknown>, ctx: { name: (personKey: string) => string; when: (iso: string) => string; materialChanged?: string[]; voidedApproval?: boolean; carrierName?: string }): string | null {
   const by = data.by as By;
   const who = by?.kind === 'person' ? ctx.name(by.personKey) : 'the agent';
   const when = typeof data.at === 'string' ? ctx.when(data.at) : '';
   switch (recordType) {
+    // §8 "Notification": one line in the card's conversation; the new carrier sees it there and in their lane. Nothing else is sent.
+    case 'carrier-departed': return `Work board: ${ctx.carrierName ?? 'the carrier'} is no longer on the team; this card needs a new owner`;
     case 'tap': {
       switch (data.action) {
         case 'approve': return `Work board: approved by ${who} · ${when}`;
@@ -1099,6 +1453,11 @@ export function transcriptLineFor(recordType: WorkRecordType, data: Record<strin
       return null;
     }
     case 'edited':
+      // §8: a pass leaves one line ("passed to <name> by <name>"); it outranks the approval note, which the lane shows anyway.
+      if (ctx.materialChanged?.includes('carrier') && data.carrier !== undefined) {
+        const to = data.carrier === 'agent' ? 'the agent' : ctx.name(String((data.carrier as { personKey?: string })?.personKey ?? ''));
+        return `Work board: passed to ${to} by ${who} · ${when}`;
+      }
       if (ctx.materialChanged && ctx.materialChanged.length && ctx.voidedApproval) return `Work board: the card changed (${ctx.materialChanged.join(', ')}); the earlier approval no longer applies`;
       return null;
     case 'waiting-on': {

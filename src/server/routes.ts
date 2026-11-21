@@ -3367,6 +3367,8 @@ export function createRoutes(ctx: RouteContext): Router {
       return { ...rest, message: (rest as { message?: string }).message ?? note };
     },
     specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
+    // agent-work-cards-default §9: a link or a finish written here reconciles the blocker links at once on the holder.
+    afterBlockerWrite: () => { ctx.workBoard?.()?.reconcileBlockersNow(); },
     // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
     // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
     phoneOnlyCard: (cardId) => { let src: ReturnType<NonNullable<typeof ctx.projectAppCustom>> | null = null; try { src = ctx.projectAppCustom?.() ?? null; } catch { return true; } return isPhoneOnlyCard(src, cardId); }, // @silent-fallback-ok — fail closed: an unreadable source keeps the card phone-only

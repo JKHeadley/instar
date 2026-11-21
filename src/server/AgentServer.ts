@@ -237,6 +237,7 @@ import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../cor
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
 import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
 import { setDocumentScopedSend, deviceRouteTakesBody } from './mobilePairingRoutes.js';
+import { workBoardTeamSeams } from './workBoardTeamSeams.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
 import { DocumentService } from '../documents/service.js';
@@ -686,7 +687,20 @@ export class AgentServer {
       }
     }
     this.mobilePairing?.reconcileTeamPhones();
+    // agent-work-cards-default §8: a carrier who left the team hands their cards back to the owner's lane (holder only).
+    try { this.workBoardRuntime?.()?.onTeamRecordChanged(); } catch (err) { console.warn('[work-board] departed-carrier reconciliation failed:', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok — warned; the holder's tick reconciles again
   }
+
+  /** agent-work-cards-default §8: the Work Board reads the team record (membership and the pass floor) through the pairing service. */
+  private attachWorkBoardTeam(options: ConstructorParameters<typeof AgentServer>[0]): void {
+    const runtime = options.workBoard?.() ?? null;
+    const pairing = this.mobilePairing;
+    if (!runtime) return;
+    this.workBoardRuntime = options.workBoard ?? null;
+    if (!pairing || runtime.teamAttached()) return; // no team record here, or a rig attached its own seams: never overwrite them
+    runtime.attachTeam(workBoardTeamSeams(pairing));
+  }
+  private workBoardRuntime: (() => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null) | null = null;
 
   /**
    * Turn one team setting on here, from the owner's tap on any machine of this agent. Only ever on.
@@ -7247,6 +7261,7 @@ export class AgentServer {
     }
     const routes = createRoutes(routeCtx);
     this.attachWorkBoardRequestGate(options);
+    this.attachWorkBoardTeam(options);
     this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
