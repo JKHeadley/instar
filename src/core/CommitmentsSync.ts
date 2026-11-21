@@ -384,6 +384,10 @@ export interface MergedCommitmentRow extends Commitment {
   originMachineId: string;
   /** Replica rows only: now − replica.receivedAt. */
   stalenessMs?: number;
+  /** Replica rows only: the machine whose replica file carried this row (the
+   *  publisher). Differs from originMachineId when a peer's store holds a
+   *  restored/copied record that originated elsewhere. */
+  replicaOwnerMachineId?: string;
   /** Computed at merge time from the pending-mutation ledger — never stored. */
   pendingMutation?: boolean;
   /** Heuristic duplicate signal (§3.3a) — composite keys of suspects. */
@@ -429,6 +433,7 @@ export function mergeCommitmentViews(deps: MergeDeps): MergedCommitmentRow[] {
         ...c,
         viewSource: 'replica',
         stalenessMs: staleness,
+        replicaOwnerMachineId: rep.ownerMachineId,
         ...(deps.pendingKeys?.has(compositeKey(c.originMachineId, c.id)) ? { pendingMutation: true } : {}),
       });
     }
@@ -463,14 +468,38 @@ function annotateDuplicates(rows: MergedCommitmentRow[]): void {
  * §3.1 — bare-id resolution over the merged view: exactly one match → the
  * row; several → 'ambiguous' (the route answers 409 listing candidates);
  * none → null.
+ *
+ * Same-origin collapse (fb-6a8328a1): several rows can share ONE
+ * (id, originMachineId) — e.g. a rebuilt machine restored a peer's
+ * commitments into its own store, so the merged view holds the restored own
+ * copy AND the origin's replica of the same record. Those are copies of one
+ * commitment, not a collision, so when `ownMachineId` is given and every match
+ * names the same origin, the row PUBLISHED BY THAT ORIGIN wins: our own row
+ * when the origin is us, else the origin's replica row (the caller forwards
+ * the mutation there). If no match was published by the origin itself the
+ * result stays 'ambiguous' — copies held only by third parties are never
+ * guessed between.
  */
 export function resolveBareId(
   rows: MergedCommitmentRow[],
   id: string,
   origin?: string,
+  ownMachineId?: string,
 ): MergedCommitmentRow | 'ambiguous' | null {
   const matches = rows.filter((r) => r.id === id && (!origin || r.originMachineId === origin));
   if (matches.length === 1) return matches[0];
-  if (matches.length > 1) return 'ambiguous';
-  return null;
+  if (matches.length === 0) return null;
+  if (ownMachineId) {
+    const origins = new Set(matches.map((r) => r.originMachineId));
+    if (origins.size === 1) {
+      const theOrigin = matches[0].originMachineId;
+      const authoritative = matches.filter((r) =>
+        theOrigin === ownMachineId
+          ? r.viewSource === 'own'
+          : r.viewSource === 'replica' && r.replicaOwnerMachineId === theOrigin,
+      );
+      if (authoritative.length === 1) return authoritative[0];
+    }
+  }
+  return 'ambiguous';
 }

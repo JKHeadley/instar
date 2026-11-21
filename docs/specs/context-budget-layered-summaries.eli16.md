@@ -126,3 +126,13 @@ confirmed (mentioned and proceed if it only adds; explicit yes if it narrows),
 when to set the engine's safety-net window (per machine, once the recovery
 fix is proven there), and the starting numbers (all written down, each with the
 measurement that replaces it).
+
+## Update, 2026-11-20
+
+Justin asked for faster experiments, so the first check now needs three clean
+days of fresh summaries instead of a week. Practice runs also gained one safety
+detail: when a session keeps something it copied from a tool or a web page, that
+text stays marked as data, never as the session's own words or as instructions.
+
+Before real shrinking starts (Phase 3), one more safety item must be closed: a
+partial quote of someone else's message must never read as the session's own words.

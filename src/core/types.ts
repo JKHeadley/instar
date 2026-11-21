@@ -1266,6 +1266,12 @@ export interface IntelligenceOptions {
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
   requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  /**
+   * Keep this call on one provider family: no category or nature routing and no
+   * failure swap. If that framework is unavailable the call throws; it never moves
+   * to another vendor (context-budget §9: conversation content stays on its family).
+   */
+  pinnedFramework?: IntelligenceFramework;
   /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
   launchGuard?: () => boolean;
   /** Maximum tokens for the response */
@@ -3488,6 +3494,8 @@ export interface SessionPoolConfig {
     ambiguityCeilingMultiple?: number;
     /** P19 per-tick claim cap. Default 2. */
     maxClaimsPerTick?: number;
+    /** Unroutable-owner release: claims from a revoked / unregistered-silent owner land even in dryRun. Default true. */
+    unroutableOwnerLive?: boolean;
     /** Bootstrap (R-r2-2): never-observed-since-boot expiry multiple. Default 3. */
     bootstrapNonObservationMultiple?: number;
     /** The owner self-fence TTL the §2.3 ordering invariant checks against. Default 60000. */
@@ -5100,6 +5108,8 @@ export interface InstarConfig {
      * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
      */
     waitingAskLinks?: { enabled?: boolean };
+    /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
+    siblingReach?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement

@@ -738,6 +738,20 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
 
 /**
+ * Route budget (ms) for the Gemini pay-per-use calls (gemini-payg-metered-lane §1, §6, §8):
+ * `/intelligence/gemini` (second opinion), `/intelligence/gemini/review` and
+ * `/routing-spend/release-proof`. A paid Gemini call may take up to the transport's
+ * GEMINI_API_MAX_TIMEOUT_MS (900 s, scaled to the reserved output), and a machine that is
+ * not the spender FORWARDS and waits for the holder's answer up to that plus 60 s. Under
+ * the 30 s default the caller got a 408 while the call kept running (and, on the holder,
+ * kept being paid for), and a forwarded call to a dead holder answered 408 instead of the
+ * honest `holder-unreachable` — found by the user-role live test's holder-death drill.
+ * Kept literal here (no provider import in the middleware); a test pins it above
+ * GEMINI_API_MAX_TIMEOUT_MS + 60 s.
+ */
+export const GEMINI_PAYG_ROUTE_TIMEOUT_MS = 990_000;
+
+/**
  * The phone's session controls (docs/specs/mobile-native-session-controls.md) wait on a dashboard route
  * called over loopback, so each budget has to outlast that route's own: a move reads the machines (up to
  * 12 s) and then the transfer (75 s), and the rest get past the default 30 s a door switch, a close or a
@@ -905,6 +919,8 @@ export function buildRequestTimeoutOverrides(opts?: {
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    '/intelligence/gemini': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+    '/routing-spend/release-proof': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
     '/mobile/sessions/move': MOBILE_SESSION_MOVE_TIMEOUT_MS,
     '/mobile/sessions/door': MOBILE_SESSION_ACTION_TIMEOUT_MS,
     '/mobile/sessions/close': MOBILE_SESSION_ACTION_TIMEOUT_MS,

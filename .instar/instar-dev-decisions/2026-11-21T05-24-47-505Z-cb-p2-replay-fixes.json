@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-21T05:24:47.505Z",
+  "slug": "cb-p2-replay-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/foldGrade.ts",
+      "src/monitoring/foldHandoff.ts",
+      "src/monitoring/foldPacket.ts",
+      "src/monitoring/foldShadowRunner.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

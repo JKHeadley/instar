@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "supervisor-grace-ceiling-reanchor",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:21:47.277Z",
+  "artifactPath": "upgrades/side-effects/supervisor-grace-ceiling-reanchor.md",
+  "artifactSha256": "602b10196863aee876d7b1cbedf4b83f57989ba812d3e0e3451cbe717b013bd3",
+  "coveredFiles": [
+    "docs/specs/supervisor-grace-ceiling-reanchor.eli16.md",
+    "src/lifeline/ServerSupervisor.ts",
+    "tests/unit/supervisor-grace-ceiling-reanchor.test.ts",
+    "upgrades/next/supervisor-grace-ceiling-reanchor.md",
+    "upgrades/side-effects/supervisor-grace-ceiling-reanchor.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-condition bug fix in the supervisor's startup-grace anchor plus tests; no state, config or interface change; a revert fully undoes it",
+  "eli16Path": "docs/specs/supervisor-grace-ceiling-reanchor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/supervisor-grace-ceiling-reanchor.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

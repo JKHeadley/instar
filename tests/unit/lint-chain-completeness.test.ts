@@ -31,6 +31,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
  */
 const REQUIRED_LINTS = [
   'lint-notification-selectivity.mjs',
+  // gemini-payg-metered-lane §4.1: one named reader for pay-per-use keys.
+  'lint-metered-secret-readers.js',
   // Round-18: added in the same commit that put this lint in the chain, which
   // is what this ratchet exists to force. Worth noting WHY it fired: the lint
   // in question is itself a gate against deferrals losing their carrier — and

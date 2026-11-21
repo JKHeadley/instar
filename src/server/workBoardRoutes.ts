@@ -14,6 +14,8 @@
  *     POST /work-board/settings             limits and the `policy` record
  *   Phone (device principal; tap = active owner phone + presence signature):
  *     GET  /mobile/work-board
+ *     GET  /mobile/work-board/cards/:id     owner phone (docs/specs/phone-work-cards.md)
+ *     POST /mobile/work-board/cards         owner phone create from a message (mounted in mobilePermissionsRoutes)
  *     POST /mobile/work-board/cards/:id/tap
  *
  * The route decides who the caller is from how the request authenticated, never from a body
@@ -252,9 +254,14 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
   router.get('/work-board', listBoard);
   router.get('/mobile/work-board', listBoard);
 
-  router.get('/work-board/cards/:id', (req, res) => {
+  /**
+   * One card, as the board shows it. The console path and the owner phone's path (docs/specs/phone-work-cards.md)
+   * run this one handler; the phone path refuses a scoped session as the phone's board read does.
+   */
+  const readOneCard = (phonePath: boolean) => (req: Request, res: Response) => {
     const svc = gate(res); if (!svc) return;
     const c = deps.caller(req);
+    if (phonePath && c.kind === 'session') { res.status(403).json({ error: 'scoped-session-reads-its-own-card-only' }); return; }
     const viewer = viewerFor(c);
     if (!viewer) { res.status(401).json({ error: 'unauthorized' }); return; }
     const id = String(req.params.id);
@@ -263,7 +270,9 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
     if (!visible(c, viewer, v)) { res.status(404).json({ error: 'not-found' }); return; }
     res.json({ card: cardJson(svc, v, viewer, deps.displayName, extraFor(svc)(v)) });
-  });
+  };
+  router.get('/work-board/cards/:id', readOneCard(false));
+  router.get('/mobile/work-board/cards/:id', readOneCard(true));
 
   // ── writes ─────────────────────────────────────────────────────────────────
 
@@ -294,10 +303,8 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     if (!(await specApprovalAllows(p, body, res))) return;
     const r = svc.createCard(p, body);
     if (!r.ok) { send(res, r); return; }
-    try { await deps.ensureConversation(r.cardId, r.conversationKey, String(body.title ?? '')); }
-    catch (err) { /* @silent-fallback-ok: logged; the card exists and its chat is created at the next write or boot (the key is derived) */ deps.log?.('work-board-conversation-create-failed', { cardId: r.cardId, error: (err as Error)?.message }); }
+    await afterCardCreate(deps, r.cardId, r.conversationKey, String(body.title ?? ''));
     const v = svc.view(r.cardId)!;
-    deps.controller()?.poke();
     // The agent sees the owner's recent "Not important" reasons at the moment it raises a card (work-front-doors §6).
     const lessons = p.kind === 'agent' ? { lessons: lessonsJson(svc, deps.displayName, 10) } : {};
     res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}), ...lessons });
@@ -530,6 +537,17 @@ export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => 
     reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, ...(l.currentTitle !== undefined ? { cardTitleNow: l.currentTitle, retitledAfterClose: true } : {}), ...(l.titleUnconfirmed ? { titleUnconfirmed: true } : {}), tapId: l.tapId, conversationKey: l.conversationKey,
     by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
   }));
+}
+
+/**
+ * The steps after a card is written: its conversation (idempotent: the key is derived from the card id) and a
+ * poke to the pickup controller. Shared by the console create and the owner phone's create, which also runs it
+ * on a replay so an interrupted create finishes on retry (docs/specs/phone-work-cards.md).
+ */
+export async function afterCardCreate(deps: Pick<WorkBoardRouteDeps, 'ensureConversation' | 'controller' | 'log'>, cardId: string, conversationKey: string, title: string): Promise<void> {
+  try { await deps.ensureConversation(cardId, conversationKey, title); }
+  catch (err) { /* @silent-fallback-ok: logged; the card exists and its chat is created at the next write or boot (the key is derived) */ deps.log?.('work-board-conversation-create-failed', { cardId, error: (err as Error)?.message }); }
+  deps.controller()?.poke();
 }
 
 /**

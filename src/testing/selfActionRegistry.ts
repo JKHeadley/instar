@@ -56,6 +56,7 @@ import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../core/StageAdvancer.js';
+import { nextSiblingAttemptAtMs, SIBLING_DEFAULT_INTERVAL_MS, SIBLING_DEFAULT_MAX_AGE_MS, SIBLING_FIRST_RETRY_MS } from '../core/sibling-holdings.js';
 import { SessionPoolRolloutDriver } from '../core/SessionPoolRolloutDriver.js';
 import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionPoolE2EResultStore.js';
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
@@ -6069,7 +6070,45 @@ const pairingOutcomeNoticeRetry: SelfActionController = {
   },
 };
 
+
+/**
+ * sibling-holdings-refresh: the background cache of what the agent's OTHER machines
+ * hold (docs/specs/sibling-machine-reach.md §3.1) polling a peer that stays dead. It
+ * is an Eternal Sentinel: it keeps trying so the peer is seen again when it comes
+ * back, but never faster than its backoff — one quick 60 s retry for a never-read
+ * peer, then 10 → 20 → 40 → 60 minutes, capped at the age limit.
+ */
+const siblingHoldingsRefresh: SelfActionController = {
+  id: 'sibling-holdings-refresh',
+  actionVerb: 'refresh',
+  models: 'src/core/sibling-holdings.ts (SiblingHoldingsCache.refreshPeer — nextSiblingAttemptAtMs per-peer backoff, 12-peer per-tick bound, live switch)',
+  modelsPath: 'src/core/sibling-holdings.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The cache is memory-only; after a restart the peer is never-read again and gets one 60 s retry, then the same doubling backoff — a restart can add at most one extra attempt.' },
+  boundK: 0,
+  perTargetBoundK: 0,
+  ticks: 24 * 6,
+  tickMs: SIBLING_DEFAULT_INTERVAL_MS,
+  eternalSentinel: { reason: 'A dead peer is retried so its holdings reappear by themselves when it comes back; the backoff holds the rate at one attempt per hour.', rateFloorMs: SIBLING_FIRST_RETRY_MS },
+  delegatedGiveUp: 'The 60-minute age cap on the backoff (SIBLING_DEFAULT_MAX_AGE_MS) and the live toneGate.siblingReach.enabled switch read every tick',
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextAttemptAtMs = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextAttemptAtMs) return;
+        sink.emit({ verb: 'refresh', target: 'dead-peer' });
+        sink.emitTimesMs.push(now);
+        failures += 1;
+        nextAttemptAtMs = nextSiblingAttemptAtMs({ nowMs: now, failures, neverRead: true, intervalMs: SIBLING_DEFAULT_INTERVAL_MS, maxAgeMs: SIBLING_DEFAULT_MAX_AGE_MS });
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
   localVerifyLeftoverReaper,

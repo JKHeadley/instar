@@ -10257,6 +10257,14 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
     }
 
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
+    }
+
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
     if (!content.includes('| Can I use a browser?') && content.includes('| What can I do?')) {
       const row = `| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |`;
@@ -18503,6 +18511,23 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Machine-load assessment helper — always overwrite (CMT-1703, spec
     // robust-load-assessment-fleet). The go-to method for evaluating machine load
     // (real CPU idle% + time-windowed ResourceLedger + a verdict), so an agent
@@ -24744,6 +24769,9 @@ var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var TERMINAL = ['committed', 'rolled-back', 'aborted'];
 // Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
 var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// Exact lookup paths (§7.6, §10): a topic's chunk list and one chunk. A pattern,
+// not a prefix, so the topic's other routes (user-corpus, anchor…) stay denied.
+var LOOKUP_PATHS = [/^\/topic\/-?\d{1,15}\/chunks$/, /^\/topic\/-?\d{1,15}\/chunks\/[A-Za-z0-9_.-]{1,128}$/];
 // The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
 // literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
 // backslash or quote (the character classes below exclude them).
@@ -24762,6 +24790,7 @@ function isLookupCommand(cmd, port) {
     var pre = LOOKUP_PREFIXES[i];
     if (p === pre || p.indexOf(pre + '/') === 0) return true;
   }
+  for (var j = 0; j < LOOKUP_PATHS.length; j++) if (LOOKUP_PATHS[j].test(p)) return true;
   return false;
 }
 
@@ -24777,7 +24806,7 @@ function deny(reason) {
 }
 
 if (typeof module !== 'undefined' && module.exports && require.main !== module) {
-  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES, LOOKUP_PATHS: LOOKUP_PATHS };
 } else {
   var iid = process.env.INSTAR_SESSION_ID || '';
   // No Instar session id: outside this hook's reach. Exit before reading stdin.
@@ -26955,13 +26984,22 @@ if (!reviewEnabled) {
     // green-pr-automerge Layer 2 (MODE-INDEPENDENT — the UnjustifiedStopGate mode
     // ships 'off', so this must act on the hot-path field BEFORE the mode gate,
     // exactly like the stated-continuation guard above). One-shot per session+PR
-    // via a tmp marker so the agent is never trapped. NO runnable merge command.
+    // via a marker under .instar/state/stop-gate-markers so the agent is never trapped. NO runnable merge command.
     if (hot && hot.greenPrBlock && hot.greenPrBlock.pr && !hot.killSwitch && !hot.compactionInFlight) {
       try {
-        const os = await import('node:os');
-        const marker = path.join(os.tmpdir(), 'instar-greenpr-block-' + encodeURIComponent(sessionId) + '-' + hot.greenPrBlock.pr);
-        if (!fs.existsSync(marker)) {
-          try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+        // SEC-131: the one-shot marker lives in the agent's own state dir (never the shared
+        // temp dir, where another local user could pre-plant the name or a symlink), and is
+        // created exclusively ('wx', 0600): an existing file or link counts as already fired
+        // and is never written through.
+        const markerDir = path.join(projectDir, '.instar', 'state', 'stop-gate-markers');
+        const marker = path.join(markerDir, 'greenpr-block-' + encodeURIComponent(sessionId) + '-' + encodeURIComponent(String(hot.greenPrBlock.pr)));
+        let firstTime = false;
+        try {
+          fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 });
+          fs.closeSync(fs.openSync(marker, 'wx', 0o600));
+          firstTime = true;
+        } catch {}
+        if (firstTime) {
           process.stdout.write(JSON.stringify({ decision: 'block', reason: 'STOP-GATE (green-pr): ' + String(hot.greenPrBlock.message) }));
           process.exit(2);
           return;

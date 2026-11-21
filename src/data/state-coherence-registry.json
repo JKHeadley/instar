@@ -2418,6 +2418,24 @@
       }
     },
     {
+      "category": "telegram-topic-names",
+      "description": "Telegram topic names shared between the agent's machines (docs/specs/topic-name-replication.md): the winning immutable name row per topic (a rename beats a creation or older name, then the later time, then the event id), whether this machine's own journal holds it, and which names a gap-filling row put in this machine's topic registry. Written atomically on each change, mode 0600. Replicated through the telegram-topic-name-record kind wherever the coherence journal runs; a row the journal refused is retried by a drain with backoff.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "conflictNote": "winner per topic by (rename over fill, atMs, eventId); order-independent union of immutable rows",
+      "transport": "peer-http",
+      "paths": [
+        "state/telegram-topic-names.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "One current row per Telegram topic the agent has a name for, the same bound as the topic registry's name map."
+      }
+    },
+    {
       "category": "conversation-read-markers",
       "description": "Read markers and baselines per person per conversation for the app's unread counts (docs/specs/mobile-unread-messages.md §3.2-§3.3): the position of the newest message each reader has seen, forward-only, plus one baseline time per reader. Held in memory, flushed atomically at most every 5 s and on shutdown, mode 0600. Replicated through the conversation-read-marker kind wherever native chat is on; a machine that missed the journal window catches up from any peer's GET /mobile/conversations/read-markers. Also holds the per-peer catch-up cursor and the refs this machine removed.",
       "scope": "must-be-coherent",

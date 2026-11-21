@@ -704,4 +704,55 @@ describe('card source message navigation', () => {
     expect(doc.querySelector('.chat-bubble')).toBeNull();
     expect((doc.querySelector('.chat-source-target') as HTMLElement).hidden).toBe(true);
   });
+
+  it('a pasted screenshot and files dropped on the open conversation join the tray; a text paste and a link drag do not (Telegram parity M6/M7)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [], nextBefore: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const W = dom.window as unknown as { File: typeof File; Event: typeof Event };
+    const box = doc.querySelector('textarea.chat-compose') as HTMLTextAreaElement;
+    const send = doc.querySelector('button.chat-send') as HTMLButtonElement;
+    const chips = () => [...doc.querySelectorAll('.chat-file-chip')].map((n) => n.firstChild?.textContent ?? '');
+    const fire = (target: Element, type: string, key: 'clipboardData' | 'dataTransfer', data: unknown) => {
+      const ev = new W.Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, key, { value: data });
+      target.dispatchEvent(ev);
+      return ev;
+    };
+    // A text paste is left to the browser.
+    const textPaste = fire(box, 'paste', 'clipboardData', { files: [], items: [{ kind: 'string' }] });
+    expect(textPaste.defaultPrevented).toBe(false);
+    expect(chips()).toEqual([]);
+    // A screenshot paste (a nameless image.png) joins the tray under a readable name.
+    const shot = new W.File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' });
+    const imgPaste = fire(box, 'paste', 'clipboardData', { files: [shot] });
+    expect(imgPaste.defaultPrevented).toBe(true);
+    expect(chips()).toHaveLength(1);
+    expect(chips()[0]).toMatch(/^Pasted image \d\d\.\d\d\.\d\d\.png · /);
+    expect(send.disabled).toBe(false);
+    // A link drag is not ours: the drop is not taken.
+    const msgs = doc.querySelector('.chat-messages')!;
+    const linkDrop = fire(msgs, 'drop', 'dataTransfer', { types: ['text/uri-list'], files: [] });
+    expect(linkDrop.defaultPrevented).toBe(false);
+    // Files dragged over the messages light the composer, and the drop adds them.
+    fire(msgs, 'dragenter', 'dataTransfer', { types: ['Files'], files: [] });
+    expect(doc.querySelector('.chat-composer')!.classList.contains('dropping')).toBe(true);
+    const doc1 = new W.File([new Uint8Array([4])], 'notes.pdf', { type: 'application/pdf' });
+    const drop = fire(msgs, 'drop', 'dataTransfer', { types: ['Files'], files: [doc1] });
+    expect(drop.defaultPrevented).toBe(true);
+    expect(doc.querySelector('.chat-composer')!.classList.contains('dropping')).toBe(false);
+    expect(chips().map((c) => c.split(' · ')[0])).toEqual([expect.stringMatching(/^Pasted image /), 'notes.pdf']);
+    // Removing a chip keeps the other.
+    (doc.querySelector('.chat-unpick') as HTMLButtonElement).click();
+    expect(chips().map((c) => c.split(' · ')[0])).toEqual(['notes.pdf']);
+  });
 });

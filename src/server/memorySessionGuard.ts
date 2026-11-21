@@ -12,6 +12,7 @@
 
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { PEER_PLACE_PREFIX } from '../users/peerPlaceAdmission.js';
+import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
 
 type Limit =
   /** No further check: the route carries no remembered content. */
@@ -29,6 +30,11 @@ interface Rule {
   denyPlacePrefix?: string;
   /** Allowed only for a session whose place key starts with this. */
   requirePlacePrefix?: string;
+  /**
+   * Open to a fold-probe place (context-budget §10 shadow answerer). A `fold-probe:` session reaches
+   * ONLY rules marked this way; every other rule, `any` included, refuses it.
+   */
+  foldProbe?: true;
 }
 
 const slack = (id: string) => `slack:${id}`;
@@ -36,6 +42,8 @@ const imessage = (id: string) => `imessage:${id}`;
 const whatsapp = (id: string) => `whatsapp:${id}`;
 /** Every Telegram topic is one place, the group, unless a team shares it (see placeMatches). */
 const telegram = (topicId: string) => `telegram:${topicId}`;
+/** The shadow answerer's synthetic place for one topic. */
+const foldProbe = (topicId: string) => `${FOLD_PROBE_PLACE_PREFIX}${topicId}`;
 
 export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   // Replies, one per channel.
@@ -64,10 +72,14 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   { method: 'POST', pattern: /^\/messaging\/preflight$/, limit: 'any' },
   { method: 'POST', pattern: /^\/events\/delivery-failed$/, limit: 'any' },
   { method: 'POST', pattern: /^\/telegram\/origins\/operations\/[^/]+\/outcome$/, limit: 'any' },
-  // Hooks and session plumbing.
-  { method: 'POST', pattern: /^\/hooks\/(events|native-events)$/, limit: 'any' },
-  { method: 'GET', pattern: /^\/internal\/stop-gate\/hot-path$/, limit: 'any' },
-  { method: 'POST', pattern: /^\/internal\/stop-gate\/evaluate$/, limit: 'any' },
+  // Hooks and session plumbing (no remembered content; a fold-probe session's hooks report too).
+  { method: 'POST', pattern: /^\/hooks\/(events|native-events)$/, limit: 'any', foldProbe: true },
+  { method: 'GET', pattern: /^\/internal\/stop-gate\/hot-path$/, limit: 'any', foldProbe: true },
+  { method: 'POST', pattern: /^\/internal\/stop-gate\/evaluate$/, limit: 'any', foldProbe: true },
+  // context-budget §10: the shadow answerer reads its OWN topic's chunk lookups (the mediated
+  // lookups a `retrievable` grade counts), and nothing else. Only a fold-probe place reaches these.
+  { method: 'GET', pattern: /^\/topic\/([^/]+)\/chunks$/, limit: 'own-place', place: foldProbe, requirePlacePrefix: FOLD_PROBE_PLACE_PREFIX, foldProbe: true },
+  { method: 'GET', pattern: /^\/topic\/([^/]+)\/chunks\/[^/]+$/, limit: 'own-place', place: foldProbe, requirePlacePrefix: FOLD_PROBE_PLACE_PREFIX, foldProbe: true },
   { method: 'GET', pattern: /^\/identity\/soul\/integrity$/, limit: 'any' },
   // A peer place must not write to the maintainers as this agent.
   { method: 'POST', pattern: /^\/feedback$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
@@ -114,6 +126,7 @@ export function memorySessionAllows(method: string, path: string, session: Sessi
     const match = rule.pattern.exec(path);
     if (!match) continue;
     const own = session.placeKey ?? '';
+    if (own.startsWith(FOLD_PROBE_PLACE_PREFIX) && !rule.foldProbe) return false;
     if (rule.denyPlacePrefix && own.startsWith(rule.denyPlacePrefix)) return false;
     if (rule.requirePlacePrefix && !own.startsWith(rule.requirePlacePrefix)) return false;
     if (rule.limit === 'any') return true;

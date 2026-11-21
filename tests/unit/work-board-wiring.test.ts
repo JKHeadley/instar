@@ -67,6 +67,11 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     expect(src).toContain('registerWorkBoardRoutes(router, workBoardRouteDeps);');
     expect(src).toContain('ctx.workBoardLate.ownerPersonKey = workBoardOwnerKey;');
     expect(src).toContain('workCardTap: async (cardId, tap) => {');
+    // Work cards from the owner phone (docs/specs/phone-work-cards.md): the create's checks and write are the real ones.
+    expect(src).toContain('precheck: (requestId, draft, req) => phoneCardPrecheck(workBoardRouteDeps, requestId, draft, () => {');
+    expect(src).toContain('create: (requestId, draft, draftHash) => answerPhoneCardCreate(workBoardRouteDeps, requestId, draft, draftHash),');
+    expect(src).toMatch(/telegramTopicKnown\(ctx\.telegram, /);
+    expect(src).toContain("ctx.appConversations?.liveConversation(key.slice('app:'.length))");
     expect(read('src/server/AgentServer.ts')).toContain('workBoard: options.workBoard ?? null,');
   });
   it('the session guard names exactly the three card routes a scoped session may reach', () => {
@@ -84,6 +89,8 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     const src = read('src/server/mobilePairingRoutes.ts');
     expect(src).toMatch(/method: 'GET', re: \/\^\\\/mobile\\\/work-board\$\//);
     expect(src).toMatch(/work-board\\\/cards\\\/wc_\[0-9a-f\]\{16\}\\\/tap\$\/, statuses: active, body: 'json', ownerOnly: true/);
+    expect(src).toMatch(/work-board\\\/cards\\\/wc_\[0-9a-f\]\{16\}\$\/, statuses: active, body: 'none', ownerOnly: true/);
+    expect(src).toMatch(/re: \/\^\\\/mobile\\\/work-board\\\/cards\$\/, statuses: active, body: 'json', ownerOnly: true/);
   });
   it('the console page, its nav tile and the Home source are registered', () => {
     expect(read('dashboard/console/console.js')).toContain("'work/board': renderWork");
