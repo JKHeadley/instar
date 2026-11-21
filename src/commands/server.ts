@@ -356,7 +356,7 @@ import { classifyLoginExpired } from '../core/LoginExpiredSignature.js';
 import * as ownerRecordWiring from '../core/ownerRecordWiring.js';
 import { unreportedRegistryDegradations } from '../awareness/registry.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
-import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
+import { decideRoleRestart, readLastRoleRestart, requestRoleRestart, withdrawRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { skillLearningSlackLink, skillLearningTelegramLink } from '../monitoring/skillLearning/SeamFilter.js';
 import { PromisedUpdateCapture, chainPromisedUpdateCapture, resolvePromisedUpdateCaptureEnabled, type PromisedUpdateCommitmentsConfig } from '../monitoring/PromisedUpdateCapture.js';
@@ -9371,7 +9371,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reconcileRole = (): void => {
       try {
         const nowAwake = coordinator.isAwake;
-        if (nowAwake === bootAwake) return;
+        if (nowAwake === bootAwake) {
+          // The role is back to what boot built for: a restart still waiting for it has no purpose.
+          if (withdrawRoleRestart({ stateDir: config.stateDir })) {
+            console.log(pc.yellow(`  [lease] role is ${coordinator.role} again, as at boot: the waiting role restart is withdrawn`));
+          }
+          return;
+        }
         const decision = decideRoleRestart({
           // Every scheduler-enabled lease holder needs the awake boot path. The
           // optional self-heal policy and preferred-machine hint do not change
