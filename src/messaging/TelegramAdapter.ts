@@ -1356,14 +1356,14 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private logView: Map<number, LogEntry[]> | null = null;
   private logViewBuild: Promise<boolean> | null = null;
-  /** The file's last line has no newline (a torn write); the row parsed from it, if any. */
-  private logTornTail: { row: { topicId: number; entry: LogEntry } | null } | null = null;
+  /** The file's last line has no newline, so the next append lands on that same line. */
+  private logTornTail = false;
   private logViewSettled: Array<() => void> = [];
   /** Bumped by each rotation, so a build that read the replaced file is not published. */
   private logGeneration = 0;
   private logViewFailures = 0;
-  private logViewRetry: ReturnType<typeof setTimeout> | null = null;
-  private logViewStopped = false;
+  /** After a failed pass, no new pass starts before this time. There is no timer: a request starts it. */
+  private logViewNextAttemptAt = 0;
   private logViewWaiters: Array<() => void> = [];
   /** Legacy-path rotation check's line count (see RotationLineCount). */
   private readonly rotationLineCount = new RotationLineCount();
@@ -1754,8 +1754,6 @@ export class TelegramAdapter implements MessagingAdapter {
 
   async stop(): Promise<void> {
     this.polling = false;
-    this.logViewStopped = true;
-    if (this.logViewRetry) { clearTimeout(this.logViewRetry); this.logViewRetry = null; }
     if (this.pollTimeout) {
       clearTimeout(this.pollTimeout);
       this.pollTimeout = null;
@@ -4732,75 +4730,74 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Build the log view with ONE pass over the file, read in small awaited blocks. Single flight;
    * never rejects. It reads to the end of the file and publishes in the same turn it confirms that
-   * end, so no append can fall between the read and the view. A failed pass is discarded whole and
-   * retries by itself (5 s, doubling to 5 min).
+   * end, so no append can fall between the read and the view. A failed pass is discarded whole; the
+   * next request may start another after 5 s, doubling to 5 min.
    */
   loadHistory(): Promise<boolean> {
     if (this.logViewBuild) return this.logViewBuild;
-    if (this.logViewRetry) return Promise.resolve(this.logView !== null); // braked: the timer will retry
+    if (Date.now() < this.logViewNextAttemptAt) return Promise.resolve(this.logView !== null);
     const pass = async (generation: number): Promise<boolean> => {
       const found = new Map<number, LogEntry[]>();
       const keys = new Set<string>();
-      let lastRow: { topicId: number; entry: LogEntry } | null = null;
       const take = (line: string): void => {
-        lastRow = null;
         if (!line) return;
-        let entry: LogEntry;
-        try { entry = JSON.parse(line) as LogEntry; }
-        catch { return; /* @silent-fallback-ok — skip a malformed JSONL line, identical to the scan path */ }
-        // The same checks as the dedupe seed: only well-formed ids make a key.
-        const raw = entry as unknown as { messageId?: unknown; fromUser?: unknown; topicId?: number | null; channelId?: number | null };
-        if (typeof raw.messageId === 'number' && typeof raw.fromUser === 'boolean') {
-          keys.add(this.messageLogDedupeKey({ messageId: raw.messageId, topicId: raw.topicId ?? raw.channelId ?? null, fromUser: raw.fromUser }));
-        }
-        const id = entry?.topicId ?? (entry as unknown as { channelId?: number } | null)?.channelId;
-        if (typeof id !== 'number') return;
-        TelegramAdapter.addToLogView(found, id, entry);
-        lastRow = { topicId: id, entry };
-      };
-      let fh: fs.promises.FileHandle | null = null;
-      try { fh = await fs.promises.open(this.messageLogPath, 'r'); }
-      catch (err) { if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err; }
-      let carry = '';
-      if (fh) {
+        // Every step inside the try: a line the file scan would skip must never stop the load.
         try {
-          const decoder = new StringDecoder('utf8');
-          const block = Buffer.allocUnsafe(64 * 1024);
-          let offset = 0;
-          for (;;) {
-            const { bytesRead } = await fh.read(block, 0, block.length, offset);
-            if (generation !== this.logGeneration) return false;
-            if (bytesRead > 0) {
-              offset += bytesRead;
-              const lines = (carry + decoder.write(block.subarray(0, bytesRead))).split('\n');
-              carry = lines.pop() ?? '';
-              for (const line of lines) take(line);
-              continue;
-            }
-            // At the end. Appends are synchronous on this thread, so a matching size here holds
-            // until this turn ends, which is when the view is published.
-            let size = 0;
-            try { size = fs.statSync(this.messageLogPath).size; }
-            catch (err) { if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err; }
-            if (size === offset) break;
-            if (size < offset) return false; // replaced underneath this pass: read it again
+          const entry = JSON.parse(line) as LogEntry;
+          const raw = entry as unknown as { messageId?: unknown; fromUser?: unknown; topicId?: number | null; channelId?: number | null };
+          if (typeof raw.messageId === 'number' && typeof raw.fromUser === 'boolean') {
+            keys.add(this.messageLogDedupeKey({ messageId: raw.messageId, topicId: raw.topicId ?? raw.channelId ?? null, fromUser: raw.fromUser }));
           }
+          const id = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+          if (typeof id === 'number') TelegramAdapter.addToLogView(found, id, entry);
+        } catch { /* @silent-fallback-ok — skip a malformed JSONL line, identical to the scan path */ }
+      };
+      /** Publish in the turn that confirmed the end of the file: no append can fall in between. */
+      const publish = (unterminated: boolean): void => {
+        this.logView = found;
+        this.logTornTail = unterminated;
+        if (!this.messageLogDedupeSeeded) {
+          this.messageLogDedupeSeeded = true;
+          for (const key of keys) this.loggedMessageKeys.add(key);
+        }
+      };
+      let fh: fs.promises.FileHandle;
+      try { fh = await fs.promises.open(this.messageLogPath, 'r'); }
+      catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+        if (generation !== this.logGeneration || fs.existsSync(this.messageLogPath)) return false; // it appeared: read it
+        publish(false);
+        return true;
+      }
+      try {
+        const opened = await fh.stat();
+        const decoder = new StringDecoder('utf8');
+        const block = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0, carry = '';
+        for (;;) {
+          const { bytesRead } = await fh.read(block, 0, block.length, offset);
+          if (generation !== this.logGeneration) return false;
+          if (bytesRead > 0) {
+            offset += bytesRead;
+            const lines = (carry + decoder.write(block.subarray(0, bytesRead))).split('\n');
+            carry = lines.pop() ?? '';
+            for (const line of lines) take(line);
+            continue;
+          }
+          // At the end. Appends are synchronous on this thread, so what this check sees holds
+          // until the turn ends. A different file at the path means this pass read a replaced one.
+          let now: fs.Stats;
+          try { now = fs.statSync(this.messageLogPath); } catch { return false; }
+          if (now.ino !== opened.ino || now.dev !== opened.dev || now.size < offset) return false;
+          if (now.size !== offset) continue;
           carry += decoder.end();
           take(carry);
-        } finally {
-          await fh.close().catch(() => undefined); // @silent-fallback-ok — closing a read-only handle
+          publish(carry.length > 0);
+          return true;
         }
-        if (generation !== this.logGeneration) return false;
+      } finally {
+        await fh.close().catch(() => undefined); // @silent-fallback-ok — closing a read-only handle
       }
-      this.logView = found;
-      // A last line with no newline: the next append lands on the same line and both become one
-      // unreadable line in the file, so the view must drop it then, as a file read would.
-      this.logTornTail = carry ? { row: lastRow } : null;
-      if (!this.messageLogDedupeSeeded) {
-        this.messageLogDedupeSeeded = true;
-        for (const key of keys) this.loggedMessageKeys.add(key);
-      }
-      return true;
     };
     const run = async (): Promise<boolean> => {
       try {
@@ -4814,14 +4811,12 @@ export class TelegramAdapter implements MessagingAdapter {
         }
         throw new Error('the log changed underneath every read');
       } catch (err) {
-        // @silent-fallback-ok — reported here and retried; requests answer "try again" meanwhile.
-        console.error(`[telegram] background load of message history failed (will retry): ${err}`);
+        // @silent-fallback-ok — reported here; requests answer "try again" and a later one reads again.
+        console.error(`[telegram] background load of message history failed: ${err}`);
         this.logViewFailures += 1;
-        if (this.logViewFailures >= 3) for (const wake of this.logViewSettled.splice(0)) wake();
-        if (!this.logViewStopped) {
-          this.logViewRetry = setTimeout(() => { this.logViewRetry = null; void this.loadHistory(); }, Math.min(5_000 * 2 ** (this.logViewFailures - 1), 5 * 60_000));
-          this.logViewRetry.unref?.();
-        }
+        this.logViewNextAttemptAt = Date.now() + Math.min(5_000 * 2 ** (this.logViewFailures - 1), 5 * 60_000);
+        for (const wake of this.logViewSettled.splice(0)) wake();
+        for (const wake of this.logViewWaiters.splice(0)) wake();
         return this.logView !== null;
       }
     };
@@ -4840,8 +4835,9 @@ export class TelegramAdapter implements MessagingAdapter {
   async waitForHistory(timeoutMs: number = 15_000): Promise<boolean> {
     if (this.logView) return true;
     void this.loadHistory();
+    if (!this.logViewBuild) return false; // the last pass failed and the next is not due yet
     return new Promise<boolean>((resolve) => {
-      const wake = (): void => { clearTimeout(timer); resolve(true); };
+      const wake = (): void => { clearTimeout(timer); resolve(this.logView !== null); };
       const timer = setTimeout(() => {
         this.logViewWaiters = this.logViewWaiters.filter((w) => w !== wake);
         resolve(this.logView !== null);
@@ -4852,11 +4848,11 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Resolves when the view is usable, or after repeated failed loads (a persistently unreadable
-   * log), when background work should run on the ordinary read path rather than never run.
+   * Resolves when the view is usable, or when a load has failed: background work then runs on the
+   * ordinary read path rather than waiting for a request to start another load.
    */
   whenHistoryLoaded(): Promise<void> {
-    if (this.logView || this.logViewFailures >= 3) return Promise.resolve();
+    if (this.logView || this.logViewFailures > 0) return Promise.resolve();
     void this.loadHistory();
     return new Promise((resolve) => { this.logViewSettled.push(resolve); });
   }
@@ -4864,15 +4860,10 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Record an appended row exactly as a later read of the file will parse it. */
   private noteLogRow(row: unknown): void {
     if (!this.logView) return; // a pass in progress reads it from the file
-    const torn = this.logTornTail;
-    if (torn) {
-      // The row joined an unterminated last line: the file now holds one unreadable line.
-      this.logTornTail = null;
-      if (torn.row) {
-        const tail = this.logView.get(torn.row.topicId);
-        const at = tail?.lastIndexOf(torn.row.entry) ?? -1;
-        if (at >= 0) tail!.splice(at, 1);
-      }
+    if (this.logTornTail) {
+      // The row joined an unterminated last line. What that line now parses to, and which older
+      // rows come back into the window, are the file's to say: read it again.
+      this.noteLogRotated();
       return;
     }
     const parsed = JSON.parse(JSON.stringify(row)) as LogEntry;
@@ -4888,7 +4879,7 @@ export class TelegramAdapter implements MessagingAdapter {
     this.logGeneration += 1;
     const hadView = this.logView !== null;
     this.logView = null;
-    this.logTornTail = null;
+    this.logTornTail = false;
     if (hadView || this.logViewBuild) void this.loadHistory();
   }
 

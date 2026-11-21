@@ -271,37 +271,41 @@ export class RotationLineCount {
   private count: number | null = null;
   /** After a failed attempt, appends still to pass before the next one. */
   private waitAppends = 0;
+  /** ...or until this time, so a quiet agent is not left over the cap by a brief failure. */
+  private waitUntilMs = 0;
 
   /** Called on each append above the size threshold: true when the cap may be passed. */
   mayExceed(logPath: string, maxLines: number): boolean {
-    if (this.waitAppends > 0) {
+    if (this.waitAppends > 0 && Date.now() < this.waitUntilMs) {
       this.waitAppends -= 1;
       if (this.count !== null) this.count += 1;
       return false;
     }
     if (this.count === null) {
       try { this.count = countNewlines(fs.readFileSync(logPath)); }
-      catch (err) { this.waitAppends = ROTATION_RETRY_LINES; throw err; }
+      catch (err) { this.failed(); throw err; }
     } else {
       this.count += 1;
     }
     return this.count > maxLines;
   }
 
-  set(lines: number): void { this.count = lines; this.waitAppends = 0; }
+  set(lines: number): void { this.count = lines; this.waitAppends = 0; this.waitUntilMs = 0; }
 
   /**
    * A rotation is being attempted: unless set() reports it finished, wait ROTATION_RETRY_LINES
-   * appends before the next full read, instead of re-reading the log on every append.
+   * appends or ROTATION_RETRY_MS before the next full read, not one read per append.
    */
-  failed(): void { this.waitAppends = ROTATION_RETRY_LINES; }
+  failed(): void { this.waitAppends = ROTATION_RETRY_LINES; this.waitUntilMs = Date.now() + ROTATION_RETRY_MS; }
 
   /** The file is back under the size threshold (rotated or replaced elsewhere): start over. */
-  forget(): void { this.count = null; this.waitAppends = 0; }
+  forget(): void { this.count = null; this.waitAppends = 0; this.waitUntilMs = 0; }
 }
 
 /** Appends between rotation attempts after a failure: 1% of the 100 000-line cap. */
 const ROTATION_RETRY_LINES = 1_000;
+/** ...or this long, whichever comes first. */
+const ROTATION_RETRY_MS = 60_000;
 
 /** Newline bytes in a buffer — the line count of a JSONL file without decoding it. */
 export function countNewlines(buf: Buffer): number {

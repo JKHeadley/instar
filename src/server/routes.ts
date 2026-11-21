@@ -23418,8 +23418,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Never a synchronous read of the whole log on this path (main-loop-freeze-conversation-list).
     // A scroll-back page reads the file by itself; only a device's unread divider also needs the view.
-    const needsHistoryView = beforeMs === null || (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
-    if (needsHistoryView && ctx.telegram.waitForHistory && !(await ctx.telegram.waitForHistory())) {
+    const viaDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
+    const remoteContinuation = req.query.row !== undefined || req.query.byteFrom !== undefined;
+    const needsHistoryView = !remoteContinuation && (beforeMs === null || (viaDevice && !!ctx.conversationUnread?.enabled()));
+    // A peer's fan-out read has about 5 s: answer inside it, so a warming peer is reported, not lost.
+    if (needsHistoryView && ctx.telegram.waitForHistory && !(await ctx.telegram.waitForHistory(viaDevice ? 15_000 : 4_000))) {
       res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return;
     }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)

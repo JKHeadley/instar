@@ -21,7 +21,7 @@ For each conversation in the list, the server asked "what is this conversation's
 
 The server now keeps a copy in memory of what that slow file read would have returned: the newest 500 messages of each conversation, exactly as stored in the file. It builds this once in the background, in small pieces, and updates it with every saved message. Everything above that step works as it did, so previews, order and unread counts should not change, and a comparison of old and new servers on identical data checks that.
 
-The phone and Mac wait briefly for that first background read. If it cannot finish within 15 seconds, they are told to try again in a moment, and the server never falls back to freezing itself.
+The phone and Mac wait briefly for that first background read. If it cannot finish within 15 seconds (four seconds when another of the agent's machines is asking), they are told to try again in a moment, and the server never falls back to freezing itself.
 
 Two earlier versions of this fix were thrown away after outside review found they could change what the apps show.
 
@@ -36,7 +36,7 @@ Two smaller fixes ride along, both found in the same recordings:
 
 - Nothing is decided or blocked differently. This change only makes existing reads cheaper and moves start-up work off the single thread.
 - A message saved during the background read appears once. When old messages are trimmed from the file, the memory copy is dropped and rebuilt, so it never shows a message the file no longer holds.
-- If the background read fails, nothing partial is kept. The apps are told to try again and the server retries by itself after a growing pause (five seconds, doubling, at most five minutes).
+- If the background read fails, nothing partial is kept. The apps are told to try again, and a later request reads the file again after a growing pause (five seconds, doubling, at most five minutes).
 - Other parts of the server that use the old way of reading history behave exactly as before.
 - Tests cover the old failure: the list used to read the file once per conversation and now reads it zero times on the main thread. Others cover paging, failed reads, trimming and the code map.
 

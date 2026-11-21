@@ -1117,17 +1117,16 @@ export async function probeNodeNativeCompat(projectDir: string): Promise<NodePro
   const symlinkPath = path.join(projectDir, '.instar', 'bin', 'node');
   const paths = new Set(excludeManagedNodeSymlink(candidates, symlinkPath).filter((p) => fs.existsSync(p)));
   try { const target = fs.readlinkSync(symlinkPath); if (fs.existsSync(target)) paths.add(target); } catch { /* @silent-fallback-ok — no current symlink to probe */ }
-  const { execFile } = await import('node:child_process');
   // At most NODE_PROBE_CONCURRENCY probes at once: each is a whole node process.
   const queue = [...paths];
   const worker = async (): Promise<void> => {
     for (let nodePath = queue.shift(); nodePath !== undefined; nodePath = queue.shift()) {
       const p = nodePath;
       await new Promise<void>((resolve) => {
-        execFile(p, ['-e', `require(${JSON.stringify(nativeModulePath)})`], { timeout: 10_000 }, (err) => {
-          known.set(p, !err);
-          resolve();
-        });
+        // Output ignored, as in the synchronous probe: only the exit status answers.
+        const child = spawn(p, ['-e', `require(${JSON.stringify(nativeModulePath)})`], { stdio: 'ignore', timeout: 10_000 });
+        child.once('error', () => { known.set(p, false); resolve(); });
+        child.once('exit', (code) => { known.set(p, code === 0); resolve(); });
       });
     }
   };

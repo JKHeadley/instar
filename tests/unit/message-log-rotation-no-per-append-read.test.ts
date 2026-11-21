@@ -95,4 +95,18 @@ describe('message-log rotation does not read the log per append', () => {
     expect(missing.mayExceed(path.join(dir, 'gone'), 2)).toBe(false);
     expect(reads).not.toHaveBeenCalled();
   });
+
+  it('after a failed attempt, the next append past one minute retries even with little traffic', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msglog-rot-'));
+    dirs.push(dir);
+    const p = path.join(dir, 'x.jsonl');
+    fs.writeFileSync(p, 'a\nb\nc\n');
+    const c = new RotationLineCount();
+    expect(c.mayExceed(p, 2)).toBe(true);
+    c.failed();
+    expect(c.mayExceed(p, 2)).toBe(false);
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+    expect(c.mayExceed(p, 2)).toBe(true);
+  });
 });

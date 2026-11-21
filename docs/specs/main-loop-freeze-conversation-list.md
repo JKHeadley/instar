@@ -94,23 +94,23 @@ rules as they were and replaces only the slow step underneath them.
   the file and publishes in the same turn that confirms that end, so no append can fall between.
   After that each append adds its row in persisted JSON shape. The pass also seeds append dedupe.
 - An append onto a torn last line (no newline) makes one unreadable line in the file, so the view
-  drops that row too, as a file read would.
+  is dropped and re-read rather than guessing what the file now holds.
 - A rotation (either logger path) drops the view and rebuilds it, so a cold read cannot seed a row
   the file no longer holds. A pass that read a replaced file is discarded and re-read.
-- A missing log is an empty view. A failed pass is discarded whole and retries by itself after 5 s,
-  doubling to 5 min.
+- A missing log is an empty view. A failed pass is discarded whole. There is no retry timer: a later
+  request may start another pass after 5 s, doubling to 5 min.
 
 ### 2. Conversation reads wait for the view, boundedly
 
 - The list, a read report that names a Telegram conversation, and `GET /telegram/topics/:id/messages`
   (the app's chat history; a Bearer scroll-back needs no view) wait after their own validation, up
-  to 15 s and off the event loop. A first-time reader's baseline is set on arrival, before the wait. If the view is still
-  unavailable they answer `503 conversations-loading` with `Retry-After: 5`, never a file scan.
+  to 15 s (4 s for a peer's fan-out read, inside its 5 s budget) and off the event loop. A first-time reader's baseline is set on arrival, before the wait. If the view is still
+  unavailable the list and chat answer `503 conversations-loading` with `Retry-After: 5`; a read
+  report proceeds with its ordinary per-mark results.
 - Scroll-back uses `getTopicHistoryBeforeAsync`, the same backward read awaited per 1 MB block.
 - The list and unread counter use `getTopicTailRows`, which skips the authorship join: it adds only
   authorship fields and can synchronously parse its ledger.
-- The conversation-graph inventory starts after the view first loads, or after three failed loads
-  (a persistently unreadable log), when it runs on the ordinary read path as it always has.
+- The conversation-graph inventory starts after the view first loads, or after a failed load, when it runs on the ordinary read path as it always has.
 - Where the app is enabled the view loads at server start.
 
 Row shape, previews, order, cursors, unread counts and dividers are intended to be unchanged; the
@@ -134,7 +134,7 @@ A small `RotationLineCount` (in `MessageLogger.ts`, used by both the shared logg
 adapter path) learns the log's line count once, by counting newline bytes in the file (no decode,
 no split), then adds one per append. The whole file is read only when the count passes the
 100 000-line cap, to rotate it exactly as before, after which the count is set to the kept lines.
-If the rotation's read or rename fails, the next attempt waits 1 000 more appends (1 % of the cap)
+If the rotation's read or rename fails, the next attempt waits 1 000 more appends or one minute
 instead of re-reading the whole log on every append while the failure lasts; the count keeps
 advancing, and a successful rotation clears the brake.
 Below the size threshold the count is forgotten, so a log rotated or replaced elsewhere is

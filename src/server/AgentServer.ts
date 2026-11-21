@@ -7975,7 +7975,7 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
-        telegramHistoryReady: options.telegram ? () => options.telegram!.waitForHistory() : undefined,
+        telegramHistoryReady: options.telegram ? (timeoutMs) => options.telegram!.waitForHistory(timeoutMs) : undefined,
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();

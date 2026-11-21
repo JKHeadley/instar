@@ -64,8 +64,8 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 
 - **Shadowing:** none. The tail cache, its eviction and the unread service are unchanged; the view only replaces the file scan beneath them.
 - **Double-fire:** the load is single flight.
-- **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file is discarded and re-read; a failed pass publishes nothing. The Cartographer read-compare-write stays in one synchronous turn.
-- **Feedback loops:** a persistently unreadable log is retried with backoff (5 s doubling to 5 min).
+- **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file, or an append onto a torn last line, causes a fresh read; a failed pass publishes nothing. The Cartographer read-compare-write stays in one synchronous turn.
+- **Feedback loops:** none. No timer retries the load; a later request may start another pass after 5 s, doubling to 5 min.
 - The conversation-graph inventory starts after the first load, so it cannot publish a partial view.
 
 ---
@@ -115,3 +115,9 @@ Not required: no messaging block/allow, session lifecycle, compaction, coherence
 - Freeze profile: run scratchpad `freeze-profiles/CAPTURED-2026-11-21T09:46:44.txt` (list chain 19.3 % self time).
 - E2E verified to fail against the old producer: 81 synchronous log reads for 80 topics; 0 after.
 - Rotation: 200 appends above the size threshold → 1 read (was 200).
+
+---
+
+## Class-Closure Declaration (display-only mirror)
+
+`unbounded-self-action`: n/a. The history load is started only by a request or once at boot, with a time brake between failed attempts and no timer. The node compatibility probe is a one-shot boot step over a bounded candidate list. Neither is a self-triggered loop.

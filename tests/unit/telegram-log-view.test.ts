@@ -14,7 +14,7 @@ const N = 60;
 const OP = 'tests/unit/telegram-log-view.test.ts';
 const at = (i: number) => new Date(1_700_000_000_000 + i * 1000).toISOString();
 const make = (d: string) => new TelegramAdapter({ token: 'test-token', chatId: '-100123' }, d);
-type Inner = { logView: Map<number, unknown[]> | null; topicTailCache: Map<number, unknown[]>; noteLogRotated(): void; logViewRetry: unknown; loggedMessageKeys: Set<string> };
+type Inner = { logView: Map<number, unknown[]> | null; topicTailCache: Map<number, unknown[]>; noteLogRotated(): void; loggedMessageKeys: Set<string> };
 
 describe('Telegram log view', () => {
   let dir: string; let logPath: string; let adapter: TelegramAdapter; const extra: TelegramAdapter[] = [];
@@ -99,6 +99,25 @@ describe('Telegram log view', () => {
     (adapter as unknown as Inner).topicTailCache.clear();
     expect(adapter.getTopicHistory(1005, 500)).toEqual(fresh.getTopicHistory(1005, 500));
     expect(adapter.getTopicHistory(1005, 500).some((r) => r.messageId === 8001)).toBe(false);
+    await adapter.loadHistory();
+    expect(adapter.isHistoryLoaded()).toBe(true);
+  });
+
+  it('a valid JSON line that is not a row (null, a number) cannot stop the view from loading', async () => {
+    fs.appendFileSync(logPath, 'null\n42\n');
+    expect(await adapter.loadHistory()).toBe(true);
+    expect(adapter.getTopicTailRows(1001, 1)[0].text).toBe('shared logger row');
+  });
+
+  it('an append landing while the file handle closes is in the published view', async () => {
+    const real = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (...a: Parameters<typeof fs.promises.open>) => {
+      const fh = await real(...a); const close = fh.close.bind(fh);
+      (fh as unknown as { close: unknown }).close = async () => { adapter.logInboundMessage({ messageId: 8300, topicId: 1008, text: 'during close', timestamp: at(8300) }); await close(); };
+      return fh;
+    }) as typeof fs.promises.open);
+    await adapter.loadHistory();
+    expect(adapter.getTopicTailRows(1008, 1)[0].text).toBe('during close');
   });
 
   it('a row with a malformed id cannot stop the view from loading', async () => {
@@ -115,8 +134,7 @@ describe('Telegram log view', () => {
     expect((adapter as unknown as Inner).loggedMessageKeys.has('in:1007:8200')).toBe(true);
   });
 
-  it('a read failing part-way is discarded, braked, retried by itself, and waiters are told', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  it('a read failing part-way is discarded and braked, waiters are told, and a later request reads again', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const real = fs.promises.open.bind(fs.promises);
     const spy = vi.spyOn(fs.promises, 'open').mockImplementation((async (...a: Parameters<typeof fs.promises.open>) => {
@@ -124,19 +142,17 @@ describe('Telegram log view', () => {
       (fh as unknown as { read: unknown }).read = (...r: unknown[]) => { if (reads++ > 0) throw new Error('read failed'); return (read as (...x: unknown[]) => unknown)(...r); };
       return fh;
     }) as typeof fs.promises.open);
-    try {
-      expect(await adapter.loadHistory()).toBe(false);
-      expect((adapter as unknown as Inner).logView).toBeNull();
-      spy.mockClear();
-      expect(await adapter.loadHistory()).toBe(false);
-      expect(spy).not.toHaveBeenCalled();
-      spy.mockImplementation(real as typeof fs.promises.open);
-      const waiting = adapter.waitForHistory(60_000);
-      await vi.advanceTimersByTimeAsync(5_000);
-      vi.useRealTimers();
-      expect(await waiting).toBe(true);
-      expect(adapter.isHistoryLoaded()).toBe(true);
-    } finally { vi.useRealTimers(); }
+    expect(await adapter.waitForHistory(5_000)).toBe(false);
+    expect((adapter as unknown as Inner).logView).toBeNull();
+    await adapter.whenHistoryLoaded(); // background work is released rather than held forever
+    spy.mockClear();
+    expect(await adapter.waitForHistory(5_000)).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockImplementation(real as typeof fs.promises.open);
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
+    expect(await adapter.waitForHistory(5_000)).toBe(true);
+    expect(adapter.isHistoryLoaded()).toBe(true);
   });
 
   it('a wait is bounded, the load is single flight, and a missing log is simply empty', async () => {

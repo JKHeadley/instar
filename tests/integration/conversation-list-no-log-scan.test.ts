@@ -69,7 +69,7 @@ describe('GET /mobile/conversations with many closed Telegram topics', () => {
   it('opening a chat and scrolling back never read the whole log synchronously', async () => {
     const e = await boot();
     const reads = vi.spyOn(fs, 'readFileSync');
-    const syncReads = vi.spyOn(fs, 'readSync');
+    const syncScrollBack = vi.spyOn(e.telegram, 'getTopicHistoryBefore');
     try {
       const auth = (q: request.Test) => q.set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
       const chat = await auth(request(e.server.getApp()).get('/telegram/topics/5001/messages?limit=2'));
@@ -79,8 +79,8 @@ describe('GET /mobile/conversations with many closed Telegram topics', () => {
       const back = await auth(request(e.server.getApp()).get(`/telegram/topics/5001/messages?limit=2&before=${encodeURIComponent(first.timestamp)}&beforeMessageId=${first.messageId}`));
       expect(back.body.messages.map((m: { text: string }) => m.text)).toEqual(['msg 0 in 1', 'msg 1 in 1']);
       expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath)).toHaveLength(0);
-      expect(syncReads).not.toHaveBeenCalled();
-    } finally { reads.mockRestore(); syncReads.mockRestore(); }
+      expect(syncScrollBack).not.toHaveBeenCalled();
+    } finally { reads.mockRestore(); syncScrollBack.mockRestore(); }
   });
 
   it('while history cannot be read, the list says try again instead of scanning or hanging', async () => {

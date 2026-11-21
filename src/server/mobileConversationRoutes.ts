@@ -257,7 +257,7 @@ export interface MobileConversationRouteDeps {
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
   /** Waits, off the event loop, until Telegram history can be read from memory. False: answer "try again". */
-  telegramHistoryReady?: () => Promise<boolean>;
+  telegramHistoryReady?: (timeoutMs?: number) => Promise<boolean>;
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
    * null when Slack is configured but the operator's Slack user id is unset (rows withheld, and
@@ -605,7 +605,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
     // A first-time reader's baseline is this request's arrival, not the end of the wait below.
     { const u = unreadOn(); const r = readerOf(req); if (u && r) u.touchBaseline(r); }
-    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
+    // A peer's fan-out read has about 5 s: answer inside it, so a warming peer is reported, not lost.
+    const historyWait = principalOf(req).kind === 'device' ? 15_000 : 4_000;
+    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady(historyWait))) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     const local = localListPage(limit, cursor);
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
@@ -760,7 +762,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!marks) { res.status(400).json({ error: 'bad-marks', detail: 'Send 1-50 marks, each with ref, id and atMs.' }); return; }
     if (reader.viaDevice) unread.touchBaseline(reader);
     // Only a mark on a Telegram conversation needs its history.
-    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
+    // After the wait the report runs either way, one result per mark, as it always has.
+    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady) await deps.telegramHistoryReady();
     // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
     const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
     res.json({ results });
