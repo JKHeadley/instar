@@ -168,3 +168,7 @@ Non-blocking:
 - **`defectClass`:** `unbounded-self-action`
 - **`closure`:** `guard`
 - **`guardEvidence`:** `{ enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts, howCaught: the only self-triggered action changed is the disk-steward post retry. A quiet hold (not-delivered) now takes the same path as a failed send, which the registered disk-steward controller already drives to its bound (send backoff 15 min to 6 h, each post dropped after 24 h, the next waiting a full repeat window). The owned-repository registry adds a fixed 15-minute read-only tick with a single-flight guard and a 60 s budget; it sends nothing and raises no notice itself. }`
+
+## Follow-up commit (CI green-up, 2026-11-21)
+
+After the merges with `main`, `Docs Coverage` fails on the job class (`83% < 85%`, 29 documented + 12 partial of 42) on `main` itself: the `gemini-payg-reconcile` default job template is mentioned nowhere under `site/src/content/docs`. This commit adds the same two documentation entries PRs #3524, #3591, #3597 and #3600 add (the default-jobs reference table and the routing-spend control-room page, byte-identical so the branches merge cleanly), lifting the class to 86%. Documentation only; no runtime surface.
