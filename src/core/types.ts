@@ -6747,6 +6747,12 @@ export interface DispatchConfig {
   version?: string;
   /** Whether to auto-apply safe dispatches (lesson, strategy types with non-critical priority) */
   autoApply?: boolean;
+  /**
+   * SEC-153: pinned Ed25519 public keys (keyId → PEM) of the dispatch server. Only a dispatch signed by
+   * one of these is auto-applied or executed; every other dispatch waits for review. Not patchable over
+   * the API: set in the config file only.
+   */
+  trustedKeys?: Record<string, string>;
 }
 
 export interface UpdateConfig {

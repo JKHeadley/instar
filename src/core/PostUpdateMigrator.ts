@@ -2325,6 +2325,27 @@ export function rewriteUsageWallRescueAwareness(content: string): { content: str
  * Existence-checked per field and idempotent: an operator value is never
  * overwritten, and re-running adds nothing.
  */
+/** SEC-153: the dispatch address every agent was given at init, an unsigned channel. */
+export const LEGACY_DISPATCH_URLS: ReadonlyArray<string> = ['https://dawn.bot-me.ai/api/instar/dispatches'];
+
+/**
+ * SEC-153: turn off polling of the old, unsigned dispatch address. Exactly that address is removed and
+ * polling is switched off; an operator's own dispatch server is never touched. Loss-free: the local
+ * dispatch record (dispatchFile) is kept, and the old address is noted so it can be put back by hand.
+ * Idempotent: once the address is gone, nothing matches.
+ */
+export function migrateConfigLegacyDispatchUrl(config: Record<string, unknown>): string | null {
+  const d = config.dispatches;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const disp = d as Record<string, unknown>;
+  if (typeof disp.dispatchUrl !== 'string' || !LEGACY_DISPATCH_URLS.includes(disp.dispatchUrl)) return null;
+  const was = disp.dispatchUrl;
+  disp.legacyDispatchUrlRemoved = { url: was, wasEnabled: disp.enabled === true, at: new Date().toISOString(), reason: 'SEC-153' };
+  disp.dispatchUrl = '';
+  disp.enabled = false;
+  return was;
+}
+
 export function migrateConfigBoundedNotificationSurface(config: Record<string, unknown>): boolean {
   let changed = false;
 
@@ -19571,6 +19592,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // SEC-153: the old dispatch address was an unsigned channel that could run actions and change
+    // configuration. Polling it stops; an operator's own dispatch server is left alone.
+    const legacyDispatch = migrateConfigLegacyDispatchUrl(config as Record<string, unknown>);
+    if (legacyDispatch) {
+      patched = true;
+      result.upgraded.push(`config.json: dispatch polling of the old unsigned address turned off (was ${legacyDispatch}); the dispatch record is kept`);
     }
 
     // Disk Steward cleanup (docs/specs/disk-steward.md): on for development agents
