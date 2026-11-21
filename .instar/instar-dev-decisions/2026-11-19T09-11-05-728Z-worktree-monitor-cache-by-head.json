@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T09:11:05.728Z",
+  "slug": "worktree-monitor-cache-by-head",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 50,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/WorktreeMonitor.ts"
+    ],
+    "addedLines": 45,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "read-only cache; no self-triggered action added or changed"
+  },
+  "verdict": "pass"
+}

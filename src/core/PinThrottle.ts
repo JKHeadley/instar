@@ -124,19 +124,28 @@ function sanitize(c: Partial<PinThrottleConfig> | undefined): PinThrottleConfig 
   const d = DEFAULT_PIN_THROTTLE_CONFIG;
   const num = (v: unknown, def: number, min: number) =>
     typeof v === 'number' && Number.isFinite(v) && v >= min ? v : def;
+  // identity-security-piece1c: the shipped budgets are floors. A setting may make them stricter
+  // (fewer guesses, longer backoff, a longer window), never looser.
   return {
-    softFailures: num(c?.softFailures, d.softFailures, 1),
-    markedSoftFailures: num(c?.markedSoftFailures, d.markedSoftFailures, 1),
-    markedAbuseCap: num(c?.markedAbuseCap, d.markedAbuseCap, 1),
-    baseMs: num(c?.baseMs, d.baseMs, 100),
-    maxBackoffMs: num(c?.maxBackoffMs, d.maxBackoffMs, 1_000),
-    windowMs: num(c?.windowMs, d.windowMs, 1_000),
-    globalFailureBudget: num(c?.globalFailureBudget, d.globalFailureBudget, 1),
-    coarseFailureBudget: num(c?.coarseFailureBudget, d.coarseFailureBudget, 1),
+    softFailures: Math.min(num(c?.softFailures, d.softFailures, 1), d.softFailures),
+    markedSoftFailures: Math.min(num(c?.markedSoftFailures, d.markedSoftFailures, 1), d.markedSoftFailures),
+    markedAbuseCap: Math.min(num(c?.markedAbuseCap, d.markedAbuseCap, 1), d.markedAbuseCap),
+    baseMs: Math.max(num(c?.baseMs, d.baseMs, 100), d.baseMs),
+    maxBackoffMs: Math.max(num(c?.maxBackoffMs, d.maxBackoffMs, 1_000), d.maxBackoffMs),
+    windowMs: Math.max(num(c?.windowMs, d.windowMs, 1_000), d.windowMs),
+    globalFailureBudget: Math.min(num(c?.globalFailureBudget, d.globalFailureBudget, 1), d.globalFailureBudget),
+    coarseFailureBudget: Math.min(num(c?.coarseFailureBudget, d.coarseFailureBudget, 1), d.coarseFailureBudget),
     alertCooldownMs: num(c?.alertCooldownMs, d.alertCooldownMs, 1_000),
     maxSources: num(c?.maxSources, d.maxSources, 16),
   };
 }
+
+/**
+ * identity-security-piece1c: the source of a request whose real client cannot be told (a loopback
+ * request without the agent's own tunnel header: localtunnel, relays). It is charged to the global
+ * budget only — never to a shared per-source or coarse key, so one stranger cannot back off everyone.
+ */
+export const UNATTRIBUTED_PIN_SOURCE = '';
 
 export class PinThrottle {
   private readonly cfg: PinThrottleConfig;
@@ -179,7 +188,7 @@ export class PinThrottle {
       return { allow: true };
     }
     // UNMARKED (or an abused marker): IP-keyed backoff, then the hard stranger caps.
-    const e = this.sources.get(source);
+    const e = source === UNATTRIBUTED_PIN_SOURCE ? undefined : this.sources.get(source);
     if (e && e.blockedUntil > now) {
       e.lastAttempt = now; // a refused attempt keeps the entry alive so backoff does not reset
       return { allow: false, retryAfterSeconds: Math.ceil((e.blockedUntil - now) / 1000), reason: 'source-backoff' };
@@ -189,7 +198,7 @@ export class PinThrottle {
     if (this.globalUnmarkedFailures >= this.cfg.globalFailureBudget) {
       return { allow: false, retryAfterSeconds: Math.ceil((this.globalResetAt - now) / 1000), reason: 'global-cap' };
     }
-    const cc = this.coarse.get(coarsePinNetwork(source));
+    const cc = source === UNATTRIBUTED_PIN_SOURCE ? undefined : this.coarse.get(coarsePinNetwork(source));
     if (cc && cc.failures >= this.cfg.coarseFailureBudget) {
       return { allow: false, retryAfterSeconds: Math.ceil((this.globalResetAt - now) / 1000), reason: 'coarse-cap' };
     }
@@ -210,18 +219,20 @@ export class PinThrottle {
       return {};
     }
     // UNMARKED (or abused marker): IP-keyed backoff + the hard unmarked & coarse budgets.
-    const e = this.touch(this.sources, source, now);
-    e.failures += 1;
-    const soft = this.cfg.softFailures;
-    if (e.failures >= soft) {
-      const steps = e.failures - soft;
-      e.blockedUntil = now + Math.min(this.cfg.baseMs * 2 ** steps, this.cfg.maxBackoffMs);
+    if (source !== UNATTRIBUTED_PIN_SOURCE) {
+      const e = this.touch(this.sources, source, now);
+      e.failures += 1;
+      const soft = this.cfg.softFailures;
+      if (e.failures >= soft) {
+        const steps = e.failures - soft;
+        e.blockedUntil = now + Math.min(this.cfg.baseMs * 2 ** steps, this.cfg.maxBackoffMs);
+      }
+      const ck = coarsePinNetwork(source);
+      const cc = this.coarse.get(ck) ?? this.addCoarse(ck, now);
+      cc.failures += 1;
+      cc.lastAttempt = now;
     }
     this.globalUnmarkedFailures += 1;
-    const ck = coarsePinNetwork(source);
-    const cc = this.coarse.get(ck) ?? this.addCoarse(ck, now);
-    cc.failures += 1;
-    cc.lastAttempt = now;
     // Alert ONLY when the hard cap is reached — the "an attack is draining the cap, use a known
     // browser or the machine" signal. A single hammering source is handled silently by backoff.
     // Deduped by cooldown, downstream of the self-healing cap (Self-Heal Before Notify).

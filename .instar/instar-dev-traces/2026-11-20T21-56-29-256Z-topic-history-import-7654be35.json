@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "topic-history-import",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T21:56:29.256Z",
+  "artifactPath": "upgrades/side-effects/topic-history-import.md",
+  "artifactSha256": "f14ee0a1293a1ffe391dbe287dc806dcc2118ce3013a37d141eba4eec91389da",
+  "specPath": "docs/specs/topic-history-import.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-20T21-54-55-079Z-topic-history-import-648220ad.json",
+    "docs/specs/reports/topic-history-import-convergence.md",
+    "docs/specs/topic-history-import.eli16.md",
+    "docs/specs/topic-history-import.md",
+    "src/commands/server.ts",
+    "src/data/awareness/topic-history-import.md",
+    "src/memory/TopicMemory.ts",
+    "src/memory/topicHistoryImport.ts",
+    "src/memory/topicRowCarrier.ts",
+    "src/memory/topicRowWriter.ts",
+    "src/monitoring/contextLayers/userCorpus.ts",
+    "src/server/middleware.ts",
+    "src/server/routes.ts",
+    "tests/e2e/topic-history-import-lifecycle.test.ts",
+    "tests/integration/topic-history-import-route.test.ts",
+    "tests/unit/topic-history-import.test.ts",
+    "upgrades/next/topic-history-import.md",
+    "upgrades/side-effects/topic-history-import.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Writes durable user-visible conversation history and adds a new row-origin label that the user-corpus authority path reads; a revert leaves restored rows in TopicMemory until a rebuild, so it is not fully revert-reversible",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/topic-history-import-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

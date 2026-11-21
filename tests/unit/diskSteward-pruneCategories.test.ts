@@ -11,12 +11,13 @@ const st = (o: { dir?: boolean; link?: boolean; mtimeMs: number }) => ({
 } as unknown as fs.Stats);
 
 function seams(o: {
-  npmRoot?: string | Error; cacheBytes?: number; procs?: ProcessRow[] | null | Array<ProcessRow[] | null>;
+  npmRoot?: string | Error; cacheBytes?: number; cacheAfter?: number | null; cleanThrows?: Error; procs?: ProcessRow[] | null | Array<ProcessRow[] | null>;
   dd?: Record<string, { mtimeMs: number; link?: boolean; realpath?: string; bytes?: number }>; dev?: Record<string, number>;
 }) {
   const ran: string[][] = [];
   const removed: string[] = [];
   let procCall = 0;
+  let cleaned = false;
   const s: PruneSeams = {
     processes: async () => {
       const p = o.procs;
@@ -26,9 +27,10 @@ function seams(o: {
     run: async (cmd, args) => {
       ran.push([cmd, ...args]);
       if (args[0] === 'config') { if (o.npmRoot instanceof Error) throw o.npmRoot; return { stdout: (o.npmRoot ?? `${HOME}/.npm`) + '\n' }; }
+      if (args[0] === 'cache') { cleaned = true; if (o.cleanThrows) throw o.cleanThrows; }
       return { stdout: '' };
     },
-    sizeOf: async (p) => (p.endsWith('_cacache') ? (o.cacheBytes ?? 0) : (o.dd?.[p.split('/').pop()!]?.bytes ?? GiB)),
+    sizeOf: async (p) => (p.endsWith('_cacache') ? (cleaned ? (o.cacheAfter === undefined ? 0 : o.cacheAfter) : (o.cacheBytes ?? 0)) : (o.dd?.[p.split('/').pop()!]?.bytes ?? GiB)),
     devOf: (p) => o.dev?.[p] ?? 1,
     readdir: (p) => (p === DD ? Object.keys(o.dd ?? {}) : null),
     lstat: (p) => {
@@ -100,6 +102,30 @@ describe('npm cache', () => {
     const r = await pruneNpmCache(s, base);
     expect(r.bytesFreed).toBe(9 * GiB);
     expect(ran.at(-1)).toEqual(['npm', 'cache', 'clean', '--force', '--cache', '/custom/cache']);
+  });
+  it('measures what left when npm exits non-zero after deleting (fb-eecd4dde-608)', async () => {
+    const { s } = seams({ cacheBytes: 13 * GiB, cacheAfter: GiB / 2, cleanThrows: new Error('Command failed: npm cache clean') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(13 * GiB - GiB / 2);
+    expect(r.removedItems).toBe(1);
+    expect(r.error).toMatch(/Command failed/);
+  });
+  it('claims nothing when npm fails and nothing left', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: 9 * GiB, cleanThrows: new Error('EBUSY') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(0);
+    expect(r.removedItems).toBe(0);
+    expect(r.error).toBe('EBUSY');
+  });
+  it('claims nothing on an error when the size afterwards is unreadable', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: null, cleanThrows: new Error('EBUSY') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(0);
+    expect(r.error).toBe('EBUSY');
+  });
+  it('counts only what actually left after a clean exit', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: GiB });
+    expect((await pruneNpmCache(s, base)).bytesFreed).toBe(8 * GiB);
   });
   it('under the limit does nothing', async () => {
     const { s, ran } = seams({ cacheBytes: 2 * GiB });
