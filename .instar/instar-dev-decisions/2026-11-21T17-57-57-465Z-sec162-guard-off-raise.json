@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-21T17:57:57.465Z",
+  "slug": "sec162-guard-off-raise",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 80,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/TrustRaiseGuard.ts",
+      "src/core/trustJourney/TrustJourneyRuntime.ts",
+      "src/data/awareness/guard-off-needs-approval.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

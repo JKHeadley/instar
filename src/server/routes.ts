@@ -674,7 +674,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
+import { APPROVABLE_CONFIG_PATCH_KEYS, configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import { askSentence } from '../core/trustJourney/admission.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
@@ -1276,7 +1276,7 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
       const patch = c.patch as Record<string, unknown> | undefined;
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
       const keys = Object.keys(patch);
-      return keys.length > 0 && keys.every((k) => k === 'externalOperations' || k === 'evolution') && JSON.stringify(patch).length <= 2_000
+      return keys.length > 0 && keys.every((k) => APPROVABLE_CONFIG_PATCH_KEYS.has(k)) && JSON.stringify(patch).length <= 2_000
         ? { kind: 'config-patch', patch } : null;
     }
     case 'slack-role':
@@ -38319,7 +38319,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!change) return res.status(400).json({ error: 'invalid-change', message: 'change must be one of: {kind:"trust-grant",service,operation,level} | {kind:"autonomy-profile",from,to} | {kind:"config-patch",patch} | {kind:"slack-role",slackUserId,displayName,role,mode} | {kind:"board-policy",policy} | {kind:"trust-recovery",incidentId}' });
     const r = await ctx.trustAccountPath.propose(change);
     const status = r.status === 'sent' || r.status === 'awaiting-acceptance' ? 202
-      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'too-large' ? 409
+      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'too-large' || r.status === 'other-machine' ? 409
       : r.status === 'too-many-open' ? 429 : 503;
     // The approval code is for the person's card only; the agent never needs it.
     const { code: _code, ...body } = r as typeof r & { code?: string };

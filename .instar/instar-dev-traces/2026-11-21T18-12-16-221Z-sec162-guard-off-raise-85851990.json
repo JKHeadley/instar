@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "sec162-guard-off-raise",
+  "sessionId": "3baab194-1525-46e9-b5f9-9a9e8d6465e3",
+  "timestamp": "2026-11-21T18:12:16.221Z",
+  "artifactPath": "upgrades/side-effects/sec162-guard-off-raise.md",
+  "artifactSha256": "409f27311945b0a6bdd58f5728cec586c097b28f9ea12d03b20bc5040e303d46",
+  "coveredFiles": [
+    "docs/specs/sec162-guard-off-raise.eli16.md",
+    "src/commands/server.ts",
+    "src/core/TrustRaiseGuard.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/server/routes.ts",
+    "tests/unit/sec162-guard-off-raise.test.ts",
+    "upgrades/next/sec162-guard-off-raise.md",
+    "upgrades/side-effects/sec162-guard-off-raise.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-162 follow-up: a settings approval card opens only on the lease holder and is bound to the machine that opened it, so an approval can never change another machine's settings; independent reviewer concurred.",
+  "eli16Path": "docs/specs/sec162-guard-off-raise.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec162-guard-off-raise.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

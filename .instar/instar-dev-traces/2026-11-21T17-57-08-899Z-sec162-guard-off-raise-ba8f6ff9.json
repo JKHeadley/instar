@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "sec162-guard-off-raise",
+  "sessionId": "3baab194-1525-46e9-b5f9-9a9e8d6465e3",
+  "timestamp": "2026-11-21T17:57:08.899Z",
+  "artifactPath": "upgrades/side-effects/sec162-guard-off-raise.md",
+  "artifactSha256": "0cade8186d010ee887cd91a11a5c043dd4067d4d25a7af3d0142b92848256fce",
+  "coveredFiles": [
+    "docs/specs/sec162-guard-off-raise.eli16.md",
+    "src/core/TrustRaiseGuard.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/data/awareness/guard-off-needs-approval.md",
+    "src/server/routes.ts",
+    "tests/integration/trust-account-path-routes.test.ts",
+    "tests/integration/trust-raise-refusal-routes.test.ts",
+    "tests/unit/sec162-guard-off-raise.test.ts",
+    "upgrades/next/sec162-guard-off-raise.md",
+    "upgrades/side-effects/sec162-guard-off-raise.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-162 security fix: extends the existing trust-raise check to guard-off and guard-weakening changes and lets the existing owner approval card carry them; no new authority, no migration, no state written; independent reviewer concurred after three rounds.",
+  "eli16Path": "docs/specs/sec162-guard-off-raise.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec162-guard-off-raise.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

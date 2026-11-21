@@ -14,6 +14,9 @@ import crypto from 'node:crypto';
 import { PROFILE_DEFAULTS } from './AutonomyProfileManager.js';
 import type { AutonomyProfileLevel } from './types.js';
 import type { TrustLevel } from './ExternalOperationGate.js';
+import { buildCompleteGuardPosture } from '../monitoring/guardPosture.js';
+import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
+import { getConfigByPath } from './devGatedFeatures.js';
 
 // ── The proof ─────────────────────────────────────────────────────────
 
@@ -292,11 +295,76 @@ export function evolutionRaises(before: unknown, patchValue: unknown, profile?: 
  * Every widening a PATCH /config body would cause, compared against the file config it merges into.
  * `profile` is the current autonomy profile, whose defaults fill unset values.
  */
+/**
+ * The top-level settings a person may approve as a config-patch request (the trust journey's card):
+ * the ones `configPatchRaises` judges. SEC-162 added the guard blocks, so a guard-off refusal has an
+ * approval path. One list, read by the request parser and by the apply step.
+ */
+export const APPROVABLE_CONFIG_PATCH_KEYS: ReadonlySet<string> = new Set(['externalOperations', 'evolution', 'monitoring', 'inputGuard', 'responseReview']);
+
 export function configPatchRaises(fileConfig: Obj, patch: Obj, profile?: AutonomyProfileLevel): string[] {
   const out: string[] = [];
   if ('externalOperations' in patch) out.push(...externalOperationsRaises(fileConfig.externalOperations, patch.externalOperations));
   if ('evolution' in patch) out.push(...evolutionRaises(fileConfig.evolution, patch.evolution, profile));
+  out.push(...guardOffRaises(fileConfig, patch));
   return out;
+}
+
+/**
+ * SEC-162: what a patch switches off among the protections. A guard is what the /guards inventory
+ * calls one (buildCompleteGuardPosture: every `monitoring.<key>.enabled` or `monitoring.<key>` boolean,
+ * plus the guard manifest), and the two protections outside it: the input guard (on unless false)
+ * and the response review (on only when true). Switching one on is never a raise.
+ */
+export function guardOffRaises(fileConfig: Obj, patch: Obj): string[] {
+  const out: string[] = [];
+  const after: Obj = { ...(isObj(fileConfig) ? fileConfig : {}) };
+  for (const [k, v] of Object.entries(patch)) after[k] = mergedConfigValue(fileConfig?.[k], v);
+  const before = buildCompleteGuardPosture(fileConfig).posture;
+  const now = buildCompleteGuardPosture(after).posture;
+  for (const key of Object.keys(before)) {
+    if (before[key] !== true) continue;
+    if (now[key] === false) out.push(`turning off the ${guardLabel(key)} guard`);
+    else if (now[key] === undefined) out.push(`replacing the settings of the ${guardLabel(key)} guard without keeping it on`);
+  }
+  // A guard on by default (absent from the file, so absent from the posture) that the patch writes off.
+  for (const key of Object.keys(now)) {
+    if (!(key in before) && now[key] === false && key.startsWith('monitoring.')) out.push(`turning off the ${guardLabel(key)} guard`);
+  }
+  // A guard that stays on but is put into dry run (it then only reports) is switched off in effect.
+  for (const entry of GUARD_MANIFEST) {
+    if (!entry.dryRunConfigPath || !entry.dryRunConfigPath.startsWith('monitoring.')) continue;
+    if (before[entry.key] !== true || now[entry.key] !== true) continue;
+    if (getConfigByPath(fileConfig, entry.dryRunConfigPath) !== true && getConfigByPath(after, entry.dryRunConfigPath) === true) {
+      out.push(`putting the ${guardLabel(entry.key)} guard into dry run`);
+    }
+  }
+  if ('inputGuard' in patch) {
+    const b = isObj(fileConfig?.inputGuard) ? fileConfig.inputGuard : {};
+    const a: Obj = isObj(after.inputGuard) ? after.inputGuard : {};
+    if (b.enabled !== false && a.enabled === false) out.push('turning off the input guard');
+    else if (b.enabled !== false) {
+      // The server defaults each check on and the action to 'warn' (server.ts, InputGuard construction).
+      for (const k of ['provenanceCheck', 'injectionPatterns', 'topicCoherenceReview']) {
+        if (b[k] !== false && a[k] === false) out.push(`turning off the input guard's ${k} check`);
+      }
+      // An action the guard does not know is ranked weakest, so it can never pass as a no-op.
+      const rank = (v: unknown) => (v === 'block' ? 2 : v === 'warn' ? 1 : v === 'log' ? 0 : -1);
+      if (rank(a.action ?? 'warn') < rank(b.action ?? 'warn')) out.push(`weakening the input guard's action to ${String(a.action)}`);
+    }
+  }
+  if ('responseReview' in patch) {
+    const b = isObj(fileConfig?.responseReview) ? fileConfig.responseReview : {};
+    const a = after.responseReview;
+    // The server switches it on for any truthy value (server.ts: `if (config.responseReview?.enabled)`).
+    if (b.enabled && !(isObj(a) && a.enabled)) out.push('turning off the response review');
+    else if (b.enabled && isObj(a) && b.observeOnly !== true && a.observeOnly === true) out.push('putting the response review into observe-only');
+  }
+  return out;
+}
+
+function guardLabel(key: string): string {
+  return key.replace(/^monitoring\./, '').replace(/\.enabled$/, '');
 }
 
 // ── Slack roles ───────────────────────────────────────────────────────
