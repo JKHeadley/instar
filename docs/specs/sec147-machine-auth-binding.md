@@ -21,71 +21,71 @@ The fix is to sign the method, the path and the receiving machine. Machines in a
 
 ## Proposed design
 
-### 1. Two signatures on every updated request
+### 1. The new signature
 
-`signRequest` gains an optional binding `{ method, path, recipientMachineId }`. When given, it adds two headers beside the existing five:
-- `X-Signature-V2`: a signature over `instar-machine-auth-v2|<machineId>|<timestamp>|<nonce>|<sequence>|<bodyHash>|<METHOD>|<path>|<recipientMachineId>`, where `path` is the request path and query exactly as sent (`pathname + search`), and the domain prefix keeps it from ever matching the v1 message.
-- `X-Recipient-Machine`: the recipient's machine id (for diagnostics; the check uses the signed value).
+A new function `signBoundRequest(machineId, privateKeyPem, body, { method, url, recipientMachineId })` returns the existing five headers plus `X-Signature-V2`, a signature over `instar-machine-auth-v2|<machineId>|<timestamp>|<nonce>|<sequence>|<bodyHash>|<METHOD>|<path>|<recipientMachineId>`. `path` is computed from the final request URL with `new URL(url)` (pathname plus search), which is exactly what the HTTP client sends, so string concatenation cannot drift. The domain prefix keeps a v2 signature from ever verifying as v1 or as a mesh ack. `X-Signature` (v1) is always sent too, so an old receiver keeps working.
 
-`X-Signature` (v1) is still sent, so an old receiver keeps working unchanged.
+Every signed call is made with `redirect: 'manual'`, as the desktop calls already are: a redirect would change the path (breaking v2) and would carry the signed headers to another location.
 
-### 2. What an updated receiver checks
+### 2. Three stages, each safe in a mixed pool
 
-- **`X-Signature-V2` present:** it must verify over the request's own method, `req.originalUrl` and this machine's id. A v2 signature that fails, or names another recipient, is refused (403), even if v1 is valid. The v1 signature is not consulted.
-- **v2 absent:** the request is a v1-only request.
-  - If this receiver has already seen a valid v2 request from that sender (`v2Seen`, recorded per sender machine id in the nonce store's directory, set on the first valid v2 request and never cleared except by the sender's revocation), it is refused: the sender is updated, so a v1-only request from it is a stripped replay.
-  - Otherwise it is accepted as today (an old sender), and logged as `v1-only` in the security log.
-- Nonce and sequence checks run after the signature check, as today, for both formats.
+- **Stage 1, accept (this release, every machine):** a receiver verifies `X-Signature-V2` when present, over the request's method, `req.originalUrl ?? req.url` (the WebSocket upgrade passes a raw request with no `originalUrl`) and its own machine id. A present v2 that fails is refused (403, typed `binding-mismatch`). A v1-only request is accepted as today and logged `v1-only`. Each updated machine advertises `machineAuth: { acceptsV2: true }` in its signed heartbeat.
+- **Stage 2, send (same release, automatic per peer):** a sender adds `X-Signature-V2` only to peers whose latest verified heartbeat advertises `acceptsV2`. A peer that has not advertised it gets v1 only, exactly as today. So the new form is sent only to machines known to check it.
+- **Stage 3, refuse v1 (later, owner decision):** `mesh.machineAuth.requireV2` makes a receiver refuse v1-only requests. The agent offers it as a one-tap owner decision when every active pool machine's current signed heartbeat advertises `acceptsV2` and it has sent v2 within the last day; a machine that has not reported is listed as pending, and the owner can mark a machine that is gone as removed.
 
-So two updated machines are protected from their first exchange, without waiting for the rest of the pool; old machines keep talking to everyone.
+**No lockout on downgrade.** Stages 1 and 2 never refuse a v1-only request, so a machine that is rolled back, reinstalled on an older build or recovered onto an older version keeps talking to the pool, and the lead stays coherent. Only stage 3 refuses v1, and its recovery is part of it: a refused v1 sender raises a typed `v1-refused` event and the agent offers the owner a one-tap "accept the old format from <machine> for 24 hours" or "turn off requireV2", applied through the config-apply path.
 
-### 3. Every caller binds
+**The compatibility window, stated.** Until stage 3, a captured request can still be replayed to another machine with its v2 header stripped, as today. The window ends when the owner takes stage 3, which the agent offers as soon as the evidence exists and re-raises weekly until it is taken or the owner records a reason not to.
 
-All 19 `signRequest` call sites (lease broadcast and acks, heartbeat, handoff request/ack/yield, reply markers, live tail, mesh RPC transports, the WebSocket desktop peer auth, the CLI's machine commands) pass the binding. Each knows its target URL and the peer's machine id. A unit test enumerates every `signRequest(` call in `src` and fails if one omits the binding (the same enumeration pattern as the confined-write chokepoint test), so a new caller cannot be added unbound.
+### 3. Failures are not key evidence
 
-Where a request goes through a proxy that rewrites the path (none today: pool calls go direct, `poolPeerFetch`), the binding uses the path the receiver sees; the test plan includes a tunnel-routed call to confirm it is unchanged.
+When v1 verifies but v2 does not, the receiver logs `binding-mismatch` and does not call `onSignatureInvalid`, so a misrouted or replayed request never feeds identity-recovery evidence against the sender. A sender that gets `binding-mismatch` from an address treats it as an address failure (`wrong-recipient`) and tries the peer's next address, as `poolPeerFetch` does for a dead address.
 
-### 4. The last stage: refuse v1 everywhere
+### 4. Every caller binds
 
-A setting `mesh.machineAuth.requireV2` (absent = false). When true, a receiver refuses every v1-only request. It is turned on by the agent, not by hand, once every machine in the pool reports a version that sends v2 (the pool roster already carries each machine's version). The agent offers it as a one-tap owner decision with the list of machines and versions; a machine that has not reported is shown as pending and blocks the offer. Until then the `v2Seen` rule already protects every updated pair.
+All signing call sites move to `signBoundRequest`; `signRequest` stays exported for compatibility but is not called from `src` (a unit test fails on any `signRequest(` call in `src` outside `machineAuth.ts`). Callers that do not know the recipient today get it carried through: the desktop mesh stream ticket row records the target machine id; `MessageRouter`'s `signRequestHeaders(body)` callback gains `{ method, url, recipientMachineId }`, and `relayToMachine` takes the target machine id from the envelope; broadcast calls sign per peer.
+
+### 5. Corrections to the record
+
+Nonces are persisted to disk and kept 60 seconds (`NonceStore`); the per-sender sequence watermark is memory-only. The code comment that calls the watermark persisted is corrected in the build.
 
 ## Decision points touched
 
 | Decision point | Classification | Basis |
 |---|---|---|
 | A present v2 signature must verify over this request and this recipient | invariant | basis: irreversible-consequence; evidence: lead hand-over and lease changes cannot be undone by the receiver once acted on. |
-| v1-only from a sender already seen sending v2 is refused | invariant | basis: enumerable-domain; evidence: an updated sender always sends v2, so v1-only from it can only be a stripped replay. |
-| v1-only from a sender never seen sending v2 is accepted (until `requireV2`) | judgment-candidate | floor: logged per request; arbiter: the owner, offered `requireV2` when every pool machine runs a v2-sending version; fallback: accept, as today, so a mixed pool keeps working. |
+| v2 is sent only to peers whose signed heartbeat advertises acceptsV2 | invariant | basis: enumerable-domain; evidence: it makes the accept and send stages independent per peer. |
+| v1-only requests are accepted until requireV2 | judgment-candidate | floor: logged per request; arbiter: the owner, offered requireV2 on evidence; fallback: accept, so a mixed or rolled-back pool keeps working. |
+| A refused v1 sender after requireV2 | judgment-candidate | floor: typed event and one-tap owner recovery; arbiter: the owner; fallback: refuse. |
 
 ## Multi-machine posture
 
-`v2Seen` is per receiving machine, about each sender: machine-local by design. machine-local-justification: physical-credential-locality (it records what this machine's own verifier has observed from a sender's key; another machine's observation proves nothing about requests arriving here). `requireV2` is set pool-wide through the config-apply path, like other mesh settings.
+Each receiver's verification is local to it, as today. Capability (`acceptsV2`) is learned from each peer's signed heartbeat, which every machine already receives. `requireV2` is set pool-wide through the config-apply path, and its readiness is read from every machine's heartbeat through the pool roster.
 
 ## Simplest robust route
 
-simplestRobustRoute: send both signatures and let each receiver learn, per sender, that the sender is updated. Rejected as worse: a version handshake before each call (an extra round trip and a new failure mode) and a flag-day cutover (breaks a mixed pool). Binding only the recipient would close the reproduced cross-machine replay; method and path are added at no extra cost so that a captured request also cannot be aimed at a different route on its own receiver in any future case where the nonce check does not catch it (for example after that receiver restarts and loses its in-memory nonces).
+simplestRobustRoute: send the new signature only to peers that advertise they check it, and refuse the old one only by an owner decision on evidence. Rejected: a sticky per-sender record of having seen the new form (it locks out a rolled-back machine and can split the lead), a flag-day cutover (breaks a mixed pool), and a version handshake before each call (an extra round trip). Method and path are signed with the recipient because they authenticate the operation the sender intended.
 
 ## Migration
 
 - New optional headers; old receivers ignore them.
-- `v2Seen` is a small JSON file beside the nonce store; absent means not seen.
 - `mesh.machineAuth.requireV2` absent means false.
 
 ## Rollout and maturation
 
-- **Test-agent rung (mixed-version pool, throwaway agents):** three throwaway agents, one on main (v1 only), two on this branch. Verify: lease broadcasts, heartbeats, handoff request and yield, and live tail all work in every direction; the two updated agents refuse a replayed A-to-B request at C and a stripped v1-only replay between them; the old agent's requests are accepted and logged `v1-only`; a lead hand-back between the updated agents and through the old one succeeds.
-- **Development-agent rung:** Echo's pool runs it; the security log's `v1-only` count goes to zero once every machine is updated, which is the evidence for offering `requireV2`.
-- **Fleet:** ships on by default; it refuses nothing that an updated sender sends.
+- **Test-agent rung (mixed-version pool, throwaway agents):** three throwaway agents, one on main (v1 only), two on this branch. Verify: lease broadcasts, heartbeats, handoff request and yield, live tail and the desktop stream work in every direction; the updated agents advertise `acceptsV2` and send v2 only to each other; a replay of an A-to-B v2 request is refused at C; the old agent's requests are accepted and logged `v1-only`; a lead hand-back between the updated agents and through the old one succeeds; one updated agent rolled back to main keeps the lead working; with `requireV2` on, the rolled-back agent is refused and the one-tap recovery restores it.
+- **Development-agent rung:** Echo's pool runs it; readiness for `requireV2` is every active machine's signed heartbeat advertising `acceptsV2` and a v2 send within the last day, never a count of zero v1 traffic (a silent machine sends nothing at any version).
+- **Fleet:** stages 1 and 2 ship on by default; they refuse nothing an old machine sends.
 
 ## Rollback
 
-Revert. Senders stop sending v2; receivers forget the rule. A receiver that kept a `v2Seen` file from the new version would, after a revert of only some machines, refuse their v1-only requests: the rollback instructions say to delete that file on any machine reverted while peers remain updated. (Reverting all machines together needs nothing.)
+Before `requireV2` is on: revert any machine at any time; nothing remembers the new form, so its peers see v1-only requests again. After `requireV2` is on: turn it off first (one config apply, the agent's one-tap), then revert. If a machine was already reverted, the `v1-refused` event offers the same one-tap.
 
 ## Tests
 
-- Unit: v2 verifies only over the same method, path and recipient (each changed in turn is refused); a v2 failure is refused even with a valid v1; v1-only accepted from an unseen sender and refused after `v2Seen`; the domain prefix keeps a v1 signature from verifying as v2; `requireV2` refuses v1-only; every `signRequest` call in `src` passes a binding (enumeration test); the SEC-147 repro now fails (replay to C refused).
+- Unit: v2 verifies only over the same method, path and recipient (each changed in turn is refused); a v2 failure is refused even with a valid v1 and does not call `onSignatureInvalid`; v1-only is accepted until `requireV2` and refused after; the domain prefix keeps a v1 signature from verifying as v2; the signed path is computed from the final URL; a sender adds v2 only for peers advertising `acceptsV2`; `wrong-recipient` moves to the next address; the WebSocket upgrade verifies v2 over `req.url`; no `signRequest(` call remains in `src`; the SEC-147 repro, replayed with v2, is refused at C.
 - Integration: the real lease and handoff routes with v1-only, v2 and mixed senders.
 
 ## Open questions
 
-None for the operator: `requireV2` is offered on evidence, as section 4 describes.
+None for the operator: `requireV2` is offered on evidence (section 2).
