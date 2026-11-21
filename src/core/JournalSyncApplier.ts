@@ -167,6 +167,8 @@ export interface ApplyResult {
   gapsRecorded: number;
   /** Append batches skipped because guardWrite refused (never thrown). */
   guardSkips: number;
+  /** Entries refused because the sender is THIS machine's own id (SEC-088 decision 2). */
+  selfSenderEntries: number;
   /** Divergence signals emitted (coalesced) in this call (rule 3). */
   signals: DivergenceSignal[];
   /** Per-stream final status after this call. */
@@ -185,6 +187,14 @@ export interface ApplierDegradation {
   guardSkips: number;
   appendErrors: number;
   signals: number;
+  /** Entries refused because the sender claimed this machine's own id (SEC-088 decision 2). */
+  selfSenderEntries: number;
+  /**
+   * `journal.sync.badSignature` (SEC-088 decision 5): `trust-grant-record` entries refused
+   * because their `journal-sync` response carried a signature that did not verify against the
+   * registered key of the machine asked.
+   */
+  badSignature: number;
 }
 
 export interface JournalSyncApplierConfig {
@@ -219,6 +229,12 @@ export interface JournalSyncApplierConfig {
    * tracks durable bytes, never uncommitted inbound data.
    */
   onReplicatedRecordsCommitted?: (senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void;
+  /**
+   * This machine's own id (SEC-088 decision 2). When known, a batch whose sender — compared
+   * after the same sanitising used for replica file names — is this machine is refused and
+   * counted: a replica never speaks for this machine. Absent ⇒ no self check (unchanged).
+   */
+  selfMachineId?: string;
 }
 
 function realFs(): JournalFs {
@@ -280,6 +296,8 @@ export class JournalSyncApplier {
    *  the config option is for tests that have the registry up front. */
   private replicatedRegistry?: ReplicatedKindRegistry;
   private replicatedCommitObserver?: (senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void;
+  /** This machine's own id (SEC-088 decision 2); settable because boot wiring learns it late. */
+  private selfMachineId?: string;
 
   /** In-memory meta cache per peer machine (keyed by RAW machineId). */
   private metaCache = new Map<string, PeerMeta>();
@@ -295,6 +313,8 @@ export class JournalSyncApplier {
     guardSkips: 0,
     appendErrors: 0,
     signals: 0,
+    selfSenderEntries: 0,
+    badSignature: 0,
   };
   private loggedClasses = new Set<string>();
 
@@ -307,6 +327,32 @@ export class JournalSyncApplier {
     this.maxEntryBytes = config.maxEntryBytes ?? APPLIER_MAX_ENTRY_BYTES;
     this.replicatedRegistry = config.replicatedRegistry;
     this.replicatedCommitObserver = config.onReplicatedRecordsCommitted;
+    this.selfMachineId = typeof config.selfMachineId === 'string' && config.selfMachineId ? config.selfMachineId : undefined;
+  }
+
+  /** Tell the applier this machine's own id (SEC-088 decision 2). Idempotent; empty is ignored. */
+  setSelfMachineId(machineId: string | undefined | null): void {
+    if (typeof machineId === 'string' && machineId.length > 0) this.selfMachineId = machineId;
+  }
+
+  /**
+   * `journal.sync.badSignature` (SEC-088 decision 5): the client refused `count` entries of a
+   * signature-gated kind because the `journal-sync` response signature did not verify against
+   * the registered key of `askedMachineId`. Counted here so it sits with the other receive
+   * degradation counters; nothing is appended.
+   */
+  recordBadSignature(askedMachineId: string, kind: string, count: number): void {
+    const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+    this.degradation.badSignature += n;
+    this.log('bad-signature', `[journal-sync] journal.sync.badSignature: refused ${n} ${kind} entr${n === 1 ? 'y' : 'ies'} from ${askedMachineId} (response signature did not verify)`);
+    const feature = STATE_SYNC_FEATURE_BY_KIND[kind];
+    if (feature) {
+      featureEvidence.recordAtMostEvery(feature, `${askedMachineId}|bad-signature`, STATE_SYNC_REFUSAL_EVIDENCE_WINDOW_MS, {
+        kind: 'error',
+        reason: 'peer-record-bad-signature',
+        context: { journalKind: kind, senderMachineId: askedMachineId, verdict: 'bad-signature', refused: n },
+      });
+    }
   }
 
   /** The per-entry byte cap for a kind — RAISED for replicated `*-record` kinds so
@@ -404,11 +450,24 @@ export class JournalSyncApplier {
       quarantined: 0,
       gapsRecorded: 0,
       guardSkips: 0,
+      selfSenderEntries: 0,
       signals: [],
       statuses: {},
     };
     try {
       if (!senderMachineId || typeof senderMachineId !== 'string') return result;
+      // SEC-088 decision 2: a replica never speaks for THIS machine. Compared after the same
+      // sanitising used for replica file names, so a sender that would land in
+      // `peers/<self>.<kind>.jsonl` is refused whole (every kind), counted, nothing appended.
+      if (this.selfMachineId && sanitizeMachineId(senderMachineId) === sanitizeMachineId(this.selfMachineId)) {
+        let n = 0;
+        for (const stream of batch || []) n += Array.isArray(stream?.entries) ? stream.entries.length : 0;
+        result.selfSenderEntries += n;
+        this.degradation.selfSenderEntries += n;
+        this.log('self-sender', `[journal-sync] refused a batch whose sender is this machine's own id (${n} entries)`);
+        featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `apply:self-sender`, 3_600_000, { kind: 'error', reason: 'self-sender-refused', context: { senderMachineId, entries: n } });
+        return result;
+      }
       const meta = this.loadMeta(senderMachineId);
 
       for (const stream of batch || []) {
@@ -587,6 +646,10 @@ export class JournalSyncApplier {
     if (kind === 'failure-callout-chunk' && entry.data?.origin !== senderMachineId) return 'forged';
     // Transcript checkpoints (native-conversation-any-machine-access §3f) come only from the machine
     // that ran the session: the inner origin and the named source must both be the sender.
+    // Trust grant records (SEC-088 decision 2, origin binding): the payload origin must equal the
+    // authenticated sender, so a peer can never write a record that names another machine (or
+    // this one) as its author. A mismatch is `forged` exactly like failure-callout-chunk.
+    if (kind === 'trust-grant-record' && entry.data?.origin !== senderMachineId) return 'forged';
     if (kind === 'session-transcript-checkpoint' && (entry.data?.origin !== senderMachineId || entry.data?.sourceMachineId !== senderMachineId)) return 'forged';
 
     // Size cap (parseable ≤ cap). The line we'd write is the serialized entry.

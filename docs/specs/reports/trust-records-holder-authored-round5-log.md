@@ -1,0 +1,11 @@
+# trust-records-holder-authored — round 5 log (2026-11-18)
+
+Reviewers: same three internal reviewers (re-asked), claude-opus-5-5; codex-cli gpt-6-astra (ok); clean-door claude-code claude-fable-5-2 (ok). Standards-Conformance Gate: ran (2 flags: Trust Is Earned by Work = approver item 14a; Close the Loop on the provable forgery signal, answered before reviewers started with one owner notice). Spec hash at review: fd84f9d1.
+
+Round-4 findings: all resolved. Integration: 0 design. Decision-completeness: 0 design.
+
+New design findings (deduplicated, 4): same-epoch contest after sleep leaves a foreign term unrecorded so an approval can run twice (security); withdrawal-by-subject also removes later re-acceptances, a permanent ban (codex + fable); local-file sink records carry no origin, so the ownership rule is undefined for journal-off single-machine agents (codex + fable); the owner notice can be triggered by unsigned injected records or by an older-build peer that took the lease, telling the owner to remove an honest machine (fable).
+
+Resolution: coordinator gains onPeerLeaseObserved(epoch, holder) from view folds, broadcasts and the contested branch, a peer at an epoch >= own is foreign at that epoch; withdrawals stay id-keyed but are written once per acceptance id the withdrawing machine sees for the subject; local-file-sink records are own (single machine only); the notice fires only on signature-verified records after a lease re-read confirms the writer never held the lease since, and codeTaken reads all writers so ids never collide; dark window is a review deadline whose extension needs renewed operator acceptance; decision 4 wording excludes legacy admission.
+
+Left behind (precision): notice repeats per term under lease flapping (re-ask rate reported to the review covers it); response signature remains diagnostics-grade except as the notice gate; "unified" label vs a local grant store alternative (two indexes kept for evidence and the honest denial line); glossary; notifyOwner is Telegram-only today (Slack/app owners get the count, wiring the other channels is filed with the build); onEpochAdvance does not fire on every foreign epoch, so the observer is a poll plus admit-time read (named in the build).
