@@ -72,4 +72,11 @@ describe('conversation page wiring', () => {
     expect(src).toMatch(/if \(v\.ref\.kind !== 'telegram' && v\.ref\.kind !== 'app'\) return;/);
     expect(src).toMatch(/conversationSession\(res, key\)/);
   });
+
+  it('a link styled as the primary button centers its label (Open Chief of Staff sat in the top-left corner)', () => {
+    const css = fs.readFileSync(path.join(__dirname, '../../dashboard/console/console.css'), 'utf8');
+    expect(css).toMatch(/a\.btn-primary \{ display: flex; align-items: center; justify-content: center; text-decoration: none; \}/);
+    // .btn-inline still wins for inline link buttons: it comes later in the file.
+    expect(css.indexOf('a.btn-primary {')).toBeLessThan(css.indexOf('.btn-inline { width: auto;'));
+  });
 });

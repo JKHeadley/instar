@@ -5,6 +5,8 @@ Conversations: each Telegram or app conversation's page now shows whether a sess
 
 Conversations door: where the Conversations view is not switched on, the Conversations door and the dashboard's first page now open Chats instead of "Conversations is not switched on here yet", and that page offers Open Chats.
 
+Buttons: the Open Chief of Staff button on Chats (and two other link buttons) now shows its label centered instead of in the top-left corner.
+
 ## What to Tell Your User
 
 When you open a conversation on the dashboard, you can now jump straight to the session answering it with "Watch the session". If nothing is running, the page says so. The dashboard also now opens on Chats, where you can read and reply, instead of a page saying Conversations is not switched on. Nothing to do.

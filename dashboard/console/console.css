@@ -361,6 +361,8 @@ details.more[open] summary .chev { transform: rotate(90deg); }
   background: linear-gradient(180deg, var(--teal-400), var(--teal-500)); color: #062022;
   font-weight: 700; font-size: 15px; cursor: pointer; transition: filter var(--dur) var(--ease);
 }
+/* A link styled as the primary button centers its label like a button does (it sat in the top-left corner, 2026-11-21). */
+a.btn-primary { display: flex; align-items: center; justify-content: center; text-decoration: none; }
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
 .unlock-error { min-height: 20px; margin-top: var(--s-3); color: var(--bad); font-size: 13px; }
