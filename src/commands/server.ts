@@ -36343,8 +36343,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     let _shadowFoldRunner: { stop(): void } | null = null;
     if (_contextLayers && _foldCoordinator && _foldHolds && hookEventReceiver) {
       try {
+        const { wireShadowFoldStop } = await import('../monitoring/hookEventConsumers.js');
         const { startShadowFoldRunner } = await import('../monitoring/foldShadowRunnerBoot.js');
-        const { ledgerInputs } = await import('../monitoring/foldWiringHelpers.js');
+        const { ledgerInputs, foldPinnedIntelligence, foldMessageRow } = await import('../monitoring/foldWiringHelpers.js');
         const { packetRowSource: shadowRowSource } = await import('../monitoring/contextLayers/standingPacketBoot.js');
         const { assembleStandingPacket, fullPacketPathFor } = await import('../monitoring/contextLayers/standingPacket.js');
         const { findClaudeJobTranscript, finalAssistantText } = await import('../scheduler/jobTranscriptEvidence.js');
@@ -36364,7 +36365,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const configHome = sessionManager.configHomeForSession(s.tmuxSession);
             return shadowTranscriptPath({ framework: CLAUDE_CODE_FRAMEWORK, sessionId: s.claudeSessionId, projectDir: (s as { cwd?: string }).cwd ?? config.projectDir, ...(configHome ? { configHome } : {}) }) || null;
           },
-          onStop: (cb) => { hookEventReceiver.on('Stop', cb); return () => { hookEventReceiver.off('Stop', cb); }; },
+          onStop: (cb) => wireShadowFoldStop(hookEventReceiver, cb),
           onDegraded: (e) => DegradationReporter.getInstance().report({
             feature: 'contextBudget.foldShadow',
             primary: 'A practice fold runs at a clean stop and closes its record',
@@ -36385,7 +36386,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const due = commitmentTracker.getActiveByTopicId(Number(t)).flatMap((c) => [c.checkInAt, c.nextUpdateDueAt]).map((x) => (x ? Date.parse(String(x)) : NaN)).filter((x) => Number.isFinite(x));
               return due.length ? Math.min(...due) : null;
             },
-            messages: (t, limit) => topicMemory ? topicMemory.getRecentMessages(Number(t), limit).map((m) => ({ messageId: m.messageId, fromUser: m.fromUser, text: m.text, at: m.timestamp ?? null })) : [],
+            messages: (t, limit) => topicMemory ? topicMemory.getRecentMessages(Number(t), limit).map((m) => foldMessageRow(m, _memoryPrivacyWired ? ({ senderKey, userId }) => _memoryPrivacyWired!.isOperator(senderKey) || _memoryPrivacyWired!.isOwnerSender(senderKey, userId) : undefined)) : [],
             archivedEntryIds: (t) => new Set(Object.keys(layers.archive.readIndex(t).entries)),
             artifactSignals: (t, h) => {
               // §7.1: an OPEN commitment of this topic naming a finished stretch's artifact contests that stretch.
@@ -36394,7 +36395,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return { signals, mergedNotMentioned: [] };
             },
             packetInputs: (t) => ({ store: layers.store, rows, intent: topicIntentStore.read(Number(t)), ...ledgerInputs(layers.store as never, rows, t) }),
-            intelligence: sharedIntelligence ?? null,
+            intelligence: foldPinnedIntelligence(sharedIntelligence),
             sessionOps: {
               exists: (tmux) => sessionManager.tmuxSessionExists(tmux),
               workState: (tmux) => sessionManager.checkSessionWorkState(tmux),

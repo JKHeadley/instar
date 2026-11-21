@@ -135,7 +135,7 @@ describe('verifyHandoff', () => {
 describe('buildHandoffRequest and tool provenance', () => {
   it('never asks a session for a transcript entry id it was not given', () => {
     const r = buildHandoffRequest({ foldId: 'f', messages: [{ messageId: 1, at: null, fromUser: true, text: 'hi' }] });
-    expect(r).toContain('"origin":"user|agent|tool"');
+    expect(r).toContain('"origin":"user|agent|tool|other"');
     expect(r).not.toContain('tool:<entry>');
   });
 

@@ -13,6 +13,11 @@
 import type { TranscriptArchive } from './contextLayers/TranscriptArchive.js';
 import { spanEntriesFromArchive, type SpanEntry } from './contextLayers/spanSampler.js';
 import type { FoldedSpan } from './foldProbe.js';
+import type { TopicMessage } from '../memory/TopicMemory.js';
+import { classifyRow, type OperatorResolver } from './contextLayers/userCorpus.js';
+import type { IntelligenceProvider } from '../core/types.js';
+import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 
 export const FOLDED_SPAN_MAX_ENTRIES = 4_000;
 
@@ -70,4 +75,30 @@ export function ledgerInputs(
     if (r.status === 'settled' || r.status === 'derived-settled') ledgerDecisions.push({ key: r.entryKey, boundMessageId: bound, text: t });
   }
   return { anchorText, ledgerText: ledgerItems.map((l) => `${l.key} (${l.type}): ${l.text}`).join('\n'), ledgerItems, ledgerDecisions };
+}
+
+/**
+ * The model for practice-fold calls (§9): handoffs and folded spans stay on the
+ * conversation's own provider family. The runner handles Claude Code sessions only,
+ * so calls are pinned there. A provider that cannot honour the pin yields null, which
+ * the runner records as `no-judge`: the fold stops rather than risk another vendor.
+ */
+export function foldPinnedIntelligence(base: IntelligenceProvider | null | undefined): IntelligenceProvider | null {
+  if (!base) return null;
+  if (base instanceof IntelligenceRouter) {
+    return { evaluate: (prompt, options) => base.evaluate(prompt, { ...options, pinnedFramework: CLAUDE_CODE_FRAMEWORK }) };
+  }
+  // No router means no routing or swap, so the single provider must itself say it is Claude.
+  return base.frameworkId === CLAUDE_CODE_FRAMEWORK ? base : null;
+}
+
+/**
+ * A topic row for the handoff flow. `fromUser` here means the verified operator's own
+ * typed message (§6.2): a forwarded, relayed or third party's row is never `operator`,
+ * so it cannot be labelled or quoted as the operator's words.
+ */
+export function foldMessageRow(m: TopicMessage, isOperator?: OperatorResolver): { messageId: number; fromUser: boolean; fromOther: boolean; text: string; at: string | null } {
+  const isHumanOrPeer = m.fromUser === true || m.origin === 'relay' || m.origin === 'a2a' || m.forwarded === true;
+  const op = isHumanOrPeer && classifyRow(m, isOperator).label === 'operator';
+  return { messageId: m.messageId, fromUser: op, fromOther: isHumanOrPeer && !op, text: m.text, at: m.timestamp ?? null };
 }

@@ -1851,7 +1851,11 @@ are the rungs (13.17).
    by a throwaway headless session seeded with the packet; would-be grades and
    costs recorded. Ends on at least 40 shadow folds with the would-be `lost`
    rate and the measured per-fold cost term.
-4. **Phase 3 — pilot (dev-agent-live, one topic).** Folding on for the build
+4. **Phase 3 — pilot (dev-agent-live, one topic).** Entry condition: no text
+   from another person can render as the session's own words, including a partial
+   quote marked `user` or a whole row marked `agent` (today only an exact whole-row
+   match is relabelled `other`; shadow packets reach only the throwaway answerer).
+   Folding on for the build
    desk, with a live inbound queue on its owner; Instar App topic in shadow;
    backstop window set per machine where the canary is `healthy`. Ends on the
    section 11 bar across at least 40 real folds.

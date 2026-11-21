@@ -133,3 +133,6 @@ Justin asked for faster experiments, so the first check now needs three clean
 days of fresh summaries instead of a week. Practice runs also gained one safety
 detail: when a session keeps something it copied from a tool or a web page, that
 text stays marked as data, never as the session's own words or as instructions.
+
+Before real shrinking starts (Phase 3), one more safety item must be closed: a
+partial quote of someone else's message must never read as the session's own words.

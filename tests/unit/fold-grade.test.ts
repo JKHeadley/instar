@@ -150,3 +150,11 @@ describe('itemPresent with a neutralized item', () => {
     expect(itemPresent('before\nafter', item, 'x')).toBe(false);
   });
 });
+
+describe('parseGrade closed vocabulary', () => {
+  it('accepts each grade through the parser, including lost', () => {
+    for (const grade of ['retained', 'retrievable', 'lost'] as const) {
+      expect(parseGrade(JSON.stringify({ grade, absent: false, reason: 'x' }))).toMatchObject({ grade });
+    }
+  });
+});

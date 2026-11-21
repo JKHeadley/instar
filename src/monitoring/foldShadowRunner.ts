@@ -116,6 +116,19 @@ export interface ShadowRunnerDeps {
 
 type Row = Omit<ShadowFoldRow, 't'>;
 
+/**
+ * The send-back request reaches a live session as a first-party turn, so it holds
+ * only fixed text and the verifier's own codes. Never the audit's free-text questions
+ * or a deficiency's detail: both derive from a handoff that can quote tool output.
+ */
+export function sendBackQuestions(deficiencyCodes: readonly string[], droppedDecisions: number): string[] {
+  const out = ['Re-check your note against your full context: is everything you called finished really finished, and is everything you still need kept word for word with the right origin?'];
+  const codes = [...new Set(deficiencyCodes)].filter((c) => /^[a-z0-9-]{1,64}$/.test(c));
+  if (codes.length) out.push(`The checker reported: ${codes.join(', ')}.`);
+  if (droppedDecisions > 0) out.push(`${droppedDecisions} recorded decision(s) sit in a stretch you called finished but are not quoted or kept.`);
+  return out;
+}
+
 export async function runShadowFoldOnStop(d: ShadowRunnerDeps, s: LiveTopicSession): Promise<Row | null> {
   if (!d.enabled() || s.framework !== CLAUDE_CODE_FRAMEWORK || !/^\d{1,15}$/.test(s.topicKey)) return null;
   const started = d.now();
@@ -232,9 +245,8 @@ export async function runShadowFoldOnStop(d: ShadowRunnerDeps, s: LiveTopicSessi
       const dropped = droppedDecisions(handoff, inputs.ledgerDecisions);
       const step = nextAuditStep(sendBacks, audit.verdict, check, { protectedDefect: dropped.keys.length > 0, droppedSpans: dropped.spans });
       if (step.action === 'decline') return end('declined', 'fold-declined: audit');
-      const deficiencyQs = verification.deficiencies.map((x) => `${x.code}: ${x.detail}`);
       if (step.action === 'accept' && verification.ok) break;
-      if (step.action === 'send-back' || (!verification.ok && sendBacks < 1)) { sendBacks++; questions = [...audit.verdict.questions, ...deficiencyQs, ...dropped.keys.map((k) => `decision ${k} is in a stretch you called finished but is not quoted or kept`)]; continue; }
+      if (step.action === 'send-back' || (!verification.ok && sendBacks < 1)) { sendBacks++; questions = sendBackQuestions(verification.deficiencies.map((x) => x.code), dropped.keys.length); continue; }
       // A still-deficient handoff: demote the contested spans to the verbatim tail (§7.4).
       demoted = step.spans;
       if (!verification.ok) return end('declined', 'fold-declined: audit (handoff still deficient)');
@@ -258,7 +270,7 @@ export async function runShadowFoldOnStop(d: ShadowRunnerDeps, s: LiveTopicSessi
     const v = verifyHandoff({ ...handoff!, finished }, { messages, archivedEntryIds: archived, backgroundEvidence: 'none' });
     const tail: TailItem[] = [...v.coverage.unclassified, ...v.coverage.tail].sort((a, b) => a - b).map((id) => {
       const m = messages.find((x) => x.messageId === id)!;
-      return m.fromUser ? { kind: 'operator', messageId: id } : { kind: 'agent', messageId: id, text: m.text };
+      return m.fromUser ? { kind: 'operator', messageId: id } : m.fromOther ? { kind: 'other', messageId: id, text: m.text } : { kind: 'agent', messageId: id, text: m.text };
     });
     const t1 = d.now();
     const packet = buildFoldPacket({ store: inputs.store, rows: inputs.rows, topicKey: s.topicKey, foldId, handoff: v, narrative: { openThreads: handoff!.openThreads, nextStep: handoff!.nextStep, background: handoff!.background, finished }, tail, intent: inputs.intent, now: d.now() });

@@ -153,7 +153,7 @@ describe('the shadow fold runner on the production trigger path', () => {
     expect(agentServer).toBeGreaterThan(0);
     expect(runner).toBeGreaterThan(agentServer);
     expect(src).toContain("shadowGate(liveConfig.get<boolean | undefined>('contextBudget.fold.shadow', undefined), config)");
-    expect(src).toContain("onStop: (cb) => { hookEventReceiver.on('Stop', cb);");
+    expect(src).toContain('onStop: (cb) => wireShadowFoldStop(hookEventReceiver, cb),');
     expect(src).toContain('ledger = () => server.getTokenLedger()');
     expect(src).toContain('issueToken: (id, t) => _memoryPrivacyWired.issueFoldProbeToken(id, t)');
     const coordBuild = src.indexOf("await import('../monitoring/foldCoordinatorBoot.js')");

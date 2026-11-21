@@ -45,7 +45,7 @@ export interface ShadowFoldRow {
 
 export function foldShadowLogDir(stateDir: string): string { return path.join(contextLayersRoot(stateDir), '_fold-shadow'); }
 const logFile = (stateDir: string) => path.join(foldShadowLogDir(stateDir), 'folds.jsonl');
-const rotatedFile = (stateDir: string) => path.join(foldShadowLogDir(stateDir), 'folds.1.jsonl');
+const rotatedFile = (stateDir: string) => path.join(foldShadowLogDir(stateDir), 'folds.jsonl.1');
 
 /** A code token: what a reason, deficiency or problem may be in the log (never free text). */
 /** A code is a hyphenated token (span-overlap, not-clean, no-judge), or one of the few known single-word codes. */
