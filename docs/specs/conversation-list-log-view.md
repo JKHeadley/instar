@@ -31,32 +31,34 @@ chat history, scroll-back, requests from other machines, and the first-fill beha
 
 ## Design
 
-- **The view.** `TelegramAdapter` keeps a view of the log file: the newest 500 rows per topic,
-  exactly as a file read parses them.
-  - **Build:** one pass of small awaited reads, single flight, started in the background (at
-    server start where the app is on, and by a list request when the view is not ready). It reads
-    to the end of the file and publishes in the same turn that confirms the same file and size, so
-    no save falls between.
-  - **Kept current:** each successful save adds its row in persisted JSON shape.
-  - **Dropped and rebuilt** after a trim, a failed save (which may have written part of a line), or
-    a save onto a torn last line.
-  - **A failed build** publishes nothing; the next list request may start another after 5 s,
-    doubling to 5 min.
-- **The only reader.** `getTopicHistoryForList(topicId, limit)` is the only reader of the view. It
-  is used by the list producer and by the unread source's Telegram history (unread counts, the unread
-  divider, read-mark resolution). It is `getTopicHistory` with one difference: when the view is
-  ready, the tail-cache seed and the per-topic scan read the view instead of the file. When the view
-  is not ready (building, failed, or switched off), it runs the old `getTopicHistory` immediately.
-  Every failure path is therefore the old code's by construction.
-- **Off switch.** `telegramHistoryView.enabled: false` (default on; read live through LiveConfig
-  where available) returns the list to the old read with no code change, and drops the view.
-- **Trim.** Both save paths keep the old trim code byte for byte. The only addition is a notice
-  after a successful trim that drops and rebuilds the view: `noteLogRotated()` in `maybeRotateLog`,
-  and an `onRotated` callback in `MessageLogger`.
+- `TelegramAdapter` keeps a view of the log file: the newest 500 rows per topic, exactly as a file
+  read parses them. One pass of small awaited reads builds it, single flight, in the background (at
+  server start where the app is on, and by a list request when it is not ready). It publishes in the
+  turn that confirms the end of the file and records that file's identity (inode, device, size,
+  modification time). Each successful save then adds its row and records the new identity.
+- `getTopicHistoryForList(topicId, limit)` is the only reader of the view, used by the list producer
+  and the unread source's Telegram history. A cached tail answers from the cache, as
+  `getTopicHistory` does. Otherwise, while the view is usable, it answers from the view and **never
+  writes the view's rows into the shared tail cache**, so the view can affect the list response and
+  nothing else: no chat ever reads it. Otherwise it is `getTopicHistory` itself, immediately.
+- The view is usable only when switched on, built, under its memory cap, and the file at the path
+  has the identity it recorded. Any difference (another process appended, the file was replaced,
+  a trim, a failed save, a save onto a torn last line) drops it, the request takes the old read, and
+  the view is rebuilt in the background.
+- Save path: the view is updated only after the save's own steps (trim check, cache update,
+  notifications) have all run, and fully isolated: a failure there only drops the view.
+- Memory cap: 64 MB of row text (the retained rows of a 100 000-line log of Echo's average row size
+  fit well inside). A build over the cap is abandoned and a save that takes it over drops the view;
+  either way the old read runs.
+- An adapter without these methods (a stand-in in tests, an older build) keeps the old read.
+- `telegramHistoryView.enabled: false` (default on; read live through LiveConfig where available)
+  returns the list to the old read with no code change.
+- Trim: the old code in both save paths, byte for byte; the only addition is a notice so the view
+  rebuilds after a trim (`noteLogRotated()`; `MessageLogger`'s `onRotated` callback).
 
 ## Decision points touched
 
-No gate, filter, block or allow decision is added, removed or changed.
+No gate, filter, block or allow decision is added, removed or changed. Fixed values: the 64 MB view cap and the 5 s to 5 min build backoff are resource brakes; on either, the old read runs.
 
 ## Multi-machine posture
 

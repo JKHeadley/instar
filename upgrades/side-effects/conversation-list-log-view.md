@@ -44,8 +44,12 @@ No new static heuristic at a competing-signals decision point. The build-retry b
 
 ## 5. Interactions
 
-- **Readers:** the view is read only through `getTopicHistoryForList`, which returns what `getTopicHistory` returns and populates the tail cache the same way. Every other reader uses `getTopicHistory`, unchanged.
-- **Races:** the view is published in the turn that confirms the end of the file. A trim, a failed save or a save onto a torn last line drops it and rebuilds it.
+- **Readers:** the view is read only through `getTopicHistoryForList`, which returns what `getTopicHistory` returns and NEVER writes the view's rows into the shared tail cache, so no chat can read the view. Every other reader uses `getTopicHistory`, unchanged.
+- **Self-check:** before every use the view checks the file's inode, device, size and modification time against what it was built from. Any difference (an external append, a replaced file) uses the old read and rebuilds in the background.
+- **Save path:** the view is updated only after the save's trim check, cache update and notifications, and fully isolated; a failure only drops the view.
+- **Memory cap:** 64 MB of row text; over it, the old read runs.
+- **Optional capability:** an adapter without the new methods (test stand-ins, older builds) keeps the old read; 36 server-constructing tests with stand-in adapters were run, targeted.
+- **Races:** the view is published in the turn that confirms the end of the file. A trim, a failed save, a save onto a torn last line or any change of the file's identity drops it and rebuilds it.
 - **Unread source:** it reads through the list path. Counts, the unread divider and read-mark resolution therefore get the same data from the view instead of the file.
 
 ## 6. External surfaces

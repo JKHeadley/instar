@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "conversation-list-log-view",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T12:59:15.327Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-log-view.md",
+  "artifactSha256": "f14a201f8f1f11ec02fc3e7a9300f3894ef0b3bfd08864aa5b1552895a291c59",
+  "coveredFiles": [
+    "docs/specs/conversation-list-log-view.eli16.md",
+    "docs/specs/conversation-list-log-view.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/telegram-list-log-view.test.ts",
+    "upgrades/side-effects/conversation-list-log-view.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review fixes: self-checked, list-only, isolated, capped view; optional capability.",
+  "eli16Path": "docs/specs/conversation-list-log-view.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-log-view.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the view build is request- or boot-started with a time brake and no timer; not a self-triggered loop"
+  }
+}

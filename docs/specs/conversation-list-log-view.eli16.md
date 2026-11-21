@@ -8,7 +8,7 @@ The phone and Mac apps' conversation list asked the server, for every conversati
 
 ## What this changes
 
-The server keeps a copy in memory of what that slow file read returns: the newest 500 messages of each conversation, exactly as stored in the file. It builds the copy once in the background, in small pieces, and keeps it up to date as messages are saved. Only the conversation list, and the unread counts it shows, read the copy.
+The server keeps a copy in memory of what that slow file read returns: the newest 500 messages of each conversation, exactly as stored in the file. It builds the copy once in the background, in small pieces, and keeps it up to date as messages are saved. Only the conversation list, and the unread counts it shows, read the copy, and the copy is never passed on to anything else: opening a chat always reads the server's ordinary history, never the copy. Before every use the copy checks that the file is still exactly the one it was built from (same file, same size, same last-change time); if anything else changed the file, the list reads the file the old way and the copy is rebuilt. The copy also has a size limit; past it, the old read is used.
 
 If the copy isn't ready (still building, a failed build, or the off switch), the list does exactly what it did before, straight away. Nothing ever waits for the copy, so every way this can go wrong behaves exactly like the old code.
 

@@ -194,4 +194,69 @@ describe('Telegram log view', () => {
     expect(a.getTopicHistoryForList(1, 5)).toEqual([]);
     SafeFsExecutor.safeRmSync(empty, { recursive: true, force: true, operation: OP });
   });
+
+  it('injected: an append by another process after the build is seen: the old read runs and the view rebuilds', async () => {
+    await adapter.loadHistory();
+    fs.appendFileSync(logPath, JSON.stringify({ messageId: 8500, topicId: 1011, text: 'written by another process', fromUser: true, timestamp: at(8500), sessionName: null }) + '\n');
+    const rows = adapter.getTopicHistoryForList(1011, 500);
+    expect(rows.at(-1)?.text).toBe('written by another process');
+    expect(rows).toEqual(fileRead(1011));
+    expect(adapter.isHistoryLoaded()).toBe(false); // dropped; a rebuild is under way
+    await adapter.loadHistory();
+    (adapter as unknown as Inner).topicTailCache.clear();
+    expect(adapter.getTopicHistoryForList(1011, 500)).toEqual(fileRead(1011));
+  });
+
+  it('injected: a replaced file (a new inode) is seen: the old read runs', async () => {
+    await adapter.loadHistory();
+    const kept = fs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean).filter((l) => !l.includes('"topicId":1012'));
+    const tmp = `${logPath}.replacement`;
+    fs.writeFileSync(tmp, kept.join('\n') + '\n');
+    fs.renameSync(tmp, logPath);
+    expect(adapter.getTopicHistoryForList(1012, 500)).toEqual([]);
+    expect(adapter.isHistoryLoaded()).toBe(false);
+  });
+
+  it('a list read served from the view never writes into the shared history cache', async () => {
+    await adapter.loadHistory();
+    const cache = (adapter as unknown as Inner).topicTailCache;
+    cache.clear();
+    expect(adapter.getTopicHistoryForList(1013, 5).length).toBeGreaterThan(0);
+    expect(cache.has(1013)).toBe(false);
+    // A chat read afterwards is the old read from the file, unaffected by the view.
+    const reads = vi.spyOn(fs, 'readFileSync');
+    expect(adapter.getTopicHistory(1013, 500)).toEqual(fileRead(1013));
+    expect(reads.mock.calls.filter((c) => String(c[0]) === logPath).length).toBeGreaterThan(0);
+  });
+
+  it('injected: a view-conversion failure after a save leaves the trim check, cache update and notification untouched', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    adapter.registerTopicSession(1014, 's-1014', 'Planning notes');
+    adapter.getTopicHistory(1014, 5); // the topic's tail is cached, as for a live conversation
+    await adapter.loadHistory();
+    const notified: number[] = [];
+    adapter.onMessageLogged = (e) => { notified.push(e.messageId); };
+    const trim = vi.spyOn(adapter as unknown as { maybeRotateLog(): void }, 'maybeRotateLog');
+    vi.spyOn(adapter as unknown as { toViewRow(r: unknown): unknown }, 'toViewRow').mockImplementation(() => { throw new Error('simulated conversion failure'); });
+    adapter.logInboundMessage({ messageId: 8600, topicId: 1014, text: 'saved anyway', timestamp: at(8600) });
+    expect(trim).toHaveBeenCalledTimes(1);
+    expect((adapter as unknown as Inner).topicTailCache.get(1014)?.some((r) => (r as { messageId: number }).messageId === 8600)).toBe(true);
+    expect(notified).toEqual([8600]);
+    expect(fs.readFileSync(logPath, 'utf-8')).toContain('"saved anyway"');
+    expect(adapter.isHistoryLoaded()).toBe(false); // only the view was given up
+  });
+
+  it('over the memory cap the view is not built (or is dropped) and the old read runs', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    (adapter as unknown as { logViewByteCap: number }).logViewByteCap = 1_000;
+    expect(await adapter.loadHistory()).toBe(false);
+    expect(adapter.isHistoryLoaded()).toBe(false);
+    expect(adapter.getTopicHistoryForList(1003, 500)).toEqual(fileRead(1003));
+    const fresh = make(dir); extra.push(fresh);
+    expect(await fresh.loadHistory()).toBe(true);
+    (fresh as unknown as { logViewByteCap: number }).logViewByteCap = (fresh as unknown as { logViewBytes: number }).logViewBytes + 10;
+    fresh.logInboundMessage({ messageId: 8700, topicId: 1015, text: 'x'.repeat(200), timestamp: at(8700) });
+    expect(fresh.isHistoryLoaded()).toBe(false);
+    expect(fresh.getTopicHistoryForList(1015, 500).at(-1)?.messageId).toBe(8700);
+  });
 });

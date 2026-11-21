@@ -7916,7 +7916,7 @@ export class AgentServer {
         machineId: () => appSvc.deps.machineId(),
         app: appSvc.store,
         telegram: telegram ? {
-          history: (topicId, limit) => telegram.getTopicHistoryForList(topicId, limit) as unknown as TelegramRowLike[],
+          history: (topicId, limit) => (typeof telegram.getTopicHistoryForList === 'function' ? telegram.getTopicHistoryForList(topicId, limit) : telegram.getTopicHistory(topicId, limit)) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
           exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
@@ -7985,7 +7985,8 @@ export class AgentServer {
           const projectTitles = cosProjectTitles();
           return options.telegram!.getAllTopicMappings().map((m) => {
           // From the in-memory log view when ready; otherwise the old read, immediately (conversation-list-log-view).
-          const last = options.telegram!.getTopicHistoryForList(m.topicId, 1)[0];
+          const tg = options.telegram!;
+          const last = (typeof tg.getTopicHistoryForList === 'function' ? tg.getTopicHistoryForList(m.topicId, 1) : tg.getTopicHistory(m.topicId, 1))[0];
           return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
         } : undefined,
@@ -7993,7 +7994,8 @@ export class AgentServer {
       // The conversation list's in-memory log view (docs/specs/conversation-list-log-view.md): off switch
       // `telegramHistoryView.enabled: false` (read live) returns the list to the old read. Built in the
       // background where the app is on; nothing waits for it.
-      if (options.telegram) {
+      // An optional capability: an adapter without it (a stand-in in tests, an older build) keeps the old read.
+      if (options.telegram && typeof options.telegram.setHistoryViewSwitch === 'function' && typeof options.telegram.loadHistory === 'function') {
         const lc = options.liveConfig;
         options.telegram.setHistoryViewSwitch(() => (lc?.get
           ? lc.get<boolean | undefined>('telegramHistoryView.enabled', undefined)
