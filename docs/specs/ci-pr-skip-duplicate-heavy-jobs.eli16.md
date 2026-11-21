@@ -15,15 +15,15 @@ Every change to the agent software goes through two sets of tests. Our own two M
 
 ## What this adds
 
-On pull requests, GitHub now skips the heavy jobs: the eight unit test shards, the integration tests, the end-to-end tests, the two desktop packaging jobs, and, because they depend on the unit shards, the build and contract jobs. Those jobs still run in full on every push to main, which is where releases come from, and whenever someone starts the workflow by hand. Pull requests keep the fast checks that Local Verify does not cover: the type check, repository invariants, documentation coverage, standards coverage and cartographer freshness.
+On pull requests, GitHub now skips the heavy jobs: the eight unit test shards, the integration tests, the end-to-end tests, and, because they depend on the unit shards, the build and contract jobs. Those jobs still run in full on every push to main, which is where releases come from, and whenever someone starts the workflow by hand. Pull requests keep both native desktop packaging jobs, which check platform compilation and package contents beyond the test suites, and the fast checks that Local Verify does not cover: the type check, repository invariants, documentation coverage, standards coverage and cartographer freshness.
 
 ## The safeguards
 
-- **Nothing merges with less testing than before.** Local Verify already runs the whole suite on every pull request and is the only required check. GitHub's copy was a repeat, not an extra gate.
+- **The required full-suite check remains.** Local Verify runs every suite before merge. Native Mac and Windows packaging checks stay on pull requests because they add platform coverage. The Node-version trade-off is stated below.
 - **Main is still tested on GitHub.** The full suite still runs on every merge to main, on GitHub's older Node versions too, so a problem that shows up only there is still caught, after the merge rather than before it.
 - **Every merge path still works.** The agent's merge step reads the Local Verify record (the local floor). One caller, the feedback executor, always asked the merge script to wait for GitHub's checks first; that would have blocked every one of its merges once the heavy jobs stopped running on pull requests, so the merge script now honours the local floor for that caller too. If the floor is ever switched back to GitHub's checks, merges of pull requests are refused outright until the heavy jobs are restored there.
 - **A Node 20 or 22 regression can now reach npm first.** Our machines test on Node 24. GitHub tests Node 20 and 22 on main, but the publish workflow runs on the same push and does not wait for it, so such a regression would be published and then flagged, rather than flagged on the pull request. This is stated in the review so it is a known cost, not a surprise.
-- **One commit undoes it.** The change is a single condition on each heavy job plus a comment. Reverting the commit restores the old behaviour exactly.
+- **One commit undoes it.** Reverting the workflow and merge-path changes restores the prior behavior; no stored user data changes.
 
 ## What ships when
 
@@ -31,4 +31,4 @@ This ships with the next release after it merges, but it takes effect for every 
 
 ## What you actually need to decide
 
-Nothing. The Chief of Staff approved this under the owner's throughput priority on 21 November 2026, because it is reversible and does not weaken the required checks. The separate question of running the release job on one of our own Macs, which would place publishing keys on that machine, stays with the owner.
+Nothing. The Chief of Staff approved removing duplicate tests under the owner's throughput priority on 21 November 2026. The owner separately approved using our Mac for releases; that implementation remains under security review.

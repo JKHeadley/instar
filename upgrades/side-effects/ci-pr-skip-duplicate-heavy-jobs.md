@@ -3,11 +3,11 @@
 **Version / slug:** `ci-pr-skip-duplicate-heavy-jobs`
 **Date:** `2026-11-21`
 **Author:** `echo (session echo-increasing-throughput)`
-**Second-pass reviewer:** `not required`
+**Second-pass reviewer:** `independent reviewers; exact final head reviewed before merge`
 
 ## Summary of the change
 
-Tier 1. Two workflow files, one script, one runtime source file (`src/feedback-factory/execute/FeedbackExecutorService.ts`, a two-line mapping) and two tests. In `.github/workflows/ci.yml` each of the five heavy jobs (the unit shard matrix, integration, e2e, the Windows and Mac desktop packaging jobs) gains `if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'`; `contract` and `build` follow through `needs: unit`; the comment above `concurrency:` records why and the older paragraph about review-triggered runs is reconciled with it. In `scripts/safe-merge.mjs`, `--auto` now honours the selected floor: under the `local` floor it takes the local path (new `resolveFloorSelection` and `autoTakesActionsFloor`), because the feedback executor always calls `--auto` and would otherwise wait on Actions checks that no longer run on pull requests. `.github/workflows/publish.yml` loses a stale comment that claimed ci.yml gates pull requests through branch protection. `tests/unit/safe-merge-auto-local-floor.test.ts` is new. Effort: three review rounds (five concerns in all, each fixed), two commit attempts. More than a Tier-1 change usually needs; each round found a real consequence for a merge path, which is what the review is for. The only runtime `src/` change is that executor mapping.
+Tier 1. Two workflow files, one script, one runtime source file (`src/feedback-factory/execute/FeedbackExecutorService.ts`, a two-line mapping) and two tests. In `.github/workflows/ci.yml` each of the three duplicated test jobs (the unit shard matrix, integration and e2e) gains `if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'`; `contract` and `build` follow through `needs: unit`; the comment above `concurrency:` records why and the older paragraph about review-triggered runs is reconciled with it. In `scripts/safe-merge.mjs`, `--auto` now honours the selected floor: under the `local` floor it takes the local path (new `resolveFloorSelection` and `autoTakesActionsFloor`), because the feedback executor always calls `--auto` and would otherwise wait on Actions checks that no longer run on pull requests. `.github/workflows/publish.yml` loses a stale comment that claimed ci.yml gates pull requests through branch protection. `tests/unit/safe-merge-auto-local-floor.test.ts` is new. Effort: three review rounds (five concerns in all, each fixed), two commit attempts. More than a Tier-1 change usually needs; each round found a real consequence for a merge path, which is what the review is for. The only runtime `src/` change is that executor mapping.
 
 ## Decision-point inventory
 
@@ -57,6 +57,8 @@ No new static heuristic at a competing-signals decision point. The event-name te
 
 ---
 
+The Windows and Mac desktop packaging jobs remain on pull requests because they verify platform-specific compilation and package contents that a full test-suite run does not establish. They skip only review events. A fresh independent review identified this distinction; the change now removes duplicate suite execution without moving those package checks after merge.
+
 ## 6. External surfaces
 
 Visible to anyone reading a pull request's checks on GitHub: the heavy jobs show as skipped. No agent, user or external system reads those job results; the green-PR merger reads the Local Verify commit status.
@@ -92,3 +94,11 @@ Approved to ship as Tier 1 after the second-pass concerns were fixed. The change
 - `ruby -ryaml` parse of the edited workflow: valid.
 - Main ruleset read live on 2026-11-21: required status checks = `instar/local-verify` only.
 - GitHub queue read live on 2026-11-21 10:35 PST: 121 queued runs for this repository, 2 in progress; the oldest publish run waited from 08:00 to 10:02 for its first machine.
+
+## Continuation review on 2026-11-21
+
+**Reviewer:** independent Codex agent `/root/release_integration_review`, reviewing PR head `72225e38da188259c33af333f2523583566b191b`, the worktree merge head `80c50a8f3e3bc0572418d55ef11ce9f768c2d414`, and the final uncommitted workflow correction.
+
+Concur with the merge-floor refactor and executor pending-result mapping. Concern raised and resolved: the native Windows build/transport and Mac package checks are not established by Local Verify's test suites, so both packaging jobs remain on pull requests and skip only review events. The reviewer re-read that correction and concurred. Documentation now describes the actual scope and Node-version trade-off, and release timing remains unmeasured until deployment. The final commit includes this artifact and its fresh trace together with the workflow changes.
+
+Targeted verification under Node 24.14.1: 96 tests passed across workflow concurrency/timeouts and merge-floor routing/hardening. The final head still requires the shared full-suite Local Verify run before merge. No extra full suite is launched outside that shared line.

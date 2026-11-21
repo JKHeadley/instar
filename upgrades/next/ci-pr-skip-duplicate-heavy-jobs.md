@@ -4,7 +4,7 @@
 
 ## What Changed
 
-In `.github/workflows/ci.yml`, the unit shard matrix, the integration and e2e jobs and the two desktop packaging jobs now carry `if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'`; the contract and build jobs follow through `needs: unit`. These jobs still run on every push to main and on workflow_dispatch. Pull requests keep Type Check, Repo Invariants, Docs Coverage, Cartographer Freshness and Standards Enforcement Coverage.
+In `.github/workflows/ci.yml`, the unit shard matrix and the integration and e2e jobs now carry `if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'`; the contract and build jobs follow through `needs: unit`. These jobs still run on every push to main and on workflow_dispatch. Native Windows and Mac packaging remain on pull requests because their compilation, transport and package-content checks are additional coverage; they skip review events only. Pull requests also keep Type Check, Repo Invariants, Docs Coverage, Cartographer Freshness and Standards Enforcement Coverage.
 
 Why: Local Verify runs the full suite on the agent's own machines for every pull request and is the only required status check on main. GitHub ran the same suite again, about twenty jobs per push, against an account that runs about four jobs at once, so the publish workflow waited hours for a runner (two hours for its first machine on 2026-11-21). Approved by the Chief of Staff under the owner's release-throughput priority.
 
@@ -14,7 +14,7 @@ In `src/feedback-factory/execute/FeedbackExecutorService.ts`, a safe-merge answe
 
 ## What to Tell Your User
 
-- **Changes merge sooner**: "GitHub no longer repeats the full test run on every pull request. Our own machines already run it before anything merges, so releases start within minutes of a merge instead of waiting hours for a GitHub build machine. GitHub still runs the full tests on main after each merge."
+- **Changes merge sooner**: "GitHub no longer repeats the full test run on every pull request. Our own machines already run it before anything merges, so fewer duplicate jobs compete with releases for a GitHub build machine. We will measure the resulting release times after the change is live. GitHub still runs the full tests on main after each merge."
 
 ## Summary of New Capabilities
 
