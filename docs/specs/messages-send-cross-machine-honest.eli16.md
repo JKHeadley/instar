@@ -27,3 +27,7 @@ Two further pieces belong to a larger piece of work that is already under way in
 ## What a reader needs to decide
 
 Nothing is waiting on a decision. This is a small, fully reversible code change: a revert restores the old behaviour, with no data to repair.
+
+## A note on one carried line
+
+This branch also carries a one-line comment in the updater (`UpdateChecker.findBundledNpmCli`): the catch that skips a candidate npm path that does not exist now states that reason in the form the no-silent-fallbacks test gate reads. It changes nothing about how the updater behaves; it is there because the gate on `main` has been one block over its baseline since another change merged, and every branch tested together with `main` inherits that until the note lands.
