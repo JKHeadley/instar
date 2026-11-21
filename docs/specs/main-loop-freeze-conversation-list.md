@@ -68,7 +68,7 @@ top.
 No request or periodic task blocks the main loop for more than about one second. Concretely:
 
 1. The conversation list never reads the Telegram log synchronously on a request's turn. It waits
-   for one streamed load, then builds N rows from memory.
+   (bounded) for one streamed load, then builds N rows from memory.
 2. The Cartographer boot scaffold is incremental: an unchanged node is read, not rewritten.
 3. Logging a message never reads the whole log just to decide whether to rotate.
 3a. The list's unread counts (the same request) never read the log synchronously either.
@@ -79,38 +79,36 @@ No request or periodic task blocks the main loop for more than about one second.
 
 ## Design
 
-### 1. One streamed load of every topic's tail
+### 1. An in-memory view of the log replaces the file scan
 
-This replaces the first design (a separate latest-message index, a TopicMemory gap-fill and an
-"unknown unread" state). A whole-diff outside review showed those created new visible differences:
-pagination could skip a topic, unread could read zero or advance a marker wrongly, and dividers
-could differ. The conversation surfaces now keep reading the same tail cache, with the same answers
-as before; only how it is filled changes.
+Two earlier designs were replaced after whole-diff outside review. A separate latest-message index
+with fallbacks changed unread and pagination answers; filling the tail cache directly changed its
+eviction, row shapes and rotation behavior. This design leaves the tail cache and every reader's
+rules as they were and replaces only the slow step underneath them.
 
-- `TelegramAdapter.ensureAllTopicTailsLoaded()` fills the existing tail cache for every topic with
-  ONE streamed pass (`fs.createReadStream`, parsed per chunk). Single flight; never rejects.
-- Entries logged during the pass are buffered and merged by dedupe key. The in-memory row replaces
-  its persisted copy because it can carry sender fields the file omits. A tail already held is kept.
-- A missing log is an empty, ready load. Any other read error discards the partial result, leaves
-  state `failed`, and waits 1 min, doubling to a 30 min cap, before another attempt. While failed,
-  readers use the previous read path, so answers stay correct at the old cost.
-- Once `ready`, a topic with no tail has no rows, so no history read of 500 or fewer scans the log;
-  `unregisterTopic` no longer evicts (eviction is what sent closed topics back to a full scan).
-  Memory: at most 500 entries per topic and never more than the log held plus later appends, which
-  is what the old list already accumulated by caching each listed topic.
-- Log rotation does not edit tails: as with every tail cached before this change, a row rotated
-  out of the file stays visible until the next restart.
-- `seedTailCacheFromLog` now seeds only topics without a tail, so it cannot duplicate rows.
+- `TelegramAdapter.logView` holds the log file's newest 500 rows per topic, exactly as a file read
+  parses them (the same topic matcher; malformed lines skipped).
+- `scanLogForTopic` (limit up to 500) and the first tail seed read the view when it exists. The tail
+  cache, its eviction on `unregisterTopic`, and the row each reader sees are otherwise unchanged.
+- One streamed pass builds it (`loadHistory`), single flight. Each append adds the row in its
+  persisted JSON shape. Rows appended during a pass are merged by dedupe key.
+- A rotation (either logger path) bumps a generation and rebuilds the view, so rows gone from the
+  file leave the view. A pass that read a replaced file is discarded and re-read. The previous view
+  serves until the new one is published.
+- A missing log is an empty view. A failed pass is discarded whole and retries by itself after 5 s,
+  doubling to 5 min.
 
-### 2. The conversation surfaces wait for that load
+### 2. Conversation reads wait for the view, boundedly
 
-- An authenticated request to `/mobile/conversations` or `/mobile/chat` waits for the load before
-  its handler runs, so list, cursor, unread, read-mark and divider code all see the full tails.
-  The wait yields the event loop.
-- `getTopicTailRows` serves the list and unread counter from memory and skips the authorship join,
-  which adds fields these readers do not use and can synchronously parse its ledger.
-- A background reader of the list producer (the conversation-graph inventory) that arrives during
-  the load gets the existing explicit `partial` answer and asks again; it never scans the log.
+- The list, the read-report route and `GET /telegram/topics/:id/messages` (the app's chat history)
+  wait after their own admission checks, up to 15 s and off the event loop. If the view is still
+  unavailable they answer `503 conversations-loading` with `Retry-After: 5`, never a file scan.
+- Scroll-back uses `getTopicHistoryBeforeAsync`, the same backward read awaited per 1 MB block.
+- The list and unread counter use `getTopicTailRows`, which skips the authorship join: it adds only
+  authorship fields and can synchronously parse its ledger.
+- The conversation-graph inventory starts after the view first loads, so it never sees a partial
+  list or scans the log.
+- Where the app is enabled the view loads at server start.
 
 Row shape, previews, order, cursors, unread counts and dividers are intended to be unchanged; the
 old-versus-new client diff on identical fixture data is the proof.
@@ -143,8 +141,8 @@ always re-reads and re-counts.
 
 ### Simplest robust route
 
-Reuse the existing tail cache and fill it once, off the request's turn. No new store, no fallback
-data source and no new "unknown" state, so every reader keeps its existing semantics.
+Replace only the expensive file scan with an in-memory copy of what it would return. No new data
+source, no provisional answer and no change to the tail cache's rules.
 
 No gate, filter, block or allow decision is added, removed or changed. The only fixed values introduced are tuning brakes on internal work, classified below; the 140-character preview cut, the 500-entry tail cache, the 20 MB size threshold and the 100 000 / 75 000-line rotation values are existing values, unchanged.
 
@@ -152,18 +150,15 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
 
 - Node ABI probe concurrency 4 — judgment-candidate; floor: at least 1 probe at a time, and an unprobed path falls back to the existing synchronous probe; arbiter: the boot path's measured latency. A tuning value, not a decision: each probe is a whole node process, the candidate list is PATH-derived and normally under ten, so 4 keeps most boots to one or two waves without a burst of ten processes. Changing it changes boot latency only.
 - Rotation retry after a failed rotation: 1 000 appends — judgment-candidate; floor: rotation still happens once the failure clears, and the log only grows by the brake's width (1 % of the cap) meanwhile; arbiter: the next attempt. Brake required by No Unbounded Loops; the old behavior was a full read on every append.
-- Tail-load retry backoff 1 min doubling to a 30 min cap — judgment-candidate; floor: a failed load never publishes partial tails and readers keep the previous read path; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
+- History-load retry backoff 5 s doubling to a 5 min cap — judgment-candidate; floor: a failed load publishes nothing and readers get a retryable answer; arbiter: the retry itself. Brakes required by No Unbounded Loops; the values trade a slower recovery from a transient read error against repeated full reads of a persistently unreadable file.
 
 ## Out of scope, with routes
 
 - `SessionManager.configHomeForSession` / `tmuxSessionExists` / `captureOutput` synchronous tmux
   spawns under `#monitorTick` and `StuckInputSentinel` (0.3-0.5 % each in the profile). These belong
   to the async-tmux work; queued with this profile as evidence. (feedback item fb-9193b40c-880)
-- About fifteen callers of `getTopicHistory(topicId, 1_000)` (limit above the 500-entry cache; e.g.
-  `notificationAlreadyDelivered`) do one synchronous full scan per call, and the search and pin
-  routes' `getTopicHistory(topicId, 500)` scans once per closed topic (then caches until the topic
-  is unregistered). Single-topic, per-request reads that did not appear in the freeze profile;
-  queued with the evidence. (feedback item fb-9193b40c-880)
+- About fifteen callers of `getTopicHistory(topicId, 1_000)` (above the 500-row view; e.g.
+  `notificationAlreadyDelivered`) still scan synchronously per call. Not on the list or chat path. (feedback item fb-9193b40c-880)
 - The one-time message-dedupe seed (`seedMessageLogDedupe`) still reads the log synchronously once
   per process, at the first append. Bounded to one read per server life. (feedback item fb-9193b40c-880)
 - `CiFailurePoller`'s `gh` launches are already async `execFile`; the profile's `spawn` frames
@@ -180,7 +175,7 @@ the node symlink are per-machine files. No notices, no URLs, no durable state ad
 
 ## Testing
 
-- Unit `tests/unit/telegram-topic-tails-load.test.ts`: tails equal the old per-topic scan; zero log reads after load; closed topics keep tails; appends during load appear once with sender fields kept; no duplicate seed; failed reads discarded and braked; single flight; missing log.
+- Unit `tests/unit/telegram-log-view.test.ts`: answers equal a real file read; closing still evicts with no file read; appends and rotation stay correct; failed reads discarded, braked and self-retried; bounded wait; async scroll-back.
 - Unit `tests/unit/message-log-rotation-no-per-append-read.test.ts`: 200 appends above the size
   threshold read the file once (the seed), not 200 times; rotation still happens at the cap and
   keeps the newest lines; a failing rotation is braked (100 appends, zero reads) and recovers.
@@ -189,7 +184,7 @@ the node symlink are per-machine files. No notices, no URLs, no durable state ad
   scaffold chunks survives; corrupt node rewritten.
 - Unit `tests/unit/node-symlink-async-probe.test.ts`: with probed answers and candidates, zero
   synchronous probes and no synchronous `brew`; without them, behavior unchanged.
-- Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all 120 topics once in order with no synchronous log read; a background reader gets `partial` during the load.
+- Integration `tests/integration/conversation-list-no-log-scan.test.ts`: a cold list pages all topics in order; chats and scroll-back avoid synchronous log reads; unavailable history answers a retryable 503.
 - E2E `tests/e2e/conversation-list-no-log-scan-alive.test.ts`: production `AgentServer` and real adapter; concurrent cold requests share one load, with no synchronous log read.
 
 ## Evidence bar and live proof
@@ -223,4 +218,4 @@ Pure code change. Revert the commit and ship a patch; no persistent state, confi
 
 ## Frontloaded Decisions
 
-- Load behavior: requests wait for one streamed load rather than showing provisional data. Decided now because any provisional answer changes what apps show.
+- Load behavior: requests wait up to 15 s for one streamed load, then answer retryable 503, rather than showing provisional data or scanning the log.

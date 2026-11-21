@@ -10,15 +10,15 @@
 Fixes fb-52447f16-7d3: the Echo Studio server froze for 20-30 s at a time because the app's conversation list (`GET /mobile/conversations`) called `TelegramAdapter.getTopicHistory(topicId, 1)` once per topic, and for every topic without a live session that was a synchronous read + parse of the whole Telegram message log. Spec: `docs/specs/main-loop-freeze-conversation-list.md`.
 
 Files touched:
-- `src/messaging/TelegramAdapter.ts` — `ensureAllTopicTailsLoaded` (one streamed load into the existing tail cache), `getTopicTailRows`; seeding cannot duplicate a held tail; closed topics keep tails once loaded; legacy rotation uses `RotationLineCount`.
-- `src/server/AgentServer.ts` — `/mobile/conversations` and `/mobile/chat` wait for the load; the list and unread counter read the tails; a background list reader gets `partial` during the load.
+- `src/messaging/TelegramAdapter.ts` — an in-memory log view replaces the per-topic file scan (`loadHistory`, `waitForHistory`, `whenHistoryLoaded`), `getTopicTailRows`, `getTopicHistoryBeforeAsync`; legacy rotation uses `RotationLineCount`.
+- `src/server/AgentServer.ts`, `src/server/routes.ts`, `src/server/mobileConversationRoutes.ts` — list, read-report and chat-history routes wait (bounded) for the view; the list and unread counter use unjoined tail rows; the graph inventory starts after the first load.
 - `src/messaging/shared/MessageLogger.ts` — `RotationLineCount` + `countNewlines`; `maybeRotate` no longer reads the log on every append.
 - `src/core/CartographerTree.ts` — `scaffoldChunked` writes a node file only when its bytes change.
 - `src/commands/setup.ts` — `probeNodeNativeCompat` (async candidate resolution + bounded parallel ABI probes), `assembleNodeCandidates` shared by sync/async; `ensureStableNodeSymlink` accepts pre-probed answers and candidates.
 - `src/commands/server.ts` — boot awaits the async probe and hands its answers to the symlink step.
 - Tests: 5 unit files, 1 integration, 1 e2e (listed in the spec).
 
-Tier 1 (small, reversible: a revert fully restores prior behavior; no state, config or migration). Size: 6 source files, 7 test files. Effort: spec review 3 rounds (the Tier-1 cap); each round found a real design issue one layer further out (partial-read merge and Cartographer race; per-append rotation read; the unread pass's scan), which is why it used the full cap.
+Tier 1 (small, reversible: a revert fully restores prior behavior; no state, config or migration). Size: 8 source files, 7 test files. Effort: spec review 3 rounds (the Tier-1 cap); each round found a real design issue one layer further out (partial-read merge and Cartographer race; per-append rotation read; the unread pass's scan), which is why it used the full cap.
 
 ## Decision-point inventory
 
@@ -62,17 +62,17 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 
 ## 5. Interactions
 
-- **Shadowing:** none. Readers keep the same cache and code; the unread service is unchanged.
+- **Shadowing:** none. The tail cache, its eviction and the unread service are unchanged; the view only replaces the file scan beneath them.
 - **Double-fire:** the load is single flight.
-- **Races:** appends during the load are merged by dedupe key, the in-memory row winning; a tail already held is kept; the first seed cannot duplicate a held tail; a failed load publishes nothing. The Cartographer read-compare-write stays in one synchronous turn so a `setSummary` cannot land inside it.
-- **Feedback loops:** a persistently unreadable log is retried with backoff (1 min doubling to 30 min).
-- Tails are no longer evicted on close once loaded; rows rotated out of the file stay visible until restart, as cached tails always have.
+- **Races:** rows appended during a pass are merged by dedupe key; a pass that read a replaced file is discarded and re-read; a failed pass publishes nothing. The Cartographer read-compare-write stays in one synchronous turn.
+- **Feedback loops:** a persistently unreadable log is retried with backoff (5 s doubling to 5 min).
+- The conversation-graph inventory starts after the first load, so it cannot publish a partial view.
 
 ---
 
 ## 6. External surfaces
 
-- Other agents / install base: every agent gets a faster list (rows and unread counts); first requests after a boot wait briefly for one background read, no per-append full-log read above 20 MB, and a quieter boot. No API shape change: `/mobile/conversations` rows are identical, and that is verified by an old-versus-new client diff.
+- Other agents / install base: every agent gets a faster list (rows and unread counts); first requests after a boot wait up to 15 s for one background read, then get a retryable 503, no per-append full-log read above 20 MB, and a quieter boot. No API shape change: `/mobile/conversations` rows are identical, and that is verified by an old-versus-new client diff.
 - External systems: none.
 - Persistent state: none added. Cartographer node files are rewritten only on change (same contents format). Rotation behavior (when and what it keeps) is unchanged.
 - Timing: the streamed index build runs once in the background after the first list request.
@@ -88,7 +88,7 @@ No operator surface — not applicable.
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-Proxied-on-read. The tail cache is derived in-memory state over this machine's own Telegram log, with no durable store (same as the existing tail cache); the pool-wide list is served by the existing `?scope=pool` merged read that calls each machine's producer. No notices, no URLs, no durable state; nothing strands on topic transfer. Cartographer node files and the node symlink are per-machine files, as before. Status surfaces: none new or changed.
+Proxied-on-read. The log view is derived in-memory state over this machine's own Telegram log, with no durable store (same as the existing tail cache); the pool-wide list is served by the existing `?scope=pool` merged read that calls each machine's producer. No notices, no URLs, no durable state; nothing strands on topic transfer. Cartographer node files and the node symlink are per-machine files, as before. Status surfaces: none new or changed.
 
 ---
 
@@ -100,7 +100,7 @@ Pure code change: revert and ship a patch. No persistent state, config, or migra
 
 ## Conclusion
 
-Spec review ran 3 rounds, then a whole-diff outside review on the final code found 8 serious problems with the first design. It was replaced by one streamed load into the existing cache. Merge stays held for the outside re-review and real-client proof.
+Spec review ran 3 rounds. Whole-diff outside code review then found serious problems in two successive designs; both were replaced. The shipped design leaves the tail cache unchanged and swaps only the file scan beneath it. Merge stays held for outside re-review and real-client proof.
 
 ---
 

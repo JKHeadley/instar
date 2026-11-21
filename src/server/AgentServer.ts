@@ -32,7 +32,7 @@ import { computeOwnLastingEndpoints } from '../core/MeshUrlAdvertiser.js';
 import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
 import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
@@ -2958,14 +2958,6 @@ export class AgentServer {
       // token type, minted only by POST /dashboard/session/step-up).
       (req: Request) => this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined),
     ));
-    // The conversation surfaces read Telegram tails from memory: wait for the one streamed load
-    // instead of letting the first requests scan the whole log on the main thread
-    // (docs/specs/main-loop-freeze-conversation-list.md). A failed load falls through to the old read.
-    this.app.use(['/mobile/conversations', '/mobile/chat'], (_req: Request, _res: Response, next: NextFunction) => {
-      const telegram = options.telegram;
-      if (!telegram || !this.mobilePairing || telegram.topicTailsLoadState() === 'ready') { next(); return; }
-      void telegram.ensureAllTopicTailsLoaded().then(() => next(), () => next());
-    });
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
     // matching logic are the single source of truth in middleware.ts so a
@@ -7983,21 +7975,19 @@ export class AgentServer {
           for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
           return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
         } : undefined,
+        telegramHistoryReady: options.telegram ? () => options.telegram!.waitForHistory() : undefined,
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
-          // Never one log read per topic on the main thread (docs/specs/main-loop-freeze-conversation-list.md).
-          // The phone routes wait for the load (below); a background reader gets the list's existing
-          // "partial" answer while it runs and asks again.
-          const tails = options.telegram!;
-          if (tails.topicTailsLoadState() === 'unloaded') void tails.ensureAllTopicTailsLoaded();
-          if (tails.topicTailsLoadState() === 'loading') throw new Error('telegram-history-loading');
           return options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicTailRows(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
         } : undefined,
       };
+      // Conversation reads wait for one streamed load of the log instead of scanning it on the main
+      // thread (docs/specs/main-loop-freeze-conversation-list.md). Loaded early where the app is on.
+      if (options.telegram && (options.mobileRoutes?.start ?? !process.env.VITEST)) void options.telegram.loadHistory();
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
       const searchDeps: ConversationSearchRouteDeps = {
@@ -8045,11 +8035,12 @@ export class AgentServer {
       }
       this.app.use(createConversationSearchRouter(searchDeps));
       if(routeCtx.conversationRegistry){
-        startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
+        // The inventory reads every topic's newest row: it starts once that needs no log scan.
+        startOwnedGraphInventory=(runtime,identity)=>{void (options.telegram?.whenHistoryLoaded()??Promise.resolve()).then(()=>{if(this.graphInventoryStopped)return;this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
           return new ConversationGraphSourceInventoryRuntime({flatDeps:{...conversationFlatDeps,machineId:()=>{const flat=conversationFlatDeps.machineId();return flat==='local'?identity.loadIdentity().machineId:flat;}},conversations:routeCtx.conversationRegistry!,runtime:active,identity,membership:()=>active.installedMembership,ownerPublicKey:active.ownerPublicKey,
             telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'')||null});
-        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});};
+        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});});};
         const existing=options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime,identity=options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager;
         if(existing&&identity)startOwnedGraphInventory(existing,identity);
       }
@@ -10281,7 +10272,8 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
-  async stopGraphSourceInventory():Promise<void>{await this.graphSourceInventory.close();}
+  private graphInventoryStopped=false;
+  async stopGraphSourceInventory():Promise<void>{this.graphInventoryStopped=true;await this.graphSourceInventory.close();}
   /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
   private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
     const config = options.config;

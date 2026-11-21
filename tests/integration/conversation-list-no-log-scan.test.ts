@@ -1,8 +1,8 @@
 /**
  * GET /mobile/conversations over the real HTTP pipeline with a real TelegramAdapter
  * (docs/specs/main-loop-freeze-conversation-list.md). A cold list pages losslessly in activity order
- * without a synchronous log read, and a background reader gets the list's explicit partial answer
- * while the load runs instead of scanning the log.
+ * without a synchronous log read, chats open and scroll back without one, and when history cannot
+ * be read the list says "try again" instead of scanning or hanging.
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -17,7 +17,6 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
-import { localConversationListPage } from '../../src/server/mobileConversationRoutes.js';
 
 const N = 120;
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -67,13 +66,34 @@ describe('GET /mobile/conversations with many closed Telegram topics', () => {
     } finally { reads.mockRestore(); }
   });
 
-  it('a background reader during the load gets an explicit partial answer, then the full list', async () => {
+  it('opening a chat and scrolling back never read the whole log synchronously', async () => {
     const e = await boot();
-    const loading = e.telegram.ensureAllTopicTailsLoaded();
-    expect(e.telegram.topicTailsLoadState()).toBe('loading');
-    const throwing = { service: { store: { listConversations: () => ({ conversations: [], nextCursor: null }) } }, telegramTopics: () => { if (e.telegram.topicTailsLoadState() === 'loading') throw new Error('telegram-history-loading'); return []; } };
-    expect(localConversationListPage(throwing as never, 10, null).partial).toBe(true);
-    await loading;
-    expect(localConversationListPage(throwing as never, 10, null).partial).toBe(false);
+    const reads = vi.spyOn(fs, 'readFileSync');
+    const syncReads = vi.spyOn(fs, 'readSync');
+    try {
+      const auth = (q: request.Test) => q.set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+      const chat = await auth(request(e.server.getApp()).get('/telegram/topics/5001/messages?limit=2'));
+      expect(chat.status).toBe(200);
+      expect(chat.body.messages.map((m: { text: string }) => m.text)).toEqual(['msg 2 in 1', 'msg 3 in 1']);
+      const first = chat.body.messages[0];
+      const back = await auth(request(e.server.getApp()).get(`/telegram/topics/5001/messages?limit=2&before=${encodeURIComponent(first.timestamp)}&beforeMessageId=${first.messageId}`));
+      expect(back.body.messages.map((m: { text: string }) => m.text)).toEqual(['msg 0 in 1', 'msg 1 in 1']);
+      expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath)).toHaveLength(0);
+      expect(syncReads).not.toHaveBeenCalled();
+    } finally { reads.mockRestore(); syncReads.mockRestore(); }
+  });
+
+  it('while history cannot be read, the list says try again instead of scanning or hanging', async () => {
+    const e = await boot();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const wait = vi.spyOn(e.telegram, 'waitForHistory').mockResolvedValue(false);
+    const reads = vi.spyOn(fs, 'readFileSync');
+    try {
+      const r = await request(e.server.getApp()).get('/mobile/conversations').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'clist-int');
+      expect(r.status).toBe(503);
+      expect(r.body).toEqual({ error: 'conversations-loading', retryable: true });
+      expect(r.headers['retry-after']).toBe('5');
+      expect(reads.mock.calls.filter((c) => String(c[0]) === e.logPath)).toHaveLength(0);
+    } finally { wait.mockRestore(); reads.mockRestore(); vi.restoreAllMocks(); }
   });
 });

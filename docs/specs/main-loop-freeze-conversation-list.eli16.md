@@ -1,6 +1,6 @@
 # Main-loop freezes from the conversation list — Plain-English Overview
 
-> The one-line version: the phone and Mac app's conversation list made the agent's server re-read its whole Telegram message history once per conversation, freezing it for 20-30 seconds; now one background read fills the server's memory and the list answers from that.
+> The one-line version: the phone and Mac app's conversation list made the agent's server re-read its whole Telegram message history once per conversation, freezing it for 20-30 seconds; now one background read keeps a memory copy, and the list answers from that.
 
 ## The problem in one breath
 
@@ -19,9 +19,11 @@ For each conversation in the list, the server asked "what is this conversation's
 
 ## What this adds
 
-The server now reads the message file once, in the background and in small pieces, and fills its existing short memory for every conversation. The phone and Mac requests wait for that single read, then answer from memory. Because they use the same data as before, previews, order and unread counts should not change; a comparison of the old and new servers on the same data checks that. Saved messages keep the memory current, and closing a session no longer drops a conversation from it.
+The server now keeps a copy in memory of what that slow file read would have returned: the newest 500 messages of each conversation, exactly as stored in the file. It builds this once in the background, in small pieces, and updates it with every saved message. Everything above that step works as it did, so previews, order and unread counts should not change, and a comparison of old and new servers on identical data checks that.
 
-An earlier version showed temporary answers while loading. Outside review found that those could skip a conversation or get an unread count wrong, so it was replaced.
+The phone and Mac wait briefly for that first background read. If it cannot finish within 15 seconds, they are told to try again in a moment, and the server never falls back to freezing itself.
+
+Two earlier versions of this fix were thrown away after outside review found they could change what the apps show.
 
 Review also found that every saved message read the whole 31 MB file just to decide whether it was due for trimming. The server now counts the lines once, keeps the count current, and reads the file only when it is actually time to trim.
 
@@ -33,8 +35,8 @@ Two smaller fixes ride along, both found in the same recordings:
 ## The safeguards
 
 - Nothing is decided or blocked differently. This change only makes existing reads cheaper and moves start-up work off the single thread.
-- A message saved during the background read appears once and is never replaced by an older copy.
-- If the background read fails, nothing partial is kept. Requests use the old read path and the server retries after a growing pause (one minute, doubling, at most 30 minutes).
+- A message saved during the background read appears once. When old messages are trimmed from the file, the memory copy is rebuilt to match.
+- If the background read fails, nothing partial is kept. The apps are told to try again and the server retries by itself after a growing pause (five seconds, doubling, at most five minutes).
 - Other parts of the server that use the old way of reading history behave exactly as before.
 - Tests cover the old failure: the list used to read the file once per conversation and now reads it zero times on the main thread. Others cover paging, failed reads, trimming and the code map.
 

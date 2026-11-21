@@ -256,6 +256,8 @@ export interface MobileConversationRouteDeps {
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
+  /** Waits, off the event loop, until Telegram history can be read from memory. False: answer "try again". */
+  telegramHistoryReady?: () => Promise<boolean>;
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
    * null when Slack is configured but the operator's Slack user id is unset (rows withheld, and
@@ -601,6 +603,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     const local = localListPage(limit, cursor);
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
@@ -747,6 +750,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!unread) { unreadOff(res); return; }
     const p = principalOf(req);
     if (p.kind !== 'device' && p.kind !== 'token') { res.status(403).json({ error: 'operator-device-required' }); return; }
+    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     // The agent itself has no reader: a Bearer request carries the forwarded key or is refused.
     if (p.kind === 'token' && !isReaderKey(req.query.reader)) { res.status(400).json({ error: 'reader-required', detail: 'A Bearer read report must name the reader it is forwarded for.' }); return; }
     const reader = unread.resolveReader({ person: devicePersonOf(req), viaDevice: p.kind === 'device', readerParam: req.query.reader });

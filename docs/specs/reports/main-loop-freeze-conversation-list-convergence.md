@@ -6,7 +6,7 @@ A real GPT-tier external pass ran through the agent's codex CLI in all three rou
 
 ## Post-convergence outside code review (added 2026-11-21)
 
-After the three spec rounds, codex reviewed the whole code diff at a05487c3b and returned eight serious findings against the first design (the index, TopicMemory gap-fill and unknown-unread state). That design was replaced: one streamed load fills the existing tail cache, and phone routes wait for it. The sections below describe the three spec rounds as they happened. The current design is in the spec, and each code-review round's verbatim verdict is kept with the pull request's evidence.
+After the three spec rounds, codex reviewed the whole code diff at a05487c3b and returned eight serious findings against the first design (the index, TopicMemory gap-fill and unknown-unread state). That design was replaced, and round two at 7a7de9b23 found eight more against its successor. The current design keeps the tail cache and all readers unchanged and swaps only the file scan beneath them for an in-memory view of the log. The sections below describe the three spec rounds as they happened. The current design is in the spec, and each code-review round's verbatim verdict is kept with the pull request's evidence.
 
 ## ELI10 Overview
 

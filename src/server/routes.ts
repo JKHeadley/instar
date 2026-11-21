@@ -23416,8 +23416,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'beforeMessageId requires before and a positive message id' }); return;
       }
     }
+    // Never a synchronous read of the whole log on this path (main-loop-freeze-conversation-list).
+    if (ctx.telegram.waitForHistory && !(await ctx.telegram.waitForHistory())) {
+      res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return;
+    }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
-      : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
+      : ctx.telegram.getTopicHistoryBeforeAsync
+        ? await ctx.telegram.getTopicHistoryBeforeAsync(topicId, beforeMs, limit, beforeMessageId ?? undefined)
+        : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
