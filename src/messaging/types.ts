@@ -24,7 +24,8 @@ export type MessageType =
   | 'response'  // Answer to a query
   | 'handoff'   // Session/machine handoff context
   | 'wellness'  // Health check ping
-  | 'system';   // Infrastructure message from the Instar server
+  | 'system'    // Infrastructure message from the Instar server
+  | 'delivery-notice'; // messages-reach-renamed-sessions §C: created only by the router
 
 /** Priority level — affects delivery urgency, retry behavior, and throttling */
 export type MessagePriority = 'critical' | 'high' | 'medium' | 'low';
@@ -42,6 +43,11 @@ export interface AgentMessage {
     session: string;
     /** Machine ID (from machine identity) */
     machine: string;
+    /**
+     * messages-reach-renamed-sessions §C: what an HTTP caller wrote, when the server
+     * forced `agent`/`machine` to its own values.
+     */
+    requested?: { agent?: string; machine?: string };
   };
 
   /** Recipient targeting */
@@ -123,6 +129,18 @@ export interface DeliveryState {
   failureReason?: string;
   /** For broadcasts: aggregate delivery state (separate from per-message phase) */
   broadcastState?: BroadcastState;
+  /**
+   * messages-reach-renamed-sessions §B: the session this message was pinned to.
+   * Written BEFORE typing; retries and recovery are held to this exact session id.
+   */
+  resolvedSession?: string;
+  resolvedSessionId?: string;
+  resolvedVia?: 'exact' | 'topic' | 'name' | 'prefix';
+  /** Written just before the text is typed; a crash after this is never retyped. */
+  typingStartedAt?: string;
+  /** §C: a sender notice is waiting in its 60s group / has been sent. */
+  noticePending?: boolean;
+  noticeSentAt?: string;
 }
 
 /** Per-recipient broadcast tracking */
@@ -309,6 +327,7 @@ export const DEFAULT_TTL: Record<MessageType, number> = {
   handoff: 480,
   wellness: 5,
   system: 60,
+  'delivery-notice': 480,
 };
 
 /** Default data retention per message type (in days) */
@@ -322,6 +341,7 @@ export const DEFAULT_RETENTION_DAYS: Record<MessageType, number> = {
   handoff: 90,
   wellness: 1,
   system: 30,
+  'delivery-notice': 7,
 };
 
 /** Rate limit configuration */

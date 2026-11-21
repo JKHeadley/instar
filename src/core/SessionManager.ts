@@ -551,6 +551,40 @@ export function parseProcTimeToSeconds(raw: string): number {
  */
 
 /** Sanitize a string for use as part of a tmux session name. */
+/**
+ * messages-reach-renamed-sessions §E (pure): see SessionManager.tmuxNameFor.
+ */
+export function chooseTmuxName(
+  sanitized: string,
+  projectBase: string,
+  records: ReadonlyArray<Pick<Session, 'tmuxSession' | 'status' | 'name' | 'telegramTopicId' | 'jobSlug'>>,
+  role: { topicId?: number; jobSlug?: string },
+): string {
+  const p = `${projectBase}-`;
+  const strip = (n: string) => (n.startsWith(p) ? n.slice(p.length) : n);
+  const sameRole = (r: Pick<Session, 'name' | 'telegramTopicId' | 'jobSlug'>) => {
+    if (role.topicId !== undefined) return r.telegramTopicId === role.topicId;
+    if (role.jobSlug) return r.jobSlug === role.jobSlug;
+    return r.telegramTopicId === undefined && !r.jobSlug && strip(r.name) === strip(sanitized);
+  };
+  const heldByOtherRole = (name: string) => records.some((r) => r.tmuxSession === name && !sameRole(r));
+  const legacy = `${p}${sanitized}`;
+  if (sanitized.startsWith(p)) {
+    if (records.some((r) => r.tmuxSession === legacy && r.status === 'running')) return legacy;
+    if (!heldByOtherRole(sanitized)) return sanitized;
+    if (!heldByOtherRole(legacy)) return legacy;
+  } else if (!heldByOtherRole(legacy)) {
+    return legacy;
+  }
+  // Both natural names belong to other roles: take the first free numbered form, so
+  // two roles never share one tmux name in either direction.
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${legacy}-${n}`;
+    if (!heldByOtherRole(candidate)) return candidate;
+  }
+  return `${legacy}-${Date.now()}`;
+}
+
 function sanitizeSessionName(name: string): string {
   const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
   return sanitized || 'session';
@@ -3600,6 +3634,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
   }
 
+  private topicRegistryCache: { mtimeMs: number; map: Record<string, unknown> } | null = null;
+
+  /**
+   * messages-reach-renamed-sessions §A: the tmux name the topic registry binds to a
+   * topic. Caches the parsed registry and reloads it when the file's mtime changes.
+   */
+  sessionNameForTopic(topicId: number): string | null {
+    if (!this.registryPath || !Number.isSafeInteger(topicId)) return null;
+    try {
+      const mtimeMs = fs.statSync(this.registryPath).mtimeMs;
+      if (!this.topicRegistryCache || this.topicRegistryCache.mtimeMs !== mtimeMs) {
+        const registry = JSON.parse(fs.readFileSync(this.registryPath, 'utf8')) as { topicToSession?: Record<string, unknown> };
+        this.topicRegistryCache = { mtimeMs, map: registry.topicToSession ?? {} };
+      }
+      const name = this.topicRegistryCache.map[String(topicId)];
+      return typeof name === 'string' && name.length > 0 ? name : null;
+    } catch { // @silent-fallback-ok: missing/malformed registry means no binding; the resolver falls back to session records
+      return null;
+    }
+  }
+
   private getSessionNameForTopic(topicId: number): string | null {
     if (!this.registryPath || !Number.isSafeInteger(topicId)) return null;
     try {
@@ -4450,8 +4505,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /** The tmux session name `spawnSession` gives a session named `name` (callers record it before spawning). */
   plannedTmuxSessionName(name: string): string {
-    return `${path.basename(this.config.projectDir)}-${sanitizeSessionName(name)}`;
+    return this.tmuxNameFor(sanitizeSessionName(name), {});
   }
+
+  /**
+   * messages-reach-renamed-sessions §E: the ONE place a tmux name gets the
+   * `<projectDir basename>-` prefix. A name that already starts with it is not
+   * prefixed again (`echo-x` stays `echo-x`, not `echo-echo-x`), except:
+   *  - while the double-prefixed form of this name is running, it is kept, so one
+   *    role never runs under two names during the change-over;
+   *  - when a session record of a DIFFERENT role already holds the plain form
+   *    (role = its topic, else its job, else its stored name), today's double-prefixed
+   *    form is used, so two roles can never take turns under one tmux name.
+   */
+  tmuxNameFor(sanitized: string, role: { topicId?: number; jobSlug?: string }): string {
+    let records: Session[] = [];
+    try { records = this.state.listSessions(); } catch { // @silent-fallback-ok: unreadable records keep today's name, which is never wrong, only doubled
+      return `${path.basename(this.config.projectDir)}-${sanitized}`;
+    }
+    return chooseTmuxName(sanitized, path.basename(this.config.projectDir), records, role);
+  }
+
 
   /**
    * Spawn a new Claude Code session in tmux.
@@ -8253,7 +8327,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
     const projectBase = path.basename(this.config.projectDir);
-    const tmuxSession = sanitized ? `${projectBase}-${sanitized}` : `${projectBase}-interactive-${Date.now()}`;
+    const tmuxSession = sanitized
+      ? this.tmuxNameFor(sanitized, { topicId: options?.telegramTopicId })
+      : `${projectBase}-interactive-${Date.now()}`;
 
     // Prevent injection into protected sessions (e.g., the server itself)
     if (this.config.protectedSessions.includes(tmuxSession)) {
@@ -9154,8 +9230,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     resumeSessionId?: string;
   }): Promise<string> {
     const sanitized = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-    const projectBase = path.basename(this.config.projectDir);
-    const tmuxSession = `${projectBase}-${sanitized}`;
+    const tmuxSession = this.tmuxNameFor(sanitized, {});
 
     if (this.config.protectedSessions.includes(tmuxSession)) {
       throw new Error(`Cannot create triage session with protected name: ${tmuxSession}`);

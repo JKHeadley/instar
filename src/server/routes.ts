@@ -44467,8 +44467,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'Missing required fields: from, to, type, priority, subject, body' });
         return;
       }
+      // messages-reach-renamed-sessions §C: only the router creates delivery notices.
+      if (type === 'delivery-notice') {
+        res.status(400).json({ error: 'type "delivery-notice" is created by the server only' });
+        return;
+      }
       const result = await ctx.messageRouter.send(
-        from,
+        ctx.messageRouter.forceLocalSender(from),
         to,
         type as MessageType,
         priority as MessagePriority,
