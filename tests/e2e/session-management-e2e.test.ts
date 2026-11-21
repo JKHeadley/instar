@@ -25,6 +25,7 @@ import type { SessionManagerConfig } from '../../src/core/types.js';
 import { cleanupTmuxSessions, waitFor } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { getTelegramInboundDir } from '../../src/messaging/shared/telegramInboundFiles.js';
+import { sessionBuildContextKeyFor } from '../../src/core/WriteDomainRegistry.js';
 
 // ── Test Constants ──────────────────────────────────────────────────
 
@@ -216,6 +217,26 @@ function createManager(project: TestProject, claudePath: string, overrides?: Par
   );
   maintenanceTicks.set(manager, maintenanceTick);
   return manager;
+}
+
+/**
+ * Run the manager's maintenance pass until it has recorded where this session's pane is.
+ *
+ * The pass reads the pane's directory with a 2-second tmux call and treats a miss as "nothing to
+ * record this time" (it is best-effort by design, and the live monitor simply reads again on its
+ * next pass a few seconds later). One pass was all the test ran, so on a loaded host a single slow
+ * tmux answer left nothing recorded and the case then waited 20 s for a restore note that could
+ * not come. Repeating the pass is what the product does; the wait is for the record itself.
+ */
+async function recordPaneCwd(project: TestProject, manager: SessionManager, tmuxSession: string): Promise<string> {
+  let recorded: string | undefined;
+  await waitFor(async () => {
+    await maintenanceTicks.get(manager)!();
+    const all = project.state.get<Record<string, { currentCwd?: string }>>(sessionBuildContextKeyFor(null));
+    recorded = all?.[tmuxSession]?.currentCwd;
+    return typeof recorded === 'string';
+  }, 30_000, 250);
+  return recorded!;
 }
 
 // ── BDD Tests ───────────────────────────────────────────────────────
@@ -503,21 +524,28 @@ describeMaybe('Session Management E2E', () => {
       const sm = createManager(project, claudePath);
       managers.push(sm);
 
-      // When we spawn with a message (triggers waitForClaudeReady)
+      // When we spawn with a message (triggers waitForClaudeReady).
+      // The spawn is asked to return once the manager has injected the message, so the case waits
+      // for the injection itself. It used to poll the pane for 20 s from the moment the spawn
+      // returned; the manager's own steps take 6.5 s of that on an idle host (3 s before the first
+      // look, the mock's 5 s start, 1 s to settle) and it gives a session 90 s to become ready, so
+      // on a loaded host the test gave up while the manager was still, correctly, waiting
+      // (2026-11-19: "waitFor timed out after 20000ms" at this wait).
       const tmuxSession = await sm.spawnInteractiveSession(
         'Delayed hello',
         `${TMUX_PREFIX}slow-start`,
+        { awaitInitialInjection: true },
       );
 
-      // Then the message should eventually be injected (within 90s timeout)
+      // Then the message is in the pane (the wait covers only tmux drawing what was just typed)
       await waitFor(() => {
         const out = sm.captureOutput(tmuxSession, 30);
         return (out || '').includes('Delayed hello');
-      }, 20_000);
+      }, 10_000);
 
       const output = sm.captureOutput(tmuxSession, 30);
       expect(output).toContain('Delayed hello');
-    }, 25_000);
+    }, 150_000);
   });
 
   // ── Feature: Session Lifecycle (kill, reap, monitor) ──────────────
@@ -847,18 +875,28 @@ describeMaybe('Session Management E2E', () => {
       buildSession.startedAt = new Date(Date.now() - 20_000).toISOString();
       project.state.saveSession(buildSession);
 
-      await maintenanceTicks.get(buildSm)!();
+      // The pass must have recorded the worktree before the session is killed: that record is the
+      // only thing the respawn can restore from.
+      expect(await recordPaneCwd(project, buildSm, buildTmux)).toBe(fs.realpathSync(worktree));
       execFileSync(tmuxPath!, ['kill-session', '-t', `=${buildTmux}`], { stdio: 'ignore' });
 
+      // The respawn returns once the manager has injected the message (awaitInitialInjection), so
+      // the case waits for the injection itself. It used to poll the pane for 20 s; a resumed
+      // session is injected no sooner than 8 s after the spawn on an idle host (3 s before the
+      // first look, 5 s for the resumed screen to settle) and the manager allows it 120 s to
+      // become ready, so on a loaded host the test gave up first ("waitFor timed out after
+      // 20000ms" at this wait).
       await buildSm.spawnInteractiveSession('CONTINUATION — resume build', buildName, {
         telegramTopicId: 1052,
         resumeSessionId: '550e8400-e29b-41d4-a716-446655440000',
+        awaitInitialInjection: true,
       });
 
+      // What is left to wait for is tmux drawing the text that was just typed.
       await waitFor(() => {
         const out = buildSm.captureOutput(buildTmux, 80) ?? '';
         return out.includes('[BUILD-CONTEXT RESTORE]') && out.includes(worktree);
-      }, 20_000);
+      }, 10_000);
 
       const homeClaudePath = createMockClaudeInteractiveInCwd(project.dir, project.dir);
       const homeSm = createManager(project, homeClaudePath, {
@@ -878,20 +916,24 @@ describeMaybe('Session Management E2E', () => {
       homeSession.startedAt = new Date(Date.now() - 20_000).toISOString();
       project.state.saveSession(homeSession);
 
-      await maintenanceTicks.get(homeSm)!();
+      // The home directory was recorded too, so "no restore note" below is the manager deciding
+      // a home-only session has nothing to restore, not the absence of any record.
+      expect(await recordPaneCwd(project, homeSm, homeTmux)).toBe(fs.realpathSync(project.dir));
       execFileSync(tmuxPath!, ['kill-session', '-t', `=${homeTmux}`], { stdio: 'ignore' });
 
       await homeSm.spawnInteractiveSession('CONTINUATION — home only', homeName, {
         telegramTopicId: 1053,
         resumeSessionId: '650e8400-e29b-41d4-a716-446655440000',
+        awaitInitialInjection: true,
       });
 
       await waitFor(() => {
         const out = homeSm.captureOutput(homeTmux, 80) ?? '';
         return out.includes('CONTINUATION — home only');
-      }, 20_000);
+      }, 10_000);
       expect(homeSm.captureOutput(homeTmux, 80)).not.toContain('[BUILD-CONTEXT RESTORE]');
-    }, 40_000);
+      // Two resumed spawns, each waited to the manager's own verdict (120 s to become ready).
+    }, 300_000);
   });
 
   // ── Feature: Session State Persistence ────────────────────────────
