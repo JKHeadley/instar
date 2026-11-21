@@ -70,9 +70,7 @@ it. No second store; every reader still goes through `getTopicHistory`.
 - `unregisterTopic` drops a topic's cache and now counts the eviction; a scan that started earlier
   does not save that topic back (tested, mutation-checked).
 - The log trim: a scan that sees the file replaced or trimmed keeps nothing; the request's old read
-  runs (tested). The trim code itself is unchanged. Known limit in the spec: after a trim, a
-  conversation whose every message lay in the trimmed part shows none in the app, exactly as the old
-  code does after any restart.
+  runs (tested). The trim code itself is unchanged. Known limit (spec, Limits): After a log trim, a Telegram conversation whose every message lay in the trimmed part shows no messages in the app, exactly as the old code does after any restart; Option C adds no blank the old code would not show, and the scan never records such a conversation as empty. Those Telegram messages remain in the conversation memory database and search (every message is written there when sent or received, independently of the log; verified on the live Studio data: all of the last 400 log rows are present in memory), and the approved follow-up CMT-2127 can surface them in the app. Native app conversations are stored separately and are not touched by the Telegram log trim.
 - An unfinished last line: every request, joiners included, defers to the old read in its own turn
   (tested, mutation-checked).
 - One 3.5 s wait budget per request, at most one scan per request, one tracked scan at a time, and a

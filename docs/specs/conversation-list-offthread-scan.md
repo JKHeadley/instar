@@ -139,10 +139,8 @@ means on. An adapter without `warmTopicTails` (a test stand-in, an older build) 
   re-read lands on a later tick (up to 2 s granularity). The hash catches every rewrite made
   before the re-read starts.
 - **A trim during a cold scan.** About once per 25,000 messages the trim drops the oldest lines of
-  the log. If it lands during a cold scan, the scan keeps nothing and the request's old read runs on
-  the trimmed file. After a trim, a conversation whose every message lay in the trimmed part shows
-  none in the app, exactly as the old code does after any restart. Option C never adds a blank the
-  old code would not show, and the scan never records a conversation as empty (tested).
+  the log; if it lands during a cold scan, the scan keeps nothing and the request's old read runs.
+  After a log trim, a Telegram conversation whose every message lay in the trimmed part shows no messages in the app, exactly as the old code does after any restart; Option C adds no blank the old code would not show, and the scan never records such a conversation as empty. Those Telegram messages remain in the conversation memory database and search (every message is written there when sent or received, independently of the log; verified on the live Studio data: all of the last 400 log rows are present in memory), and the approved follow-up CMT-2127 can surface them in the app. Native app conversations are stored separately and are not touched by the Telegram log trim.
 - **A stalled disk.** A request with an uncached topic waits at most for the scan's 3.5 s deadline,
   then the old read runs (which a hung disk would hang, as in the old code). Requests whose topics
   are cached do not wait.
