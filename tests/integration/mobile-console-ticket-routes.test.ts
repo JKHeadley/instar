@@ -137,7 +137,9 @@ describe('console ticket routes', () => {
     expect((await redeem(e, m.body.ticket)).status).toBe(401); // single use
 
     const log = audit(e);
-    expect(log).toContain('"event":"presence-key-set"');
+    // piece 3a: the test marks the phone as an approver by giving it this key first (standing in for a device
+    // that approved before the release), so the route sees the same key and records no new set.
+    expect(log).not.toContain('"event":"presence-key-set"');
     expect(log).toContain('"event":"minted"');
     expect(log).toContain('"event":"redeemed"');
     expect(log).not.toContain(m.body.ticket);

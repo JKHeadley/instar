@@ -22,7 +22,7 @@ import {
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
   LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
-  effortMembers, trackedProjects, projectsForGroups,
+  effortMembers, trackedProjects, projectsForGroups, groupSections,
 } from './chats-model.js';
 
 /**
@@ -522,18 +522,20 @@ class ChatsPage {
       if (grouped) {
         const { lead, groups, ungrouped } = groupRows(rest, this.hierarchy, this.pinnedKey);
         if (lead) kids.push(rowEl(lead, false));
-        if (groups.length) kids.push(el('div', { class: 'chat-group-label chat-groups-label', text: 'Groups' }));
-        for (const g of groups) {
+        // Two sections, as on the iPhone: "Projects" (groups linked to a tracked project) and "Groups" (plain groups).
+        // A group with no conversations is never shown; an empty section has no header.
+        const sections = groupSections(groups, this.groupProjects);
+        const groupEl = (g) => {
           // The group holding the open conversation stays open, so the row on screen is never hidden.
           const expanded = this.openGroups.has(g.key) || g.rows.some((r) => r.key === open);
           // A tracked project (Chief of Staff) gets the project mark and its status chip; a plain group keeps the folder and count.
-          const project = this.groupProjects.get(g.key) || null;
-          const label = [project ? `Project ${g.title}` : `Group ${g.title}`, project && project.status ? project.status.label : null, groupCountWords(g.count), g.unread > 0 ? `${g.unread} unread` : null].filter(Boolean).join(', ');
+          const project = g.project;
+          const label = [project ? `Project ${g.displayTitle}` : `Group ${g.displayTitle}`, project && project.status ? project.status.label : null, groupCountWords(g.count), g.unread > 0 ? `${g.unread} unread` : null].filter(Boolean).join(', ');
           const head = el('button', { class: `chat-effort-row${project ? ' chat-project-row' : ''}${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false', 'aria-label': label },
             el('span', { class: `chat-group-icon${project ? ' chat-group-icon-project' : ''}`, icon: project ? 'flag' : 'folder' }),
             el('span', { class: 'chat-row-main' },
               el('span', { class: 'chat-row-top' },
-                el('span', { class: 'chat-row-title', text: g.title }),
+                el('span', { class: 'chat-row-title', text: g.displayTitle }),
                 project && project.status ? el('span', { class: `chat-project-status tone-${project.status.tone}`, text: project.status.label }) : null),
               el('span', { class: 'chat-row-preview', text: groupCountWords(g.count) })),
             el('span', { class: 'chat-row-side' },
@@ -546,7 +548,11 @@ class ChatsPage {
             if (project) kids.push(el('a', { class: 'link-btn chat-open-project', href: project.href, text: 'Open project' }));
             for (const r of g.rows) kids.push(rowEl(r, false));
           }
-        }
+        };
+        if (sections.projects.length) kids.push(el('div', { class: 'chat-group-label chat-projects-label', text: 'Projects' }));
+        for (const g of sections.projects) groupEl(g);
+        if (sections.groups.length) kids.push(el('div', { class: 'chat-group-label chat-groups-label', text: 'Groups' }));
+        for (const g of sections.groups) groupEl(g);
         if (ungrouped.length) {
           kids.push(el('div', { class: 'chat-group-label chat-ungrouped-label' },
             el('span', { text: 'Not in a group yet' }),
@@ -1080,19 +1086,31 @@ class ChatsPage {
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); if (!send.disabled) send.click(); }
     });
     attach.addEventListener('click', () => pick.click());
-    pick.addEventListener('change', () => {
-      const files = Array.from(pick.files || []);
-      pick.value = '';
+    // One way in for every file: the Attach picker, a paste and a drop (Telegram parity M6/M7).
+    const addFiles = (files) => {
       const all = [...v.files, ...files];
       const ok = checkFiles(all, this.status && this.status.limits);
       if (!ok.ok) { v.statusLine.textContent = ok.reason; return; }
       v.files = all;
       setKids(chosen, v.files.map((f, i) => {
         const x = el('button', { class: 'btn-quiet chat-unpick', type: 'button', text: '×', 'aria-label': `Remove ${f.name}` });
-        x.addEventListener('click', () => { v.files.splice(i, 1); pick.dispatchEvent(new Event('change')); });
+        x.addEventListener('click', () => { v.files.splice(i, 1); addFiles([]); });
         return el('span', { class: 'chat-file-chip' }, el('span', { text: `${f.name} · ${humanSize(f.size)}` }), x);
       }));
       refresh();
+    };
+    pick.addEventListener('change', () => {
+      const files = Array.from(pick.files || []);
+      pick.value = '';
+      addFiles(files);
+    });
+    // A pasted screenshot or copied file joins the tray; pasted text stays ordinary text.
+    text.addEventListener('paste', (ev) => {
+      const pasted = pastedFiles(ev.clipboardData);
+      if (!pasted.length) return;
+      ev.preventDefault();
+      addFiles(pasted);
+      text.focus();
     });
     send.addEventListener('click', async () => {
       const body = text.value.trim();
@@ -1107,6 +1125,20 @@ class ChatsPage {
       this.send(v, body, files, progress, box);
     });
     const box = el('div', { class: 'chat-composer' }, chosen, progress, el('div', { class: 'chat-compose-row' }, attach, pick, text, send));
+    // Files dropped anywhere on the open conversation (its messages or the composer) join the tray.
+    let depth = 0;
+    const over = (on) => box.classList.toggle('dropping', on);
+    for (const t of [box, v.msgs].filter(Boolean)) {
+      t.addEventListener('dragenter', (ev) => { if (!carriesFiles(ev.dataTransfer)) return; ev.preventDefault(); depth++; over(true); });
+      t.addEventListener('dragover', (ev) => { if (!carriesFiles(ev.dataTransfer)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; over(true); });
+      t.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) over(false); });
+      t.addEventListener('drop', (ev) => {
+        if (!carriesFiles(ev.dataTransfer)) return;
+        ev.preventDefault(); depth = 0; over(false);
+        const files = Array.from(ev.dataTransfer.files || []);
+        if (files.length) { addFiles(files); text.focus(); }
+      });
+    }
     return box;
   }
 
@@ -1484,6 +1516,28 @@ function credentialChoice() {
     send.addEventListener('click', () => finish('send'));
     sheet({ title: 'This looks like a password or key', onClose: () => { if (!done) { done = true; resolve('cancel'); } } },
       el('div', { class: 'pin-form' }, el('p', { class: 'confirm-text', text: CREDENTIAL_QUESTION }), el('div', { class: 'confirm-row' }, drop, send)));
+  });
+}
+
+/** True while a drag carries files (not a text or link drag, which the browser handles as usual). */
+export function carriesFiles(dt) {
+  return !!dt && Array.from(dt.types || []).includes('Files');
+}
+
+/**
+ * The files on a paste, or []. A copied screenshot arrives as a nameless "image.png", so it gets a
+ * name that tells two pastes apart ("Pasted image 14.32.07.png").
+ */
+export function pastedFiles(cd, at = new Date()) {
+  if (!cd) return [];
+  let files = Array.from(cd.files || []);
+  if (!files.length && cd.items) files = Array.from(cd.items).filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter(Boolean);
+  const stamp = [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, '0')).join('.');
+  return files.map((f, i) => {
+    if (f.name && f.name !== 'image.png') return f;
+    const ext = (String(f.type || '').split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+    const name = `Pasted image ${stamp}${files.length > 1 ? `-${i + 1}` : ''}.${ext || 'png'}`;
+    try { return new File([f], name, { type: f.type, lastModified: f.lastModified }); } catch { return f; } // @silent-fallback-ok: no File constructor keeps the original name
   });
 }
 

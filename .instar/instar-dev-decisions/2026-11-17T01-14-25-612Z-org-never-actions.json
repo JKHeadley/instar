@@ -1,0 +1,49 @@
+{
+  "ts": "2026-11-17T01:14:25.612Z",
+  "slug": "org-never-actions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1008,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/org-never-actions-eval.mts",
+      "src/core/IntentTestHarness.ts",
+      "src/core/OrgActionCheck.ts",
+      "src/core/OrgPolicyGateHooks.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SlackReplyRelayInstaller.ts",
+      "src/data/awareness/org-never-actions.md",
+      "src/data/state-coherence-registry.json",
+      "src/server/AgentServer.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/orgPackRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/app-reply.sh",
+      "src/templates/scripts/slack-reply.sh",
+      "src/templates/scripts/telegram-reply.sh",
+      "src/templates/scripts/whatsapp-reply.sh"
+    ],
+    "addedLines": 980,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one judgment per tool call or outgoing message, under its own daily budget and a 9 second deadline"
+  },
+  "verdict": "pass"
+}

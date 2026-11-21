@@ -14,6 +14,12 @@ export function topicNameMap(res) {
       names[String(row.topicId)] = row.topicName.trim();
     }
   }
+  // A topic no machine can name: its bound project's title (the server sends these apart, `fallbacks`). Never over a real name.
+  const fallbacks = res?.ok && Array.isArray(res.data?.fallbacks) ? res.data.fallbacks : [];
+  for (const row of fallbacks) {
+    const id = String(row?.topicId);
+    if (Number.isSafeInteger(Number(row?.topicId)) && !names[id] && isRealTopicName(row?.title, row.topicId)) names[id] = row.title.trim();
+  }
   return names;
 }
 

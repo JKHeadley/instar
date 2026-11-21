@@ -186,3 +186,127 @@ describe('evaluateRun — fail-fast stopped lanes', () => {
     expect(ev.reasons).toEqual(['lane-stopped-without-failure', 'lane-stopped-early:integration']);
   });
 });
+
+// ── test names in the parser, and the re-run decision (spec local-verify-import-related-rerun.md) ──
+
+import crypto from 'node:crypto';
+import { decideIsolationRerun, errorLine, passedByName, type ParsedLaneReport } from '../../../src/localVerify/laneReport.js';
+
+describe('parseVitestJson — test names (import-related re-run)', () => {
+  const named = (rel: string, tests: Array<{ name?: string; title?: string; ancestors?: string[]; status: string; msg?: string }>, fileStatus?: 'passed' | 'failed', message = '') => ({
+    assertionResults: tests.map((t) => ({
+      ancestorTitles: t.ancestors ?? [], ...(t.name !== undefined ? { fullName: t.name } : {}), status: t.status, title: t.title ?? t.name ?? '',
+      duration: 1, failureMessages: t.msg !== undefined ? [t.msg] : t.status === 'failed' ? ['boom'] : [], location: null, meta: {},
+    })),
+    startTime: 1, endTime: 2, status: fileStatus ?? (tests.some((t) => t.status === 'failed') ? 'failed' : 'passed'), message, name: `${ROOT}/${rel}`,
+  });
+  const F = 'tests/unit/a.test.ts';
+  const hashOf = (names: string[]) => { const h = crypto.createHash('sha256'); for (const n of names) h.update(JSON.stringify(n) + '\n'); return h.digest('hex'); };
+
+  it('returns failedTests (name and distinguishing line) for failed files only, and no passedTests on a lane report', () => {
+    const r = parseVitestJson(report([
+      named(F, [{ name: 's one', status: 'passed' }, { name: 's two', status: 'failed', msg: 'AssertionError: expected 1 to be 2\n    at x.ts:1:1' }]),
+      named('tests/unit/b.test.ts', [{ name: 'ok', status: 'passed' }]),
+    ] as never), ROOT);
+    const a = r.files.get(F)!;
+    expect(a.failedTests).toEqual([{ name: 's two', line: 'AssertionError: expected 1 to be 2', full: 'AssertionError: expected 1 to be 2\n    at x.ts:1:1' }]);
+    expect(a.passedTests).toBeUndefined();
+    const b = r.files.get('tests/unit/b.test.ts')!;
+    expect(b.failedTests).toBeUndefined();
+    expect(b.testSetHash).toBeUndefined();
+    expect(b.passedTests).toBeUndefined();
+  });
+  it('a solo report carries passedTests and what every other test was', () => {
+    const r = parseVitestJson(report([named(F, [{ name: 'a', status: 'passed' }, { name: 'b', status: 'skipped' }, { name: 'c', status: 'todo' }])] as never), ROOT, { solo: true });
+    expect(r.files.get(F)!.passedTests).toEqual(['a']);
+    expect(r.files.get(F)!.notPassedTests).toEqual([{ name: 'b', status: 'skipped' }, { name: 'c', status: 'todo' }]);
+  });
+  it('the full name is fullName, or the ancestor titles joined with the title when fullName is absent or empty', () => {
+    const r = parseVitestJson(report([named(F, [
+      { title: 'does it', ancestors: ['outer', 'inner'], status: 'failed' },
+      { name: '', title: 'other', ancestors: ['outer'], status: 'failed' },
+    ])] as never), ROOT);
+    expect(r.files.get(F)!.failedTests!.map((t) => t.name)).toEqual(['outer inner does it', 'outer other']);
+  });
+  it('pending and unknown statuses are failed names; the counts are what they were', () => {
+    const r = parseVitestJson(report([named(F, [{ name: 'p', status: 'pending' }, { name: 'u', status: 'weird' }, { name: 'ok', status: 'passed' }], 'failed')] as never), ROOT);
+    const c = r.files.get(F)!;
+    expect(c.failedTests!.map((t) => t.name)).toEqual(['p', 'u']);
+    expect(c).toMatchObject({ passed: 1, failed: 2, skipped: 0, todo: 0, assertionFailures: 0, nonAssertionFailure: true });
+  });
+  it('testSetHash covers every name in report order: a swap of two names changes it, the same order does not', () => {
+    const one = parseVitestJson(report([named(F, [{ name: 'a', status: 'failed' }, { name: 'b', status: 'passed' }, { name: 'c', status: 'passed' }])] as never), ROOT).files.get(F)!;
+    const same = parseVitestJson(report([named(F, [{ name: 'a', status: 'failed' }, { name: 'b', status: 'passed' }, { name: 'c', status: 'skipped' }])] as never), ROOT).files.get(F)!;
+    const swapped = parseVitestJson(report([named(F, [{ name: 'a', status: 'failed' }, { name: 'c', status: 'passed' }, { name: 'b', status: 'passed' }])] as never), ROOT).files.get(F)!;
+    expect(one.testSetHash).toBe(hashOf(['a', 'b', 'c']));
+    expect(same.testSetHash).toBe(one.testSetHash);
+    expect(swapped.testSetHash).not.toBe(one.testSetHash);
+    expect(one.duplicateFailedName).toBe(false);
+  });
+  it('flags a failed name that occurs twice in the file, also across two entries for the same path in one report', () => {
+    const twice = parseVitestJson(report([named(F, [{ name: 'x', status: 'failed' }, { name: 'x', status: 'passed' }])] as never), ROOT).files.get(F)!;
+    expect(twice.duplicateFailedName).toBe(true);
+    const split = parseVitestJson(report([named(F, [{ name: 'x', status: 'failed' }]), named(F, [{ name: 'x', status: 'passed' }, { name: 'y', status: 'passed' }])] as never), ROOT).files.get(F)!;
+    expect(split.duplicateFailedName).toBe(true);
+    expect(split.testSetHash).toBe(hashOf(['x', 'x', 'y']));
+    const passedTwice = parseVitestJson(report([named(F, [{ name: 'x', status: 'failed' }, { name: 'y', status: 'passed' }, { name: 'y', status: 'passed' }])] as never), ROOT).files.get(F)!;
+    expect(passedTwice.duplicateFailedName).toBe(false); // only a FAILED name that is not unique counts
+  });
+  it('reports a file-level failure alone and alongside named failures (S3)', () => {
+    const alone = parseVitestJson(report([named(F, [], 'failed', 'Cannot find module')] as never), ROOT).files.get(F)!;
+    expect(alone.fileLevelFailure).toBe(true);
+    const beside = parseVitestJson(report([named(F, [{ name: 'x', status: 'failed' }, { name: 'y', status: 'passed' }], 'failed', 'beforeAll hook threw')] as never), ROOT).files.get(F)!;
+    expect(beside).toMatchObject({ fileLevelFailure: true, failed: 1 });
+    const plain = parseVitestJson(report([named(F, [{ name: 'x', status: 'failed' }])] as never), ROOT).files.get(F)!;
+    expect(plain.fileLevelFailure).toBe(false);
+  });
+  it('a failed name over 300 characters is left out, never shortened, and the count stays true (S4)', () => {
+    const long = 'n'.repeat(301);
+    const c = parseVitestJson(report([named(F, [{ name: long, status: 'failed' }, { name: 'short', status: 'failed' }])] as never), ROOT).files.get(F)!;
+    expect(c.failedTests!.map((t) => t.name)).toEqual(['short']);
+    expect(c.failed).toBe(2);
+  });
+  it('errorLine picks the first line that names an error, bounds it and marks a cut', () => {
+    expect(errorLine('some preamble\nError: mac-desktop-host-timeout\n    at f (x.ts:1:1)')).toEqual({ line: 'Error: mac-desktop-host-timeout' });
+    expect(errorLine('plain words\nmore')).toEqual({ line: 'plain words' });
+    const cut = errorLine('AssertionError: ' + 'x'.repeat(900));
+    expect(cut.lineCut).toBe(true);
+    expect(cut.line.length).toBeLessThanOrEqual(400);
+    expect(cut.line).toContain('BOUNDED INPUT');
+  });
+  it('keeps the whole failure message for the run log, bounded at 8000 with the cut disclosed and the end kept', () => {
+    const c = parseVitestJson(report([named(F, [{ name: 'x', status: 'failed', msg: 'Error: head\n' + 'y'.repeat(20_000) + '\nTHE END' }])] as never), ROOT).files.get(F)!;
+    expect(c.failedTests![0].full.length).toBeLessThanOrEqual(8000);
+    expect(c.failedTests![0].full).toContain('BOUNDED INPUT');
+    expect(c.failedTests![0].full.endsWith('THE END')).toBe(true);
+  });
+  it('passedByName: every failed name must be passed by name; a duplicated name needs as many passes as failures', () => {
+    expect(passedByName(['a', 'b'], ['b', 'a', 'c'])).toEqual({ passed: ['a', 'b'], notPassed: [] });
+    expect(passedByName(['a', 'b'], ['a', 'c'])).toEqual({ passed: ['a'], notPassed: ['b'] });
+    expect(passedByName(['a', 'a'], ['a'])).toEqual({ passed: [], notPassed: ['a', 'a'] });
+    expect(passedByName(['a', 'a'], ['a', 'a'])).toEqual({ passed: ['a', 'a'], notPassed: [] });
+  });
+});
+
+describe('decideIsolationRerun', () => {
+  const rep = (m: Record<string, number>): ParsedLaneReport => ({ files: new Map(Object.entries(m).map(([f, failed]) => [f, { passed: 1, failed, skipped: 0, todo: 0 }])) });
+  const base = { maxFiles: 3, budgetLeft: 3, unhandledErrors: 0 };
+  it('importRelated absent: exactly today\'s result', () => {
+    expect(decideIsolationRerun({ ...base, report: rep({ a: 1, b: 0 }), laneFiles: ['a', 'b'] })).toEqual({ rerun: ['a'], reason: 'eligible', threePass: [] });
+    expect(decideIsolationRerun({ ...base, report: rep({ a: 1 }), laneFiles: ['a'], ineligible: new Set(['a']) })).toEqual({ rerun: [], reason: 'related-to-change' });
+  });
+  it('an import-related file with main evidence is eligible and needs three passes', () => {
+    expect(decideIsolationRerun({ ...base, report: rep({ a: 1 }), laneFiles: ['a'], ineligible: new Set(), importRelated: new Set(['a']) })).toEqual({ rerun: ['a'], reason: 'eligible', threePass: ['a'] });
+  });
+  it('an ineligible file in the lane stops everything, also beside an import-related one', () => {
+    expect(decideIsolationRerun({ ...base, report: rep({ a: 1, b: 1 }), laneFiles: ['a', 'b'], ineligible: new Set(['b']), importRelated: new Set(['a']) })).toEqual({ rerun: [], reason: 'related-to-change' });
+  });
+  it('mixed with a plain file: both re-run, only the import-related one needs three passes', () => {
+    expect(decideIsolationRerun({ ...base, report: rep({ a: 1, b: 1 }), laneFiles: ['a', 'b'], importRelated: new Set(['b']) })).toEqual({ rerun: ['a', 'b'], reason: 'eligible', threePass: ['b'] });
+  });
+  it('an import-related file counts as one file against the budget; more than 3 failed files is still a real break', () => {
+    expect(decideIsolationRerun({ ...base, budgetLeft: 1, report: rep({ a: 1 }), laneFiles: ['a'], importRelated: new Set(['a']) }).rerun).toEqual(['a']);
+    expect(decideIsolationRerun({ ...base, budgetLeft: 1, report: rep({ a: 1, b: 1 }), laneFiles: ['a', 'b'], importRelated: new Set(['a', 'b']) })).toEqual({ rerun: [], reason: 'rerun-budget-spent' });
+    expect(decideIsolationRerun({ ...base, report: rep({ a: 1, b: 1, c: 1, d: 1 }), laneFiles: ['a', 'b', 'c', 'd'], importRelated: new Set(['a']) })).toEqual({ rerun: [], reason: 'too-many-failures' });
+  });
+});

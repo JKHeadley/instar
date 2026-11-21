@@ -250,10 +250,13 @@ MONEY_LAYER_PREGATE_ACTIONS = [
                                     // yielding both-enabled; does NOT clear the config key
   "money-layer-disable",             // refused by the renderer while the config key is set
   "money-layer-disable-store-only",  // the acknowledged variant, rendered in its place
+  "gemini-payg-setup",               // amendment 2026-11-20 (gemini-payg-metered-lane §8):
+                                    // the flag PLUS one pending-setup intent file; never
+                                    // the caps store while money is off
 ]
 ```
 
-**Four** public actions. Any statement of a count elsewhere refers to this enum; the commit
+**Five** public actions (four until the 2026-11-20 amendment below). Any statement of a count elsewhere refers to this enum; the commit
 route accepts a signed action **iff** it is a member of it. There is no internal-only
 variant — `money-layer-disable-store-only` is a public action precisely so that what the
 operator approved is visible in the signed plan and the audit log.
@@ -604,6 +607,36 @@ An earlier draft had a single combined failure state and claimed a retry commit 
 
 **Enabling arms no door.** Every door stays `not-live` with `$0` committed until separately
 armed with the PIN. The enable is permission to *use* the arming flow, never a grant of spend.
+
+### Amendment 2026-11-20 — `gemini-payg-setup`: one PIN for the setup and its restart
+
+Made in the same change as `docs/specs/gemini-payg-metered-lane.md` §8 (FD-G18, FD-G25),
+which this section binds to. It amends the action list above and the restart binding of
+this section; nothing else here changes.
+
+- **What the action writes.** The enable flag and one pending-setup intent file
+  (`state/money-pending-setup.json`: the setup struct and its hash). It never writes the caps
+  store while money is off — the invariant "no caps write while money is off" holds. The caps,
+  the go-live record, the door policy and the zone are written by the money layer itself when
+  it applies the intent: at boot (before serving), or at once when money is already enforcing.
+- **Render.** Only on the machine the proposal names (a request from another machine is
+  forwarded there), from the persisted proposal, re-running every precondition each time it is
+  opened. The plan binds to the proposal's hash and the caps store version; a changed proposal
+  refuses render and commit with "the proposal changed; a new card is needed". Its text carries
+  the restart disclosure ("this restarts the whole agent server; sessions on this machine are
+  interrupted"), so the PIN approves the restart knowingly.
+- **Restart binding.** On a successful commit with money not yet enforcing, the **commit
+  route itself** schedules the supervised restart — no second PIN, no nonce — through the
+  **same safeguards** as `POST .../restart`: the three-state eligibility check, the persisted
+  cooldown, the settling check, and `restart requested` appended and flushed before the
+  supervisor handoff. A refused safeguard restarts nothing; the response says why and, where it
+  can, when it retries (`retryAt`; at most three automatic retries). This is the one named
+  exception to "the restart is separately PIN-gated": the nonce and confirmation-hash exist to
+  prove the caller saw the disclosure, and here the PIN-approved plan text carried it.
+- **Money already enforcing ⇒ no restart.** The intent applies hot through the running caps
+  store, and the response says so.
+- **A failed apply** (validation, a missing commit row, disk) boots with that door frozen,
+  raises one notice and never crash-loops.
 
 ## 5. Disable, and what it does not do
 

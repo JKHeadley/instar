@@ -143,7 +143,9 @@ describe('Session Pool activation wiring (§L4)', () => {
     // Injection uses the Telegram-aware path (adds the [telegram:N …] prefix the moved
     // session needs to reply) and tracks the injection for stall detection.
     // native-conversation-base §3c: the session text is built from the forward's media on this machine.
-    expect(block).toContain('sessionManager.injectTelegramMessage(existing, topicId, sessionText');
+    // SEC-106 path D: the three receiver sites share one helper that also carries the sender and label.
+    expect(block).toContain('const injected = injectForwarded(existing, sessionText);');
+    expect(block).toContain('return sessionManager.injectTelegramMessage(\n                session, topicId, sessionText,');
     expect(block).toContain('tg.trackMessageInjection(topicId, existing, text)');
     // The spawn name must NOT be the prefixed session name (the double-prefix defect).
     expect(block).toContain('const spawnName = `topic-${topicId}`');

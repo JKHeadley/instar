@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "workboard-card-redesign",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-19T04:23:05.027Z",
+  "artifactPath": "upgrades/side-effects/workboard-card-redesign.md",
+  "artifactSha256": "1bde1210bb465f49c5f0ab8764c0a616c16511121446f75be676807acf1573ee",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "tests/unit/console-work-brief.test.ts",
+    "tests/unit/console-work-closeout.test.ts",
+    "tests/unit/console-work-model.test.ts",
+    "tests/unit/console-work-slice2.test.ts",
+    "upgrades/next/workboard-card-redesign.md",
+    "upgrades/side-effects/workboard-card-redesign.eli16.md",
+    "upgrades/side-effects/workboard-card-redesign.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Static dashboard assets and tests only; no route, store, authority or migration; a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/workboard-card-redesign.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/workboard-card-redesign.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

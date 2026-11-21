@@ -62,7 +62,9 @@ export function isStorable(path, init, input) {
   if (headerOf(init, 'X-Instar-Operator-Session', input)) return false;
   // Saved copies belong to the sign-in that read them: no bearer, nothing saved.
   if (!bearerOf(init, input)) return false;
-  const bare = path.split('?')[0];
+  const [bare, query] = path.split('?');
+  // A continuation must check the viewer and the current list every time it opens.
+  if (bare === '/needs' && new URLSearchParams(query).has('cursor')) return false;
   return STORED.some((re) => re.test(bare));
 }
 
@@ -90,18 +92,22 @@ export function whenWords(at, now) {
   return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${time}`;
 }
 
-/** The top line, or '' when the connection is fine. */
+/**
+ * The top line, or '' when the connection is fine. The lead words are Telegram's, the same on every
+ * Instar app (Telegram parity W6): "Waiting for network…" with no connection, "Connecting…" while the
+ * agent does not answer.
+ */
 export function lineText(state, now) {
   if (!state || state.mode === 'fresh') return '';
   const offline = state.mode === 'offline';
   if (state.shownAt) {
     return offline
-      ? `Offline. Showing what I had at ${whenWords(state.shownAt, now)}.`
-      : `Weak connection. Showing what I had at ${whenWords(state.shownAt, now)}. Trying again.`;
+      ? `Waiting for network… Showing what I had at ${whenWords(state.shownAt, now)}.`
+      : `Connecting… Showing what I had at ${whenWords(state.shownAt, now)}.`;
   }
   return offline
-    ? 'Offline. Nothing saved on this device yet. I’ll load it when the connection is back.'
-    : 'Weak connection. Still trying to reach the agent.';
+    ? 'Waiting for network… Nothing saved on this device yet. I’ll load it when the connection is back.'
+    : 'Connecting… Still trying to reach the agent.';
 }
 
 /**

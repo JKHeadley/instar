@@ -137,7 +137,8 @@ A card for every decision, answer or sign-off the agent needs from a person. Off
 |--------|------|-------------|
 | GET | `/telegram/topics` | List topic-session mappings |
 | POST | `/telegram/topics` | Programmatic topic creation |
-| POST | `/telegram/reply/:topicId` | Send message to a topic |
+| POST | `/telegram/reply/:topicId` | Send message to a topic. The answer carries `messageId` and, when the chat has message links, `messageLink` |
+| GET | `/messages/link` | Build the link to a message, a card or a conversation from ids: `?platform=telegram&topicId=N&messageId=M`, `?platform=slack&channel=C&ts=T`, `?platform=card&cardId=ID`, `?platform=app&conversationKey=UUID`. Telegram answers say whether this machine's log holds that message (`verified`, `matched`); `409 not-linkable` names why a link cannot be built |
 | GET | `/telegram/topics/:topicId/messages` | Topic message history (`?limit=20`) |
 
 ## Evolution

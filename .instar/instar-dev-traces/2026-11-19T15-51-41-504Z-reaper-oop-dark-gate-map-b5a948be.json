@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "reaper-oop-dark-gate-map",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T15:51:41.504Z",
+  "artifactPath": "upgrades/side-effects/reaper-oop-dark-gate-map.md",
+  "artifactSha256": "1809e5ff8641a4625a4927f0572f8049a11dee2911485c329b545aaa301c1461",
+  "coveredFiles": [
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "upgrades/side-effects/reaper-oop-dark-gate-map.eli16.md",
+    "upgrades/side-effects/reaper-oop-dark-gate-map.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only hand-kept line map shift; no runtime change",
+  "eli16Path": "upgrades/side-effects/reaper-oop-dark-gate-map.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reaper-oop-dark-gate-map.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
