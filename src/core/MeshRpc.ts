@@ -445,6 +445,52 @@ export type MeshCommand =
       topicText: string;
       fallbackTopicId: number | null;
       jobSlug?: string;
+    }
+  // ── Gemini pay-per-use lane (docs/specs/gemini-payg-metered-lane.md §6) ──
+  // One designated machine spends; every other machine forwards to it. All five are
+  // registered-peer class: verifyEnvelope proves the sending machine, and each handler
+  // is the real gate (the holder re-runs its own route guards, the money chokepoint,
+  // and the result-token check; stop actions can only ever REDUCE money).
+  | {
+      // Any peer → the holder: run one metered call. `op` is set by the ORIGIN server
+      // route, never by a request body. Idempotent by callId (the holder's ledger).
+      type: 'metered-gemini-call';
+      op: 'spec-review' | 'second-opinion' | 'release-proof-forward';
+      originMachine: string;
+      session: string;
+      callId: string;
+      requestSha256: string;
+      /** sha256 of the origin-generated result token (the token never travels here). */
+      resultTokenHash: string;
+      payload: Record<string, unknown>;
+    }
+  | {
+      // The origin → the holder: poll a forwarded call. Without the token: not-yours.
+      type: 'metered-gemini-result';
+      callId: string;
+      resultToken: string;
+    }
+  | {
+      // Any peer → the holder: freeze / lower / disable a caller / lower a share. Only
+      // ever reduces money; the holder applies it through its own reduce-only mutators.
+      type: 'metered-stop-action';
+      action: 'freeze' | 'lower' | 'disable-caller' | 'lower-share';
+      keyRef: string;
+      requestId: string;
+      params?: Record<string, unknown>;
+    }
+  | {
+      // The holder → any peer: lease confirmation. The peer echoes the nonce and reports
+      // the designation it has seen. Read-class.
+      type: 'designation-echo';
+      keyRef: string;
+      designationEpoch: number;
+      nonce: string;
+    }
+  | {
+      // The holder → any peer: vault key NAMES only (never values). Read-class; the
+      // go-live precondition that the key is on the designated machine only.
+      type: 'secret-names';
     };
 
 export interface MeshEnvelope {
@@ -630,6 +676,14 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       const authd = deps.authorizeMandateDeliver?.({ sender, command }) ?? false;
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
+    // gemini-payg §6: registered-peer class. The holder's handlers are the gate (route
+    // guards + money chokepoint + result token; stop actions are reduce-only).
+    case 'metered-gemini-call':
+    case 'metered-gemini-result':
+    case 'metered-stop-action':
+    case 'designation-echo':
+    case 'secret-names':
+      return { ok: true, reason: 'ok' };
     case 'commitment-mutate':
     case 'telegram-origin':
     // email-send-forward (backup-email-sending, Who sends): the same posture. verifyEnvelope proves the sending

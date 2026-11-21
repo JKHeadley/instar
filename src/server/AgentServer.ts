@@ -227,6 +227,8 @@ import { createDocumentPageRoutes } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
+import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
+import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
 import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
@@ -998,6 +1000,10 @@ export class AgentServer {
    * (docs/specs/money-layer-operator-enable-surface.md).
    */
   private moneyLayerEnableSurface: MoneyLayerEnableSurface | null = null;
+  /** gemini-payg-metered-lane: the lane's server pieces (built on every machine; dark until go-live). */
+  private geminiPaygLane: GeminiPaygLane | null = null;
+  /** gemini-payg §6: the lane runtime the mesh handlers and secret sync read. */
+  meteredLaneRuntime: MeteredLaneRuntime | null = null;
   private moneyLayerAudit: MoneyLayerAuditLog | null = null;
   /** Read EARLY — the operator flag is half of MLE-1 and decides whether the money layer constructs at all. */
   private moneyLayerEnableStore: MoneyLayerEnableStore | null = null;
@@ -3447,7 +3453,10 @@ export class AgentServer {
               knownDoors: new Set([...METERED_ROUTING_DOORS, PROBE_DOOR] as string[]),
             });
             this.spendPlanStore = new RenderedPlanStore();
-            const machineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+            // gemini-payg §6: the money layer's machine id is the MESH id. `config.machineId`
+            // is unset on most agents, so the old fallback made every machine of a pool call
+            // itself 'single-machine' — and pass the designation check together.
+            const machineId = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
             // The reserved cap-gate probe door, installed idempotently so the
             // readiness probe has an ordinary live door to be refused by.
             this.routingSpendCapsStore.ensureProbeDoor(machineId);
@@ -3468,7 +3477,10 @@ export class AgentServer {
                   // lands with the metered dispatch seam — until then the gate
                   // SELF-FENCES (fails closed) there, the safe direction, matching
                   // the spec's own "paid routing is single-machine until D".
-                  leaseConfirmedAgoMs: () => (poolOn ? null : 0),
+                  // gemini-payg §6: on a pool, the holder's active designation echo
+                  // (MeteredLaneRuntime) is the positive confirmation; absent or unknown
+                  // ⇒ null, which still self-fences.
+                  leaseConfirmedAgoMs: () => (poolOn ? (this.meteredLaneRuntime?.leaseConfirmedAgoMs() ?? null) : 0),
                 })
               : null;
             // Reserve-expiry sweep: at boot + cadence (money-side; takes the per-key mutex).
@@ -3719,7 +3731,7 @@ export class AgentServer {
       const enableStore = this.moneyLayerEnableStore ?? new MoneyLayerEnableStore({ stateDir: options.config.stateDir });
       this.moneyLayerEnableStore = enableStore;
       const enableAudit = new MoneyLayerAuditLog({ stateDir: options.config.stateDir });
-      const surfaceMachineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      const surfaceMachineId = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
       this.moneyLayerAudit = enableAudit;
       this.moneyLayerEnableSurface = new MoneyLayerEnableSurface({
         store: enableStore,
@@ -3763,6 +3775,45 @@ export class AgentServer {
       // must not die because one surface failed to construct.
       console.error('[instar] money-layer enable surface init FAILED (its routes will 503):', err);
       this.moneyLayerEnableSurface = null;
+    }
+
+    // gemini-payg-metered-lane: build the lane on EVERY machine. A non-holder needs it to
+    // forward reviews and second opinions whatever its own money state (§6); every read is
+    // a late-bound closure, so nothing here captures freeze/serving/designation at boot.
+    try {
+      const laneSelf = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      this.geminiPaygLane = buildGeminiPaygLane({
+        stateDir: options.config.stateDir,
+        selfMachineId: laneSelf,
+        capsStore: () => this.routingSpendCapsStore,
+        gate: () => this.meteredSpendGate,
+        ledger: () => this.meteredSpendLedger,
+        servingReady: () => this.moneyLayerEnableSurface?.servingReady() ?? false,
+        peers: () => {
+          const lanePool = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
+          const mgr = options.coordinator?.managers?.identityManager;
+          // A pool agent with no readable registry is UNKNOWN (null), which fences — never "single machine".
+          if (!mgr) return lanePool ? null : [];
+          try {
+            return mgr.getActiveMachines().map((m) => m.machineId).filter((id) => id !== laneSelf);
+          } catch { return null; } // @silent-fallback-ok — unreadable registry is unknown, which fences
+        },
+        isLiveSession: (name) => {
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; }
+        },
+        reviewRoots: () => [path.dirname(options.config.stateDir)],
+        notify: (kind, message) => console.error(`[instar] gemini-payg ${kind}: ${message}`),
+      });
+      this.meteredLaneRuntime = this.geminiPaygLane.runtime;
+      this.meteredLaneRuntime.resumePendingStops();
+      const lanePoolOn = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
+      if (lanePoolOn) this.meteredLaneRuntime.startEcho();
+    } catch (err) {
+      // @silent-fallback-ok: NOT silent — logged; the lane's routes are then absent and
+      // nothing can spend (the gate still requires the runtime's lease confirmation).
+      console.error('[instar] gemini-payg lane init FAILED (lane unavailable):', err);
+      this.geminiPaygLane = null;
+      this.meteredLaneRuntime = null;
     }
 
     // Close-the-Loop action reach: the dated overdue checker cannot see pending
@@ -7645,6 +7696,9 @@ export class AgentServer {
     options.viewer?.setNewViewGuard?.(() => this.documentsReplaceViews());
     // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
     this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
+    // gemini-payg-metered-lane: POST /intelligence/gemini, /intelligence/gemini/review,
+    // GET /intelligence/gemini/status (behind the Bearer middleware; loopback-only inside).
+    if (this.geminiPaygLane) this.app.use(this.geminiPaygLane.router);
     // Linking a member's computer from their own phone (§3.6a), and that computer's one allowed send.
     {
       const pageDeps = this.documentPageDeps(options);
