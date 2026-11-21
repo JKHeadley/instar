@@ -95,7 +95,7 @@ export function conversationRef(conversationKey: string): Record<string, string>
   return { kind: 'app', key: conversationKey, ref: `app:${conversationKey}`, messagesPath: `/mobile/chat/app/${k}/messages`, sendPath: `/mobile/chat/app/${k}` };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean }): Record<string, unknown> {
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** The card's project's name (work-front-doors §4.3, "the project name on a card"); null when unknown. */ projectTitle?: string | null }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
   const phoneOnly = extra?.phoneOnly === true;
@@ -144,7 +144,11 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     ...(extra?.behind ? { behind: extra.behind } : {}),
     ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn } : {}),
   };
-  if (ownerish) { out.source = c.source; out.projectKey = c.projectKey; }
+  if (ownerish) {
+    out.source = c.source; out.projectKey = c.projectKey;
+    // The project's name rides with its key, to the same viewers only (a member never learns a private project's name, §4.4).
+    if (c.projectKey && typeof extra?.projectTitle === 'string' && extra.projectTitle.trim()) out.projectTitle = extra.projectTitle.trim();
+  }
   return out;
 }
 

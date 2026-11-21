@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-20T21:04:05.075Z",
+  "slug": "work-front-doors-stage2-project-label",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/work-projects.md",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
