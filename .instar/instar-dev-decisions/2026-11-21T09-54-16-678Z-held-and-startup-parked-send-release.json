@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-21T09:54:16.678Z",
+  "slug": "held-and-startup-parked-send-release",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 674,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/held-send-retire.md",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginLegacy.ts",
+      "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+      "src/messaging/telegram-origin/OriginOwnerRead.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/server/BootHealthBeacon.ts",
+      "src/server/telegramOriginRoutes.ts"
+    ],
+    "addedLines": 637,
+    "deletedLines": 37
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

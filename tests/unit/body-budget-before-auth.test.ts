@@ -229,6 +229,33 @@ describe('SEC-118-R1: an error answer to an unread body closes the connection', 
     expect(r.status).toBe(401);
     expect(r.closed).toBe(true);
   });
+  it('SEC-118-R2: the error answer to an unread body says Connection: close in its headers', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.use(authMiddleware(() => TOKEN));
+    app.post('/echo', (_req, res) => { res.json({ ok: true }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const port = (srv.address() as AddressInfo).port;
+    const conn = await new Promise<string | undefined>((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/echo', method: 'POST', headers: { 'transfer-encoding': 'chunked', 'content-type': 'application/x-unknown' } }, (res) => { resolve(res.headers.connection); res.resume(); req.destroy(); });
+      req.on('error', () => {});
+      req.write('z'.repeat(1024));
+    });
+    expect(conn).toBe('close');
+    await new Promise((r) => srv.close(r));
+  });
+  it('SEC-118-R2: an error after the body was fully read keeps the connection (not an unread body)', async () => {
+    const app = express();
+    app.use(closeUnreadBodyOnError());
+    app.post('/bad', express.json({ limit: '1mb' }), (_req, res) => { res.status(422).json({ error: 'nope' }); });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise((r) => srv.once('listening', r));
+    const r = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/bad`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"a":1}' });
+    expect(r.status).toBe(422);
+    expect(r.headers.get('connection')).not.toBe('close');
+    await new Promise((res) => srv.close(res));
+  });
   it('a successful answer is untouched (the guard acts on error statuses only)', async () => {
     const app = express();
     app.use(closeUnreadBodyOnError());
