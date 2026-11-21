@@ -110,6 +110,7 @@ import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
+import { sanitizeTypedText } from '../core/terminalControlBytes.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
@@ -21757,7 +21758,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           const target = `=${tmuxSession}:`;
           // Chunked — see src/core/tmuxLiteralSend.ts (`send-keys -l` payload
           // is one argv element and blows ARG_MAX on large text).
-          for (const chunk of chunkLiteralForTmux(text)) {
+          // SEC-137: peer-authored text is typed key-by-key here, so a CR, Ctrl-U or ESC inside it would act
+          // as a keystroke (early submit, erased sender tag). Same cleaning as SessionManager.rawInject.
+          for (const chunk of chunkLiteralForTmux(sanitizeTypedText(text))) {
             execFileSync(tmuxBin, buildLiteralSendArgs(target, chunk), { encoding: 'utf-8', timeout: 5000 });
           }
           execFileSync(tmuxBin, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
