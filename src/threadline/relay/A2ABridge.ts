@@ -12,7 +12,7 @@
  */
 
 import crypto from 'node:crypto';
-import net from 'node:net';
+import { resolveClientAddressParts } from './clientAddress.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { PresenceRegistry } from './PresenceRegistry.js';
 import type { AgentFingerprint, AgentMetadata, PresenceEntry, MessageEnvelope } from './types.js';
@@ -31,6 +31,8 @@ export interface A2ABridgeConfig {
   maxConcurrentTasksPerAgent?: number; // default 3
   /** Max request body size in bytes */
   maxRequestBodySize?: number; // default 65536 (64KB)
+  /** SEC-139: header the front proxy sets with the caller address; '' = trust no header. */
+  clientAddressHeader?: string;
 }
 
 export interface A2ABridgeDeps {
@@ -139,8 +141,13 @@ export class A2ABridgeRateLimiter {
 
   record(ip: string): void {
     const now = Date.now();
-    this.getOrCreate(`min:${ip}`).push(now);
-    this.getOrCreate(`hour:${ip}`).push(now);
+    for (const key of [`hour:${ip}`, `min:${ip}`]) {
+      const events = this.getOrCreate(key);
+      events.push(now);
+      // SEC-139: move to the end so the ceiling drops the least recently used keys first.
+      this.windows.delete(key);
+      this.windows.set(key, events);
+    }
     for (const key of this.windows.keys()) {
       if (this.windows.size <= A2ABridgeRateLimiter.MAX_KEYS) break;
       this.windows.delete(key);
@@ -262,6 +269,7 @@ export class A2ABridge {
       responseTimeoutMs: config.responseTimeoutMs ?? 300_000,
       maxConcurrentTasksPerAgent: config.maxConcurrentTasksPerAgent ?? 3,
       maxRequestBodySize: config.maxRequestBodySize ?? 65_536,
+      clientAddressHeader: config.clientAddressHeader ?? '',
     };
     this.deps = deps;
     this.bridgeEncryptor = new MessageEncryptor(
@@ -282,11 +290,10 @@ export class A2ABridge {
     const agentId = match[1];
     const subpath = match[2] ?? '/';
 
-    // SEC-134: only a well-formed address is used as a key (a forwarded header is caller-supplied
-    // text); anything else falls back to the socket address. Trusting the forwarded header only from
-    // a known proxy is a separate relay-wide change (RelayServer derives the address the same way).
-    const forwarded = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
-    const ip = forwarded && net.isIP(forwarded) ? forwarded : (req.socket.remoteAddress ?? 'unknown');
+    // SEC-139: the caller address the rest of the relay uses (no caller-written header trusted unless
+    // the deployment names one). Rate limits key IPv6 by /64; thread scope keeps the exact address so
+    // two hosts in one /64 never share a thread.
+    const { rateKey: ip, exact: callerAddress } = resolveClientAddressParts(req, this.config.clientAddressHeader);
 
     // Rate limit
     const rateCheck = this.deps.rateLimiter.check(ip);
@@ -304,7 +311,7 @@ export class A2ABridge {
     // Messages
     if (subpath === '/messages' && req.method === 'POST') {
       this.deps.rateLimiter.record(ip);
-      await this.handleMessage(req, res, agentId, ip);
+      await this.handleMessage(req, res, agentId, callerAddress);
       return true;
     }
 
@@ -410,7 +417,7 @@ export class A2ABridge {
     req: IncomingMessage,
     res: ServerResponse,
     agentId: AgentFingerprint,
-    callerIp: string,
+    callerAddress: string,
   ): Promise<void> {
     // Check agent exists and is online
     const entry = this.deps.presence.get(agentId);
@@ -474,7 +481,7 @@ export class A2ABridge {
     }
 
     // Map context ID to thread ID, scoped to this caller and this agent (SEC-134).
-    const { threadId, isNew } = this.contextMapper.getOrCreateThreadId(`${callerIp}\u0000${agentId}`, params.contextId || undefined);
+    const { threadId, isNew } = this.contextMapper.getOrCreateThreadId(`${callerAddress}\u0000${agentId}`, params.contextId || undefined);
 
     // Create task
     const taskId = `task-${crypto.randomUUID()}`;

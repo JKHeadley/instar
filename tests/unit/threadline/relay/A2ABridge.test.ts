@@ -394,6 +394,16 @@ describe('A2ABridge', () => {
       await Promise.all([p, p2]);
     });
 
+    it('SEC-139: two hosts in one IPv6 /64 keep separate threads for the same contextId', async () => {
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('v6-ctx'), '2001:db8:0:1::5'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      const p2 = bridge.handleRequest(mockReq('POST', sendBody('v6-ctx'), '2001:db8:0:1::6'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes[1].envelope.threadId).not.toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await Promise.all([p1, p2]);
+    });
+
     it('SEC-134: refuses a contextId that is too long or not text', async () => {
       for (const bad of ['x'.repeat(257), 42]) {
         const res = mockRes();
