@@ -4,6 +4,6 @@ Your agent runs on several computers, and they talk to each other: who is in cha
 
 The signature says who sent a message, but not which computer it was for or what it was asking. So someone on your network who copied a message going to one computer could, within half a minute, send that same signed message to a third computer, even as a different request, such as "hand over the lead". The third computer would accept it.
 
-Now every updated computer checks a second signature that also names the request and the computer it is meant for. Once every computer has proven it can check that second signature, they all start sending it. Older computers simply ignore the extra signature and keep working, so nothing breaks while your computers update at different times.
+The fix adds a second signature that also names the request and the computer it is meant for. It arrives in three updates, spaced out so every computer has time to catch up. First, computers learn to check the second signature when it is there. Next, they start sending it. Older computers ignore it and keep working. Last, they stop accepting messages without it, which closes the gap for good.
 
-Each computer keeps track of which of the others are already sending the new signature. When every computer reports that all the others send it, the agent asks you once whether to stop accepting the old kind. If an older computer is refused later, the agent tells you which one and lets you let it back in with one tap.
+You don't need to do anything. The one exception is a computer kept on a very old version. Once the last update arrives, its messages are refused, and the agent tells you which computer it is. You can let it back in for a while with one tap, until it is updated.
