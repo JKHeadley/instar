@@ -64,7 +64,7 @@ No new static heuristic at a competing-signals decision point. The two new fixed
 
 - **Shadowing:** none. The tail cache, its eviction and the unread service are unchanged; the view only replaces the file scan beneath them.
 - **Double-fire:** the load is single flight.
-- **Races:** rows appended during a pass are merged by dedupe key; a pass that read a replaced file is discarded and re-read; a failed pass publishes nothing. The Cartographer read-compare-write stays in one synchronous turn.
+- **Races:** a pass reads to the confirmed end of the file and publishes in that turn, so no append falls between; a rotation drops the view; a pass that read a replaced file is discarded and re-read; a failed pass publishes nothing. The Cartographer read-compare-write stays in one synchronous turn.
 - **Feedback loops:** a persistently unreadable log is retried with backoff (5 s doubling to 5 min).
 - The conversation-graph inventory starts after the first load, so it cannot publish a partial view.
 

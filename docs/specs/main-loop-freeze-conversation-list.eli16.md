@@ -35,7 +35,7 @@ Two smaller fixes ride along, both found in the same recordings:
 ## The safeguards
 
 - Nothing is decided or blocked differently. This change only makes existing reads cheaper and moves start-up work off the single thread.
-- A message saved during the background read appears once. When old messages are trimmed from the file, the memory copy is rebuilt to match.
+- A message saved during the background read appears once. When old messages are trimmed from the file, the memory copy is dropped and rebuilt, so it never shows a message the file no longer holds.
 - If the background read fails, nothing partial is kept. The apps are told to try again and the server retries by itself after a growing pause (five seconds, doubling, at most five minutes).
 - Other parts of the server that use the old way of reading history behave exactly as before.
 - Tests cover the old failure: the list used to read the file once per conversation and now reads it zero times on the main thread. Others cover paging, failed reads, trimming and the code map.

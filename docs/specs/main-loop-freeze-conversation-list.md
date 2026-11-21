@@ -90,24 +90,27 @@ rules as they were and replaces only the slow step underneath them.
   parses them (the same topic matcher; malformed lines skipped).
 - `scanLogForTopic` (limit up to 500) and the first tail seed read the view when it exists. The tail
   cache, its eviction on `unregisterTopic`, and the row each reader sees are otherwise unchanged.
-- One streamed pass builds it (`loadHistory`), single flight. Each append adds the row in its
-  persisted JSON shape. Rows appended during a pass are merged by dedupe key.
-- A rotation (either logger path) bumps a generation and rebuilds the view, so rows gone from the
-  file leave the view. A pass that read a replaced file is discarded and re-read. The previous view
-  serves until the new one is published.
+- One pass of small awaited reads builds it (`loadHistory`), single flight. It reads to the end of
+  the file and publishes in the same turn that confirms that end, so no append can fall between.
+  After that each append adds its row in persisted JSON shape. The pass also seeds append dedupe.
+- An append onto a torn last line (no newline) makes one unreadable line in the file, so the view
+  drops that row too, as a file read would.
+- A rotation (either logger path) drops the view and rebuilds it, so a cold read cannot seed a row
+  the file no longer holds. A pass that read a replaced file is discarded and re-read.
 - A missing log is an empty view. A failed pass is discarded whole and retries by itself after 5 s,
   doubling to 5 min.
 
 ### 2. Conversation reads wait for the view, boundedly
 
-- The list, the read-report route and `GET /telegram/topics/:id/messages` (the app's chat history)
-  wait after their own admission checks, up to 15 s and off the event loop. If the view is still
+- The list, a read report that names a Telegram conversation, and `GET /telegram/topics/:id/messages`
+  (the app's chat history; a Bearer scroll-back needs no view) wait after their own validation, up
+  to 15 s and off the event loop. A first-time reader's baseline is set on arrival, before the wait. If the view is still
   unavailable they answer `503 conversations-loading` with `Retry-After: 5`, never a file scan.
 - Scroll-back uses `getTopicHistoryBeforeAsync`, the same backward read awaited per 1 MB block.
 - The list and unread counter use `getTopicTailRows`, which skips the authorship join: it adds only
   authorship fields and can synchronously parse its ledger.
-- The conversation-graph inventory starts after the view first loads, so it never sees a partial
-  list or scans the log.
+- The conversation-graph inventory starts after the view first loads, or after three failed loads
+  (a persistently unreadable log), when it runs on the ordinary read path as it always has.
 - Where the app is enabled the view loads at server start.
 
 Row shape, previews, order, cursors, unread counts and dividers are intended to be unchanged; the
@@ -159,8 +162,8 @@ No gate, filter, block or allow decision is added, removed or changed. The only 
   to the async-tmux work; queued with this profile as evidence. (feedback item fb-9193b40c-880)
 - About fifteen callers of `getTopicHistory(topicId, 1_000)` (above the 500-row view; e.g.
   `notificationAlreadyDelivered`) still scan synchronously per call. Not on the list or chat path. (feedback item fb-9193b40c-880)
-- The one-time message-dedupe seed (`seedMessageLogDedupe`) still reads the log synchronously once
-  per process, at the first append. Bounded to one read per server life. (feedback item fb-9193b40c-880)
+- An actual rotation still reads and rewrites the file synchronously, once per roughly 25 000
+  messages, as it always has. (feedback item fb-9193b40c-880)
 - `CiFailurePoller`'s `gh` launches are already async `execFile`; the profile's `spawn` frames
   under it are the unavoidable fork cost of a real child process, not a blocking wait.
 

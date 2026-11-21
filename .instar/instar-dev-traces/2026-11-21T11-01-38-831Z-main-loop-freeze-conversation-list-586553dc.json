@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:01:38.831Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "aa12458abcb38bbeae6cef41ecb2f8fce6ae8bb66a453618dcb07e94e022e222",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T10-59-43-829Z-main-loop-freeze-conversation-list.json",
+    ".instar/instar-dev-traces/2026-11-21T10-59-15-989Z-main-loop-freeze-conversation-list-010232b5.json",
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "docs/specs/main-loop-freeze-conversation-list.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/conversation-list-no-log-scan-alive.test.ts",
+    "tests/unit/telegram-log-view.test.ts",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path performance repair with no state, config or migration; a revert restores prior behavior.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

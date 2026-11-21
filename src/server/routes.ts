@@ -23417,7 +23417,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
     // Never a synchronous read of the whole log on this path (main-loop-freeze-conversation-list).
-    if (ctx.telegram.waitForHistory && !(await ctx.telegram.waitForHistory())) {
+    // A scroll-back page reads the file by itself; only a device's unread divider also needs the view.
+    const needsHistoryView = beforeMs === null || (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
+    if (needsHistoryView && ctx.telegram.waitForHistory && !(await ctx.telegram.waitForHistory())) {
       res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return;
     }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)

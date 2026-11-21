@@ -52,7 +52,7 @@ describe('conversation list — production wiring', () => {
     cleanup.push(() => server.stop());
     const list = () => request(server.getApp()).get('/mobile/conversations?limit=200').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'clist-e2e');
     const reads = vi.spyOn(fs, 'readFileSync');
-    const streams = vi.spyOn(fs, 'createReadStream');
+    const opens = vi.spyOn(fs.promises, 'open');
     try {
       const [a, b] = await Promise.all([list(), list()]);
       for (const r of [a, b]) {
@@ -62,10 +62,10 @@ describe('conversation list — production wiring', () => {
         expect(tg).toHaveLength(N);
         expect(tg[0]).toMatchObject({ id: 7000 + N, lastPreview: `note 2 for ${N}` });
       }
-      expect(streams.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(1);
+      expect(opens.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(1);
       const unread = server.conversationUnread as unknown as { deps: { telegram: { history: (i: number, l: number) => Array<{ messageId: number }> } } };
       expect(unread.deps.telegram.history(7001, 100).map((r) => r.messageId)).toEqual([1, 2, 3]);
       expect(reads.mock.calls.filter((c) => String(c[0]) === logPath)).toHaveLength(0);
-    } finally { reads.mockRestore(); streams.mockRestore(); }
+    } finally { reads.mockRestore(); opens.mockRestore(); }
   });
 });

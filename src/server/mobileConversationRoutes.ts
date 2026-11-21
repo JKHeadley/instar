@@ -603,6 +603,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    // A first-time reader's baseline is this request's arrival, not the end of the wait below.
+    { const u = unreadOn(); const r = readerOf(req); if (u && r) u.touchBaseline(r); }
     if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     const local = localListPage(limit, cursor);
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
@@ -750,7 +752,6 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!unread) { unreadOff(res); return; }
     const p = principalOf(req);
     if (p.kind !== 'device' && p.kind !== 'token') { res.status(403).json({ error: 'operator-device-required' }); return; }
-    if (deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     // The agent itself has no reader: a Bearer request carries the forwarded key or is refused.
     if (p.kind === 'token' && !isReaderKey(req.query.reader)) { res.status(400).json({ error: 'reader-required', detail: 'A Bearer read report must name the reader it is forwarded for.' }); return; }
     const reader = unread.resolveReader({ person: devicePersonOf(req), viaDevice: p.kind === 'device', readerParam: req.query.reader });
@@ -758,6 +759,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const marks = ConversationUnreadService.parseMarks(req.body);
     if (!marks) { res.status(400).json({ error: 'bad-marks', detail: 'Send 1-50 marks, each with ref, id and atMs.' }); return; }
     if (reader.viaDevice) unread.touchBaseline(reader);
+    // Only a mark on a Telegram conversation needs its history.
+    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady && !(await deps.telegramHistoryReady())) { res.setHeader('Retry-After', '5'); res.status(503).json({ error: 'conversations-loading', retryable: true }); return; }
     // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
     const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
     res.json({ results });
