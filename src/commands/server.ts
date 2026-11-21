@@ -32302,11 +32302,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           // Recovery wiring lives in its own module: this function is at the compiler's flow limit.
           {
-            const { startRecoveryMainWiring } = await import('./recoveryMainWiring.js');
+            const { startRecoveryMainWiring, recoveryDirectSshRoute } = await import('./recoveryMainWiring.js');
             const recoveryRuntime = await startRecoveryMainWiring({ config, liveConfig, state, coordinator, identity: meshIdMgr, meshClient, peerUrl,
               machineId: meshSelfId, machineSigningKey: localSigningKeyPem, selfEndpoints: getSelfMeshEndpoints?.() ?? [], telegramOriginBoot: () => telegramOriginBoot });
             guardRegistry.register('multiMachine.serverDownRecovery.enabled', () => ({
               enabled: resolveDevAgentGate(config.multiMachine?.serverDownRecovery?.enabled,config), status: recoveryRuntime.status(),
+              directSshRoute: recoveryDirectSshRoute(),
             }));
           }
           // Pool Dashboard Streaming requesting side (§2.2): build the connector

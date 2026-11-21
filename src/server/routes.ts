@@ -31494,11 +31494,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/telegram/dashboard-refresh', async (_req, res) => {
     if (!ctx.telegram) {
+      // An agent with no Telegram at all (an app-created agent talks through
+      // the app) has no Dashboard topic: the refresh does not apply, so it is
+      // a clean skip (200), not a failure the job would count every 15 minutes.
+      // Telegram that IS configured but not running stays a real failure.
+      const telegramConfigured = (ctx.config.messaging ?? []).some(m => m.type === 'telegram' && m.enabled);
+      if (!telegramConfigured) {
+        res.json({ action: 'skipped', reason: 'telegram-not-configured',
+          detail: 'Telegram is not set up for this agent, so there is no Dashboard topic to update.' });
+        return;
+      }
       res.status(503).json(dashboardRefreshFailure(
         'precondition',
-        'Telegram messaging is not configured for this agent, so there is no Dashboard topic to update.',
-        'Run Telegram setup for this agent or disable the dashboard-link-refresh job when Telegram is intentionally unavailable.',
-        'skipped',
+        'Telegram is configured for this agent but this server has no Telegram connection (it is not running), so the Dashboard topic cannot be updated.',
+        'Check the server log for a Telegram startup error (bot token, network), or whether the server was started without Telegram on purpose.',
       ));
       return;
     }
