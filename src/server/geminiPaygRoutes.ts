@@ -26,6 +26,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { hasForwardingHeaders } from './mobileBrowserDevices.js';
 import { GeminiApiRefusal, type GeminiApiProvider, type GeminiCallRequest } from '../providers/metered/gemini-api/GeminiApiProvider.js';
 
@@ -177,7 +178,7 @@ export function createGeminiPaygRoutes(deps: GeminiPaygRouteDeps): Router {
   const router = Router();
 
   router.post('/intelligence/gemini', async (req: Request, res: Response) => {
-    if (!isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
+    if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
       res.status(403).json({ error: 'forbidden', reason: 'not-local', message: 'Second opinions are accepted only from this machine.' });
       return;
     }
@@ -224,7 +225,7 @@ export function createGeminiPaygRoutes(deps: GeminiPaygRouteDeps): Router {
 
   // The review driver's door probe (loopback only; no secrets in the answer).
   router.get('/intelligence/gemini/status', (req: Request, res: Response) => {
-    if (!isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
+    if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
       res.status(403).json({ configured: false, ready: false, reason: 'not-local' });
       return;
     }
@@ -234,7 +235,7 @@ export function createGeminiPaygRoutes(deps: GeminiPaygRouteDeps): Router {
   });
 
   router.post('/intelligence/gemini/review', async (req: Request, res: Response) => {
-    if (!isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
+    if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
       res.status(403).json({ status: 'unavailable', reason: 'not-local', message: 'Reviews are accepted only from this machine.' });
       return;
     }

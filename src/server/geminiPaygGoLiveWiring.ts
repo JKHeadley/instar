@@ -28,6 +28,7 @@ import { operatorError } from '../core/storageMachineName.js';
 import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { hasForwardingHeaders } from './mobileBrowserDevices.js';
 import { sessionOf } from './geminiPaygRoutes.js';
 import {
@@ -133,7 +134,7 @@ export interface GeminiPaygCapsDetail {
 const MODELS_CHEAPEST_FIRST = Object.values(GEMINI_API_MODELS).sort((a, b) => a.cheapestRank - b.cheapestRank).map((m) => m.id);
 
 function loopbackOnly(req: Request, res: Response): boolean {
-  if (!isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) {
     res.status(403).json({ error: 'forbidden', reason: 'not-local', message: 'This route is accepted only from this machine.' });
     return false;
   }

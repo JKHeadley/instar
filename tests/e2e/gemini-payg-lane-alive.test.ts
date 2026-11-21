@@ -70,6 +70,15 @@ describe('Gemini pay-per-use lane E2E (wired on the production init path, dark b
     expect(rv.body.reason).toBe('bad-request');
   });
 
+  it('the local-only routes refuse a forwarded (tunnel-style) request on the real boot path', async () => {
+    // A tunnel connects from loopback too; the forwarded headers (and, for the same-network
+    // listener, mayBeLocalArrival) are what keep these routes local-only.
+    const st = await request(server.getApp()).get('/intelligence/gemini/status').set(auth()).set('X-Forwarded-For', '203.0.113.9');
+    expect(st.status).toBe(403);
+    const e2 = await request(server.getApp()).post('/intelligence/gemini').set(auth()).set('X-Forwarded-Host', 'echo.example').send({ prompt: 'q', purpose: 'e2e' });
+    expect(e2.status).toBe(403);
+  });
+
   it('the lane runtime is constructed (wiring integrity) and fences when nothing is designated', async () => {
     const rt = server.meteredLaneRuntime;
     expect(rt).not.toBeNull();
