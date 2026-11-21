@@ -1,0 +1,21 @@
+# The dashboard file editor refuses the files that decide what runs
+
+<!-- bump: patch -->
+
+## What Changed
+
+SEC-144. The file editor's never-editable list (`NEVER_EDITABLE_PREFIXES`, `src/server/fileRoutes.ts`) protects files whose edit would run code, under the invariant that a PIN compromise must never yield arbitrary code execution. It covered `.claude/hooks/`, `.claude/scripts/`, `.instar/jobs/instar/`, `.instar/reference/` and `.instar/config.json`, but not `.claude/settings.json` and `.claude/settings.local.json` (the hook command lines), `.instar/hooks/` (where the hook scripts that run live; the list guarded the older folder), `.instar/scripts/`, `.instar/jobs.json`, `.instar/jobs/user/`, `.instar/jobs/schedule/`, `.mcp.json`, `.codex/`, `.gemini/` and `.husky/`. They are now on the list, with the same case-folded and resolved-path checks, and each entry also matches inside a nested project root such as a worktree. Reading them is unchanged. Job editing keeps working through the Schedule page's own route (`POST /jobs/:slug/save`), which the same token can still use, so this is defence in depth for jobs.
+
+## What to Tell Your User
+
+- **Safer file editor**: "The dashboard's file editor no longer saves the files that decide which commands I run, like hook settings and scheduled jobs. You can still read them, and jobs are still edited from the Schedule page."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| File editor refuses execution-deciding files | Automatic |
+
+## Evidence
+
+- `tests/unit/file-editor-never-editable-bypasses.test.ts`: new case for each added path in several letter cases; controls show memory and job README files stay editable.
