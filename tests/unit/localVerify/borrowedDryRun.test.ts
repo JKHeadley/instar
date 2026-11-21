@@ -74,10 +74,26 @@ describe('the dry run\'s rules', () => {
     expect(judgeDryRunFile(p({ tests: 0 }), row)).toBe('not-collected');
   });
   it('a lane is proven when the passing files are worth at least half of its time', () => {
-    const ms = (f: string) => ({ a: 60, b: 40 } as Record<string, number>)[f];
-    expect(laneProvenByTime([{ file: 'a', passed: true }, { file: 'b', passed: false }], ms)).toBe(true);
-    expect(laneProvenByTime([{ file: 'a', passed: false }, { file: 'b', passed: true }], ms)).toBe(false);
-    expect(laneProvenByTime([], ms)).toBe(false);
+    const ms = (f: string) => ({ a: 60, b: 40, c: 100 } as Record<string, number>)[f];
+    expect(laneProvenByTime(['a', 'b'], new Set(['a']), ms)).toBe(true);
+    expect(laneProvenByTime(['a', 'b'], new Set(['b']), ms)).toBe(false);
+    // A file the helper never finished counts against the lane: 60 of 200 is not half.
+    expect(laneProvenByTime(['a', 'b', 'c'], new Set(['a']), ms)).toBe(false);
+    expect(laneProvenByTime([], new Set(), ms)).toBe(false);
+  });
+});
+
+describe('a dry run that cannot finish', () => {
+  it('is started again at most three times, then stopped and said once', async () => {
+    const s = setup();
+    s.baseline.clear(); // nothing can start: every try ends unfinished
+    s.request();
+    let t = 0;
+    (s.dry as unknown as { d: { now: () => number } }).d.now = () => (t += 11 * 60_000);
+    for (let i = 0; i < 8; i++) { s.dry.tick([LAPTOP]); await s.until(() => !s.dry.isRunning('m_laptop')); }
+    expect(s.audits.filter((a) => a.event === 'borrowed-dry-run-waiting')).toHaveLength(3);
+    expect(s.audits.filter((a) => a.event === 'borrowed-dry-run-gave-up')).toHaveLength(1);
+    expect(s.store.get('m_laptop').dryRunIntent?.state).toBe('stopped');
   });
 });
 

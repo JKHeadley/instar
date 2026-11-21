@@ -87,6 +87,7 @@ import { pickupBudgetLeft } from '../core/WorkBoardPickupController.js';
 import { DEFAULT_WORK_BOARD_SETTINGS } from '../core/WorkBoardService.js';
 import { askDecision, freshAsk, noteAsked, noteSkipped, type AskState } from '../localVerify/borrowedAsk.js';
 import { DRY_RUN_LIMITS } from '../localVerify/borrowedDryRun.js';
+import { BORROWED_PROXY } from '../localVerify/BorrowedRunMachine.js';
 import { untold, type HelperEvent } from '../localVerify/borrowedNotices.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -5792,26 +5793,34 @@ const localVerifyBorrowedHelperAsking: SelfActionController = {
 /**
  * local-verify-borrowed-dry-run-resend — the dry run sends again a file the helper did not finish
  * (it handed the slice back for its owner, or stayed silent). Pinned worst case: the helper hands
- * back every slice forever. Brake: each file is sent at most DRY_RUN_LIMITS.maxSends times, then
- * recorded as not answered; a restart starts the dry run over at most once per boot after the
- * 10-minute retry gap.
+ * back every slice forever. Brakes: each file is sent at most DRY_RUN_LIMITS.maxSends times in a
+ * run; a request that could not finish is started again at most DRY_RUN_LIMITS.maxStarts times
+ * (10 minutes apart), then stopped. The model drives every start of one request.
  */
 const localVerifyBorrowedDryRunResend: SelfActionController = {
   id: 'local-verify-borrowed-dry-run-resend',
   actionVerb: 'retry-dry-run-slice',
   models: 'src/localVerify/borrowedDryRun.ts (runLane: pending files sent again until DRY_RUN_LIMITS.maxSends)',
   modelsPath: 'src/localVerify/borrowedDryRun.ts',
-  restartPosture: { pressureSurvives: false, resetSafeReason: 'The send counts are per run; a restart starts the dry run over once, after the 10-minute retry gap, with the same per-file cap, and an operator stop ends it.' },
-  boundK: 10 * DRY_RUN_LIMITS.maxSends,
-  perTargetBoundK: DRY_RUN_LIMITS.maxSends,
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The start count is per process: a restart may start a request again, each time under the same per-file and per-request caps; the request is persisted, so an operator stop or a gave-up stop survives the restart.' },
+  boundK: 10 * DRY_RUN_LIMITS.maxSends * DRY_RUN_LIMITS.maxStarts,
+  perTargetBoundK: DRY_RUN_LIMITS.maxSends * DRY_RUN_LIMITS.maxStarts,
   ticks: 200,
   tickMs: DRY_RUN_LIMITS.pollMs,
   makeUnderPressure(f, sink) {
     const files = Array.from({ length: 10 }, (_, i) => `tests/integration/f${i}.test.ts`);
-    const sends = new Map<string, number>();
-    let pending = [...files];
+    let starts = 0;
+    let sends = new Map<string, number>();
+    let pending: string[] = [];
     return { tick() {
       sink.considered += 1;
+      // A run ended unfinished: the request starts again while under its start cap.
+      if (pending.length === 0) {
+        if (starts >= DRY_RUN_LIMITS.maxStarts) return;
+        starts += 1;
+        sends = new Map();
+        pending = [...files];
+      }
       const next: string[] = [];
       for (const file of pending) {
         sends.set(file, (sends.get(file) ?? 0) + 1);
@@ -5851,6 +5860,36 @@ const localVerifyBorrowedHelperNotice: SelfActionController = {
         told.add(e.id);
       }
       f.durableState.set(key, [...told]);
+    } };
+  },
+};
+
+/**
+ * local-verify-borrowed-baseline-push — the coordinator offers its baseline results to each peer
+ * that runs a helper. Pinned worst case: the peer refuses every offer and the coordinator ticks
+ * every 30 seconds for a day. Brake: one version is offered at most every 5 minutes and at most
+ * BORROWED_PROXY.baselineMaxTries times; only a new version (the next green main) is offered again.
+ */
+const localVerifyBorrowedBaselinePush: SelfActionController = {
+  id: 'local-verify-borrowed-baseline-push',
+  actionVerb: 'retry-baseline-push',
+  models: 'src/localVerify/BorrowedRunMachine.ts (pushBaseline: retry gap and per-version cap)',
+  modelsPath: 'src/localVerify/BorrowedRunMachine.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The offer counts are in memory: a restart may offer the current version again up to the same cap, once per restart; a peer that stored it acknowledges and is never offered it again.' },
+  boundK: BORROWED_PROXY.baselineMaxTries,
+  perTargetBoundK: BORROWED_PROXY.baselineMaxTries,
+  ticks: 2_880,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    let tries = 0;
+    let triedAt = -Infinity;
+    return { tick() {
+      sink.considered += 1;
+      if (tries >= BORROWED_PROXY.baselineMaxTries || f.clock.nowMs() - triedAt < BORROWED_PROXY.baselineRetryMs) return;
+      tries += 1;
+      triedAt = f.clock.nowMs();
+      sink.emit({ verb: 'retry-baseline-push', target: 'm_m5' });
+      if (!f.targetAlwaysRejects()) tries = BORROWED_PROXY.baselineMaxTries; // stored: never offered again
     } };
   },
 };
@@ -6212,4 +6251,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyBorrowedHelperAsking,
   localVerifyBorrowedDryRunResend,
   localVerifyBorrowedHelperNotice,
+  localVerifyBorrowedBaselinePush,
 ];

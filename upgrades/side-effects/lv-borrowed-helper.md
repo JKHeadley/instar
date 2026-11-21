@@ -252,7 +252,7 @@ These stages add or change actions the code takes by itself. Each has a brake:
 - **Asking a helper:** one status request per verify with a 2-second limit; after 10 unanswered in a row, every 5th verify; after 7 days without an answer, none until the helper announces itself.
 - **"I am here":** one signed request per wake of the helper (a wake is a gap of more than 3 minutes between 60-second sweeps); a refused or failed send is audited and not retried.
 - **Notices:** one per helper event id, through the create-once attention seam; ordinary lapses are never sent to the owner.
-- **Baseline push to a peer:** only when the baseline changes.
+- **Baseline push to a peer:** a new version at once; a version a peer refused is offered again at most every 5 minutes and, since the second pass of stage 6, at most 5 times.
 - **The slice queue and preparation:** bounded queue; refusals found during preparation are remembered per commit pair, so a repeated request is refused at once without preparing again; the loopback proxy has a 5-second limit and never retries.
 - **Sandbox stops and restarts, clean-up kills:** unchanged from the first build (memory-pressure hold-off doubling to 1 hour; at most 3 kills, then a restart).
 
@@ -307,3 +307,25 @@ Kept from the first design and named so nobody mistakes it for the dry run: the 
 - **Failure states:** with `/local-verify` unreadable, or no helper configured, the card is simply absent (it carries no state the page needs).
 
 Unit tests: every file under `tests/unit/localVerify` (71 files, runs of at most 5), `MaturationLadder`, `MaturationLadderService`, `feature-ladders-coverage`, `feature-maturation-plan-gate`, the awareness registry tests, `claude-md-core-headroom`, `console-development` and `console-needs-first-screen` (182), `self-action-convergence` (883), `degradation-never-silent`; integration `local-verify-borrowed-routes`, `-helper-routes`, `-routes` and `console-static-serving`; e2e `local-verify-borrowed-helper-lifecycle` and `local-verify-lifecycle`; `tsc` clean. New: `borrowedDryRun.test.ts` (against a real helper service: a full dry run, a helper failure, no baseline, a stop).
+
+## Second-pass review (the whole rework, after stage 6)
+
+**Reviewer:** independent reviewer subagent (general-purpose, read-only; it read the spec, `docs/signal-vs-authority.md` and the whole diff against `main`, not the author's conclusions)
+**Verdict: concur** (after one round of fixes, re-checked by the same reviewer)
+
+**First read: concern raised, one blocking finding and six should-fix:**
+1. (blocking) The "more than five disagreements in one verify" rule was checked per lane at each lane's end, so a counting lane that ended early kept its helper passes when a later lane took the verify past five. **Fixed:** a counting lane that admits passes registers a final local pass; once every lane has ended, if the verify is past five, each such lane removes those passes from its report and runs the files here before any verdict (`orchestrator.ts`, `lateFinalPasses`; test "the mass rule is the whole verify's" through the real `runVerify`).
+2. The server applied the same rule per lane. **Fixed:** `recordVerify` passes the verify's total to every lane (`verifyDisagreements`).
+3. "A pass that made main red" fired only for this machine's own main verifies. **Fixed:** checked in `completeMain` for local and peer main records alike, leaving out files that passed alone; the coordinator sends a red `main` to each peer that runs helpers (`POST /local-verify/peer-main-red`, lease holder only, strict body), with one retry a minute later.
+4. A peer's record could be refused when its setting went off mid-verify. **Fixed:** the coordinator accepts a helper the peer reported in the last 24 hours.
+5. The dry run's lane proof counted only answered files. **Fixed:** every eligible file is in the denominator.
+6. The dry run and the baseline push retried forever, and the models overstated the brakes. **Fixed:** a dry-run request starts at most 3 times, then stops (`borrowed-dry-run-gave-up`); a refused baseline version is offered at most 5 times; the registry models match the code, and a baseline-push model was added.
+7. The share was not scaled by the helper's free workers. **Fixed:** the helper's status names its worker ceiling (`owner.workersMax`), and the share scales by free over ceiling.
+
+Nits, all fixed: one lane's slice cap no longer stops later lanes; the poll's read position moves only past known results; no polling without a share; the dry run reads tree readiness only from a signed status; spot re-runs are drawn per file.
+
+**Accepted residuals (named by the reviewer):** the server may suspend a helper on a verify whose passes the child already used (the failing-direction request adds wrong passes after the verdict; suspension then applies from the next verify); a red-main notice to a peer that fails twice is lost (audited); the coordinator's 24-hour memory of a peer's helpers does not survive a coordinator restart.
+
+**Verified by the reviewer as holding:** a helper failure, a late, invalid or other-tree answer, slice trouble or a timeout only ever leads to a local run; a local result always wins; a file reported twice makes the report untrusted; take-back processes run only their shard's portion; the proxy refuses the tunnel, other forwarders, non-loopback sockets, main-verify and finished tokens, and any field beyond the operation's own; every slice and status answer's signature is checked before the child sees it; with `borrowed` absent no flow runs and the record is unchanged (the one dark change: unit-lane file times now go into the durations file, which only balances shards).
+
+Tests after the fixes: every file under `tests/unit/localVerify` and the neighbour units (all batches green), integration (5 files, 48 tests), e2e (2 files, 21 tests), `self-action-convergence`, `tsc` clean.

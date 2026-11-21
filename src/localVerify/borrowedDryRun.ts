@@ -18,8 +18,10 @@
  * The helper writes its own "dry run done" record from the same slices (C item 3).
  *
  * Self-triggered and bounded: one task per helper at a time; at most 20 slices waiting on the
- * helper at once; status asked every 5 seconds; a stopped request ends the task and tells the
- * helper it is over; the task gives up after 24 hours. Nothing here is on a verify's path.
+ * helper at once; status asked every 5 seconds; each file sent at most 5 times in a run; a run
+ * ends after 24 hours; a request that could not finish is started again at most three times (once
+ * per 10 minutes), then stopped; an operator stop ends it and tells the helper it is over.
+ * Nothing here is on a verify's path.
  */
 import crypto from 'node:crypto';
 import type { MachineKeyLookup, MachineSigner } from '../core/AppRecordSignatures.js';
@@ -50,6 +52,8 @@ export const DRY_RUN_LIMITS = Object.freeze({
   maxSends: 5,
   /** A dry run that could not start (no baseline, no answer) is tried again at most this often. */
   retryMs: 10 * 60_000,
+  /** A request whose dry run could not finish is started again at most this many times, then stopped. */
+  maxStarts: 3,
   /** Lane proven: files worth at least this share of the lane's time passed. */
   provenShare: 0.5,
   /** A file with no recorded time is counted as this long. */
@@ -81,12 +85,15 @@ export function judgeDryRunFile(helper: HelperPerFile, row: FileCountsRow | unde
   return helper.digest === row[4] ? 'compared' : 'digest-differs-both-pass';
 }
 
-/** A lane is proven when the files that passed on the helper are worth at least half of the lane's time. Pure. */
-export function laneProvenByTime(results: ReadonlyArray<{ file: string; passed: boolean }>, ms: (f: string) => number): boolean {
+/**
+ * A lane is proven when the files that passed on the helper are worth at least half of the lane's
+ * time: the time of EVERY eligible file, so a file the helper never finished counts as not passed. Pure.
+ */
+export function laneProvenByTime(eligible: readonly string[], passed: ReadonlySet<string>, ms: (f: string) => number): boolean {
   let all = 0;
-  let passed = 0;
-  for (const r of results) { const w = ms(r.file); all += w; if (r.passed) passed += w; }
-  return all > 0 && passed >= DRY_RUN_LIMITS.provenShare * all;
+  let ok = 0;
+  for (const f of eligible) { const w = ms(f); all += w; if (passed.has(f)) ok += w; }
+  return all > 0 && ok >= DRY_RUN_LIMITS.provenShare * all;
 }
 
 const newId = (): string => crypto.randomBytes(16).toString('hex');
@@ -94,6 +101,8 @@ const newId = (): string => crypto.randomBytes(16).toString('hex');
 export class BorrowedDryRun {
   private readonly running = new Map<string, { abort: AbortController; done: Promise<void> }>();
   private readonly lastTry = new Map<string, number>();
+  /** Starts of each request (keyed by helper and the request's time): an unfinished dry run is started again at most maxStarts times. */
+  private readonly starts = new Map<string, number>();
 
   constructor(private readonly d: DryRunDeps) {}
 
@@ -114,6 +123,17 @@ export class BorrowedDryRun {
       const last = this.lastTry.get(h.machineId) ?? 0;
       if (this.d.now() - last < DRY_RUN_LIMITS.retryMs && last !== 0) continue;
       this.lastTry.set(h.machineId, this.d.now());
+      const key = `${h.machineId}@${intent.requestedAt}`;
+      const n = (this.starts.get(key) ?? 0) + 1;
+      if (n > DRY_RUN_LIMITS.maxStarts) {
+        // Could not finish in three tries: stop asking, and say so once. A new request starts over.
+        const st = this.d.store.get(h.machineId);
+        if (st.dryRunIntent) st.dryRunIntent = { ...st.dryRunIntent, state: 'stopped' };
+        try { this.d.store.save(); } catch { /* @silent-fallback-ok: the stop is kept in memory; the next save writes it */ }
+        this.audit({ event: 'borrowed-dry-run-gave-up', helper: h.machineId, starts: n - 1 });
+        continue;
+      }
+      this.starts.set(key, n);
       const abort = new AbortController();
       const done = this.run(h, [...intent.lanes], abort.signal)
         .catch((e) => this.audit({ event: 'borrowed-dry-run-error', helper: h.machineId, detail: String(e instanceof Error ? e.message : e).slice(0, 200) }))
@@ -189,7 +209,9 @@ export class BorrowedDryRun {
     for (;;) {
       if (signal.aborted) return false;
       const st = await this.d.client.status(h, signal, undefined, 10_000);
-      const t = st?.trees.find((x) => x.headSha === commit);
+      // Only a status whose whole-answer signature holds is read.
+      const signed = st && st.raw && !verifyHelperStatus(st.raw, h.machineId, this.d.keyLookup(), this.d.now()) ? st : null;
+      const t = signed?.trees.find((x) => x.headSha === commit);
       if (t?.state === 'ready') { prepMs = t.prepMs ?? this.d.now() - prepStart; break; }
       if (t?.state === 'failed' || this.d.now() - prepStart > DRY_RUN_LIMITS.prepareWaitMs) {
         this.audit({ event: 'borrowed-dry-run-lane', helper: h.machineId, lane, prepared: false, reason: t?.reason ?? 'prepare-timeout' });
@@ -261,7 +283,8 @@ export class BorrowedDryRun {
       const known = localMs.get(f);
       if (typeof known === 'number') { helperMs += p.ms; localKnownMs += known; }
     }
-    const proven = laneProvenByTime([...answered.values()].map((p) => ({ file: p.file, passed: p.tests > 0 && p.failed === 0 })), ms);
+    const passedHere = new Set([...answered.values()].filter((p) => p.tests > 0 && p.failed === 0).map((p) => p.file));
+    const proven = laneProvenByTime(eligible, passedHere, ms);
     this.d.recordDryRunResult(h.machineId, lane, { eligible, compared, eligibleDigest: filesDigest(eligible), proven });
     // The helper's measured speed and preparation time (the share and the plan read them).
     const run: HelperRunSummary = { at: this.d.now(), counted: helperMs > 0, slicesSent: eligible.length, done: answered.size, agree: compared.length, disagree: observations.length, helperMs, localMs: localKnownMs, prepMs, vitestStartMs: null };

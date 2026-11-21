@@ -19,6 +19,7 @@
  *                                        the lanes' states and the helper come from the server's record
  *                                        of that verify, never from the request
  *   POST /local-verify/peer-baseline     the coordinator's baseline results, stored by a peer
+ *   POST /local-verify/peer-main-red     the coordinator's red `main` (head and failed files), for a peer's counted helper passes
  *   GET  /local-verify/record   ?pr=&head=&base=  the record for one key, or 404
  *   POST /local-verify/peer-run     a coordinator hands this machine one PR verify (Part D of
  *                                   docs/specs/local-verify-capacity.md); refused on the lease holder
@@ -470,6 +471,14 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
     if (!svc) return;
     const ctx = leaseCtx();
     const a = svc.peerBaseline(req.body, { holdsLease: ctx.holdsLease, holderMachineId: ctx.holderMachineId });
+    res.status(a.status).json(a.body);
+  });
+
+  router.post('/local-verify/peer-main-red', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const ctx = leaseCtx();
+    const a = svc.peerMainRed(req.body, { holdsLease: ctx.holdsLease, holderMachineId: ctx.holderMachineId });
     res.status(a.status).json(a.body);
   });
 

@@ -294,3 +294,11 @@ describe('take-back', () => {
     await flow.stop();
   });
 });
+
+describe('the share follows the free workers', () => {
+  it('scaled by the free share of the helper\'s ceiling', () => {
+    expect(laneShare(0.4, 2, 4)).toBeCloseTo(0.2);
+    expect(laneShare(0.4, 8, 4)).toBeCloseTo(0.4);
+    expect(laneShare(0.4, 2, null)).toBeCloseTo(0.4);
+  });
+});

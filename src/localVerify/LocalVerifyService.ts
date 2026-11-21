@@ -2163,6 +2163,11 @@ export class LocalVerifyService {
     return info && typeof info === 'object' && !Array.isArray(info) ? { ...(info as Record<string, unknown>), mainObserver: this.mainRunObserverInfo() } : info;
   }
 
+  /** Peer side: `POST /local-verify/peer-main-red` (a red `main` the coordinator recorded, checked against this machine's counted helper passes). */
+  peerMainRed(body: unknown, ctx: { holdsLease: boolean; holderMachineId: string | null }): BorrowedHttpAnswer {
+    return this.borrowedCall<BorrowedHttpAnswer>('peer-main-red', (s) => s.acceptPeerMainRed(body, ctx), { status: 404, body: { error: 'not found' } });
+  }
+
   /** Peer side: `POST /local-verify/peer-baseline` (the coordinator's copy of the baseline results). */
   peerBaseline(body: unknown, ctx: { holdsLease: boolean; holderMachineId: string | null }): BorrowedHttpAnswer {
     return this.borrowedCall<BorrowedHttpAnswer>('peer-baseline', (s) => s.acceptPeerBaseline(body, ctx), { status: 404, body: { error: 'not found' } });
@@ -3224,7 +3229,7 @@ export class LocalVerifyService {
         const adoptionOn = this.peerWorksThroughRestartOn();
         const why = importRefusal(res.record, m, { repo: this.cfg.repo, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash, holdsLease: leaseNow.holds, leaseEpoch: leaseNow.epoch, coordinatorMachineId: this.cfg.machineId, adoptionOn,
           // A record's borrowed helper must be one the peer itself reported as its own.
-          knownHelpers: this.peerHealth.get(peer.machineId)?.status?.helpers ?? [] });
+          knownHelpers: [...new Set([...(this.peerHealth.get(peer.machineId)?.status?.helpers ?? []), ...this.borrowedCall<string[]>('peer-helpers', (b) => b.peerHelpersSeen(peer.machineId), [])])] });
         // Spec C.5: the lease moved during the result fetch. Not a peer failure: the next poll decides again (C.3).
         if (adoptionOn && ((why === 'lease-epoch-changed' && !markerCurrent(m, leaseNow, true)) || why === 'not-lease-holder')) {
           this.remotePolledAt.delete(m.attemptId);
@@ -4505,11 +4510,6 @@ export class LocalVerifyService {
         this.completeMain(this.syntheticError(f.entry, !result || result.kind === 'crash' ? 'crash' : 'invalid-record'), f.entry);
       } else {
         this.completeMain(result.record, f.entry, { reasons: result.reasons, failures: result.failures, runLog: `${f.token}.log`, flakyTestLines: result.flakyTestLines, fileCounts: result.fileCounts });
-        // A red `main`: any helper pass that counted for a change merged into it, on a file that failed here, is reported.
-        if (result.record.outcome === 'failure' && result.failures && result.failures.length > 0) {
-          const failedFiles = [...new Set(result.failures.map((x) => x.file))];
-          this.borrowedCall('main-red', (b) => b.onMainRed({ headSha: f.entry.headSha, failedFiles }), undefined);
-        }
       }
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
       const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
@@ -4663,6 +4663,13 @@ export class LocalVerifyService {
     // Borrowed helpers' baseline results: a green `main` verify (this machine's, or a peer's signed one) with its per-file counts.
     // Inert with no helper configured anywhere; it never touches main health or the isolation baseline above.
     if (record.outcome === 'success') this.borrowedCall('green-main', (b) => b.onGreenMain({ commit: head, finishedAt: record.finishedAt, machineId: record.machineId, fileCounts: run?.fileCounts }), undefined);
+    // A red `main` (this machine's run or a peer's signed one): any helper pass that counted for a change merged
+    // into it, on a file that failed finally there, is reported. A file that passed alone on its re-run is not.
+    if (record.outcome === 'failure' && run?.failures && run.failures.length > 0) {
+      const flaky = new Set((record.flakyRetried ?? []).map((x) => x.file));
+      const failedFiles = [...new Set(run.failures.map((x) => x.file))].filter((x) => !flaky.has(x));
+      if (failedFiles.length > 0) this.borrowedCall('main-red', (b) => b.onMainRed({ headSha: head, failedFiles }), undefined);
+    }
     if (record.outcome === 'success' && this.preflightReplays) {
       const work = (async () => {
         for (const marker of this.preflightReplays!.list().filter((r) => r.state === 'blocked')) {

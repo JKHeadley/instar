@@ -31,5 +31,14 @@
   "tier": 2,
   "tierReasoning": "stage 6 of 6 of the rework to the approved amendment: the dry-run task, the console card, the awareness entry, the ladder measures, the upgrade note and self-action models; feature dark; independent second pass running over the whole rework",
   "secondPass": "not-required",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "stage 6 adds the dry-run task and models every borrowed self-action in the registry: asking a silent helper (at most 80 asks over 14 days at a verify every 30 minutes), dry-run resends (each file at most 5 sends, 20 slices waiting at once, a 24-hour cap, one start per boot after a 10-minute gap) and helper notices (each event told once); the convergence ratchet drives all three."
+    }
+  }
 }

@@ -532,6 +532,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const localDigests = new Map<string, string>();
   const borrowedPer: Partial<Record<FlowLane, { comparisons: Map<string, FileComparison>; counted: string[]; localFailed: Array<{ file: string; failedTests: string[]; confirmed: boolean }> }>> = {};
   let borrowedResult: BorrowedFlowResult | null = null;
+  /** Counting lanes that admitted helper passes: the final local pass each runs if the verify ends with more than five disagreements. */
+  const lateFinalPasses = new Map<FlowLane, (run: LaneRunInput) => Promise<void>>();
   let rerunBudget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
   const reporter = seams.unhandledErrorsReporter?.() ?? null;
   let changedForIsolation: Set<string> | null = null;
@@ -772,6 +774,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
       if (firstError) throw firstError.reason;
       for (const s of settled) if (s.status === 'fulfilled') laneRuns.push(s.value);
+      // More than five disagreements across the whole verify: no helper result is used. Every lane
+      // that admitted helper passes makes one final local pass over them before any verdict.
+      if (flow && flow.massDisagreement() && lateFinalPasses.size > 0) {
+        for (const [fl, finalPass] of lateFinalPasses) {
+          const run = laneRuns.find((r) => r.lane === fl);
+          if (run) await finalPass(run);
+        }
+      }
     } finally {
       if (typeof releaseSlot === 'function') releaseSlot();
       if (flow) {
@@ -985,6 +995,26 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           } else if (accepted.size > 0) {
             counted = admitHelperPasses(report, accepted);
             seams.log({ event: 'borrowed-counted', lane: lane.name, files: counted.length });
+            // The mass rule is the whole verify's: a lane ending later may still take the count past
+            // five. Then, after every lane has ended, these passes are taken out again and run here.
+            const admitted = [...counted];
+            lateFinalPasses.set(fl, async (run: LaneRunInput) => {
+              if (!run.report) return;
+              for (const f of admitted) run.report.files.delete(f);
+              flow!.markFinalLocalPass(fl);
+              seams.log({ event: 'borrowed-final-local-pass', lane: lane.name, files: admitted.length, after: 'all-lanes' });
+              const fin = await runPart(`${lane.name}-final`, admitted, true);
+              const finReport = fin.aborted ? null : mergeParts([fin]);
+              if (!finReport) { run.report = null; return; }
+              for (const [f, c] of finReport.files) {
+                if (run.report.files.has(f)) { seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f, part: 'final' }); run.report = null; return; }
+                run.report.files.set(f, c);
+              }
+              const finExit = await rerunPhase(finReport, admitted, fin.unhandled, combineExit([fin.status]), [...run.report.files.values()].filter((c) => c.failed > 0).length);
+              run.exitCode = combineExit([run.exitCode ?? null, finExit]);
+              const per = borrowedPer[fl];
+              if (per) per.counted = [];
+            });
           }
         }
         const localFailed = report ? [...report.files.entries()].filter(([f, c]) => c.failed > 0 && !counted.includes(f)).map(([f, c]) => ({ file: f, failedTests: (c.failedTests ?? []).map((x) => x.name).slice(0, 50), confirmed: soloFailed.has(f) })) : [];

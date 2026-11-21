@@ -284,6 +284,8 @@ export interface LaneVerifyOutcome {
   check: 'right' | 'wrong' | null;
   /** Every answer of the verify in order: valid, or invalid (wrong ids, signature, file list or tree hash). */
   answers: Array<'valid' | 'invalid'>;
+  /** Disagreements across every lane of the verify (the mass rule is the verify's, not the lane's). Absent: this lane's own. */
+  verifyDisagreements?: number;
 }
 
 function invalidLapseDue(answers: readonly boolean[]): boolean {
@@ -325,8 +327,10 @@ export function applyVerifyOutcome(input: LaneRecord, o: LaneVerifyOutcome, now:
   // 2. nothing finished
   if (o.finished <= 0) return { lane: l, events, disagreed: false };
 
-  const disagreements = o.digestDiffersBothPass.length + o.helperFailedLocalPassed.length + o.confirmedWrongPasses.length;
-  const disagreed = disagreements > 0;
+  const laneDisagreements = o.digestDiffersBothPass.length + o.helperFailedLocalPassed.length + o.confirmedWrongPasses.length;
+  const disagreed = laneDisagreements > 0;
+  // "More than five disagreements in one verify": counted across the verify's lanes.
+  const disagreements = Math.max(laneDisagreements, o.verifyDisagreements ?? 0);
 
   // 3. mass disagreement
   if (disagreements > L.massDisagreement) {

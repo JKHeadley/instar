@@ -729,3 +729,53 @@ describe('what the verify child is given', () => {
     expect(s.machine.childInput(TOKEN)).toBeNull();
   });
 });
+
+describe('second-pass fixes', () => {
+  it('the mass rule counts the whole verify: 3 disagreements in two lanes each suspend the helper', () => {
+    const s = setup();
+    const three = [f(1), f(2), f(3)];
+    s.machine.recordVerify('m_laptop', { integration: outcome({ digestDiffersBothPass: three }), e2e: outcome({ helperFailedLocalPassed: ['tests/e2e/a.test.ts', 'tests/e2e/b.test.ts', 'tests/e2e/c.test.ts'] }) });
+    expect(s.store.peekLane('m_laptop', 'integration')!.state).toBe('suspended');
+    expect(s.store.peekLane('m_laptop', 'e2e')!.state).toBe('suspended');
+  });
+
+  it('a helper a peer reported stays known for its records for a day after the peer stops listing it', () => {
+    const s = setup();
+    const peer = { machineId: 'm_m5', url: 'http://100.64.0.5:4042' };
+    s.machine.onPeerStatus(peer, { helpers: ['m_winpc'], wantsBaseline: true });
+    s.machine.onPeerStatus(peer, {});
+    expect(s.machine.knownHelper('m_winpc', 'm_m5')).toBe(true);
+    s.r.clock.t += 25 * 60 * 60_000;
+    s.machine.onPeerStatus(peer, { wantsBaseline: true });
+    expect(s.machine.knownHelper('m_winpc', 'm_m5')).toBe(false);
+  });
+
+  it('the coordinator sends a red main to peers that run helpers; a peer checks it against its own counted passes', async () => {
+    const posted: Array<{ peer: string; body: unknown }> = [];
+    const s = setup();
+    (s.machine as unknown as { d: { postPeerMainRed: (p: { machineId: string }, b: unknown) => Promise<boolean> } }).d.postPeerMainRed = async (p, b) => { posted.push({ peer: p.machineId, body: b }); return true; };
+    s.machine.onPeerStatus({ machineId: 'm_m5', url: 'http://100.64.0.5:4042' }, { helpers: ['m_winpc'], wantsBaseline: true });
+    s.machine.onMainRed({ headSha: sha('9'), failedFiles: [UNIT_A] });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(posted).toEqual([{ peer: 'm_m5', body: { coordinatorMachineId: 'm_studio', headSha: sha('9'), failedFiles: [UNIT_A] } }]);
+    // The peer side: from the lease holder only, strictly shaped.
+    const p = setup({ machineId: 'm_m5', coordinator: false });
+    (p.machine as unknown as { d: { isAncestor: () => Promise<boolean> } }).d.isAncestor = async () => true;
+    p.store.addCounted('m_laptop', { pr: 3501, headSha: sha('e'), at: 1, lane: 'unit', files: [UNIT_A] });
+    expect(p.machine.acceptPeerMainRed({ coordinatorMachineId: 'm_other', headSha: sha('9'), failedFiles: [UNIT_A] }, { holdsLease: false, holderMachineId: 'm_studio' }).status).toBe(409);
+    expect(p.machine.acceptPeerMainRed({ coordinatorMachineId: 'm_studio', headSha: sha('9'), failedFiles: [UNIT_A], extra: 1 }, { holdsLease: false, holderMachineId: 'm_studio' }).status).toBe(400);
+    expect(p.machine.acceptPeerMainRed({ coordinatorMachineId: 'm_studio', headSha: sha('9'), failedFiles: [UNIT_A] }, { holdsLease: false, holderMachineId: 'm_studio' }).status).toBe(200);
+    await settleSoon(() => p.store.events().some((e) => e.kind === 'main-red-after-pass'));
+    expect(p.store.events().find((e) => e.kind === 'main-red-after-pass')).toMatchObject({ file: UNIT_A, change: '3501' });
+  });
+
+  it('a peer that refuses the baseline is offered one version at most five times', async () => {
+    let offers = 0;
+    const s = setup({ postPeerBaseline: async () => { offers++; return false; } });
+    s.baseline.add({ commit: HEAD, finishedAt: '2026-11-18T19:00:00.000Z', machineId: 'm_studio', files: { [UNIT_A]: [1, 0, 0, 0, 'a'.repeat(64)] } });
+    const peer = { machineId: 'm_m5', url: 'http://100.64.0.5:4042' };
+    for (let i = 0; i < 20; i++) { s.machine.onPeerStatus(peer, { wantsBaseline: true, helpers: ['m_winpc'] }); await new Promise((r) => setTimeout(r, 2)); s.r.clock.t += 6 * 60_000; }
+    expect(offers).toBe(BORROWED_PROXY.baselineMaxTries);
+    expect(s.audits.some((a) => a.event === 'main-file-counts-send-gave-up')).toBe(true);
+  });
+});

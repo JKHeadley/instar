@@ -84,8 +84,9 @@ export interface PlanFacts {
   /** Local file-ms the helper finishes per helper-ms. */
   throughput: number;
   prepMs: number;
-  /** Workers the owner's use leaves free at the verify's status request (null: not reported). */
+  /** Workers the owner's use leaves free at the verify's status request, and the helper's ceiling (null: not reported). */
   workersFree: number | null;
+  workersMax: number | null;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -117,6 +118,7 @@ export function parsePlan(v: unknown): PlanFacts | null {
     throughput: isFiniteNum(v.throughput) && v.throughput > 0 ? v.throughput : 0.27,
     prepMs: isFiniteNum(v.prepMs) && v.prepMs >= 0 ? v.prepMs : 3 * 60_000,
     workersFree: isFiniteNum(v.workersFree) && v.workersFree >= 0 ? Math.floor(v.workersFree) : null,
+    workersMax: isFiniteNum(v.workersMax) && v.workersMax >= 1 ? Math.floor(v.workersMax) : null,
   };
 }
 
@@ -265,10 +267,14 @@ export function admitHelperPasses(report: ParsedLaneReport, passes: ReadonlyMap<
   return added.sort();
 }
 
-/** The share of a lane that goes to the helper, scaled by the workers its owner leaves free. Pure. */
-export function laneShare(base: number, workersFree: number | null): number {
+/**
+ * The share of a lane that goes to the helper, scaled by the workers its owner's use leaves free
+ * out of the helper's ceiling (spec "the share is scaled by it"); unknown counts leave it as is. Pure.
+ */
+export function laneShare(base: number, workersFree: number | null, workersMax: number | null = null): number {
   if (workersFree === 0) return 0;
-  return Math.min(LANE_FLOW.maxShare, Math.max(0, base));
+  const scale = workersFree !== null && workersMax !== null && workersMax > 0 ? Math.min(1, workersFree / workersMax) : 1;
+  return Math.min(LANE_FLOW.maxShare, Math.max(0, base * scale));
 }
 
 export interface LaneCandidate {
@@ -415,6 +421,7 @@ export class BorrowedLaneFlow {
   private readonly takenBackCount = new Map<FlowLane, number>();
   private readonly finalPass = new Set<FlowLane>();
   private lastSeq = 0;
+  private readonly unknownSeen = new Map<string, number>();
   private stopped = false;
   private poller: Promise<void> | null = null;
   private treeState: StatusFacts['tree'] = { state: 'none', treeHash: null };
@@ -485,7 +492,7 @@ export class BorrowedLaneFlow {
       // Compare lanes: files never compared on go first (coverage), then the longest.
       groups.sort((a, b) => (mode === 'compare' ? Number(b.files.some((f) => uncovered.has(f))) - Number(a.files.some((f) => uncovered.has(f))) : 0) || b.ms - a.ms || (a.files[0] < b.files[0] ? -1 : 1));
       const localMs = l.files.reduce((n, f) => n + ms(f), 0);
-      cands.push({ lane: l.lane, mode, groups, localMs, wallPerMs: l.wallPerMs, share: laneShare(this.plan.lanes[l.lane].share, this.plan.workersFree) });
+      cands.push({ lane: l.lane, mode, groups, localMs, wallPerMs: l.wallPerMs, share: laneShare(this.plan.lanes[l.lane].share, this.plan.workersFree, this.plan.workersMax) });
     }
     const alloc = allocateShare(cands, this.plan.throughput, this.plan.prepMs);
     for (const c of cands) {
@@ -515,9 +522,10 @@ export class BorrowedLaneFlow {
 
   /** Start polling and sending: the check slice first, then each lane's slices (count before compare). */
   start(deadlineInMs: number): void {
-    this.poller = this.poll();
     const plans = [...this.lanePlans.values()];
+    // No lane got a share: nothing to ask the helper for, and no polling.
     if (plans.length === 0) return;
+    this.poller = this.poll();
     this.senders.push(this.sendAll(plans, deadlineInMs).catch((e) => this.log({ event: 'borrowed-flow-error', step: 'send', detail: String(e instanceof Error ? e.message : e).slice(0, 200) })));
   }
 
@@ -539,7 +547,7 @@ export class BorrowedLaneFlow {
       if (files.length > 0 && this.lanePlans.has(lane)) await this.sendSlice(lane, 'compare', files, LANE_FLOW.sliceBudgetMs[lane], deadline(), null, true);
     }
     const ordered = [...plans].sort((a, b) => (a.mode === b.mode ? 0 : a.mode === 'count' ? -1 : 1));
-    for (const p of ordered) {
+    lanes: for (const p of ordered) {
       const parts: Array<{ files: string[]; shard: number | null }> = p.mode === 'count'
         ? p.portions.flatMap((files, k) => files.length > 0 ? [{ files, shard: k }] : [])
         : [{ files: p.sent, shard: null }];
@@ -550,7 +558,9 @@ export class BorrowedLaneFlow {
         const slices = planSlices({ files: part.files.map((f) => ({ file: f, ms: dur(f) })), budgetMs: LANE_FLOW.sliceBudgetMs[p.lane], throughput: tp, sendLocalMs: Number.POSITIVE_INFINITY }).slices;
         for (const s of slices) {
           for (let i = 0; i < s.length; i += LANE_FLOW.maxFilesPerSlice) {
-            if (this.stopped || n >= LANE_FLOW.maxSlicesPerLane) return;
+            if (this.stopped) return;
+            // This lane's slice cap: the rest of its files run here; the next lane still gets its share.
+            if (n >= LANE_FLOW.maxSlicesPerLane) continue lanes;
             await this.sendSlice(p.lane, p.mode === 'count' ? 'count' : 'compare', s.slice(i, i + LANE_FLOW.maxFilesPerSlice), LANE_FLOW.sliceBudgetMs[p.lane], deadline(), part.shard);
             n++;
           }
@@ -581,10 +591,20 @@ export class BorrowedLaneFlow {
     const st = parseStatusFacts(await this.d.call({ op: 'status', since: this.lastSeq }).catch(() => null));
     if (!st) return;
     this.treeState = st.tree;
-    for (const r of st.results) {
-      if (r.seq > this.lastSeq) this.lastSeq = r.seq;
+    // The read position moves only past results this flow knows: a result can arrive before its
+    // slice's id is recorded here (the send's answer still on its way), and is read again next time.
+    // A result still unknown after 3 polls is not this flow's and is passed.
+    let advance = true;
+    for (const r of [...st.results].sort((a, b) => a.seq - b.seq)) {
       const iss = this.issued.get(r.attemptId);
-      if (!iss) continue;
+      if (!iss) {
+        const n = (this.unknownSeen.get(r.attemptId) ?? 0) + 1;
+        this.unknownSeen.set(r.attemptId, n);
+        if (n < 3) advance = false;
+        if (advance && r.seq > this.lastSeq) this.lastSeq = r.seq;
+        continue;
+      }
+      if (advance && r.seq > this.lastSeq) this.lastSeq = r.seq;
       // Interim states are not results.
       if (r.state === 'queued' || r.state === 'preparing') continue;
       if (!this.results.has(r.attemptId)) this.results.set(r.attemptId, r);
@@ -634,7 +654,8 @@ export class BorrowedLaneFlow {
     for (const g of filterOverlapGroups(portion)) {
       const all = !mass && checkOk && g.every((f) => { const r = passes.get(f); return !!r && isCountablePass(r, this.baselineRows.get(f), this.changed.has(f)); });
       if (!all) { back.push(...g); continue; }
-      if (drawSpot(this.plan.spotOneIn, this.d.randomInt)) { spot.push(...g); continue; }
+      // Each passed file is drawn on its own; a drawn file takes its whole overlap group with it.
+      if (g.some(() => drawSpot(this.plan.spotOneIn, this.d.randomInt))) { spot.push(...g); continue; }
       for (const f of g) accepted.set(f, passes.get(f)!);
     }
     this.frozen.set(`${lane}#${shard}`, accepted);

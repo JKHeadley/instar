@@ -116,8 +116,10 @@ export interface BorrowedRunSeam {
   helperFor(token: string): string | null;
   /** After the record is written: the lane flow's result (the server alone updates the practice record). */
   onVerifyResult(e: BorrowedVerifyResult): void;
-  /** Coordinator: a `main` verify's record is red. */
+  /** A `main` verify's record is red (the coordinator also tells peers that run helpers). */
   onMainRed(e: BorrowedMainRed): void;
+  /** Peer side: `POST /local-verify/peer-main-red` from the coordinator. */
+  acceptPeerMainRed(body: unknown, lease: { holdsLease: boolean; holderMachineId: string | null }): BorrowedHttpAnswer;
   onVerifyStart(e: BorrowedVerifyStart): void;
   onVerifyEnd(e: BorrowedVerifyEnd): void;
   /** True when a `main` verify's per-file counts are wanted (this machine or a peer has a helper). */
@@ -129,6 +131,8 @@ export interface BorrowedRunSeam {
   onPeerStatus(peer: { machineId: string; url: string }, extras: BorrowedPeerStatusExtras): void;
   /** Whether `helper` is a configured helper of this machine (or, with `peerMachineId`, of that peer as it last reported). */
   knownHelper(helper: string, peerMachineId?: string): boolean;
+  /** The helpers a peer reported in the last day (a peer record's helper must be one). */
+  peerHelpersSeen(peerMachineId: string): string[];
   tick(): void;
   info(): unknown;
   /** `POST /local-verify/borrowed-proxy` (loopback only, the verify's attempt token). */

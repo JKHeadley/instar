@@ -2109,7 +2109,7 @@ describe('borrowed helpers through the peer exchange', () => {
       knownHelper: () => false, tick: () => {}, info: () => null,
       proxy: async () => ({ status: 200, body: {} }), decide: () => ({ status: 200, body: {} }), dryRun: () => ({ status: 202, body: {} }),
       helperHere: () => ({ status: 200, body: {} }), acceptPeerBaseline: () => ({ status: 200, body: {} }),
-      childInput: () => null, helperFor: () => null, onVerifyResult: () => {}, onMainRed: () => {}, ...over,
+      childInput: () => null, helperFor: () => null, acceptPeerMainRed: () => ({ status: 200, body: {} }), peerHelpersSeen: () => [], onVerifyResult: () => {}, onMainRed: () => {}, ...over,
     };
     return { s, calls };
   }

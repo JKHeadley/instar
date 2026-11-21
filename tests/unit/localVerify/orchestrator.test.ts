@@ -1949,3 +1949,59 @@ describe('runVerify with a borrowed helper (the lane flow)', () => {
     expect(h.calls).toEqual([]);
   });
 });
+
+describe('runVerify with a borrowed helper: the mass rule is the whole verify\'s', () => {
+  it('a counting lane that ended early gives its passes back when a later lane takes the verify past five disagreements', async () => {
+    const DIG = '7'.repeat(64);
+    const BLOB = '9'.repeat(40);
+    const UNIT3: Record<string, string[]> = { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/p.test.ts': ['passed'], 'tests/unit/q.test.ts': ['passed'] };
+    const INT: Record<string, string[]> = Object.fromEntries(Array.from({ length: 24 }, (_, i) => [`tests/integration/i${i}.test.ts`, ['passed']]));
+    const BORROWED = { port: 4040, token: '1'.repeat(32), baselines: [{ commit: BASE, finishedAt: '2026-11-20T00:00:00.000Z', machineId: 'm_studio', files: { 'tests/unit/p.test.ts': [1, 0, 0, 0, DIG] as [number, number, number, number, string], 'tests/unit/q.test.ts': [1, 0, 0, 0, DIG] as [number, number, number, number, string] } }] };
+    const gitOverride = (args: string[]): GitResult | null => (args[0] === 'ls-tree' && args[1] === '-r' && args[2] !== '--name-only'
+      ? { status: 0, stdout: `100644 blob ${BLOB}\ttests/unit/p.test.ts\n100644 blob ${BLOB}\ttests/unit/q.test.ts\n`, stderr: '', timedOut: false } : null);
+    const f = fake({ laneFiles: { unit: UNIT3, integration: INT }, gitOverride });
+    const lane = { state: 'counting', mayCount: true, proven: true, share: 0.5, uncovered: [] as string[] };
+    const canary = BORROWED_CANARY_FILES.map((x) => ({ file: x, tests: 1, ...BORROWED_CANARY[x], ms: 1, digest: DIG, failedTests: [] }));
+    const slices: Array<{ id: string; files: string[]; use: string; lane: string }> = [];
+    let n = 0;
+    f.seams.borrowedProxy = () => async (b) => {
+      if (b.op === 'plan') return { ok: true, helper: 'm_laptop', mode: 'count', assigned: 'counting', answered: true, lanes: { unit: { ...lane }, integration: { ...lane, mayCount: false, state: 'practice' }, e2e: { ...lane, proven: false } }, spotOneIn: 1_000_000, learned: [], throughput: 100, prepMs: 0, workersFree: 4, workersMax: 4 };
+      if (b.op === 'slice') { const id = (++n).toString(16).padStart(32, '0'); slices.push({ id, files: b.files as string[], use: b.use as string, lane: b.lane as string }); return { ok: true, attemptId: id, state: 'queued' }; }
+      if (b.op === 'status') {
+        return { ok: true, tree: { state: 'ready', treeHash: TREE }, results: slices.map((s, i) => ({
+          seq: i + 1, attemptId: s.id, valid: true, state: 'done', treeHash: TREE,
+          slice: s.use === 'check' ? { exitCode: 1, unhandledErrors: 1, collected: true } : { exitCode: 0, unhandledErrors: 0, collected: true },
+          // Unit: a pass with the baseline's digest. Integration (compare): passes whose digest differs from this machine's.
+          perFile: s.use === 'check' ? canary : s.files.map((x) => ({ file: x, tests: 1, passed: 1, failed: 0, skipped: 0, todo: 0, ms: 5, digest: s.lane === 'unit' ? DIG : '8'.repeat(64), failedTests: [] })),
+        })) };
+      }
+      return { ok: true };
+    };
+    f.seams.borrowedSleep = () => new Promise<void>((r) => setImmediate(r));
+    let counted!: () => void;
+    const unitCounted = new Promise<void>((r) => { counted = r; });
+    const log = f.seams.log;
+    f.seams.log = (e) => { if (e.event === 'borrowed-counted') counted(); log(e); };
+    const realExec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const unit = args.includes('vitest.config.ts');
+      const integration = args.some((a) => a.includes('integration')) && !args.some((a) => a.includes('-rerun-'));
+      // The unit lane waits for its counting slice; the integration lane ends only after the unit lane admitted its passes.
+      if (unit && !args.some((a) => a.includes('-final') || a.includes('-back') || a.includes('-rerun-'))) {
+        for (let i = 0; i < 200 && !slices.some((s) => s.use === 'count'); i++) await new Promise<void>((r) => setTimeout(r, 1));
+        for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r));
+      }
+      if (integration) await Promise.race([unitCounted, new Promise<void>((r) => setTimeout(r, 2_000))]);
+      return realExec(command, args, opts);
+    };
+    const r = await runVerify(input({ borrowed: BORROWED }), f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.borrowed!.disagreements).toBeGreaterThan(5);
+    // The unit lane's passes were taken back after every lane ended, and run here in a final pass.
+    expect(f.execCalls.some((c) => c.args.some((a) => a.endsWith('/unit-final.json')))).toBe(true);
+    expect(r.borrowed!.lanes.unit!.counted).toEqual([]);
+    expect(r.borrowed!.lanes.unit!.finalLocalPass).toBe(true);
+    expect(f.logs.some((e) => e.event === 'borrowed-final-local-pass' && e.after === 'all-lanes')).toBe(true);
+    expect(r.record.lanes.find((l) => l.name === 'unit')!.files).toBe(3);
+  });
+});

@@ -362,7 +362,7 @@ export class HelperService {
       sandbox: { kind: this.d.driver?.kind ?? null, up: this.sandboxUp, containment: this.containment, image: this.imageKey, ownerBusy: this.holdOff.holding(now), holdOffMs: this.holdOff.currentHoldMs(), startMs: this.lastSandboxStartMs, peakMemMb: this.sandboxPeakMemMb },
       busy: this.current ? { kind: this.current.kind, runAttemptId: this.current.runAttemptId, attemptId: this.current.attemptId } : null,
       // The governor's last reading of what the owner's use leaves free, with its time (it is taken while the helper works, not on a status request).
-      owner: this.lastOwner ? { ...this.lastOwner } : null,
+      owner: this.lastOwner ? { ...this.lastOwner, ...(() => { const c = this.d.config(); return c ? { workersMax: sandboxWorkerCeiling(c.sandbox, HELPER_LIMITS.workersPerGb) } : {}; })() } : null,
       trees: [...this.trees.values()].map((t) => ({ baseSha: t.baseSha, headSha: t.headSha, treeHash: t.treeHash, state: t.state, prepMs: t.prepMs, copyMs: t.copyMs, ...(t.reason ? { reason: t.reason } : {}) })),
       // Slices waiting, in the order they will be served.
       queue: this.orderedQueue().map((x) => ({ attemptId: x.req.attemptId, runAttemptId: x.req.runAttemptId, lane: x.req.lane, use: x.req.use, files: x.req.files.length })),

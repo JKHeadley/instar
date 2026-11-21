@@ -774,6 +774,15 @@ export async function wireBorrowedRunMachine(
       } catch { return false; } // @silent-fallback-ok: an unreachable peer is offered the baseline again later
       finally { clearTimeout(t); }
     },
+    postPeerMainRed: async (peer, body) => {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 30_000);
+      try {
+        const r = await fetchImpl(`${peer.url}/local-verify/peer-main-red`, { method: 'POST', body: JSON.stringify(body), signal: ac.signal, headers: { Authorization: `Bearer ${o.authToken}`, 'X-Instar-AgentId': o.agentId, 'Content-Type': 'application/json' } });
+        return r.status === 200;
+      } catch { return false; } // @silent-fallback-ok: the caller audits it as not sent and tries once more a minute later
+      finally { clearTimeout(t); }
+    },
     audit,
     // The existing attention seam, one item per event id. The owner's item is raised only for the two cases the spec names.
     notify: (who, event, text, ownerReason) => o.hooks?.signal?.(`${who === 'owner' ? BORROWED_NOTICE_KEYS.owner : BORROWED_NOTICE_KEYS.line}:${event.id}`, {

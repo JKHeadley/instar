@@ -53,8 +53,10 @@ export const BORROWED_PROXY = Object.freeze({
   callTimeoutMs: 5_000,
   /** The latest deadline a slice may state, counted from now (the longest lane deadline). */
   maxDeadlineInMs: 60 * 60_000,
-  /** A baseline is offered again to a peer that has not acknowledged it at most this often. */
+  /** A baseline is offered again to a peer that has not acknowledged it at most this often… */
   baselineRetryMs: 5 * 60_000,
+  /** …and at most this many times per version (the next green `main` offers a new one). */
+  baselineMaxTries: 5,
   /** A verify's helper session is kept this long after its child ended, for its result (then the helper is told the verify is over). */
   endedKeepMs: 15 * 60_000,
   /** The failing-direction request (after the record) waits at most this long for the helper's answers. */
@@ -63,6 +65,10 @@ export const BORROWED_PROXY = Object.freeze({
   /** A lane's helper share: after this many verifies in which it was sent work, it follows the finish rate. */
   shareMeasuredAfter: 5,
   shareMin: 0.05,
+  /** A helper a peer reported is still accepted on its records for this long after it stops being reported. */
+  peerHelperMemoryMs: 24 * 60 * 60_000,
+  /** A red `main` a peer did not take is sent once more after this long. */
+  mainRedRetryMs: 60_000,
 });
 
 const LOOPBACK = /^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
@@ -168,6 +174,8 @@ export interface BorrowedRunMachineDeps {
   machineId: string;
   /** True when this machine is the coordinator (holds the serving lease, or has no pool). Only the coordinator sends notices and keeps baselines. */
   isCoordinator: () => boolean;
+  /** Coordinator: send a red `main` to one peer (`POST /local-verify/peer-main-red`); true when the peer took it. */
+  postPeerMainRed?: (peer: { machineId: string; url: string }, body: unknown) => Promise<boolean>;
   /** Coordinator: send the baseline file to one peer (`POST /local-verify/peer-baseline`); true when the peer stored it. */
   postPeerBaseline?: (peer: { machineId: string; url: string }, body: unknown) => Promise<boolean>;
   audit(event: Record<string, unknown>): void;
@@ -215,8 +223,10 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
   private readonly verifies = new Map<string, VerifyCtx>();
   /** Coordinator: what each peer last reported (its helpers, whether it wants the baseline, its events). */
   private readonly peerSeen = new Map<string, { url: string; wantsBaseline: boolean; helpers: string[]; events: HelperEvent[] }>();
+  /** Coordinator: each peer's helpers with when they were last reported. */
+  private readonly peerHelpersEver = new Map<string, Map<string, number>>();
   /** Coordinator: the baseline hash each peer acknowledged, and the hash last offered with its time (a refused offer is repeated at most every 5 minutes). */
-  private readonly peerBaseline = new Map<string, { hash: string | null; triedHash: string | null; triedAt: number }>();
+  private readonly peerBaseline = new Map<string, { hash: string | null; triedHash: string | null; triedAt: number; tries: number }>();
 
   private readonly dryRunTask: BorrowedDryRun | null;
 
@@ -295,12 +305,15 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
    * server alone updates the practice record). The spot re-run rate moves once per verify.
    */
   recordVerify(helper: string, outcomes: Partial<Record<PracticeLane, LaneVerifyOutcome>>): void {
+    // The mass rule counts the whole verify's disagreements, so every lane sees the verify's total.
+    let total = 0;
+    for (const lane of PRACTICE_LANES) { const o = outcomes[lane]; if (o) total += o.digestDiffersBothPass.length + o.helperFailedLocalPassed.length + o.confirmedWrongPasses.length; }
     let disagreed = false;
     let served = false;
     for (const lane of PRACTICE_LANES) {
       const o = outcomes[lane];
       if (!o) continue;
-      const t = applyVerifyOutcome(this.d.store.lane(helper, lane, this.now()), o, this.now());
+      const t = applyVerifyOutcome(this.d.store.lane(helper, lane, this.now()), { ...o, verifyDisagreements: total }, this.now());
       this.applyTransition(helper, lane, t);
       disagreed = disagreed || t.disagreed;
       served = served || o.finished > 0;
@@ -540,6 +553,26 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
    * entry is reported once and then dropped.
    */
   onMainRed(e: BorrowedMainRed): void {
+    // The coordinator tells each peer that runs helpers: their counted passes live in their own practice record.
+    if (this.coordinator() && this.d.postPeerMainRed && e.failedFiles.length > 0) {
+      for (const [machineId, p] of this.peerSeen) {
+        if (p.helpers.length === 0) continue;
+        const body = { coordinatorMachineId: this.d.machineId, headSha: e.headSha, failedFiles: e.failedFiles.slice(0, 200) };
+        const send = (attempt: number): void => {
+          void this.d.postPeerMainRed!({ machineId, url: p.url }, body).catch(() => false).then((ok) => {
+            this.audit({ event: 'main-red-sent', peer: machineId, headSha: e.headSha, ok, attempt });
+            // One more try a minute later; after that the notice is lost and the audit row says so.
+            if (!ok && attempt === 1) { const t = setTimeout(() => send(2), BORROWED_PROXY.mainRedRetryMs); t.unref?.(); }
+          });
+        };
+        send(1);
+      }
+    }
+    this.checkMainRed(e);
+  }
+
+  /** This machine's counted passes against a red `main`: each hit is a `main-red-after-pass` event, once. */
+  private checkMainRed(e: BorrowedMainRed): void {
     if (this.cfg().mode === 'off' || e.failedFiles.length === 0 || !this.d.isAncestor) return;
     const failed = new Set(e.failedFiles);
     void (async () => {
@@ -564,6 +597,20 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
       }
       if (changed) this.save();
     })().catch((err) => this.audit({ event: 'borrowed-seam-error', step: 'main-red', detail: String(err instanceof Error ? err.message : err).slice(0, 200) }));
+  }
+
+  /** Peer side: the coordinator's red `main`, checked against this machine's counted passes (once per call, never forwarded). */
+  acceptPeerMainRed(body: unknown, lease: { holdsLease: boolean; holderMachineId: string | null }): BorrowedHttpAnswer {
+    if (this.cfg().mode === 'off') return { status: 404, body: { error: 'not found' } };
+    if (lease.holdsLease) return { status: 409, body: { ok: false, reason: 'is-lease-holder' } };
+    const b = body as Record<string, unknown> | null;
+    if (!b || typeof b !== 'object' || Array.isArray(b) || !only(b, ['coordinatorMachineId', 'headSha', 'failedFiles'])) return { status: 400, body: { ok: false, reason: 'invalid-request' } };
+    if (typeof b.coordinatorMachineId !== 'string' || !lease.holderMachineId || b.coordinatorMachineId !== lease.holderMachineId) return { status: 409, body: { ok: false, reason: 'not-coordinator' } };
+    if (typeof b.headSha !== 'string' || !/^[0-9a-f]{40}$/.test(b.headSha)) return { status: 400, body: { ok: false, reason: 'invalid-request' } };
+    const files = b.failedFiles;
+    if (!Array.isArray(files) || files.length < 1 || files.length > 200 || !files.every((f) => typeof f === 'string' && isRequestFile(f))) return { status: 400, body: { ok: false, reason: 'invalid-request' } };
+    this.checkMainRed({ headSha: b.headSha, failedFiles: files as string[] });
+    return { status: 200, body: { ok: true } };
   }
 
   /** The compare-only assignment drawn for an in-flight verify of a waiting change (null: none drawn). */
@@ -636,14 +683,16 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     if (op.op === 'plan') {
       const h = this.d.store.get(helper.machineId);
       const st = ctx.status;
-      const owner = (st?.raw as { owner?: { workersFree?: unknown } } | undefined)?.owner;
+      const owner = (st?.raw as { owner?: { workersFree?: unknown; workersMax?: unknown } } | undefined)?.owner;
+      const count = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
       return { status: 200, body: {
         ok: true, helper: helper.machineId, mode: cfg.mode, assigned: ctx.assigned, answered, runAttemptId: ctx.runAttemptId,
         lanes: this.laneFacts(helper.machineId, cfg.mode), spotOneIn: spotRateOneIn(h.spot),
         learned: (st?.learned.entries ?? []).map((e) => ({ file: e.file, retrialDue: e.retrialDue === true })),
         throughput: measuredThroughput(h.runs) ?? BORROWED_PLAN.seedRelativeShare,
         prepMs: measuredPrepP90(h.runs) ?? BORROWED_PLAN.seedPrepMs,
-        workersFree: owner && typeof owner.workersFree === 'number' && Number.isSafeInteger(owner.workersFree) && owner.workersFree >= 0 ? owner.workersFree : null,
+        workersFree: owner ? count(owner.workersFree) : null,
+        workersMax: owner ? count(owner.workersMax) : null,
       } };
     }
     if (!answered) return { status: 200, body: { ok: false, reason: 'no-helper' } };
@@ -851,20 +900,24 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
 
   /** Coordinator: send the baseline file to each peer that wants it and has not acknowledged this version. */
   private async pushBaseline(): Promise<void> {
+    /* @self-action-controller: local-verify-borrowed-baseline-push */
     if (!this.d.postPeerBaseline || !this.coordinator()) return;
     for (const [machineId, p] of this.peerSeen) {
       if (!p.wantsBaseline) continue;
       try {
         const cur = this.d.baseline.read();
         if (!cur.ok) return;
-        const sent = this.peerBaseline.get(machineId) ?? { hash: null, triedHash: null, triedAt: 0 };
+        const sent = this.peerBaseline.get(machineId) ?? { hash: null, triedHash: null, triedAt: 0, tries: 0 };
         if (sent.hash === cur.hash) continue;
-        // The same version offered and not stored: again only after the retry time. A new version goes at once.
-        if (sent.triedHash === cur.hash && this.now() - sent.triedAt < BORROWED_PROXY.baselineRetryMs) continue;
-        this.peerBaseline.set(machineId, { hash: sent.hash, triedHash: cur.hash, triedAt: this.now() });
+        // The same version offered and not stored: again only after the retry time, at most a few times. A new version goes at once.
+        const same = sent.triedHash === cur.hash;
+        if (same && (this.now() - sent.triedAt < BORROWED_PROXY.baselineRetryMs || sent.tries >= BORROWED_PROXY.baselineMaxTries)) continue;
+        const tries = same ? sent.tries + 1 : 1;
+        this.peerBaseline.set(machineId, { hash: sent.hash, triedHash: cur.hash, triedAt: this.now(), tries });
         const ok = await this.d.postPeerBaseline({ machineId, url: p.url }, { coordinatorMachineId: this.d.machineId, file: cur.file });
         this.audit({ event: 'main-file-counts-sent', peer: machineId, hash: cur.hash, ok });
-        if (ok) this.peerBaseline.set(machineId, { hash: cur.hash, triedHash: cur.hash, triedAt: this.now() });
+        if (ok) this.peerBaseline.set(machineId, { hash: cur.hash, triedHash: cur.hash, triedAt: this.now(), tries });
+        else if (tries >= BORROWED_PROXY.baselineMaxTries) this.audit({ event: 'main-file-counts-send-gave-up', peer: machineId, hash: cur.hash, tries });
       } catch (err) {
         this.audit({ event: 'borrowed-seam-error', step: 'push-baseline', detail: String(err instanceof Error ? err.message : err).slice(0, 200) });
       }
@@ -911,6 +964,12 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
     const wants = extras.wantsBaseline === true;
     if (!wants && helpers.length === 0 && !prev) return; // a peer with no helper: nothing to keep
     this.peerSeen.set(peer.machineId, { url: peer.url, wantsBaseline: wants, helpers, events: events ?? prev?.events ?? [] });
+    // Every helper this peer reported in the last day: a verify that started with one keeps its record
+    // even when the peer's setting is switched off before its record is imported.
+    const ever = this.peerHelpersEver.get(peer.machineId) ?? new Map<string, number>();
+    for (const h of helpers) ever.set(h, this.now());
+    for (const [h, at] of ever) if (this.now() - at > BORROWED_PROXY.peerHelperMemoryMs) ever.delete(h);
+    this.peerHelpersEver.set(peer.machineId, ever);
     if (!this.coordinator()) return;
     if (events && events.length > 0) {
       const fresh = untold(events, this.d.store.told());
@@ -924,7 +983,14 @@ export class BorrowedRunMachine implements BorrowedRunSeam {
 
   knownHelper(helper: string, peerMachineId?: string): boolean {
     if (peerMachineId === undefined) return this.cfg().helpers.some((h) => h.machineId === helper);
-    return this.peerSeen.get(peerMachineId)?.helpers.includes(helper) === true;
+    return this.peerHelpersSeen(peerMachineId).includes(helper);
+  }
+
+  /** The helpers a peer reported in the last day (its current ones included). */
+  peerHelpersSeen(peerMachineId: string): string[] {
+    const now = [...(this.peerSeen.get(peerMachineId)?.helpers ?? [])];
+    for (const [h, at] of this.peerHelpersEver.get(peerMachineId) ?? []) if (this.now() - at <= BORROWED_PROXY.peerHelperMemoryMs && !now.includes(h)) now.push(h);
+    return now;
   }
 
   // ── every tick ──────────────────────────────────────────────────────

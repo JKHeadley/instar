@@ -43,7 +43,7 @@ function seam(state: { configured: boolean }) {
     childInput: (token) => (state.configured ? { port: 4042, token, baselines: [] } : null),
     helperFor: () => (state.configured ? 'm_laptop' : null),
     onVerifyResult: (e) => { results.push(e); },
-    onMainRed: () => {},
+    onMainRed: () => {}, acceptPeerMainRed: () => ({ status: 404, body: {} }), peerHelpersSeen: () => [],
     onVerifyStart: () => {}, onVerifyEnd: () => {}, wantsMainFileCounts: () => false, onGreenMain: () => {},
     peerStatusExtras: () => ({}), onPeerStatus: () => {},
     // The setting is read live: once it is off, no helper is "known".
