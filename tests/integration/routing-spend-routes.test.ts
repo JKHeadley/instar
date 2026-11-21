@@ -101,7 +101,8 @@ describe('GET /routing-spend/summary + /caps (integration)', () => {
     expect(res.status).toBe(200);
     expect(res.body.meteredLiveYet).toBe(false);
     const keys = res.body.keys.map((k: { keyRef: string }) => k.keyRef).sort();
-    expect(keys).toEqual(['metered_gemini_bench', 'metered_groq_bench', 'metered_openrouter_bench']);
+    // gemini-payg §2: keys come from the caps defaults (the chains carry no metered position).
+    expect(keys).toEqual(['gemini_api_key_payg', 'metered_groq_bench', 'metered_openrouter_bench']);
     for (const k of res.body.keys) {
       expect(k.goLiveState).toBe('not-live');
       expect(k.committedLifetimeUsd).toBe(0);
@@ -215,12 +216,38 @@ describe('Increment B money routes (integration)', () => {
     expect(replay.body.code).toBe('consumed');
   });
 
+  it('gemini-payg §5: caps-adjust renders and commits a MONTHLY-only key (no lifetime toFixed on null)', async () => {
+    const app = appWith(moneyCtx());
+    const plan = await request(app).post('/routing-spend/plan').send({
+      action: 'caps-adjust', keyRef: 'gemini_api_key_payg', provider: 'google', monthlyCapUsd: 50, dailyCapUsd: 10, periodTimeZone: 'America/Los_Angeles',
+    });
+    expect(plan.status).toBe(200);
+    expect(plan.body.renderedText).toContain('monthly cap $50.00');
+    expect(plan.body.renderedText).not.toContain('lifetime');
+    expect(plan.body.renderedText).toContain('America/Los_Angeles');
+    const commit = await request(app).post('/routing-spend/caps/adjust').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
+    expect(commit.status).toBe(200);
+    expect(commit.body.store.caps.gemini_api_key_payg).toMatchObject({ monthlyCapUsd: 50, dailyCapUsd: 10, periodTimeZone: 'America/Los_Angeles' });
+    expect(commit.body.store.caps.gemini_api_key_payg.lifetimeCapUsd).toBeUndefined();
+    // Re-render against the now monthly-only record: the renderer reads current.lifetimeCapUsd === undefined safely.
+    const again = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'gemini_api_key_payg', provider: 'google', monthlyCapUsd: 40, dailyCapUsd: 10 });
+    expect(again.status).toBe(200);
+    expect(again.body.renderedText).toContain('monthly cap $50.00 → $40.00');
+    expect(again.body.renderedText).toContain('LOWERS');
+    const caps = await request(app).get('/routing-spend/caps');
+    const row = caps.body.keys.find((k: { keyRef: string }) => k.keyRef === 'gemini_api_key_payg');
+    expect(row).toMatchObject({ monthlyCapUsd: 50, lifetimeCapUsd: null, dailyCapUsd: 10, door: 'gemini-api' });
+    // Neither cap ⇒ refused at render.
+    const none = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'gemini_api_key_payg', provider: 'google', dailyCapUsd: 10 });
+    expect(none.status).toBe(400);
+  });
+
   it('version drift between render and commit 409s (approve-what-you-saw)', async () => {
     const c = moneyCtx();
     const app = appWith(c);
     const plan = await request(app).post('/routing-spend/plan').send({ action: 'caps-adjust', keyRef: 'metered_openrouter_bench', provider: 'openrouter', lifetimeCapUsd: 50, dailyCapUsd: 20 });
     // A concurrent Bearer freeze bumps the store version underneath the plan.
-    await request(app).post('/routing-spend/freeze').send({ keyRef: 'metered_gemini_bench' });
+    await request(app).post('/routing-spend/freeze').send({ keyRef: 'gemini_api_key_payg' });
     const commit = await request(app).post('/routing-spend/caps/adjust').send({ pin: PIN, planId: plan.body.planId, nonce: plan.body.nonce });
     expect(commit.status).toBe(409);
     expect(commit.body.code).toBe('version-drift');

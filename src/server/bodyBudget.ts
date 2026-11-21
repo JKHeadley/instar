@@ -239,6 +239,16 @@ export function credentialAwareJsonParser(deps: BodyBudgetDeps, fullLimitBytes: 
 export function closeUnreadBodyOnError(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (hasBody(req)) {
+      // SEC-118-R2: say so in the headers too, so a reusing proxy (cloudflared, an HTTP client pool)
+      // sees a clean `Connection: close` instead of only an abrupt socket close after the answer.
+      const writeHead = res.writeHead as (...a: unknown[]) => Response;
+      res.writeHead = function (this: Response, ...args: unknown[]) {
+        const code = Number(args[0]);
+        if (code >= 400 && !req.complete && !res.headersSent) {
+          try { res.setHeader('Connection', 'close'); } catch { /* @silent-fallback-ok — headers already flushed: the socket close below still applies */ }
+        }
+        return writeHead.apply(this, args);
+      } as typeof res.writeHead;
       res.once('finish', () => {
         if (res.statusCode >= 400 && !req.complete) req.socket?.destroy();
       });

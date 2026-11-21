@@ -28,6 +28,7 @@
  * routing decides claude-vs-codex first; this decides WHICH Claude path).
  */
 
+import { CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { decideSdkVsSubscription } from '../providers/costAwareRouting.js';
 import type { AgentSdkCreditSnapshot } from '../providers/primitives/observability/usageMeterProvider.js';
@@ -87,6 +88,7 @@ export interface AnthropicSubscriptionRouterOptions {
 const DEFAULT_SAFETY_MARGIN_FRACTION = 0.1;
 
 export class AnthropicSubscriptionRouter implements IntelligenceProvider {
+  readonly frameworkId = CLAUDE_CODE_FRAMEWORK;
   private readonly opts: AnthropicSubscriptionRouterOptions;
   private readonly safetyMarginFraction: number;
 

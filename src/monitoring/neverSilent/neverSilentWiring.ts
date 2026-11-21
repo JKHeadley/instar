@@ -45,7 +45,9 @@ export interface NeverSilentWiringInput {
   // pool
   poolAccounts: () => PoolAccountLike[];
   loginCheck: (accountId: string) => string | null;
-  observeLoginExpired: (configHome: string, tmuxSession: string) => Promise<string | void>;
+  observeLoginExpired: (configHome: string, tmuxSession: string) => Promise<string | void | { reason: string; probe?: 'ok' | 'refused' | 'pending' | 'inconclusive' }>;
+  /** Spec stale-process-login-expired: is an in-place refresh in progress or still possible for this session? */
+  inPlaceRefreshPossible?: (tmuxSession: string, accountId: string | null) => boolean;
   repairStarted: (accountId: string | null) => boolean;
   swap: (session: SessionFacts) => Promise<{ swapped: boolean; reason?: string }>;
   // topic profile (Telegram topics only)
@@ -157,6 +159,7 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
       return !!p?.framework && (!by.startsWith('system:') || by.startsWith(NEVER_SILENT_RESTORED_PIN_PREFIX));
     },
     observeLoginExpired: input.observeLoginExpired,
+    ...(input.inPlaceRefreshPossible ? { inPlaceRefreshPossible: input.inPlaceRefreshPossible } : {}),
     swap: input.swap,
     applyFallback: async (platform, key, target, by, text) => {
       if (platform !== 'telegram') return { ok: false, from: null, fromUpdatedBy: null, reason: 'engine moves need a Telegram topic' };

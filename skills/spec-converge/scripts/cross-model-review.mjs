@@ -60,6 +60,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -89,6 +90,7 @@ function parseArgs() {
     stateDir: null,
     timeoutMs: null,
     config: null,
+    round: null,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -100,13 +102,14 @@ function parseArgs() {
     else if (a === '--state-dir') out.stateDir = args[++i];
     else if (a === '--timeout-ms') out.timeoutMs = parseInt(args[++i], 10);
     else if (a === '--config') out.config = args[++i];
+    else if (a === '--round') out.round = parseInt(args[++i], 10);
     else fail(`Unknown arg: ${a}`);
   }
   if (!out.detectOnly && !out.spec) {
     fail(
       'Usage: cross-model-review.mjs --spec PATH [--context PATH ...] ' +
         '[--detect-only] [--hash-only] [--family ID] [--state-dir DIR] ' +
-        '[--timeout-ms N] [--config PATH]',
+        '[--timeout-ms N] [--config PATH] [--round N]',
     );
   }
   return out;
@@ -311,6 +314,8 @@ function loadReviewerConfig(explicitPath) {
     const cfg = JSON.parse(fs.readFileSync(resolved.path, 'utf-8'));
     const out = {};
     if (typeof cfg.developmentAgent === 'boolean') out.developmentAgent = cfg.developmentAgent;
+    // gemini-payg §2: the local server port, for the loopback gemini-api door probe.
+    if (Number.isInteger(cfg.port) && cfg.port > 0) out.port = cfg.port;
     if (cfg.specConverge && typeof cfg.specConverge === 'object') out.specConverge = cfg.specConverge;
     // grok-build reviewer dark-ship gate (grok-build spec §8 round-7): the
     // enabledFrameworks opt-in must reach detection through THIS loader —
@@ -329,8 +334,51 @@ function loadReviewerConfig(explicitPath) {
   }
 }
 
+/**
+ * Ask THIS machine's agent server about the metered gemini-api review door
+ * (gemini-payg-metered-lane §2). Best-effort and loopback-only: any failure means
+ * "not configured", which keeps today's behaviour. Never prints the token.
+ */
+async function fetchGeminiApiDoor(reviewerConfig, resolvedConfigPath) {
+  // Is the door configured on THIS machine (the holder holds a go-live record)? Read the
+  // caps record directly, so a missing token or a slow server can never quietly re-enable
+  // the gemini CLI where the API door replaced it (§2 "never a CLI fallback").
+  let configuredLocally = false;
+  try {
+    if (resolvedConfigPath) {
+      const caps = JSON.parse(fs.readFileSync(path.join(path.dirname(resolvedConfigPath), 'state', 'routing-spend-caps.json'), 'utf-8'));
+      configuredLocally = !!caps?.goLive?.['gemini-api'];
+    }
+  } catch { configuredLocally = false; }
+  // A non-holder (standby) holds no caps record; the designation it heard from the
+  // holder's echo marks the door configured here too.
+  try {
+    if (!configuredLocally && resolvedConfigPath) {
+      const seen = JSON.parse(fs.readFileSync(path.join(path.dirname(resolvedConfigPath), 'state', 'gemini-payg-seen-designation.json'), 'utf-8'));
+      configuredLocally = typeof seen?.machineId === 'string';
+    }
+  } catch { /* nothing heard: not configured on this machine */ }
+  const closed = { configured: true, ready: false, reason: 'door-probe-failed' };
+  const port = Number(reviewerConfig?.port);
+  const token = process.env.INSTAR_AUTH_TOKEN;
+  if (!Number.isInteger(port) || port <= 0 || !token) return configuredLocally ? closed : undefined;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    const res = await fetch(`${baseUrl}/intelligence/gemini/status`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.status === 404) return configuredLocally ? closed : undefined; // a server without the lane
+    if (!res.ok) return configuredLocally ? closed : { configured: false, ready: false, reason: `status-${res.status}` };
+    const body = await res.json();
+    return { configured: body?.configured === true || configuredLocally, ready: body?.ready === true, reason: typeof body?.reason === 'string' ? body.reason : undefined, baseUrl };
+  } catch {
+    return configuredLocally ? closed : undefined;
+  }
+}
+
 async function main() {
-  const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs, config } = parseArgs();
+  const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs, config, round } = parseArgs();
   const { mod, resolvedModulePath } = await loadModule();
   // Config-gate the Anthropic clean-door family (§1.5). Absent config ⇒ fleet-dark.
   const { config: reviewerConfig, resolvedConfigPath } = loadReviewerConfig(config);
@@ -344,8 +392,10 @@ async function main() {
   }
 
   // ── --detect-only: report ALL available families (Piece 3) ──
+  const geminiApiDoor = await fetchGeminiApiDoor(reviewerConfig, resolvedConfigPath);
   if (detectOnly) {
     const detectInputs = {
+      ...(geminiApiDoor ? { geminiApiDoor } : {}),
       ...(Array.isArray(reviewerConfig.enabledFrameworks)
         ? { enabledFrameworks: reviewerConfig.enabledFrameworks }
         : {}),
@@ -360,7 +410,7 @@ async function main() {
     // 'grok-binary-missing' is the difference between "config never reached
     // detection" (the dead-switch signature) and an honest availability gap.
     const inactive = [];
-    for (const entry of mod.resolveActiveReviewerFrameworks(reviewerConfig)) {
+    for (const entry of mod.resolveActiveReviewerFrameworks(reviewerConfig, geminiApiDoor ? { geminiApiDoor } : undefined)) {
       const d = entry.detect(detectInputs);
       if (!d.available) inactive.push({ framework: entry.id, reason: d.reason ?? 'unknown' });
     }
@@ -385,7 +435,7 @@ async function main() {
     // set so a config-disabled claude family is not recorded as present.
     if (stateDir) {
       const frameworks = {};
-      for (const entry of mod.resolveActiveReviewerFrameworks(reviewerConfig)) {
+      for (const entry of mod.resolveActiveReviewerFrameworks(reviewerConfig, geminiApiDoor ? { geminiApiDoor } : undefined)) {
         frameworks[entry.id] = all.some((d) => d.framework === entry.id);
       }
       try {
@@ -418,7 +468,7 @@ async function main() {
     }
     // Config gate (§1.5): a trusted-but-disabled family (the claude clean-door
     // family on the fleet) is refused here — trusted-egress ≠ enabled.
-    const active = mod.resolveActiveReviewerFrameworks(reviewerConfig);
+    const active = mod.resolveActiveReviewerFrameworks(reviewerConfig, geminiApiDoor ? { geminiApiDoor } : undefined);
     familyEntry = active.find((f) => f.id === family) ?? null;
     if (!familyEntry) {
       process.stdout.write(
@@ -433,6 +483,7 @@ async function main() {
   }
 
   const familyDetectInputs = {
+    ...(geminiApiDoor ? { geminiApiDoor } : {}),
     ...(Array.isArray(reviewerConfig.enabledFrameworks)
       ? { enabledFrameworks: reviewerConfig.enabledFrameworks }
       : {}),
@@ -472,9 +523,19 @@ async function main() {
   // call, the refusal was absent from the only path in use. `ReviewerInvokeArgs`
   // carries just `promptText`, so this path could not have refused even in
   // principle: the omission signal never reached it.
+  // gemini-api E1 binding (§2): the local server re-validates the path, the hash and the
+  // payload, and books one pass per (spec hash, round). Other families ignore it.
+  const specBinding = {
+    specPath: path.resolve(spec),
+    specSha256: crypto.createHash('sha256').update(fs.readFileSync(path.resolve(spec))).digest('hex'),
+    round: Number.isInteger(round) && round > 0 ? round : 1,
+    runNonce: crypto.randomBytes(12).toString('hex'),
+  };
   const result = familyEntry
     ? await mod.runCrossModelReview({
         assembled,
+        specBinding,
+        detectInputs: familyDetectInputs,
         family: familyEntry.id,
         detectionOverride: detection,
         config: reviewerConfig,
@@ -485,11 +546,17 @@ async function main() {
       })
     : await mod.runCrossModelReview({
         assembled,
+        specBinding,
         config: reviewerConfig,
         // Third detect flow (security round-8): the back-compat default path
         // must carry the same inputs as detect-all and per-family.
-        ...(Array.isArray(reviewerConfig.enabledFrameworks)
-          ? { detectInputs: { enabledFrameworks: reviewerConfig.enabledFrameworks } }
+        ...(Array.isArray(reviewerConfig.enabledFrameworks) || geminiApiDoor
+          ? {
+              detectInputs: {
+                ...(Array.isArray(reviewerConfig.enabledFrameworks) ? { enabledFrameworks: reviewerConfig.enabledFrameworks } : {}),
+                ...(geminiApiDoor ? { geminiApiDoor } : {}),
+              },
+            }
           : {}),
         ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
       });

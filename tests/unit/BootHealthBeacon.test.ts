@@ -29,6 +29,23 @@ afterEach(async () => {
 });
 
 describe('BootHealthBeacon', () => {
+  it('carries Instar\'s machine marker on its 503 when it knows its machine (takeover-ready-pool R1)', async () => {
+    const port = await freePort();
+    beacon = new BootHealthBeacon(port, '127.0.0.1', 'abc123def4567890');
+    await beacon.start();
+    const res = await fetch(`http://127.0.0.1:${port}/api/lease/pull`, { method: 'POST', body: '{}' });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('x-instar-machine')).toBe('abc123def4567890');
+  });
+
+  it('carries no marker without a machine identity', async () => {
+    const port = await freePort();
+    beacon = new BootHealthBeacon(port);
+    await beacon.start();
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.headers.get('x-instar-machine')).toBeNull();
+  });
+
   it('answers /health with a typed 503 "starting" (never 200: a 200 means serving)', async () => {
     const port = await freePort();
     beacon = new BootHealthBeacon(port);
