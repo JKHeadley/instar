@@ -177,6 +177,10 @@ parsers and a >10x plausibility clamp). Both write forward-only observations int
 observed cache only; promoting an observed price into the reviewed canonical manifest is always the
 operator's PIN action.
 
+### The Gemini pay-per-use invoice check
+
+The Gemini pay-per-use metered lane has its own monthly cross-check, the `gemini-payg-reconcile` job (the 2nd of each month at 9am, with one re-read at 3pm, on the spending machine's Pacific clock). It reads last month's spend for the lane's dedicated Google project from the AI Studio / Cloud billing page, read-only through the lane's signed-in browser profile, and compares it with the lane's own money ledger. It reports a drift; it never spends and never changes a setting. It ships off until the lane is live on an agent.
+
 ## Amortized subscription costs (with the math shown)
 
 Declare what a subscription door actually costs (`routingSpend.subscriptions`, e.g. Claude Max at

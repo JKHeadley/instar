@@ -137,6 +137,10 @@ Verified by the reviewer against code and a fresh run (store, gate, runtime, tru
 
 ---
 
+## Docs coverage follow-up (2026-11-21)
+
+CI's Docs Coverage check failed on the PR's merge commit with `job 83% < 85%`: main had gained a job (`gemini-payg-reconcile`) since this branch's base, so the merge composition crossed the job floor that the branch alone did not. Fixed by documenting that job in `reference/default-jobs.md` and the Routing Spend page, and by documenting this slice's own additions (`WorkBoardRequestGate` in the architecture page and the class list; the notes and not-started routes and the trust request routes in the API reference), which also gives the class and route floors (both at their floor) headroom. Documentation only; no runtime change.
+
 ## Evidence pointers
 
 - `tests/unit/agent-work-cards-store.test.ts`, `tests/unit/agent-work-cards-gate.test.ts`, `tests/unit/agent-work-cards-runtime.test.ts`, `tests/unit/agent-work-cards-trust.test.ts` (50 tests)
