@@ -11,7 +11,8 @@ import { sha256Hex } from './WorkCardStore.js';
 
 export interface Viewer { personKey: string | null; isOwner: boolean; isAgent: boolean }
 
-export interface BehindInfo { machineId: string; since: string }
+/** machineName: that machine's nickname when the pool knows one (shown instead of its id). */
+export interface BehindInfo { machineId: string; since: string; machineName?: string | null }
 
 /** Plain words for each status, for the row's "what is needed" line. */
 /** A stopped project app's serve card: turning the app back on comes with stage 2 (CMT-1882). */
@@ -142,7 +143,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     repliedAfterQuestion: !!extra?.repliedAfterQuestion,
     ...(extra?.phoneOnly ? { phoneOnly: true } : {}),
     ...(extra?.behind ? { behind: extra.behind } : {}),
-    ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn } : {}),
+    ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn, ...(extra.behind.machineName ? { mayHaveChangedOnName: extra.behind.machineName } : {}) } : {}),
   };
   if (ownerish) { out.source = c.source; out.projectKey = c.projectKey; }
   return out;

@@ -120,7 +120,7 @@ function drillBlock(d, { get, sinceMs, state, onPath }) {
   const go = async (path) => {
     state.path = path.slice(0, DRILL_ORDER.length);
     onPath?.(state.path);
-    paint(buildDrill(await get(drillQuery(state.path, sinceMs)), state.path));
+    paint(buildDrill(await get(drillQuery(state.path, sinceMs)), state.path, d.names || {}));
   };
   paint(d);
   return box;
