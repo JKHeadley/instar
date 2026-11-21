@@ -24,8 +24,9 @@ const tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'inst-imp-in
 const TOKEN = 'imp-token';
 const OWNER = 'owner-session-ok';
 
-function boot() {
+function boot(opts: { memory?: boolean } = {}) {
   const stateDir = tmp();
+  const remembered: Array<{ text: string; from: string }> = [];
   const app = express();
   app.use(express.json());
   app.use(authMiddleware(() => TOKEN, 'imp-int'));
@@ -35,10 +36,13 @@ function boot() {
     stateDir,
     bearerOk: (req) => req.headers.authorization === `Bearer ${TOKEN}`,
     ownerOk: (req) => req.headers['x-instar-operator-session'] === OWNER,
+    // Stands in for the device authenticator's verdict (DEVICE_ALLOWLIST is tested in the unit test).
+    deviceOwnerOk: (req) => req.headers['x-test-owner-device'] === 'yes',
+    ...(opts.memory === false ? {} : { rememberFact: (f: { text: string; from: 'claude' | 'chatgpt' }) => { remembered.push(f); return `e${remembered.length}`; } }),
     now: () => clock,
   });
   app.use(router);
-  return { app, stateDir, advance: (ms: number) => { clock += ms; } };
+  return { app, stateDir, remembered, advance: (ms: number) => { clock += ms; } };
 }
 
 const agent = (r: request.Test) => r.set('Authorization', `Bearer ${TOKEN}`).set('X-Instar-AgentId', 'imp-int');
@@ -91,6 +95,9 @@ describe('imported history routes', () => {
     const r = await agent(request(app).post('/imported-history/preview')).send({ path: evil });
     expect(r.status).toBe(422);
     expect(r.body.detail).toMatch(/unsafe file name/);
+    expect(r.body.detail).not.toContain('escape.json'); // a name inside the zip is export text: not shown to the agent
+    const asOwner = await owner(request(app).post('/imported-history/preview')).send({ path: evil });
+    expect(asOwner.body.detail).toContain('escape.json');
     expect((await agent(request(app).post('/imported-history/preview')).send({ path: 'relative.zip' })).status).toBe(400);
     expect((await agent(request(app).post('/imported-history/preview')).send({ path: '/nope/missing.zip' })).status).toBe(404);
   });
@@ -117,7 +124,48 @@ describe('imported history routes', () => {
     expect(asOwner.body.messages.map((m: { key: string }) => m.key)).toEqual(['m1', 'm2']);
 
     const list = await agent(request(app).get('/imported-history/conversations'));
-    expect(list.body).toMatchObject({ keptOn: 'this-machine', conversations: [{ ref: 'imported:claude:c1', title: 'Garden', messageCount: 2 }] });
+    expect(list.body).toMatchObject({ note: QUOTED_NOTE, keptOn: 'this-machine', conversations: [{ ref: 'imported:claude:c1', messageCount: 2 }] });
+    // The chat title is text from the export: the agent reads it only inside the wrapper.
+    expect(list.body.conversations[0].title).toBeUndefined();
+    expect(list.body.conversations[0].quoted.startsWith('<imported-history from="claude" title="Garden"')).toBe(true);
+    expect(asAgent.body.conversation.title).toBeUndefined();
+    expect(s.body.results[0].title).toBeUndefined();
+    const ownerList = await owner(request(app).get('/imported-history/conversations'));
+    expect(ownerList.body.conversations[0]).toMatchObject({ ref: 'imported:claude:c1', title: 'Garden' });
+  });
+
+  it('the owner\'s app reaches the same routes under /mobile and reads raw', async () => {
+    const { app } = boot();
+    const zip = claudeExport();
+    const device = (r: request.Test) => agent(r).set('x-test-owner-device', 'yes');
+    const pv = await device(request(app).post('/mobile/imported-history/preview')).send({ path: zip });
+    expect(pv.status).toBe(200);
+    expect((await device(request(app).post('/mobile/imported-history/apply')).send({ previewId: pv.body.previewId })).body.ok).toBe(true);
+    const list = await device(request(app).get('/mobile/imported-history/conversations'));
+    expect(list.body.conversations).toHaveLength(1);
+    const one = await device(request(app).get(`/mobile/imported-history/conversations/${encodeURIComponent('imported:claude:c1')}`));
+    expect(one.body.messages.map((m: { key: string }) => m.key)).toEqual(['m1', 'm2']);
+    const found = await device(request(app).get('/mobile/imported-history/search').query({ q: 'garden' }));
+    expect(found.body.hits).toHaveLength(1);
+    // The agent's bearer on a /mobile path is still the agent: quoted history, never raw.
+    const asAgent = await agent(request(app).get(`/mobile/imported-history/conversations/${encodeURIComponent('imported:claude:c1')}`));
+    expect(asAgent.body.messages).toBeUndefined();
+    expect(asAgent.body.quoted).toContain('<imported-history');
+  });
+
+  it('only the person stores facts: the agent is refused; secrets are removed; bad input and memory-off answer plainly', async () => {
+    const { app, remembered } = boot();
+    const facts = { from: 'claude', facts: ['I live in Portland', `My key is sk-ant-api03-${'A1b2C3d4'.repeat(12)}`] };
+    expect((await agent(request(app).post('/imported-history/facts')).send(facts)).status).toBe(403);
+    expect(remembered).toEqual([]);
+    const ok = await agent(request(app).post('/mobile/imported-history/facts')).set('x-test-owner-device', 'yes').send(facts);
+    expect(ok.body).toEqual({ ok: true, stored: 2 });
+    expect(remembered[0]).toEqual({ text: 'I live in Portland', from: 'claude' });
+    expect(remembered[1]!.text).toContain('[removed: looked like a secret]');
+    expect((await owner(request(app).post('/imported-history/facts')).send({ from: 'gemini', facts: ['x y z'] })).status).toBe(400);
+    expect((await owner(request(app).post('/imported-history/facts')).send({ from: 'claude', facts: ['x'.repeat(301)] })).status).toBe(400);
+    const off = boot({ memory: false });
+    expect((await owner(request(off.app).post('/imported-history/facts')).send({ from: 'claude', facts: ['I like tea'] })).status).toBe(503);
   });
 
   it('no credentials, no access', async () => {

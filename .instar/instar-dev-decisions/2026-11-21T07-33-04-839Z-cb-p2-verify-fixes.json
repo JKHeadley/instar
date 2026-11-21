@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-21T07:33:04.839Z",
+  "slug": "cb-p2-verify-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 167,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AnthropicSubscriptionRouter.ts",
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/IntelligenceRouter.ts",
+      "src/core/componentCategories.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/foldHandoff.ts",
+      "src/monitoring/foldPacket.ts",
+      "src/monitoring/foldShadowLog.ts",
+      "src/monitoring/foldShadowRunner.ts",
+      "src/monitoring/foldWiringHelpers.ts",
+      "src/monitoring/hookEventConsumers.ts"
+    ],
+    "addedLines": 147,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

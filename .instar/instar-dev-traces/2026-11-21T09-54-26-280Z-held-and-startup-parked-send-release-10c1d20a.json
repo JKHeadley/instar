@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "held-and-startup-parked-send-release",
+  "sessionId": "b51f0ed9-88d4-4fb4-b466-cb297e392a3c",
+  "timestamp": "2026-11-21T09:54:26.280Z",
+  "artifactPath": "upgrades/side-effects/held-and-startup-parked-send-release.md",
+  "artifactSha256": "d05462200ae6bdba965070684419666d0850c2b43a9796ad5922f31c07aa11f6",
+  "specPath": "docs/specs/held-and-startup-parked-send-release.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T09-54-16-678Z-held-and-startup-parked-send-release.json",
+    "docs/specs/held-and-startup-parked-send-release.eli16.md",
+    "docs/specs/held-and-startup-parked-send-release.md",
+    "docs/specs/reports/held-and-startup-parked-send-release-convergence.md",
+    "src/commands/server.ts",
+    "src/data/awareness/held-send-retire.md",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "src/messaging/telegram-origin/OriginLegacy.ts",
+    "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+    "src/messaging/telegram-origin/OriginOwnerRead.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "src/messaging/telegram-origin/OriginStore.worker.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/server/BootHealthBeacon.ts",
+    "src/server/telegramOriginRoutes.ts",
+    "tests/e2e/held-send-release-lifecycle.test.ts",
+    "tests/integration/telegram-origin-held-send-release.test.ts",
+    "tests/unit/telegram-origin/held-send-release.test.ts",
+    "upgrades/next/held-and-startup-parked-send-release.md",
+    "upgrades/side-effects/held-and-startup-parked-send-release.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Outbound message delivery: durable external side effects (sends to Telegram), a new block/allow decision on held sends, a new route, and a store schema addition; a wrong change can lose or duplicate person-facing replies.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/held-and-startup-parked-send-release-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

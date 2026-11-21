@@ -18,12 +18,23 @@ import {
   type IssueSeverity,
   type ForensicFinding,
 } from '../monitoring/FrameworkIssueLedger.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
 import { DP_MENTOR_STAGE_B_CLASSIFY } from '../data/provenanceCoverage.js';
 
 const MAX_FINDINGS_PER_RUN = 10; // bound a single tick's output
 const MAX_TITLE = 200;
+
+/**
+ * Bound on the forensic signals in the prompt. Not in the lint's baseline (an
+ * unnamed slice inside an array literal is outside its detector); found by the
+ * batch-4 second pass. The signals are a server-log section (the strongest
+ * evidence) followed by session digests, so the HEAD is kept; the 12,000
+ * characters of content are unchanged and a cut is now disclosed, so the model
+ * does not read "no later digest" as "nothing else happened".
+ */
+const FORENSIC_SIGNALS_CHARS = 12000 + BOUNDED_INPUT_MIN_CHARS;
 
 export const MENTOR_STAGE_B_PROMPT_ID = 'mentor-stage-b-forensics-v1';
 
@@ -38,9 +49,9 @@ export function buildMentorStageBDecisionContext(input: {
     promptChars: input.promptText.length,
     promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
     frameworkIdentitySha256: buildStructuredSha256Identity(input.framework),
-    signalsIdentitySha256: buildStructuredSha256Identity(input.signals.slice(0, 12000)),
-    signalsChars: Math.min(input.signals.length, 12000),
-    signalsTruncated: input.signals.length > 12000,
+    signalsIdentitySha256: buildStructuredSha256Identity(boundedHead(input.signals, FORENSIC_SIGNALS_CHARS)),
+    signalsChars: Math.min(input.signals.length, FORENSIC_SIGNALS_CHARS),
+    signalsTruncated: input.signals.length > FORENSIC_SIGNALS_CHARS,
   });
 }
 
@@ -116,7 +127,7 @@ export function buildForensicPrompt(framework: string, signals: string): string 
     `If the signals evidence no concrete issue, output []. Never invent issues.`,
     ``,
     `--- Signals ---`,
-    signals.slice(0, 12000), // bound the prompt
+    boundedHead(signals, FORENSIC_SIGNALS_CHARS), // bound the prompt, disclosing a cut
   ].join('\n');
 }
 
@@ -147,6 +158,7 @@ export function parseForensicFindings(raw: string, framework: string): ForensicF
     const o = item as Record<string, unknown>;
     const bucket = o.bucket as string;
     if (!ISSUE_BUCKETS.includes(bucket as IssueBucket)) continue; // drop invalid bucket
+    // bounded-input-reviewed: parses model OUTPUT (an issue title) into a stored record; not a judgment's input.
     const title = typeof o.title === 'string' ? o.title.trim().slice(0, MAX_TITLE) : '';
     if (!title) continue;
     const severity: IssueSeverity = ISSUE_SEVERITIES.includes(o.severity as IssueSeverity)

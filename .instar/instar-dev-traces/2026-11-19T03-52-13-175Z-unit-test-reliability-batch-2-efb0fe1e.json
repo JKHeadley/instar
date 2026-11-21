@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "unit-test-reliability-batch-2",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T03:52:13.175Z",
+  "artifactPath": "upgrades/side-effects/unit-test-reliability-batch-2.md",
+  "artifactSha256": "2705d6468717b6c92796b395a5fc56133ad4941f36364a1341eb66f8d023743c",
+  "coveredFiles": [
+    "docs/eli16/unit-test-reliability-batch-2.eli16.md",
+    "tests/unit/autonomous-stop-hook-idle-backoff.test.ts",
+    "tests/unit/telegram-origin/config-reader.test.ts",
+    "tests/unit/telegram-origin/store-worker-recovery.test.ts",
+    "upgrades/next/unit-test-reliability-batch-2.md",
+    "upgrades/side-effects/unit-test-reliability-batch-2.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only repair of three load-sensitive unit test files; no runtime code changes and a revert fully undoes it.",
+  "eli16Path": "docs/eli16/unit-test-reliability-batch-2.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/unit-test-reliability-batch-2.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

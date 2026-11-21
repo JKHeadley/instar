@@ -46,6 +46,7 @@
  */
 
 import type { IntelligenceProvider } from '../core/types.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 
 /** The gate's decision for a single undirected message. */
 export interface AmbientDecision {
@@ -488,6 +489,15 @@ function parseAmbientVerdict(
 }
 
 /**
+ * How much of an overheard message the contribution model reads. Derived: the
+ * 2000 characters of content it always read, plus disclosure room, so a cut says
+ * so. Disclose, not refuse: this decides whether the agent CHIMES IN on chatter
+ * it was not addressed in, so a cut can only make it less sure there is
+ * something to add.
+ */
+const GATE_MESSAGE_CHARS = 2000 + BOUNDED_INPUT_MIN_CHARS;
+
+/**
  * Build the "should I speak?" prompt. It DEFAULTS TO SILENCE and asks the model to
  * return speak:true ONLY when it can name a concrete, meaningful contribution — and
  * never to interrupt a human-to-human exchange without clear value (§5.2 guardrails).
@@ -519,7 +529,7 @@ function buildAmbientPrompt(input: AmbientGateInput): { systemPrompt: string; us
     input.channelName ? `channel: ${input.channelName}` : 'channel: (unnamed)',
     'overheard message (you were NOT addressed):',
     '"""',
-    (input.text || '').slice(0, 2000),
+    boundedHead(input.text || '', GATE_MESSAGE_CHARS),
     '"""',
   ].join('\n');
 

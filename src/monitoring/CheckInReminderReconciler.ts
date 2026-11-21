@@ -24,6 +24,7 @@ import {
   type NotDueReason,
 } from './checkInReminderCore.js';
 import type { Commitment, CommitmentTracker } from './CommitmentTracker.js';
+import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { isPromisedUpdateCommitment } from './PromisedUpdateCapture.js';
 import {
   isLateNoticeDue,
@@ -327,6 +328,19 @@ export class CheckInReminderReconciler {
   }
 
   /**
+   * Send, and fail when the message was held instead of delivered. A held send
+   * (the notification policy filed it in the Notifications feed) resolves
+   * normally with a quiet receipt; counting that as sent would stamp
+   * "the user has been told" on a message the user never got (CMT-1951,
+   * 2026-11-18). Throwing routes it through the same retry / give-up path as a
+   * transport failure.
+   */
+  private async sendDelivered(topicId: number, text: string, identity: CheckInSendIdentity): Promise<void> {
+    const receipt = await this.deps.send(topicId, text, identity);
+    if (isQuietReceipt(receipt)) throw new Error(`held-not-delivered: the notification policy recorded it quietly (${receipt.quietId})`);
+  }
+
+  /**
    * One conversation's late rows → one message. Order: count an attempt (with
    * the predicate re-checked inside the CAS) → send once → stamp every row →
    * hand off to a running session. The handoff runs only after the stamp, so
@@ -374,7 +388,7 @@ export class CheckInReminderReconciler {
         .sort((a, b) => (a.id + a.time).localeCompare(b.id + b.time)),
     };
     try {
-      await this.deps.send(topicId, text, identity);
+      await this.sendDelivered(topicId, text, identity);
     } catch (err) {
       late.failed++;
       report.failed++;
@@ -486,7 +500,7 @@ export class CheckInReminderReconciler {
     }
 
     try {
-      await this.deps.send(topicId, text, { commitmentId: commitment.id, checkInAt: commitment.checkInAt! });
+      await this.sendDelivered(topicId, text, { commitmentId: commitment.id, checkInAt: commitment.checkInAt! });
     } catch (err) {
       report.failed++;
       report.errors.push({ id: commitment.id, error: String(err) });

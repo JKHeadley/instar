@@ -9,6 +9,7 @@
  * (specs/provider-portability/04-anthropic-path-constraints.md).
  */
 
+import { CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -102,6 +103,7 @@ export function buildClaudeReviewerArgs(model: string, jsonSchema?: string, noTo
 }
 
 export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
+  readonly frameworkId = CLAUDE_CODE_FRAMEWORK;
   private claudePath: string;
 
   constructor(claudePath: string) {

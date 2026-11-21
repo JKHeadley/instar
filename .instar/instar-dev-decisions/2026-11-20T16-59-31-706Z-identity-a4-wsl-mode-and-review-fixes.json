@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-20T16:59:31.706Z",
+  "slug": "identity-a4-wsl-mode-and-review-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 107,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SameNetworkNetwork.ts",
+      "src/core/ceremonyCredential.ts",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

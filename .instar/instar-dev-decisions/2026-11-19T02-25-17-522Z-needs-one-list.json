@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-19T02:25:17.522Z",
+  "slug": "needs-one-list",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/needs-you-list.md",
+      "src/server/needsRoutes.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -398,6 +398,7 @@ export class TelegramOriginService {
     const held = this.#held.get(operationId);
     if (held?.operation) this.#heldBytes -= held.operation.admission.payloadBytes;
     this.#held.delete(operationId);
+    this.#leaseHeldIds.delete(operationId);
   }
   currentOperationIds(): string[] { return [...(this.#scope.getStore()?.operations ?? [])]; }
   /** What this machine can truthfully say about who wrote a queued legacy row.
@@ -593,6 +594,7 @@ export class TelegramOriginService {
       this.#heldBytes += operation.admission.payloadBytes;
       this.#held.set(id, { reason, since: this.#now(), operation: structuredClone(operation) });
     } else this.#held.get(id)!.reason = reason;
+    if (reason === 'lease-not-held' && this.#leaseHeldIds.size < 10_000) this.#leaseHeldIds.add(id);
     this.options.onHold({ operationId: id, reason, producerKind: operation.record.producerKind, operationKind: operation.record.operationKind, destination: operation.record.destination });
     throw new TelegramOriginHoldError(reason, id);
   }
@@ -613,6 +615,12 @@ export class TelegramOriginService {
    * During a total storage outage these bytes are memory-only; expose that
    * limitation rather than pretending a successful durable queue admission.
    */
+  /** held-and-startup-parked-send-release §2 — the in-memory hold reason for an operation, if any. */
+  heldReason(operationId: string): string | null { return this.#held.get(operationId)?.reason ?? null; }
+  /** Sticky: true once this process held the operation for `lease-not-held`, even if a later hold
+   * replaced the reason (a failed admit re-holds it as `execution-admission-unavailable`). */
+  wasLeaseHeldInMemory(operationId: string): boolean { return this.#leaseHeldIds.has(operationId) || this.heldReason(operationId) === 'lease-not-held'; }
+  readonly #leaseHeldIds = new Set<string>();
   heldOperations(limit = 10): OriginPreparedBotOperation[] {
     this.pruneExpiredHolds();
     const result: OriginPreparedBotOperation[] = [];

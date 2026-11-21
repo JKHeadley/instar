@@ -40,6 +40,8 @@ export interface HealthRule {
   /** The id this rule covers. A key ending in `*` covers every id that starts with what comes before it. */
   key: string;
   impact: Exclude<HealthImpact, 'unclassified'>;
+  /** Explicit false: affects work, but waiting does not require the person to act. */
+  requiresUserAction?: boolean;
   title: string;
   detail: string;
   /** Required: where the person can act, or null when the only step is asking the agent. */
@@ -50,6 +52,8 @@ export interface HealthIssue {
   /** Stable across reads: the rule's key, or the id itself when no rule names it. */
   id: string;
   impact: HealthImpact;
+  /** Missing preserves older clients' conservative Needs-you behavior. */
+  requiresUserAction?: boolean;
   title: string;
   detail: string;
   /** The agent's own latest words about it, when it left any. */
@@ -119,7 +123,7 @@ export const HEALTH_RULES: readonly HealthRule[] = [
   { key: 'SessionManager.monitorTick.interactiveLoginExpired', impact: 'user-affecting', title: 'A sign-in ran out', detail: 'A session stopped because its account needs signing in again.', action: ACCOUNTS },
   { key: 'SessionManager.monitorTick.reroutedLoginExpired', impact: 'user-affecting', title: 'A sign-in ran out', detail: 'A session stopped because its account needs signing in again.', action: ACCOUNTS },
   { key: 'health:claude-key', impact: 'user-affecting', title: 'The Claude key stopped working', detail: 'Work that depends on it can’t run while it’s failing.', action: ACCOUNTS },
-  { key: 'health:sessions-full', impact: 'user-affecting', title: 'All session slots are in use', detail: 'New work has to wait until a session finishes.', action: SESSIONS },
+  { key: 'health:sessions-full', impact: 'user-affecting', requiresUserAction: false, title: 'All session slots are in use', detail: 'New work has to wait until a session finishes.', action: SESSIONS },
   { key: 'health:job-failures', impact: 'user-affecting', title: 'Scheduled jobs keep failing', detail: 'Work that should run on its own is not getting done.', action: SCHEDULE },
   { key: 'health:whatsapp', impact: 'user-affecting', title: 'WhatsApp isn’t connected', detail: 'Messages sent to me through WhatsApp won’t reach me until this is fixed.', action: null },
 
@@ -377,6 +381,7 @@ export function summarizeHealth(
     groups.set(key, {
       id: key,
       impact,
+      ...(rule?.requiresUserAction === false ? { requiresUserAction: false } : {}),
       title,
       detail: text(s.detail, EVIDENCE_MAX) ?? rule?.detail ?? (impact === 'internal'
         ? 'This is internal and doesn’t need you.'
