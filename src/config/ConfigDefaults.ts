@@ -487,7 +487,9 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     agentWorktreeReaper: {
       enabled: false,
       dryRun: true,
-      reapIntervalMs: 86_400_000,
+      // Hourly (docs/specs/reaper-removal-out-of-process.md §4). An existing
+      // agent holding the old 24 h default is moved by migrateReaperHourlyCadence.
+      reapIntervalMs: 3_600_000,
       initialPassDelayMs: 900_000,
       maxReapsPerPass: 20,
     },

@@ -1,0 +1,21 @@
+# Remote Desktop permission card only on Macs where Remote Desktop is used
+
+<!-- bump: patch -->
+
+## What Changed
+
+The "Remote Desktop needs its Mac permission again" Attention card is now raised only when a Remote Desktop session has started on that Mac in the last 30 days (read from the existing local desktop-access audit). On a Mac nobody remotes into, the missing permission stays visible as "not ready" on the Machines page and is explained on the Remote Desktop page at the moment of use, but it no longer lands in Needs you. An agent with no recent use no longer takes the shared one-card-per-Mac claim, so a sibling agent that is used can still raise it. A card already open still closes itself when the permission returns.
+
+## What to Tell Your User
+
+- **Fewer Remote Desktop cards**: "You'll only get a card about Remote Desktop permissions on a Mac you actually use Remote Desktop on. If you start using it on another Mac, it will tell you then what needs allowing."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Remote Desktop permission card limited to recently used Macs | Automatic; no setting |
+
+## Evidence
+
+Unit tests: `tests/unit/DesktopHelperPermissionNotice.test.ts` (no card and no claim when unused, card once used, clear unchanged) and `tests/unit/DesktopAccessAudit.test.ts` (30-day window). Live trigger: the Mac Studio had an open card and no desktop session on record in 30 days (operator report, 2026-11-20).

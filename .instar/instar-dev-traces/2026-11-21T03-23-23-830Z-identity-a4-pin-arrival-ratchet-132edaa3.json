@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "identity-a4-pin-arrival-ratchet",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-21T03:23:23.830Z",
+  "artifactPath": "upgrades/side-effects/identity-a4-pin-arrival-ratchet.md",
+  "artifactSha256": "f2c9fc42c61594d9d049c5fa6723a30b93e992266388559937daa237c116ad2b",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "upgrades/side-effects/identity-a4-pin-arrival-ratchet.eli16.md",
+    "upgrades/side-effects/identity-a4-pin-arrival-ratchet.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line arrival check before an existing loopback test; behaviour unchanged (same-network sockets already carry sn: addresses); a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/identity-a4-pin-arrival-ratchet.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/identity-a4-pin-arrival-ratchet.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

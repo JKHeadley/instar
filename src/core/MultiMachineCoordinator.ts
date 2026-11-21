@@ -1373,12 +1373,31 @@ export class MultiMachineCoordinator extends EventEmitter {
     // in `reconcileRoleToLease`, so the tail write clobbered the truth and left a
     // lease HOLDER published as `standby / do-not-poll`.
     this.writeLeasePollIntent(false, 'standby');
+    // takeover-ready-pool R1 (boot claim safety): the boot claim goes through the boot hold
+    // AFTER the pull loop starts, so the hold's probes accrue while it waits instead of the
+    // claim running once against the stale local view before anyone was asked.
+    const bootClaimSafety = typeof this.leaseCoordinator.bootClaimSafetyEnabled === 'function'
+      && this.leaseCoordinator.bootClaimSafetyEnabled();
+    if (bootClaimSafety) {
+      this.bootHoldNudgePending = true;
+      this.startLeasePullLoop();
+    }
     if (this.isLeaseObserveOnly) {
       // Silent standby: do NOT acquire — only observe the primary's lease.
       this.reconcileRoleToLease('lease-init-observe-only');
     } else if (this.shouldDeferToPreferred()) {
       // F4 — boot as a deferential standby to a healthy preferred peer (no contend).
       this.reconcileRoleToLease('lease-init-defer-preferred');
+    } else if (bootClaimSafety) {
+      // The pull loop is already running; hold the tick guard so its nudge cannot run a
+      // second acquisition alongside this one.
+      this.leaseTicking = true;
+      try {
+        await this.leaseCoordinator.acquireIfEligible();
+      } finally {
+        this.leaseTicking = false;
+      }
+      this.reconcileRoleToLease('lease-init');
     } else {
       await this.leaseCoordinator.acquireIfEligible();
       this.reconcileRoleToLease('lease-init');
@@ -1645,6 +1664,9 @@ export class MultiMachineCoordinator extends EventEmitter {
    * every acquire/renew decision and all its observe-only/preferred/fencing
    * gates. Re-arms via `arm` even on failure.
    */
+  /** takeover-ready-pool R1 — one tickLease nudge owed for the moment the boot hold ends. */
+  private bootHoldNudgePending = false;
+
   private async tickLeasePull(arm: () => void): Promise<void> {
     if (this.leasePulling) { arm(); return; }
     this.leasePulling = true;
@@ -1657,6 +1679,24 @@ export class MultiMachineCoordinator extends EventEmitter {
       try {
         this.config.onLeasePullTick?.();
       } catch { /* @silent-fallback-ok — observation is signal-only; the next tick retries */ }
+      // takeover-ready-pool R1 — the moment the boot hold ends, run the one authoritative lease
+      // actor once instead of waiting for the next heartbeat tick. The nudge adds no authority:
+      // tickLease still applies every acquisition rule (a live holder is never taken over).
+      if (this.bootHoldNudgePending) {
+        const lc = this.leaseCoordinator!;
+        if (typeof lc.bootHoldActive !== 'function') {
+          this.bootHoldNudgePending = false;
+        } else if (!lc.bootHoldActive()) {
+          if (lc.holdsLease()) {
+            this.bootHoldNudgePending = false;
+          } else if (!this.leaseTicking) {
+            // Cleared only when the tick really runs: a heartbeat tick in flight would make
+            // tickLease return at once, and the nudge would be lost until the next heartbeat.
+            this.bootHoldNudgePending = false;
+            await this.tickLease();
+          }
+        }
+      }
       // Only reconcile role / surface split-brain when a peer lease was actually
       // OBSERVED. A solo machine (no peers, or no peer lease seen this boot) must
       // NEVER be demoted by the pull loop on a transient self-lease lapse — that

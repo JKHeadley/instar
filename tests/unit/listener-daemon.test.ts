@@ -148,7 +148,7 @@ describe('PipeSessionSpawner', () => {
       const spawner = new PipeSessionSpawner({ stateDir: tmpDir });
 
       const result = spawner.shouldUsePipeMode({
-        threadId: 'test-thread',
+        threadId: 'thread-test',
         messageText: 'What is the status?',
         fromFingerprint: 'abc123',
         fromName: 'test-agent',
@@ -164,7 +164,7 @@ describe('PipeSessionSpawner', () => {
       const spawner = new PipeSessionSpawner({ stateDir: tmpDir });
 
       const result = spawner.shouldUsePipeMode({
-        threadId: 'test-thread',
+        threadId: 'thread-test',
         messageText: 'What is the status?',
         fromFingerprint: 'abc123',
         fromName: 'test-agent',
@@ -180,7 +180,7 @@ describe('PipeSessionSpawner', () => {
       const spawner = new PipeSessionSpawner({ stateDir: tmpDir });
 
       const result = spawner.shouldUsePipeMode({
-        threadId: 'test-thread',
+        threadId: 'thread-test',
         messageText: 'What is the status?',
         fromFingerprint: 'abc123',
         fromName: 'test-agent',
@@ -197,7 +197,7 @@ describe('PipeSessionSpawner', () => {
       const spawner = new PipeSessionSpawner({ stateDir: tmpDir });
 
       const result = spawner.shouldUsePipeMode({
-        threadId: 'test-thread',
+        threadId: 'thread-test',
         messageText: 'x'.repeat(3000),
         fromFingerprint: 'abc123',
         fromName: 'test-agent',

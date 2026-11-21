@@ -400,6 +400,36 @@ export interface ProjectOverviewRow {
   lastReport: { at: string; note: string; verdict: string } | null;
   /** A queued "Ask for an update" not yet answered by a check. */
   checkRequested: boolean;
+  // ── project-state-quiet-stalled: what lets the Work door name a project the judge could not call (all display-only) ──
+  /** The newest check that saw progress (a done item flipped, a merged PR, the diff grew), or null. */
+  lastProgressAt: string | null;
+  /** The newest check whose read evidence differed from the check before it (the first readable check counts), or null. */
+  lastEvidenceChangeAt: string | null;
+  /** True when the newest check could not read the project's evidence at all (a failed gather). */
+  lastCheckUnreadable: boolean;
+  /** The project's check cadence in hours (the binding's, else the default, floored at the minimum). */
+  cadenceHours: number;
+}
+
+/** The hash a failed gather records (its evidence was never read). */
+const UNREAD_EVIDENCE_HASH = 'x'.repeat(64);
+
+/**
+ * When a project's read evidence last changed (pure): walk its checks oldest first, skip the ones that could not
+ * read anything, and keep the time of each check whose evidence hash differs from the previous readable one (the
+ * first readable check counts: tracking began then). `newestUnreadable` is whether the newest check read nothing.
+ */
+export function evidenceChange(checks: Array<{ at: string; hash: string; note: string }>): { lastChangeAt: string | null; newestUnreadable: boolean } {
+  const sorted = [...checks].sort((a, b) => a.at.localeCompare(b.at));
+  const unread = (c: { hash: string; note: string }) => c.note === 'gather-failed' || c.hash === UNREAD_EVIDENCE_HASH || !c.hash;
+  let prev: string | null = null; let lastChangeAt: string | null = null;
+  for (const c of sorted) {
+    if (unread(c)) continue;
+    if (prev === null || c.hash !== prev) lastChangeAt = c.at;
+    prev = c.hash;
+  }
+  const newest = sorted.length ? sorted[sorted.length - 1]! : null;
+  return { lastChangeAt, newestUnreadable: newest !== null && unread(newest) };
 }
 
 /** Why "Ask for an update" did not run (work-door-project-rows §3.2). */
@@ -556,8 +586,14 @@ export class ChiefOfStaffLoop {
     const cfg = this.d.config(); const now = new Date(this.d.now());
     // The newest check note per project (one pass), so a project with no verdict can say why.
     const notes = new Map<string, { at: string; note: string; verdict: string }>();
+    // Every check per project (the same pass), for when its evidence last changed and whether the newest one could read it.
+    const checksBy = new Map<string, Array<{ at: string; hash: string; note: string }>>();
     for (const e of union) {
       const d = e.data as { recordType?: unknown; conversationKey?: unknown; at?: unknown; note?: unknown };
+      if (d.recordType === 'check-event' && typeof d.conversationKey === 'string' && typeof d.at === 'string') {
+        const list = checksBy.get(d.conversationKey) ?? checksBy.set(d.conversationKey, []).get(d.conversationKey)!;
+        list.push({ at: d.at, hash: String((e.data as { evidenceHash?: unknown }).evidenceHash ?? ''), note: typeof d.note === 'string' ? d.note : '' });
+      }
       if (d.recordType !== 'check-event' || typeof d.conversationKey !== 'string' || typeof d.note !== 'string' || !d.note) continue;
       // A carried-forward check says only "no new evidence"; the newest note that says something explains more.
       if (/^\s*no new evidence\s*$/i.test(d.note)) continue;
@@ -565,8 +601,10 @@ export class ChiefOfStaffLoop {
       if (!prev || at > prev.at) notes.set(d.conversationKey, { at, note: d.note, verdict: String((d as { verdict?: unknown }).verdict ?? '') });
     }
     return boundProjects(union).map((p) => {
+      const cadenceHours = Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours);
+      const ev = evidenceChange(checksBy.get(p.conversationKey) ?? []);
       // The same per-project jitter tick() uses, so the shown next check is the real one (work-door-project-rows §3.1.4).
-      const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, now, p.binding);
+      const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: cadenceHours, maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, now, p.binding);
       const done = (Array.isArray(p.doneDefinition) ? p.doneDefinition : []).map((d: { id?: unknown; text?: unknown; kind?: unknown; certify?: unknown }) => ({ id: String(d.id ?? ''), text: String(d.text ?? ''), kind: d.kind === 'judgment' ? 'judgment' as const : 'deterministic' as const, ...(d.kind === 'judgment' ? { certify: d.certify === 'agent-may-certify' ? 'agent-may-certify' as const : 'owner-confirms' as const } : {}) })).filter((d) => d.id && d.text);
       return {
         conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems,
@@ -576,6 +614,7 @@ export class ChiefOfStaffLoop {
         // A queued "Ask for an update" newer (by HLC) than the last check (work-door-project-rows §3.1.4).
         checkRequested: p.binding.lastCheckRequestHlc !== null && (!st.lastCheckHlc || compareHlc(p.binding.lastCheckRequestHlc, st.lastCheckHlc) > 0),
         lastReport: notes.get(p.conversationKey) ?? null,
+        lastProgressAt: st.lastProgressAt, lastEvidenceChangeAt: ev.lastChangeAt, lastCheckUnreadable: ev.newestUnreadable, cadenceHours,
       };
     });
   }

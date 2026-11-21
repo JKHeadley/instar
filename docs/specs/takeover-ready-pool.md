@@ -103,12 +103,19 @@ every claim, whatever `survivorMayHold()`, `soloCaptainHold` or `preferredAwakeM
    a legacy dial with no endpoint kind counts only signed replies. An unsigned answer counts for at most the preferred
    machine's published restart time (`restartBudgetMs` p95, R5) plus 60 seconds, with a 45-second floor and a
    10-minute ceiling; until R5 publishes it, the interim window is 45 s plus 3 minutes. After the window only a signed
-   reply counts, so a wedged preferred machine answering errors for ever cannot keep the pool silent.
+   reply counts, so a wedged preferred machine answering errors for ever cannot keep the pool silent. A signed reply
+   whose view names no live holder (a live holder ends the hold at once, rule 4) counts for that machine's same window
+   plus the 45 s silence span, from its first signed reply: a preferred machine that answers but cannot claim
+   (observe-only, held back, identity-ineligible) never leaves the pool without a holder (build amendment,
+   second-pass finding 1).
 4. The boot hold ends, and the normal acquisition rules apply, when a peer pull returns a lease view that names a
    live holder or an epoch strictly newer than this machine's own record (a standby holding the same stale view does
    not count; the probe round continues), or when the preferred
    machine has been silent on at least three probes spanning at least 45 seconds. With no preferred machine named, or
-   when this machine is the preferred one, the same test applies to every known peer. A git-only lease store counts a
+   when this machine is the preferred one, the same test applies to every known peer; there a signed answer that names
+   no live holder settles that peer, except that with no preferred machine named a peer with a lower machine id is
+   waited for as the preferred one would be (the pool's lower-id tie-break), so two machines restarting together do not
+   claim the same epoch. A git-only lease store counts a
    refresh only when it fetched from a remote; a git store with no remote counts only a peer's HTTP reply, since a
    local write proves nothing about a peer.
 
@@ -345,7 +352,9 @@ takeover and published in posture rows; until five observations exist, 125 s is 
 interval. There is no planned-restart extension: with no role restarts, a holder slower to restart than W (the Laptop,
 ~4 min) is taken over once and gets the lead back at most once through hand-back. Each holder publishes its restart
 time (persisted wall-clock stamp at exit to first confirmed renewal) as `restartBudgetMs`; above W it is reported as
-`slow-start`.
+`slow-start`. With it, each machine's signed pull reply says whether it is still in its own boot hold (R1), and a
+deferring machine's signed-answer bound extends while the preferred machine reports that, within the 10-minute
+ceiling, so staggered boots with different restart times cannot claim the same epoch.
 
 **Churn guard, one target.** `churnDetector` resolves `dryRun: false` on ladder agents. On a latch every machine
 computes the same target from posture rows: the current holder if ready, else the preferred machine if ready, else the
@@ -468,7 +477,7 @@ cancel.
 | P0 preflight | readiness on all members; digests over reachable members; no owner message in the last 10 min; no Local Verify run on the holder | readiness `ok`, digests equal; else skip with reason |
 | S standby restart | the holder restarts each standby in turn through that standby's authenticated `POST /server/restart`, the conductor included and waited for, probing itself | holder `holdsLease` never false; every probe answered |
 | P plug pull | `start-hold`; holder down 10 min; probes to the drill topic; an R8 session reply on the conductor | within 5 min of the hold a survivor holds the lease, polls, answers with a tool call, delivered the failover notice, ran the missed-job sweep, restarted nothing for the role change; the R8 reply delivered once |
-| B return | dead-man restart | `boot-hold` deferral and epoch adoption; one return notice; an R8 reply on the survivor during the move back; then 30 non-disruptive minutes with at most two role flips and no latch |
+| B return | dead-man restart | `boot-hold` deferring, then epoch adoption; one return notice; an R8 reply on the survivor during the move back; then 30 non-disruptive minutes with at most two role flips and no latch |
 | R report | signed report | pass or fail per requirement, with measured claim-to-reply time |
 
 **Abort.** The conductor cancels the hold if no survivor holds the lease 5 minutes after it starts, if a real owner
@@ -542,7 +551,7 @@ naming the machines and cause, from no other machine.
 |---|---|---|
 | Boot hold: no claim from own stale lease; non-preferred defers until a peer answers; never while the preferred answers | invariant | basis: irreversible-consequence; evidence: a same-epoch boot claim caused 36 lease moves in six hours (fb-2bf6ccd0-705) |
 | Boot hold ends after ≥3 silent probes over ≥45 s | judgment-candidate | floor: normal rules still need a lapsed lease; arbiter: the probes; values from the interim hotpatch (Laptop, Mini; no contest since 2026-11-20 10:35); config |
-| An unsigned answer counts for restartBudget p95 + 60 s (45 s – 10 min), then only signed liveness | judgment-candidate | floor: signed liveness always counts; arbiter: the preferred machine's own measured restart; bounds a wedged machine; config |
+| An unsigned answer counts for restartBudget p95 + 60 s (45 s – 10 min), then only signed liveness; a signed answer naming no live holder counts for that window + 45 s from the first one | judgment-candidate | floor: a signed answer always counts within its bound and a live holder always ends the hold; arbiter: the preferred machine's own measured restart; bounds a wedged or non-claiming machine; config |
 | Holder keeps its epoch through an unconfirmed renewal in every pool size | invariant | basis: irreversible-consequence; evidence: dropping it silenced Luna on every standby restart; a majority rule would silence Echo after a Studio loss with two members routinely off |
 | On persistent 409s, the side whose best reachable member ranks below the best live unreachable one yields; contenders are members that were ready when reach was lost; a yield lasts at most 2W without a peer epoch | invariant | basis: enumerable-domain; evidence: a total order over members and disjoint sides in a clean cut, so exactly one side yields with no message between them |
 | A yielded machine probes once per step (30 s – 2 min, jittered) and resumes on the contender becoming reachable, a peer epoch or "poll released" record, two silent full long-poll probes, or 2W | judgment-candidate | floor: never silent beyond 2W; arbiter: reachability, signed records and probes; config |
@@ -674,7 +683,7 @@ and Luna.
 
 ## Maturation plan
 
-- **ladder:** not applicable: this PR adds only the design; increment 1 (boot-claim safety) adds the multiMachine.takeoverReadyPool switches together with their ladder entry in src/data/feature-ladders.json (project takeover-ready-pool).
+- **ladder:** multiMachine.takeoverReadyPool
 - **dark-window:** none for Echo and Luna (the owner approved the change as post-mortem fix items 1–4); the fleet stays
   on today's behaviour until the graduation criterion is met.
 - **test-agent-live:** each increment on a throwaway three-machine pool, drill run by hand.
@@ -682,7 +691,7 @@ and Luna.
 - **fleet:** every multi-machine agent whose conversations are on Telegram, after four consecutive weekly passes on
   Echo and Luna. Agents whose only channel is Slack or the app need channel-specific readiness, promotion and probes
   (the Slack adapter does not follow the lease, per session-pool-takeover-at-pairing) and stay on their current
-  behaviour until a follow-up spec covers them; that gap is listed on the readiness page.
+  behaviour, outside this spec's scope; that gap is listed on the readiness page.
 - **graduation criterion:** four weekly passes on each of Echo and Luna, no fail in the last two, and on each of them
   at least one recorded real owner message, in a real conversation, answered with tools by a survivor within five
   minutes of the lead's loss (R9's tracker records loss, claim, message arrival and delivery times separately). It counts toward

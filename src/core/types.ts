@@ -3091,6 +3091,28 @@ export interface MultiMachineConfig {
    */
   leaseSelfHeal?: LeaseSelfHealConfig;
   /**
+   * takeover-ready-pool (docs/specs/takeover-ready-pool.md) — losing any machine never
+   * silences a multi-machine agent. `enabled: false` turns every part off (the rollback);
+   * each part rides the development-agent gate (live on a development agent, dark on the
+   * fleet) unless set explicitly.
+   */
+  takeoverReadyPool?: {
+    enabled?: boolean;
+    /**
+     * R1 boot claim safety (fb-2bf6ccd0-705): a restarted machine never claims from its own
+     * lapsed lease before asking its peers, never claims while the named preferred machine
+     * answers, and claims only after the preferred machine (every known peer when none is
+     * named) has been silent on `silentProbes` probes spanning `silentSpanMs`.
+     */
+    bootClaimSafety?: {
+      enabled?: boolean;
+      /** Default 3. */
+      silentProbes?: number;
+      /** Default 45000. */
+      silentSpanMs?: number;
+    };
+  };
+  /**
    * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
    * Cloudflare failover). Ships ENABLED (Layers 0-2 are strictly additive); a
    * single-machine agent is a no-op. FLAT knobs to dodge the one-level-deep
@@ -3466,6 +3488,8 @@ export interface SessionPoolConfig {
     ambiguityCeilingMultiple?: number;
     /** P19 per-tick claim cap. Default 2. */
     maxClaimsPerTick?: number;
+    /** Unroutable-owner release: claims from a revoked / unregistered-silent owner land even in dryRun. Default true. */
+    unroutableOwnerLive?: boolean;
     /** Bootstrap (R-r2-2): never-observed-since-boot expiry multiple. Default 3. */
     bootstrapNonObservationMultiple?: number;
     /** The owner self-fence TTL the §2.3 ordering invariant checks against. Default 60000. */

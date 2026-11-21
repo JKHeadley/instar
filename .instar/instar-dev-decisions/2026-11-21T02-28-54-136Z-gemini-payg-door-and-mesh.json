@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-21T02:28:54.136Z",
+  "slug": "gemini-payg-door-and-mesh",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 2324,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-no-direct-llm-http.js",
+      "skills/spec-converge/scripts/cross-model-review.mjs",
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/core/meteredLaneMesh.ts",
+      "src/data/awareness/gemini-payg-lane.md",
+      "src/providers/metered/gemini-api/GeminiApiProvider.ts",
+      "src/providers/metered/gemini-api/geminiApiKeyReader.ts",
+      "src/providers/metered/gemini-api/geminiApiModels.ts",
+      "src/providers/metered/gemini-api/geminiApiTransport.ts",
+      "src/server/AgentServer.ts",
+      "src/server/geminiPaygRoutes.ts",
+      "src/server/geminiPaygWiring.ts",
+      "src/server/meteredLaneRuntime.ts"
+    ],
+    "addedLines": 2304,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

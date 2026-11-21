@@ -71,7 +71,10 @@ export interface AgentWorktreeReaperConfig {
 export const DEFAULT_AGENT_WORKTREE_REAPER_CONFIG: AgentWorktreeReaperConfig = {
   enabled: false,
   dryRun: true,
-  reapIntervalMs: 24 * 3600 * 1000,
+  // Hourly (spec reaper-removal-out-of-process §4): a worktree that becomes
+  // eligible is reclaimed within about an hour, and the measured backlog drains
+  // in about six runs. The dry-run pass is off the main thread (a worker).
+  reapIntervalMs: 3600 * 1000,
   initialPassDelayMs: 15 * 60 * 1000,
   maxReapsPerPass: 20,
   maxReclaimFailuresPerPath: 3,
@@ -96,6 +99,55 @@ export interface WorktreeEvaluation {
   nodeModules?: NodeModulesKind;
   /** Dry run, eligible only: what removal would archive and reclaim. null = could not be measured. */
   projection?: ReclaimProjection | null;
+  /** Live reclaim run only: what the child did with this checkout. */
+  outcome?: 'removed' | 'kept' | 'error' | 'not-attempted';
+  /** Live reclaim run only: why it was kept or failed at removal time. */
+  outcomeReason?: string;
+}
+
+/** One attempt's result, as the breaker reads it (spec reaper-removal-out-of-process §3). */
+export interface ReclaimAttemptOutcome {
+  attemptId: string;
+  path: string;
+  kind: 'removed' | 'failed';
+  reason?: string;
+}
+
+/** The child's report file (spec reaper-removal-out-of-process §4, "The report in live mode"). */
+export interface ReclaimReportFile {
+  runId: string;
+  at: number;
+  phase: 'evaluated' | 'final';
+  enumerationOk: boolean;
+  enumerationError?: string | null;
+  worktrees: WorktreeEvaluation[];
+  archiveBytes: number | null;
+  removed: string[];
+  stopReason?: string | null;
+  /** Leftover-trash cleanup this run: deleted, failed, deferred, and `trash-stuck` folders (skipped after 3 failures). */
+  trash?: ReclaimTrashSummary;
+}
+
+export interface ReclaimTrashSummary {
+  deleted: string[];
+  errors: Array<{ name: string; reason: string }>;
+  stuck: Array<{ name: string; bytes: number | null; lastError: string }>;
+  deferred: string[];
+}
+
+/**
+ * The live reclaim runner (agentWorktreeReclaimRunner.ts). Every method is
+ * asynchronous and does no git, lsof, ps or file walk on the caller's thread.
+ */
+export interface ReclaimRunnerPort {
+  /** Start at most one reclaim child. `started: false` names why (busy, unresolved ownership, intent write failed, spawn failed). */
+  startRun(req: { excludedPaths: string[] }): Promise<{ started: true; runId: string; done: Promise<void> } | { started: false; reason: string }>;
+  /** Attempt outcomes not yet read, each attempt at most once across restarts. */
+  collectOutcomes(): Promise<ReclaimAttemptOutcome[]>;
+  /** The latest report the child wrote, or null. */
+  readReport(): Promise<ReclaimReportFile | null>;
+  /** True while a run's process group is alive (or its ownership is unresolved). */
+  busy(): boolean;
 }
 
 export type NodeModulesKind = 'real' | 'symlink' | 'none' | 'unknown';
@@ -181,6 +233,9 @@ export interface AgentWorktreeReaperDeps {
    *  delete — and `isMerged(info)` would still check the STALE (merged) branch.
    *  Production: SafeGitExecutor `rev-parse --abbrev-ref HEAD` on the path. */
   currentBranch: (path: string) => string | null;
+  /** Optional: the worktree's LIVE head commit, read at reclaim time. A new commit on the
+   *  same branch since enumeration makes `isMerged(info)` stale (it checks the old head). */
+  currentHead?: (path: string) => string | null;
   /** Optional belt-and-suspenders: true when a `.instar-build-active` marker file sits
    *  at the worktree root — an in-flight builder's explicit "don't reap me" claim.
    *  Production: fs.existsSync(path/.instar-build-active). */
@@ -205,6 +260,13 @@ export interface AgentWorktreeReaperDeps {
    * `{ ok: false, error }` and is recorded as an enumeration failure.
    */
   evaluateAllOffThread?: () => Promise<WorktreeEnumeration<WorktreeEvaluation> & { archiveBytes?: number | null }>;
+  /**
+   * Live removal out of process (spec reaper-removal-out-of-process §1). When
+   * present and removal is live (enabled, dryRun false), a pass does no git,
+   * lsof, ps or file walk on this thread: it reads the last run's results, then
+   * starts at most one reclaim child, which evaluates and removes.
+   */
+  reclaimRunner?: ReclaimRunnerPort;
   now?: () => number;
 }
 
@@ -251,6 +313,12 @@ export class AgentWorktreeReaper extends EventEmitter {
   private reclaimFailures = new Map<string, number>();
   /** Paths whose breaker has tripped + already emitted (emit-once). */
   private reclaimTripped = new Set<string>();
+  /** A live reclaim child is running (out-of-process removal). */
+  private liveRunActive = false;
+  /** The last child report applied (runId@at), so a failed one is not counted twice. */
+  private lastLoadedReportKey: string | null = null;
+  /** The last live run's trash summary (report only; null in dry run or before any run). */
+  private lastTrash: ReclaimTrashSummary | null = null;
 
   constructor(deps: AgentWorktreeReaperDeps, cfg?: Partial<AgentWorktreeReaperConfig>) {
     super();
@@ -273,6 +341,7 @@ export class AgentWorktreeReaper extends EventEmitter {
 
   start(): void {
     if (this.timer || !this.cfg.enabled) return;
+    /* @self-action-controller: worktree-reclaim-run-spawn */
     this.timer = setInterval(() => { void this.reap(); }, this.cfg.reapIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();
     // One-time initial pass shortly after boot. Without it, the first pass is a
@@ -340,6 +409,7 @@ export class AgentWorktreeReaper extends EventEmitter {
   /** One reap pass. Returns the per-worktree evaluations + what was reaped. */
   async reap(): Promise<{ ts: number; evaluations: WorktreeEvaluation[]; reaped: string[]; dryRun: boolean }> {
     if (this.running) return { ts: this.now(), evaluations: [], reaped: [], dryRun: !this.killsEnabled };
+    if (this.deps.reclaimRunner && this.killsEnabled) return this.reapOutOfProcess(this.deps.reclaimRunner);
     this.running = true;
     const reaped: string[] = [];
     const evaluations: WorktreeEvaluation[] = [];
@@ -472,6 +542,93 @@ export class AgentWorktreeReaper extends EventEmitter {
     return { ts: this.now(), evaluations, reaped, dryRun: !this.killsEnabled };
   }
 
+  /**
+   * The live pass with an out-of-process runner (spec reaper-removal-out-of-process §1, §3).
+   * Feeds every finished attempt to the breaker, leaves tripped paths out of the
+   * list the child may act on, and starts at most one child. Returns at once;
+   * the run's results arrive through `done`.
+   */
+  private async reapOutOfProcess(runner: ReclaimRunnerPort): Promise<{ ts: number; evaluations: WorktreeEvaluation[]; reaped: string[]; dryRun: boolean }> {
+    this.running = true;
+    try {
+      await this.applyReclaimOutcomes(runner);
+      const excludedPaths = [...this.reclaimFailures.keys()].filter((p) => this.breakerTripped(p));
+      const started = await runner.startRun({ excludedPaths });
+      if (started.started) {
+        this.liveRunActive = true;
+        void started.done.then(() => this.finishLiveRun(runner), () => this.finishLiveRun(runner));
+      } else {
+        this.emit('reclaim-run-skipped', { reason: started.reason });
+        featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'held', reason: `reclaim run not started: ${started.reason}`, context: { dryRun: false, outOfProcess: true } });
+      }
+      return { ts: this.now(), evaluations: this.lastEvaluations?.worktrees ?? [], reaped: [], dryRun: false };
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** A reclaim run ended: read its results into the breaker and its report into the route. */
+  private async finishLiveRun(runner: ReclaimRunnerPort): Promise<void> {
+    try {
+      const outcomes = await this.applyReclaimOutcomes(runner);
+      const loaded = await this.loadReclaimReport(runner);
+      const reaped = outcomes.filter((o) => o.kind === 'removed').map((o) => o.path);
+      this.emit('pass', { evaluations: this.lastEvaluations?.worktrees ?? [], reaped });
+      featureEvidence.record('monitoring.agentWorktreeReaper', {
+        kind: reaped.length > 0 ? 'fired' : 'held',
+        reason: reaped.length > 0 ? 'reaped merged idle worktrees' : loaded ? 'pass kept everything' : 'reclaim run left no report',
+        context: { dryRun: false, outOfProcess: true, reaped: reaped.length, failed: outcomes.filter((o) => o.kind === 'failed').length, reapedNames: reaped.map((p) => p.split('/').pop() ?? '').join(',') },
+      });
+    } catch (err) {
+      // @silent-fallback-ok — not silent: surfaced through the warn line; outcomes stay unconsumed and are read next pass.
+      this.warn(`[agent-worktree-reaper] reading a finished reclaim run FAILED: ${summarizeEnumerationError(err)}`);
+    } finally {
+      this.liveRunActive = false;
+    }
+  }
+
+  /** Feed unread attempt outcomes to the per-path breaker. */
+  private async applyReclaimOutcomes(runner: ReclaimRunnerPort): Promise<ReclaimAttemptOutcome[]> {
+    const outcomes = await runner.collectOutcomes();
+    for (const o of outcomes) {
+      if (o.kind === 'removed') {
+        this.reclaimFailures.delete(o.path);
+        this.reclaimTripped.delete(o.path);
+        this.emit('reaped', { path: o.path });
+      } else {
+        featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'error', reason: 'worktree removal failed', context: { worktree: o.path.split('/').pop() ?? '', failuresBefore: this.reclaimFailures.get(o.path) ?? 0, outOfProcess: true, why: (o.reason ?? '').slice(0, 200) } });
+        this.recordReclaimFailure(o.path);
+      }
+    }
+    return outcomes;
+  }
+
+  /** The child's full evaluation becomes the route's answer. Asynchronous read only. */
+  private async loadReclaimReport(runner: ReclaimRunnerPort): Promise<boolean> {
+    const report = await runner.readReport();
+    if (!report) return false;
+    const key = `${report.runId}@${report.at}`;
+    if (key === this.lastLoadedReportKey) return true; // each report is applied once
+    if (this.lastEvaluations && this.lastEvaluations.at >= report.at) return true;
+    this.lastLoadedReportKey = key;
+    this.lastTrash = report.trash ?? null;
+    this.lastPassAt = report.at;
+    this.lastArchiveBytes = report.archiveBytes;
+    this.reapedLastPass = report.removed.length;
+    if (report.enumerationOk) {
+      this.lastEnumerationOk = true;
+      this.lastEnumerationError = null;
+      this.lastEvaluations = { at: report.at, worktrees: report.worktrees };
+    } else {
+      this.lastEnumerationOk = false;
+      this.lastEnumerationError = report.enumerationError ?? 'reclaim run could not enumerate worktrees';
+      this.lastEvaluations = null;
+      this.recordEnumerationFailure(report.at);
+      this.emit('enumeration-failed', { error: this.lastEnumerationError });
+    }
+    return true;
+  }
+
   private recordEnumerationFailure(at: number): void {
     this.enumerationFailures = Math.min(Number.MAX_SAFE_INTEGER, this.enumerationFailures + 1);
     this.lastEnumerationFailureAt = at;
@@ -514,13 +671,14 @@ export class AgentWorktreeReaper extends EventEmitter {
    * Order mirrors evaluate(): the marker + branch identity first (the load-bearing
    * TOCTOU checks), then the protect-gates re-confirmed against the STILL-CURRENT branch.
    */
-  private reclaimRaceGuard(info: WorktreeInfo): string | null {
+  reclaimRaceGuard(info: WorktreeInfo): string | null {
     try {
       if (this.deps.hasActiveBuildMarker?.(info.path)) return 'raced-build-active-marker';
       // The load-bearing check: has the checked-out branch changed since enumeration?
       // If so, isMerged(info) (which reads info.branch) is stale and must NOT authorize a delete.
       const liveBranch = this.deps.currentBranch(info.path);
       if (liveBranch !== info.branch) return 'raced-changed-since-eval';
+      if (this.deps.currentHead && this.deps.currentHead(info.path) !== info.headSha) return 'raced-changed-since-eval';
       if (this.deps.isInUse(info.path)) return 'raced-now-in-use';
       if (!this.deps.isClean(info.path)) return 'raced-now-dirty';
       // Branch unchanged + clean + idle → info.branch is still current, so re-confirming
@@ -588,7 +746,16 @@ export class AgentWorktreeReaper extends EventEmitter {
    * A live reaper (dryRun false) is never driven from here.
    * Without one it keeps the old shape: prepare, then a synchronous snapshot().
    */
-  async report(): Promise<ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt?: number | null; source?: 'last-pass' | 'live'; passRunning?: boolean }> {
+  async report(): Promise<ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt?: number | null; source?: 'last-pass' | 'live'; passRunning?: boolean; trash?: ReclaimTrashSummary }> {
+    if (this.deps.reclaimRunner && this.killsEnabled) {
+      // Live with an out-of-process runner: the route serves the child's full
+      // evaluation (read from its report file, asynchronously) and never evaluates here.
+      if (this.lastEvaluations === null) {
+        try { await this.loadReclaimReport(this.deps.reclaimRunner); }
+        catch { /* @silent-fallback-ok — no report yet reads as 'no pass has finished yet' below */ }
+      }
+      return this.cachedReport(this.running || this.liveRunActive || this.deps.reclaimRunner.busy());
+    }
     if (!this.deps.evaluateAllOffThread) {
       await this.prepare();
       return { ...this.snapshot(), source: 'live' };
@@ -603,6 +770,10 @@ export class AgentWorktreeReaper extends EventEmitter {
         void this.reap(); // refresh in the background; this answer carries passRunning: true
       }
     }
+    return this.cachedReport(this.running);
+  }
+
+  private cachedReport(passRunning: boolean): ReturnType<AgentWorktreeReaper['snapshot']> & { evaluatedAt: number | null; source: 'last-pass'; passRunning: boolean; trash?: ReclaimTrashSummary } {
     const cached = this.lastEvaluations;
     const enumerationOk = this.lastEnumerationOk !== false && cached !== null;
     return {
@@ -620,7 +791,8 @@ export class AgentWorktreeReaper extends EventEmitter {
       ...summarizeReclaim(cached?.worktrees ?? [], this.lastArchiveBytes, !this.killsEnabled),
       evaluatedAt: cached?.at ?? null,
       source: 'last-pass',
-      passRunning: this.running,
+      passRunning,
+      ...(this.lastTrash && this.killsEnabled ? { trash: this.lastTrash } : {}),
     };
   }
 

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-21T04:32:00.129Z",
+  "slug": "a2a-bridge-bounded",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/relay/A2ABridge.ts matches relay / delivery path",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 115,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/relay/A2ABridge.ts"
+    ],
+    "addedLines": 97,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
