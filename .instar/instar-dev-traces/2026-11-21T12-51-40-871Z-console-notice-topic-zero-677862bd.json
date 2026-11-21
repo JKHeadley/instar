@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "console-notice-topic-zero",
+  "sessionId": "858473d9-be33-4c39-9456-54abdb9aa26a",
+  "timestamp": "2026-11-21T12:51:40.871Z",
+  "artifactPath": "upgrades/side-effects/console-notice-topic-zero.md",
+  "artifactSha256": "9e54b5fa77733ce58b09723ed9c81e6f92a553ac304bf9e2e71b4c347f0a3997",
+  "coveredFiles": [
+    "dashboard/console/needs-strip.js",
+    "tests/unit/console-front-doors.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one display string in the Needs-you list heading, no gate or state",
+  "eli16Path": "docs/specs/console-notice-topic-zero.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-notice-topic-zero.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
