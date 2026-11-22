@@ -148,7 +148,7 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
     const res = await request(app).post('/a2a/inbox')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        text: `[a2a:from=echo to=${PROJECT} role=mentor id=live-1 corr=live-1 ts=1 v=1]\nlive probe`,
+        text: `[a2a:from=echo to=${PROJECT} role=mentor id=live-1 corr=live-1 ts=1 v=1]\n\nlive probe`,
         topicId: 458,
         senderAgent: 'echo',
         senderIsBot: true,
@@ -165,7 +165,7 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
     const res = await request(app).post('/a2a/inbox')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        text: `[a2a:from=stranger to=${PROJECT} role=mentor id=s-1 corr=s-1 ts=1 v=1]\nhi`,
+        text: `[a2a:from=stranger to=${PROJECT} role=mentor id=s-1 corr=s-1 ts=1 v=1]\n\nhi`,
         topicId: 458, senderAgent: 'stranger', senderIsBot: true, senderBotId: '8781020500',
       });
     expect(res.status).toBe(403);
@@ -177,7 +177,7 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
     const res = await request(app).post('/a2a/inbox')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        text: `[a2a:from=echo to=${PROJECT} role=mentor id=m-1 corr=m-1 ts=1 v=1]\nhi`,
+        text: `[a2a:from=echo to=${PROJECT} role=mentor id=m-1 corr=m-1 ts=1 v=1]\n\nhi`,
         topicId: 458, senderAgent: 'stranger', senderIsBot: true, senderBotId: '8781020500',
       });
     expect(res.status).toBe(403);
