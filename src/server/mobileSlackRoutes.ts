@@ -59,6 +59,7 @@ import { slackDeviceText, slackPlatformMediaFor } from '../core/appPlatformMedia
 import type { OriginVerdict } from '../core/AppRecordSignatures.js';
 import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
 import type { HolderRead } from './mobileSlackHolderProxy.js';
+import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { MEDIA_OFF_ACTION } from './mobileMediaOff.js';
 
 /** A Slack conversation as this machine knows it (a local registry entry). */
@@ -242,6 +243,10 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const id = parseSlackConversationId(String(req.params.conversationId));
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
+    // Fingerprint only the finished page: a late row or changed verdict must remain visible.
+    const known = parseKnownRows(req.query.knownRows);
+    if (known === 'invalid') { res.status(400).json({ error: 'bad-known-rows' }); return; }
+    if (known !== null && req.query.before !== undefined) { res.status(400).json({ error: 'known-rows-with-before' }); return; }
     // Another machine's row: only the owner's phone is read through, by the trusted holder. A token
     // read is never forwarded, so the holder's own hop cannot go on to a third machine.
     const named = req.query.machine;
@@ -249,7 +254,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const admission = mobileOwnerDeviceAdmission(deps.pairing, req);
     const stillOwner = () => admission?.isCurrent() === true;
     if (deps.holderRead && typeof named === 'string' && named && named !== deps.machineId() && stillOwner()) {
-      const answer = await deps.holderRead({ id, machine: named, limit, before: typeof req.query.before === 'string' ? req.query.before : null, stillOwner });
+      const answer = await deps.holderRead({ id, machine: named, limit, before: typeof req.query.before === 'string' ? req.query.before : null, ...(known !== null ? { knownRows: String(req.query.knownRows) } : {}), stillOwner });
       // The helper has parsed/formatted the body; reread at the actual emission boundary.
       if (answer.status === 200 && !stillOwner()) { ownerOnly(res); return; }
       res.status(answer.status).json(answer.body);
@@ -307,6 +312,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       byId.set(eventId, { eventId, messageId: r.ts, role: r.fromUser ? 'participant' : 'agent', fromUser: r.fromUser, senderName: r.senderName, text, at: r.at, originVerified: 'none', ...(attachments ? { attachments } : {}), ...(origin ? { origin } : {}) });
     }
     const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    // Construct the same page as a plain read before comparing final, privacy-shaped rows.
     const desc = [...byId.values()].sort((x, y) => cmp(String(y.at), String(x.at)) || cmp(String(y.eventId), String(x.eventId)));
     const page = desc.slice(0, limit);
     const oldest = page[page.length - 1];
@@ -319,7 +325,8 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     res.json({
       // `conversationKey` is the `ref` a download of this conversation's files names (§4.9).
       ...(deviceViewAsked ? { deviceView: true } : {}),
-      conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key, messages: page.reverse(),
+      conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key,
+      ...(known === null ? { messages: page.reverse() } : filterKnownRows(page.reverse(), known)),
       nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, ...readUpTo,
       // Pinned messages (conversation-pinned-messages) ride on every history answer.
       // Slack text is never stored in a pin; the preview comes from the rows read here.

@@ -890,6 +890,7 @@ import { resolvePendingRelayPath } from '../messaging/pending-relay-store.js';
 import Database from 'better-sqlite3';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
+import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
@@ -23695,6 +23696,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'beforeMessageId requires before and a positive message id' }); return;
       }
     }
+    // Diff the final emitted page by exact row digest; display times never determine inclusion.
+    const knownRows = parseKnownRows(req.query.knownRows);
+    if (knownRows === 'invalid') { res.status(400).json({ error: 'invalid-known-rows' }); return; }
+    if (knownRows !== null && beforeMs !== null) { res.status(400).json({ error: 'known-rows-with-before' }); return; }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
       : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
@@ -23719,8 +23724,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const pinsField = (): Record<string, unknown> => (ctx.appConversations && isConversationPinsEnabled(ctx.config) ? { pins: pinRowsFor(ctx.appConversations.store, `telegram:${topicId}`) } : {});
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
+      // Fingerprint the final JOINED rows: early omission could re-add weaker stored copies.
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
+      res.json({ topicId, ...filterKnownRows(isDevice ? stripViewSignatures(shaped) : shaped, knownRows), historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -23849,8 +23855,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return true;
       })
       .slice(-limit);
+    // After the merge, own-row-wins dedupe and the device join, never before (same reason as above).
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
+    res.json({ topicId, ...filterKnownRows(isDevice ? stripViewSignatures(joinedPool) : joinedPool, knownRows), historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────

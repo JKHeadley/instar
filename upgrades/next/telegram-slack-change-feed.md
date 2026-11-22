@@ -1,0 +1,28 @@
+# Smaller Telegram And Slack Chat Updates
+
+<!-- bump: patch -->
+
+## What Changed
+
+Telegram and Slack history reads accept `knownRows`, a bounded list of SHA-256 fingerprints of the finished message rows the caller already holds. The response contains only new or changed rows, plus `changeFeed.rowHashes` for reconstructing the full current newest page. An empty `knownRows` starts a baseline; a plain read stays unchanged.
+
+The web chat uses this on its five-second quick checks. It retains actual rows with their hashes and reconstructs full pages before sharing results with other tabs, including a newly opened tab or a new leader. Its 30-second full pool read stays unchanged. Slack holder reads forward the optional hashes. Older agents and holders return their usual full pages.
+
+Hashes are computed after all device privacy shaping, signature stripping and authoritative store/platform joins. Late timestamps cannot hide arrivals, and a changed delivery mark, attachment or origin display resends its row. This diffs the existing bounded newest page; it does not expand history retention. The initial unshipped timestamp-window design was replaced during review.
+
+## What to Tell Your User
+
+- **Smaller updates in Telegram and Slack web chats:** "An open chat now downloads new or changed message rows instead of the same fifty messages every few seconds. Messages that arrive late still show up, and opening another tab keeps the full conversation page."
+
+## Summary of New Capabilities
+
+| Capability | How To Use |
+|-----------|-----------|
+| Telegram and Slack newest-page payload diff | Send `knownRows=` for a baseline, retain returned rows and `changeFeed.rowHashes`, then send the hashes comma-separated; the web chat does this automatically |
+
+## Evidence
+
+- Targeted unit tests cover hash shape/count/length, exact-row changes, duplicate rows, empty deltas, legacy fallback and complete-page cross-tab reconstruction.
+- HTTP integration tests cover Telegram local/pool/device reads and Slack device/holder reads, including late timestamps, delivery/origin changes and stored-copy privacy.
+- Production-wiring lifecycle tests exercise the authenticated AgentServer paths for the opt-in feed and trusted Slack holder forwarding.
+- Full-suite results must come from Local Verify for the exact final pull-request head; targeted results alone do not claim a merge or deployment.
