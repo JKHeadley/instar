@@ -9,3 +9,5 @@ The artifact follows the existing retained failed checkout. The normal retention
 This is diagnostic data only. The test verdict, merge requirements, and any user's permissions do not change. The file is written with private permissions and exclusive creation. If writing it fails, the verifier reports that evidence could not be saved and preserves the actual test outcome. No credentials or publication tokens are added. No automatic deployment is part of this change.
 
 The change is diagnostic only and does not change the test result or authorize a merge.
+
+The awareness entry follows the existing registry format. Registry and migration-consumer tests verify that it renders before the complete verification gate runs.
