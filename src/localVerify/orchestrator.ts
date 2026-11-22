@@ -18,6 +18,7 @@
 
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { FailureEvidence, FAILURE_EVIDENCE_FILE } from './failureEvidence.js';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
 import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
 
@@ -79,7 +80,7 @@ export interface GitCallOpts {
 export interface OrchestratorFs {
   exists(p: string): boolean;
   mkdirp(p: string): void;
-  writeFile(p: string, data: string): void;
+  writeFile(p: string, data: string, options?: { mode: number; flag: 'wx' }): void;
   /** null when absent or unreadable. */
   readFile(p: string): string | null;
   /** Size in bytes, null when absent or unreadable. Absent seam ⇒ the duration history is never read. */
@@ -403,6 +404,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const interruptedReruns = new Set<string>();
   const startedFirstParts = new Set<LaneName>();
   const observedFailures = new Map<string, FileFailure>();
+  const failureEvidence = new FailureEvidence();
+  const captureFailures = (lane: LaneName, report: ParsedLaneReport) => {
+    try { failureEvidence.capture(lane, report); }
+    catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
+  };
   const detail: ObservationDetail = { incomplete: true, completedLanes: [], firstPartFiles: {}, failures: [], failuresTotal: 0 };
   let evidenceIncomplete = false;
   const collectEvidence = (collect: () => void) => {
@@ -777,6 +783,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         if (text != null) {
           try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
         }
+        if (report) captureFailures(lane.name, report);
         collectEvidence(() => {
           if (report) for (const [file, counts] of report.files) if (counts.failed > 0) observedFailures.set(file, {
             file, lane: lane.name, firstPart: firstParts.get(lane.name)?.files.includes(file) ?? false,
@@ -1224,6 +1231,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         let again: ParsedLaneReport | null = null;
         const text = r.deadlineKilled ? null : seams.fs.readFile(out);
         if (text != null) { try { again = parseVitestJson(text, p.runDir, { solo: true }); } catch { again = null; } }
+        if (again) captureFailures(lane, again);
         const c = again?.files.get(file);
         const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(seams.fs.readFile(errs));
         // The pass rule every solo run has always had: nothing failed, something passed, exit 0, no unhandled error.
@@ -1440,6 +1448,17 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (worktreeCreated) {
         if (failed) {
           kept = p.runDir;
+          // Processes have stopped. Replace only this diagnostic, never follow a
+          // pre-existing symlink, and never let a diagnostic failure change the verdict.
+          const evidencePath = path.join(p.runDir, FAILURE_EVIDENCE_FILE);
+          try {
+            await seams.fs.removeTree(evidencePath);
+            const evidence = failureEvidence.serialize();
+            seams.fs.writeFile(evidencePath, evidence, { mode: 0o600, flag: 'wx' });
+            seams.log({ event: 'failure-evidence-kept', path: evidencePath, bytes: Buffer.byteLength(evidence) });
+          } catch {
+            seams.log({ event: 'failure-evidence-write-failed', path: evidencePath });
+          }
           await keepFailed(seams, p);
         } else {
           await removeWorktree(seams, p, p.runDir);
