@@ -52,6 +52,23 @@ Tier 2 security spec, about 170 lines. 12 rounds, twice the cap, continued at th
 
 Each round's findings and resolutions are summarized in the table above and in "Original vs Converged". The raw reviewer outputs are in the security session's scratchpad for this run (codex170-r1 to r12, plus the internal reviewer transcript). The previous lead-based design is kept there too, as pool-wide-pin-budget.leader-design.md.
 
+## Standards-Conformance Gate: dispositions after round 12
+
+The gate is LLM-judged and its findings vary from run to run on the same text. The Chief of Staff's run at e8a8f16a6 (22:39 UTC) returned 8 possible violations, where my last run before it had returned 1. Each of the 8 is fixed or disposed below.
+
+1. **Verify the State (an owner's "gone for good" could hand out a share a still-running machine uses).** Fixed. The confirmation counts only when the pool's own contact records show no signed contact from the machine for 7 days. That is the same silence that lists it for the owner, so the owner's tap takes effect at once in the ordinary case. Unreadable records keep the raise waiting.
+2. **Cross-Machine Coherence (a hand-down doesn't fence a cut-off peer's pending raise).** Fixed. A raise never exceeds the table entry minus the machine's own outstanding transfers. A worked example and a test were added.
+3. **Judgment Within Floors (equal shares let a busy machine refuse while others idle).** Disposed. The division is already a judgment-candidate with a floor (shares sum to 20, agreed), an arbiter and an owner-signed path to a weighted division. A new trigger was added: any new-browser refusal outside a counted attack during dev-agent-live means borrowing or a weighted division is built before the fleet packet.
+4. **Security Fixes Keep the Experience Whole (a zero-share machine could refuse indefinitely; borrowing dismissed without evidence).** Fixed. Any machine at share 0 that is not retired gets a giver-signed hand-down from any reachable peer and admits after one window. That covers lost state and a newcomer whose giver had nothing to spare. Borrowing is now rejected on evidence: it puts a network call back on the PIN path, which the lead design proved costly. It has a measured trigger and a tracked commitment.
+5. **Judgment Within Floors (fixed alert thresholds).** Disposed. They are classified as a judgment-candidate with a floor (alerts never change what is admitted), an arbiter and a fallback.
+6. **The Agent Carries the Loop (the retirement proposal resurfaced after 30 days with nothing new).** Fixed. It re-raises only when something new happens: another machine goes silent, or a change is held back by a silent machine.
+7. **Bounded Notification Surface (one proposal per silent machine).** Fixed. One agent-wide item lists every silent machine and is updated in place.
+8. **Maturation Path (no test-agent rung, no graduation condition).** Fixed in form. Both existed, and each rung now states its exit condition explicitly.
+
+Two further gate items from my re-runs were also fixed: the lost-allocation recovery retry got the same brakes as acknowledgments, and the 30-day wait was replaced by the 7-day corroboration.
+
+**Final gate runs on the committed text (three runs, 22:42 UTC, 102 standards each):** 1, 1 and 2 possible violations. All of them are Judgment Within Floors items, asking for evidence for the exact 7-day corroboration and for the equal split. Both are already declared judgment-candidates with floor, arbiter and fallback, to be tuned from dev-agent-live evidence. They are disposed, not hidden. They are the two places where Justin may prefer a different call: an owner's tap taking effect at once, and a weighted rather than equal split.
+
 ## Convergence verdict
 
 Converged at round 12: the internal reviewer returned CONVERGED and the external reviewer returned minor issues only, with no design findings. Every precision item is applied. This is past the Tier 2 cap, by the Chief of Staff's direction to go on, and the design changed at round 8, so the operator should read §3 (the fixed-share design and its weighed alternatives) and §5 (what changes for the owner) before approving. No code is to be written until the spec is approved.
