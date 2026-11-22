@@ -20,6 +20,8 @@ lessons-engaged:
   - "Attributed Statements Trace to Their Source (the origin cites the message; the earned-rule reservation is marked as the agent's wording)"
   - "Private evidence never enters the public repository"
   - "Always a Multi-Machine Entity; Updates never restrict existing agents; Migration Parity; Agent Awareness"
+approved: true
+approved-by: "Justin (owner), Telegram topic 146789, message 147024, 2026-11-22 01:21 PST: 'Approved', in reply to the approval request (message 147020) that listed decisions 1 to 5, the constitution check result and this pull request. Required from him because the spec adds one constitution article in each book."
 review-convergence: "2026-11-22T08:47:57.223Z"
 review-iterations: 7
 review-completed-at: "2026-11-22T08:47:57.223Z"
