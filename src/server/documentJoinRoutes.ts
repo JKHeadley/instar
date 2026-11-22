@@ -6,7 +6,7 @@
  *   POST /docs/_join/redeem           (public)  take a team invite code for this browser's key → a waiting computer
  *   POST /docs/_join/confirm          (public, signed by that key, instar-join-v1) the code from the owner's phone → joined
  *   POST /docs/_link/forget-self      (public, signed by the computer's key) Forget this computer
- *   GET  /docs/_join/addresses        (public)  the agent's own document addresses, display only (§3.6)
+ *   GET  /docs/_join/addresses        (public)  the addresses where a computer is set up, display only (§3.6, SEC-169)
  *   GET  /team/computers              (bearer)  each person's computers, both kinds, and the limits in force
  *   POST /team/computer-limits        (bearer)  set the allowance and lifetimes, agent-wide or for one person (§3.5)
  *   POST /team/people/:personKey/computers/:deviceId/forget (bearer) remove one computer: taking access away only
@@ -24,7 +24,7 @@ import { Router, type Request, type Response } from 'express';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { normalizeRequestHost } from '../core/MobileOwnNames.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey, type DeviceRecord } from '../core/MobileDeviceKeys.js';
-import { COMPUTER_LIMIT_DEFAULTS, computerLimitsFor } from '../core/TeamComputers.js';
+import { COMPUTER_LIMIT_DEFAULTS, computerHomeHosts, computerLimitsFor } from '../core/TeamComputers.js';
 import { COMPUTER_MAX_DAYS, validateMachineEvent } from '../core/TeamAccessEvents.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { principalOf, redeemArrival, takePairingCode } from './mobilePairingRoutes.js';
@@ -162,11 +162,23 @@ export function createDocumentJoinRoutes(deps: DocumentJoinDeps): Router {
     res.type('html').send(JOIN_SHELL);
   });
 
-  // Display only (§3.6): the agent's own document addresses, the same for any caller and any document.
+  // Display only (§3.6): the way back for a computer set up on another of the agent's addresses, the
+  // same for any caller and any document. SEC-169: only the addresses where a computer is set up and
+  // still counts, never every machine in the pool. A computer's key lives only on its own address, so
+  // no other address is ever a way back, and a public list of every machine would let a stranger find
+  // each one and spend each machine's own PIN guess budget. No readable team log: an empty list.
   router.get('/docs/_join/addresses', (_req, res) => {
     if (off(res)) return;
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ addresses: deps.addresses().slice(0, 16) });
+    let homes: Set<string> = new Set();
+    try {
+      const state = deps.pairing()?.teamLog()?.state();
+      if (state) homes = computerHomeHosts(state, now());
+    } catch { /* @silent-fallback-ok — display only: no readable log lists nothing */ }
+    const addresses = deps.addresses().filter((a) => {
+      try { return homes.has(new URL(a).host.toLowerCase()); } catch { return false; }
+    });
+    res.json({ addresses: addresses.slice(0, 16) });
   });
 
   router.post('/docs/_join/redeem', (req: Request, res: Response) => {

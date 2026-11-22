@@ -279,6 +279,19 @@ describe('a computer joins from the owner\'s team invite — feature is alive on
     expect((await page.comment(w.docId, data.body)).status).toBe(403);
   });
 
+  it('SEC-169: the public way-back list is empty until a computer is set up, then names only that address', async () => {
+    const w = await world();
+    const list = async () => {
+      const r = await request(w.app).get('/docs/_join/addresses').set('Host', HOST);
+      expect(r.status).toBe(200);
+      return r.body.addresses as string[];
+    };
+    // No computer set up anywhere: an anonymous caller is told no machine address.
+    expect(await list()).toEqual([]);
+    await joinComputer(w, 'mia');
+    expect(await list()).toEqual([`https://${HOST}`]);
+  });
+
   it('with documents off, the join routes answer 503 and team links carry no j=1', async () => {
     const w = await world();
     (w.config as unknown as { documents?: { enabled?: boolean } }).documents = { enabled: false };
