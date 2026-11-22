@@ -32891,6 +32891,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: !trust,
+          // Only the verified lifeline's native platform receipt can identify a confirmation.
+          ...(!trust && ingressDecision.verified && !senderUntrusted
+            && Number.isSafeInteger(req.body.replyToMessageId) && req.body.replyToMessageId > 0
+            ? { replyToMessageId: req.body.replyToMessageId } : {}),
           // §3c: the files, in process (a confined local path never leaves this machine). Absent for an
           // older lifeline's plain text, so the receiver can tell; a new sender always sets it.
           ...(fwdMedia.legacy && fwdMedia.media.length === 0 ? {} : { media: fwdMedia.media }),

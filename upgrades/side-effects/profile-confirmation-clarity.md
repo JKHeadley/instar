@@ -9,6 +9,8 @@
 
 Tier 2: security-sensitive confirmation plumbing across Telegram ingress, the proposal HTTP route, profile storage and the existing write surface. Questions use conversation names and explain consequences. Several immutable identified requests can coexist; intentional reminders preserve the request and expiry. Only the existing verified-owner, native-reply, exact-yes control tuple authorizes a write. Nonexact prose goes to the conversational agent and never applies a change. Source and tests are isolated in a fresh helper-created worktree. Five commit attempts were needed to complete framework-literal, parent-principle and self-action declaration metadata checks; all failures and fixes remain recorded. Six full exact-scope design rounds reached the cap; Chief authorized a two-case bounded closure, not full convergence. One post-build review correction replaced a disconnected acknowledgment-failure test with the production consumer and real adapter lifecycle coverage. Full Local Verify remains required through the normal queue.
 
+The first real-user demo run failed: actual Telegram reply IDs were dropped at polling and lifeline composition. The amendment preserves native reply metadata only from those first-party seams; bearer-only/mobile assertions never establish it. A separate Codex rollout-capture failure blocks normal conversational reminders and is not bypassed. Live proof remains a hard merge hold.
+
 ## Decision-point inventory
 
 - Proposal delivery and receipt selection — modified: each send belongs to an immutable request and actual platform receipt; failed sends grant no authority.

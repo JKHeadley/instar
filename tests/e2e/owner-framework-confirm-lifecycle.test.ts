@@ -36,7 +36,7 @@ function harness() {
   const store = new TopicProfileStore({ stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
   const resolver = new TopicProfileResolver({ store, defaultFramework: () => 'claude-code', configTopicFrameworks: () => ({}), configProfileDefaults: () => ({}), frameworkDefaultModels: () => ({}), tierEscalationConfig: () => undefined, localModelBinding: () => null, frameworkBinaryPath: () => null });
   const slots = new ProfileConfirmSlots();
-  const telegram = new TelegramAdapter({ token: '123:lifecycle-fixture', chatId: '-1001', ownerUserId: OWNER }, stateDir, { suppressLifelineAutoCreate: true });
+  const telegram = new TelegramAdapter({ token: '123:lifecycle-fixture', chatId: '-1001', ownerUserId: OWNER, authorizedUserIds: [OWNER] }, stateDir, { suppressLifelineAutoCreate: true });
   vi.spyOn(telegram, 'getTopicName').mockImplementation(id => id === TARGET ? 'Project Work' : id === SOURCE ? 'Planning' : null);
   const gate = new NotificationSelectivityGate(stateDir, 'test-machine', () => ({ enabled: true, dryRun: false }));
   telegram.selectivity = gate;
@@ -61,10 +61,10 @@ function harness() {
     return response;
   };
   const remind = (id: string) => request(server.getApp()).post(`/topic-profile/${TARGET}/propose`).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({ remindRequestId: id, confirmIn: SOURCE });
-  const confirm = async (uid = OWNER, id = [...delivered.keys()].at(-1)!, text = 'yes', inboundId = mid + 1) => {
+  const confirm = async (uid = OWNER, id = [...delivered.keys()].at(-1)!, text = 'yes', inboundId = mid + 1, nativeReply?: number) => {
     const delivery = delivered.get(id)!;
     const out = await handleAndAcknowledgeProfileProposalReply({ requests: slots.proposals, surface,
-      source: String(delivery.source), text, messageId: inboundId, replyTo: delivery.receipt, forwarded: false,
+      source: String(delivery.source), text, messageId: inboundId, replyTo: nativeReply ?? delivery.receipt, forwarded: false,
       principal: { kind: 'operator', platform: 'telegram', uid: String(uid) },
       eligible: destKey => {
         const ops = server.getTopicOperatorStore()!; const confinement = new TeamConfinement(stateDir);
@@ -102,6 +102,24 @@ describe('Owner framework confirmation is alive through production composition',
     expect(h.respawns).toEqual([String(TARGET)]);
     const persisted = JSON.parse(fs.readFileSync(path.join(h.stateDir, 'state', 'topic-profiles.json'), 'utf8'));
     expect(JSON.stringify(persisted)).toContain('codex-cli');
+  });
+
+  it('carries a real polling update reply receipt into confirmation instead of inventing one in the fixture', async () => {
+    const h = harness(); const proposed = await h.propose(SOURCE); expect(proposed.status).toBe(200);
+    let outcome: Awaited<ReturnType<typeof h.confirm>> | null = null;
+    h.telegram.onTopicMessage = async message => {
+      const nativeReply = message.metadata?.replyToMessageId;
+      if (typeof nativeReply !== 'number') return;
+      outcome = await h.confirm(Number(message.userId), proposed.body.requestId, message.content, Number(message.id.slice(3)), nativeReply);
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    const update = { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000),
+      from: { id: OWNER, first_name: 'Fixture operator' }, chat: { id: -1001, type: 'supergroup' }, text: 'yes', reply_to_message: { message_id: 901 } };
+    await polling.processUpdate({ update_id: 1, message: { ...update, reply_to_message: { message_id: 899 } } });
+    expect(h.store.resolve(TARGET)).toBeNull();
+    await polling.processUpdate({ update_id: 2, message: { ...update, message_id: 991 } });
+    expect(outcome).toMatchObject({ written: true });
+    expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.respawns).toEqual([String(TARGET)]);
   });
 
   it('delivers an in-topic proposal visibly while an ordinary automated report stays quiet', async () => {
