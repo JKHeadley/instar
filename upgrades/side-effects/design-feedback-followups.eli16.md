@@ -1,0 +1,7 @@
+# Three owner reports become lasting design rules
+
+This update puts three new reports from the owner into the shared design register. The first asks for one clearly identifiable Chief of Staff conversation above project containers. The second asks for native context actions where the person actually right-clicks a chat or message. The third asks that helper conversations appear under their real parent, or remain in a readable recovery location when parentage cannot yet be established.
+
+Each record explains the failure, maps the existing rules, names the missing rule and lists the evidence still needed. It keeps the Chief of Staff's relay clearly labeled instead of inventing a direct quote from the owner. Original screenshots and private conversation contents remain in the private archive. Proposed server field names remain proposals, not shipped capabilities.
+
+The standard gains permanent rules for the main conversation's fixed place, actual native context targets and authenticated creation provenance. Those rules describe the expected result and the regression checks. They do not claim that code or a release has completed. The Apple app owner reports that the Mac navigation update is released, but the matching iPhone release is still required. The native menu and server parentage work also stay open. This commit changes documents only; it moves or deletes no existing conversation.
