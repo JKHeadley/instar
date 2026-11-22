@@ -415,7 +415,7 @@ import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter, compileFeaturePattern, FEATURE_PATTERN_MAX_CHARS } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
-import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, registerVoiceUnreadableListener, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
@@ -18796,6 +18796,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // open the confirm page at: the tunnel when there is one, else this machine on the home network.
     offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
     existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
+    reoffersEnabled: () => !!ctx.config.recommendedServices?.reoffers?.enabled,
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;
@@ -18947,6 +18948,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     },
   });
   ctx.recommendedServicesRecheck = (service) => recommendedHandle.requestRecheck(service);
+  // Real-problem source `voice-unreadable` (recommended-services.md, rollout step 4): records nothing while re-offers are off.
+  registerVoiceUnreadableListener((evidenceRef) => recommendedHandle.recordProblem('voice-unreadable', evidenceRef));
   // docs/specs/backup-email-sending.md: a one-off whose email did not go reaches the session's own topic.
   ctx.emailTopicSend = async (topicId, text) => {
     if (!ctx.telegram) throw new Error('no Telegram');

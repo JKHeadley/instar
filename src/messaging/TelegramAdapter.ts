@@ -4334,6 +4334,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
+      channel: 'telegram',
       mediaType: 'audio/ogg',
       timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
