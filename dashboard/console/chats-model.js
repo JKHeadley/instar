@@ -246,24 +246,31 @@ export function bubbles(kind, rows, opts = {}) {
 export function sortBubbles(list) {
   return list.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')) || a.id.localeCompare(b.id));
 }
-/** Merges new bubbles over the ones shown (a newer reading of the same id wins). */
 /**
- * The change feed (docs/specs/telegram-slack-change-feed.md): the newest row time in a Telegram or
- * Slack history answer, as an ISO string, or null when the answer has none. The leader sends it as
- * `after` on the next quick read so only what changed comes back.
+ * Rebuild a full newest page from its server-issued row hashes and changed rows. The cache
+ * contains the actual rows represented by the hashes sent on THAT request. Never keep hashes
+ * alone: a new tab/leader must be able to receive the complete reconstructed page.
+ * Returns no data on an incomplete answer, so the next read can request a fresh full page.
  */
-export function newestRowTime(rows, prev = null) {
-  let best = typeof prev === 'string' && !Number.isNaN(Date.parse(prev)) ? prev : null;
-  let bestMs = best ? Date.parse(best) : -Infinity;
-  for (const r of Array.isArray(rows) ? rows : []) {
-    if (!r || typeof r !== 'object') continue;
-    const t = iso(r.at) || iso(r.timestamp);
-    const ms = t ? Date.parse(t) : NaN;
-    if (Number.isFinite(ms) && ms > bestMs) { bestMs = ms; best = new Date(ms).toISOString(); }
+export function rebuildQuickPage(previous, data) {
+  if (!data || !Array.isArray(data.messages)) return { data: null, cache: null };
+  if (data.changeFeed === undefined) return { data, cache: null }; // older agents return a full page
+  const hashes = data.changeFeed && data.changeFeed.rowHashes;
+  if (!Array.isArray(hashes) || hashes.length > 100 || hashes.some((h) => typeof h !== 'string' || !/^[a-f0-9]{64}$/.test(h))) return { data: null, cache: null };
+  const rows = new Map();
+  const full = [];
+  let i = 0;
+  for (const h of hashes) {
+    const row = previous && previous.rows instanceof Map && previous.rows.has(h) ? previous.rows.get(h) : data.messages[i++];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return { data: null, cache: null };
+    rows.set(h, row);
+    full.push(row);
   }
-  return best;
+  if (i !== data.messages.length) return { data: null, cache: null };
+  return { data: { ...data, messages: full }, cache: { hashes: [...hashes], rows } };
 }
 
+/** Merges new bubbles over the ones shown (a newer reading of the same id wins). */
 export function mergeBubbles(prev, next) {
   const m = new Map(prev.map((b) => [b.id, b]));
   for (const b of next) m.set(b.id, b);

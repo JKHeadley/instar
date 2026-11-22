@@ -1,52 +1,13 @@
-# A change feed for Telegram and Slack chats — the plain version
+# Smaller Updates For Telegram And Slack Chats
 
-## What this is
+When you keep a Telegram or Slack conversation open in the web chat, it checks for messages every five seconds. Previously, each check downloaded the newest fifty messages again. This change lets the page say which exact message rows it already holds, so the agent sends only rows that are new or have changed.
 
-When you have a Telegram or Slack conversation open in the web chat, the page asks the agent every
-five seconds for "the newest 50 messages". Usually nothing has changed. The agent still looks up
-those 50 messages, checks who sent each one, attaches any files, packs them up and sends them. The
-page then downloads all 50 and redraws them. That is wasted work on both ends. It's part of why long
-chats can feel slow, and it's the speed priority on the Telegram parity list.
+The agent gives each finished row a digital fingerprint. The fingerprint covers everything the page can show: the message, its delivery mark, its files and its origin information. The browser returns those fingerprints on its next check. If a delivery mark changes, or a message arrives with an older timestamp, the row still comes back. A timestamp does not decide whether a message is new to the browser.
 
-Chats started in the Instar app don't have this problem. For those, the page can ask "what happened
-since this point?" and get back only the new things. This change gives Telegram and Slack chats the
-same kind of question.
+The browser also keeps the actual rows behind its fingerprints. Before sharing an update with another open tab, it reconstructs the complete current page. That matters because a new tab must receive the messages themselves, not merely be told that some other tab has seen them. If a baseline is missing or inconsistent, the browser asks for a fresh full page.
 
-## What already exists
+The existing checks that decide who may read a conversation stay in place. The agent removes private server paths and joins verified app messages before calculating fingerprints. A Slack message cannot become a less trustworthy raw copy just because its platform timestamp differs from the stored copy. The regular full read every thirty seconds and loading older messages remain available.
 
-- The two "give me messages" addresses for Telegram and Slack chats, with a way to scroll back
-  ("messages before this time").
-- A full read every 30 seconds that asks every machine the agent runs on. It stays exactly as it is.
-- The page already ignores duplicates: if a message arrives twice, it shows once.
+This improves how much data each normal poll sends. It does not turn the newest fifty messages into an unlimited archive, change what the platforms retain, or add new edit and delete controls. Older agents simply return their normal full page, so the browser can fall back safely during updates. Native apps can adopt the same optional request later; this change includes the web chat using it.
 
-## What is new
-
-1. Both addresses accept "messages after this time". The page passes the time of the newest message
-   it already has, and the agent sends back only messages from that time on, plus the two minutes
-   before it.
-2. The two-minute overlap is deliberate. Message times aren't perfectly in order: two machines, or
-   Telegram and the agent, can stamp times a little differently. Sending a small overlap means a
-   message stamped slightly "too early" still arrives. Because the page ignores duplicates, the
-   overlap costs almost nothing.
-3. The web chat's five-second check uses the new question. The 30-second full read across machines
-   does not change. It's the safety net that catches anything the overlap could miss, such as a
-   Slack message edited after it was sent.
-
-## Safeguards
-
-- Nothing about who may read what changes. The same permission checks run first. The new question
-  only trims a list the reader was already allowed to see.
-- Older agents simply ignore "after" and send the newest page as before, so nothing breaks while
-  machines update at different times.
-- Undoing it is one revert. The page then gets full pages again, which it already handles.
-
-## What isn't in this change
-
-- The iPhone, Mac, Windows, Android and Linux apps can start using the same question on their own
-  schedule. Each app's own parity card tracks that.
-- Edits and deletions don't become their own events. Neither Telegram's log nor Slack's history
-  records them that way today, and the 30-second full read already shows the current text.
-
-## What you need to decide
-
-Nothing. This is a small change that only adds a new option, and a revert fully undoes it.
+The change can be undone by reverting it. It introduces no new message database, configuration setting or credential. The final pull request must pass the shared full verification process before it is merged; targeted tests alone do not mean it is deployed.

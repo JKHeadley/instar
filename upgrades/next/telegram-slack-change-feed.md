@@ -1,36 +1,28 @@
-# Telegram and Slack chats: fetch only what changed
+# Smaller Telegram And Slack Chat Updates
 
 <!-- bump: patch -->
 
 ## What Changed
 
-`GET /telegram/topics/:topicId/messages` and `GET /mobile/chat/slack/:conversationId/messages` accept an optional `after` (an ISO time; Telegram also takes epoch milliseconds).
+Telegram and Slack history reads accept `knownRows`, a bounded list of SHA-256 fingerprints of the finished message rows the caller already holds. The response contains only new or changed rows, plus `changeFeed.rowHashes` for reconstructing the full current newest page. An empty `knownRows` starts a baseline; a plain read stays unchanged.
 
-- With `after`, the answer keeps only the rows logged from two minutes before that time onward, and adds `changeFeed: { since, lookbackMs }`.
-- The window applies to the finished answer, after the device join and the multi-machine merge, so it changes which rows are sent, never which copy of a row is sent.
-- The Slack holder hop forwards `after`.
-- The web chat's five-second check of an open Telegram or Slack conversation now sends `after`. Its 30-second full read is unchanged and is the safety net.
-- A plain read is unchanged, and an older server ignores `after` and returns the plain page.
+The web chat uses this on its five-second quick checks. It retains actual rows with their hashes and reconstructs full pages before sharing results with other tabs, including a newly opened tab or a new leader. Its 30-second full pool read stays unchanged. Slack holder reads forward the optional hashes. Older agents and holders return their usual full pages.
 
-Spec: `docs/specs/telegram-slack-change-feed.md`.
+Hashes are computed after all device privacy shaping, signature stripping and authoritative store/platform joins. Late timestamps cannot hide arrivals, and a changed delivery mark, attachment or origin display resends its row. This diffs the existing bounded newest page; it does not expand history retention. The initial unshipped timestamp-window design was replaced during review.
 
 ## What to Tell Your User
 
-- **Faster Telegram and Slack chats in the web chat**: "When you have a Telegram or Slack chat open in the web chat, it now only downloads new messages every few seconds instead of the last fifty each time."
+- **Smaller updates in Telegram and Slack web chats:** "An open chat now downloads new or changed message rows instead of the same fifty messages every few seconds. Messages that arrive late still show up, and opening another tab keeps the full conversation page."
 
 ## Summary of New Capabilities
 
-| Capability | How to Use |
+| Capability | How To Use |
 |-----------|-----------|
-| Change feed for Telegram and Slack history reads | Add `after=<newest message time you hold>` to the history read; the web chat does this automatically |
+| Telegram and Slack newest-page payload diff | Send `knownRows=` for a baseline, retain returned rows and `changeFeed.rowHashes`, then send the hashes comma-separated; the web chat does this automatically |
 
 ## Evidence
 
-- `tests/integration/telegram-change-feed.test.ts`: 6 cases.
-  - A plain read is unchanged.
-  - The window applies to local and pool reads.
-  - A device read never gets a weaker store copy of an app-sent row from outside the window. This case fails when the filter runs before the join.
-  - Bad input gets a 400.
-- `tests/integration/mobile-slack-from-app.test.ts`: the Slack window and its 400 cases.
-- `tests/unit/mobile-slack-holder-proxy.test.ts`: the holder hop forwards `after`.
-- `tests/unit/console-chats-page.test.ts` and `tests/unit/console-chats-model.test.ts`: the quick read sends `after` once it knows a time, and the pool read never does.
+- Targeted unit tests cover hash shape/count/length, exact-row changes, duplicate rows, empty deltas, legacy fallback and complete-page cross-tab reconstruction.
+- HTTP integration tests cover Telegram local/pool/device reads and Slack device/holder reads, including late timestamps, delivery/origin changes and stored-copy privacy.
+- Production-wiring lifecycle tests exercise the authenticated AgentServer paths for the opt-in feed and trusted Slack holder forwarding.
+- Full-suite results must come from Local Verify for the exact final pull-request head; targeted results alone do not claim a merge or deployment.

@@ -11,6 +11,7 @@
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { poolPeerFetch, PoolPeerAdmissionError, type PoolPeerTarget, type RopeResultRecorder } from './poolPeerFetch.js';
+import { parseKnownRows } from './changeFeed.js';
 
 export const HOLDER_READ_TIMEOUT_MS = 8_000;
 export const HOLDER_READ_MAX_BYTES = 4 * 1024 * 1024;
@@ -26,8 +27,8 @@ export interface HolderReadRequest {
   machine: string;
   limit: number;
   before: string | null;
-  /** Change feed (telegram-slack-change-feed): the newest row time the phone holds, forwarded as is. */
-  after?: string | null;
+  /** Fingerprints of the phone's previous finished page, forwarded without changing its view. */
+  knownRows?: string | null;
   stillOwner: () => boolean;
 }
 export interface HolderReadAnswer { status: number; body: Record<string, unknown> }
@@ -87,15 +88,16 @@ export function buildSlackHolderRead(deps: HolderReadDeps): HolderRead {
     const token = deps.token();
     if (!token) return failed(503, 'holder-unavailable');
     if (q.before !== null && q.before.length > BEFORE_MAX_CHARS) return { status: 400, body: { error: 'bad-before' } };
-    if (q.after != null && q.after.length > BEFORE_MAX_CHARS) return { status: 400, body: { error: 'bad-after' } };
+    if (q.knownRows != null && parseKnownRows(q.knownRows) === 'invalid') return { status: 400, body: { error: 'bad-known-rows' } };
+    if (q.knownRows != null && q.before !== null) return { status: 400, body: { error: 'known-rows-with-before' } };
     const mine = perHolder.get(q.machine) ?? 0;
     if (inFlight >= HOLDER_READ_MAX_IN_FLIGHT || mine >= HOLDER_READ_MAX_PER_HOLDER) return failed(503, 'holder-busy');
     inFlight++;
     perHolder.set(q.machine, mine + 1);
     try {
       const before = q.before === null ? '' : `&before=${encodeURIComponent(q.before)}`;
-      const after = q.after == null ? '' : `&after=${encodeURIComponent(q.after)}`;
-      const path = `/mobile/chat/slack/${q.id}/messages?machine=${encodeURIComponent(q.machine)}&limit=${q.limit}&deviceView=1${before}${after}`;
+      const knownRows = q.knownRows == null ? '' : `&knownRows=${encodeURIComponent(q.knownRows)}`;
+      const path = `/mobile/chat/slack/${q.id}/messages?machine=${encodeURIComponent(q.machine)}&limit=${q.limit}&deviceView=1${before}${knownRows}`;
       const ownerFetch: typeof fetch = async (input, init) => {
         if (!q.stillOwner()) throw new PoolPeerAdmissionError('owner-phone-required');
         return (deps.fetchImpl ?? fetch)(input, init);

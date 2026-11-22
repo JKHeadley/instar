@@ -578,11 +578,63 @@ describe('messagePieces: inline markdown in a message (console-chat-markdown)', 
   });
 });
 
-describe('newestRowTime (telegram-slack-change-feed)', () => {
-  it('takes the newest of Telegram timestamps and Slack at, as ISO, and never moves backwards', () => {
-    expect(m.newestRowTime([])).toBeNull();
-    expect(m.newestRowTime([{ timestamp: '2026-11-22T08:00:00.000Z' }, { at: '2026-11-22T08:05:00.000Z' }, { timestamp: 'nonsense' }, null])).toBe('2026-11-22T08:05:00.000Z');
-    expect(m.newestRowTime([{ timestamp: '2026-11-22T07:00:00.000Z' }], '2026-11-22T08:00:00.000Z')).toBe('2026-11-22T08:00:00.000Z');
-    expect(m.newestRowTime([{ timestamp: Date.parse('2026-11-22T09:00:00.000Z') }], 'garbage')).toBe('2026-11-22T09:00:00.000Z');
+describe('quick-page payload diff (telegram-slack-change-feed)', () => {
+  const h = (n: number) => n.toString(16).padStart(64, '0');
+  const page = (hashes: string[], messages: unknown[]) => ({ messages, changeFeed: { rowHashes: hashes } });
+
+  it('keeps late and future timestamps, and replaces the full row when delivery or origin changes', () => {
+    const future = { messageId: 1, timestamp: '2099-01-01T00:00:00Z', text: 'future clock' };
+    const pending = { messageId: 'app-2', timestamp: '2026-11-22T00:00:00Z', text: 'hello', deliveryState: 'pending' };
+    const first = m.rebuildQuickPage(null, page([h(1), h(2)], [future, pending]));
+    const late = { messageId: 3, timestamp: '2020-01-01T00:00:00Z', text: 'arrived late' };
+    const delivered = { ...pending, deliveryState: 'delivered', originVerified: 'verified' };
+    const next = m.rebuildQuickPage(first.cache, page([h(1), h(4), h(3)], [delivered, late]));
+    expect(next.data.messages).toEqual([future, delivered, late]);
+    expect([...next.cache.rows.values()]).toEqual(next.data.messages);
+    expect(next.cache.hashes).toEqual([h(1), h(4), h(3)]);
+  });
+
+  it('an empty network delta becomes a full broadcast page for a new tab, reopened chat and new leader', () => {
+    const rows = [{ messageId: 1, text: 'one' }, { messageId: 2, text: 'two' }];
+    const original = m.rebuildQuickPage(null, page([h(1), h(2)], rows));
+    const broadcast = m.rebuildQuickPage(original.cache, page([h(1), h(2)], []));
+    expect(broadcast.data.messages).toEqual(rows);
+    const newTab = m.rebuildQuickPage(null, structuredClone(broadcast.data));
+    expect(newTab.data.messages).toEqual(rows);
+    expect(newTab.cache.hashes).toEqual([h(1), h(2)]);
+    const newLeader = m.rebuildQuickPage(newTab.cache, page([h(1), h(2)], []));
+    expect(newLeader.data.messages).toEqual(rows);
+    expect(m.rebuildQuickPage(null, newLeader.data).data.messages).toEqual(rows);
+  });
+
+  it('drops departed hashes and learns each new hash only alongside its actual row', () => {
+    const old = m.rebuildQuickPage(null, page([h(1), h(2)], [{ messageId: 1 }, { messageId: 2 }]));
+    const next = m.rebuildQuickPage(old.cache, page([h(2), h(3)], [{ messageId: 3 }]));
+    expect(next.cache.hashes).toEqual([h(2), h(3)]);
+    expect(next.cache.rows.has(h(1))).toBe(false);
+    expect(next.data.messages).toEqual([{ messageId: 2 }, { messageId: 3 }]);
+  });
+
+  it('rejects missing/extra delta rows and malformed hash metadata instead of inheriting unseen hashes', () => {
+    for (const data of [page([h(1)], []), page([], [{ messageId: 1 }]), page(['bad'], [{}]), page(Array.from({ length: 101 }, (_, i) => h(i)), Array.from({ length: 101 }, () => ({}))), { messages: [], changeFeed: {} }]) {
+      expect(m.rebuildQuickPage(null, data)).toEqual({ data: null, cache: null });
+    }
+    expect(m.rebuildQuickPage(null, page([h(1)], [null]))).toEqual({ data: null, cache: null });
+  });
+
+  it('retains repeated identical rows and their positions when the next delta is empty', () => {
+    const row = { messageId: 1, text: 'retried log row' };
+    const initial = m.rebuildQuickPage(null, page([h(1), h(1)], [row, { ...row }]));
+    expect(initial.data.messages).toEqual([row, row]);
+    expect(initial.cache.hashes).toEqual([h(1), h(1)]);
+    const unchanged = m.rebuildQuickPage(initial.cache, page([h(1), h(1)], []));
+    expect(unchanged.data.messages).toEqual([row, row]);
+    expect(m.rebuildQuickPage(null, unchanged.data).data.messages).toEqual([row, row]);
+  });
+
+  it('older agents return plain full pages and never create a hash baseline', () => {
+    const data = { messages: [{ messageId: 1, text: 'legacy' }] };
+    const previous = m.rebuildQuickPage(null, page([h(1)], [{}])).cache;
+    expect(m.rebuildQuickPage(previous, data)).toEqual({ data, cache: null });
   });
 });

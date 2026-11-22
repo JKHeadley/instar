@@ -22,7 +22,7 @@ import {
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
   LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
-  effortMembers, trackedProjects, projectsForGroups, groupSections, newestRowTime,
+  effortMembers, trackedProjects, projectsForGroups, groupSections, rebuildQuickPage,
 } from './chats-model.js';
 
 /**
@@ -94,7 +94,7 @@ class ChatsPage {
     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
     this.announcements = new Map();
     this.cursors = new Map();   // ref → events cursor (shared by broadcast so a new leader carries on)
-    this.newestSeen = new Map(); // ref → newest Telegram/Slack row time seen (the change feed's `after`)
+    this.quickPages = new Map(); // ref → complete quick-page rows and their server-issued hashes
     this.leader = false;
     this.union = [];
     this.scheduler = createScheduler();
@@ -713,21 +713,20 @@ class ChatsPage {
     }).catch(() => {});
   }
 
-  historyPath(v, { pool, before, after } = {}) {
+  historyPath(v, { pool, before, knownRows } = {}) {
     const { kind, id } = v.ref;
     if (kind === 'app') return `/mobile/chat/app/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    // Change feed (telegram-slack-change-feed): `after` asks only for what changed; never with `before`.
-    const since = after && !before ? `&after=${encodeURIComponent(after)}` : '';
+    // Hashes describe rows we actually hold, not a time boundary that could skip late messages.
+    const since = knownRows !== undefined && !before ? `&knownRows=${encodeURIComponent(knownRows)}` : '';
     if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
     return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
   }
-  /** Remembers the newest row time a quick (this-machine) Telegram/Slack read carried; it never moves backwards. */
-  noteNewest(ref, data) {
-    const p = typeof ref === 'string' ? parseConversationRef(ref) : ref;
-    if (!p || p.kind === 'app' || !data || !Array.isArray(data.messages)) return;
-    const key = refString(p);
-    const t = newestRowTime(data.messages, this.newestSeen.get(key) || null);
-    if (t) this.newestSeen.set(key, t);
+  /** Keep full quick pages for every tab; a leader change never inherits hashes without rows. */
+  rememberQuickPage(ref, cache) {
+    this.quickPages.delete(ref);
+    if (cache) this.quickPages.set(ref, cache);
+    // Bounded recent-page memory. An evicted reference simply requests a full page next time.
+    while (this.quickPages.size > 16) this.quickPages.delete(this.quickPages.keys().next().value);
   }
   /**
    * The machine a Slack conversation was listed from (a Slack id is local to it; the routes require it).
@@ -1439,13 +1438,15 @@ class ChatsPage {
     const v = { ref };
     if (task.mode === 'fallback') return this.historyPath(v, { pool: true });
     if (task.mode === 'pool') return this.historyPath(v, { pool: ref.kind === 'telegram' });
-    // The quick read asks only for what changed; the 30 s pool read above stays full (the safety net).
-    return this.historyPath(v, { pool: false, after: task.mode === 'newest' ? this.newestSeen.get(task.ref) || null : null });
+    // Quick reads send the hashes of a complete cached page. Pool reads above stay full.
+    return this.historyPath(v, { pool: false, ...(task.mode === 'newest' ? { knownRows: (this.quickPages.get(task.ref)?.hashes || []).join(',') } : {}) });
   }
 
   async runTask(task) {
     const t0 = now();
     this.scheduler.start(task, t0);
+    // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
+    const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
     try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
@@ -1461,6 +1462,13 @@ class ChatsPage {
     }
     if (r.ok) {
       const msg = { type: 'result', mode: task.mode, ref: task.ref, data: r.data, backoff: this.scheduler.snapshot(), union: this.union };
+      if (task.mode === 'newest') {
+        const page = rebuildQuickPage(previous, r.data);
+        this.rememberQuickPage(task.ref, page.cache);
+        msg.data = page.data;
+        msg.quickFullPage = Boolean(page.data);
+        msg.resetQuickPage = !page.data;
+      }
       if (task.mode === 'events' && r.data && typeof r.data.cursor === 'string') {
         this.cursors.set(task.ref, r.data.cursor);
         msg.cursor = r.data.cursor;
@@ -1477,10 +1485,16 @@ class ChatsPage {
     if (Array.isArray(m.backoff)) this.lastBackoff = m.backoff;
     if (Array.isArray(m.union)) { this.union = m.union; this.markPaused(); }
     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
+    if (m.resetQuickPage && m.ref) this.rememberQuickPage(m.ref, null);
     if (!m.mode || !m.data) return;
     if (m.mode === 'list') { this.applyList(m.data, false); return; }
-    // Only this machine's own quick read sets the cursor: a pool answer carries other machines' clocks.
-    if (m.mode === 'newest' && m.ref) this.noteNewest(m.ref, m.data);
+    // Broadcasts carry full reconstructed pages. Even an unfocused tab/new leader learns rows
+    // and hashes together, never an unseen hash that would suppress a missing message.
+    if (m.mode === 'newest' && m.ref && m.quickFullPage) {
+      const page = rebuildQuickPage(null, m.data);
+      this.rememberQuickPage(m.ref, page.cache);
+      if (!page.data) return;
+    }
     const v = this.view;
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
     if (m.mode === 'events') {

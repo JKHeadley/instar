@@ -1,41 +1,33 @@
 /**
- * The change feed for Telegram and Slack history reads (docs/specs/telegram-slack-change-feed.md).
- *
- * A caller passes `after`: the time of the newest row it already holds. The read answers only the
- * rows logged at or after that time minus a lookback window. Row times are not strictly ordered
- * (machines and senders stamp them separately), so the window re-sends the last two minutes and the
- * caller de-duplicates by row id. A read-side filter only: it never widens what a caller may read.
+ * A payload diff of the existing newest history page, not an ingestion cursor.
+ * Hash only the final privacy-shaped rows. Timestamp windows can hide late arrivals;
+ * knowing a row's complete digest permits omitting only that exact, unchanged row.
  */
+import { createHash } from 'node:crypto';
 
-export const CHANGE_FEED_LOOKBACK_MS = 120_000;
+export const CHANGE_FEED_MAX_ROWS = 100;
+export const CHANGE_FEED_MAX_KNOWN_CHARS = CHANGE_FEED_MAX_ROWS * 65 - 1;
 
-export interface ChangeFeedAfter {
-  /** The time the caller passed, in epoch milliseconds. */
-  afterMs: number;
-  /** `afterMs` minus the lookback: rows at or after this come back. */
-  cutoffMs: number;
+/** Undefined keeps the legacy full-page read; an empty string starts a fresh baseline. */
+export function parseKnownRows(raw: unknown): Set<string> | null | 'invalid' {
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string' || raw.length > CHANGE_FEED_MAX_KNOWN_CHARS) return 'invalid';
+  if (raw === '') return new Set();
+  const hashes = raw.split(',');
+  if (hashes.length > CHANGE_FEED_MAX_ROWS || hashes.some((hash) => !/^[a-f0-9]{64}$/.test(hash))) return 'invalid';
+  return new Set(hashes);
 }
 
 /**
- * Parses `after`: absent → null; an ISO time or epoch milliseconds → the window; anything else →
- * 'invalid' (the route answers 400).
+ * The full ordered hash list accompanies the changed rows, in the same order.
+ * Clients retain the actual baseline rows and reconstruct the complete page before
+ * sharing it with another tab. Missing baselines must request knownRows= again.
+ * Read positions, pins and backwards cursors stay outside this message-only diff.
  */
-export function parseChangeFeedAfter(raw: unknown, opts: { allowEpochMs?: boolean } = {}): ChangeFeedAfter | null | 'invalid' {
-  if (raw === undefined) return null;
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 64) return 'invalid';
-  const allowEpoch = opts.allowEpochMs !== false;
-  const afterMs = /^\d+$/.test(raw) ? (allowEpoch ? Number(raw) : NaN) : Date.parse(raw);
-  if (!Number.isFinite(afterMs) || afterMs < 0) return 'invalid';
-  return { afterMs, cutoffMs: afterMs - CHANGE_FEED_LOOKBACK_MS };
-}
-
-/** Whether a row's time is at or after the cutoff. A row with no readable time is kept (never silently dropped). */
-export function atOrAfterCutoff(at: unknown, cutoffMs: number): boolean {
-  const ms = typeof at === 'number' ? at : typeof at === 'string' ? Date.parse(at) : NaN;
-  return !Number.isFinite(ms) || ms >= cutoffMs;
-}
-
-/** The `changeFeed` field an answer carries, so a caller can tell the server honoured `after`. */
-export function changeFeedEcho(feed: ChangeFeedAfter): { since: string; lookbackMs: number } {
-  return { since: new Date(Math.max(0, feed.cutoffMs)).toISOString(), lookbackMs: CHANGE_FEED_LOOKBACK_MS };
+export function filterKnownRows<T>(rows: ReadonlyArray<T>, known: ReadonlySet<string> | null): {
+  messages: T[]; changeFeed?: { rowHashes: string[] };
+} {
+  if (known === null) return { messages: [...rows] };
+  const rowHashes = rows.map((row) => createHash('sha256').update(JSON.stringify(row)).digest('hex'));
+  return { messages: rows.filter((_row, index) => !known.has(rowHashes[index]!)), changeFeed: { rowHashes } };
 }

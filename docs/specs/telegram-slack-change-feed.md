@@ -1,132 +1,62 @@
 ---
-title: A change feed for Telegram and Slack chats
+title: Send Only Changed Rows In Telegram And Slack Chats
 slug: telegram-slack-change-feed
 status: approved
 tier: 1
 approved: true
-approved-by: "Echo (agent), Tier 1 additive read parameter; Justin started the work card wc_1cd7f517af0e78ee with 'Go' in topic 145738 on 2026-11-22"
+approved-by: "Echo (agent), reversible read-only page diff; Justin authorized the parity work in topic 145738"
 eli16-overview: docs/specs/telegram-slack-change-feed.eli16.md
 ---
 
-# A change feed for Telegram and Slack chats
+# Send Only Changed Rows In Telegram And Slack Chats
 
 ## Problem
 
-App conversations already have a change feed (`GET /mobile/chat/app/:key/events?cursor=`): a client asks
-for what happened after its cursor and gets only that. Telegram and Slack conversations have none.
-Every client that shows one (the web chat, and the native apps) re-reads the newest page every few
-seconds:
-
-- the web chat's leader tab runs a `newest` read of 50 rows every 5 s per open Telegram/Slack
-  conversation (`dashboard/console/chats-model.js` `INTERVAL.newest`), plus a full `pool` read every 30 s;
-- each `newest` read makes the server build, join (origin, media, authorship) and serialize 50 rows,
-  and the client download and re-render them, although usually nothing changed.
-
-Parity row W10 (Telegram parity document, Justin's speed priority) and work card
-`wc_1cd7f517af0e78ee` ask for the agent to serve only what changed, and for the web chat to use it.
+The web chat requests the newest 50 Telegram or Slack messages every five seconds and a full pool page every 30 seconds. Most returned rows are unchanged. Work card `wc_1cd7f517af0e78ee` and parity row W10 ask for smaller updates without losing the messages, delivery marks, media or origin information the existing polls provide.
 
 ## Design
 
-### 1. An `after` parameter on both history routes
+Both existing history routes accept optional `knownRows`, a comma-separated list of complete SHA-256 row digests. An empty string starts a fresh baseline. Absence keeps the existing plain read unchanged. Inputs are bounded to 100 lowercase 64-character hexadecimal digests and 6499 characters. Arrays, malformed values and combinations with backwards-history parameters return 400. The web chat requests 50 rows, so its usual query is about 3.3 KiB before query escaping. Authentication, device signing and audience checks remain unchanged.
 
-`GET /telegram/topics/:topicId/messages` and `GET /mobile/chat/slack/:conversationId/messages`
-accept an optional `after`:
+The server builds exactly the same bounded current page as a plain read, including origin joins, store/platform deduplication, device media shaping and signature stripping. Only then does it hash each complete emitted row. The response contains only rows whose digest is absent from `knownRows`, in their original page order, and `changeFeed: { rowHashes: [...] }` containing the FULL page's ordered digest list. Read positions, pins, backwards cursors and pool failure metadata remain outside the message diff and are returned normally. A caller that claims to hold a digest can omit only that exact row from its own response; this grants no additional read authority.
 
-- Telegram: an ISO time or epoch milliseconds (the same forms `before` accepts).
-- Slack: an ISO time.
-- `after` together with `before` (or `beforeMessageId`) is `400`: one read pages one way.
-- An unparseable `after` is `400`.
+This is a payload diff of the existing newest page, not a durable ingestion cursor. It preserves all rows that the previous five-second bounded full-page poll would show. It does not expand that page's existing history coverage or implement edits/deletes at the platform. Message text, delivery state, media and origin changes alter the digest and therefore resend the row. Late or future timestamps never determine inclusion. Rotation, restart, source changes and row reordering cause harmless retransmission rather than skipped rows. Identical repeated rows can share a digest; the ordered full hash list retains their positions.
 
-Meaning: "the newest row I already hold was logged at `after`". The server answers the rows logged at
-or after `after − 120 s` (the **lookback**, `CHANGE_FEED_LOOKBACK_MS = 120_000`), oldest first, at
-most `limit` of them (the newest `limit` when more qualify, exactly as a plain read keeps the newest).
-Every other field of the answer (`readUpTo`, `pins`, `historyCursorVersion`, `nextBefore`,
-`conversationKey`, `pool`) is unchanged, so a client merges an `after` answer exactly like a plain one.
-The answer adds `changeFeed: { since: <ISO cutoff>, lookbackMs: 120000 }` so a client can tell the
-server honoured the parameter (an older server ignores `after` and returns the plain newest page,
-which is still correct, only larger).
+## Web Chat And Multiple Tabs
 
-Why a time-with-lookback cursor rather than an exact sequence cursor: the Telegram log is
-append-only but its timestamps are not strictly monotonic across machines and senders, Slack rows
-come from Slack's own history with Slack's times, and neither source has a per-row sequence number
-that survives a restart. A lookback window re-sends the last two minutes of rows (small), and the
-client already de-duplicates by row id (`mergeBubbles`), so a row stamped slightly earlier than one
-the client already holds is still delivered.
+The leader keeps the actual full quick-page rows together with their hashes, atomically, for each conversation reference. It sends hashes only for a baseline whose rows it retains. A request captures that exact baseline before awaiting the response. It reconstructs the complete current page by walking the returned full ordered digest list: reuse a row from the sent baseline when known; otherwise consume the next changed response row. Only a complete, validated reconstruction is broadcast, with an internal marker indicating that the broadcast already contains the full page. Every receiving tab can then retain the same row/hash baseline. A newly opened tab, new leader or reopened view must never learn hashes for rows it has not retained.
 
-### 2. What the server reads
+Malformed or inconsistent metadata invalidates the baseline; no incomplete page is represented as complete. The next quick request sends an empty baseline. An older agent or holder ignores `knownRows` and returns its normal full page without metadata; the client uses that page and does not adopt digest state. The existing 30-second pool read remains plain. First-load and scroll-back behavior remain unchanged.
 
-The window trims the **finished** answer, after every join and merge. It changes which rows are
-sent, never which copy of a row is sent:
+The initial unshipped `after` timestamp design is replaced, rather than retained as a competing interface. Review found that an old stored Slack row could be removed before deduplication and replaced by a newer raw mirror. A future-dated row could also suppress ordinary quick-poll arrivals long enough to introduce gaps beyond the existing newest-page limit. Final-row hashing avoids both defects without changing the underlying storage systems.
 
-- Telegram, local read: the same in-memory tail (`getTopicHistory`, no log-file read), then the
-  device join and origin join exactly as a plain read, then the window. Filtering before the device
-  join would be wrong: the join re-adds every app-sent message it was not given as a weaker store
-  copy (`messageId: null`), which would replace the full Telegram row in the client and make the pin
-  mark and placeholder matching flicker between the 5 s and 30 s reads (review round 1, finding 1).
-- Telegram, `scope=pool`: the peer fan-out, merge, own-row-wins dedupe and device join are
-  unchanged; the window applies to their result. Filtering this machine's rows first would let a
-  peer's copy of a row win over this machine's own copy (review round 1, finding 2). Each machine
-  still returns its newest page: those pages are bounded already (100 rows, 512 KiB) and the web chat
-  does not send `after` on pool reads (section 3), so carrying `after` over the signed mesh verb would
-  change a versioned peer protocol for no client-visible saving. This is a design choice, not a gap.
-- Slack: the store rows and `bridge.history` rows are read as for a plain read; rows older than the
-  cutoff are skipped before their origin and file shaping. Slack has no device join that re-adds rows,
-  so skipping early is safe there.
+## Multi-Machine Posture
 
-The saving is the answer itself: in a quiet chat a few rows (the lookback window) instead of 50,
-which the server serializes and the client downloads and re-renders.
+Unified by the existing proxied-on-read history paths. Telegram pool reads first complete their current own-row-wins merge and privacy shaping, then compute the diff. The signed pool protocol stays unchanged because peers still return their normal bounded history pages. Slack holder reads forward `knownRows` to the trusted holder with the existing owner revalidation, body limit and device-view checks. Older holders return a full page. No new durable machine-local state, replicated schema, configuration or credentials are introduced.
 
-### 3. The web chat uses it
+## Decision Points Touched
 
-In the web chat's leader tab, the 5-second `newest` task for a Telegram or Slack conversation sends
-`after=<newest row time seen in an earlier newest answer for that conversation>`. That time comes only
-from server rows in this machine's own `newest` answers (the page's `noteNewest`), never from the
-shown bubbles (a `local:` placeholder carries the browser's clock, which may drift) and never from a
-pool answer (its rows carry other machines' clocks: a peer running more than two minutes fast would
-otherwise hide this machine's rows from the quick read). The first `newest` read for a conversation
-is therefore a plain read. Every tab records the time from broadcast `newest` results, so a new
-leader carries on.
+- Digest syntax, count, length and incompatible query parameters: invariant; these are structural API validation.
+- Omitting a row only when its entire final digest was supplied: invariant; exact byte-content identity, not semantic message filtering.
+- Client baseline adoption: invariant; complete hash/row correspondence is required before claiming a full current page.
+- Existing authentication, owner/device admission, media privacy and pool origin authority: unchanged.
 
-The 30-second `pool` task stays a full newest-page read. It is the safety net: anything the lookback
-window could miss (a row stamped more than two minutes before the newest row, or a Slack message
-edited in place) is picked up there within 30 s, the same as today.
+There is no new judgment gate, outbound-message authority, session lifecycle operation or UI element. Reference: `docs/signal-vs-authority.md`.
 
-The focused tab's `pollNow` and the first load stay plain reads.
+## Acceptance And Tests
 
-The page sets `nextBefore`, `oldestTs` and the "Earlier messages" control only on a first load or a
-scroll-back page, never on a `newest` answer, so a small `after` answer cannot disturb scroll-back.
-
-## Non-goals
-
-- Native apps (iPhone, Mac, Windows, Android, Linux) adopting the parameter: each app's own parity
-  card carries that (`wc_77670e12ec07c169` for iPhone and Mac; Windows/Android already use the app
-  change feed for app chats). The parameter is additive, so apps adopt it independently.
-- Edits and deletions as events: neither source records them as events today.
-
-Guidance for an app adopting `after`: an `after` answer describes only the window. Take scroll-back
-cursors (`nextBefore`, the oldest row) from plain reads and scroll-back pages only, and keep a
-periodic plain read as the safety net, as the web chat does.
-
-## Decision points
-
-None. This is a read-side filter on rows the caller is already allowed to read. It gates nothing,
-blocks nothing and changes no permission check (the same `deviceMayUse` / owner checks run first).
-
-## Multi-machine posture
-
-Proxied-on-read, unchanged: a pool read still merges every machine's rows; `after` filters the merged
-result. A Slack read routed to another machine through the holder hop forwards `after` with the rest
-of the query.
-
-## Tests
-
-- Unit/integration: Telegram local and pool reads with `after` return only rows at or after the
-  cutoff, include the lookback window, keep `readUpTo`/`pins`, refuse `after`+`before`, refuse a bad
-  `after`, and a plain read is byte-for-byte unchanged.
-- Slack: the same for the Slack route.
-- Web chat model: the `newest` task path carries `after` once a time is known and the `pool` path never does.
+- Plain reads stay unchanged; an empty baseline returns a full page; an identical repeat returns no message rows but the full digest list.
+- New arrivals with old or future display times are returned. Changing only delivery, media or origin fields resends the row.
+- Device and pool reads hash the final authoritative row; a newer raw platform mirror cannot replace a stored verified caption or leak a private path.
+- Hash validation exercises both sides of count/length boundaries and incompatible backwards cursors.
+- Slack trusted-holder forwarding retains revocation and device privacy behavior; legacy holders fall back to full pages.
+- The browser reconstructs full pages before cross-tab broadcast; new tabs, leader changes and reopened views cannot suppress unseen rows.
+- Unit and HTTP tests run locally in targeted files. Full unit/integration/E2E/build validation is delegated to the shared Local Verify owner for the exact final PR head, per the Chief of Staff handoff. Maintenance holds are not released by this task.
 
 ## Rollback
 
-Revert the commit. Clients that send `after` to a server without it get the plain newest page, which
-they already handle.
+Revert the PR. No migration or agent-state repair is needed. Clients sending `knownRows` to older servers receive the normal full page and discard digest state. Native apps retain their current behavior until they adopt this optional protocol.
+
+## Open Questions
+
+None.
