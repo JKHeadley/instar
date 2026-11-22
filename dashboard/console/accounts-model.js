@@ -109,7 +109,7 @@ export function windowRow(w, now = Date.now()) {
     pctText: `${Math.round(w.pct)}%`,
     reset: when ? `${when}${until ? ` (${until})` : ''}` : null,
     // warning-path: row
-    tone: w.pct >= NEAR_OUT_PCT ? 'bad' : w.pct >= 75 ? 'attn' : null,
+    tone: usageTone(w.pct),
   };
 }
 
@@ -127,6 +127,19 @@ export function resetWords(ts, now = Date.now()) {
 
 /** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
 export const NEAR_OUT_PCT = 90;
+/** At or over this share a limit is coloured as needing attention. */
+export const USAGE_TONE_ATTN_PCT = 75;
+
+/**
+ * The colour for a limit or an account, from the rounded percentage that is displayed (so 89.6%,
+ * shown as "90%", is red), and none for a limit that has reset. The server holds the same rule in
+ * src/server/mobileCapacityRoutes.ts; src/data/design/usage-tone-vectors.json pins both sides.
+ */
+export function usageTone(pct, rolledOver = false) {
+  if (rolledOver || !Number.isFinite(Number(pct))) return null;
+  const shown = Math.round(Number(pct));
+  return shown >= NEAR_OUT_PCT ? 'bad' : shown >= USAGE_TONE_ATTN_PCT ? 'attn' : null;
+}
 
 /** Every live usage window on a reading: [{ pct, resetsAt }]. */
 function windowsOf(q, now = Date.now()) {
@@ -273,9 +286,11 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       // One plain sentence per window, for the details sheet: "5-hour: 100% used, resets 5:59 PM (in 3m)".
       windowsText: windows.map((w) => `${w.label}: ${w.rolledOver ? w.reset : `${w.pctText} used${w.reset ? `, ${w.reset}` : ''}`}`),
       // warning-path: row
-      tone: t && t.pct >= 90 ? 'bad' : t && t.pct >= 75 ? 'attn' : null,
+      tone: t ? usageTone(t.pct) : null,
     };
-  }).sort((a, b) => (frameworkName(a.framework)).localeCompare(frameworkName(b.framework)) || (b.tight ? b.tight.pct : -1) - (a.tight ? a.tight.pct : -1));
+  }).sort((a, b) => (frameworkName(a.framework)).localeCompare(frameworkName(b.framework)) || (b.tight ? b.tight.pct : -1) - (a.tight ? a.tight.pct : -1)
+    // Same name tie-break as the server (DF-0001), so equal accounts never swap places between refreshes.
+    || String(a.name || '').localeCompare(String(b.name || '')));
 
   const accountKeys = accounts.map((a) => verifiedDisplayName(a.name, a.id)
     ? `${a.name.toLocaleLowerCase()}\u0000${(a.email || '').toLocaleLowerCase()}` : null);
