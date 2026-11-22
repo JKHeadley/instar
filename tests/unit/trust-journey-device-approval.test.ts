@@ -5,7 +5,7 @@
  * `accepted-device`, concurrent consumptions → one raise, `unknown` when the process stops between
  * consumption and outcome, the first-device and accept-device rules, and the local override.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -106,6 +106,15 @@ describe('propose without a chat', () => {
     // The same change again is the same request.
     expect(await svc.propose(change)).toMatchObject({ status: 'sent', via: 'device', deduped: true });
   });
+});
+
+it('a failed chat send leaves the same request genuinely available in the app, not falsely waiting on chat', async () => {
+  const store = mkStore(); const chat = new FakeChat(); const svc = mkService(store, chat); await acceptMac(svc);
+  vi.spyOn(chat, 'sendDirect').mockRejectedValue(new Error('transport uncertain'));
+  const result = await svc.propose(change); expect(result).toMatchObject({ status: 'sent', via: 'device' });
+  expect(svc.deviceListing()).toEqual([expect.objectContaining({ status: 'open', proposalHash: HASH })]);
+  devices.on = false;
+  expect((await svc.propose(change)).status).toBe('delivery-unconfirmed');
 });
 
 describe('onPresenceApproval', () => {

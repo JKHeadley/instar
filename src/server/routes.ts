@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
@@ -678,6 +679,8 @@ import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
 import { configPatchRaises, isKnownTrustLevel, orgCapRefusal, raiseRefusal, slackRoleRaises, TrustRaiseRefusedError } from '../core/TrustRaiseGuard.js';
 import { askSentence } from '../core/trustJourney/admission.js';
+import { deriveEffect } from '../data/effect-kinds.js';
+import { approvalPresentation, traceApprovalRefusal } from '../core/trustJourney/approvalPresentation.js';
 import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import type { AutonomousEvolution } from '../core/AutonomousEvolution.js';
@@ -38237,7 +38240,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // checkpoint). Resolution is session→topic→commitment; the cost is a
       // single negative lookup for normal sessions (which carry no revivalMode
       // commitment), and reads fast-path out in the hook before reaching here.
-      if (sessionName && mutability !== 'read' && ctx.telegram && ctx.commitmentTracker) {
+      if (sessionName && (typeof req.body.tool_name === 'string' ? deriveEffect(req.body.tool_name, req.body.tool_input)?.operation ?? mutability : mutability) !== 'read' && ctx.telegram && ctx.commitmentTracker) {
         const topicId = ctx.telegram.getTopicForSession?.(String(sessionName));
         if (topicId != null) {
           const tId = typeof topicId === 'number' ? topicId : Number(topicId);
@@ -38301,12 +38304,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             } catch { /* @silent-fallback-ok: the holder did not answer in time; this call waits (fails closed) below */ }
           }
         }
+        if (adm.verdict === 'ask' && adm.why === 'holder-unreachable') {
+          // Distributed forwarding remains unchanged; new hooks refuse unsupported old ask metadata.
+          return res.json({ action: 'ask', reason: askSentence(adm.why, 'other'), trust: adm, llmEvaluated: false, evaluatedAt: now });
+        }
         if (adm.verdict === 'ask') {
-          const st = ask && (ask.status === 'sent' || ask.status === 'awaiting-acceptance' || ask.status === 'undelivered') ? ask.status : 'other';
-          return res.json({ action: 'ask', reason: askSentence(adm.why, st), trust: adm, ...(ask && 'requestId' in ask ? { requestId: ask.requestId } : {}), llmEvaluated: false, evaluatedAt: now });
+          const local = approvalPresentation(ask);
+          const recorded = traceApprovalRefusal(ctx.config.stateDir, { status: local.approval.status, reason: ask?.status ?? 'request-unconfirmed', machine: hostname(), disposition: req.get(TRUST_ADMISSION_FORWARDED_HEADER) ? 'holder-local-forwarded' : 'local' });
+          return res.json({ ...local, ...(!recorded ? { action: 'block', reason: 'This action remains refused. The local approval refusal trace could not be saved, and no owner wait is claimed.' } : {}), trust: adm, llmEvaluated: false, evaluatedAt: now });
         }
         if (adm.verdict === 'refused') {
-          return res.json({ action: 'block', reason: 'The person set this kind of action to "Don\'t do this", so it is refused. Only the person can change that setting.', trust: adm, llmEvaluated: false, evaluatedAt: now });
+          const traceSaved = traceApprovalRefusal(ctx.config.stateDir, { status: 'person-refused', reason: 'person-policy', machine: hostname(), disposition: 'local' });
+          return res.json({ action: 'block', reason: 'The person set this kind of action to "Don\'t do this", so it is refused. Only the person can change that setting.' + (traceSaved ? '' : ' The local refusal trace could not be saved.'), trust: adm, llmEvaluated: false, evaluatedAt: now });
         }
         // legacy: today's gate decision, unchanged.
       }

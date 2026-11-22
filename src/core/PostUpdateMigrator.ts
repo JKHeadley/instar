@@ -1,3 +1,5 @@
+import { exactReadToolNames } from '../data/effect-kinds.js';
+import { isActionableApproval } from './trustJourney/approvalPresentation.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
@@ -25266,6 +25268,9 @@ process.stdin.on('end', async () => {
 
     const service = parts[1];
     const action = parts.slice(2).join('_');
+    const sourceReadNames = ${JSON.stringify(exactReadToolNames())};
+    if (sourceReadNames.includes(toolName)) process.exit(0);
+    const isActionableApproval = ${isActionableApproval.toString()};
 
     // Playwright's logged-in operator profile is one physical, host-wide seat.
     // Acquire/renew its lease before EVERY browser tool, including snapshots and
@@ -25434,9 +25439,8 @@ process.stdin.on('end', async () => {
         body: postData,
         signal: controller.signal,
       });
-      clearTimeout(timeout);
-
       const decision = await res.json();
+      clearTimeout(timeout);
 
       const actionDecision = decision.action;
       const permitsOperation = actionDecision === 'proceed' || actionDecision === 'allow';
@@ -25448,6 +25452,10 @@ process.stdin.on('end', async () => {
         process.exit(2);
       }
 
+      if (actionDecision === 'ask' && !isActionableApproval(decision.approval)) {
+        process.stderr.write('APPROVAL REQUEST UNCONFIRMED: Delivery of an actionable request to the owner could not be confirmed. The action remains refused.\\n');
+        process.exit(2);
+      }
       if (actionDecision === 'ask') {
         // A governed action waits for the person: the server has sent (or tried to send) the card.
         process.stderr.write('WAITING FOR APPROVAL: ' + (decision.reason || 'This action needs approval from the person.') + '\\n');

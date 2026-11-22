@@ -2779,6 +2779,11 @@ export class TelegramAdapter implements MessagingAdapter {
    * threaded reply to one message there. Returns null on any failure, including a reply target the
    * platform refuses, so a caller that needs the thread never falls back to an unthreaded send.
    */
+  /** Trusted account-path asks use the existing visible, bounded owner-decision lane. */
+  async sendOwnerApproval(text: string, replyToMessageId?: number): Promise<SendResult | null> {
+    return withNotificationEnvelope(OWNER_DECISION_ENVELOPE, () => this.sendToOwnerDM(text, replyToMessageId));
+  }
+
   async sendOwnerDirect(text: string, replyToMessageId?: number): Promise<SendResult | null> {
     return this.sendToOwnerDM(text, replyToMessageId);
   }

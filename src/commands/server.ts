@@ -36684,7 +36684,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // ── Trust journey, stage 0 part B: the account path (docs/specs/trust-journey.md decision 5) ──
     // Always on: authority replication and proof checks are never behind a flag (spec 6a).
     try {
-      const { createTrustJourneyRuntime, journalSink } = await import('../core/trustJourney/TrustJourneyRuntime.js');
+      const { initializeTrustJourneyRuntime, journalSink } = await import('../core/trustJourney/TrustJourneyRuntime.js');
       const tjStore = await import('../core/trustJourney/TrustJourneyStore.js');
       const { slackOwnerUserId: tjSlackOwner } = await import('../server/mobileSlackRoutes.js');
       const tjSink = coherenceJournal && replicatedRecordEmitter && replicatedPeerStreamReader
@@ -36720,7 +36720,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           })
         : undefined;
-      _trustJourneyRuntime = createTrustJourneyRuntime({
+      const initializedTrust = await initializeTrustJourneyRuntime({
         outcomeSink: tjOutcomeSink,
         stateDir: config.stateDir,
         configPath: path.join(config.stateDir, 'config.json'),
@@ -36731,7 +36731,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         autonomyManager,
         trustRecovery: trustRecovery ?? null,
         telegram: telegram ? {
-          sendOwnerDirect: (text: string, replyTo?: number) => telegram!.sendOwnerDirect(text, replyTo),
+          sendOwnerDirect: (text: string, replyTo?: number) => telegram!.sendOwnerApproval(text, replyTo),
           getOwnerUserId: () => telegram!.getOwnerUserId(),
         } : null,
         slack: slackAdapter ? {
@@ -36784,13 +36784,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           };
         })(),
-        notifyOwner: telegram ? async (text: string) => { await telegram!.sendOwnerDirect(text); } : undefined,
+        notifyOwner: telegram ? async (text: string) => { await telegram!.sendOwnerApproval(text); } : undefined,
         log: (event, detail) => console.log(`  [trust-journey] ${event} ${JSON.stringify(detail)}`),
+      }, (tjr) => {
+        if (telegram) telegram.onTrustAccountPathReceipt = (r) => tjr.ingest(r);
+        if (slackAdapter) slackAdapter.onTrustAccountPathReceipt = (r) => tjr.ingest(r);
       });
-      if (telegram) { const tjr = _trustJourneyRuntime; telegram.onTrustAccountPathReceipt = (r) => tjr.ingest(r); }
-      if (slackAdapter) { const tjr = _trustJourneyRuntime; slackAdapter.onTrustAccountPathReceipt = (r) => tjr.ingest(r); }
-      const narrowed = await _trustJourneyRuntime.checkAtLoad();
-      const legacy = await _trustJourneyRuntime.importLegacyAndWriteFallback();
+      _trustJourneyRuntime = initializedTrust.runtime;
+      const { narrowed, legacy } = initializedTrust;
       console.log(pc.dim(`  [trust-journey] legacy import: ${legacy.imported} kind(s) recorded; hook fallback file ${legacy.fileWritten ? 'written' : `NOT written${legacy.skipped ? ` (${legacy.skipped})` : ''}`}`));
       console.log(pc.dim(`  [trust-journey] account path ready (${_trustJourneyRuntime.store.sinkDescription}); proof check at load restored ${narrowed.length} setting(s)`));
     } catch (err) {
