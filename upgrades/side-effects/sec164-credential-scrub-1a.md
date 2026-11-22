@@ -28,6 +28,14 @@ Tier 2, spec-driven. Size:
 ## Source fix
 The Telegram calls already log the method name only, never the request address. A unit test pins the direct case: no log statement formats the address inline. The four bot-key-shaped matches found in this machine's logs on 2026-11-21 were version stamps in a notification-preferences log, not keys. That is the false positive the sweeper's dry run exists to catch before anything is masked.
 
+## 6b. Operator-surface quality
+
+The only operator-surface file touched is `dashboard/console/credential-shape.js`, and only its Telegram bot-key pattern changed, to match the server's wall: the form inside a Telegram address is now recognised. Nothing renders differently. No markup, label, layout or action changes, so each criterion is unchanged from today:
+1. **Leads with the primary action?** Yes, unchanged. No surface layout is touched.
+2. **Zero raw internals as primary content?** Yes. The change only decides which pasted text the console treats as a key; it adds nothing that is shown.
+3. **Destructive actions de-emphasized?** Not applicable. No action is added or moved.
+4. **Plain language and phone width?** Unchanged. No text or layout is touched, and the parity test keeps the browser and server decisions in step.
+
 ## Signal vs authority
 It adds no authority, and it blocks nothing. The wall's behaviour is unchanged.
 
