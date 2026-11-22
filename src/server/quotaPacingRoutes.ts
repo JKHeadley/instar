@@ -16,6 +16,13 @@ import { Router, type Request, type Response } from 'express';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { RouteContext } from './routes.js';
 import { createPoolBuildLimiter, poolFanOut } from './poolFanOut.js';
+import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
+import { isWindowAwareChoiceEnabled } from '../core/windowAwarePlacement.js';
+import {
+  ACCOUNT_CHOICE_SHADOW_SCHEMA, pageShadowRows, readShadowRows, shadowLogPath, summarizeShadowRows,
+  type ShadowDaySummary,
+} from '../monitoring/AccountChoiceShadowLog.js';
 import { buildLocalSummaries, isQuotaPacingEnabled, type QuotaHistoryLedger } from '../monitoring/QuotaHistoryLedger.js';
 import {
   HOUR_MS, QUOTA_PACING_SCHEMA, assembleProviders, mergeLogins, parseMs, poolCalibration, validatePeerSummary,
@@ -127,6 +134,97 @@ export function createQuotaPacingRoutes(ctx: QuotaPacingCtx, timings: { peerTime
       couldNotRead: sources.filter((s) => s.status === 'failed').map((s) => ({ machineId: s.machineId, machine: s.machine, reason: s.reason })),
       calibration: poolCalibration(merged.logins),
     });
+  });
+
+  /**
+   * GET /quota-pacing/account-choice — quota pacing step 2's shadow evidence
+   * (docs/specs/quota-pacing-account-choice.md §5). Bearer-only, read-only.
+   *   - default (`scope=pool`): one per-machine, per-day summary for this machine plus each peer
+   *     (each peer asked `?scope=local-summary`), naming any machine that did not answer.
+   *   - `?scope=local&since=&until=&limit=&cursor=`: this machine's raw rows, paged (limit ≤ 500).
+   *   - `?machine=<id>&…`: one other machine's raw page, through the same bearer peer fetch.
+   *   - 503 `window-aware-choice-off` while `subscriptionPool.pacing.windowAwareChoice` resolves off.
+   */
+  const allowChoicePoolBuild = createPoolBuildLimiter();
+  router.get('/quota-pacing/account-choice', async (req: Request, res: Response) => {
+    if (!isWindowAwareChoiceEnabled(ctx.config)) {
+      res.status(503).json({ error: 'window-aware-choice-off', detail: 'window-aware account choice is not switched on for this machine (subscriptionPool.pacing.windowAwareChoice)' });
+      return;
+    }
+    const stateDir = (ctx.config as { stateDir?: string }).stateDir;
+    if (!stateDir) { res.status(503).json({ error: 'window-aware-choice-not-running' }); return; }
+    const now = clock();
+    const selfId = ctx.meshSelfId ?? 'local';
+    const file = shadowLogPath(stateDir);
+    const q = (k: string): string | undefined => (typeof req.query[k] === 'string' ? (req.query[k] as string) : undefined);
+    const num = (k: string): number | undefined => {
+      const v = q(k);
+      if (v === undefined) return undefined;
+      const t = /^\d+$/.test(v) ? Number(v) : Date.parse(v);
+      return Number.isFinite(t) ? t : undefined;
+    };
+    const pageQuery = () => ({ sinceMs: num('since'), untilMs: num('until'), limit: num('limit'), cursor: q('cursor') ?? null });
+    const pageParams = () => {
+      const u = new URLSearchParams();
+      for (const k of ['since', 'until', 'limit', 'cursor']) { const v = q(k); if (v !== undefined) u.set(k, v); }
+      return u.toString();
+    };
+
+    const machine = q('machine');
+    if (q('scope') === 'local' || (machine !== undefined && machine === selfId)) {
+      const { rows, malformed } = await readShadowRows(file);
+      const page = pageShadowRows(rows, pageQuery());
+      res.json({ schema: ACCOUNT_CHOICE_SHADOW_SCHEMA, scope: 'local', generatedAt: new Date(now).toISOString(), machineId: selfId, rows: page.rows, next: page.next, malformed });
+      return;
+    }
+    if (q('scope') === 'local-summary') {
+      const { rows, malformed } = await readShadowRows(file);
+      res.json({ schema: ACCOUNT_CHOICE_SHADOW_SCHEMA, scope: 'local-summary', generatedAt: new Date(now).toISOString(), machineId: selfId, days: summarizeShadowRows(rows), malformed });
+      return;
+    }
+    if (machine !== undefined) {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machine);
+      if (!peer) { res.status(404).json({ error: 'unknown-machine' }); return; }
+      const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allow).ok) {
+        res.status(502).json({ error: 'peer-not-allowed', machineId: machine }); return;
+      }
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/quota-pacing/account-choice?scope=local&${pageParams()}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+        });
+        const text = await r.text();
+        if (!r.ok) { res.status(502).json({ error: 'peer-failed', machineId: machine, status: r.status }); return; }
+        if (Buffer.byteLength(text) > MAX_PEER_BYTES) { res.status(502).json({ error: 'peer-too-large', machineId: machine }); return; }
+        const body = JSON.parse(text) as Record<string, unknown>;
+        if (body.schema !== ACCOUNT_CHOICE_SHADOW_SCHEMA || body.scope !== 'local' || !Array.isArray(body.rows)) {
+          res.status(502).json({ error: 'peer-invalid-body', machineId: machine }); return;
+        }
+        res.json({ ...body, machineId: machine });
+      } catch (err) { // @silent-fallback-ok — answered as a named 502, never dropped
+        res.status(502).json({ error: err instanceof Error && err.name === 'TimeoutError' ? 'peer-deadline' : 'peer-unreachable', machineId: machine });
+      }
+      return;
+    }
+
+    if (!allowChoicePoolBuild(now)) { res.status(429).json({ error: 'rate-limited' }); return; }
+    const { rows, malformed } = await readShadowRows(file);
+    const machines: Array<{ machineId: string; machine: string; days: ShadowDaySummary[] }> = [
+      { machineId: selfId, machine: nicknameOf(ctx, ctx.meshSelfId ?? null), days: summarizeShadowRows(rows) },
+    ];
+    const couldNotRead: Array<{ machineId: string; machine: string; reason?: string }> = [];
+    await poolFanOut(ctx, {
+      path: '/quota-pacing/account-choice?scope=local-summary', peerTimeoutMs: PEER_TIMEOUT_MS, fanOutDeadlineMs: FAN_OUT_DEADLINE_MS, maxBytes: MAX_PEER_BYTES,
+      accept: (body, p) => {
+        if (body.schema !== ACCOUNT_CHOICE_SHADOW_SCHEMA || body.scope !== 'local-summary' || !Array.isArray(body.days)) return 'invalid-body';
+        machines.push({ machineId: p.machineId, machine: nicknameOf(ctx, p.machineId), days: (body.days as ShadowDaySummary[]).slice(0, 62) });
+        return null;
+      },
+      onResult: (p, ok, reason) => {
+        if (!ok) couldNotRead.push({ machineId: p.machineId, machine: nicknameOf(ctx, p.machineId), reason });
+      },
+    });
+    res.json({ schema: ACCOUNT_CHOICE_SHADOW_SCHEMA, scope: 'pool', generatedAt: new Date(now).toISOString(), machines, couldNotRead, malformed });
   });
 
   return router;

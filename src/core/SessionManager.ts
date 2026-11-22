@@ -1,3 +1,4 @@
+import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
@@ -7,6 +8,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  * and can be monitored/reaped by the server.
  */
 
+import type { SpawnPlacementContext } from './windowAwarePlacement.js';
 import { alwaysAvailableTokenInUse } from './alwaysAvailableToken.js';
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
@@ -1248,7 +1250,7 @@ export class SessionManager extends EventEmitter {
    * before (the gate: this stays unset unless `subscriptionPool.pinSessionsToPool`
    * is enabled, so it is a strict no-op by default). Returns null per-call when
    * no eligible account exists. */
-  private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+  private spawnAccountResolver?: (ctx?: SpawnPlacementContext) => { configHome: string; accountId: string } | null;
   /**
    * Codex placement for a NEW headless `codex-cli` spawn (fb-39e55b95-f00): the
    * account with room to launch under, a refusal when every pool Codex account
@@ -2281,7 +2283,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
   }
 
-  setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
+  setSpawnAccountResolver(resolver: (ctx?: SpawnPlacementContext) => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
   }
 
@@ -2290,10 +2292,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * agent's Claude sign-in it overrides the pool (create-agent-accounts-and-always-on §B.4): the session
    * runs on that code, so it is not tagged with a pool account it doesn't use.
    */
-  private poolAccountForSpawn(): { configHome: string; accountId: string } | null {
+  private poolAccountForSpawn(ctx?: SpawnPlacementContext): { configHome: string; accountId: string } | null {
     if (!this.spawnAccountResolver) return null;
     if (this.config.stateDir && alwaysAvailableTokenInUse(this.config.stateDir, this.config.anthropicApiKey)) return null;
-    return this.spawnAccountResolver();
+    return this.spawnAccountResolver(ctx);
   }
 
   setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
@@ -5120,7 +5122,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = options.accountPin
       ? options.accountPin
       : headlessFramework === 'claude-code'
-        ? (this.poolAccountForSpawn() ?? null)
+        ? (this.poolAccountForSpawn({
+            model: launchModel ?? null,
+            modelSource: options.model ? 'explicit' : requestedModel ? 'config-default' : 'unknown',
+            sessionName: tmuxSession,
+          }) ?? null)
         : headlessFramework === 'codex-cli'
           ? this.codexHeadlessPlacement()
           : null;
@@ -5604,7 +5610,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // always claude-code, so launch under the chosen pool account's config home
     // and tag the session. No-op unless the resolver is wired + returns an account.
     // An explicit account pin (spec skill-driven-signin-repair) always wins over the resolver.
-    const pinnedAccount = options.accountPin ?? this.poolAccountForSpawn() ?? null;
+    const pinnedAccount = options.accountPin ?? this.poolAccountForSpawn({
+      model: launchModel ?? null,
+      modelSource: options.model ? 'explicit' : launchModel ? 'config-default' : 'unknown',
+      sessionName: tmuxSession,
+    }) ?? null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
@@ -8521,7 +8531,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //     account → default-login behavior is exactly unchanged when off.
     const explicitConfigHome = options?.configHome;
     const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
-      ? (this.poolAccountForSpawn() ?? null)
+      ? (this.poolAccountForSpawn({
+          model: launchDefaultModel ?? null,
+          modelSource: options?.defaultModel ? 'explicit' : launchDefaultModel ? 'config-default' : 'unknown',
+          sessionName: tmuxSession,
+        }) ?? null)
       : null;
     // Census #6: when the home comes from a pinned pool account, resolve its LIVE slot through the
     // ledger gate (an explicit caller-supplied home — the account-swap / SessionRefresh path — is a
@@ -8902,7 +8916,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // actually runs; recoverPendingInjects sweeps survivors at boot.
       this.pendingInjects.record({
         tmuxSession,
-        initialMessage: effectiveInitialMessage,
+        // SEC-137: record the text exactly as rawInject will type it, so the
+        // Stage-B first-message match compares like with like.
+        initialMessage: sanitizeTypedText(effectiveInitialMessage),
         telegramTopicId: options?.telegramTopicId,
         conversationId: options?.bootstrapConversationIds?.[0] ?? options?.telegramTopicId,
         // Only a genuinely fresh Codex spawn may use the narrow offset-zero
@@ -10080,6 +10096,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // delivered verbatim; this removes only the sequence that can forge a
     // paste boundary.
     text = text.replace(/(?:\x1b\[|\x9b)20[01]~/g, '');
+    // SEC-137: no other byte in the text may act as a keystroke either. A single-line message is typed
+    // with `send-keys -l`, so `\r` would submit early and Ctrl-U would erase the sender tag. CR becomes a
+    // newline (taking the bracketed path), and remaining C0 (except tab/newline), DEL and C1 are dropped.
+    text = neutralizeTerminalControls(text);
     // Reset idle-prompt timer — this session is about to receive new input,
     // so it's not a zombie. Without this, the zombie detector can kill a session
     // that just received a message but hasn't produced output yet.
@@ -10226,7 +10246,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const exactTarget = `=${tmuxSession}:`;
     const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
     const enterPresses = framework === 'codex-cli' ? 2 : 1;
-    if (text.includes('\n')) {
+    // SEC-137: a tab typed key-by-key can trigger completion; send it inside a paste instead.
+    if (text.includes('\n') || text.includes('\t')) {
       withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], { encoding: 'utf-8', timeout: 5000 }));
       for (const chunk of chunkLiteralForTmux(text)) {
         withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), { encoding: 'utf-8', timeout: 10000 }));

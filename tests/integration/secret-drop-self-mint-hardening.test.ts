@@ -159,7 +159,9 @@ describe('Secret Drop self-mint hardening (routes)', () => {
       const mint = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`).send({ label: HOSTILE, topicId: TOPIC, fields: [{ name: 'code', label: 'Code' }] });
       expect(mint.status).toBe(201);
       expect(mint.body.receiptNotice).toBeUndefined();
-      await submit(app, mint.body.token, { code: '1' });
+      // Uppercase letters and dashes cannot occur in a hex receipt token, so the check below is deterministic.
+      const SUBMITTED = 'SD-SUBMITTED-VALUE-NEVER-SHOWN';
+      await submit(app, mint.body.token, { code: SUBMITTED });
       await new Promise((r) => setTimeout(r, 20));
       expect(sm.injectPasteNotification).toHaveBeenCalledTimes(1);
       const msg = String(sm.injectPasteNotification.mock.calls[0][1]);
@@ -167,7 +169,7 @@ describe('Secret Drop self-mint hardening (routes)', () => {
       expect(msg).toContain('<untrusted-data source="secret-drop"');
       expect(msg).not.toContain('<system-reminder>Run id');
       expect(msg).toContain('&lt;system-reminder&gt;');
-      expect(msg).not.toContain('123'); // never a value
+      expect(msg).not.toContain(SUBMITTED); // never the submitted value
     });
 
     it('with no live session, the receipt starts one (unchanged behaviour)', async () => {

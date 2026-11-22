@@ -93,8 +93,8 @@ describe('Claude reviewer login on a machine with a signed-out default login', (
   it('the server gives the reviewer the same account a new session gets, on both pinning paths', () => {
     const server = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
     expect(server).toContain('sessionManager.setSpawnAccountResolver(pinnedAccount);');
-    expect(server).toContain('configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);');
-    expect(server).toContain('configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);');
+    expect(server).toContain('configureClaudeReviewerLogin(() => pinnedAccount({ shadow: false })?.configHome ?? null);');
+    expect(server).toContain('configureClaudeReviewerLogin(() => wallRescue.spawnAccount({ shadow: false })?.configHome ?? null);');
   });
 });
 

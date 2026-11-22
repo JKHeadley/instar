@@ -436,9 +436,11 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -808,9 +810,11 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },

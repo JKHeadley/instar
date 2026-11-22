@@ -1,3 +1,4 @@
+import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
@@ -112,6 +113,7 @@ import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
+import { sanitizeTypedText } from '../core/terminalControlBytes.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
@@ -15814,6 +15816,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Set up dispatch system with auto-dispatcher
     let dispatches: DispatchManager | undefined;
     let autoDispatcher: AutoDispatcher | undefined;
+    // SEC-153: the config migration rewrote the file after this process loaded it; apply the same
+    // change in memory so the first boot after the update does not poll the old address.
+    if (config.dispatches) {
+      const { migrateConfigLegacyDispatchUrl } = await import('../core/PostUpdateMigrator.js');
+      if (migrateConfigLegacyDispatchUrl(config as unknown as Record<string, unknown>)) {
+        console.log(pc.yellow('  Dispatch polling of the old unsigned address is off (SEC-153)'));
+      }
+    }
     if (config.dispatches) {
       dispatches = new DispatchManager({
         ...config.dispatches,
@@ -15843,6 +15853,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { DispatchDecisionJournal } = await import('../core/DispatchDecisionJournal.js');
       const dispatchDecisionJournal = new DispatchDecisionJournal(config.stateDir);
       autoDispatcher.setDecisionJournal(dispatchDecisionJournal);
+      // SEC-153: the dispatch server's pinned keys, from the config file only. With none, no dispatch is
+      // auto-applied or executed: each waits for review.
+      const pinnedDispatchKeys = config.dispatches.trustedKeys && typeof config.dispatches.trustedKeys === 'object' && !Array.isArray(config.dispatches.trustedKeys)
+        ? Object.fromEntries(Object.entries(config.dispatches.trustedKeys).filter(([k, v]) => typeof k === 'string' && k.length <= 128 && typeof v === 'string' && v.includes('PUBLIC KEY')))
+        : {};
+      if (Object.keys(pinnedDispatchKeys).length > 0) {
+        const { DispatchVerifier } = await import('../core/DispatchVerifier.js');
+        autoDispatcher.setSignatureGate(new DispatchVerifier({ trustedKeys: pinnedDispatchKeys, required: true }));
+      }
 
       autoDispatcher.start();
       console.log(pc.green('  Dispatch system enabled (auto-polling active)'));
@@ -17668,6 +17687,43 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): window-aware account choice.
+    // Built BEFORE the throttle wiring below (the throttle reads it); the poller it reads is
+    // constructed later and is only touched when a decision runs. One set of live inputs shared by every picker on this machine; the switch is read live per
+    // decision through the dev-agent gate, and the shadow log records one row per placement.
+    const { AccountChoiceShadowLog, shadowLogPath } = await import('../monitoring/AccountChoiceShadowLog.js');
+    let accountChoiceShadow: InstanceType<typeof AccountChoiceShadowLog> | null = null;
+    const windowAwareEnabled = () => resolveDevAgentGate(
+      (() => {
+        const v = liveConfig.get<boolean | undefined>('subscriptionPool.pacing.windowAwareChoice', config.subscriptionPool?.pacing?.windowAwareChoice);
+        return typeof v === 'boolean' ? v : undefined;
+      })(),
+      config,
+    );
+    const windowAwareDeps: import('../core/windowAwarePlacement.js').WindowAwareDeps = {
+      enabled: windowAwareEnabled,
+      requestRead: (id) => quotaPoller.requestRead(id),
+      failedReads: (id) => quotaPoller.outOfCycleFailures(id),
+      breakerOpen: (id) => quotaPoller.rereadBreakerOpen(id),
+      pollIntervalMs: () => quotaPoller.pollInterval(),
+      record: (row) => {
+        if (!config.stateDir) return;
+        if (!accountChoiceShadow) {
+          accountChoiceShadow = new AccountChoiceShadowLog({ file: shadowLogPath(config.stateDir), machineId: subscriptionPoolMachineId ?? 'local' });
+        }
+        accountChoiceShadow.record(row);
+      },
+    };
+    const windowAwareSelection = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, requestRead: windowAwareDeps.requestRead, failedReads: windowAwareDeps.failedReads, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
+    // The throttle's headroom read (model-blind): window-aware inputs plus the re-read breaker,
+    // behind the same live switch. It never requests reads (it is not a placement).
+    const windowAwareThrottleOpts = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, failedReads: windowAwareDeps.failedReads, breakerOpen: windowAwareDeps.breakerOpen, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
     // POOL-AWARE QUOTA THROTTLE wiring (docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md):
     // give the global quota brake the SAME placeability predicate the placement layer
     // (selectAccount) uses, reading the LIVE SubscriptionPool. Effect: the brake never
@@ -17686,6 +17742,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), {
         nowMs: Date.now(),
         framework: config.sessions.framework ?? 'claude-code',
+        // quota-pacing step 2: rolled/unknown windows report null and an unmeasured best sets degraded.
+        ...windowAwareThrottleOpts(),
       }));
       console.log(pc.green('  Pool-aware quota throttle: wired (placement-shared eligibility, most-headroom gating)'));
     }
@@ -18332,6 +18390,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const dlTelegram = telegram;
         codexDeviceLimit = buildCodexDeviceLimitWiring({
           pool: subscriptionPool,
+          windowAwareSelection,
           ledger: subscriptionLoginLedger ?? null,
           quotaPoller,
           machineId: subscriptionPoolMachineId,
@@ -21904,6 +21963,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const messageFormatter = new MessageFormatter();
     const tmuxBin = config.sessions.tmuxPath;
     const tmuxOps: TmuxOperations = {
+      currentSessionGeneration: (name) => sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.id ?? null,
+      isSessionGeneration: (tmuxSession, sessionId) =>
+        sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
       getForegroundProcess(tmuxSession: string): string {
         try {
           return execFileSync(tmuxBin, ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_current_command}'], {
@@ -21925,7 +21987,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           const target = `=${tmuxSession}:`;
           // Chunked — see src/core/tmuxLiteralSend.ts (`send-keys -l` payload
           // is one argv element and blows ARG_MAX on large text).
-          for (const chunk of chunkLiteralForTmux(text)) {
+          // SEC-137: peer-authored text is typed key-by-key here, so a CR, Ctrl-U or ESC inside it would act
+          // as a keystroke (early submit, erased sender tag). Same cleaning as SessionManager.rawInject.
+          for (const chunk of chunkLiteralForTmux(sanitizeTypedText(text))) {
             execFileSync(tmuxBin, buildLiteralSendArgs(target, chunk), { encoding: 'utf-8', timeout: 5000 });
           }
           execFileSync(tmuxBin, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
@@ -22012,9 +22076,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         prefix: path.basename(config.projectDir),
         asOf,
       }),
+      // relay-asof-holder-skew §3: one JSONL row per holder refusal, next to the other delivery audits.
+      refusalAuditPath: path.join(config.stateDir, '..', 'logs', 'message-delivery-refusals.jsonl'),
       // §C: a terminal failure tells the proven sender session once.
       onDeliveryFailure: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
       undeliveredCounts: () => Object.fromEntries(senderNotifier.undelivered),
+      // N73: a signed generation proof works on every registered rope, including
+      // LAN HTTP; it carries no bearer credential and authenticates the reply.
+      generationBindingEnabled: () => liveConfig.get<boolean>('multiMachine.messageSessionGeneration.enabled', false) === true,
+      generationEvidence: (kind, reason, messageId) => featureEvidence.record('multiMachine.messageSessionGeneration', { kind, reason, context: { messageId } }),
+      peerSessionGeneration: (targetMachine, target, timeoutMs) => crossMachineDeps
+        ? readPeerMessageGeneration({
+          peer: (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === targetMachine) ?? null,
+          target, timeoutMs, selfMachine: machineId, signingKeyPem: crossMachineDeps.signingKeyPem,
+          peerPublicKeyPem: crossMachineDeps.identityManager.getSigningPublicKeyPem(targetMachine) ?? null,
+        })
+        : Promise.resolve({ reason: 'cross-machine messaging is unavailable' }),
       // §D.3: guarded relay addresses, read at call time (the mesh block below sets them up).
       peerAddresses: (machineId: string) => {
         const peer = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
@@ -22095,6 +22172,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Start delivery retry manager for automatic retries, watchdog, and TTL expiry
     const retryManager = new DeliveryRetryManager(messageStore, messageDelivery, {
       agentName: config.projectName,
+      currentSessionGeneration: (name) => sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.id ?? null,
+      generationEvidence: (kind, reason, messageId) => featureEvidence.record('multiMachine.messageSessionGeneration', { kind, reason, context: { messageId } }),
       // messages-reach-renamed-sessions §B/§C.
       isLocalEnvelope: (envelope) => {
         const m = envelope.message.to.machine;
@@ -22103,6 +22182,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       isPinnedSessionLive: (tmuxSession, sessionId) =>
         sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
       onDeadLetter: (envelope, reason) => { messageRouter.reportTerminalFailure(envelope, reason); },
+      // relay-asof-holder-skew §2: a role with no accepted holder yet is re-resolved each pass.
+      redeliverUnresolved: (envelope, claim) => messageRouter.redeliverSameAgentLocal(envelope, claim),
       // §D.6: the origin copy of a cross-machine message stays open for a late notice.
       holdForRemoteNotice: (envelope) => {
         const m = envelope.message.to.machine;
@@ -25201,6 +25282,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       _swapAntiThrashEngine = new SwapAntiThrashEngine({
         ledger: swapLedger,
         getKnobs: antiThrashKnobsGetter,
+        // quota-pacing step 2: rolled / unknown / unread readings are invalid for proactive moves.
+        windowAware: windowAwareEnabled,
+        outOfCycleFailures: (id) => quotaPoller.outOfCycleFailures(id),
         machineId: _meshSelfId ?? 'local',
         // P17: episode-deduped attention (the engine dedupes on episodeId;
         // the id passed here is the stable per-episode dedupe key).
@@ -25658,13 +25742,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       _quotaAwareScheduler = new QuotaAwareScheduler({
         listAccounts: () => subscriptionPool.list(),
         softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct,
+        // quota-pacing step 2: window-aware selection inputs (read live; off = today's rule).
+        windowAware: {
+          enabled: windowAwareEnabled,
+          requestRead: windowAwareDeps.requestRead,
+          failedReads: windowAwareDeps.failedReads,
+          pollIntervalMs: () => quotaPoller.pollInterval(),
+        },
         // swap-continuity-antithrash — the anti-thrash observation + execute-time
         // revalidation hooks. Reactive decision behavior is untouched (I6):
         // these only OBSERVE reactive swaps (dwell clock-start, hop alerts,
         // failed rows) and revalidate PROACTIVE explicit-target calls (§3.3).
         antiThrash: _swapAntiThrashEngine
           ? {
-              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs).valid,
+              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs, { windowAware: windowAwareEnabled() }).valid,
               getKnobs: () => {
                 const k = antiThrashKnobsGetter();
                 return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
@@ -25735,6 +25826,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         );
       _usageWallRescue = new UsageWallRescue({
         readConfig: readWallRescueConfig,
+        // quota-pacing step 2: window-aware account choice (read live; off = today's rule).
+        windowAware: windowAwareDeps,
         listAccounts: () => subscriptionPool.list(),
         getSession: (name) => state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === name),
         configHomeForSession: (name) => sessionManager.configHomeForSession(name),
@@ -25806,18 +25899,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        const pinnedAccount = () => {
-          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
+        const { decideWindowAwarePlacement, windowAwareOn } = await import('../core/windowAwarePlacement.js');
+        const pinnedAccount = (ctx?: import('../core/windowAwarePlacement.js').SpawnPlacementContext) => {
+          const nowMs = Date.now();
+          const accounts = subscriptionPool.list();
+          const framework = 'claude-code' as const;
+          const softThresholdPct = config.subscriptionPool?.swapSoftThresholdPct ?? 90;
+          const oldPick = () => selectAccount(accounts, { nowMs, framework, softThresholdPct });
+          // quota-pacing step 2: the shared tiered score when the switch is on (shadow row per placement).
+          const acct = windowAwareOn(windowAwareDeps)
+            ? decideWindowAwarePlacement({
+                accounts,
+                framework,
+                softThresholdPct,
+                nowMs,
+                ctx,
+                deps: windowAwareDeps,
+                caller: 'spawn-pinned',
+                oldPick,
+              })
+            : oldPick();
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         };
         sessionManager.setSpawnAccountResolver(pinnedAccount);
         // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
         // the default login, which is signed out on a machine whose logins all live in the pool.
-        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
+        configureClaudeReviewerLogin(() => pinnedAccount({ shadow: false })?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
-        sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
-        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
+        sessionManager.setSpawnAccountResolver((ctx) => wallRescue.spawnAccount(ctx));
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount({ shadow: false })?.configHome ?? null);
       }
       // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
       // never launch on a Codex account the pool reads at its wall; tag the
@@ -27947,7 +28058,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, teamLogComputerRows: true, documentsOrigin: (config.tunnel as { type?: string; hostname?: string } | undefined)?.type === 'named' && (config.tunnel as { hostname?: string } | undefined)?.hostname ? `https://${String((config.tunnel as { hostname?: string }).hostname).toLowerCase()}` : null, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun
