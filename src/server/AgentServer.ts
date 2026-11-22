@@ -7421,6 +7421,7 @@ export class AgentServer {
       }
     }
     const routes = createRoutes(routeCtx);
+    this.attachWorkBoardRequestGate(options);
     // sibling-machine-reach: the background holdings cache's timers stop with the server.
     this.siblingHoldingsStop = () => (routes as unknown as { siblingHoldings?: { stop(): void } }).siblingHoldings?.stop();
     this.attribution?.start();
@@ -9690,6 +9691,80 @@ export class AgentServer {
       },
       getConfig,
     );
+  }
+
+  /**
+   * agent-work-cards-default §3: the request-to-card gate joins the Work Board runtime to the commitments, the durable
+   * message rows (Telegram log, app conversation events), the device registry and the team record. Every input the gate
+   * reads is a recorded fact on THIS machine; absent pieces leave the gate inert (a commitment then reads
+   * `cardPending` with a retryable reason, never a silent nothing).
+   */
+  private attachWorkBoardRequestGate(options: ConstructorParameters<typeof AgentServer>[0]): void {
+    const runtime = options.workBoard?.() ?? null;
+    const tracker = options.commitmentTracker ?? null;
+    const pairing = this.mobilePairing;
+    if (!runtime || !tracker || !pairing) return;
+    if (runtime.gate) return; // already attached (a test rig, or an earlier wiring): never overwrite its seams
+    const selfId = options.meshSelfId ?? 'local';
+    const telegram = options.telegram ?? null;
+    const appStore = options.appConversations?.store ?? null;
+    const cos = options.chiefOfStaffLoop ?? null;
+    const projectKeyFor = (candidates: string[]): string | null => {
+      let rows: Array<{ conversationKey: string }> = [];
+      try { rows = cos?.projectsSummary() ?? []; } catch { /* @silent-fallback-ok: an unreadable project list puts the card in General, which the agent can move */ rows = []; }
+      const keys = new Set(rows.map((r) => r.conversationKey));
+      return candidates.find((k) => keys.has(k)) ?? null;
+    };
+    const teamPeople = () => pairing.teamLog()?.state().people ?? new Map<string, { personKey: string; links: Record<string, string | number> }>();
+    runtime.attachRequestGate({
+      operatorConversation: (conversationKey) => {
+        const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+        if (tg) return telegram ? { ok: true, projectKey: projectKeyFor([conversationKey]) } : { ok: false };
+        if (conversationKey.startsWith('slack:')) return options.slack ? { ok: true, projectKey: projectKeyFor([conversationKey]) } : { ok: false };
+        // An app conversation that exists here (a card's own conversation links to its card inside the gate).
+        if (!appStore || !appStore.getConversation(conversationKey)) return { ok: false };
+        return { ok: true, projectKey: projectKeyFor([`app:${conversationKey}`, conversationKey]) };
+      },
+      telegramRow: telegram ? (topicId, messageId) => {
+        const r = telegram.findTopicMessage(topicId, messageId, Date.now() - 30 * 86_400_000);
+        return { entry: r.entry as never, ...(r.unreadable ? { unreadable: true } : {}), ...(r.budgetExceeded ? { budgetExceeded: true } : {}) };
+      } : undefined,
+      appRow: appStore ? (conversationKey, messageId) => {
+        const ev = appStore.getMessageEvent(conversationKey, messageId) as { kind?: string; role?: 'operator' | 'agent'; text?: string; origin?: { deviceId?: string }; senderRole?: 'owner' | 'msp' | 'team'; senderPerson?: { machineId: string; userId: string } } | null;
+        if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message') || !ev.role || typeof ev.text !== 'string') return null;
+        return { role: ev.role, text: ev.text, deviceId: ev.origin?.deviceId ?? null, senderRole: ev.senderRole, senderPerson: ev.senderPerson };
+      } : undefined,
+      deviceRecord: (deviceId) => {
+        const d = pairing.devices.get(deviceId);
+        return d ? { status: String(d.status), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}), ...(d.userId ? { userId: d.userId } : {}), ...(d.role ? { role: d.role } : {}) } : null;
+      },
+      telegramOwnerId: () => pairing.ownerIdentity().telegramOwnerId ?? telegram?.getOwnerUserId() ?? null,
+      teamPersonForTelegramId: (id) => {
+        for (const p of teamPeople().values()) for (const [k, v] of Object.entries(p.links ?? {})) if (/telegram/i.test(k) && String(v) === String(id)) return p.personKey;
+        return null;
+      },
+      slackOwnerId: () => pairing.ownerIdentity().slackOwnerUserId ?? null,
+      teamPersonForSlackId: (id) => {
+        for (const p of teamPeople().values()) for (const [k, v] of Object.entries(p.links ?? {})) if (/slack/i.test(k) && String(v) === id) return p.personKey;
+        return null;
+      },
+      commitments: {
+        list: () => {
+          const own = tracker.getAll().map((c) => ({ ...c, originMachineId: c.originMachineId ?? selfId }));
+          const replicas = (options.commitmentReplicaStore?.allReplicas() ?? []).flatMap((r) => r.records.map((c) => ({ ...c, originMachineId: c.originMachineId ?? r.ownerMachineId })));
+          return [...own, ...replicas] as never;
+        },
+        annotate: (id, patch) => { tracker.annotateCard(id, patch); },
+        supersedeSentinels: (conversationKey, userRequest, agentResponse, byId) => tracker.supersedeSentinelsFor(conversationKey, userRequest, agentResponse, byId),
+      },
+      teamKey: () => pairing.teamLog()?.state().ownerPersonKey ?? 'owner',
+      log: (event, detail) => {
+        console.log(`  [work-board] ${event} ${JSON.stringify(detail)}`);
+        // Maturation evidence (workBoard.agentWorkCards ladder): one `fired` per card the gate wrote, one `error` per refusal.
+        if (event === 'work-board-request-card-written') featureEvidence.record('workBoard.agentWorkCards', { kind: 'fired', reason: detail.backfill ? 'backfill' : 'gate' });
+        else if (event === 'work-board-request-card-refused') featureEvidence.record('workBoard.agentWorkCards', { kind: 'error', reason: String(detail.error ?? 'refused') });
+      },
+    });
   }
 
   /**

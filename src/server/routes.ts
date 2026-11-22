@@ -87,7 +87,7 @@ import { customProjectAppsEnabled } from './ProjectAppSandbox.js';
 import { projectAppsEnabled } from '../core/ProjectAppStore.js';
 import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
-import { workBoardEnabled } from '../core/WorkCardStore.js';
+import { workBoardEnabled, requestCardId as requestCardIdFor } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
 import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
 import { mountMobileAttentionChoiceRoutes } from './mobileAttentionChoiceRoutes.js';
@@ -3342,7 +3342,7 @@ export function createRoutes(ctx: RouteContext): Router {
     settings: () => ctx.workBoard?.()?.settings() ?? resolveWorkBoardSettings((ctx.config as { workBoard?: unknown }).workBoard),
     caller: (req) => {
       const session = (req.res?.locals as { memorySession?: { placeKey: string | null } } | undefined)?.memorySession;
-      if (session) return { kind: 'session', conversationKey: session.placeKey?.startsWith('app:') ? session.placeKey.slice(4) : null };
+      if (session) return { kind: 'session', conversationKey: session.placeKey?.startsWith('app:') ? session.placeKey.slice(4) : null, placeKey: session.placeKey ?? null };
       const person = devicePersonOf(req);
       if (person) {
         const pairing = ctx.mobilePairingService;
@@ -3370,6 +3370,20 @@ export function createRoutes(ctx: RouteContext): Router {
     saveSettings: (patch) => ctx.workBoard?.()?.saveSettingsPatch(patch) ?? false,
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
     exposeBoardRead: (read) => { workBoardReadAs = read; },
+    // agent-work-cards-default §2: progress notes through the runtime (conversation event first, pointer by the holder).
+    notes: {
+      write: (p, cardId, text, writerBinding) => { const rt = ctx.workBoard?.(); if (!rt) return { ok: false, status: 503, error: 'work-board-starting' }; return rt.writeNote(p, cardId, text, writerBinding); },
+      // Optional call: a card read must never fail because a runtime surface carries no notes.
+      last: (cardId) => ctx.workBoard?.()?.lastNote?.(cardId) ?? null,
+    },
+    // agent-work-cards-default §5: "Approve and widen" raises the board-policy request with the record it rests on.
+    proposeBoardPolicy: async (record) => {
+      if (!ctx.trustAccountPath) return { status: 'not-raised', message: 'request not raised: the trust path is not available on this machine' };
+      const r = await ctx.trustAccountPath.propose({ kind: 'board-policy', policy: 'outward-only' } as never);
+      const { code: _code, ...rest } = r as typeof r & { code?: string };
+      const note = `Your own requests already start at once. You have approved ${record.approvedUnchanged} other internal cards unchanged, changed ${record.changed} and declined ${record.declined} so far; ${record.waiting} are waiting now.`;
+      return { ...rest, message: (rest as { message?: string }).message ?? note };
+    },
     specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
     // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
     // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
@@ -30237,7 +30251,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const { type, title, description, context } = req.body;
+    const { type, title, description, context, source: feedbackSource } = req.body;
+    // agent-work-cards-default §3 "Feedback is not a trigger (R10)": with the board on, a Bearer caller says who the report
+    // is from; a request from the person the agent serves is a work card (POST /commitments), never feedback.
+    if (askWorkBoardOn()) {
+      const scoped = (res.locals.memorySession as { placeKey?: string | null } | undefined) ?? null;
+      const src = feedbackSource as { kind?: unknown; conversationKey?: unknown } | undefined;
+      const kinds = ['agent', 'other-agent', 'user', 'operator-conversation'];
+      const routes = { commitments: 'POST /commitments (the request becomes a card by itself)', card: 'POST /work-board/cards' };
+      if (!src || typeof src !== 'object' || !kinds.includes(String(src.kind))) {
+        if (!(scoped && src === undefined)) { res.status(400).json({ error: 'source-required', message: 'Say who this report is from: source: {kind: "agent" | "other-agent" | "user"}. A request from the person you serve is not feedback: record it as a commitment and it becomes a card.', routes }); return; }
+      }
+      if (src && src.kind === 'operator-conversation') { res.status(400).json({ error: 'operator-request-not-feedback', message: 'A direct request from the person you serve is a work card you carry, never a report to the maintainers. Record it with POST /commitments (the card is written for you), or write the card.', routes }); return; }
+    }
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -38547,6 +38573,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : body);
   });
 
+  // agent-work-cards-default §5 (b): withdraw an unanswered request the agent raised. Never approves anything; a
+  // board-policy request (the owner's path to the lighter policy) cannot be withdrawn; the same change cannot be re-asked
+  // until the card would have expired.
+  router.delete('/trust/requests/:id', async (req, res) => {
+    if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    const id = String(req.params.id);
+    if (!/^tr-[0-9a-f]{12}-[A-Za-z0-9-]{1,32}$/.test(id)) return res.status(400).json({ error: 'bad-request-id' });
+    const r = await ctx.trustAccountPath.service.withdraw(id);
+    if (!r.ok) {
+      const status = r.reason === 'not-found' ? 404 : r.reason === 'not-recorded' ? 503 : 409;
+      return res.status(status).json({ error: r.reason, ...(r.reason === 'board-policy-not-withdrawable' ? { message: 'The request to start internal cards without asking is the owner\'s path; the agent cannot withdraw it.' } : {}) });
+    }
+    res.json({ requestId: id, status: 'withdrawn', cardTold: r.cardTold, message: 'Withdrawn. A reply with its code approves nothing now, and the same change cannot be asked again until the card would have expired.' });
+  });
+
   router.get('/trust/requests', (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
     // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
@@ -39984,10 +40025,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, scope: 'mesh', commitments: byPriority(await commitmentsMeshRows(status === 'active')) });
       return;
     }
+    // agent-work-cards-default §3 Detectors: the requests whose card is not written yet (a retryable gap), never zero by omission.
+    const cardPendingOnly = req.query.cardPending === '1' || req.query.cardPending === 'true';
+    const byCardPending = <T,>(rows: T[]): T[] => cardPendingOnly ? rows.filter((c) => (c as { cardPending?: boolean }).cardPending === true) : rows;
     if (status === 'active') {
-      res.json({ enabled: true, commitments: byPriority(ctx.commitmentTracker.getActive()) });
+      res.json({ enabled: true, commitments: byCardPending(byPriority(ctx.commitmentTracker.getActive())) });
     } else {
-      res.json({ enabled: true, commitments: byPriority(ctx.commitmentTracker.getAll()) });
+      res.json({ enabled: true, commitments: byCardPending(byPriority(ctx.commitmentTracker.getAll())) });
     }
   });
 
@@ -40499,12 +40543,37 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             owner, blockedOn, actionClass, supersededBy,
             correctionId, classReviewRef, origin,
             // promise-review-and-priority §2.1
-            priority, priorityReason } = req.body;
+            priority, priorityReason,
+            // agent-work-cards-default §3: the request's source and the recording session's card fields.
+            sourceConversationKey: bodySourceConversationKey, sourceMessageId: bodySourceMessageId, milestones, outward, recommendation, whyYou, cardId: bodyCardId } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
       return;
     }
+    // ── agent-work-cards-default §3: source fields are validated; the conversation of a scoped session is its binding ──
+    if (bodyCardId !== undefined) { res.status(400).json({ error: 'card-id-not-accepted', message: 'The card id is derived from the commitment; it cannot be chosen. Record the commitment and read cardId from the response.' }); return; }
+    if (bodySourceConversationKey !== undefined && !(typeof bodySourceConversationKey === 'string' && /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|telegram:-?\d{1,20}|slack:[A-Za-z0-9_.:-]{1,160})$/.test(bodySourceConversationKey))) {
+      res.status(400).json({ error: '"sourceConversationKey" must be an app conversation key, telegram:<topic> or slack:<channel>[:<thread>]' }); return;
+    }
+    if (bodySourceMessageId !== undefined && !(typeof bodySourceMessageId === 'string' && bodySourceMessageId.length > 0 && bodySourceMessageId.length <= 200)) { res.status(400).json({ error: '"sourceMessageId" must be a string of at most 200 characters' }); return; }
+    if (milestones !== undefined && !(Array.isArray(milestones) && milestones.length <= 256 && milestones.every((m: unknown) => typeof m === 'string' && m.trim().length > 0 && m.length <= 8000))) { res.status(400).json({ error: '"milestones" must be a list of up to 256 non-empty strings' }); return; }
+    if (outward !== undefined && typeof outward !== 'boolean') { res.status(400).json({ error: '"outward" must be boolean' }); return; }
+    if (recommendation !== undefined && !(typeof recommendation === 'string' && recommendation.length <= 32_000)) { res.status(400).json({ error: '"recommendation" must be a string' }); return; }
+    if (whyYou !== undefined && !(typeof whyYou === 'string' && whyYou.length <= 32_000)) { res.status(400).json({ error: '"whyYou" must be a string' }); return; }
+    const scopedPlace = (res.locals.memorySession as { placeKey?: string | null } | undefined)?.placeKey ?? null;
+    let sourceConversationKey: string | undefined = typeof bodySourceConversationKey === 'string' ? bodySourceConversationKey : undefined;
+    if (scopedPlace) {
+      // Derived from the binding (§3): a body value outside the binding is `source-mismatch`.
+      const bound = scopedPlace.startsWith('app:') ? scopedPlace.slice(4) : /^telegram:(?:topic:)?(-?\d+)$/.test(scopedPlace) ? `telegram:${/^telegram:(?:topic:)?(-?\d+)$/.exec(scopedPlace)![1]}` : null;
+      if (sourceConversationKey !== undefined && bound !== null && sourceConversationKey !== bound) { res.status(403).json({ error: 'source-mismatch', message: 'A scoped session records against its own conversation; the body named another.' }); return; }
+      if (sourceConversationKey === undefined && bound) sourceConversationKey = bound;
+      if (sourceConversationKey === undefined && typeof topicId === 'number' && bound === null && /^telegram:/.test(scopedPlace)) sourceConversationKey = `telegram:${topicId}`;
+    }
+    if (sourceConversationKey === undefined && typeof topicId === 'number' && Number.isSafeInteger(topicId) && topicId > 0) sourceConversationKey = `telegram:${topicId}`;
+    const sourceMessageId: string | undefined = typeof bodySourceMessageId === 'string' ? bodySourceMessageId : undefined;
+    const requestGate = ctx.workBoard?.()?.gate ?? null;
+    const sourceVerdict = requestGate && sourceConversationKey && (source === 'agent' || source === 'manual' || source === undefined) ? requestGate.verifySource(sourceConversationKey, sourceMessageId ?? null) : null;
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
       return;
@@ -40648,7 +40717,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(boundBy ? { boundBy } : {}),
         ...(priority !== undefined ? { priority } : {}),
         ...(typeof priorityReason === 'string' ? { priorityReason } : {}),
+        // agent-work-cards-default §3: the source, the verdict (computed above from the durable row, never from the body) and the card fields.
+        ...(sourceConversationKey ? { sourceConversationKey } : {}),
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(sourceVerdict ? (sourceVerdict.sourceVerified
+          ? { sourceVerified: true, requesterPersonKey: sourceVerdict.requesterPersonKey, requesterIsOwner: sourceVerdict.requesterIsOwner, requestText: sourceVerdict.requestText, requestTextHash: sourceVerdict.requestTextHash }
+          : { sourceVerified: false, sourceUnverifiedReason: sourceVerdict.sourceUnverifiedReason }) : {}),
+        ...(Array.isArray(milestones) ? { milestones } : {}),
+        ...(typeof outward === 'boolean' ? { outward } : {}),
+        ...(typeof recommendation === 'string' ? { recommendation } : {}),
+        ...(typeof whyYou === 'string' ? { whyYou } : {}),
       });
+      // The derived card id rides in the response (derivable before the write); the gate runs after the response is sent.
+      const gateApplies = !!requestGate && !!sourceConversationKey && (commitment.source === 'agent' || commitment.source === 'manual') && requestGate.cardFor({ id: commitment.id, originMachineId: commitment.originMachineId ?? (ctx.meshSelfId ?? 'local') }) === null;
+      const derivedCardId = gateApplies ? requestCardIdFor(commitment.originMachineId ?? (ctx.meshSelfId ?? 'local'), commitment.id) : null;
+      if (gateApplies && requestGate) {
+        const row = commitment;
+        res.once('finish', () => {
+          try { requestGate.onRecorded({ ...row, originMachineId: row.originMachineId ?? (ctx.meshSelfId ?? 'local') } as never); }
+          catch (err) { console.warn(`[work-board] request-card gate failed for ${row.id}: ${err instanceof Error ? err.message : String(err)}`); }
+        });
+      }
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
       // is dark/dry a session CAN open a commitment on a minted id — accept it
       // (it preserves the record for the live proof) and raise ONE deduped
@@ -40679,7 +40768,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } catch { /* @silent-fallback-ok — an advisory hint must never fail the record */ }
       res.status(201).json({ ...commitment, classReviewAdmission: {
         wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
-      }, ...(dateMissing ? { dateMissing } : {}) });
+      }, ...(dateMissing ? { dateMissing } : {}), ...(derivedCardId ? { cardId: derivedCardId, cardPending: true } : {}) });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -41380,22 +41469,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
       return;
     }
-    const { deliveryMessageId, evidence } = req.body ?? {};
-    if (evidence !== undefined && (typeof evidence !== 'string' || evidence.length > 500)) {
-      res.status(400).json({ error: 'evidence must be a string of at most 500 characters' });
+    const { deliveryMessageId, evidence, itemId } = req.body ?? {};
+    // agent-work-cards-default §2: with `itemId` the evidence lands on the card (its 32,000 limit); the commitment's own
+    // resolution keeps its 500-character slice either way.
+    const evidenceMax = typeof itemId === 'string' && itemId ? 32_000 : 500;
+    if (evidence !== undefined && (typeof evidence !== 'string' || evidence.length > evidenceMax)) {
+      res.status(400).json({ error: `evidence must be a string of at most ${evidenceMax} characters` });
       return;
     }
+    if (itemId !== undefined && !(typeof itemId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(itemId))) { res.status(400).json({ error: 'itemId must name a done item on the card' }); return; }
     if (typeof route === 'object') {
-      const args = { ...(deliveryMessageId ? { deliveryMessageId } : {}), ...(evidence ? { evidence } : {}) };
+      const args = { ...(deliveryMessageId ? { deliveryMessageId } : {}), ...(evidence ? { evidence } : {}), ...(itemId ? { itemId } : {}) };
       await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'deliver', Object.keys(args).length ? args : undefined));
       return;
     }
-    const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId, evidence);
+    const before = ctx.commitmentTracker.get(req.params.id);
+    const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId, evidence); // deliver() keeps its own 500-character resolution slice
     if (!updated) {
       res.status(404).json({ error: `Commitment ${req.params.id} not found or already in terminal status` });
       return;
     }
-    res.json({ delivered: true, id: updated.id, commitment: updated });
+    let card: Record<string, unknown> | undefined;
+    const gate = ctx.workBoard?.()?.gate ?? null;
+    if (gate && before && (before.source === 'agent' || before.source === 'manual')) {
+      try { card = gate.onDeliver({ ...updated, originMachineId: updated.originMachineId ?? (ctx.meshSelfId ?? 'local') } as never, { deliveryMessageId, evidence, itemId }) as unknown as Record<string, unknown>; }
+      catch (err) { card = { error: err instanceof Error ? err.message : String(err) }; }
+    }
+    res.json({ delivered: true, id: updated.id, commitment: updated, ...(card ? { card } : {}) });
   });
 
   // POST /commitments/:id/probe — C1+C2 §4.4. The agent's own session records an

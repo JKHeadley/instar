@@ -1632,8 +1632,10 @@ When something isn't working with instar, or the user wants a feature, use your 
 \`\`\`bash
 curl -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -H 'Content-Type: application/json' \\
-  -d '{"type":"bug","title":"Short description","description":"Full details with context"}'
+  -d '{"type":"bug","title":"Short description","description":"Full details with context","source":{"kind":"agent"}}'
 \`\`\`
+
+\`source\` says who the report is from (\`agent\`, \`other-agent\`, \`user\`). A request the person you serve makes of you directly is never feedback: record it as a commitment (POST /commitments) and it becomes a work card you carry.
 
 This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`, \`hallucination\`.
 
@@ -2141,7 +2143,8 @@ curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -d '{
     "type": "bug",
     "title": "Brief description of the issue",
-    "description": "Full context: what happened, what you expected, error messages, steps to reproduce"
+    "description": "Full context: what happened, what you expected, error messages, steps to reproduce",
+    "source": {"kind": "agent"}
   }' | python3 -m json.tool
 \`\`\`
 
