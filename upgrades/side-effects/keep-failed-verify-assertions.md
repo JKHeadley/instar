@@ -34,9 +34,12 @@ The evidence stays on the machine that ran the tests. No replicated state or dup
 Revert the change. Existing artifacts are diagnostic only and expire with retained-checkout cleanup. No migration is required.
 
 ## Conclusion
-One independent review pass concurred. Targeted checks: 137 tests passed. Full-suite validation remains pending through normal Local Verify.
+One independent review pass concurred. Targeted checks: 137 tests passed. All three full Local Verify groups passed for 07d2a1f0dc742e98bc37e0b63e98ed544b7c9c53. This metadata correction still follows the normal verification gate.
 
-## Second-Pass Review
+## Second-pass review
+
+**Reviewer:** Codex independent reviewer `/root/retain_failure_evidence`. The reviewer completed the source review and concurred after the capture-exception and truncation findings were fixed.
+
 Concur with the review. Successfully parsed failures are preserved before cleanup, the artifact is bounded to64 KiB in UTF-8, private exclusive creation avoids following an existing file or symlink, and diagnostic failures preserve the test verdict. Existing checkout retention owns eviction, including its documented corrupt-registry exception.
 
 ## Class Closure
