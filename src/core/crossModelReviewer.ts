@@ -257,6 +257,14 @@ const REVIEW_MODEL_TIER = 'capable' as const;
  * Rule-1 / auth-probe vocabulary so a report can render a specific
  * remediation.
  */
+/**
+ * A reviewer family id: an IntelligenceFramework, or the metered `gemini-api` DOOR
+ * (gemini-payg-metered-lane §2 "Reviewer family accounting"). The door is deliberately
+ * NOT an IntelligenceFramework (FD-G3), so no automatic framework choice can ever pick
+ * it; only this registry names it.
+ */
+export type ReviewerFrameworkId = IntelligenceFramework | 'gemini-api';
+
 export type CrossModelUnavailableReason =
   | 'codex-not-installed'
   | 'codex-not-authed'
@@ -274,6 +282,11 @@ export type CrossModelUnavailableReason =
   | 'claude-not-installed'
   | 'claude-config-missing'
   | 'claude-forbidden'
+  // gemini-api metered door (gemini-payg §2): money off / not armed, or a CLI that this
+  // agent's review policy has replaced with the API door.
+  | 'gemini-api-not-configured'
+  | 'gemini-api-not-ready'
+  | 'gemini-cli-replaced-by-gemini-api'
   | 'no-supported-framework';
 
 export interface CrossModelDetectionResult {
@@ -286,9 +299,11 @@ export interface CrossModelDetectionResult {
    */
   binaryPath?: string;
   /** Present when available; the framework id that will run the review. */
-  framework?: IntelligenceFramework;
+  framework?: ReviewerFrameworkId;
   /** Present when available; the concrete model the review resolves to. */
   model?: string;
+  /** gemini-api only: the LOCAL server origin the review is sent to (never a secret). */
+  endpointUrl?: string;
   /** Present when unavailable; a specific machine-readable reason. */
   reason?: CrossModelUnavailableReason;
   /**
@@ -365,6 +380,14 @@ export interface CrossModelDetectInputs {
    * treated as allowed (the dominant claude-agent case).
    */
   enabledFrameworks?: string[];
+  /**
+   * The local server's answer about the metered `gemini-api` review door
+   * (`GET /intelligence/gemini/status`), fetched by the review driver. Absent ⇒ the
+   * door is treated as not configured (fleet default: byte-identical behaviour).
+   * `configured` ⇒ this agent's review policy uses the API door for Gemini and
+   * EXCLUDES the gemini CLI entirely (its sign-in may be a personal account).
+   */
+  geminiApiDoor?: { configured: boolean; ready: boolean; reason?: string; baseUrl?: string };
 }
 
 /** Resolve the default codex auth.json path (CODEX_HOME-aware). */
@@ -486,6 +509,13 @@ export function detectGeminiReviewer(
   const geminiPath =
     inputs.geminiPathDetected !== undefined ? inputs.geminiPathDetected : detectGeminiPath();
   const credsPath = inputs.geminiOauthCredsPath ?? defaultGeminiOauthCredsPath();
+
+  // 0. gemini-payg §2: an agent whose metered gemini-api door is configured reviews
+  //    Gemini through the API ONLY — never a CLI fallback (the CLI's sign-in may be a
+  //    personal Google account, which stays out of autonomous work).
+  if (inputs.geminiApiDoor?.configured === true) {
+    return { available: false, reason: 'gemini-cli-replaced-by-gemini-api' };
+  }
 
   // 1. Binary present?
   if (!geminiPath) {
@@ -1289,7 +1319,7 @@ export interface ReviewerResult {
   /** Outcome class for the cross-model pass. */
   status: 'ok' | 'degraded' | 'unavailable';
   /** The framework that ran (or would have run). */
-  framework?: IntelligenceFramework;
+  framework?: ReviewerFrameworkId;
   /** Concrete model used. */
   model?: string;
   /** Parsed verdict, when the review returned. */
@@ -1364,7 +1394,12 @@ export interface ReviewFinding {
 
 interface SupportedReviewerFramework {
   /** Extend this union (in the type below) to add a framework. */
-  id: IntelligenceFramework;
+  id: ReviewerFrameworkId;
+  /**
+   * Model-family key for diversity accounting (gemini-payg §2): `gemini-cli` and
+   * `gemini-api` share `gemini`, so a round counts Gemini once. Absent ⇒ the id.
+   */
+  familyKey?: string;
   /**
    * Is this a CROSS-MODEL (non-Claude) reviewer family (REVIEWER-DOOR-REWIRING
    * §5.1)? A REQUIRED field with NO default: a future reviewer provider/door
@@ -1424,6 +1459,23 @@ export interface ReviewerInvokeArgs {
    * A `providerOverride` still short-circuits this (no construction at all).
    */
   claudeProviderFactory?: () => { evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> } | null;
+  /**
+   * gemini-api only (gemini-payg §2): binds the review to a real spec on disk. The
+   * local server re-validates every field and books the (spec hash, round) pass.
+   */
+  specBinding?: GeminiApiSpecBinding;
+  /** Test-only fetch override for the gemini-api entry's call to the local server. */
+  geminiApiFetch?: typeof fetch;
+}
+
+/** The E1 binding the driver sends with a gemini-api review (§2 "The spec must be real"). */
+export interface GeminiApiSpecBinding {
+  /** Absolute path of the spec file. */
+  specPath: string;
+  specSha256: string;
+  round: number;
+  /** Random per driver run; reused on a retry of the same round so no second call mints. */
+  runNonce: string;
 }
 
 /**
@@ -2001,6 +2053,81 @@ const grokReviewer: SupportedReviewerFramework = {
  * registry entries. NOTE: the registry only ever carries first-party OAuth
  * CLI adapters — see `TRUSTED_REVIEWER_FRAMEWORKS` below.
  */
+/**
+ * Detect the metered gemini-api review door (gemini-payg §2). Pure: it reads only the
+ * status the driver fetched from the local server. Absent ⇒ not configured.
+ */
+export function detectGeminiApiReviewer(inputs: CrossModelDetectInputs = {}): CrossModelDetectionResult {
+  const door = inputs.geminiApiDoor;
+  if (!door || door.configured !== true) return { available: false, reason: 'gemini-api-not-configured' };
+  if (door.ready !== true || !door.baseUrl) return { available: false, reason: 'gemini-api-not-ready' };
+  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(door.baseUrl)) return { available: false, reason: 'gemini-api-not-ready' };
+  return { available: true, framework: 'gemini-api', model: 'gemini-4-neon', crossFamily: true, endpointUrl: door.baseUrl };
+}
+
+/**
+ * The gemini-api reviewer entry (gemini-payg §2). It NEVER builds the provider: it is
+ * a thin client of the LOCAL server's `POST /intelligence/gemini/review`, which
+ * validates the spec, books the pass under the money lock and calls Google — so the
+ * ledger has one writer and the key has one reader. No fallback to the gemini CLI.
+ */
+const geminiApiReviewer: SupportedReviewerFramework = {
+  id: 'gemini-api',
+  familyKey: 'gemini',
+  crossFamily: true,
+  detect: (inputs) => detectGeminiApiReviewer(inputs),
+  review: async (args) => {
+    const fail = (status: 'degraded' | 'unavailable', reason: string, model = 'gemini-4-neon'): ReviewerResult => ({
+      status,
+      framework: 'gemini-api',
+      model,
+      reason,
+      flag: `cross-model-review: gemini-api:${model} (${status}: ${reason})`,
+      crossFamily: true,
+    });
+    const binding = args.specBinding;
+    if (!binding) return fail('degraded', 'spec-binding-missing');
+    // The review goes ONLY to this machine's own server (loopback), never elsewhere.
+    const baseUrl = args.detectionOverride?.endpointUrl;
+    const token = process.env.INSTAR_AUTH_TOKEN;
+    if (!baseUrl || !token) return fail('unavailable', 'gemini-api-not-ready');
+    const doFetch = args.geminiApiFetch ?? fetch;
+    let res: Response;
+    try {
+      res = await doFetch(`${baseUrl.replace(/\/$/, '')}/intelligence/gemini/review`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ...binding, promptText: args.promptText }),
+        signal: AbortSignal.timeout(Math.max(30_000, args.timeoutMs)),
+      });
+    } catch (err) { // @silent-fallback-ok: degraded posture recorded for the round, never a clean pass
+      return fail('degraded', `server-unreachable: ${err instanceof Error ? err.message.slice(0, 120) : 'error'}`); // bounded-input-reviewed: an error label for the round posture, never prompt content
+    }
+    let body: { status?: string; reason?: string; text?: string; model?: string; incomplete?: boolean } = {};
+    try { body = (await res.json()) as typeof body; } catch { /* @silent-fallback-ok: degraded posture, never a clean pass */ return fail('degraded', `bad-response-${res.status}`); }
+    if (!res.ok || body.status !== 'ok' || typeof body.text !== 'string') {
+      // The exact refusal reason is the round's posture: no step-down here (the server
+      // already did the only allowed one), no gemini-cli fallback.
+      return fail('unavailable', body.reason ?? `http-${res.status}`);
+    }
+    const model = body.model ?? 'gemini-4-neon';
+    if (body.incomplete) {
+      // A truncated review never folds in as a clean "no findings" (§1).
+      return fail('degraded', 'incomplete-response', model);
+    }
+    const parsed = parseReviewerReply(body.text, `cross-model:gemini-api:${model}`);
+    return {
+      status: 'ok',
+      framework: 'gemini-api',
+      model,
+      verdict: parsed.verdict,
+      findings: [parsed],
+      flag: `cross-model-review: gemini-api:${model}`,
+      crossFamily: true,
+    };
+  },
+};
+
 export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
   codexReviewer,
   geminiReviewer,
@@ -2013,6 +2140,11 @@ export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
   // ACTIVE set filters it by the developmentAgent config gate
   // (`resolveActiveReviewerFrameworks`) — dark on the fleet, live on a dev agent.
   claudeReviewer,
+  // gemini-payg §2: the metered gemini-api DOOR. ACTIVE only when the agent's door is
+  // configured (resolveActiveReviewerFrameworks), so the fleet's active set is
+  // byte-identical. When it is active the gemini CLI's detection steps aside (same
+  // familyKey: Gemini counts once, and never a CLI fallback).
+  geminiApiReviewer,
 ];
 
 /**
@@ -2035,10 +2167,13 @@ export function isAnthropicReviewerEnabled(config?: ReviewerConfig): boolean {
  */
 export function resolveActiveReviewerFrameworks(
   config?: ReviewerConfig,
+  inputs?: Pick<CrossModelDetectInputs, 'geminiApiDoor'>,
 ): SupportedReviewerFramework[] {
-  return SUPPORTED_REVIEWER_FRAMEWORKS.filter((f) =>
-    f.id === 'claude-code' ? isAnthropicReviewerEnabled(config) : true,
-  );
+  return SUPPORTED_REVIEWER_FRAMEWORKS.filter((f) => {
+    if (f.id === 'claude-code') return isAnthropicReviewerEnabled(config);
+    if (f.id === 'gemini-api') return inputs?.geminiApiDoor?.configured === true;
+    return true;
+  });
 }
 
 /**
@@ -2087,6 +2222,10 @@ export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = [
   // with tools denied + web search off + prompt via file. Same first-party
   // posture as the other three; no third-party aggregator involved.
   'grok-build',
+  // gemini-payg §2: the metered gemini-api DOOR (not a framework). Trusted because its
+  // host is a code constant in its transport (no base-URL override)
+  // and the review travels only through the local server's validated route.
+  'gemini-api',
 ];
 
 /** Is `id` on the trusted first-party reviewer allowlist? */
@@ -2109,7 +2248,7 @@ export function detectCrossModelReviewer(
   inputs: CrossModelDetectInputs = {},
   config?: ReviewerConfig,
 ): CrossModelDetectionResult {
-  const active = resolveActiveReviewerFrameworks(config);
+  const active = resolveActiveReviewerFrameworks(config, inputs);
   for (const framework of active) {
     const result = framework.detect(inputs);
     if (result.available) return result;
@@ -2133,7 +2272,7 @@ export function detectAllCrossModelReviewers(
   config?: ReviewerConfig,
 ): CrossModelDetectionResult[] {
   const available: CrossModelDetectionResult[] = [];
-  for (const framework of resolveActiveReviewerFrameworks(config)) {
+  for (const framework of resolveActiveReviewerFrameworks(config, inputs)) {
     const result = framework.detect(inputs);
     if (result.available) available.push(result);
   }
@@ -2726,6 +2865,8 @@ async function invokeReviewerWithContextGuard(
     providerOverride?: ReviewerInvokeArgs['providerOverride'];
     codexModelOverride?: ReviewerInvokeArgs['codexModelOverride'];
     config?: ReviewerConfig;
+    specBinding?: GeminiApiSpecBinding;
+    geminiApiFetch?: typeof fetch;
   },
 ): Promise<ReviewerResult> {
 
@@ -2779,6 +2920,8 @@ async function invokeReviewerWithContextGuard(
     ...(args.codexModelOverride ? { codexModelOverride: args.codexModelOverride } : {}),
     ...(args.config ? { reviewerConfig: args.config } : {}),
     ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
+    ...(args.specBinding ? { specBinding: args.specBinding } : {}),
+    ...(args.geminiApiFetch ? { geminiApiFetch: args.geminiApiFetch } : {}),
   });
 }
 
@@ -2808,6 +2951,10 @@ export async function runCrossModelReview(args: {
    * enters here and meets the same guard.
    */
   family?: string;
+  /** gemini-api E1 binding (gemini-payg §2); ignored by every other family. */
+  specBinding?: GeminiApiSpecBinding;
+  /** Test-only fetch override for the gemini-api entry. */
+  geminiApiFetch?: typeof fetch;
   /**
    * A detection the caller already computed (the driver detects before
    * assembling). Skips re-probing the host; MUST still be `available`.
@@ -2829,7 +2976,7 @@ export async function runCrossModelReview(args: {
   // codex without being told.
   const requestedFamily = args.family;
   if (requestedFamily !== undefined) {
-    const entry = resolveActiveReviewerFrameworks(args.config).find(
+    const entry = resolveActiveReviewerFrameworks(args.config, effectiveDetectInputs).find(
       (f) => f.id === requestedFamily,
     );
     if (!entry) {
@@ -2865,7 +3012,7 @@ export async function runCrossModelReview(args: {
     };
   }
 
-  const framework = resolveActiveReviewerFrameworks(args.config).find(
+  const framework = resolveActiveReviewerFrameworks(args.config, effectiveDetectInputs).find(
     (f) => f.id === detection.framework,
   );
   if (!framework) {

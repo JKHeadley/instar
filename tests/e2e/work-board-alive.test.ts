@@ -66,6 +66,9 @@ function mkRuntime(stateDir: string, opts: { rotateBytes?: number } = {}): Rig {
   const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: 'm1', autoRebuild: false });
   const lines: Rig['lines'] = []; const briefs: string[] = []; const conversations = new Set<string>(); const removed: string[] = [];
   const runtime = new WorkBoardRuntime({
+    // The rig stamps records with its own clock; the runtime reads the same clock, so no record ever looks days old
+    // to the holder's quiet rule (agent-work-cards-default §3) while the test runs at wall-clock time.
+    now: () => t,
     machineId: 'm1', enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
     awaitDurable: async () => { journal.flush(); },
@@ -118,10 +121,15 @@ describe('Work Board E2E (feature is alive)', () => {
       expect((await request(app).get('/work-board')).status).toBe(401);
 
       // The agent proposes a card.
-      // Without a recommendation and why-you, the agent's card is refused (work-board-cards-appear §2).
-      const bare = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: false });
+      // Without a recommendation and why-you, the agent's ASK is refused (work-board-cards-appear §2); an inward agent-work
+      // card asks nothing and needs neither (agent-work-cards-default §1): it is accepted and reads `not-started`.
+      const bare = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: true });
       expect(bare.status).toBe(400);
       expect(bare.body.error).toBe('recommendation-required');
+      const inward = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Tidy the venue list', need: 'Internal clean-up.', doneWhen: [{ id: 'd1', text: 'List tidy', certify: 'agent-may-certify' }], outward: false });
+      expect(inward.status, JSON.stringify(inward.body)).toBe(201);
+      expect(inward.body.card.status).toBe('not-started');
+      expect(inward.body.card.agentWork).toBe(true);
       const created = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: false, recommendation: 'The lake house: closest for everyone.', whyYou: 'Only you know the budget.', covers: ['plan:INI-1'], source: { conversationKey: 'telegram:42', messageId: 'original-1' } });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
       expect(created.body.card.whyYou).toBe('Only you know the budget.');

@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { projectTitlesByTopic } from './conversationFallbackTitle.js';
 import { signedInPinSource } from './ownerPinSource.js';
 import { OrgPackStore } from '../core/OrgPackStore.js';
 import { PROFILE_DEFAULTS as ORG_PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
@@ -25,6 +26,7 @@ import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
 import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
+import { runTopicHistoryImport, ImportTooLargeError } from '../memory/topicHistoryImport.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -72,6 +74,8 @@ import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from '.
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
 import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { answerPhoneCardCreate, phoneCardPrecheck } from './phoneWorkCards.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { projectTapPort } from './workProjectActions.js';
 import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
@@ -83,7 +87,7 @@ import { customProjectAppsEnabled } from './ProjectAppSandbox.js';
 import { projectAppsEnabled } from '../core/ProjectAppStore.js';
 import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
-import { workBoardEnabled } from '../core/WorkCardStore.js';
+import { workBoardEnabled, requestCardId as requestCardIdFor } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
 import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
 import { mountMobileAttentionChoiceRoutes } from './mobileAttentionChoiceRoutes.js';
@@ -134,6 +138,8 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
+import { readShadowFolds, summarizeShadowFolds } from '../monitoring/foldShadowLog.js';
 import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
@@ -358,6 +364,7 @@ import { REFUSING_REASONS as REFUSING_EXECUTE_REASONS } from '../feedback-factor
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
+import { isValidTimeZone } from '../core/RoutingSpendCapsStore.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
@@ -404,7 +411,7 @@ import { CodexTaskContinuationStore, parseContinuationTasks } from '../core/Code
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
-import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { DegradationReporter, compileFeaturePattern, FEATURE_PATTERN_MAX_CHARS } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
@@ -851,7 +858,9 @@ import { signViewPath } from './middleware.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
 import { detectOperatorErrand } from '../core/operator-errand.js';
 import { detectUnownedHandoff } from '../core/unowned-handoff.js';
-import { buildAgentReach } from '../core/agent-reach.js';
+import { buildAgentReach, withoutSiblings, reachHasSiblings, renderedSiblingIdentities, type AgentReach } from '../core/agent-reach.js';
+import { SiblingHoldingsCache, normalizePoolLogin, SIBLING_MAX_BODY_BYTES, type SiblingFetchResult, type SiblingPoolAccount } from '../core/sibling-holdings.js';
+import { OUTBOUND_MESSAGING_TIMEOUT_MS } from './middleware.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
@@ -1883,6 +1892,12 @@ export interface RouteContext {
   moneyLayerEnableSurface?: import('../core/MoneyLayerEnableSurface.js').MoneyLayerEnableSurface | null;
   /** The audit log behind that surface — flushed before the restart supervisor handoff (§4/§7). */
   moneyLayerAudit?: import('../core/MoneyLayerAuditLog.js').MoneyLayerAuditLog | null;
+  /**
+   * gemini-payg §7/§8: the go-live (caps detail, release gate) and the lane runtime
+   * (designation, forwarding a setup render, the caps proxy to the holder).
+   */
+  geminiPaygGoLive?: import('./geminiPaygGoLiveWiring.js').GeminiPaygGoLive | null;
+  meteredLaneRuntime?: import('./meteredLaneRuntime.js').MeteredLaneRuntime | null;
   /** Initiate the server's existing SUPERVISED restart (the auto-updater's path, under launchd keepalive). No new restart machinery. */
   requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
@@ -2123,6 +2138,8 @@ export interface RouteContext {
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
   chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  /** "Make this group a project" phone confirm (conversation-groups-phone §3), filled once the conversation graph opens. */
+  groupProjectConfirm?: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder;
   /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
   projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
   /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound sandbox. */
@@ -2332,6 +2349,9 @@ export interface RouteContext {
   autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
   /** Working-set acquire kick for an explicit transfer target. */
   kickWorkingSetOnMachine?: ((machineId: string, topic: number | string) => void) | null;
+  /** Unroutable-owner release (docs/specs/unroutable-owner-release.md §4): true when the
+   *  recorded owner can never be routed to. Absent ⇒ never (today's transfer behavior). */
+  isOwnerUnroutable?: ((machineId: string) => boolean) | null;
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
@@ -3322,7 +3342,7 @@ export function createRoutes(ctx: RouteContext): Router {
     settings: () => ctx.workBoard?.()?.settings() ?? resolveWorkBoardSettings((ctx.config as { workBoard?: unknown }).workBoard),
     caller: (req) => {
       const session = (req.res?.locals as { memorySession?: { placeKey: string | null } } | undefined)?.memorySession;
-      if (session) return { kind: 'session', conversationKey: session.placeKey?.startsWith('app:') ? session.placeKey.slice(4) : null };
+      if (session) return { kind: 'session', conversationKey: session.placeKey?.startsWith('app:') ? session.placeKey.slice(4) : null, placeKey: session.placeKey ?? null };
       const person = devicePersonOf(req);
       if (person) {
         const pairing = ctx.mobilePairingService;
@@ -3350,6 +3370,20 @@ export function createRoutes(ctx: RouteContext): Router {
     saveSettings: (patch) => ctx.workBoard?.()?.saveSettingsPatch(patch) ?? false,
     log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
     exposeBoardRead: (read) => { workBoardReadAs = read; },
+    // agent-work-cards-default §2: progress notes through the runtime (conversation event first, pointer by the holder).
+    notes: {
+      write: (p, cardId, text, writerBinding) => { const rt = ctx.workBoard?.(); if (!rt) return { ok: false, status: 503, error: 'work-board-starting' }; return rt.writeNote(p, cardId, text, writerBinding); },
+      // Optional call: a card read must never fail because a runtime surface carries no notes.
+      last: (cardId) => ctx.workBoard?.()?.lastNote?.(cardId) ?? null,
+    },
+    // agent-work-cards-default §5: "Approve and widen" raises the board-policy request with the record it rests on.
+    proposeBoardPolicy: async (record) => {
+      if (!ctx.trustAccountPath) return { status: 'not-raised', message: 'request not raised: the trust path is not available on this machine' };
+      const r = await ctx.trustAccountPath.propose({ kind: 'board-policy', policy: 'outward-only' } as never);
+      const { code: _code, ...rest } = r as typeof r & { code?: string };
+      const note = `Your own requests already start at once. You have approved ${record.approvedUnchanged} other internal cards unchanged, changed ${record.changed} and declined ${record.declined} so far; ${record.waiting} are waiting now.`;
+      return { ...rest, message: (rest as { message?: string }).message ?? note };
+    },
     specApprovalJudge: (text) => judgeSpecApprovalAsk(ctx.intelligence ?? null, text, safeRecentSpecChecks(ctx.config.stateDir)),
     // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
     // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
@@ -3398,6 +3432,8 @@ export function createRoutes(ctx: RouteContext): Router {
     appsFor: (key) => { const rt = ctx.projectAppsRuntime?.() ?? null; return rt && projectAppsEnabled(ctx.config) ? rt.view(key) : null; },
     // docs/specs/work-door-project-rows.md §3.1.4 / §3.2: whether this machine runs the checks, and "Ask for an update".
     checkContext: () => ({ here: ctx.chiefOfStaffLoop?.checksHere() ?? false, gapMs: ctx.chiefOfStaffLoop?.requestGapMs() ?? 14 * 60_000 }),
+    // "Quiet since …" / "Stalled since …" in the owner's zone (the same `timezone` the Chief of Staff's note hour uses).
+    timeZone: () => (ctx.config as { timezone?: string }).timezone || undefined,
     ...(ctx.chiefOfStaffLoop ? { checkNow: (key: string, by: 'owner-tap' | 'chief-of-staff') => ctx.chiefOfStaffLoop!.checkNow(key, by) } : {}),
   });
   ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
@@ -4383,6 +4419,107 @@ export function createRoutes(ctx: RouteContext): Router {
     try { live = ctx.liveConfig?.get<boolean | undefined>('toneGate.waitingAskLinks.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
     return resolveDevAgentGate(live ?? boot, ctx.config);
   };
+  // ── sibling-machine-reach (docs/specs/sibling-machine-reach.md, CMT-2073) ──
+  /** `toneGate.siblingReach.enabled`: unset = live on development agents, dark on the fleet. */
+  const siblingReachOn = (): boolean => {
+    const boot = (ctx.config as { toneGate?: { siblingReach?: { enabled?: boolean } } }).toneGate?.siblingReach?.enabled;
+    let live: boolean | undefined;
+    try { live = ctx.liveConfig?.get<boolean | undefined>('toneGate.siblingReach.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+    return resolveDevAgentGate(live ?? boot, ctx.config);
+  };
+  /** This machine's pool accounts as reach facts; null = unreadable (UNKNOWN). */
+  const localPoolFacts = (): SiblingPoolAccount[] | null => {
+    if (!ctx.subscriptionPool) return [];
+    try {
+      return ctx.subscriptionPool.list().map((a) => ({
+        label: String(a.nickname || a.id),
+        ...(a.email ? { email: String(a.email) } : {}),
+        provider: String(a.provider || a.framework || ''),
+        login: normalizePoolLogin(a.status, ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable'),
+      }));
+    } catch {
+      return null; // @silent-fallback-ok — rendered as UNKNOWN (not empty), never as "none"
+    }
+  };
+  /** Live dial targets keyed by machine id (local registry read, no network). */
+  const siblingPeerTargets = (): Map<string, NonNullable<ReturnType<NonNullable<typeof ctx.resolvePeerUrls>>>[number]> => {
+    const map = new Map<string, NonNullable<ReturnType<NonNullable<typeof ctx.resolvePeerUrls>>>[number]>();
+    for (const p of ctx.resolvePeerUrls?.() ?? []) map.set(p.machineId, p);
+    return map;
+  };
+  const siblingHoldings: SiblingHoldingsCache | null = ctx.resolvePeerUrls
+    ? new SiblingHoldingsCache({
+        enabled: siblingReachOn,
+        roster: () => {
+          const self = ctx.meshSelfId ?? null;
+          const targets = siblingPeerTargets();
+          const rows = new Map<string, { machineId: string; nickname?: string; dialable: boolean; online: boolean; address?: string }>();
+          for (const m of ctx.listPoolMachines?.() ?? []) {
+            if (m.machineId === self) continue;
+            rows.set(m.machineId, { machineId: m.machineId, ...(m.nickname ? { nickname: m.nickname } : {}), dialable: false, online: true });
+          }
+          for (const [id, t] of targets) if (id !== self) rows.set(id, { ...(rows.get(id) ?? { machineId: id, online: true }), dialable: true, address: t.url });
+          for (const r of rows.values()) {
+            const cap = ctx.machinePoolRegistry?.getCapacity(r.machineId) ?? null;
+            const nick = cap?.nickname;
+            if (nick) r.nickname = nick;
+            if (cap && cap.online === false) r.online = false;
+          }
+          return [...rows.values()];
+        },
+        fetchJson: async (peer, path): Promise<SiblingFetchResult> => {
+          // Dial targets come ONLY from resolvePeerUrls (admitted ropes); a machine that no
+          // longer resolves to this address is not dialed this tick.
+          const target = siblingPeerTargets().get(peer.machineId);
+          if (!target || target.url !== peer.address) return { ok: false, failure: 'unreachable' };
+          let r: globalThis.Response;
+          try {
+            r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, target, path, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+          } catch {
+            return { ok: false, failure: 'unreachable' }; // @silent-fallback-ok — classified; the surface keeps its dated evidence
+          }
+          if (r.status === 401 || r.status === 403) { try { await r.body?.cancel(); } catch { /* classified */ } return { ok: false, failure: 'unauthorized' }; }
+          if (r.status === 503 || r.status === 404) { try { await r.body?.cancel(); } catch { /* classified */ } return { ok: false, failure: 'surface-off' }; }
+          if (!r.ok) { try { await r.body?.cancel(); } catch { /* classified */ } return { ok: false, failure: 'unreachable' }; }
+          const text = await readReaperPeerText(r, SIBLING_MAX_BODY_BYTES);
+          if (!text.ok) return { ok: false, failure: 'oversize' };
+          try { return { ok: true, body: JSON.parse(text.text) as unknown }; } catch { return { ok: false, failure: 'surface-off' }; /* @silent-fallback-ok — an unparseable body is UNKNOWN for that surface */ }
+        },
+      })
+    : null;
+  if (siblingHoldings) {
+    siblingHoldings.start();
+    (router as unknown as { siblingHoldings?: SiblingHoldingsCache }).siblingHoldings = siblingHoldings;
+  }
+  let siblingDarkReported = false;
+  /** Topics whose last B21 carried the sibling hint (bounded; for the complied evidence row). */
+  const siblingHintedTopics = new Map<number, number>();
+  /** Reach extras for one send: this machine's pool + the other machines (memory only). */
+  const siblingReachExtras = (): { localPool: SiblingPoolAccount[] | null; siblings: ReturnType<SiblingHoldingsCache['snapshot']> } | undefined => {
+    if (!siblingHoldings || !siblingReachOn()) return undefined;
+    const siblings = siblingHoldings.snapshot();
+    if (siblingHoldings.allDark()) {
+      if (!siblingDarkReported) {
+        siblingDarkReported = true;
+        DegradationReporter.getInstance().report({ feature: 'toneGate.siblingReach', primary: "Read what this agent's other machines hold", fallback: 'The outbound check sees those machines as UNKNOWN and judges as before.', reason: 'No other machine has been read successfully within the last hour.', impact: 'The check cannot nudge toward another machine that could do a per-machine step.' });
+      }
+    } else {
+      siblingDarkReported = false;
+    }
+    if (siblings.machines.length === 0 && siblings.unknown.length === 0) return undefined;
+    return { localPool: localPoolFacts(), siblings };
+  };
+  /** Replace every rendered sibling identity that appears verbatim in model text. */
+  const redactSiblingIdentities = (textIn: string, reach: AgentReach | undefined): string => {
+    if (!textIn || !reach || !reachHasSiblings(reach)) return textIn;
+    let out = textIn;
+    for (const id of renderedSiblingIdentities(reach)) out = out.split(id).join('the account');
+    return out;
+  };
+
   /** Allowance for gathering B26's facts, reusing the reply path's origin-lookup allowance. */
   const WAITING_ASK_FACTS_BUDGET_MS = 750;
   /**
@@ -5229,7 +5366,8 @@ export function createRoutes(ctx: RouteContext): Router {
           // carries the vault's entry NAMES (never values) and each account's stored
           // roles: the B17 HELD-ACCESS sub-clause (Echo Bugs topic 10000002770) needs
           // them to tell "asking for access I already hold" from a genuine ask.
-          agentReach = buildAgentReach(buildPlaywrightRegistry());
+          // sibling-machine-reach: + this machine's pool and the OTHER machines (memory only).
+          agentReach = buildAgentReach(buildPlaywrightRegistry(), siblingReachExtras());
         }
       } catch {
         // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
@@ -5507,8 +5645,9 @@ export function createRoutes(ctx: RouteContext): Router {
           : undefined;
       const templateFingerprint =
         options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
-      const result = await reviewWithinBudget(
-        ctx.messagingToneGate.review(text, {
+      const reviewStartedAt = Date.now();
+      const runGateReview = (reviewReach: AgentReach | undefined, budgetMs: number) => reviewWithinBudget(
+        ctx.messagingToneGate!.review(text, {
           channel,
           recentMessages,
           signals,
@@ -5547,7 +5686,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // Undefined in observe-only mode (the default) and on every uncertainty,
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
-          agentReach,
+          agentReach: reviewReach,
           // B24 (Echo Bugs topic 10000002750): this machine's built-in constitution
           // check results, so a spec/design approval ask is judged against them.
           specConstitutionChecks: options.messageKind === 'health-alert' ? undefined : safeRecentSpecChecks(ctx.config.stateDir),
@@ -5559,7 +5698,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // caller of the gate — keeps the detector-only path.
           liveArtefactSignals: options.liveArtefactSignals === true,
         }),
-        gateBudgetMs,
+        budgetMs,
         undefined,
         undefined,
         // §Design 6 + F4: the slow-review timeout disposition mirrors review()'s.
@@ -5572,6 +5711,93 @@ export function createRoutes(ctx: RouteContext): Router {
         operatorTierDeliver,
         budgetDegrade,
       );
+      let result = await runGateReview(agentReach, gateBudgetMs);
+      // sibling-machine-reach §3.4: other machines' data only NUDGES. A B17, or any B21,
+      // from a review that rendered the OTHER MACHINES section is re-checked ONCE with that
+      // section omitted (the exact pre-feature prompt):
+      //  - first B17 → the local-only verdict is the verdict (a B17 stands only if confirmed);
+      //    a re-review with no verdict takes the existing no-verdict path, never a confirmed B17.
+      //  - first B21 → a local-only B17 wins; otherwise the first B21 (and its hint) stands.
+      let siblingHintSource: typeof result | null = null;
+      if (agentReach && reachHasSiblings(agentReach) && !result.pass && (result.rule === 'B17_FALSE_BLOCKER' || result.rule === 'B21_USER_TASK_SUBSTITUTION')) {
+        const first = result;
+        const remaining = OUTBOUND_MESSAGING_TIMEOUT_MS - (Date.now() - reviewStartedAt) - 5_000;
+        const confirmBudget = Math.min(gateBudgetMs, remaining);
+        const localReach = withoutSiblings(agentReach);
+        let confirm: typeof result | null = null;
+        if (confirmBudget >= 5_000) {
+          try { confirm = await runGateReview(localReach, confirmBudget); } catch { confirm = null; /* @silent-fallback-ok — handled as no verdict below */ }
+        }
+        const confirmHasVerdict = !!confirm && !confirm.failedOpen && !confirm.failedClosed && !confirm.budgetExceeded && !confirm.degradedToDeterministic && !confirm.invalidRule;
+        try { logToneGateDecision({ text, channel, topicId: options.topicId, signals, result: confirm ?? first, reason: 'sibling-confirm' }); } catch { /* @silent-fallback-ok — observability only */ }
+        if (first.rule === 'B17_FALSE_BLOCKER') {
+          if (confirm && confirmHasVerdict) {
+            result = confirm;
+            if (confirm.rule !== 'B17_FALSE_BLOCKER') {
+              try { featureEvidence.record('toneGate.siblingReach', { kind: 'fired', reason: 'b17-overturned', context: { channel, finalRule: confirm.rule || 'pass' } }); } catch { /* @silent-fallback-ok — evidence only */ }
+            }
+          } else {
+            // No local verdict: the existing no-verdict path for this send (hold/degrade as
+            // configured) — the sibling-sourced B17 is never confirmed.
+            result = confirm ?? (budgetDegrade
+              ? budgetDegrade(Date.now() - reviewStartedAt)
+              : budgetFailClosed
+                ? ({ pass: false, rule: '', issue: 'Outbound tone review could not confirm its verdict.', suggestion: 'Held (fail-closed); the message is queued for retry, not dropped.', latencyMs: Date.now() - reviewStartedAt, failedClosed: true } as typeof result)
+                : ({ pass: true, rule: '', issue: '', suggestion: '', latencyMs: Date.now() - reviewStartedAt, failedOpen: true, budgetExceeded: true } as typeof result));
+            try { featureEvidence.record('toneGate.siblingReach', { kind: 'fired', reason: 'b17-unconfirmed', context: { channel } }); } catch { /* @silent-fallback-ok — evidence only */ }
+          }
+        } else if (confirm && confirmHasVerdict && confirm.rule === 'B17_FALSE_BLOCKER') {
+          result = confirm; // a local B17 is never masked by the per-machine B21
+        } else {
+          result = first;
+          siblingHintSource = first;
+        }
+      }
+
+      // sibling-machine-reach §3.5: the route hint, for the ONE machine the gate cited by its
+      // opaque profile reference, validated against the reach that built THIS prompt. The
+      // hint is a server-owned template (no identity, no email). Model-written text has every
+      // rendered sibling identity redacted.
+      let siblingHintFields: Record<string, unknown> = {};
+      let siblingHintText = '';
+      if (agentReach && reachHasSiblings(agentReach) && !result.pass && (result.rule === 'B17_FALSE_BLOCKER' || result.rule === 'B21_USER_TASK_SUBSTITUTION')) {
+        try { if (siblingHoldings?.hasStaleOrUnknown()) siblingHoldings.kickTargeted(); } catch { /* @silent-fallback-ok — refresh is best-effort, off the send path */ }
+        result = { ...result, issue: redactSiblingIdentities(result.issue, agentReach), suggestion: redactSiblingIdentities(result.suggestion, agentReach) };
+        const cited = siblingHintSource && result.rule === 'B21_USER_TASK_SUBSTITUTION' && siblingHintSource.siblingProfileRef
+          ? agentReach.siblingProfileRefs?.[siblingHintSource.siblingProfileRef]
+          : undefined;
+        if (cited) {
+          const current = siblingPeerTargets().get(cited.machineId)?.url;
+          const address = cited.verifiedAddress && current === cited.verifiedAddress ? cited.verifiedAddress : undefined;
+          if (!address) { try { siblingHoldings?.kickTargeted(); } catch { /* @silent-fallback-ok — best-effort */ } }
+          const verifiedMs = cited.lastVerifiedAt ? Date.parse(cited.lastVerifiedAt) : NaN;
+          const verifyFirst = !Number.isFinite(verifiedMs) || Date.now() - verifiedMs > 24 * 60 * 60_000;
+          siblingHintText =
+            `${cited.machine} may hold a ${cited.service} browser profile for this account` +
+            (cited.owner === 'operator' ? " (the operator's own account: act in it only for this same account's sign-in or under a standing grant)" : '') +
+            `. Before overriding or asking: ` +
+            (verifyFirst ? `verify that profile is still signed in, then ` : '') +
+            `start the login on the machine that is missing the account and approve it on ${cited.machine} through a helper session there` +
+            (address ? ` (POST ${address}/sessions/spawn with your bearer and no topicId — a topic-bound spawn is a one-shot session).` : ` (its address is being refreshed; find the machine in the pool views).`);
+          siblingHintFields = {
+            otherMachine: {
+              machineId: cited.machineId,
+              machine: cited.machine,
+              ...(address ? { address } : {}),
+              readMinutesAgo: cited.browserReadMinutesAgo,
+              browserProfiles: cited.browserProfiles,
+              signedInSubscriptionAccounts: cited.signedInSubscriptionAccounts,
+            },
+            otherMachinesHint: siblingHintText,
+          };
+          result = { ...result, suggestion: `${result.suggestion}${result.suggestion ? ' ' : ''}${siblingHintText}` };
+          try { featureEvidence.record('toneGate.siblingReach', { kind: 'fired', reason: 'hint-attached', context: { channel, address: address ? 'present' : 'absent' } }); } catch { /* @silent-fallback-ok — evidence only */ }
+          if (options.topicId !== undefined) {
+            siblingHintedTopics.set(options.topicId, Date.now());
+            if (siblingHintedTopics.size > 200) siblingHintedTopics.delete(siblingHintedTopics.keys().next().value as number);
+          }
+        }
+      }
 
       // Structured observability: log every decision the authority made. This is
       // the "why I blocked" log — over-block audits read this. Invalid-rule
@@ -5598,6 +5824,12 @@ export function createRoutes(ctx: RouteContext): Router {
       // `toneAdvisoryComplied` remains honored as a direct declaration.
       if (result.pass) {
         const revised = takeRevisionOf(options.topicId, text);
+        // sibling-machine-reach: a revised send after a hinted B21 is an outbound-message
+        // outcome only (the message was rewritten), never proof a helper did the work.
+        if (options.topicId !== undefined && siblingHintedTopics.has(options.topicId) && (revised || options.toneAdvisoryComplied === 'B21_USER_TASK_SUBSTITUTION')) {
+          siblingHintedTopics.delete(options.topicId);
+          try { featureEvidence.record('toneGate.siblingReach', { kind: 'fired', reason: 'complied-after-hint', context: { channel } }); } catch { /* @silent-fallback-ok — evidence only */ }
+        }
         if (options.toneAdvisoryComplied) {
           recordToneAdvisoryReaction({
             decisionRef: options.toneAdvisoryDecisionRef ?? revised?.decisionRef,
@@ -5746,6 +5978,9 @@ export function createRoutes(ctx: RouteContext): Router {
               reaction: 'override',
               reason,
             });
+            if (siblingHintText) {
+              try { featureEvidence.record('toneGate.siblingReach', { kind: 'fired', reason: 'override-after-hint', context: { channel } }); } catch { /* @silent-fallback-ok — evidence only */ }
+            }
             return { ok: true };
           }
           // Remember it so a later revised send is credited WITHOUT the agent
@@ -5765,7 +6000,9 @@ export function createRoutes(ctx: RouteContext): Router {
               // decision. Without it an override is an orphan the grader can
               // never attach to the verdict it disputes.
               ...(result.decisionRef ? { decisionRef: result.decisionRef } : {}),
+              ...siblingHintFields,
               howToProceed:
+                (siblingHintText ? `${siblingHintText} ` : '') +
                 `ADVISORY — the message was NOT sent, and the decision is yours. Either (a) revise and re-send, adding ` +
                 `metadata.toneAdvisoryComplied = "${result.rule}"` +
                 (result.decisionRef ? ` and metadata.toneAdvisoryDecisionRef = "${result.decisionRef}"` : '') +
@@ -6243,11 +6480,14 @@ export function createRoutes(ctx: RouteContext): Router {
     topicId?: number;
     signals: import('../core/MessagingToneGate.js').ToneReviewSignals;
     result: import('../core/MessagingToneGate.js').ToneReviewResult;
+    /** Why this review ran when it was not the send's first (e.g. `sibling-confirm`). */
+    reason?: string;
   }): void {
     try {
       const line = {
         t: new Date().toISOString(),
         kind: 'tone-gate-decision',
+        ...(entry.reason ? { reason: entry.reason } : {}),
         channel: entry.channel,
         topicId: entry.topicId,
         textLen: entry.text.length,
@@ -6899,7 +7139,8 @@ export function createRoutes(ctx: RouteContext): Router {
    * events.
    *
    * Body: { feature: string }   exact-match feature name
-   *   OR: { featurePattern: string }   regex source, applied without flags
+   *   OR: { featurePattern: string }   regex source, applied without flags; limited to
+   *        128 chars of letters, digits, _ - . \\. ^ $ | (SEC-125)
    *
    * Returns: { flipped: number }   count of events actually marked
    */
@@ -6937,13 +7178,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     if (typeof featurePattern === 'string' && featurePattern.length > 0) {
-      let re: RegExp;
-      try {
-        re = new RegExp(featurePattern);
-      } catch (err) {
+      // SEC-125: only a short pattern in a backtracking-safe subset is compiled; an
+      // arbitrary caller regex could block the event loop over the stored names.
+      const re = compileFeaturePattern(featurePattern);
+      if (!re) {
         res.status(400).json({
           error: 'invalid featurePattern',
-          detail: operatorError(err, res.app?.locals?.stateDir),
+          detail: `featurePattern must be at most ${FEATURE_PATTERN_MAX_CHARS} characters of letters, digits, _ - . \\. ^ $ and |`,
         });
         return;
       }
@@ -9674,6 +9915,21 @@ export function createRoutes(ctx: RouteContext): Router {
   // context-budget-layered-summaries §7.8/§9.1: the ContextBudgetSentinel's status —
   // its heartbeat, quarantined and torn folds, and the standing compaction canary's
   // state per machine/engine/version. Read-only; 503 when the sentinel is off.
+  // context-budget-layered-summaries §16 Phase 2: the shadow-fold record — how
+  // many shadow folds were graded toward the 40-fold exit, the would-be lost
+  // rate, and why the rest did not complete. Counts only, never words. 503 when
+  // shadow folding is off on this agent (contextBudget.fold.shadow, dev-gated).
+  router.get('/context-budget/fold-shadow', (_req, res) => {
+    let explicit: boolean | undefined;
+    try { explicit = ctx.liveConfig?.get<boolean | undefined>('contextBudget.fold.shadow', undefined); } catch { explicit = undefined; /* @silent-fallback-ok — an unreadable live value falls back to the boot value */ }
+    if (explicit === undefined) explicit = (ctx.config as { contextBudget?: { fold?: { shadow?: boolean } } }).contextBudget?.fold?.shadow;
+    if (!resolveDevAgentGate(explicit, ctx.config)) {
+      res.status(503).json({ error: 'context-budget shadow folding not enabled on this agent', enableWith: 'contextBudget.fold.shadow' });
+      return;
+    }
+    const rows = readShadowFolds(ctx.config.stateDir);
+    res.json({ ...summarizeShadowFolds(rows), recent: rows.slice(-20).reverse() });
+  });
   router.get('/context-budget/sentinel', (_req, res) => {
     if (!ctx.contextBudgetSentinel) {
       res.status(503).json({ error: 'context-budget sentinel not enabled on this agent', enableWith: 'contextBudget.sentinel.enabled' });
@@ -9693,8 +9949,17 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   // context-budget-layered-summaries §7.6: chunk (C) and range (C2) records of
   // one conversation, with sizes, status and each span's archive state.
-  // Bearer-only (memory-session tokens are refused: not on the session guard's
-  // allowlist), bounded, paginated; 503 while the layers are off.
+  // Bearer, or a fold-probe memory-session token for this topic only (§10 shadow
+  // answerer; the session guard admits no other memory session), bounded,
+  // paginated; 503 while the layers are off.
+  /** A memory-session caller may read only its own topic's chunks (defence in depth beside the guard). */
+  const chunkCallerAllowed = (res: ExpressResponse, topicKey: string): boolean => {
+    const ms = res.locals.memorySession as { placeKey?: string | null } | undefined;
+    if (!ms) return true;
+    if (ms.placeKey === `${FOLD_PROBE_PLACE_PREFIX}${topicKey}`) return true;
+    res.status(403).json({ error: 'not-available-to-this-session' });
+    return false;
+  };
   router.get('/topic/:id/chunks', (req, res) => {
     if (!ctx.contextLayers) {
       res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
@@ -9702,6 +9967,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const topicKey = String(req.params.id);
     if (!isSafeChunkTopic(topicKey)) { res.status(400).json({ error: 'invalid topic id' }); return; }
+    if (!chunkCallerAllowed(res, topicKey)) return;
     const kindQ = typeof req.query.kind === 'string' ? req.query.kind : 'all';
     if (!['all', 'chunk', 'c2'].includes(kindQ)) { res.status(400).json({ error: 'kind must be all, chunk or c2' }); return; }
     const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
@@ -9717,6 +9983,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const topicKey = String(req.params.id);
     const key = String(req.params.k);
     if (!isSafeChunkTopic(topicKey) || !isSafeChunkKey(key)) { res.status(400).json({ error: 'invalid topic id or chunk key' }); return; }
+    if (!chunkCallerAllowed(res, topicKey)) return;
     const r = readChunk(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, key);
     if (!r) { res.status(404).json({ error: 'no such chunk' }); return; }
     res.json(r);
@@ -18563,7 +18830,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const current = telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown });
         if (current) telegramWrittenHere = { ...current, enabled: false };
       },
-      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },
+      requestRestart: async (reason) => (await ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram')) === true,
     },
     // The Cloudflare recipe: Cloudflare's API, this agent's tunnel block, one public read, and a planned restart.
     cloudflare: {
@@ -18596,7 +18863,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return code === 'ENOTFOUND' || code === 'ECONNREFUSED' ? 'unreachable' : 'unknown';
         }
       },
-      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare'); return r === true; },
+      requestRestart: async (reason) => (await ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare')) === true,
     },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     // Setting up Telegram itself needs no Telegram yet: that session runs where the dashboard shows it (startSetup below).
@@ -19147,9 +19414,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.status(r.status).json(r.body);
   });
 
-  router.get('/routing-spend/caps', (_req, res) => {
+  // gemini-payg §7: on a machine that is not the spender, the caps answer is the
+  // HOLDER's, proxied (cached ≤ 30 s, its age shown; `holderUnreachable` with the last
+  // known values when it cannot be reached).
+  let holderCapsCache: { at: number; holder: string; body: Record<string, unknown> } | null = null;
+  async function holderCapsView(holder: string): Promise<Record<string, unknown>> {
+    const nowMs = Date.now();
+    if (holderCapsCache && holderCapsCache.holder === holder && nowMs - holderCapsCache.at <= 30_000) {
+      return { ...holderCapsCache.body, proxiedFrom: holder, ageMs: nowMs - holderCapsCache.at };
+    }
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === holder);
+    if (peer) {
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/routing-spend/caps?local=1', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (r.ok) {
+          const body = await r.json() as Record<string, unknown>;
+          holderCapsCache = { at: nowMs, holder, body };
+          return { ...body, proxiedFrom: holder, ageMs: 0 };
+        }
+      } catch {
+        // @silent-fallback-ok — an unreachable holder is reported as holderUnreachable below, never as local figures.
+      }
+    }
+    const local = composeCapsView() as unknown as Record<string, unknown>;
+    return holderCapsCache && holderCapsCache.holder === holder
+      ? { ...holderCapsCache.body, proxiedFrom: holder, ageMs: nowMs - holderCapsCache.at, holderUnreachable: true }
+      : { ...local, proxiedFrom: holder, holderUnreachable: true, note: 'the spending machine could not be reached; committed figures live there' };
+  }
+
+  router.get('/routing-spend/caps', async (req, res) => {
     if (!resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
+      return;
+    }
+    const rt = ctx.meteredLaneRuntime;
+    const holder = rt?.holder() ?? null;
+    if (req.query.local !== '1' && rt && holder && !rt.isDesignatedHere()) {
+      res.json(await holderCapsView(holder));
       return;
     }
     res.json(composeCapsView());
@@ -19170,6 +19474,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const limit = req.query.limit ? Number(req.query.limit) : 100;
     res.json({
       records: ctx.providerCostReportStore.recentRecon(Number.isFinite(limit) && limit > 0 ? limit : 100),
+      // gemini-payg §7: the browser-read invoice figures (holder-local; reporting only).
+      geminiPaygBrowserReads: ctx.geminiPaygGoLive?.reconciliation.list(Number.isFinite(limit) && limit > 0 ? limit : 100) ?? [],
       note:
         'Layer 1c reconciliation (REPORTING-only — never a gate input): signed driftPct compares provider-reported vs ' +
         'internally-derived spend per (keyRef, door) window; committedUsd appears only on the metered-lease holder. ' +
@@ -19239,12 +19545,48 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   /** Render a canonical plan (Bearer). Rendering is not authority — the PIN commit is. */
-  router.post('/routing-spend/plan-money-layer', (req, res) => {
+  router.post('/routing-spend/plan-money-layer', async (req, res) => {
     const surface = moneySurface(res);
     if (!surface) return;
+    const b = (req.body ?? {}) as { action?: unknown; designatedMachineId?: unknown; expectedProposalHash?: unknown };
     try {
-      res.json(surface.renderPlan((req.body ?? {}).action));
+      if (b.action === 'gemini-payg-setup') {
+        // gemini-payg §8: the plan renders on the machine that will spend. A request
+        // naming another machine is forwarded THERE; its plan is committed there.
+        const target = typeof b.designatedMachineId === 'string' && b.designatedMachineId ? b.designatedMachineId : null;
+        const self = ctx.meshSelfId ?? null;
+        if (target && self && target !== self) {
+          const rt = ctx.meteredLaneRuntime;
+          if (!rt) { res.status(503).json({ error: 'lane-unavailable', message: 'the Gemini lane runtime is not built on this machine' }); return; }
+          const fwd = await rt.forwardSetupRender(target);
+          if (!fwd.ok) {
+            res.status(fwd.reason === 'holder-unreachable' || fwd.reason === 'peer-version' ? 503 : 409).json({ error: fwd.reason ?? 'render-refused', message: fwd.message ?? `machine ${target} could not render the plan`, renderedOn: target, ...(fwd.detail ? { detail: fwd.detail } : {}) });
+            return;
+          }
+          res.json({ ...(fwd.plan as Record<string, unknown>), renderedOn: target, forwarded: true, note: `rendered on ${target}; approve it there (its Spend tab), not here` });
+          return;
+        }
+        try {
+          res.json(await surface.renderPlanAsync('gemini-payg-setup', typeof b.expectedProposalHash === 'string' ? { expectedProposalHash: b.expectedProposalHash } : {}));
+        } catch (err) {
+          // The local proposal names another machine: forward the render THERE (§8).
+          const named = err instanceof MoneyLayerRefusal && err.code === 'wrong-machine' && typeof err.detail?.designatedMachineId === 'string' ? err.detail.designatedMachineId : null;
+          if (!named || !ctx.meteredLaneRuntime || named === self) throw err;
+          const fwd = await ctx.meteredLaneRuntime.forwardSetupRender(named);
+          if (!fwd.ok) {
+            res.status(fwd.reason === 'holder-unreachable' || fwd.reason === 'peer-version' ? 503 : 409).json({ error: fwd.reason ?? 'render-refused', message: fwd.message ?? `machine ${named} could not render the plan`, renderedOn: named, ...(fwd.detail ? { detail: fwd.detail } : {}) });
+            return;
+          }
+          res.json({ ...(fwd.plan as Record<string, unknown>), renderedOn: named, forwarded: true, note: `rendered on ${named}; approve it there (its Spend tab), not here` });
+        }
+        return;
+      }
+      res.json(surface.renderPlan(b.action));
     } catch (err) {
+      if (err instanceof MoneyLayerRefusal && err.detail) {
+        res.status(err.status).json({ error: err.code, message: operatorError(err, res.app?.locals?.stateDir), ...err.detail });
+        return;
+      }
       sendMoneyLayerError(res, err);
     }
   });
@@ -19259,13 +19601,58 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const surface = moneySurface(res);
     if (!surface) return;
     const b = req.body ?? {};
+    let out: Awaited<ReturnType<typeof surface.commit>>;
     try {
-      const out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(req, b) });
-      res.json(out);
+      out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(req, b), proposalHash: b.proposalHash });
     } catch (err) {
       sendMoneyLayerError(res, err);
+      return;
     }
+    if (!out.restartRequired) {
+      res.json(out);
+      return;
+    }
+    // gemini-payg §8 item 3: the commit schedules the supervised restart under the SAME
+    // PIN, through the SAME safeguards as the restart route. A refused safeguard
+    // restarts nothing and says why and when it will retry (once, automatically).
+    const restart = await scheduleGoLiveRestart(surface, 0);
+    res.json({
+      ...out,
+      restart,
+      ...(restart.scheduled ? {} : { message: `approved and saved — the restart that applies it has not happened yet (${String(restart.message ?? restart.reason)})${restart.retryAt ? `; it retries at ${String(restart.retryAt)}` : '; it applies at the next restart of this machine'}` }),
+    });
   });
+
+  /**
+   * One safeguarded restart attempt for a go-live commit: eligibility + cooldown +
+   * settling (surface.admitCommitRestart), then the audit FLUSH before the supervisor
+   * handoff. A refusal with a retry time schedules up to 3 further attempts.
+   */
+  async function scheduleGoLiveRestart(surface: import('../core/MoneyLayerEnableSurface.js').MoneyLayerEnableSurface, attempt: number): Promise<Record<string, unknown>> {
+    try {
+      surface.admitCommitRestart();
+    } catch (err) {
+      if (!(err instanceof MoneyLayerRefusal)) throw err;
+      const retryAt = typeof err.detail?.retryAt === 'string' ? err.detail.retryAt : null;
+      if (retryAt && attempt < 3) {
+        const t = setTimeout(() => { void scheduleGoLiveRestart(surface, attempt + 1).catch((e) => console.error('[money-layer] go-live restart retry failed:', e)); }, Math.max(1000, Date.parse(retryAt) - Date.now()));
+        t.unref?.();
+      } else if (attempt > 0) {
+        // The automatic retries are used up: say so once, so an approval never waits unseen.
+        void ctx.geminiPaygGoLive?.notices.laneNotice(`go-live-restart-pending:${Date.now()}`, `Your Gemini approval is saved, but the restart that applies it was refused (${err.message}). It applies at the next restart of this machine.`).catch(() => undefined);
+      }
+      return { scheduled: false, reason: err.code, message: `nothing restarted: ${err.message}`, ...(retryAt && attempt < 3 ? { retryAt } : {}) };
+    }
+    try {
+      await ctx.moneyLayerAudit?.flush();
+    } catch (err) {
+      return { scheduled: false, reason: 'audit-flush-failed', message: `the restart was NOT initiated because its record could not be flushed first: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const initiated = ctx.requestSupervisedRestart ? await ctx.requestSupervisedRestart('gemini-payg go-live — operator PIN commit') : false;
+    if (!initiated) return { scheduled: false, reason: 'restart-not-initiated', message: 'the restart request could not be written; the approval is saved and applies at the next restart' };
+    surface.noteRestartInitiated();
+    return { scheduled: true, message: 'the agent server on this machine is restarting to apply the approved setup' };
+  }
 
   /** Mint the single-use restart nonce + its canonical confirmation text (Bearer). Refused outside the three restartable states. */
   router.post('/routing-spend/money-layer/restart-nonce', (req, res) => {
@@ -19444,17 +19831,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const capsOverride: NonNullable<Parameters<typeof buildRoutingSpendCaps>[0]>['capsOverride'] = {};
     for (const [keyRef, c] of Object.entries(store.caps)) {
-      capsOverride[keyRef] = { provider: c.provider, lifetimeCapUsd: c.lifetimeCapUsd, dailyCapUsd: c.dailyCapUsd, frozen: c.frozen };
+      capsOverride[keyRef] = {
+        provider: c.provider,
+        lifetimeCapUsd: c.lifetimeCapUsd ?? null,
+        monthlyCapUsd: c.monthlyCapUsd ?? null,
+        dailyCapUsd: c.dailyCapUsd,
+        periodTimeZone: c.periodTimeZone ?? null,
+        frozen: c.frozen,
+      };
     }
-    for (const g of Object.values(store.goLive)) {
+    for (const [door, g] of Object.entries(store.goLive)) {
       const prev = capsOverride[g.keyRef] ?? {};
-      capsOverride[g.keyRef] = { ...prev, goLiveState: g.enabled ? 'live' : 'disarmed', meteredLeaseHolder: g.designatedMachineId };
+      capsOverride[g.keyRef] = { ...prev, door, goLiveState: g.enabled ? 'live' : 'disarmed', meteredLeaseHolder: g.designatedMachineId };
     }
-    const committed: Record<string, { committedLifetimeUsd: number; committedDayUsd: number }> = {};
+    const committed: NonNullable<Parameters<typeof buildRoutingSpendCaps>[0]>['committed'] = {};
     for (const t of ctx.meteredSpendLedger.allCommitted()) {
-      committed[t.keyRef] = { committedLifetimeUsd: t.committedLifetimeUsd, committedDayUsd: t.committedDayUsd };
+      committed[t.keyRef] = { committedLifetimeUsd: t.committedLifetimeUsd, committedDayUsd: t.committedDayUsd, committedMonthUsd: t.committedMonthUsd };
     }
-    return { ...buildRoutingSpendCaps({ capsOverride, committed, moneyLive: true }), storeVersion: store.version };
+    let geminiPayg: unknown = null;
+    try { geminiPayg = ctx.geminiPaygGoLive?.capsDetail() ?? null; } catch { /* @silent-fallback-ok: the §7 block is an enrichment; the caps rows above still answer */ geminiPayg = null; }
+    return { ...buildRoutingSpendCaps({ capsOverride, committed, moneyLive: true }), storeVersion: store.version, ...(geminiPayg ? { geminiPayg } : {}) };
   }
 
   /** Render the canonical plan for a money action (Bearer — rendering is not authority; the PIN commit is). */
@@ -19472,19 +19868,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     try {
       if (action === 'caps-adjust') {
-        const { keyRef, provider, lifetimeCapUsd, dailyCapUsd } = b;
+        const { keyRef, provider, dailyCapUsd } = b;
+        // gemini-payg §5 period model: lifetime OR monthly (or both), plus daily, and an
+        // optional IANA period zone. A null lifetime is legitimate when monthly is set.
+        const lifetimeCapUsd: number | null = b.lifetimeCapUsd ?? null;
+        const monthlyCapUsd: number | null = b.monthlyCapUsd ?? null;
+        const periodTimeZone: string | null = b.periodTimeZone ?? null;
         if (typeof keyRef !== 'string' || !keyRef.trim()) throw new Error('keyRef required');
         if (typeof provider !== 'string' || !provider.trim()) throw new Error('provider required');
-        for (const [n, v] of [['lifetimeCapUsd', lifetimeCapUsd], ['dailyCapUsd', dailyCapUsd]] as const) {
-          if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`${n} must be a number ≥ 0`);
+        if (typeof dailyCapUsd !== 'number' || !Number.isFinite(dailyCapUsd) || dailyCapUsd < 0) throw new Error('dailyCapUsd must be a number ≥ 0');
+        for (const [n, v] of [['lifetimeCapUsd', lifetimeCapUsd], ['monthlyCapUsd', monthlyCapUsd]] as const) {
+          if (v !== null && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) throw new Error(`${n} must be a number ≥ 0 when given`);
         }
+        if (lifetimeCapUsd === null && monthlyCapUsd === null) throw new Error('a lifetimeCapUsd or a monthlyCapUsd is required');
+        if (periodTimeZone !== null && !isValidTimeZone(periodTimeZone)) throw new Error('periodTimeZone must be an IANA zone name');
+        // gemini-payg §5: the provisional-ceiling card's prefilled plan also resets/raises
+        // the door's uncertain-charge limit — a door-policy field, so it names its door.
+        const door: string | null = typeof b.door === 'string' && b.door.trim() ? b.door : null;
+        const provisionalCeilingUsd: number | null = b.provisionalCeilingUsd ?? null;
+        if (provisionalCeilingUsd !== null && (typeof provisionalCeilingUsd !== 'number' || !Number.isFinite(provisionalCeilingUsd) || provisionalCeilingUsd <= 0)) throw new Error('provisionalCeilingUsd must be a number > 0 when given');
+        if (provisionalCeilingUsd !== null && (!door || !ctx.routingSpendCapsStore.read().doorPolicy?.[door])) throw new Error('provisionalCeilingUsd needs the door whose policy it changes');
+        const currentPolicy = door ? ctx.routingSpendCapsStore.read().doorPolicy?.[door] : undefined;
         const current = ctx.routingSpendCapsStore.read().caps[keyRef];
+        // Never `.toFixed` an absent cap (a monthly-only record has no lifetime).
+        const money = (v: number | null | undefined) => (typeof v === 'number' ? `$${v.toFixed(2)}` : 'none');
+        const changeLine = (label: string, prev: number | null | undefined, next: number | null) =>
+          next === null && (prev === undefined || prev === null) ? '' : `${label} ${current ? `${money(prev)} → ` : ''}${money(next)}; `;
+        const lowers =
+          !!current &&
+          (dailyCapUsd < current.dailyCapUsd ||
+            (lifetimeCapUsd !== null && (current.lifetimeCapUsd === undefined || lifetimeCapUsd < current.lifetimeCapUsd)) ||
+            (monthlyCapUsd !== null && (current.monthlyCapUsd === undefined || monthlyCapUsd < current.monthlyCapUsd)));
         const renderedText =
           `Adjust caps for key '${keyRef}' (${provider}): ` +
-          `daily cap ${current ? `$${current.dailyCapUsd.toFixed(2)} → ` : ''}$${dailyCapUsd.toFixed(2)}; ` +
-          `lifetime cap ${current ? `$${current.lifetimeCapUsd.toFixed(2)} → ` : ''}$${lifetimeCapUsd.toFixed(2)}. ` +
-          `No other field changes. ${current && (lifetimeCapUsd < current.lifetimeCapUsd || dailyCapUsd < current.dailyCapUsd) ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
-        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, dailyCapUsd }, { capsStore: storeVersion });
+          `daily cap ${current ? `${money(current.dailyCapUsd)} → ` : ''}${money(dailyCapUsd)}; ` +
+          changeLine('monthly cap', current?.monthlyCapUsd, monthlyCapUsd) +
+          changeLine('lifetime cap', current?.lifetimeCapUsd, lifetimeCapUsd) +
+          (periodTimeZone !== null ? `period zone ${current?.periodTimeZone ?? 'UTC'} → ${periodTimeZone}; ` : '') +
+          (provisionalCeilingUsd !== null && currentPolicy ? `uncertain-charge limit on door '${door}' ${money(currentPolicy.provisionalCeilingUsd)} → ${money(provisionalCeilingUsd)}; ` : '') +
+          `No other field changes. ${lowers ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
+        const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, monthlyCapUsd, dailyCapUsd, periodTimeZone, ...(provisionalCeilingUsd !== null && door ? { door, provisionalCeilingUsd } : {}) }, { capsStore: storeVersion });
         // `action` rides the response so the client can post the commit to the route that
         // ACTION names. Without it the dashboard had to guess, guessed the caps route for
         // everything, and a go-live commit was refused 400 by the plan-binding check —
@@ -19532,12 +19955,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   /** PIN commit of a rendered caps-adjust plan. The commit derives SOLELY from the plan snapshot (S2-3). */
   router.post('/routing-spend/caps/adjust', (req, res) => {
-    commitMoneyPlan(req, res, 'caps-adjust', (fields, expectedVersion, actor) =>
-      ctx.routingSpendCapsStore!.adjustCaps(actor, expectedVersion, fields.keyRef as string, fields.provider as string, {
-        lifetimeCapUsd: fields.lifetimeCapUsd as number,
+    commitMoneyPlan(req, res, 'caps-adjust', (fields, expectedVersion, actor) => {
+      // Both writes of one approved plan, or neither: the door-policy half is checked
+      // BEFORE the caps half lands, so its expected failure cannot leave a half-applied plan.
+      if (typeof fields.door === 'string' && typeof fields.provisionalCeilingUsd === 'number' && !ctx.routingSpendCapsStore!.read().doorPolicy?.[fields.door]) {
+        throw new Error(`no door policy for '${fields.door}'`);
+      }
+      const after = ctx.routingSpendCapsStore!.adjustCaps(actor, expectedVersion, fields.keyRef as string, fields.provider as string, {
+        lifetimeCapUsd: (fields.lifetimeCapUsd as number | null | undefined) ?? null,
+        monthlyCapUsd: (fields.monthlyCapUsd as number | null | undefined) ?? null,
         dailyCapUsd: fields.dailyCapUsd as number,
-      }),
-    );
+        periodTimeZone: (fields.periodTimeZone as string | null | undefined) ?? null,
+      });
+      // The same PIN-approved plan's door-policy line (gemini-payg §5 provisional ceiling).
+      const door = typeof fields.door === 'string' ? fields.door : null;
+      const pc = typeof fields.provisionalCeilingUsd === 'number' ? fields.provisionalCeilingUsd : null;
+      if (door && pc !== null) {
+        const policy = after.doorPolicy?.[door];
+        if (!policy) throw new Error(`no door policy for '${door}'`);
+        return ctx.routingSpendCapsStore!.setDoorPolicy(actor, after.version, door, { ...policy, provisionalCeilingUsd: pc });
+      }
+      return after;
+    });
   });
 
   /** PIN commit of a rendered go-live plan (arms/disarms + designates the metered-lease machine). */
@@ -22064,9 +22503,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
       }
     }
+    const unresolved = [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b);
+    // A topic no machine can name shows its bound project's title instead (kept apart from verified names,
+    // which `topics` alone carries). 2026-11-20: ~60 names were lost on every machine in the Studio rebuild.
+    let projectTitles = new Map<number, string>();
+    try { projectTitles = projectTitlesByTopic(ctx.chiefOfStaffLoop?.projectsSummary() ?? []); } catch { /* @silent-fallback-ok — a fallback title is optional */ }
+    const fallbacks = unresolved.filter((id) => projectTitles.has(id)).map((id) => ({ topicId: id, title: projectTitles.get(id)!, source: 'project' as const }));
     res.json({
       topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
-      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+      fallbacks: filterTopicsForTeam(ctx.mobilePairingService, req, fallbacks, (t) => t.topicId),
+      pool: { failed, unresolved },
     });
   });
 
@@ -28349,7 +28795,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // exactly like the router's casClaimOwnership/confirmClaim pair. The
         // entry is what the target's wsOwnerOf journal-placement fallback
         // (#930) reads after replication.
-        const casAndJournal = (action: { type: 'place'; machineId: string } | { type: 'claim'; machineId: string }, half: string): boolean => {
+        const casAndJournal = (action: { type: 'place'; machineId: string } | { type: 'claim'; machineId: string } | { type: 'force-claim'; machineId: string }, half: string): boolean => {
           const r = ctx.sessionOwnershipRegistry!.cas(action, {
             sessionKey: topicId,
             sender: self,
@@ -28369,7 +28815,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           } catch { /* observability never endangers the observed */ }
           return true;
         };
-        if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
+        // Unroutable-owner release §4: an ACTIVE/transient record owned by a machine
+        // that can never answer (revoked, or unregistered + silent) cannot cooperate
+        // in a transfer and `place` is refused on a live record — so the holder
+        // force-claims it straight to the target (one CAS, journaled like every half).
+        const curOwner = cur0?.ownerMachineId;
+        let unroutableOwner = false;
+        try {
+          unroutableOwner = !!cur0 && cur0.status !== 'released' && !!curOwner && curOwner !== target && curOwner !== self && ctx.isOwnerUnroutable?.(curOwner) === true;
+        } catch { unroutableOwner = false; /* @silent-fallback-ok — unreadable standing keeps today's transfer path */ }
+        if (unroutableOwner) {
+          placedOwnership = casAndJournal({ type: 'force-claim', machineId: target }, 'tforce');
+        } else if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
           placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
           // TOPIC-PROFILE-SPEC §5.3 acquire seam (deterministic-transfer arm):
           // when THIS machine is the transfer target, the landed tclaim is an
@@ -29795,7 +30252,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const { type, title, description, context } = req.body;
+    const { type, title, description, context, source: feedbackSource } = req.body;
+    // agent-work-cards-default §3 "Feedback is not a trigger (R10)": with the board on, a Bearer caller says who the report
+    // is from; a request from the person the agent serves is a work card (POST /commitments), never feedback.
+    if (askWorkBoardOn()) {
+      const scoped = (res.locals.memorySession as { placeKey?: string | null } | undefined) ?? null;
+      const src = feedbackSource as { kind?: unknown; conversationKey?: unknown } | undefined;
+      const kinds = ['agent', 'other-agent', 'user', 'operator-conversation'];
+      const routes = { commitments: 'POST /commitments (the request becomes a card by itself)', card: 'POST /work-board/cards' };
+      if (!src || typeof src !== 'object' || !kinds.includes(String(src.kind))) {
+        if (!(scoped && src === undefined)) { res.status(400).json({ error: 'source-required', message: 'Say who this report is from: source: {kind: "agent" | "other-agent" | "user"}. A request from the person you serve is not feedback: record it as a commitment and it becomes a card.', routes }); return; }
+      }
+      if (src && src.kind === 'operator-conversation') { res.status(400).json({ error: 'operator-request-not-feedback', message: 'A direct request from the person you serve is a work card you carry, never a report to the maintainers. Record it with POST /commitments (the card is written for you), or write the card.', routes }); return; }
+    }
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -29947,12 +30416,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    // Update the AutoUpdater's live config
-    if (ctx.autoUpdater) {
-      (ctx.autoUpdater as any).config.autoApply = autoApply;
-    }
+    // Update the AutoUpdater's live config. Turning it off also cancels an
+    // update a check already queued, so "off" holds from this moment.
+    const cancelledQueuedUpdate = ctx.autoUpdater
+      ? ctx.autoUpdater.setAutoApply(autoApply, 'PATCH /updates/config')
+      : false;
 
-    res.json({ autoApply, persisted: true });
+    res.json({ autoApply, persisted: true, cancelledQueuedUpdate });
   });
 
   router.post('/updates/apply', async (req, res) => {
@@ -31486,11 +31956,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/telegram/dashboard-refresh', async (_req, res) => {
     if (!ctx.telegram) {
+      // An agent with no Telegram at all (an app-created agent talks through
+      // the app) has no Dashboard topic: the refresh does not apply, so it is
+      // a clean skip (200), not a failure the job would count every 15 minutes.
+      // Telegram that IS configured but not running stays a real failure.
+      const telegramConfigured = (ctx.config.messaging ?? []).some(m => m.type === 'telegram' && m.enabled);
+      if (!telegramConfigured) {
+        res.json({ action: 'skipped', reason: 'telegram-not-configured',
+          detail: 'Telegram is not set up for this agent, so there is no Dashboard topic to update.' });
+        return;
+      }
       res.status(503).json(dashboardRefreshFailure(
         'precondition',
-        'Telegram messaging is not configured for this agent, so there is no Dashboard topic to update.',
-        'Run Telegram setup for this agent or disable the dashboard-link-refresh job when Telegram is intentionally unavailable.',
-        'skipped',
+        'Telegram is configured for this agent but this server has no Telegram connection (it is not running), so the Dashboard topic cannot be updated.',
+        'Check the server log for a Telegram startup error (bot token, network), or whether the server was started without Telegram on purpose.',
       ));
       return;
     }
@@ -31757,7 +32236,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // lifeline-proven sender may name a topic: names are shown to the operator.
     const forwardedTopicName = typeof req.body?.topicName === 'string' ? req.body.topicName : null;
     if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
-      ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
+      const eventAt = Number(req.body?.topicEventAtMs);
+      const eventSeq = Number(req.body?.topicEventSeq);
+      ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true, Number.isSafeInteger(eventAt) && eventAt > 0 ? eventAt : undefined, Number.isSafeInteger(eventSeq) && eventSeq >= 0 ? eventSeq : undefined);
     }
     // A pin made in Telegram, read by the lifeline (conversation-pinned-messages). Only a lifeline-proven
     // sender; the adapter checks the person who pinned is authorized here.
@@ -33678,6 +34159,71 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  /**
+   * Restore recovered conversation history (docs/specs/topic-history-import.md).
+   * POST /topic/import { file?: "<path inside the state dir>", rows?: [...], source?, dryRun? }
+   *
+   * Agent bearer token only: a paired phone (owner, team or MSP) never writes
+   * history. Rows are validated against the store's own schema, deduped against
+   * the store, published as an immutable batch beside the logs (never into the
+   * live log), and merged into each topic at its message time. Idempotent: a
+   * second identical call accepts nothing.
+   */
+  router.post('/topic/import', async (req, res) => {
+    if (!ctx.topicMemory) {
+      res.status(503).json({ error: 'TopicMemory not initialized' });
+      return;
+    }
+    if (principalOf(req).kind !== 'token') {
+      res.status(403).json({ error: 'agent-token-required', reason: 'Only the agent itself can restore conversation history.' });
+      return;
+    }
+    const body = (req.body ?? {}) as { file?: unknown; rows?: unknown; source?: unknown; dryRun?: unknown };
+    let filePath: string | undefined;
+    if (body.file !== undefined) {
+      if (typeof body.file !== 'string' || !body.file.trim() || path.isAbsolute(body.file)) {
+        res.status(400).json({ error: 'file must be a path relative to the state directory' });
+        return;
+      }
+      let root: string;
+      let resolved: string;
+      try {
+        root = fs.realpathSync(ctx.config.stateDir);
+        resolved = fs.realpathSync(path.resolve(root, body.file));
+      } catch {
+        // @silent-fallback-ok — answered as a 400 naming the problem; nothing was read
+        res.status(400).json({ error: 'file not found inside the state directory' });
+        return;
+      }
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        res.status(400).json({ error: 'file must stay inside the state directory' });
+        return;
+      }
+      if (!fs.statSync(resolved).isFile()) {
+        res.status(400).json({ error: 'file is not a regular file' });
+        return;
+      }
+      filePath = resolved;
+    } else if (!Array.isArray(body.rows)) {
+      res.status(400).json({ error: 'file (string) or rows (array) required' });
+      return;
+    }
+    try {
+      const report = await runTopicHistoryImport(ctx.topicMemory, ctx.config.stateDir, {
+        ...(filePath ? { filePath } : { rows: body.rows as unknown[] }),
+        source: typeof body.source === 'string' ? body.source : undefined,
+        dryRun: body.dryRun === true,
+      });
+      res.json({ ...report, stats: ctx.topicMemory.stats() });
+    } catch (err) {
+      if (err instanceof ImportTooLargeError) {
+        res.status(413).json({ error: 'too-large', reason: operatorError(err, ctx.config.stateDir) });
+        return;
+      }
+      res.status(500).json({ error: 'import-failed', reason: operatorError(err, ctx.config.stateDir) });
+    }
+  });
+
   // ── Pairing API — Multi-machine state sync (Phase 4.5) ────────
 
   /**
@@ -34508,6 +35054,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // GET /playwright-profiles — the FULL detail surface (vault NAMES, dangling-ref flags).
   router.get('/playwright-profiles', (req, res) => {
+    // sibling-machine-reach §3.2: the LIGHT accounts view — service, identity, owner and
+    // last-asserted state only; no vault read, no seeding, no write. Runs BEFORE the dev
+    // gate (it carries no secret) but answers ONLY the agent's own bearer: any other
+    // credential falls through to the full view's behavior below.
+    if (req.query.view === 'accounts' && bearerMatches(req, ctx.config.authToken)) {
+      try {
+        res.json({ ...(ctx.meshSelfId ? { machineId: ctx.meshSelfId } : {}), view: 'accounts', profiles: buildPlaywrightRegistry().listAccountsLight() });
+      } catch (err) {
+        if (handlePlaywrightError(err, res)) return;
+        res.status(500).json({ error: 'Failed to list playwright accounts' });
+      }
+      return;
+    }
     if (!playwrightFeatureEnabled()) {
       res.status(503).json({ error: 'playwright profile registry disabled' });
       return;
@@ -38015,6 +38574,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : body);
   });
 
+  // agent-work-cards-default §5 (b): withdraw an unanswered request the agent raised. Never approves anything; a
+  // board-policy request (the owner's path to the lighter policy) cannot be withdrawn; the same change cannot be re-asked
+  // until the card would have expired.
+  router.delete('/trust/requests/:id', async (req, res) => {
+    if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
+    const id = String(req.params.id);
+    if (!/^tr-[0-9a-f]{12}-[A-Za-z0-9-]{1,32}$/.test(id)) return res.status(400).json({ error: 'bad-request-id' });
+    const r = await ctx.trustAccountPath.service.withdraw(id);
+    if (!r.ok) {
+      const status = r.reason === 'not-found' ? 404 : r.reason === 'not-recorded' ? 503 : 409;
+      return res.status(status).json({ error: r.reason, ...(r.reason === 'board-policy-not-withdrawable' ? { message: 'The request to start internal cards without asking is the owner\'s path; the agent cannot withdraw it.' } : {}) });
+    }
+    res.json({ requestId: id, status: 'withdrawn', cardTold: r.cardTold, message: 'Withdrawn. A reply with its code approves nothing now, and the same change cannot be asked again until the card would have expired.' });
+  });
+
   router.get('/trust/requests', (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
     // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
@@ -39452,10 +40026,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, scope: 'mesh', commitments: byPriority(await commitmentsMeshRows(status === 'active')) });
       return;
     }
+    // agent-work-cards-default §3 Detectors: the requests whose card is not written yet (a retryable gap), never zero by omission.
+    const cardPendingOnly = req.query.cardPending === '1' || req.query.cardPending === 'true';
+    const byCardPending = <T,>(rows: T[]): T[] => cardPendingOnly ? rows.filter((c) => (c as { cardPending?: boolean }).cardPending === true) : rows;
     if (status === 'active') {
-      res.json({ enabled: true, commitments: byPriority(ctx.commitmentTracker.getActive()) });
+      res.json({ enabled: true, commitments: byCardPending(byPriority(ctx.commitmentTracker.getActive())) });
     } else {
-      res.json({ enabled: true, commitments: byPriority(ctx.commitmentTracker.getAll()) });
+      res.json({ enabled: true, commitments: byCardPending(byPriority(ctx.commitmentTracker.getAll())) });
     }
   });
 
@@ -39967,12 +40544,37 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             owner, blockedOn, actionClass, supersededBy,
             correctionId, classReviewRef, origin,
             // promise-review-and-priority §2.1
-            priority, priorityReason } = req.body;
+            priority, priorityReason,
+            // agent-work-cards-default §3: the request's source and the recording session's card fields.
+            sourceConversationKey: bodySourceConversationKey, sourceMessageId: bodySourceMessageId, milestones, outward, recommendation, whyYou, cardId: bodyCardId } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
       return;
     }
+    // ── agent-work-cards-default §3: source fields are validated; the conversation of a scoped session is its binding ──
+    if (bodyCardId !== undefined) { res.status(400).json({ error: 'card-id-not-accepted', message: 'The card id is derived from the commitment; it cannot be chosen. Record the commitment and read cardId from the response.' }); return; }
+    if (bodySourceConversationKey !== undefined && !(typeof bodySourceConversationKey === 'string' && /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|telegram:-?\d{1,20}|slack:[A-Za-z0-9_.:-]{1,160})$/.test(bodySourceConversationKey))) {
+      res.status(400).json({ error: '"sourceConversationKey" must be an app conversation key, telegram:<topic> or slack:<channel>[:<thread>]' }); return;
+    }
+    if (bodySourceMessageId !== undefined && !(typeof bodySourceMessageId === 'string' && bodySourceMessageId.length > 0 && bodySourceMessageId.length <= 200)) { res.status(400).json({ error: '"sourceMessageId" must be a string of at most 200 characters' }); return; }
+    if (milestones !== undefined && !(Array.isArray(milestones) && milestones.length <= 256 && milestones.every((m: unknown) => typeof m === 'string' && m.trim().length > 0 && m.length <= 8000))) { res.status(400).json({ error: '"milestones" must be a list of up to 256 non-empty strings' }); return; }
+    if (outward !== undefined && typeof outward !== 'boolean') { res.status(400).json({ error: '"outward" must be boolean' }); return; }
+    if (recommendation !== undefined && !(typeof recommendation === 'string' && recommendation.length <= 32_000)) { res.status(400).json({ error: '"recommendation" must be a string' }); return; }
+    if (whyYou !== undefined && !(typeof whyYou === 'string' && whyYou.length <= 32_000)) { res.status(400).json({ error: '"whyYou" must be a string' }); return; }
+    const scopedPlace = (res.locals.memorySession as { placeKey?: string | null } | undefined)?.placeKey ?? null;
+    let sourceConversationKey: string | undefined = typeof bodySourceConversationKey === 'string' ? bodySourceConversationKey : undefined;
+    if (scopedPlace) {
+      // Derived from the binding (§3): a body value outside the binding is `source-mismatch`.
+      const bound = scopedPlace.startsWith('app:') ? scopedPlace.slice(4) : /^telegram:(?:topic:)?(-?\d+)$/.test(scopedPlace) ? `telegram:${/^telegram:(?:topic:)?(-?\d+)$/.exec(scopedPlace)![1]}` : null;
+      if (sourceConversationKey !== undefined && bound !== null && sourceConversationKey !== bound) { res.status(403).json({ error: 'source-mismatch', message: 'A scoped session records against its own conversation; the body named another.' }); return; }
+      if (sourceConversationKey === undefined && bound) sourceConversationKey = bound;
+      if (sourceConversationKey === undefined && typeof topicId === 'number' && bound === null && /^telegram:/.test(scopedPlace)) sourceConversationKey = `telegram:${topicId}`;
+    }
+    if (sourceConversationKey === undefined && typeof topicId === 'number' && Number.isSafeInteger(topicId) && topicId > 0) sourceConversationKey = `telegram:${topicId}`;
+    const sourceMessageId: string | undefined = typeof bodySourceMessageId === 'string' ? bodySourceMessageId : undefined;
+    const requestGate = ctx.workBoard?.()?.gate ?? null;
+    const sourceVerdict = requestGate && sourceConversationKey && (source === 'agent' || source === 'manual' || source === undefined) ? requestGate.verifySource(sourceConversationKey, sourceMessageId ?? null) : null;
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
       return;
@@ -40116,7 +40718,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(boundBy ? { boundBy } : {}),
         ...(priority !== undefined ? { priority } : {}),
         ...(typeof priorityReason === 'string' ? { priorityReason } : {}),
+        // agent-work-cards-default §3: the source, the verdict (computed above from the durable row, never from the body) and the card fields.
+        ...(sourceConversationKey ? { sourceConversationKey } : {}),
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(sourceVerdict ? (sourceVerdict.sourceVerified
+          ? { sourceVerified: true, requesterPersonKey: sourceVerdict.requesterPersonKey, requesterIsOwner: sourceVerdict.requesterIsOwner, requestText: sourceVerdict.requestText, requestTextHash: sourceVerdict.requestTextHash }
+          : { sourceVerified: false, sourceUnverifiedReason: sourceVerdict.sourceUnverifiedReason }) : {}),
+        ...(Array.isArray(milestones) ? { milestones } : {}),
+        ...(typeof outward === 'boolean' ? { outward } : {}),
+        ...(typeof recommendation === 'string' ? { recommendation } : {}),
+        ...(typeof whyYou === 'string' ? { whyYou } : {}),
       });
+      // The derived card id rides in the response (derivable before the write); the gate runs after the response is sent.
+      const gateApplies = !!requestGate && !!sourceConversationKey && (commitment.source === 'agent' || commitment.source === 'manual') && requestGate.cardFor({ id: commitment.id, originMachineId: commitment.originMachineId ?? (ctx.meshSelfId ?? 'local') }) === null;
+      const derivedCardId = gateApplies ? requestCardIdFor(commitment.originMachineId ?? (ctx.meshSelfId ?? 'local'), commitment.id) : null;
+      if (gateApplies && requestGate) {
+        const row = commitment;
+        res.once('finish', () => {
+          try { requestGate.onRecorded({ ...row, originMachineId: row.originMachineId ?? (ctx.meshSelfId ?? 'local') } as never); }
+          catch (err) { console.warn(`[work-board] request-card gate failed for ${row.id}: ${err instanceof Error ? err.message : String(err)}`); }
+        });
+      }
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
       // is dark/dry a session CAN open a commitment on a minted id — accept it
       // (it preserves the record for the live proof) and raise ONE deduped
@@ -40147,7 +40769,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } catch { /* @silent-fallback-ok — an advisory hint must never fail the record */ }
       res.status(201).json({ ...commitment, classReviewAdmission: {
         wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
-      }, ...(dateMissing ? { dateMissing } : {}) });
+      }, ...(dateMissing ? { dateMissing } : {}), ...(derivedCardId ? { cardId: derivedCardId, cardPending: true } : {}) });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -40767,7 +41389,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * P1.5b §3.4 — owner-routing decision for a mutation route. Returns:
    *  'local'      → the record is OWN (or the layer is dark): mutate locally.
    *  {forward}    → the record lives ONLY in a replica: forward to its owner.
-   *  'ambiguous'  → a bare id matches own AND replica rows (409, §3.1).
+   *  'ambiguous'  → a bare id matches rows from DIFFERENT origins (409, §3.1);
+   *                 same-origin copies collapse to the origin's own row.
    *  'absent'     → nowhere in the merged view (404 falls through to local).
    */
   async function resolveCommitmentRoute(id: string, origin: string | undefined): Promise<
@@ -40780,7 +41403,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       own: ctx.commitmentTracker.getAll(),
       replicas: ctx.commitmentReplicaStore.allReplicas(),
     });
-    const resolved = syncMod.resolveBareId(rows, id, origin);
+    const resolved = syncMod.resolveBareId(rows, id, origin, ctx.meshSelfId ?? 'local');
     if (resolved === 'ambiguous') return 'ambiguous';
     if (resolved === null) return 'absent';
     if (resolved.viewSource === 'own') return 'local';
@@ -40847,22 +41470,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
       return;
     }
-    const { deliveryMessageId, evidence } = req.body ?? {};
-    if (evidence !== undefined && (typeof evidence !== 'string' || evidence.length > 500)) {
-      res.status(400).json({ error: 'evidence must be a string of at most 500 characters' });
+    const { deliveryMessageId, evidence, itemId } = req.body ?? {};
+    // agent-work-cards-default §2: with `itemId` the evidence lands on the card (its 32,000 limit); the commitment's own
+    // resolution keeps its 500-character slice either way.
+    const evidenceMax = typeof itemId === 'string' && itemId ? 32_000 : 500;
+    if (evidence !== undefined && (typeof evidence !== 'string' || evidence.length > evidenceMax)) {
+      res.status(400).json({ error: `evidence must be a string of at most ${evidenceMax} characters` });
       return;
     }
+    if (itemId !== undefined && !(typeof itemId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(itemId))) { res.status(400).json({ error: 'itemId must name a done item on the card' }); return; }
     if (typeof route === 'object') {
-      const args = { ...(deliveryMessageId ? { deliveryMessageId } : {}), ...(evidence ? { evidence } : {}) };
+      const args = { ...(deliveryMessageId ? { deliveryMessageId } : {}), ...(evidence ? { evidence } : {}), ...(itemId ? { itemId } : {}) };
       await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'deliver', Object.keys(args).length ? args : undefined));
       return;
     }
-    const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId, evidence);
+    const before = ctx.commitmentTracker.get(req.params.id);
+    const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId, evidence); // deliver() keeps its own 500-character resolution slice
     if (!updated) {
       res.status(404).json({ error: `Commitment ${req.params.id} not found or already in terminal status` });
       return;
     }
-    res.json({ delivered: true, id: updated.id, commitment: updated });
+    let card: Record<string, unknown> | undefined;
+    const gate = ctx.workBoard?.()?.gate ?? null;
+    if (gate && before && (before.source === 'agent' || before.source === 'manual')) {
+      try { card = gate.onDeliver({ ...updated, originMachineId: updated.originMachineId ?? (ctx.meshSelfId ?? 'local') } as never, { deliveryMessageId, evidence, itemId }) as unknown as Record<string, unknown>; }
+      catch (err) { card = { error: err instanceof Error ? err.message : String(err) }; }
+    }
+    res.json({ delivered: true, id: updated.id, commitment: updated, ...(card ? { card } : {}) });
   });
 
   // POST /commitments/:id/probe — C1+C2 §4.4. The agent's own session records an
@@ -41316,17 +41950,42 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   }
 
   router.get('/subscription-pool', async (req, res) => {
+    // sibling-machine-reach §3.1: every plain response names the machine that answered, so a
+    // reader can tell a stale URL that now reaches a different machine (identity check).
+    const answeringMachine = ctx.meshSelfId ? { machineId: ctx.meshSelfId } : {};
     if (req.query.scope === 'pool') {
-      res.json(await subscriptionPoolScopeView());
+      const view = await subscriptionPoolScopeView();
+      if (siblingHoldings) {
+        // The agent's one lookup: per machine ages/failures for every reader; account and
+        // browser identities ONLY for the agent's own bearer (never a dashboard session).
+        const ownBearer = bearerMatches(req, ctx.config.authToken);
+        const snap = siblingHoldings.snapshot();
+        (view as Record<string, unknown>).siblingReach = {
+          ...siblingHoldings.status(),
+          machines: snap.machines.map((m) => ({
+            machineId: m.machineId,
+            ...(m.nickname ? { nickname: m.nickname } : {}),
+            poolAgeMinutes: m.pool?.ageMinutes ?? null,
+            browserAgeMinutes: m.browser?.ageMinutes ?? null,
+            ...(m.poolUnknownReason ? { poolUnknownReason: m.poolUnknownReason } : {}),
+            ...(m.browserUnknownReason ? { browserUnknownReason: m.browserUnknownReason } : {}),
+            ...(ownBearer
+              ? { poolAccounts: m.pool?.accounts ?? null, browserAccounts: m.browser?.accounts ?? null }
+              : { poolAccountCount: m.pool?.accounts.length ?? null, browserProfileCount: m.browser?.accounts.length ?? null }),
+          })),
+          unknown: snap.unknown,
+        };
+      }
+      res.json(view);
       return;
     }
 
     if (!ctx.subscriptionPool) {
-      res.json({ enabled: false, accounts: [] });
+      res.json({ enabled: false, accounts: [], ...answeringMachine });
       return;
     }
     if (!subscriptionPoolReadable()) {
-      res.status(503).json(subscriptionPoolFailureBody());
+      res.status(503).json({ ...subscriptionPoolFailureBody(), ...answeringMachine });
       return;
     }
     const accounts = ctx.subscriptionPool.list().map((a) => ({
@@ -41338,6 +41997,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const emailGaps = subscriptionEmailGaps();
     res.json({
       enabled: true,
+      ...answeringMachine,
       count: accounts.length,
       accounts,
       emailGaps,
@@ -42663,6 +43323,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const owner = workBoardOwnerKey();
         if (!owner) return { status: 409, body: { error: 'no-team-owner' } };
         return performOwnerTap(workBoardRouteDeps, svc, cardId, tap as unknown as Record<string, unknown>, { kind: 'person', personKey: owner, proof: 'presence', isOwner: true });
+      },
+      // "Make this group a project" (docs/specs/conversation-groups-phone.md §3): the write gate proved the owner's
+      // phone and Face ID over the draft's exact hash; the binding write is POST /chief-of-staff/projects's own.
+      ...(ctx.chiefOfStaffLoop ? { groupProjectRefusal: () => {
+        // One machine decides: the lease holder (as approve-widening), so two machines cannot bind one conversation from stale copies.
+        let holder = true;
+        try { holder = ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { holder = false; } // @silent-fallback-ok — an unreadable lease reads as not held: refuse, never bind twice
+        if (!holder) return { status: 409, body: { error: 'not-holder', detail: 'This machine is not the one deciding right now. Try again in a moment.' } };
+        if (ctx.groupProjectConfirm?.off) return { status: 503, body: { error: 'conversation-changes-off', detail: 'Changing conversations is turned off for this agent, so a group cannot become a project here.' } };
+        return null;
+      }, confirmGroupProject: (draftId: string, draftHash: string, _deviceId: string, req: import('express').Request, carried: unknown) => {
+        const confirm = ctx.groupProjectConfirm?.confirm;
+        return confirm ? confirm(req, draftId, draftHash, carried)
+          : { status: 503, body: { error: 'conversation-graph-pending', detail: 'Your conversations are still opening on this machine. Try again in a moment.' } };
+      } } : {}),
+      // Make a card from a message (docs/specs/phone-work-cards.md): the write gate proved the owner's phone and Face ID over this draft.
+      workCardCreate: {
+        precheck: (requestId, draft, req) => phoneCardPrecheck(workBoardRouteDeps, requestId, draft, () => {
+          // The rule every phone write path into a conversation uses (telegramTopicKnown; a live app conversation),
+          // then the shared conversation check for this phone's person.
+          const key = draft.source.conversationKey;
+          const known = key.startsWith('telegram:')
+            ? !!ctx.telegram && telegramTopicKnown(ctx.telegram, Number(key.slice('telegram:'.length)))
+            : !!ctx.appConversations?.liveConversation(key.slice('app:'.length));
+          const pairing = ctx.mobilePairingService;
+          return known && !!pairing && deviceMayUse(pairing, req, key, 'read');
+        }),
+        create: (requestId, draft, draftHash) => answerPhoneCardCreate(workBoardRouteDeps, requestId, draft, draftHash),
       },
       // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
       startAccountSignIn: async (accountId, machineId, req) => {
@@ -44467,8 +45155,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'Missing required fields: from, to, type, priority, subject, body' });
         return;
       }
+      // messages-reach-renamed-sessions §C: only the router creates delivery notices.
+      if (type === 'delivery-notice') {
+        res.status(400).json({ error: 'type "delivery-notice" is created by the server only' });
+        return;
+      }
       const result = await ctx.messageRouter.send(
-        from,
+        ctx.messageRouter.forceLocalSender(from),
         to,
         type as MessageType,
         priority as MessagePriority,

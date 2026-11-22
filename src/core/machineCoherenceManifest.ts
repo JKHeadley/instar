@@ -345,6 +345,8 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled', reason: 'per-machine spawn ownership check; no silent cross-machine guarantee' },
   { configPath: 'multiMachine.sessionPool.failoverRunner.enabled', reason: 'per-machine failover-drill runner; produces this agent\'s own honest failover-E2E green into its local rollout gate, no cross-machine coherence guarantee it owns (dark, dry-run-first)' },
   { configPath: 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled', reason: 'lease self-heal reconciler; the lease/split-brain machinery owns its coherence' },
+  { configPath: 'multiMachine.takeoverReadyPool.bootClaimSafety.enabled', reason: 'per-machine boot-claim hold; it only withholds this machine\'s own claim for a bounded time, the lease/split-brain machinery owns coherence, and a mixed pool degrades to today\'s acquisition on the unflagged side' },
+  { configPath: 'multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.enabled', reason: 'per-machine pending-restart renewal and boot hold; the extension is an ordinary renewal peers already fold, the lease/split-brain machinery owns coherence, and a mixed pool degrades to today\'s renewal on the unflagged side' },
   { configPath: 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled', reason: 'lease self-heal reconciler; lease-layer owned + operator latch' },

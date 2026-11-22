@@ -601,3 +601,32 @@ export function joinErrorWords(status, data, ownerName) {
   if (status === 0) return 'The agent couldn\'t be reached. Check your connection and try again.';
   return 'Something went wrong. Try again in a moment.';
 }
+
+// ── the "Link this computer" page's words (Justin 2026-11-18: more explicit, easier to follow) ────
+// The button and screen words are the iPhone app's own (apps/instar-ios ComputerLinkEntry and
+// ComputerLinkSheet, build 112): People → "Link a computer", "Link for 30 days", then Face ID.
+// 30 days is the server's own cap (src/server/documentLinkRoutes.ts LINK_MAX_DAYS).
+export const LINK_WORDS = Object.freeze({
+  title: 'Link this computer to your phone',
+  lead: 'Linking lets this computer open your documents, read them and comment, for 30 days, without signing in again.',
+  limits: 'It only sees documents you can see. You can remove it from your phone at any time, under People → Linked computers.',
+  stepsTitle: 'On your iPhone',
+  steps: Object.freeze([
+    Object.freeze({ text: 'Open Instar on your iPhone.' }),
+    Object.freeze({ text: 'Tap ', button: 'People', after: '.' }),
+    Object.freeze({ text: 'Tap ', button: 'Link a computer', after: '.' }),
+    Object.freeze({ text: 'Scan the code on this screen.' }),
+    Object.freeze({ text: 'Check that the code on your phone matches the one here, tap ', button: 'Link for 30 days', after: ', then confirm with Face ID.' }),
+  ]),
+  fallback: 'No “Link a computer” in People yet? Update the app, or open any document in the app and tap “Open on a computer”.',
+  codeLabel: 'Check code',
+  codeHint: 'Your phone shows this same code after it scans.',
+  qrLabel: 'Code to scan with the Instar app',
+  waiting: 'Waiting for your phone…',
+});
+
+/** One step as plain text (for a screen reader label and tests): the button words in quotes. */
+export function linkStepText(step) {
+  if (!step || typeof step.text !== 'string') return '';
+  return step.button ? `${step.text}“${step.button}”${step.after || ''}` : step.text;
+}

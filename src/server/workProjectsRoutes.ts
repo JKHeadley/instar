@@ -18,7 +18,7 @@ export const PROJECTS_SCHEMA_VERSION = 1;
 export const PROJECTS_CACHE_MS = 10_000;
 export const PROJECTS_MAX_CARDS_PER_PROJECT = 50;
 
-export type ProjectState = 'paused' | 'done' | 'claims-done' | 'waiting-on-you' | 'moving' | 'stalled' | 'drifting' | 'stopped-retrying' | 'unknown';
+export type ProjectState = 'paused' | 'done' | 'claims-done' | 'waiting-on-you' | 'moving' | 'stalled' | 'drifting' | 'stopped-retrying' | 'quiet' | 'unknown';
 
 /** The words a person sees for each state. The server owns them so every surface says the same thing. */
 export const PROJECT_STATE_WORDS: Record<ProjectState, string> = {
@@ -30,11 +30,12 @@ export const PROJECT_STATE_WORDS: Record<ProjectState, string> = {
   stalled: 'Stalled',
   drifting: 'Drifting',
   'stopped-retrying': 'I stopped retrying: needs a look',
+  quiet: 'Quiet',
   unknown: 'Not known yet',
 };
 
 /** Pinned order: what needs the person first, finished last. */
-const STATE_ORDER: ProjectState[] = ['waiting-on-you', 'stopped-retrying', 'stalled', 'drifting', 'claims-done', 'moving', 'unknown', 'paused', 'done'];
+const STATE_ORDER: ProjectState[] = ['waiting-on-you', 'stopped-retrying', 'stalled', 'drifting', 'claims-done', 'moving', 'quiet', 'unknown', 'paused', 'done'];
 
 export interface CosProjectRow {
   conversationKey: string; title: string; goal: string; lastVerdict: string | null; lastCheckAt: string | null; parked: boolean;
@@ -50,6 +51,8 @@ export interface CosProjectRow {
   bindingRef?: string | null;
   lastReport?: { at: string; note: string; verdict: string } | null;
   checkRequested?: boolean;
+  // ── project-state-quiet-stalled (optional: an older loop leaves them out, and the row keeps the old "Not known yet") ──
+  lastProgressAt?: string | null; lastEvidenceChangeAt?: string | null; lastCheckUnreadable?: boolean; cadenceHours?: number;
 }
 
 /** One done item as the row shows it (§3.1.3). */
@@ -63,6 +66,8 @@ export interface ProjectCard { id: string; title: string; lane: string; needLine
 
 export interface ProjectRow {
   key: string; title: string; goal: string; state: ProjectState; stateWords: string; lastCheckAt: string | null;
+  /** For "quiet" and "stalled": the last time anything was seen happening (evidence changed, or progress), ISO. Null otherwise. */
+  stateSince: string | null;
   /** Project apps (docs/specs/project-apps.md §3.3): present only when the feature is on. */
   apps?: unknown[]; offers?: unknown[]; answers?: unknown[]; addable?: unknown[];
   /** When paused: the owner's own words and when (shown under the state), and where the tap was made. */
@@ -134,7 +139,52 @@ export function reportWords(note: string): string {
 }
 
 /** Context the read needs from the loop beyond the rows: whether checks run here, and the tick interval. */
-export interface ProjectsContext { here: boolean; tickMs: number; now: number }
+export interface ProjectsContext { here: boolean; tickMs: number; now: number; /** The owner's IANA zone for day words; absent = this machine's. */ timeZone?: string }
+
+/** A project goes from quiet to stalled after this long with nothing happening while its done list is open. */
+export const STALLED_MIN_HOURS = 48;
+/** The quiet time after which an open project reads as stalled: two check cadences, at least two days. */
+export function stalledAfterMs(cadenceHours: number | undefined): number {
+  return Math.max(STALLED_MIN_HOURS, 2 * (cadenceHours && cadenceHours > 0 ? cadenceHours : 24)) * 3_600_000;
+}
+
+/** A time as a person says it, in the owner's zone: "9:14 AM" today, "yesterday", else "Nov 13". */
+export function dayWords(iso: string, now: number, timeZone?: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return 'an unknown time';
+  const fmt = (o: Intl.DateTimeFormatOptions, ms: number) => {
+    try { return new Intl.DateTimeFormat('en-US', { ...o, ...(timeZone ? { timeZone } : {}) }).format(new Date(ms)); }
+    catch { return new Intl.DateTimeFormat('en-US', o).format(new Date(ms)); } // @silent-fallback-ok: an invalid zone reads in this machine's zone
+  };
+  const day = (ms: number) => fmt({ year: 'numeric', month: '2-digit', day: '2-digit' }, ms);
+  if (day(t) === day(now)) return fmt({ hour: 'numeric', minute: '2-digit' }, t);
+  if (day(t) === day(now - 86_400_000)) return 'yesterday';
+  return fmt({ month: 'short', day: 'numeric' }, t);
+}
+
+/**
+ * The state a person sees (pure). A verdict the judge could not call ("unknown") is settled from what the checks
+ * did read: "Quiet since …" when nothing has happened lately, "Stalled since …" when nothing has happened for
+ * stalledAfterMs while the done list is still open, and "unknown" only when the newest check could not read the
+ * project's evidence (or none has run yet), with the reason in the words. Display only: no verdict changes.
+ */
+export function settleState(r: CosProjectRow, base: ProjectState, items: ProjectDoneItem[], ctx: ProjectsContext): { state: ProjectState; stateWords: string; stateSince: string | null } {
+  const since = [r.lastEvidenceChangeAt, r.lastProgressAt].filter((x): x is string => typeof x === 'string' && x.length > 0).sort().pop() ?? null;
+  if (base === 'stalled') return { state: base, stateWords: since ? `Stalled since ${dayWords(since, ctx.now, ctx.timeZone)}` : PROJECT_STATE_WORDS.stalled, stateSince: since };
+  if (base !== 'unknown') return { state: base, stateWords: PROJECT_STATE_WORDS[base], stateSince: null };
+  // An older loop does not send what settles it: keep the old words rather than guess.
+  if (r.lastEvidenceChangeAt === undefined) return { state: 'unknown', stateWords: PROJECT_STATE_WORDS.unknown, stateSince: null };
+  if (!r.lastCheckAt) return { state: 'unknown', stateWords: 'Not checked yet: the first check runs on the next round', stateSince: null };
+  if (r.lastCheckUnreadable) return { state: 'unknown', stateWords: "Couldn't check: the last check could not read the project's evidence", stateSince: null };
+  // Checks stopped landing (a gather that fails writes no check record): what the old checks read is no longer news.
+  const lastCheck = Date.parse(r.lastCheckAt);
+  if (Number.isFinite(lastCheck) && ctx.now - lastCheck >= stalledAfterMs(r.cadenceHours)) return { state: 'unknown', stateWords: `Couldn't check: no check has run since ${dayWords(r.lastCheckAt, ctx.now, ctx.timeZone)}`, stateSince: null };
+  if (!since) return { state: 'unknown', stateWords: "Couldn't check: no check has been able to read the project's evidence", stateSince: null };
+  const open = items.some((i) => i.state !== 'pass' && !i.checkedByYou);
+  const when = dayWords(since, ctx.now, ctx.timeZone);
+  if (open && ctx.now - Date.parse(since) >= stalledAfterMs(r.cadenceHours)) return { state: 'stalled', stateWords: `Stalled since ${when}`, stateSince: since };
+  return { state: 'quiet', stateWords: `Quiet since ${when}`, stateSince: since };
+}
 
 const APP_REF = 'instar-app:';
 
@@ -256,11 +306,13 @@ export function composeProjects(cos: CosProjectRow[] | null | 'failed', board: {
     else notInProject.push(card);
   }
   const projects: ProjectRow[] = rows.map((r) => {
-    const state = projectState(r);
-    const { items, ...extras } = rowExtras(r, state, ctx);
+    const base = projectState(r);
+    // The extras (actions, waiting-on-you, stopped) key off the verdict's state; a settled quiet/stalled changes only the words.
+    const { items, ...extras } = rowExtras(r, base, ctx);
+    const { state, stateWords, stateSince } = settleState(r, base, items, ctx);
     const cards = byKey.get(r.conversationKey) ?? [];
     return {
-      key: r.conversationKey, title: r.title, goal: r.goal, state, stateWords: PROJECT_STATE_WORDS[state], lastCheckAt: r.lastCheckAt,
+      key: r.conversationKey, title: r.title, goal: r.goal, state, stateWords, stateSince, lastCheckAt: r.lastCheckAt,
       paused: state === 'paused' && r.pausedBy ? { at: r.pausedBy.at, quote: r.pausedBy.quote, via: r.pausedBy.messageRef.startsWith(APP_REF) ? 'app' as const : 'telegram' as const } : null,
       why: state === 'unknown' && r.lastNote ? shortNote(r.lastNote) : null,
       // `met` stays the count of passing items: an owner's check is shown in `checkedByYou`, never as a pass.
@@ -285,6 +337,8 @@ export interface ProjectsDeps {
   appsFor?: (conversationKey: string) => { apps: unknown[]; offers: unknown[]; answers: unknown[]; addable: unknown[] } | null;
   /** Whether this machine runs the checks, and the "Ask for an update" gap (work-door-project-rows §3.1.4, §3.2). */
   checkContext?: () => { here: boolean; gapMs: number };
+  /** The owner's IANA zone for "Quiet since …" day words; absent = this machine's zone. */
+  timeZone?: () => string | undefined;
   /** "Ask for an update" (work-door-project-rows §3.2); absent ⇒ 503 chief-of-staff-off. */
   checkNow?: (conversationKey: string, by: 'owner-tap' | 'chief-of-staff') => Promise<CheckNowResult>;
 }
@@ -322,7 +376,9 @@ export function mountProjectsRoutes(router: Router, deps: ProjectsDeps): { inval
   const ctxNow = (): ProjectsContext => {
     let c = { here: false, gapMs: 14 * 60_000 };
     try { c = deps.checkContext?.() ?? c; } catch { /* @silent-fallback-ok: an unreadable context shows checks as not running here; the action routes answer for themselves */ }
-    return { here: c.here, tickMs: c.gapMs, now: now() };
+    let timeZone: string | undefined;
+    try { timeZone = deps.timeZone?.() || undefined; } catch { timeZone = undefined; } // @silent-fallback-ok: day words read in this machine's zone
+    return { here: c.here, tickMs: c.gapMs, now: now(), ...(timeZone ? { timeZone } : {}) };
   };
   const handle = (req: Request, res: Response) => {
     res.set('Cache-Control', 'no-store');

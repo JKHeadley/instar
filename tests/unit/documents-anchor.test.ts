@@ -149,3 +149,40 @@ describe('reanchor', () => {
     expect(reanchor('abc', 'abc', { quote: null as never, start: 0, end: 1 }).state).toBe('orphaned');
   });
 });
+
+describe('reanchor: a reworded passage is shown in whole words', () => {
+  const at = (text: string, phrase: string): Anchor => {
+    const s = text.indexOf(phrase);
+    return { quote: makeQuote(text, s, s + phrase.length), start: s, end: s + phrase.length };
+  };
+  const oldText = 'Intro line.\n\nInvoices go out on the first business day of each month.\n\nMore.';
+  const newText = 'Intro line.\n\nInvoices go out on the second business day of each month.\n\nMore.';
+
+  it('a selection that started on a word edge keeps the whole first word ("second", not "econd")', () => {
+    const r = reanchor(oldText, newText, at(oldText, 'first business day of each month'));
+    expect(r.state).toBe('edited');
+    expect(r.exact).toBe('second business day of each month');
+    expect(newText.slice(r.start!, r.end!)).toBe(r.exact);
+  });
+
+  it('a selection that ended on a word edge keeps the whole last word', () => {
+    const o = 'Support is open from nine to five on weekdays and closed on holidays.';
+    const n = 'Support is open from nine to five on weekends and closed on holidays.';
+    const r = reanchor(o, n, at(o, 'Support is open from nine to five on weekdays'));
+    expect(r.state).toBe('edited');
+    expect(r.exact).toBe('Support is open from nine to five on weekends');
+  });
+
+  it('a selection that began mid-word is not widened to the whole word', () => {
+    const phrase = 'irst business day of each month';
+    const r = reanchor(oldText, newText, at(oldText, phrase));
+    expect(r.state).not.toBe('orphaned');
+    expect(r.exact!.startsWith('second')).toBe(false);
+  });
+
+  it('is deterministic: the same inputs place the same range', () => {
+    const a = reanchor(oldText, newText, at(oldText, 'first business day of each month'));
+    const b = reanchor(oldText, newText, at(oldText, 'first business day of each month'));
+    expect(b).toEqual(a);
+  });
+});

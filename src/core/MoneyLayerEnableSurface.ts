@@ -89,6 +89,11 @@ export interface MoneyLayerEnableSurfaceDeps {
   lockHeld: () => boolean;
   /** In-flight calls/reservations still settling — DERIVED from the ledger, never an independent counter. */
   settlingCount: () => number;
+  /**
+   * The Gemini pay-per-use go-live (`gemini-payg-setup`, gemini-payg §8). Absent ⇒ that
+   * action is refused (the lane is not built on this server).
+   */
+  geminiPayg?: () => GeminiPaygSetupPort | null;
   limits?: Partial<MoneyLayerLimits>;
   now?: () => number;
 }
@@ -98,10 +103,52 @@ export class MoneyLayerRefusal extends Error {
     public status: 400 | 401 | 409 | 429 | 503,
     public code: string,
     msg: string,
+    /** Structured facts the caller may show (named blockers, retry time). */
+    public detail?: Record<string, unknown>,
   ) {
     super(msg);
     this.name = 'MoneyLayerRefusal';
   }
+}
+
+/**
+ * What the enable surface needs from the Gemini go-live (gemini-payg §8). Implemented by
+ * the server wiring over `geminiPaygGoLive.ts`; defined here so the surface owns its
+ * contract and the plan/PIN machinery stays in one place.
+ */
+export interface GeminiPaygSetupPort {
+  /**
+   * Re-read the PERSISTED proposal and re-run every render precondition. Throws a
+   * MoneyLayerRefusal naming the blockers (or the designated machine, when this is not
+   * it). `expectedProposalHash` is the hash the card was created with.
+   */
+  prepareRender(expectedProposalHash?: string): Promise<{ hash: string; text: string; capsVersion: number; designatedMachineId: string }>;
+  /** The persisted proposal's hash now, or null when there is none. */
+  proposalHash(): string | null;
+  /** The caps store version now (-1 unreadable; 0 absent). */
+  capsVersion(): number;
+  /** Write the pending-setup intent from the persisted proposal (durable). Throws if its hash is not `hash`. */
+  writeIntent(hash: string): void;
+  /** Apply the intent now (money already enforcing). */
+  applyHot(): Promise<{ applied: boolean; reason?: string }>;
+  /** Archive the key handoff (commit success). */
+  archiveHandoff(reason: string): void;
+}
+
+/** The commit's result, shared by every pre-gate action. */
+export interface MoneyLayerCommitResult {
+  lifecycleState: MoneyLifecycleState;
+  enforcementReady: boolean;
+  enableSources: EnableSources;
+  storeCleared: boolean;
+  probe: ProbeVerdict | null;
+  message: string;
+  /** gemini-payg-setup only: the commit must now restart the server (money was not enforcing). */
+  restartRequired?: boolean;
+  /** gemini-payg-setup only: the intent hash written. */
+  intentHash?: string;
+  /** gemini-payg-setup only: the intent was applied hot (money already enforcing). */
+  appliedHot?: boolean;
 }
 
 interface RestartNonceRecord {
@@ -119,7 +166,7 @@ export class MoneyLayerEnableSurface {
   /** The PRE-GATE plan store — separate from the money layer's own, because it must exist while that layer does not. */
   private readonly plans: RenderedPlanStore;
   /** planId → the render-time facts commit must re-check (§2: state-at-render, machine, lock). */
-  private readonly renderContext = new Map<string, { sourceState: string; machineId: string; renderedUnderLock: boolean; renderedTextHash: string }>();
+  private readonly renderContext = new Map<string, { sourceState: string; machineId: string; renderedUnderLock: boolean; renderedTextHash: string; proposalHash?: string; capsVersion?: number }>();
   private restartNonce: RestartNonceRecord | null = null;
   private lastAcceptedRestartAt = 0;
   private planRenderTimes: number[] = [];
@@ -276,6 +323,11 @@ export class MoneyLayerEnableSurface {
       // SYNTAX: this string never named a real pre-gate action.
       throw new MoneyLayerRefusal(400, 'unknown-action', `action must be one of: ${MONEY_LAYER_PREGATE_ACTIONS.join(', ')}`);
     }
+    if (action === 'gemini-payg-setup') {
+      // Its preconditions (peer secret names, the key fingerprint, the transcript scan)
+      // are asynchronous; it renders only through renderPlanAsync.
+      throw new MoneyLayerRefusal(409, 'async-render-required', 'gemini-payg-setup renders through renderPlanAsync');
+    }
     if (!this.d.lockHeld()) {
       throw new MoneyLayerRefusal(409, 'lock-not-held', 'plan rendering requires the single-instance lock — this process is not the owner');
     }
@@ -330,6 +382,54 @@ export class MoneyLayerEnableSurface {
     };
   }
 
+  /**
+   * Render any pre-gate action. `gemini-payg-setup` renders a FRESH plan from the
+   * persisted proposal every time it is opened (rendered plans live 10 minutes; a card
+   * outlives that and a Studio restart), re-running every precondition; the plan binds
+   * to the proposal's hash and the caps store version.
+   */
+  async renderPlanAsync(action: unknown, opts: { expectedProposalHash?: string } = {}): Promise<ReturnType<MoneyLayerEnableSurface['renderPlan']> & { proposalHash?: string }> {
+    if (action !== 'gemini-payg-setup') return this.renderPlan(action);
+    const port = this.d.geminiPayg?.() ?? null;
+    if (!port) throw new MoneyLayerRefusal(503, 'gemini-payg-unavailable', 'the Gemini pay-per-use lane is not built on this server');
+    if (!this.d.lockHeld()) {
+      throw new MoneyLayerRefusal(409, 'lock-not-held', 'plan rendering requires the single-instance lock — this process is not the owner');
+    }
+    this.enforcePlanRenderRate();
+    const prepared = await port.prepareRender(opts.expectedProposalHash);
+    const sources = this.enableSources();
+    const renderedText = prepared.text;
+    const plan = this.plans.render('gemini-payg-setup', renderedText, { moneyLayerAction: 'gemini-payg-setup', proposalHash: prepared.hash }, { capsStore: prepared.capsVersion });
+    this.renderContext.set(plan.planId, {
+      sourceState: sources.state,
+      machineId: this.d.machineId,
+      renderedUnderLock: true,
+      renderedTextHash: sha256(renderedText),
+      proposalHash: prepared.hash,
+      capsVersion: prepared.capsVersion,
+    });
+    this.auditOnly('plan-rendered', 'operator', {
+      planId: plan.planId,
+      action: 'gemini-payg-setup',
+      requestedAction: 'gemini-payg-setup',
+      sourceStateAtRender: sources.state,
+      machineId: this.d.machineId,
+      renderedTextHash: sha256(renderedText),
+      proposalHash: prepared.hash,
+    });
+    return {
+      planId: plan.planId,
+      nonce: plan.nonce,
+      renderedText,
+      action: 'gemini-payg-setup',
+      sourceStateAtRender: sources.state,
+      machineId: this.d.machineId,
+      machineNickname: this.d.machineNickname ?? null,
+      expiresAt: new Date(plan.expiresAt).toISOString(),
+      proposalHash: prepared.hash,
+    };
+  }
+
   /** The operator approves the SERVER's words. Every string a commit can apply is authored here. */
   private renderText(action: MoneyLayerPregateAction, sources: EnableSources): string {
     const where = `on machine '${this.d.machineNickname ?? this.d.machineId}'`;
@@ -358,6 +458,9 @@ export class MoneyLayerEnableSurface {
           `To stop spending now, use FREEZE. To make the config file's setting take effect as changed, edit it and restart. ` +
           `Current source: ${sources.state}.`
         );
+      case 'gemini-payg-setup':
+        // Rendered only by renderPlanAsync, from the persisted proposal.
+        return '';
     }
   }
 
@@ -368,14 +471,7 @@ export class MoneyLayerEnableSurface {
    * body — so the pre-gate door cannot be walked through with a validly-signed
    * caps-adjust plan.
    */
-  async commit(args: { pin: string; planId: unknown; nonce: unknown; pinValid: boolean }): Promise<{
-    lifecycleState: MoneyLifecycleState;
-    enforcementReady: boolean;
-    enableSources: EnableSources;
-    storeCleared: boolean;
-    probe: ProbeVerdict | null;
-    message: string;
-  }> {
+  async commit(args: { pin: string; planId: unknown; nonce: unknown; pinValid: boolean; proposalHash?: unknown }): Promise<MoneyLayerCommitResult> {
     if (!this.checkPin(args.pinValid, 'commit')) {
       throw new MoneyLayerRefusal(401, 'bad-pin', 'PIN rejected');
     }
@@ -394,9 +490,19 @@ export class MoneyLayerEnableSurface {
       throw new MoneyLayerRefusal(409, 'wrong-machine', `this plan was rendered for machine '${ctx.machineId}', not '${this.d.machineId}'`);
     }
 
+    // gemini-payg §8: a tap never commits a struct the operator did not see. The plan is
+    // bound to the proposal hash it was rendered from (and the card's hash, when sent).
+    if (ctx.proposalHash !== undefined) {
+      const now = this.d.geminiPayg?.()?.proposalHash() ?? null;
+      const cardHash = typeof args.proposalHash === 'string' && args.proposalHash ? args.proposalHash : null;
+      if (now !== ctx.proposalHash || (cardHash !== null && cardHash !== ctx.proposalHash)) {
+        throw new MoneyLayerRefusal(409, 'proposal-changed', 'the proposal changed; a new card is needed');
+      }
+    }
     let plan: RenderedPlan;
     try {
-      plan = this.plans.commit(args.planId, args.nonce, {});
+      const current: Record<string, number> = ctx.capsVersion !== undefined ? { capsStore: this.d.geminiPayg?.()?.capsVersion() ?? -1 } : {};
+      plan = this.plans.commit(args.planId, args.nonce, current);
     } catch (err) {
       if (err instanceof PlanCommitError) throw new MoneyLayerRefusal(409, err.code, err.message);
       throw err;
@@ -421,23 +527,40 @@ export class MoneyLayerEnableSurface {
       throw new MoneyLayerRefusal(409, 'lock-not-held', 'this process does not hold the single-instance lock — money authority writes are refused');
     }
 
-    return this.applyAction(action, plan.renderedText, ctx.renderedTextHash);
+    return this.applyAction(action, plan.renderedText, ctx.renderedTextHash, plan.fields);
   }
 
-  private async applyAction(action: MoneyLayerPregateAction, renderedText: string, renderedTextHash: string): Promise<{
-    lifecycleState: MoneyLifecycleState;
-    enforcementReady: boolean;
-    enableSources: EnableSources;
-    storeCleared: boolean;
-    probe: ProbeVerdict | null;
-    message: string;
-  }> {
+  private async applyAction(action: MoneyLayerPregateAction, renderedText: string, renderedTextHash: string, planFields: Record<string, unknown> = {}): Promise<MoneyLayerCommitResult> {
     let storeCleared = false;
     let probe: ProbeVerdict | null = null;
     let message: string;
     const before = this.status();
+    const extra: Pick<MoneyLayerCommitResult, 'restartRequired' | 'intentHash' | 'appliedHot'> = {};
 
-    if (action === 'money-layer-enable' || action === 'money-layer-mirror-config') {
+    if (action === 'gemini-payg-setup') {
+      const port = this.d.geminiPayg?.() ?? null;
+      const intentHash = typeof planFields.proposalHash === 'string' ? planFields.proposalHash : '';
+      if (!port || !intentHash) throw new MoneyLayerRefusal(503, 'gemini-payg-unavailable', 'the Gemini pay-per-use lane is not built on this server');
+      // Record before mutate (SECOND-PASS FINDING 4's order): the authority row first,
+      // then the intent and the flag. The apply checks this row before it writes caps.
+      this.authority('gemini-payg-setup-committed', 'operator', { renderedTextHash, machineId: this.d.machineId, intentHash });
+      port.writeIntent(intentHash);
+      this.d.store.setOperatorEnabled(true);
+      extra.intentHash = intentHash;
+      try { port.archiveHandoff('commit'); } catch (err) { console.error(`[money-layer] gemini-payg: could not archive the key handoff: ${String(err)}`); }
+      if (this.servingReady()) {
+        // Money is already enforcing here: the running caps store applies it now.
+        const r = await port.applyHot();
+        extra.appliedHot = r.applied;
+        extra.restartRequired = false;
+        message = r.applied
+          ? 'approved — the Gemini door is set up and waiting for its proof call; no restart was needed'
+          : `approved, but the setup could not be applied (${r.reason ?? 'unknown'}) — the Gemini door is frozen; nothing can spend`;
+      } else {
+        extra.restartRequired = true;
+        message = 'approved — the agent server on this machine restarts now to bring up the spending controls with the Gemini door';
+      }
+    } else if (action === 'money-layer-enable' || action === 'money-layer-mirror-config') {
       // Idempotent in INTENT — it never double-enables — but always re-verifies
       // and re-repairs. "Switch on, machinery down" is exactly the state this
       // control exists to rescue the operator from.
@@ -494,6 +617,7 @@ export class MoneyLayerEnableSurface {
       storeCleared,
       probe,
       message,
+      ...extra,
     };
   }
 
@@ -551,15 +675,7 @@ export class MoneyLayerEnableSurface {
     if (typeof args.confirmationTextHash !== 'string' || !timingSafeEqualStr(args.confirmationTextHash, rec.confirmationTextHash)) {
       throw new MoneyLayerRefusal(409, 'confirmation-hash-mismatch', 'confirmationTextHash is absent or does not match the text minted with this nonce');
     }
-    const lastAccepted = Math.max(this.lastAcceptedRestartAt, this.readStoreSafe()?.lastRestartAcceptedAtMs ?? 0);
-    const sinceLast = this.now() - lastAccepted;
-    if (lastAccepted > 0 && sinceLast < this.limits.restartCooldownSeconds * 1000) {
-      throw new MoneyLayerRefusal(429, 'restart-cooldown', `a restart was accepted ${Math.round(sinceLast / 1000)}s ago — the cooldown is ${this.limits.restartCooldownSeconds}s`);
-    }
-    const settling = this.safeSettlingCount();
-    if (settling > 0 && args.force !== true) {
-      throw new MoneyLayerRefusal(409, 'money-settling', `${settling} paid call(s) are still settling — re-send with force:true to restart anyway`);
-    }
+    this.restartCooldownAndSettling(args.force === true);
     rec.consumed = true; // single-use: a second presentation is refused (T27)
     // SECOND-PASS FINDING 7 — an in-memory-only timestamp is no cooldown at all
     // HERE, because the action being rate-limited is the one that ends this
@@ -577,6 +693,48 @@ export class MoneyLayerEnableSurface {
     // spend activity the sensitivity split withholds. The row records only
     // whether the operator forced past a settling refusal, never how many.
     this.auditOnly('restart-requested', 'operator', { machineId: this.d.machineId, state: s.lifecycleState, forced: args.force === true });
+  }
+
+  /** The cooldown and settling safeguards, shared by the restart route and the go-live commit. */
+  private restartCooldownAndSettling(force: boolean): void {
+    const lastAccepted = Math.max(this.lastAcceptedRestartAt, this.readStoreSafe()?.lastRestartAcceptedAtMs ?? 0);
+    const sinceLast = this.now() - lastAccepted;
+    const cooldownMs = this.limits.restartCooldownSeconds * 1000;
+    if (lastAccepted > 0 && sinceLast < cooldownMs) {
+      throw new MoneyLayerRefusal(429, 'restart-cooldown', `a restart was accepted ${Math.round(sinceLast / 1000)}s ago — the cooldown is ${this.limits.restartCooldownSeconds}s`, {
+        retryAt: new Date(lastAccepted + cooldownMs).toISOString(),
+      });
+    }
+    const settling = this.safeSettlingCount();
+    if (settling > 0 && !force) {
+      throw new MoneyLayerRefusal(409, 'money-settling', `${settling} paid call(s) are still settling — re-send with force:true to restart anyway`, {
+        retryAt: new Date(this.now() + 60_000).toISOString(),
+      });
+    }
+  }
+
+  /**
+   * The restart a `gemini-payg-setup` commit schedules under its ONE PIN (gemini-payg §8
+   * item 3): the SAME safeguards as the restart route — the three-state eligibility, the
+   * cooldown (persisted, so it survives the restart it allows), and the settling check —
+   * minus the nonce and confirmation hash, because the PIN-approved plan text carried
+   * the restart disclosure. The CALLER flushes the audit log before the supervisor
+   * handoff, exactly as the restart route does. A refusal restarts nothing and says why
+   * and when (`detail.retryAt`).
+   */
+  admitCommitRestart(): void {
+    const s = this.status();
+    if (!isRestartEligible(s.lifecycleState)) {
+      throw new MoneyLayerRefusal(409, 'not-restartable', `restart is refused in state '${s.lifecycleState}'`);
+    }
+    this.restartCooldownAndSettling(false);
+    this.lastAcceptedRestartAt = this.now();
+    try {
+      this.d.store.recordRestartAccepted(this.now());
+    } catch (err) {
+      console.error(`[money-layer] could not persist the restart cooldown: ${String(err)}`);
+    }
+    this.auditOnly('restart-requested', 'operator', { machineId: this.d.machineId, state: s.lifecycleState, forced: false, via: 'gemini-payg-setup-commit' });
   }
 
   /** Best-effort by contract: its ABSENCE must never be read as "never tried" (§4). */

@@ -764,8 +764,10 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // The page offers "switch it off" only where this machine's own setup made the service work; a service the
     // person already had is named as theirs. It also says when a yes can't be taken here.
     const workingHere = state?.verified?.result === 'pass' && !state.stopped;
-    // A recipe that keeps a copy elsewhere says on the page which secrets it would copy: names only, never values.
-    const copies = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []) : undefined;
+    // A recipe that keeps a copy elsewhere says on the page how many secrets it would copy. SEC-129: this answer
+    // is reachable before any sign-in, so it carries only the COUNT; the names come from the PIN-checked
+    // `answer: 'names'` on the POST below. Values never reach a page.
+    const copiesCount = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []).length : undefined;
     // Email asks the owner to type the one address it will ever send to, and later takes the proof email's code here.
     const emailFields = row.id === 'email' ? {
       asksRecipient: true,
@@ -773,7 +775,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       recipientFixed: readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape === 'A' && !!deps.readSecret(EMAIL_RECIPIENT_SECRET),
       awaitingCode: !!deps.email && deps.readSecret(EMAIL_RECIPIENT_SECRET) !== null && !deps.email.proven().proven && readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape !== 'B' && !!deps.readSecret(EMAIL_SECRET),
     } : {};
-    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...emailFields, ...minted });
+    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copiesCount !== undefined ? { copiesCount } : {}), ...emailFields, ...minted });
   });
 
   router.post('/recommended-services/:id/confirm', (req, res) => {
@@ -806,8 +808,24 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(400).json({ error: 'token-refused' });
       return;
     }
-    if (answer !== 'yes' && answer !== 'no') {
+    if (answer !== 'yes' && answer !== 'no' && answer !== 'names') {
       res.status(400).json({ error: 'invalid-answer' });
+      return;
+    }
+    // SEC-129: the names of the secrets a copying service would copy, for an open page with the PIN. It needs
+    // the same live token and PIN as an answer, never spends the token, and changes nothing.
+    if (answer === 'names') {
+      if (!recipeFor(row)?.listsCopies) {
+        res.status(404).json({ error: 'no-copies' });
+        return;
+      }
+      if (!tokens.isLive(token, row.id)) {
+        res.status(409).json({ error: 'token-refused' });
+        return;
+      }
+      if (!deps.checkConfirmPin(req, res)) return;
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ copies: deps.readSecretNames?.() ?? [] });
       return;
     }
     if (!NO_REASONS.includes(reason as NoReason)) {
@@ -1060,7 +1078,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         deps.telegramSetup.write({ token, chatId });
         // Setup made this channel: the switch-off may disable it.
         updateSetupState(deps.stateDir, row.id, { signedInBySetup: true });
-        deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
+        await deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
       } catch (err) {
         report('Store the Telegram channel', err, 'The channel was not saved.');
         res.status(503).json({ error: 'key-not-saved' });

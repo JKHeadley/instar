@@ -398,15 +398,34 @@ async function startLink(run) {
   let payload;
   try { payload = M.linkPayload({ browserPublicKey: key.publicKey, nonce: data.nonce, machineId: data.machineId, host: data.host || host }); } catch { linkFailed('Something went wrong on the agent. Try again in a moment.'); return; }
   const { qrSvg } = await import('./qr-code.js');
-  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 4, quiet: 4, label: 'Code to scan with the Instar app' })]);
-  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: 'Waiting for your phone…' });
+  const W = M.LINK_WORDS;
+  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 6, quiet: 4, label: W.qrLabel })]);
+  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: W.waiting });
+  // Steps on the left, the code to scan on the right (stacked on a narrow window); each button name is shown as the app says it.
+  const steps = el('ol', { cls: 'link-steps' }, W.steps.map((st, i) => el('li', { attrs: { 'aria-label': `Step ${i + 1}: ${M.linkStepText(st)}` } }, [
+    el('span', { cls: 'link-step-n', text: String(i + 1), attrs: { 'aria-hidden': 'true' } }),
+    el('span', { cls: 'link-step-text' }, st.button ? [st.text, el('strong', { cls: 'link-btn-name', text: st.button }), st.after || ''] : [st.text]),
+  ])));
   linkView([
-    el('h1', { cls: 'link-title', text: 'Link this computer to your phone' }),
-    el('p', { text: 'Open the Instar app on your phone, go to People → Link a computer, scan this code, and check the app shows the same code:' }),
-    el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `Check code: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
-    code,
-    status,
-    el('p', { cls: 'scope', text: LINK_SCOPE_WORDS }),
+    el('header', { cls: 'link-head' }, [
+      el('h1', { cls: 'link-title', text: W.title }),
+      el('p', { cls: 'link-lead', text: W.lead }),
+      el('p', { cls: 'link-limits', text: W.limits }),
+    ]),
+    el('div', { cls: 'link-grid' }, [
+      el('section', { cls: 'link-card link-how', attrs: { 'aria-label': W.stepsTitle } }, [
+        el('h2', { cls: 'link-eyebrow', text: W.stepsTitle }),
+        steps,
+        el('p', { cls: 'link-fallback', text: W.fallback }),
+      ]),
+      el('section', { cls: 'link-card link-scan', attrs: { 'aria-label': 'Scan this code' } }, [
+        code,
+        el('p', { cls: 'link-eyebrow', text: W.codeLabel }),
+        el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `${W.codeLabel}: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
+        el('p', { cls: 'link-hint', text: W.codeHint }),
+        el('div', { cls: 'link-wait' }, [el('span', { cls: 'link-pulse', attrs: { 'aria-hidden': 'true' } }), status]),
+      ]),
+    ]),
   ]);
   // A computer set up on another of the agent's addresses has its key there (§3.6): a way back.
   otherAddresses().then((p) => { if (p && run === linkRun) main.querySelector('.link-computer')?.appendChild(p); }).catch(() => { /* display only */ });

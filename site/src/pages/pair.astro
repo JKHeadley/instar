@@ -44,6 +44,11 @@
           <p class="small" id="computer-host"></p>
         </div>
       </div>
+      <div id="home" hidden>
+        <h1>Scan this code in the Instar app</h1>
+        <p class="small">Install or open Instar, then scan the code on your computer.</p>
+        <p class="small">This code only works inside the Instar app, on the same Wi-Fi as your computer.</p>
+      </div>
       <div id="bad" hidden>
         <h1>This link is not valid</h1>
         <p class="small">Ask your agent for a new pairing link.</p>
@@ -71,9 +76,15 @@
         return { origin, code: q.get('c') as string, computer: q.get('j') === '1' };
       }
 
-      const parsed = parse(location.hash);
       const show = (id: string) => { const el = document.getElementById(id); if (el) el.hidden = false; };
-      if (!parsed) {
+      // Link format v2 (identity A4): a same-network code, made only on the agent's own computer. This
+      // page reads nothing from it and shows nothing of it; only the Instar app can use it.
+      const v2 = /^#v=2(&|$)/.test(location.hash);
+      if (v2) history.replaceState(null, '', location.pathname);
+      const parsed = v2 ? null : parse(location.hash);
+      if (v2) {
+        show('home');
+      } else if (!parsed) {
         show('bad');
       } else {
         const link = location.href;

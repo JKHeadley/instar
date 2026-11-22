@@ -244,7 +244,7 @@ export class UpdateChecker {
         // failing with ENOENT in environments where the download path doesn't exist.
         // The cloudflared binary is installed lazily on-demand by TunnelManager when
         // the tunnel feature is first used (via install(bin) from the cloudflared package).
-        await this.execAsync('npm', [
+        await this.npmExec([
           'install', localTarball ?? `instar@${targetVersion}`,
           '--ignore-scripts',
           '--prefix', candidateDir,
@@ -254,11 +254,13 @@ export class UpdateChecker {
         // --ignore-scripts skips better-sqlite3's build step, leaving no .node binaries.
         // Without this, TopicMemory and SemanticMemory fail silently on shadow installs.
         // better-sqlite3 uses node-gyp and can rebuild from source in ~30 seconds.
-        await this.execAsync('npm', [
+        // npmExec runs it under the Node that validateCandidate probes with, so the
+        // binding is built for the ABI that will load it (see npmForRuntime).
+        await this.npmExec([
           'rebuild', 'better-sqlite3',
           '--prefix', candidateDir,
         ], 60000);
-        console.log('[UpdateChecker] Rebuilt better-sqlite3 native bindings in candidate install');
+        console.log(`[UpdateChecker] Rebuilt better-sqlite3 native bindings in candidate install with ${this.resolveRuntimeNode()}`);
 
         // Strip extended attributes on macOS that may block launchd's restricted sandbox.
         // com.apple.quarantine can cause EPERM; com.apple.provenance is kernel-protected
@@ -431,8 +433,7 @@ export class UpdateChecker {
     const installed = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8')) as { version?: string };
     const newVersion = installed.version ?? 'unknown';
     if (newVersion !== targetVersion) throw new Error(`Installed version is ${newVersion}, expected ${targetVersion}`);
-    const nodeSymlink = path.join(this.stateDir, 'bin', 'node');
-    const nodeRuntime = fs.existsSync(nodeSymlink) ? nodeSymlink : process.execPath;
+    const nodeRuntime = this.resolveRuntimeNode();
     await this.execAsync(nodeRuntime, ['--check', newCliPath], 10000);
     const startupVersion = await this.execAsync(nodeRuntime, [newCliPath, '--version'], 15000);
     if (startupVersion !== targetVersion) throw new Error(`CLI startup reported ${startupVersion || 'no version'}, expected ${targetVersion}`);
@@ -536,12 +537,12 @@ export class UpdateChecker {
       else this.retireLeftoverPrevious();
       fs.mkdirSync(candidateDir, { recursive: true });
       fs.writeFileSync(path.join(candidateDir, 'package.json'), JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
-      await this.execAsync('npm', [
+      await this.npmExec([
         'install', `instar@${rollbackInfo.previousVersion}`,
         '--ignore-scripts',
         '--prefix', candidateDir,
       ], 120000);
-      await this.execAsync('npm', ['rebuild', 'better-sqlite3', '--prefix', candidateDir], 60000);
+      await this.npmExec(['rebuild', 'better-sqlite3', '--prefix', candidateDir], 60000);
       if (os.platform() === 'darwin') {
         await this.stripCandidateXattrs(candidateDir);
       }
@@ -758,14 +759,86 @@ export class UpdateChecker {
   }
 
   /**
+   * The Node binary that will run the agent after the update: the agent's own
+   * runtime link when it exists, otherwise the current process. validateCandidate
+   * loads the native binding with this same binary, so every native build must
+   * target it.
+   */
+  private resolveRuntimeNode(): string {
+    const nodeSymlink = path.join(this.stateDir, 'bin', 'node');
+    return fs.existsSync(nodeSymlink) ? nodeSymlink : process.execPath;
+  }
+
+  /**
+   * How to run npm so that a native rebuild targets the runtime Node's ABI.
+   *
+   * `npm` is a `#!/usr/bin/env node` script: it, node-gyp and prebuild-install all
+   * run under whichever `node` is first on PATH, and node-gyp compiles for THAT
+   * node's ABI. On a machine where Homebrew or a version manager puts a different
+   * Node major first on the server's PATH (Echo Studio, 2026-11-20: Homebrew Node 22,
+   * ABI 127, ahead of the agent's Node 24, ABI 137), the rebuilt better-sqlite3
+   * binding never loads under the runtime node and every update is kept back.
+   *
+   * So: run the runtime node's own `npm-cli.js` with the runtime node, put the
+   * runtime node's directory first on PATH (node-gyp and lifecycle scripts resolve
+   * bare `node` to it), and point node-gyp at the runtime's bundled headers via
+   * `npm_config_nodedir` when they are present (official tarball layout), which
+   * also saves a header download. Without a bundled npm, `npm` from PATH is used
+   * under the same PATH prefix, and the fallback is logged.
+   */
+  private npmForRuntime(): { cmd: string; prefixArgs: string[]; env: NodeJS.ProcessEnv; note: string | null } {
+    const runtime = this.resolveRuntimeNode();
+    let realNode = runtime;
+    try { realNode = fs.realpathSync(runtime); } catch { /* keep the link path: PATH lookup still finds it */ }
+    const nodeDir = path.dirname(realNode);
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const inherited = (process.env[pathKey] ?? '').split(path.delimiter).filter((d) => d && d !== nodeDir);
+    const env: NodeJS.ProcessEnv = { ...process.env, [pathKey]: [nodeDir, ...inherited].join(path.delimiter) };
+    const installPrefix = path.dirname(nodeDir);
+    if (fs.existsSync(path.join(installPrefix, 'include', 'node', 'node_version.h'))) {
+      env.npm_config_nodedir = installPrefix;
+    }
+    const npmCli = this.findBundledNpmCli(nodeDir);
+    if (npmCli) return { cmd: realNode, prefixArgs: [npmCli], env, note: null };
+    return {
+      cmd: 'npm', prefixArgs: [], env,
+      note: `No npm is bundled beside the runtime node ${realNode}; using npm from PATH (with ${nodeDir} placed first on PATH so its node-gyp still targets the runtime node)`,
+    };
+  }
+
+  /** npm-cli.js shipped with the node in `nodeDir` (official tarball or Windows layout), or null. */
+  private findBundledNpmCli(nodeDir: string): string | null {
+    const candidates = [
+      path.join(nodeDir, 'npm'),
+      path.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+      path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    ];
+    for (const candidate of candidates) {
+      try {
+        const real = fs.realpathSync(candidate);
+        if (real.endsWith('.js') && fs.statSync(real).isFile()) return real;
+      } catch { /* @silent-fallback-ok: this candidate path is not this node layout; try the next one */ }
+    }
+    return null;
+  }
+
+  /** Run npm for a candidate install under the runtime node (npmForRuntime). */
+  private npmExec(args: string[], timeoutMs: number): Promise<string> {
+    const npm = this.npmForRuntime();
+    if (npm.note) console.warn(`[UpdateChecker] ${npm.note}`);
+    return this.execAsync(npm.cmd, [...npm.prefixArgs, ...args], timeoutMs, undefined, npm.env);
+  }
+
+  /**
    * Run a command asynchronously, returning trimmed stdout.
    */
-  private execAsync(cmd: string, args: string[], timeoutMs: number, maxBuffer = 1024 * 1024): Promise<string> {
+  private execAsync(cmd: string, args: string[], timeoutMs: number, maxBuffer = 1024 * 1024, env?: NodeJS.ProcessEnv): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(cmd, args, {
         encoding: 'utf-8',
         timeout: timeoutMs,
         maxBuffer,
+        ...(env ? { env } : {}),
       }, (err, stdout, stderr) => {
         if (err) {
           // Attach stderr for richer diagnostics in error handlers

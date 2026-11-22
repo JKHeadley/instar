@@ -613,6 +613,8 @@ a.btn-quiet.btn-inline { color: var(--text); }
 .mchip.attn { border-color: rgb(251 191 36 / .4); color: var(--attn); }
 .mchip.attn::before { content: "⟳ "; }
 .mchip.unknown { border-style: dashed; }
+.mchip.missing { border-style: dotted; opacity: .7; }
+.mchip.missing::before { content: "+ "; }
 .signin-steps { display: flex; flex-direction: column; gap: var(--s-3); }
 .signin-link { word-break: break-all; }
 .signin-progress { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-3); padding: var(--s-6) 0; }
@@ -1412,6 +1414,9 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-pin-by { font-size: 12px; color: var(--text-muted); }
 .chat-pin-unpin { flex: none; min-height: 44px; }
 .chat-composer { display: flex; flex-direction: column; gap: var(--s-2); }
+/* A drag carrying files over the open conversation: the composer says where they will go. */
+.chat-composer.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--r-md); }
+.chat-composer.dropping::before { content: 'Drop to attach'; align-self: center; padding: 4px 14px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); font-size: 13px; font-weight: 600; }
 .chat-compose-row { display: flex; gap: var(--s-2); align-items: flex-end; }
 .chat-compose { flex: 1; min-width: 0; min-height: 44px; max-height: 40dvh; resize: vertical; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
 /* The shared .btn-primary is full width with a top margin; in the composer row the buttons size to their label. */
@@ -1647,6 +1652,15 @@ a.needs-row:hover { background: var(--surface-raised); }
 /* "N more things need you. Show all": a full-width button that keeps the strip's frame (2026-11-16). */
 .needs-strip > button.needs-more { display: block; width: 100%; box-sizing: border-box; text-align: left; font: inherit; font-size: 13px; color: var(--accent, var(--text-strong)); background: var(--surface); border-left: 1px solid var(--strip-line); border-right: 1px solid var(--strip-line); border-top: 0; cursor: pointer; min-height: 36px; padding: 6px 14px; }
 .needs-strip > button.needs-more:hover { text-decoration: underline; }
+/* Closed form: one calm line (2026-11-20). Tone dot · "Needs you · N" · first need on one line · chevron. */
+.needs-compact { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; box-sizing: border-box; padding: 8px 14px; border: 1px solid var(--strip-line); border-radius: var(--r-md, 12px); background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.needs-compact:hover { background: var(--surface-raised); }
+.needs-compact .dot { flex: none; }
+.needs-compact-label { flex: none; font-size: 14px; font-weight: 650; color: var(--text-strong); }
+.needs-compact-first { flex: 1; min-width: 0; font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-compact .chev { flex: none; color: var(--text-muted); }
+.needs-strip[data-state="loading"] .needs-compact-label, .needs-strip[data-state="unknown"] .needs-compact-label { color: var(--text-muted); font-weight: 600; }
+.needs-close { flex: none; font-size: 13px; }
 /* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
 .conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
 /* Whose turn (work-front-doors §6, Luna's board): light red while a card waits on you, light blue while it moves. */
