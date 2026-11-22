@@ -334,6 +334,8 @@ export function errorWords(status, body, ctx = {}) {
 
 // ── drafts ──────────────────────────────────────────────────────────────────────────────────────
 
+/** Every comment draft's localStorage key starts with this (Forget this computer clears them all). */
+export const DRAFT_PREFIX = 'instar-doc-draft:';
 export const draftKey = (docId, kind, a, b) => `instar-doc-draft:${docId}:${kind}:${a}${b === undefined ? '' : `-${b}`}`;
 
 /** A stored draft, or null for anything unreadable. Shape: {text, id, salt?}. */
@@ -550,6 +552,54 @@ export function decisionPollDelays(totalMs = 10 * 60_000) {
   let d = 5000; let sum = 0;
   while (sum + d <= totalMs) { out.push(d); sum += d; d = Math.min(d * 2, 60_000); }
   return out;
+}
+
+// ── Joining a computer from a team invite (docs/specs/member-browser-any-computer.md) ──────────
+
+/** The join page's fragment `#v=1&c=<code>[&d=<docId>]`: the code and the document the member came for. */
+export function parseJoinFragment(hash) {
+  const q = new Map();
+  for (const kv of String(hash || '').replace(/^#/, '').split('&')) {
+    const i = kv.indexOf('=');
+    if (i > 0 && !q.has(kv.slice(0, i))) { try { q.set(kv.slice(0, i), decodeURIComponent(kv.slice(i + 1))); } catch { return null; } }
+  }
+  if (q.get('v') !== '1') return null;
+  const code = q.get('c') || '';
+  if (!/^[A-Za-z0-9_-]{22}$/.test(code)) return null;
+  const d = q.get('d') || '';
+  return { code, docId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(d) ? d : null };
+}
+
+/** What a joining computer signs to confirm (server: documentJoinRoutes.joinConfirmString). */
+export const joinConfirmString = ({ deviceId, host, timeMs, code }) => `instar-join-v1\nconfirm\n${deviceId}\n${String(host).toLowerCase()}\n${timeMs}\n${code}`;
+/** What a computer signs to forget itself (server: documentJoinRoutes.joinForgetString). */
+export const joinForgetString = ({ deviceId, host, timeMs }) => `instar-join-v1\nforget\n${deviceId}\n${String(host).toLowerCase()}\n${timeMs}`;
+
+/** A typed code: digits only, spaces allowed (`123 456`). */
+export function cleanJoinCode(text) {
+  const c = String(text || '').replace(/\s+/g, '');
+  return /^\d{6}$/.test(c) ? c : null;
+}
+
+/** The plain line a page shows near a joined computer's end (§3.1 step 8): only in the last 7 days. */
+export function computerEndLine(endsAtIso, ownerName, nowMs = Date.now()) {
+  const t = Date.parse(endsAtIso || '');
+  if (!Number.isFinite(t)) return null;
+  if (t - nowMs > 7 * 86_400_000) return null;
+  const day = new Date(t).toLocaleDateString([], { day: 'numeric', month: 'short' });
+  return `This computer can open documents until ${day}. After that, ask ${ownerName || 'the owner'} for a new link.`;
+}
+
+/** The words for a join refusal (never a raw error code). */
+export function joinErrorWords(status, data, ownerName) {
+  const owner = ownerName || 'the owner';
+  const detail = data && typeof data.detail === 'string' ? data.detail : null;
+  if (detail) return detail;
+  if (data && data.error === 'wrong-code') return `That code isn't right. ${data.attemptsLeft === 1 ? 'One try left.' : `${data.attemptsLeft ?? 2} tries left.`}`;
+  if (status === 403) return `This link has expired or was already used. Ask ${owner} for a new link.`;
+  if (status === 503) return 'Computers can\'t open documents on this agent right now. Try again later.';
+  if (status === 0) return 'The agent couldn\'t be reached. Check your connection and try again.';
+  return 'Something went wrong. Try again in a moment.';
 }
 
 // ── the "Link this computer" page's words (Justin 2026-11-18: more explicit, easier to follow) ────
