@@ -58,6 +58,7 @@ These rules can be measured without a person. They are the ones to build automat
 | `DS-LAYOUT-6` | Every registered screen has a reachable navigation control at every standard size. |
 | `DS-LAYOUT-7` | Protected text (buttons, statuses, numbers, dates) is one line tall and not cut. |
 | `DS-LAYOUT-9` | A second paint leaves scroll position, focus and open sections unchanged. |
+| `DS-LAYOUT-13` | Generated conversations retain authenticated origin, authorized parentage or a readable unplaced state through creation, restart and replication. |
 | `DS-DATA-1` | Every value in a number column is one line tall. |
 | `DS-DATA-2` | Right edges of the numbers in a column line up to within 1 unit. |
 | `DS-DATA-3` | The sequence of row labels is identical in every item of a list. |
@@ -188,7 +189,7 @@ These rules can be measured without a person. They are the ones to build automat
 - **Why**: The person should immediately know where to ask for general help, even when many project and helper conversations exist.
 - **Bad**: The Chief of Staff looks like an ordinary pinned row below Projects and disappears while searching.
 - **Good**: One clearly identified Chief of Staff entry stays above the project list on Mac and iPhone, with its own accessible identity and readable status.
-- **Surfaces**: Conversation lists on all app and web surfaces that expose a canonical main conversation.
+- **Surfaces**: All.
 - **Check**: review. Check grouped, flat, search and fallback states at normal, narrow and maximum-text sizes. Structural regressions also verify canonical identity, no duplicate row, stable selection and primary-before-project geometry; a look-alike title must not acquire the role.
 - **Earned from**: DF-0002.
 
@@ -197,7 +198,7 @@ These rules can be measured without a person. They are the ones to build automat
 - **Why**: Helper work should be understandable in its real context, without cluttering the main list or disappearing when metadata is incomplete.
 - **Bad**: Every work-card backing conversation appears as a top-level App chat, or the client guesses a parent from its title.
 - **Good**: Generated work appears under its verified parent. Unplaced work has a readable recovery location; any reconciliation of existing chats is previewed and no history is deleted as cleanup.
-- **Surfaces**: Conversation creation, hierarchy, synchronization and lists on all surfaces.
+- **Surfaces**: All.
 - **Check**: machine. Exercise work-card, session and person-created roots; denied, foreign and cyclic parents; partial linkage failure; retries; restart and replication; old-server responses; and readable unplaced recovery. Verify that existing records are unchanged until authorized reconciliation.
 - **Earned from**: DF-0004.
 
@@ -466,7 +467,7 @@ These rules can be measured without a person. They are the ones to build automat
 - **Why**: People expect right-click and the keyboard context key to act on the item they selected, not a nearby container or another window's last selection.
 - **Bad**: Right-clicking a message's words opens only a generic text menu, or Copy message link copies the conversation link instead.
 - **Good**: The native menu opens over words and background, preserves selection and links, and applies the chosen action to that exact authorized message with honest success, cancellation and error states.
-- **Surfaces**: Mac, Windows, Linux and web conversation surfaces with a pointer; platform equivalents on touch surfaces.
+- **Surfaces**: All.
 - **Check**: review. Open the actual native menu over both words and background, by keyboard and pointer, at ordinary and large text. Exercise two windows, stale identifiers, wrong-machine and permission failures, destructive cancellation and platform mirror failures against the real action contracts.
 - **Earned from**: DF-0003.
 
