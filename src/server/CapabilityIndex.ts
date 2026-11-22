@@ -574,6 +574,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'usageServedAccount',
+    // Under the '/usage' prefix already claimed by unifiedUsageLedger.
+    prefixes: [],
+    description: 'Spend by served account (docs/specs/quota-pacing-spend-by-account.md, quota pacing step 3) — each usage-ledger row records the account that ACTUALLY served it: the transcript folder (config home) gives the slot, and the credential ledger (verified before the row) or the recorded identity checks (at the row\'s time) give the login, each row carrying its basis; the session\'s tag is kept beside it. Registry First: "which account did this week\'s work come from / which sessions ran on a different account than they were tagged with / how much work is 1% of an account\'s week?" → GET /usage/accounts (spend per login pool-wide, unidentified spend apart), GET /usage/account-mismatches?limit=&cursor= (tagged vs served, paged, confirmed vs unconfirmed), GET /usage/accounts/size?account= (cost per point over closed cycles: a workload-dependent lower bound, or cannot-tell with the reason). Read-only; bearer only. Dev-gated (usage.ledger.servedAccount): 503 served-account-off when dark.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /usage/accounts', 'GET /usage/accounts/size', 'GET /usage/accounts/spend', 'GET /usage/account-mismatches'],
+    }),
+  },
+  {
     key: 'mobilePlansPeopleScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
