@@ -16,6 +16,8 @@ Tier 1 by size, security-sensitive: an independent second-pass review is attache
 - **Same failure behavior.** `security -i` exits with the failing command's status. A live check gave 45 for a duplicate and 2 for bad arguments. So a failed write still throws or rejects. The refresh still returns false and falls to needs-reauth, the secret stores still fall back to the key file, and the vaults still throw to their callers.
 - **Same update rules.** Sites that used `-U` (the refresh and the swap executor) still update in place. Sites that delete and then add (the vaults and the secret stores) are unchanged.
 
+- **Stage-B check.** The new helper is reached through `SecretStore`, which is inside the Stage-B certified closure, so `src/data/stageBCertifiedSet.ts` lists it as excluded with a reason. It holds no delivery or lifecycle logic. The fingerprint of the certified files is unchanged. `stage-b-certified-fingerprint --check` reports OK.
+
 ## Not in this change
 - Reads (`find-generic-password ... -w`) put no secret in the arguments. The secret comes back on standard output, so they are unchanged.
 - Linux paths (`secret-tool`) are unchanged.
