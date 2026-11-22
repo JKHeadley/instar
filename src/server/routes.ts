@@ -38,6 +38,7 @@ import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
 const stampPromiseNotice = notificationStamper('src/server/routes.ts', 'promise-notice');
+const stampProfileConfirmation = notificationStamper('src/server/routes.ts', 'profile-confirmation');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { mountOwnerRecordRoutes, type OwnerRecordRouteDeps } from './ownerRecordRoutes.js';
@@ -414,7 +415,7 @@ import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter, compileFeaturePattern, FEATURE_PATTERN_MAX_CHARS } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
-import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, registerVoiceUnreadableListener, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
@@ -847,6 +848,9 @@ import { isOperationReference } from '../messaging/telegram-origin/OriginPolicyV
 import { AdvisoryAnswerClosedError } from '../messaging/telegram-origin/types.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
+import { InboundCredentialNotice, type MaskedInbound } from './inboundCredentialNotice.js';
+import { isTeamSender, maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { registerEmailRoutes } from './emailRoutes.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
@@ -886,6 +890,7 @@ import { resolvePendingRelayPath } from '../messaging/pending-relay-store.js';
 import Database from 'better-sqlite3';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
+import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
@@ -3110,6 +3115,15 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
   'frameworkBinaryPaths',
   'claudePath',
   'grokInteractiveSessions',
+  // SEC-145: the same authority class. `tmuxPath` chooses the binary the server runs for every
+  // session; the Anthropic base URL, API key and `credentials` decide where every Claude session's
+  // conversation and tool calls go and whose account pays; `retainedClaudeBinary` names a binary
+  // directory the retainer runs from. Set them in .instar/config.json, not through the API.
+  'tmuxPath',
+  'anthropicBaseUrl',
+  'anthropicApiKey',
+  'credentials',
+  'retainedClaudeBinary',
 ];
 
 /** Keys that name JavaScript's object machinery; never valid as config keys (SEC-071). */
@@ -14139,12 +14153,12 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       confirmIn = n as number;
-      // A cross-conversation yes may change only everyday run settings. Framework, escalation
-      // override and origin display keep today's rule (confirm in that conversation itself).
+      // The same bounded field list is enforced again by the write surface.
+      // Escalation override and origin display still require in-conversation confirmation.
       const allowedCross = new Set(CROSS_TOPIC_FIELDS);
       const outside = Object.keys(patch).filter((k) => !allowedCross.has(k));
       if (outside.length) {
-        res.status(400).json({ error: `confirmIn may change only model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
+        res.status(400).json({ error: `confirmIn may change only framework, model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
         return;
       }
       // Ships behind the umbrella's per-piece switch: live on a development agent, dark on the fleet.
@@ -14188,7 +14202,9 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
+      // This armed exact-change proposal needs a human answer, so it uses the
+      // existing bounded owner-decision lane rather than the quiet report feed.
+      const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
       ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
       res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
@@ -18793,6 +18809,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // open the confirm page at: the tunnel when there is one, else this machine on the home network.
     offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
     existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
+    reoffersEnabled: () => !!ctx.config.recommendedServices?.reoffers?.enabled,
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;
@@ -18944,6 +18961,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     },
   });
   ctx.recommendedServicesRecheck = (service) => recommendedHandle.requestRecheck(service);
+  // Real-problem source `voice-unreadable` (recommended-services.md, rollout step 4): records nothing while re-offers are off.
+  registerVoiceUnreadableListener((evidenceRef) => recommendedHandle.recordProblem('voice-unreadable', evidenceRef));
   // docs/specs/backup-email-sending.md: a one-off whose email did not go reaches the session's own topic.
   ctx.emailTopicSend = async (topicId, text) => {
     if (!ctx.telegram) throw new Error('no Telegram');
@@ -23677,6 +23696,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'beforeMessageId requires before and a positive message id' }); return;
       }
     }
+    // Diff the final emitted page by exact row digest; display times never determine inclusion.
+    const knownRows = parseKnownRows(req.query.knownRows);
+    if (knownRows === 'invalid') { res.status(400).json({ error: 'invalid-known-rows' }); return; }
+    if (knownRows !== null && beforeMs !== null) { res.status(400).json({ error: 'known-rows-with-before' }); return; }
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
       : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
@@ -23701,8 +23724,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const pinsField = (): Record<string, unknown> => (ctx.appConversations && isConversationPinsEnabled(ctx.config) ? { pins: pinRowsFor(ctx.appConversations.store, `telegram:${topicId}`) } : {});
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
+      // Fingerprint the final JOINED rows: early omission could re-add weaker stored copies.
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
+      res.json({ topicId, ...filterKnownRows(isDevice ? stripViewSignatures(shaped) : shaped, knownRows), historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -23831,8 +23855,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return true;
       })
       .slice(-limit);
+    // After the merge, own-row-wins dedupe and the device join, never before (same reason as above).
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
+    res.json({ topicId, ...filterKnownRows(isDevice ? stripViewSignatures(joinedPool) : joinedPool, knownRows), historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -31366,6 +31391,79 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return { localUrl, tunnelUrl };
   }
 
+  // SEC-164 part 1 §3.5 and §4.5: a live key in a new incoming message is masked before anything keeps
+  // the text, and a team member gets one fixed notice with a fresh Secret Drop link to resend it safely.
+  const credentialScrubOn = credentialScrubEnabledReader(ctx.config.projectDir);
+  const inboundCredentialNotice = new InboundCredentialNotice({
+    enabled: credentialScrubOn,
+    mintResendLink: ({ target, channel }) => {
+      const topicId = channel === 'telegram' && Number.isSafeInteger(Number(target)) ? Number(target) : undefined;
+      const { token } = secretDrop.create({
+        mintAuth: 'master',
+        label: 'Send the key safely',
+        description: 'I removed a key from your message so it is not kept in the conversation. Paste it here instead and it goes straight to the vault.',
+        ...(topicId !== undefined ? { topicId } : {}),
+      });
+      // A phone can only open the tunnel address; without one the notice says to try again shortly.
+      return secretDropUrl(token).tunnelUrl;
+    },
+    sendNotice: ({ target, channel, text: noticeText }) => channel === 'slack'
+      ? ctx.slack?.sendToChannel(target, noticeText)
+      : withNotificationEnvelope(stampNotification(), async () => ctx.telegram?.sendToTopic(Number(target), noticeText, { provenance: 'automation' })),
+    reportFailure: (reason) => DegradationReporter.getInstance().report({
+      feature: 'credentialScrub.inbound',
+      primary: 'Mask a live key in a new incoming message',
+      fallback: 'Patterns-only check, else the message is delivered unchanged',
+      reason,
+      impact: 'A key may remain in a stored copy until the sweeper or the part 2 history clean reaches it',
+    }),
+  });
+  /** Whether a Telegram sender counts as the agent's team for the notice (§4.5). Never throws. */
+  let teamUserManagerCtor: (new (stateDir: string) => { resolveFromTelegramUserId(id: number): unknown }) | null = null;
+  void import('../users/UserManager.js').then((m) => { teamUserManagerCtor = m.UserManager; })
+    .catch(() => { /* @silent-fallback-ok — without it only the owner counts (§4.5) */ });
+  const telegramTeamSender = (fromUserId: unknown, notFromThePerson: boolean): boolean => {
+    if (fromUserId === undefined || fromUserId === null || notFromThePerson) return false;
+    let memberIds: string[] = [];
+    try {
+      const n = Number(fromUserId);
+      if (teamUserManagerCtor && Number.isSafeInteger(n) && new teamUserManagerCtor(ctx.config.stateDir).resolveFromTelegramUserId(n)) memberIds = [String(n)];
+    } catch { memberIds = []; } // @silent-fallback-ok — unreadable team data means only the owner counts (§4.5)
+    return isTeamSender({ channel: 'telegram', senderId: fromUserId as string | number, ownerIds: [ctx.telegram?.getOwnerUserId?.()], memberIds, notFromThePerson });
+  };
+  // Slack masks through the same object. Its team is the operator's own allowlist, never a bot,
+  // guest or Slack Connect user (§4.5).
+  if (ctx.slack) {
+    ctx.slack.inboundCredentialMasker = ({ text: inText, channelId, ts, userId, authorized, notFromThePerson, externalOrGuest }) => {
+      const r = inboundCredentialNotice.mask(inText, { channel: 'slack', senderId: null });
+      if (!r.removed) return null;
+      r.team = authorized && isTeamSender({ channel: 'slack', senderId: userId, memberIds: [userId], notFromThePerson, externalOrGuest });
+      void inboundCredentialNotice.notify({ target: channelId, messageKey: ts, channel: 'slack', result: r })
+        .catch(() => { /* @silent-fallback-ok — notify reports its own failures */ });
+      return inboundCredentialNotice.sessionText(r.text, r);
+    };
+  }
+  // WhatsApp and iMessage mask through the same object. Part 1 sends no notice on these channels: the
+  // key is masked and the session is told.
+  for (const adapter of [ctx.whatsapp, ctx.imessage]) {
+    if (!adapter) continue;
+    adapter.inboundCredentialMasker = (inText: string) => {
+      const r = inboundCredentialNotice.mask(inText, { channel: 'whatsapp', senderId: null });
+      return r.removed ? inboundCredentialNotice.sessionText(r.text, r) : null;
+    };
+  }
+  // The server's own polling path (no lifeline poll owner) masks through the same object.
+  if (ctx.telegram) {
+    ctx.telegram.inboundCredentialMasker = ({ text: inText, topicId, messageId, fromId, notFromThePerson }) => {
+      const r = inboundCredentialNotice.mask(inText, { channel: 'telegram', senderId: null });
+      if (!r.removed) return null;
+      r.team = telegramTeamSender(fromId, notFromThePerson);
+      void inboundCredentialNotice.notify({ target: String(topicId), messageKey: String(messageId), channel: 'telegram', result: r })
+        .catch(() => { /* @silent-fallback-ok — notify reports its own failures */ });
+      return inboundCredentialNotice.sessionText(r.text, r);
+    };
+  }
+
   // Shared body validation for BOTH secret-mint paths: the bearer-gated
   // /secrets/request and the loopback-only /threadline/secrets/request
   // (sealed-handoff keystone). Keeping the contract in ONE place prevents the two
@@ -32305,6 +32403,29 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // directories; an app file arrives by attachment id. From here on `text` is one path-free
     // sentence per file plus the person's text with every typed path tag inert, and the file travels
     // in `metadata.media` — before anything is logged, forwarded or queued.
+    // ── SEC-164 §3.5: mask live keys before the first side effect that keeps the text ──
+    // Before the media rewrite, so the travelling text, the history form, the trust-account receipt,
+    // the inbound log (and the authorship hash it feeds), the ledger and the session all see one
+    // masked text. Every key masks to the same marker, so a re-forward masks identically (SEC-106).
+    let credMask: MaskedInbound | null = null;
+    if (typeof text === 'string' && text) {
+      credMask = inboundCredentialNotice.mask(text, { channel: 'telegram', senderId: null });
+      // The lifeline masked a queued message before writing it (§3.5, the lifeline rule), or the app
+      // route masked a device-signed message before storing it, and says so here, so the notice still
+      // follows. Only a lifeline-proven forward or the in-process app route may say it.
+      const queuedKinds = req.body?.credentialRemovedKinds;
+      if (!credMask.removed && (trust ? true : ingressDecision.verified === true) && Array.isArray(queuedKinds)
+        && queuedKinds.length > 0 && queuedKinds.length <= 16 && queuedKinds.every((k: unknown) => typeof k === 'string' && k.length <= 64)) {
+        credMask = { ...credMask, removed: true, kinds: queuedKinds as string[] };
+      }
+      if (credMask.removed) {
+        text = credMask.text;
+        credMask.team = trust
+          ? trust.sender?.role === 'owner' || trust.sender?.role === 'team'
+          : telegramTeamSender(fromUserId, req.body.forwarded === true || senderIsBot === true
+            || senderChatId !== undefined || senderBotId !== undefined || req.body.viaBot === true);
+      }
+    }
     const fwdMedia = normalizeForwardedInbound({
       text: typeof text === 'string' ? text : '', bodyMedia: req.body?.media, messageId,
       acceptLocalPaths: !trust && ingressDecision.senderTrusted === true,
@@ -32717,7 +32838,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const message = {
         id: `tg-${messageId || Date.now()}`,
         userId: String(fromUserId || 'unknown'),
-        content: text,
+        content: credMask?.removed ? inboundCredentialNotice.sessionText(text, credMask) : text,
         channel: { type: 'telegram', identifier: String(topicId) },
         receivedAt: new Date().toISOString(),
         metadata: {
@@ -32770,6 +32891,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
         const delivered = ctx.telegram.onTopicMessage(message) as unknown;
         if (trust) await delivered;
+        if (credMask?.removed && credMask.team && !refused) {
+          void withNotificationEnvelope(stampForwardResponse(), async () => inboundCredentialNotice.notify({
+            target: String(topicId), messageKey: String(messageId ?? req.body.updateId ?? ''), channel: 'telegram', result: credMask!,
+          })).catch(() => { /* @silent-fallback-ok — notify reports its own failures */ });
+        }
         res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });
       } catch (err) {
         DegradationReporter.getInstance().report({
@@ -39280,8 +39406,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (offending.length > 0) {
         res.status(400).json({
           error: `sessions.${offending.join(', sessions.')} is not patchable via the API — these `
-            + 'select which executable a session spawns, or admit a session lane that spends '
-            + 'against an unmetered pool. Set them in .instar/config.json (or via the '
+            + 'select which program a session runs, where Claude sessions connect and which account '
+            + 'pays, or admit a session lane that spends against an unmetered pool. Set them in '
+            + '.instar/config.json (or via the '
             + 'per-framework env lever) so the change is an operator act on the machine.',
         });
         return;
@@ -46998,7 +47125,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
     const {
       targetAgent,
-      message,
+      message: rawMessage,
       inReplyTo,
       threadId,
       waitForReply,
@@ -47009,10 +47136,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       priority,
     } = req.body;
 
-    if (!targetAgent || !message) {
+    if (!targetAgent || !rawMessage) {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
     }
+    // ── SEC-164 §3.5: outgoing agent-to-agent text is masked before it is logged, encrypted or sent ──
+    // Every later step (local route, relay, thread log, outbox, mirrors) uses the masked `message`.
+    // The ONE exception (Chief of Staff c835d801): a send the credential-share gate itself allowed
+    // (marked as a share AND an eligible verified paired recipient) carries the raw text, sealed, on
+    // the pinned encrypted send only; our own records still hold the masked text.
+    let credentialShareGateAllowed = false;
+    const a2aMask = typeof rawMessage === 'string'
+      ? maskInbound(rawMessage, { enabled: credentialScrubOn() })
+      : null;
+    const message = a2aMask && (a2aMask.outcome === 'masked' || a2aMask.outcome === 'fallback') ? a2aMask.text : rawMessage;
     // Explicit new-thread intent (`fork` / `newThread`). A request that names a
     // thread AND asks for a new one cannot honour both, so it is refused rather
     // than silently sent on the named thread.
@@ -47119,6 +47256,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(403).json({ success: false, refused: true, reason: decision.reason, error: `Credential-share refused: ${decision.reason}.` });
         return true;
       }
+      // SEC-164: only the gate's own allow decision lets the raw text travel (sealed, pinned send).
+      credentialShareGateAllowed = true;
       return false;
     };
 
@@ -48075,7 +48214,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let sent: { messageId: string; threadId: string };
       try {
         sent = pinnedForCredential
-          ? relayClient.sendCredentialToPinned(resolvedId, pinnedForCredential, message, relayLegThreadId, msgId, relayLegResend || undefined)
+          ? relayClient.sendCredentialToPinned(resolvedId, pinnedForCredential, credentialShareGateAllowed ? rawMessage : message, relayLegThreadId, msgId, relayLegResend || undefined)
           : relayLegResend
             ? relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId, true)
             : relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId);

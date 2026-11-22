@@ -32,6 +32,17 @@ export const NEVER_EDITABLE = [
   { prefix: 'node_modules/', why: 'Installed packages are never editable here.' },
   { prefix: '.instar/jobs/instar/', why: 'Built-in jobs are replaced on every update, so they are never editable here.' },
   { prefix: '.instar/config.json', why: 'The agent’s settings file is never editable here; ask the agent to change a setting.' },
+  { prefix: '.claude/settings.json', why: 'Hook settings decide which commands run, so they are never editable here.' },
+  { prefix: '.claude/settings.local.json', why: 'Hook settings decide which commands run, so they are never editable here.' },
+  { prefix: '.instar/hooks/', why: 'Hooks and scripts are never editable here.' },
+  { prefix: '.instar/scripts/', why: 'Hooks and scripts are never editable here.' },
+  { prefix: '.instar/jobs.json', why: 'Jobs decide what runs; edit them on the Schedule page.' },
+  { prefix: '.instar/jobs/user/', why: 'Jobs decide what runs; edit them on the Schedule page.' },
+  { prefix: '.instar/jobs/schedule/', why: 'Jobs decide what runs; edit them on the Schedule page.' },
+  { prefix: '.mcp.json', why: 'This file names the tool servers sessions start, so it is never editable here.' },
+  { prefix: '.codex/', why: 'This framework’s settings name commands it starts, so they are never editable here.' },
+  { prefix: '.gemini/', why: 'This framework’s settings name commands it starts, so they are never editable here.' },
+  { prefix: '.husky/', why: 'Git hooks run on every commit, so they are never editable here.' },
 ];
 export const NEVER_SHOWN_WORDS = 'Key material (the agent’s identity and machine keys, the key vault, signed-in account records) and files named like secrets (.env, *.key, *.pem, credentials, tokens) are never listed, shown or downloaded.';
 

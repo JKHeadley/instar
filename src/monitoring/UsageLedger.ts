@@ -26,6 +26,7 @@ import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import type { ServedAccountResolver, ServedAttribution, ServedBasis } from './servedAccount.js';
 
 export type UsageSource =
   | 'claude-transcript' | 'codex-rollout' | 'intelligence-call'
@@ -88,6 +89,11 @@ export interface UsageLedgerOptions {
   settleWindowMs?: number;
   now?: () => number;
   databaseFactory?: (p: string) => BetterSqliteDatabase;
+  /**
+   * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): which account actually
+   * served each row. When `enabled()` is false, rows are written with `served_basis: 'off'`.
+   */
+  servedAccount?: { enabled: () => boolean; resolver: ServedAccountResolver };
 }
 
 export interface ScanReport {
@@ -391,6 +397,9 @@ export function normalizeFramework(f: string | null | undefined): UsageFramework
   return 'api';
 }
 
+/** quota-pacing step 3: the served-account columns (raw rows only; rollups are not re-keyed). */
+export const SERVED_COLS = ['served_slot', 'served_account_id', 'served_identity', 'served_basis'] as const;
+
 const PAGE_ROWS = 5_000;
 const PAGE_BYTES = 5 * 1024 * 1024;
 const EXPORT_TABLES = ['rollup_hour', 'rollup_day', 'rollup_session_day', 'session_bindings'] as const;
@@ -423,6 +432,28 @@ export interface AggregateRow {
   missingAny: number;
   reportedActualUsd: number;
   reportedPlanRateUsd: number;
+}
+export interface ServedAggregateRow {
+  bucket: number;
+  model: string | null;
+  framework: string;
+  basis: ServedBasis;
+  identity: string | null;
+  served: string | null;
+  tagged: string | null;
+  calls: number;
+  input: number; cacheRead: number; cacheWrite: number; output: number;
+}
+export interface AccountMismatch {
+  sessionId: string;
+  tagged: string;
+  served: string;
+  servedBasis: ServedBasis;
+  requests: number;
+  firstTs: number;
+  lastTs: number;
+  /** False for an identity-unconfirmed served account (Codex today): counted, never treated as a placement bug alone. */
+  confirmed: boolean;
 }
 export interface SnapshotRules {
   /** Is this id a predecessor of THIS machine in the identity-change ledger? */
@@ -460,7 +491,8 @@ async function mapInBatches<T, R>(items: readonly T[], fn: (item: T) => Promise<
 
 export class UsageLedger {
   private readonly db: BetterSqliteDatabase;
-  private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes' | 'poolHomes'>> & { otherAgentHomes: string[] };
+  private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes' | 'poolHomes' | 'servedAccount'>> & { otherAgentHomes: string[] };
+  private readonly served: UsageLedgerOptions['servedAccount'];
   private readonly roots = new Map<string, CoverageRoot>();
   private readonly codexRoots = new Map<string, CoverageRoot>();
   private readonly poolHomes: UsageLedgerOptions['poolHomes'];
@@ -476,6 +508,7 @@ export class UsageLedger {
 
   constructor(opts: UsageLedgerOptions) {
     this.poolHomes = opts.poolHomes;
+    this.served = opts.servedAccount;
     this.refreshPoolRoots();
     this.opts = {
       maxDepth: 3,
@@ -503,6 +536,11 @@ export class UsageLedger {
     for (const ddl of SCHEMA) this.db.exec(ddl);
     const cpCols = (this.db.prepare('PRAGMA table_info(checkpoints)').all() as { name: string }[]).map(c => c.name);
     if (!cpCols.includes('extra')) this.db.exec('ALTER TABLE checkpoints ADD COLUMN extra TEXT');
+    // quota-pacing step 3: served-account columns on the raw rows only (additive, idempotent).
+    // Rows written before they existed read served_basis 'before-attribution'.
+    const evCols = (this.db.prepare('PRAGMA table_info(usage_events)').all() as { name: string }[]).map(c => c.name);
+    for (const col of SERVED_COLS) if (!evCols.includes(col)) this.db.exec(`ALTER TABLE usage_events ADD COLUMN ${col} TEXT`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_usage_events_served ON usage_events(served_identity, ts)');
     this.initMeta();
     // Stable observation IDs are shared across homes. An uncopied source can arrive
     // after a backup; replace only the uncounted copy's detail from the original.
@@ -512,7 +550,8 @@ export class UsageLedger {
       parent_session_id = @parent_session_id, scope_basis = @scope_basis, topic_id = @topic_id,
       job_slug = @job_slug, run_id = @run_id, tok_input = @tok_input, tok_cache_read = @tok_cache_read,
       tok_cache_write = @tok_cache_write, tok_output = @tok_output, tok_reasoning = @tok_reasoning,
-      status = 'counted', source_path = @source_path, source_pos = @source_pos
+      status = 'counted', source_path = @source_path, source_pos = @source_pos,
+      served_slot = @served_slot, served_account_id = @served_account_id, served_identity = @served_identity, served_basis = @served_basis
       WHERE observation_id = @observation_id AND status = 'copied-history'`);
     this.upsertStmts = {
       hour: this.prepareUpsert('rollup_hour', HOUR_KEY),
@@ -884,6 +923,7 @@ export class UsageLedger {
   /** Work every tick does before listing. False when there is nothing to scan. */
   private beginScanTick(): boolean {
     this.refreshPoolRoots();
+    try { if (this.served?.enabled()) this.served.resolver.refresh(); } catch { /* @silent-fallback-ok: a failed refresh keeps last tick's slot map; rows still record their basis */ }
     // Bindings from queued one-shots must exist before their transcripts are scanned.
     try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
     if (this.pendingDetailRescan) {
@@ -992,10 +1032,12 @@ export class UsageLedger {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
       (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
        parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
-       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos,
+       served_slot, served_account_id, served_identity, served_basis)
       VALUES (@observation_id, @correlation_key, 'request', @ts, 'claude-transcript', 'claude-code', @model, @machine_id,
        @account_id, @session_id, @session_kind, @parent_session_id, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
-       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, NULL, @status, NULL, NULL, @source_path, @source_pos)`);
+       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, NULL, @status, NULL, NULL, @source_path, @source_pos,
+       @served_slot, @served_account_id, @served_identity, @served_basis)`);
 
     const memberCache = new Map<string, ScopeBasis | null>();
     const batch = new DeltaBatch();
@@ -1040,6 +1082,7 @@ export class UsageLedger {
           run_id: binding?.runId ?? null,
           tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_cache_write: parts.cacheWrite, tok_output: parts.output,
           tok_reasoning: null, status, source_path: file, source_pos: linePos,
+          ...this.servedColumns(root, 'claude', ts, isSubagent && parentSessionId ? parentSessionId : sessionId, binding),
         };
         if (insert.run(event).changes === 1) inserted++;
         else if (status !== 'counted' || this.promoteCopiedRow.run(event).changes !== 1) continue;
@@ -1133,10 +1176,12 @@ export class UsageLedger {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
       (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
        parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
-       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos,
+       served_slot, served_account_id, served_identity, served_basis)
       VALUES (@observation_id, @correlation_key, 'invocation', @ts, 'intelligence-call', @framework, @model, @machine_id,
        NULL, @session_id, 'internal', NULL, 'spawn-record', NULL, @job_slug, @run_id, @feature,
-       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, @tok_reasoning, 'counted', @reported_usd, @reported_basis, NULL, NULL)`);
+       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, @tok_reasoning, 'counted', @reported_usd, @reported_basis, NULL, NULL,
+       NULL, NULL, NULL, @served_basis)`);
     let n = 0;
     const tx = this.db.transaction(() => {
       const batch = new DeltaBatch();
@@ -1158,6 +1203,8 @@ export class UsageLedger {
           job_slug: clip(it.jobSlug), run_id: clip(it.runId), feature: clip(it.feature),
           tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_cache_write: parts.cacheWrite,
           tok_output: parts.output, tok_reasoning: parts.reasoning, reported_usd: usd, reported_basis: basis,
+          // A one-shot has no transcript root: its spend is its own bucket, never a login's.
+          served_basis: this.servedOn() ? 'no-transcript' : 'off',
         });
         if (res.changes !== 1) continue;
         n++;
@@ -1437,10 +1484,12 @@ export class UsageLedger {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
       (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
        parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
-       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos,
+       served_slot, served_account_id, served_identity, served_basis)
       VALUES (@observation_id, @correlation_key, 'request', @ts, 'codex-rollout', 'codex-cli', @model, @machine_id,
        @account_id, @session_id, @session_kind, NULL, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
-       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, @status, NULL, NULL, @source_path, @source_pos)`);
+       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, @status, NULL, NULL, @source_path, @source_pos,
+       @served_slot, @served_account_id, @served_identity, @served_basis)`);
     let inserted = 0, counted = 0;
     const batch = new DeltaBatch();
     let scope: ScopeBasis | null | undefined;
@@ -1491,6 +1540,7 @@ export class UsageLedger {
           session_kind: sessionKind, scope_basis: scope, topic_id: binding?.topicId ?? null, job_slug: binding?.jobSlug ?? null,
           run_id: binding?.runId ?? null, tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_output: parts.output,
           parent_session_id: null, tok_cache_write: null, tok_reasoning: parts.reasoning, source_path: file, source_pos: linePos,
+          ...this.servedColumns(root, 'codex', ts, state.sessionId, binding),
         };
         if (insert.run(event).changes === 1) inserted++;
         else if (status !== 'counted' || this.promoteCopiedRow.run(event).changes !== 1) continue;
@@ -1712,6 +1762,93 @@ export class UsageLedger {
   }
 
   get machineId(): string { return this.opts.machineId; }
+
+  // ── quota-pacing step 3: served account (docs/specs/quota-pacing-spend-by-account.md) ──
+
+  private servedOn(): boolean {
+    try { return !!this.served?.enabled(); } catch { return false; }
+  }
+
+  /** When a row's session began: its spawn record, else its earliest row on this machine, else the row itself. */
+  private sessionStartTs(sessionId: string, binding: SessionBinding | null, ts: number): number {
+    if (binding) return binding.validFrom;
+    const first = this.anyBinding(sessionId);
+    if (first) return first.validFrom;
+    const row = this.db.prepare('SELECT MIN(ts) AS t FROM usage_events WHERE session_id = ?').get(sessionId) as { t: number | null } | undefined;
+    return row?.t != null ? Math.min(row.t, ts) : ts;
+  }
+
+  private servedColumns(root: string, kind: 'claude' | 'codex', ts: number, sessionId: string, binding: SessionBinding | null): Record<'served_slot' | 'served_account_id' | 'served_identity' | 'served_basis', string | null> {
+    if (!this.servedOn()) return { served_slot: null, served_account_id: null, served_identity: null, served_basis: 'off' };
+    let a: ServedAttribution;
+    try {
+      a = this.served!.resolver.resolve({ root, kind, ts, sessionStartTs: this.sessionStartTs(sessionId, binding, ts) });
+    } catch { /* @silent-fallback-ok: an attribution failure records the row as unknown-root, never as a guessed account */
+      a = { slot: path.resolve(root), accountId: null, identity: null, basis: 'unknown-root' };
+    }
+    return { served_slot: clip(a.slot), served_account_id: clip(a.accountId), served_identity: clip(a.identity), served_basis: a.basis };
+  }
+
+  /** The earliest raw row this machine still keeps (retention or the raw-row ceiling may have dropped older ones). */
+  oldestRawTs(): number | null {
+    const r = this.db.prepare('SELECT MIN(ts) AS t FROM usage_events').get() as { t: number | null } | undefined;
+    return r?.t ?? null;
+  }
+
+  /**
+   * Served-account spend over raw rows: token sums by day bucket, model, framework, served basis,
+   * served identity, served account and tagged account. Counts the same row statuses as the
+   * rollups: transcript/rollout rows `counted`; invocation rows `counted` with their tokens, and
+   * `paired` invocations for their call only (their tokens moved to the transcript rows).
+   */
+  servedAggregate(sinceMs: number, untilMs: number, filter: { identity?: string; bases?: readonly ServedBasis[]; fableOnly?: boolean } = {}): ServedAggregateRow[] {
+    const where: string[] = ['ts >= @since', 'ts < @until', `(status = 'counted' OR (grain = 'invocation' AND status = 'paired'))`];
+    const params: Record<string, unknown> = { since: sinceMs, until: untilMs };
+    if (filter.identity !== undefined) { where.push('served_identity = @identity'); params.identity = filter.identity; }
+    if (filter.bases && filter.bases.length) {
+      where.push(`COALESCE(served_basis, 'before-attribution') IN (${filter.bases.map((_, i) => `@b${i}`).join(', ')})`);
+      filter.bases.forEach((b, i) => { params[`b${i}`] = b; });
+    }
+    if (filter.fableOnly) where.push(`LOWER(COALESCE(model, '')) LIKE '%fable%'`);
+    const paired = `(grain = 'invocation' AND status = 'paired')`;
+    const rows = this.db.prepare(`SELECT
+        (ts / ${DAY_MS}) * ${DAY_MS} AS bucket, model, framework,
+        COALESCE(served_basis, 'before-attribution') AS basis, served_identity AS identity,
+        served_account_id AS served, account_id AS tagged,
+        COUNT(*) AS calls,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_input, 0) END) AS input,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_cache_read, 0) END) AS cache_read,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_cache_write, 0) END) AS cache_write,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_output, 0) END) AS output
+      FROM usage_events WHERE ${where.join(' AND ')}
+      GROUP BY bucket, model, framework, basis, identity, served, tagged`).all(params) as Array<Record<string, unknown>>;
+    return rows.map(r => ({
+      bucket: Number(r.bucket), model: (r.model as string) ?? null, framework: r.framework as string,
+      basis: r.basis as ServedBasis, identity: (r.identity as string) ?? null, served: (r.served as string) ?? null,
+      tagged: (r.tagged as string) ?? null, calls: Number(r.calls),
+      input: Number(r.input), cacheRead: Number(r.cache_read), cacheWrite: Number(r.cache_write), output: Number(r.output),
+    }));
+  }
+
+  /**
+   * Sessions whose tagged account and served account are both known and differ, newest first.
+   * Only rows whose basis can name an account count. Paged by `(lastTs desc, sessionId)`.
+   */
+  accountMismatches(sinceMs: number, limit: number, after: { lastTs: number; sessionId: string } | null): { rows: AccountMismatch[]; total: number } {
+    const base = `FROM usage_events WHERE ts >= @since AND account_id IS NOT NULL AND served_account_id IS NOT NULL
+      AND account_id <> served_account_id AND served_basis IN ('ledger-verified', 'enrollment-confirmed', 'identity-unconfirmed')
+      AND status = 'counted'`;
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM (SELECT session_id ${base} GROUP BY session_id, account_id, served_account_id, served_basis)`)
+      .get({ since: sinceMs }) as { n: number }).n;
+    const rows = this.db.prepare(`SELECT * FROM (
+        SELECT session_id AS sessionId, account_id AS tagged, served_account_id AS served, served_basis AS servedBasis,
+          COUNT(*) AS requests, MIN(ts) AS firstTs, MAX(ts) AS lastTs ${base}
+        GROUP BY session_id, account_id, served_account_id, served_basis)
+      WHERE (@afterTs IS NULL OR lastTs < @afterTs OR (lastTs = @afterTs AND sessionId > @afterSession))
+      ORDER BY lastTs DESC, sessionId ASC LIMIT @limit`)
+      .all({ since: sinceMs, limit, afterTs: after?.lastTs ?? null, afterSession: after?.sessionId ?? '' }) as AccountMismatch[];
+    return { rows: rows.map(r => ({ ...r, confirmed: r.servedBasis !== 'identity-unconfirmed' })), total };
+  }
 
   // ── Slice 4: backed-up snapshot ─────────────────────────────────────
 

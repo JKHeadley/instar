@@ -2610,6 +2610,10 @@ export interface MachineCapacity {
   seamlessnessFlags?: {
     /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
     documentsDecisionRows?: boolean;
+    /** member-browser-any-computer §5: this build reads the computer-* team-log rows (advertised whatever the switches say). Sticky on peers while unreachable. */
+    teamLogComputerRows?: boolean;
+    /** member-browser-any-computer §3.6: this machine's own document address (its named tunnel origin), display only. */
+    documentsOrigin?: string | null;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
@@ -2892,6 +2896,9 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** N73 rollout: endpoint is always available; enable send-time generation
+   * binding only after the receiving pool supports it. Absent/false is off. */
+  messageSessionGeneration?: { enabled?: boolean };
   /** Storage prerequisite only; never enables the Conversations read/UI increment. */
   conversationGraph?: {
     /** Release switches: leave absent/off until increment-A acceptance. Storage
@@ -4373,6 +4380,11 @@ export interface InstarConfig {
     ledger?: {
       /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
       enabled?: boolean;
+      /**
+       * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): record which account
+       * actually served each request. OMITTED so the dev-agent gate decides (LIVE-dev / DARK-fleet).
+       */
+      servedAccount?: boolean;
     };
   };
   routingSpend?: {
@@ -5233,6 +5245,13 @@ export interface InstarConfig {
        */
       existingAgents?: boolean;
     };
+    /**
+     * Rollout step 4 of recommended-services.md: after a no, ask again only when a real problem shows up that the
+     * service would fix (deterministic table, cool-offs, one a day). Off by default: off records and sends nothing.
+     */
+    reoffers?: {
+      enabled?: boolean;
+    };
   };
   /**
    * Sending email to the owner (docs/specs/backup-email-sending.md). Email only works after the owner's yes and the
@@ -5361,7 +5380,17 @@ export interface InstarConfig {
      * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
      * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
      */
-    pacing?: { enabled?: boolean };
+    pacing?: {
+      enabled?: boolean;
+      /**
+       * Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads
+       * each limit window as it stands now (paired weekly deadlines, the Fable window for Fable
+       * launches, unmeasured never counted as room) and logs one shadow row per placement.
+       * OMITTED from defaults: resolved through the dev-agent gate (on for development agents,
+       * off for the fleet); an explicit value always wins.
+       */
+      windowAwareChoice?: boolean;
+    };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
