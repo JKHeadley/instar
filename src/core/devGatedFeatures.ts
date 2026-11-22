@@ -992,6 +992,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
   },
   {
+    name: 'windowAwareAccountChoice',
+    configPath: 'subscriptionPool.pacing.windowAwareChoice',
+    description: 'Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads each limit window as it stands now — the weekly deadline pairs with weekly room (never the 5-hour reset), the Fable window binds Fable launches (never emptying the pick), and a window that reset, is a placeholder or was not read recently is unmeasured (never 0% and never last cycle\'s number) and triggers a deduped out-of-cycle read. One shadow row per placement (GET /quota-pacing/account-choice).',
+    justification: 'Placement already decides where a session runs; this changes only the inputs and the ranking it reads, and the measured tier always outranks an unread account, so it never certifies capacity nobody read. Off = every picker runs today\'s code unchanged. The shadow log is bounded (30-day self-trim) and sync-excluded with the other logs. Dev agents first so two weekly resets of shadow evidence exist before the fleet rung.',
+  },
+  {
     name: 'ecosystemIdeas',
     configPath: 'ecosystemIdeas.enabled',
     description: 'Ecosystem idea pipeline: a weekly review of similar projects that checks each idea against our own source and goals and ranks it. Advice only; it builds nothing and contacts no one. Reads outside text only through frameworks that pass a must-fail file-read probe.',
