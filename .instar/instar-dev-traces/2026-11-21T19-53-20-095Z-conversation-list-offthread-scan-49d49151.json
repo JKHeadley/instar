@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T19:53:20.095Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "1cae6aece57530f3339efa466f4199beb2600ddcefa4cd568162af70fde96cc8",
+  "coveredFiles": [
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "docs/specs/conversation-list-offthread-scan.md",
+    "docs/specs/reports/conversation-list-offthread-scan-measure/README.md",
+    "docs/specs/reports/conversation-list-offthread-scan-measure/measure.sh",
+    "docs/specs/reports/conversation-list-offthread-scan-measure/run.sh",
+    "docs/specs/reports/conversation-list-offthread-scan-measure/serve.mts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/conversation-list-offthread-scan-alive.test.ts",
+    "tests/integration/conversation-list-offthread-scan.test.ts",
+    "tests/unit/telegram-offthread-history-scan.test.ts",
+    "upgrades/next/conversation-list-offthread-scan.md",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "wording, comments and test-assertion changes only; no runtime behaviour change",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

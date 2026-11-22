@@ -43,7 +43,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-guards.test.ts' });
 });
 
-async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
+async function setup(opts: { machine?: string; pool?: AppPoolHandle; historyWarm?: (topicIds: number[]) => Promise<void>; listWarm?: () => Promise<void>; onTopics?: () => void; unread?: unknown } = {}) {
   const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-guard-'));
   dirs.push(dir);
@@ -86,6 +86,7 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
     sentinel: { decideInboundDisposition: async () => ({ disposition: 'route-through', category: 'normal' }) },
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, listSessions: () => running, get: () => undefined },
     topicOperatorStore: { setAuthenticatedOperator: () => undefined }, conversationRegistry: registry, appConversations: svc,
+    ...(opts.historyWarm ? { telegramHistoryWarm: opts.historyWarm } : {}),
     telegram: {
       getOwnerUserId: () => 777, getTopicHistory: (id: number) => [{ text: `words in ${id}`, timestamp: new Date().toISOString() }],
       getAllTopicMappings: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, sessionName: null })),
@@ -106,7 +107,9 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1', listPins,
     sentinel: { decideInboundDisposition: async () => ({ disposition: spies.disposition, category: 'normal' }) } as never,
-    telegramTopics: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })),
+    telegramTopics: () => { opts.onTopics?.(); return [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })); },
+    ...(opts.listWarm ? { telegramWarm: opts.listWarm } : {}),
+    ...(opts.unread ? { unread: opts.unread as never } : {}),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   return { app, pairing, svc, spies, dir, registry, dispatched, listPins };
@@ -151,6 +154,41 @@ describe('reading a Telegram topic', () => {
     const { e, mia } = await withMember();
     expect((await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`)).status).toBe(200);
     expect((await send(e, mia, 'GET', `/telegram/topics/${OTHER}/messages`)).status).toBe(404);
+  });
+
+  it.each([
+    { scans: true, expected: ['baseline', 'scan', 'page'] },
+    { scans: false, expected: ['baseline', 'page'] },
+  ])('a phone\'s first unread baseline is attempted exactly once, at admission, before any wait (scan: $scans)', async ({ scans, expected }) => {
+    // When in doubt a message counts as unread: an early baseline only makes later replies unread, and
+    // one attempt means a later attempt can never set a baseline after a reply saved during the wait.
+    const order: string[] = [];
+    let attempts = 0;
+    const unread = {
+      enabled: () => true,
+      resolveReader: (r: { person: unknown; viaDevice: boolean }) => (r.viaDevice ? { key: 'owner', person: r.person, viaDevice: true } : null),
+      touchBaseline: () => { attempts++; order.push('baseline'); },
+      rowFields: () => null,
+    };
+    const e = await setup({ unread, ...(scans ? { listWarm: async () => { order.push('scan'); } } : {}), onTopics: () => { if (!order.includes('page')) order.push('page'); } });
+    const owner = phone(e);
+    const r = await send(e, owner, 'GET', '/mobile/conversations');
+    expect(r.status).toBe(200);
+    expect(order).toEqual(expected);
+    expect(attempts).toBe(1);
+  });
+
+  it('a grant removed while the first read waits on the history scan is honoured (conversation-list-offthread-scan)', async () => {
+    let duringWait: () => Promise<void> = async () => undefined;
+    const { e, owner, mia } = await withMember('use', { historyWarm: async () => { await duringWait(); } });
+    expect((await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`)).status).toBe(200);
+    duringWait = async () => {
+      const r = await send(e, owner, 'POST', '/mobile/team/grants', { events: [{ type: 'grant-remove', personKey: 'mia', ref: `telegram:${GRANTED}` }] });
+      expect(r.status).toBe(200);
+    };
+    const r = await send(e, mia, 'GET', `/telegram/topics/${GRANTED}/messages`);
+    expect(r.status).toBe(404);
+    expect(JSON.stringify(r.body)).not.toContain(`words in ${GRANTED}`);
   });
 
   it.each([`${OTHER}x`, `%35%31`, `${OTHER}.0`, `0${OTHER}`, ` ${OTHER}`.replace(' ', '%20')])('an altered address %s does not reach another topic', async (id) => {

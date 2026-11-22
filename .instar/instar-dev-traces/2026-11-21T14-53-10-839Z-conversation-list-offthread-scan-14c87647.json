@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T14:53:10.839Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "53c284a957ac6114a3e1501db04c3802539d1aa676f16f4f86e7a32aaf3907c6",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-21T14-53-00-630Z-conversation-list-offthread-scan-9e206ad2.json",
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "docs/specs/conversation-list-offthread-scan.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/unit/telegram-offthread-history-scan.test.ts",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review fixes for the additive off-main-thread cache fill: seed consistency, eviction count, bounded rounds, close before the final check, coarse-time settle, access re-check; live off switch; old read and trim unchanged.",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

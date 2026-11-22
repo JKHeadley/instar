@@ -25,6 +25,8 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+import crypto from 'node:crypto';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
@@ -3538,6 +3540,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // ~8 bytes, and resetting it on a re-registered topic could collide with
     // a LiveTailSource.lastSeenVersion snapshot and silently gate a real change.
     this.topicTailCache.delete(topicId);
+    this.noteTailEvicted(topicId);
     this.saveRegistry();
   }
 
@@ -4811,6 +4814,239 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   getCachedTopicTail(topicId: number): ReadonlyArray<{ messageId: number; timestamp: string; fromUser: boolean; sessionName: string | null }> | null {
     return this.topicTailCache.get(topicId) ?? null;
+  }
+
+  /**
+   * The one history scan in progress for the conversation list, held until it really ends. Requests
+   * wait through `waiters`, each removed (with its timer cleared) when it stops waiting, so a stuck
+   * scan holds nothing per request.
+   */
+  private tailWarm: { expiresAt: number; waiters: Set<() => void> } | null = null;
+  /** Per topic, how many times unregisterTopic evicted its tail; a scan never saves over a newer eviction. */
+  private tailEvictions = new Map<number, number>();
+  /** Test seam: how many scans have started (concurrent requests must share one). */
+  private tailWarmScans = 0;
+  /** One request's wait budget, and a scan's own deadline: past it, the request stops waiting (the old
+   *  read answers) and the scan saves nothing. Inside the 5 s budget another machine gives a list read. */
+  private tailWarmDeadlineMs = 3_500;
+  private static readonly TAIL_WARM_BLOCK_BYTES = 64 * 1024;
+  /** Rounds of "read to the size seen, re-check" before a busy file is left to the old read. */
+  private static readonly TAIL_WARM_MAX_ROUNDS = 3;
+  /** On a file system whose change times are coarse (whole milliseconds or seconds), the re-read starts
+   *  only once the last change is this old, so a write during the re-read always moves the change time. */
+  private static readonly TAIL_WARM_COARSE_SETTLE_MS = 2_500;
+
+  /**
+   * Fill the EXISTING tail cache for every given topic that is not cached yet, with the file read
+   * off the request's turn, in slices (docs/specs/conversation-list-offthread-scan.md). There is no
+   * worker thread: only the read calls run on the libuv pool; each 64 KiB block's decode, line split,
+   * JSON parse and hashing run on the main thread in their own turn, so other requests and timers
+   * run between blocks. The rows are exactly what
+   * the old synchronous read would cache: scanLogForTopic's split, JSON parse, topicId/channelId
+   * match and malformed-line skip, the newest TAIL_CACHE_LIMIT rows per topic in file order. The
+   * scan saves only in the turn that confirms the file is still the same file with the same bytes
+   * (same identity, size and change times, and a re-read whose hash matches the bytes parsed), after
+   * its handle is closed, so the caller reads the cache in that same turn. A file replaced or trimmed
+   * for any reason, any failure, the deadline, or a file still changing after TAIL_WARM_MAX_ROUNDS:
+   * nothing is saved and the unchanged synchronous code reads the file as before. One scan at a time
+   * (held until it really ends); a request waits for at most one scan and at most its own budget. A
+   * caller whose topics are all cached returns at once, never waiting. Resolves true when every
+   * requested topic is cached afterwards. Never throws.
+   */
+  async warmTopicTails(topicIds: Iterable<number>): Promise<boolean> {
+    const ids = [...new Set(topicIds)];
+    const missing = (): number[] => ids.filter((id) => !this.topicTailCache.has(id));
+    if (missing().length === 0) return true;
+    // Every request checks for an unfinished last line itself, before any wait, so its old read runs
+    // in its own turn, exactly when the old code would have read (also when a scan is already running).
+    if (this.logLastLineUnfinished()) return false;
+    // 3.5 s from this call, the start of the history read (after the route's admission work, topic
+    // enumeration and the last-line check above), not from the request's arrival.
+    const requestEnds = performance.now() + this.tailWarmDeadlineMs;
+    // Never join a scan that has used up its time limit: it can no longer save, so the old read runs now.
+    if (this.tailWarm && this.tailWarm.expiresAt <= performance.now()) return false;
+    if (!this.tailWarm) {
+      const want = new Set(missing());
+      this.tailWarmScans++;
+      const scan = { expiresAt: performance.now() + this.tailWarmDeadlineMs, waiters: new Set<() => void>() };
+      this.tailWarm = scan;
+      // The slot is held until the scan really ends, so a stuck scan can never be joined by a second.
+      // Both outcomes are handled: a scan that fails in any way (even outside its own error handling)
+      // saves nothing, ends the wait, and the request's old read runs. Nothing can escape unhandled.
+      void this.scanTailsOffTurn(want, scan).catch((err) => {
+        console.error(`[telegram] off-turn history scan failed; the old read runs: ${err}`);
+        return false;
+      }).finally(() => {
+        if (this.tailWarm === scan) this.tailWarm = null;
+        for (const wake of [...scan.waiters]) wake();
+      });
+    }
+    // Wait for the running scan (never a second one behind it) until whichever ends first: the scan's
+    // own limit (past it, it can no longer save) or this request's budget. Topics it does not cover,
+    // or a scan that saved nothing, fall to the old read.
+    const scan = this.tailWarm;
+    if (!scan) return missing().length === 0; // it already ended, in this turn
+    const waitMs = Math.min(scan.expiresAt, requestEnds) - performance.now();
+    if (waitMs <= 0) return missing().length === 0;
+    await new Promise<void>((resolve) => {
+      const done = (): void => { clearTimeout(timer); scan.waiters.delete(done); resolve(); };
+      const timer = setTimeout(done, waitMs);
+      timer.unref?.();
+      scan.waiters.add(done);
+    });
+    return missing().length === 0;
+  }
+
+  /** Test seam: how many requests are waiting on the running scan. */
+  private tailWarmWaiterCount(): number { return this.tailWarm?.waiters.size ?? 0; }
+
+  /** The log's last byte is not a newline: a writer mid-line, or a crash. Errors read as unfinished. */
+  private logLastLineUnfinished(): boolean {
+    let fd: number | null = null;
+    try {
+      if (!fs.existsSync(this.messageLogPath)) return false;
+      fd = fs.openSync(this.messageLogPath, 'r');
+      const size = fs.fstatSync(fd).size;
+      if (size === 0) return false;
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, size - 1);
+      return last[0] !== 0x0a;
+    } catch {
+      return true; // @silent-fallback-ok — an unreadable log is left to the old read, which reports it
+    } finally {
+      if (fd !== null) { try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ } }
+    }
+  }
+
+  /** unregisterTopic evicted this topic's tail: a scan that started earlier must not save it back. */
+  private noteTailEvicted(topicId: number): void {
+    this.tailEvictions.set(topicId, (this.tailEvictions.get(topicId) ?? 0) + 1);
+  }
+
+  private async scanTailsOffTurn(asked: Set<number>, run: { expiresAt: number }): Promise<boolean> {
+    const expired = (): boolean => performance.now() > run.expiresAt;
+    // The old first-miss seed fills every live topic in the same pass; so does this one, so that the
+    // seed never runs later over tails this scan saved (it appends every disk row to existing tails).
+    const want = new Set(asked);
+    if (!this.tailCacheSeeded) for (const id of this.topicToSession.keys()) want.add(id);
+    const evictionsAtStart = new Map<number, number>();
+    const found = new Map<number, LogEntry[]>();
+    for (const id of want) { found.set(id, []); evictionsAtStart.set(id, this.tailEvictions.get(id) ?? 0); }
+    const failed = (why: string): false => { console.error(`[telegram] off-turn history scan saved nothing (${why}); the old read runs`); return false; };
+    const save = (): boolean => {
+      if (expired()) return failed('past its deadline'); // the final time check, in the saving turn
+      for (const [id, tail] of found) {
+        if (this.topicTailCache.has(id)) continue; // filled meanwhile by another read: keep that copy
+        if ((this.tailEvictions.get(id) ?? 0) !== evictionsAtStart.get(id)) continue; // evicted meanwhile
+        this.topicTailCache.set(id, tail);
+      }
+      this.tailCacheSeeded = true;
+      return true;
+    };
+    const logPath = this.messageLogPath;
+    if (!fs.existsSync(logPath)) return save(); // no log: the old read caches [] for each topic too
+    // A last line without its newline is not finished (a writer mid-line, or a crash): leave this
+    // read to the old code (each request also checks this itself before waiting).
+    if (this.logLastLineUnfinished()) return failed('the last line is not finished');
+
+    // The parse below is scanLogForTopic's, applied to every wanted topic in one pass.
+    const take = (line: string): void => {
+      if (!line) return;
+      try {
+        const entry: LogEntry = JSON.parse(line);
+        const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+        const tail = typeof entryTopicId === 'number' ? found.get(entryTopicId) : undefined;
+        if (!tail) return;
+        tail.push(entry);
+        if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+      } catch { /* @silent-fallback-ok — skip a malformed line, exactly as scanLogForTopic does */ }
+    };
+    const decoder = new StringDecoder('utf8');
+    const parsedHash = crypto.createHash('sha256');
+    const block = Buffer.allocUnsafe(TelegramAdapter.TAIL_WARM_BLOCK_BYTES);
+    let identity: { dev: bigint; ino: bigint } | null = null;
+    let offset = 0; let carry = '';
+    const sameFile = (s: fs.BigIntStats): boolean => identity !== null && s.ino === identity.ino && s.dev === identity.dev;
+    /** Read the bytes not yet parsed, up to `target`. */
+    const readTo = async (fh: fs.promises.FileHandle, target: number): Promise<boolean> => {
+      while (offset < target) {
+        if (expired()) return false;
+        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, target - offset), offset);
+        if (bytesRead === 0) return false;
+        const bytes = block.subarray(0, bytesRead);
+        parsedHash.update(bytes);
+        offset += bytesRead;
+        const lines = (carry + decoder.write(bytes)).split('\n');
+        carry = lines.pop() ?? '';
+        for (const text of lines) take(text);
+      }
+      return true;
+    };
+    /** Re-read what was parsed and compare: a same-length rewrite of read bytes changes the hash. */
+    const verify = async (fh: fs.promises.FileHandle): Promise<boolean> => {
+      const verifyHash = crypto.createHash('sha256');
+      for (let at = 0; at < offset;) {
+        if (expired()) return false;
+        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, offset - at), at);
+        if (bytesRead === 0) return false;
+        verifyHash.update(block.subarray(0, bytesRead));
+        at += bytesRead;
+      }
+      return verifyHash.digest().equals(parsedHash.copy().digest());
+    };
+    const closeOk = async (fh: fs.promises.FileHandle): Promise<boolean> => {
+      try { await fh.close(); return true; } catch { return false; } // @silent-fallback-ok — reported by the caller as a failed scan
+    };
+
+    // A file replaced or trimmed for ANY reason (the trim renames a new file into place) ends the scan
+    // with nothing saved; the request's old read then runs on the file as it is.
+    let fh: fs.promises.FileHandle | null = null;
+    try {
+      for (let round = 0; round < TelegramAdapter.TAIL_WARM_MAX_ROUNDS; round++) {
+        if (expired()) return failed('past its deadline');
+        if (!fh) {
+          fh = await fs.promises.open(logPath, 'r');
+          const opened = await fh.stat({ bigint: true });
+          if (identity === null) identity = { dev: opened.dev, ino: opened.ino };
+          else if (!sameFile(opened)) return failed('the file was replaced');
+        }
+        // 1. Read up to the size this handle sees now (a writer cannot keep a round going).
+        const size = Number((await fh.stat({ bigint: true })).size);
+        if (size < offset) return failed('the file shrank');
+        if (!await readTo(fh, size)) return failed(expired() ? 'past its deadline' : 'the file shrank while being read');
+        const atEnd = fs.statSync(logPath, { bigint: true });
+        if (!sameFile(atEnd)) return failed('the file was replaced');
+        if (atEnd.size < BigInt(offset)) return failed('the file shrank');
+        if (atEnd.size > BigInt(offset)) continue; // appended to while reading: read the rest next round
+        // 2. Coarse change times cannot tell two writes in the same tick apart: start the re-read
+        //    only when the last change is old enough that any later write moves the change time.
+        if (atEnd.ctimeNs % 1_000_000n === 0n) {
+          const age = Date.now() - Number(atEnd.ctimeNs / 1_000_000n);
+          const settle = TelegramAdapter.TAIL_WARM_COARSE_SETTLE_MS;
+          if (age < settle) await new Promise<void>((r) => setTimeout(r, Math.min(settle, settle - age)));
+        }
+        // 3. Re-read what was parsed and compare.
+        if (!await verify(fh)) return failed(expired() ? 'past its deadline' : 'the file was rewritten');
+        // 4. Close (a failed close counts as a failed scan), then the final check.
+        const closing = fh; fh = null;
+        if (!await closeOk(closing)) return failed('the file could not be closed');
+        const now = fs.statSync(logPath, { bigint: true });
+        if (sameFile(now) && now.size === atEnd.size && now.mtimeNs === atEnd.mtimeNs && now.ctimeNs === atEnd.ctimeNs) {
+          // Nothing written since step 1 (any write moves the change time): save in this turn, so the
+          // waiting request reads the cache before any other I/O callback runs.
+          if (carry + decoder.end()) return failed('the last line is not finished');
+          return save();
+        }
+        if (!sameFile(now)) return failed('the file was replaced');
+        if (now.size < atEnd.size) return failed('the file changed during the check');
+        // appended to during the check: the next round reopens the file, reads the rest and checks again
+      }
+      return failed('the file kept changing');
+    } catch (err) {
+      return failed(String(err));
+    } finally {
+      if (fh) await closeOk(fh);
+    }
   }
 
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {

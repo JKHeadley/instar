@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-list-offthread-scan",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T15:52:31.592Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "artifactSha256": "a7a6b84bc9315ff261c650a762c482ddf70a9527eb0a501bb6feb66946c941d7",
+  "coveredFiles": [
+    "docs/specs/conversation-list-offthread-scan.eli16.md",
+    "docs/specs/conversation-list-offthread-scan.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/unit/telegram-offthread-history-scan.test.ts",
+    "upgrades/side-effects/conversation-list-offthread-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Second-review fixes for the additive off-main-thread cache fill: unread baseline order, close failure, deadline, trim follow, unfinished last line; live off switch; old read and trim unchanged.",
+  "eli16Path": "docs/specs/conversation-list-offthread-scan.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-offthread-scan.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
