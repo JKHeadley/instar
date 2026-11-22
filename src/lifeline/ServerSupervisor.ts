@@ -547,6 +547,17 @@ export class ServerSupervisor extends EventEmitter {
     this.isRunning = false;
   }
 
+  /** A completed stop() can swallow tmux errors; only an independent read proves absence. */
+  observeServerStopped(): boolean | null {
+    if (!this.tmuxPath) return null;
+    try {
+      const sessions = execFileSync(this.tmuxPath, ['list-sessions', '-F', '#{session_name}'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000,
+      }).trim().split('\n');
+      return !sessions.includes(this.serverSessionName);
+    } catch { return null; } // @silent-fallback-ok: no measurable session list means unknown, never proof of a stop
+  }
+
   /**
    * Check if the server is currently healthy.
    */

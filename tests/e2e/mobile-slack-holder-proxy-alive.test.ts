@@ -20,6 +20,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { filterKnownRows, parseKnownRows } from '../../src/server/changeFeed.js';
 
 const HOST = 'echo-holder-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -36,8 +37,11 @@ describe('owner phone Slack holder read — production wiring', () => {
     const seen: Array<{ url: string; auth: string | undefined }> = [];
     const holder = http.createServer((q, r) => {
       seen.push({ url: q.url ?? '', auth: q.headers.authorization });
+      const known = new URL(q.url ?? '/', 'http://holder').searchParams.get('knownRows');
+      const parsed = parseKnownRows(known === null ? undefined : known);
+      if (parsed === 'invalid') throw new Error('test holder received malformed fingerprints');
       r.setHeader('Content-Type', 'application/json');
-      r.end(JSON.stringify({ deviceView: true, conversationId: -42, title: 'held elsewhere', conversationKey: 'slack:T:C', messages: [{ text: 'from the holder' }], nextBefore: null }));
+      r.end(JSON.stringify({ deviceView: true, conversationId: -42, title: 'held elsewhere', conversationKey: 'slack:T:C', ...filterKnownRows([{ text: 'from the holder' }], parsed), nextBefore: null }));
     });
     await new Promise<void>((go) => holder.listen(0, '127.0.0.1', () => go()));
     sockets.push(holder);
@@ -75,12 +79,29 @@ describe('owner phone Slack holder read — production wiring', () => {
     if (!c.ok) throw new Error('setup');
     pairing.devices.applyConfirm(c.device.id, { ok: true });
     const route = '/mobile/chat/slack/-42/messages?machine=m_holder&limit=5';
-    const time = String(Date.now());
-    const sig = dev.sign(canonicalString(c.device.id, HOST, 'GET', route, time, undefined));
-    const r = await request(server.getApp()).get(route).set('Host', HOST).set('X-Instar-Device', c.device.id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+    let lastTime = 0;
+    const read = (p: string) => {
+      lastTime = Math.max(Date.now(), lastTime + 1);
+      const time = String(lastTime);
+      const sig = dev.sign(canonicalString(c.device.id, HOST, 'GET', p, time, undefined));
+      return request(server.getApp()).get(p).set('Host', HOST).set('X-Instar-Device', c.device.id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+    };
+    const r = await read(route);
     expect(r.status).toBe(200);
     expect(r.body.messages).toEqual([{ text: 'from the holder' }]);
     expect(r.body.deviceView).toBeUndefined();
     expect(seen).toEqual([{ url: '/mobile/chat/slack/-42/messages?machine=m_holder&limit=5&deviceView=1', auth: 'Bearer e2e-token' }]);
+
+    const baseline = await read(`${route}&knownRows=`);
+    expect(baseline.status).toBe(200);
+    expect(baseline.body.messages).toEqual(r.body.messages);
+    expect(baseline.body.changeFeed.rowHashes).toHaveLength(1);
+    expect(seen[1]!.url).toBe('/mobile/chat/slack/-42/messages?machine=m_holder&limit=5&deviceView=1&knownRows=');
+    const hashes = baseline.body.changeFeed.rowHashes.join(',') as string;
+    const idle = await read(`${route}&knownRows=${encodeURIComponent(hashes)}`);
+    expect(idle.status).toBe(200);
+    expect(idle.body.messages).toEqual([]);
+    expect(idle.body.changeFeed).toEqual(baseline.body.changeFeed);
+    expect(seen[2]!.url).toBe(`/mobile/chat/slack/-42/messages?machine=m_holder&limit=5&deviceView=1&knownRows=${encodeURIComponent(hashes)}`);
   });
 });

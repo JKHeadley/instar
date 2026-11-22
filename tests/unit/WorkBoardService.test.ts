@@ -44,13 +44,16 @@ describe('WorkBoardService — who may write what', () => {
   let t: ReturnType<typeof makeService>;
   beforeEach(() => { t = makeService(); });
 
-  it('the agent creates a card; it needs approval and is not workable', () => {
+  it('the agent creates a card; it needs approval and is not workable (an inward agent-work card reads not-started, an outward one needs-approval)', () => {
     const r = t.svc.createCard(AGENT, card);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const v = t.svc.view(r.cardId)!;
-    expect(v.status).toBe('needs-approval');
+    // agent-work-cards-default §1: an agent-work card without approval is `not-started` (never a per-card ask).
+    expect(v.status).toBe('not-started');
     expect(v.card.workable).toBe(false);
+    const o = t.svc.createCard(AGENT, { ...card, outward: true }); if (!o.ok) throw new Error('create');
+    expect(t.svc.view(o.cardId)!.status).toBe('needs-approval');
   });
   it('a member cannot create a card or tap; a scoped session cannot create', () => {
     expect(t.svc.createCard(MEMBER, card)).toMatchObject({ ok: false, error: 'owner-required' });
@@ -73,9 +76,11 @@ describe('WorkBoardService — who may write what', () => {
     expect(t.svc.createCard(AGENT, { ...card, carrier: { personKey: 'adriana' } })).toMatchObject({ ok: false, error: 'carrier-not-allowed' });
     expect(t.svc.createCard(AGENT, { ...card, carrier: { personKey: 'justin' } }).ok).toBe(true);
   });
-  it('outward defaults to true when unsure', () => {
+  it('outward defaults to false for the agent and true for a person (agent-work-cards-default §1)', () => {
     const r = t.svc.createCard(AGENT, { title: 'x', need: 'y', doneWhen: [{ id: 'd', text: 'z' }] }); if (!r.ok) throw new Error('create');
-    expect(t.svc.view(r.cardId)!.card.outward).toBe(true);
+    expect(t.svc.view(r.cardId)!.card.outward).toBe(false);
+    const o = t.svc.createCard(OWNER, { title: 'x', need: 'y', doneWhen: [{ id: 'd', text: 'z' }] }); if (!o.ok) throw new Error('create');
+    expect(t.svc.view(o.cardId)!.card.outward).toBe(true);
   });
   it('a card with no done item is refused', () => {
     expect(t.svc.createCard(AGENT, { ...card, doneWhen: [] })).toMatchObject({ ok: false, error: 'done-item-required' });
@@ -107,8 +112,9 @@ describe('WorkBoardService — limits and the credential check', () => {
   });
   it('the soft budget never refuses; it reports overSoftBudget', () => {
     const t = makeService({ softOpenCards: 2 });
-    t.svc.createCard(AGENT, card); t.svc.createCard(AGENT, card);
-    const r = t.svc.createCard(AGENT, card);
+    const ask = { ...card, outward: true }; // an ask waits on the owner; an inward agent-work card does not
+    t.svc.createCard(AGENT, ask); t.svc.createCard(AGENT, ask);
+    const r = t.svc.createCard(AGENT, ask);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.overSoftBudget).toMatchObject({ softOpenCards: 2 });
   });
@@ -165,8 +171,11 @@ describe('WorkBoardService — taps', () => {
   });
   it('a claim before approval is refused not-approved; with missing evidence, evidence-missing', () => {
     const t = makeService();
-    const r = t.svc.createCard(AGENT, card); if (!r.ok) throw new Error('create');
+    const r = t.svc.createCard(AGENT, { ...card, outward: true }); if (!r.ok) throw new Error('create');
     expect(t.svc.claimDone(AGENT, r.cardId)).toMatchObject({ ok: false, error: 'not-approved' });
+    // An inward agent-work card the owner has not let start refuses with its own word (agent-work-cards-default §1).
+    const ns = t.svc.createCard(AGENT, card); if (!ns.ok) throw new Error('create');
+    expect(t.svc.claimDone(AGENT, ns.cardId)).toMatchObject({ ok: false, error: 'not-started' });
     const o = t.svc.createCard(OWNER, card); if (!o.ok) throw new Error('create');
     expect(t.svc.claimDone(AGENT, o.cardId)).toMatchObject({ ok: false, error: 'evidence-missing' });
   });

@@ -203,6 +203,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/work/projects/pause'],
       ['POST', '/mobile/work/projects/done-item'],
       ['POST', '/mobile/work/projects/finish'],
+      // The owner removes a member's computer from People (member-browser-any-computer follow-up).
+      ['POST', '/mobile/team/people/u_0123/computers/d_0123/forget'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);
