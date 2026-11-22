@@ -83,9 +83,11 @@ describe('jev-correction-shadow — migration parity and awareness', () => {
 });
 
 describe('jev-correction-shadow — alive on a development agent, dark on the fleet', () => {
-  // `authorizedUserIds` [4242] makes 4242 the one allowed sender, so getLearningOwner() names it the owner,
-  // the way server.ts resolves it (SEC-105). Pass undefined for an agent with no owner known.
-  async function run(developmentAgent: boolean, mutate?: (e: ReturnType<typeof setup>) => void, authorizedUserIds: number[] | undefined = [4242]) {
+  // `allowed` [4242] makes 4242 the one allowed sender, so getLearningOwner() names it the owner, the way
+  // server.ts resolves it (SEC-105). Pass null for an agent with no allowed-sender list and no owner known.
+  // (null, not undefined: an explicit undefined would take the [4242] default and test nothing.)
+  async function run(developmentAgent: boolean, mutate?: (e: ReturnType<typeof setup>) => void, allowed: number[] | null = [4242]) {
+    const authorizedUserIds = allowed === null ? undefined : allowed;
     const e = setup({ developmentAgent });
     e.migrator.migrateConfig(e.result());
     mutate?.(e);
@@ -127,7 +129,7 @@ describe('jev-correction-shadow — alive on a development agent, dark on the fl
   });
 
   it('development agent with no owner known (every sender accepted): nobody\'s words drive a check (SEC-105)', async () => {
-    const x = await run(true, undefined, undefined);
+    const x = await run(true, undefined, null);
     expect(x.status).toBe(200);
     expect(x.fetchImpl).not.toHaveBeenCalled();
     expect(x.summary).toMatchObject({ enabled: true, checks: 0 });
