@@ -78,3 +78,9 @@ Not required: no gate, block, session lifecycle or watchdog.
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## November 22 repair evidence
+
+The shell's bearer hierarchy probe is skipped when the explicit initial route is Chats (including query parameters and nested paths). Chats retains only its signed browser-device hierarchy reader. Other initial routes keep the existing off-feature probe, so automatic landing still chooses Chats when the server explicitly reports the hierarchy off. This fixes the three refusal-boundary assertions without changing them. Targeted validation: console-chats-page, console-front-doors and console-conversations-dom, 91 tests passed. Main merged normally before the repair. No server permissions, PIN proof, approval requirements, session lifecycle or messaging policy changed. Tier 1, one source file plus this review and the trace; a revert removes the repair. Existing ELI16 remains accurate. Complete verification remains with the throughput coordinator.
+
+Independent repair review: review_chat_repair initially found a phone alias omission and a navigation regression. Both were corrected: the existing route normalizer recognizes phone Chats; a separate preferChats display preference retains its working destination without claiming graph-off. Added refusal coverage for ?phone=1#/chats and direct-choice door assertions. The reviewer re-read the diffs and concurred.

@@ -41,6 +41,8 @@ describe('the three doors', () => {
     expect(doorHref('conversations', { chats: true, graph: false })).toBe('#/work/chats');
     expect(doorHref('conversations', { chats: false, graph: false })).toBe('#/work/conversations'); // Chats off too: unchanged
     expect(doorHref('conversations', { chats: true, graph: null })).toBe('#/work/conversations'); // unknown keeps the hierarchy
+    expect(doorHref('conversations', { chats: true, graph: null, preferChats: true })).toBe('#/work/chats');
+    expect(doorHref('conversations', { chats: false, preferChats: true })).toBe('#/work/conversations');
     expect(doorHref('agent')).toBe('#/agent');
   });
 

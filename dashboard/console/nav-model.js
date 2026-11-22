@@ -239,14 +239,14 @@ export const DOORS = [
 ];
 
 /** Where each door opens. `chats` / `board`: whether that page's own probe answered 200 on this agent. */
-export function doorHref(id, { chats = false, board = false, graph = null } = {}) {
+export function doorHref(id, { chats = false, board = false, graph = null, preferChats = false } = {}) {
   // The Conversations door opens the conversations hierarchy (Chief of Staff first, then All), on every agent
   // (spec §7 stage 1: "conversations-model.js keeps its hierarchy"). The browser-device chat page stays one tap
   // away inside it; opening the door on it showed "No conversations yet" on a real agent (2026-11-16).
   // But where the hierarchy is switched off (graph === false: it has never been released on the owner's machines),
   // the door opened on "Conversations is not switched on here yet". There it opens Chats, the working view
-  // (2026-11-21, topic 127504). Unknown (null) keeps the hierarchy.
-  if (id === 'conversations') return graph === false && chats ? '#/work/chats' : '#/work/conversations';
+  // (2026-11-21, topic 127504). Unknown (null) keeps the hierarchy unless the person opened Chats directly; then the door keeps that working destination without another hierarchy read.
+  if (id === 'conversations') return (graph === false || preferChats) && chats ? '#/work/chats' : '#/work/conversations';
   // Feature off (spec §7 stage 1): with the board off, Work opens the Work section (Promises, Plans, …).
   if (id === 'work') return board ? '#/work/board' : '#/work';
   return '#/agent';

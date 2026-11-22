@@ -622,15 +622,15 @@ describe('Conversations page', () => {
     expect([...doc.querySelectorAll('.chat-rows .chat-row-title')]).toHaveLength(4);
   });
 
-  for (const status of [403, 404, 503]) {
-    it(`hierarchy answers ${status}: the flat list exactly as before, no toggle`, async () => {
+  for (const [status, chatRoute] of [[403, '#/work/chats'], [404, '#/work/chats'], [503, '#/work/chats'], [503, '?phone=1#/chats']] as const) {
+    it(`hierarchy answers ${status}: the flat list exactly as before, no toggle (${chatRoute})`, async () => {
       const { idb } = await seeded();
       const { doc } = await boot((c) => {
         if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
         if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: LIST() };
         if (c.url.startsWith('/mobile/conversation-graph/roots')) return { status, body: { code: 'x' } };
         return undefined;
-      }, '#/work/chats', idb);
+      }, chatRoute, idb);
       for (let i = 0; i < 10; i++) await flush();
       expect((doc.querySelector('.chat-view-toggle') as HTMLElement).hidden).toBe(true);
       expect(doc.querySelector('.chat-effort-row')).toBeNull();

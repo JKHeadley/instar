@@ -224,16 +224,19 @@ async function renderUnlock(message) {
 // ── shell ─────────────────────────────────────────────────────────────────
 // The three doors (work-front-doors.md §2.3): Conversations, Work, Agent. Each front door's target
 // depends on whether its page is switched on here (the same probes its tile always used).
-const doorProbes = { chats: false, board: false, graph: null, checked: false };
+const doorProbes = { chats: false, board: false, graph: null, preferChats: false, checked: false };
 function probeDoors() {
   const probe = (path) => fetch(path, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).then((r) => r.ok).catch(() => false); // @silent-fallback-ok: an unreachable probe keeps the door on its always-present page
   // The hierarchy is off only when the server says so (503 conversation-graph-off); anything else keeps it.
-  const graphProbe = fetch('/conversation-graph/roots', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+  // Chats uses its signed browser-device read. Opening it must not also read the
+  // hierarchy with dashboard credentials just to choose a navigation target.
+  const onChats = pagePath(splitHash(location.hash).path, phone) === 'work/chats';
+  const graphProbe = onChats ? Promise.resolve(null) : fetch('/conversation-graph/roots', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
     .then(async (r) => (r.status === 503 && (await r.json().catch(() => ({}))).code === 'conversation-graph-off' ? false : null))
     .catch(() => null); // @silent-fallback-ok: unknown keeps the hierarchy door
   return Promise.all([probe('/mobile/browser-devices/status'), probe('/work-board'), graphProbe]).then(([chats, board, graph]) => {
     const changed = chats !== doorProbes.chats || board !== doorProbes.board || graph !== doorProbes.graph || !doorProbes.checked;
-    Object.assign(doorProbes, { chats, board, graph, checked: true });
+    Object.assign(doorProbes, { chats, board, graph, preferChats: onChats, checked: true });
     if (changed) for (const a of document.querySelectorAll('nav.nav a[data-door]')) a.setAttribute('href', doorHref(a.dataset.door, doorProbes));
     // The board answered after the first paint: a page already showing the bare Work address moves onto the board.
     if (changed && board && /^#\/work\/?$/.test(location.hash)) location.replace('#/work/board');
