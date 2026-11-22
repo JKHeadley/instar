@@ -2,6 +2,7 @@
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { parseMarker } from '../messaging/AgentTelegramComms.js';
 import { projectTitlesByTopic } from './conversationFallbackTitle.js';
 import { signedInPinSource } from './ownerPinSource.js';
 import { OrgPackStore } from '../core/OrgPackStore.js';
@@ -33002,6 +33003,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const { text, topicId, senderAgent, senderBotId, senderIsBot, fromUserId } = req.body ?? {};
       if (typeof text !== 'string' || text.length === 0) {
         res.status(400).json({ error: 'text (string) is required' });
+        return;
+      }
+      // SEC-154: the same rules as the signed mesh inbox. The caller names itself and its bot id; the
+      // marker must name that same sender and this agent; the sender must be another agent registered
+      // on this machine. The accept boundary then checks the bot id against the known mentor, and no
+      // longer skips that check when the id is missing.
+      if (typeof senderAgent !== 'string' || !senderAgent || typeof senderBotId !== 'string' || !senderBotId) {
+        res.status(400).json({ error: 'senderAgent and senderBotId (strings) are required' });
+        return;
+      }
+      const inboxMarker = parseMarker(text);
+      if (!inboxMarker.ok || inboxMarker.msg.from !== senderAgent || inboxMarker.msg.to !== ctx.config.projectName) {
+        res.status(403).json({ ok: false, agentMessage: false, reason: 'marker-principal-mismatch' });
+        return;
+      }
+      const { listAgents } = await import('../core/AgentRegistry.js');
+      if (senderAgent === ctx.config.projectName || !listAgents().some((a) => a.name === senderAgent)) {
+        res.status(403).json({ ok: false, agentMessage: false, reason: 'sender-not-a-local-agent' });
         return;
       }
       const numericTopicId = typeof topicId === 'number' ? topicId : Number(topicId);

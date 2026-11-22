@@ -1,0 +1,22 @@
+# A forged mentor message can no longer start a mentee session
+
+<!-- bump: patch -->
+
+## What Changed
+
+SEC-154. An agent set up as a mentee starts a session when its known mentor sends it a marked message. The acceptance check compared the sender's bot id with the mentor's only when a bot id was supplied, so a caller that left it out could pose as the mentor and start a session with any instructions. The check now refuses a missing, empty or different bot id. The same-machine delivery route (`/a2a/inbox`) now requires the sender to name itself and its bot id, the message to name that same sender and this agent, and the sender to be another agent registered on this machine. These are the rules the signed route between machines already applied. Real mentor messages are unchanged: every legitimate path already supplied a matching bot id.
+
+## What to Tell Your User
+
+- **Mentoring is locked to the real mentor**: "If one of your agents is set up to learn from a mentor agent, it now only starts work for messages that really come from that mentor."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Mentor messages must carry and match the known mentor's bot id | Automatic for any agent with mentee mode on |
+
+## Evidence
+
+- `tests/unit/sec154-mentor-forgery.test.ts` (8 cases): a missing, empty or different bot id is dropped; a chat post with no bot id is dropped; the real mentor is still routed; and the inbox checks the sender, the marker principals and local registration before anything is dispatched.
+- The existing a2a tests (`AgentTelegramComms`, `installAgentMessageHook`, `body-budget-before-auth`) pass unchanged.
