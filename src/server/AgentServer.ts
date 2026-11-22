@@ -1044,6 +1044,7 @@ export class AgentServer {
   private meteredSpendGate: MeteredSpendGate | null = null;
   private spendPlanStore: RenderedPlanStore | null = null;
   private pinAttemptStore: PinAttemptStore | null = null;
+  private pinShare: import('../core/PinShare.js').PinShareProvider | null = null;
   private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
   private spendAlertResolver: SpendAlertResolver | null = null;
   private spendAlertTimer: ReturnType<typeof setInterval> | null = null;
@@ -1388,6 +1389,8 @@ export class AgentServer {
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
+    /** SEC-170: this machine's share of the agent's unknown-browser PIN budget. Absent = 20 per machine (today). */
+    pinShare?: import('../core/PinShare.js').PinShareProvider | null;
     terminateSessionAuthority?: SessionTerminateAuthority;
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
     apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
@@ -2142,8 +2145,10 @@ export class AgentServer {
 
     // PIN-only desktop access requires a durable guess budget. Construct it
     // before any dashboard unlock can mint an operator session.
+    this.pinShare = options.pinShare ?? null;
     try {
-      this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
+      const pinShareRef = this.pinShare;
+      this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir, strictGlobal: () => pinShareRef?.state().enabled === true });
     } catch (err) {
       // @silent-fallback-ok — the warning is visible and desktop admission stays dark without a durable PIN budget.
       console.warn('[instar] PIN attempt store unavailable; remote desktop stays dark:', err);
@@ -2202,7 +2207,8 @@ export class AgentServer {
     // generated after AgentServer construction (first-boot timing issue).
     // Config values are checked at request time via this.config which may be
     // updated by LiveConfig/PostUpdateMigrator after construction.
-    const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
+    // SEC-170: the unknown-browser cap is this machine's share of the agent's 20 (20 when the switch is off).
+    const globalPinCap = (): number => this.pinShare?.share() ?? GLOBAL_PIN_MAX_ATTEMPTS;
     const configRef = this.config;
 
     // SEC-002: per-client throttle + known-browser (cookie) bypass + hard cap + owner alert.
@@ -2272,7 +2278,7 @@ export class AgentServer {
       if (!c.isLocalDirect && !c.markerId) {
         // Durable cross-restart backstops, never applied to a known browser: the real client's own
         // budget, and the shared unmarked budget (a restart no longer resets it).
-        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, globalPinCap())) {
           res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
             ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
             : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
@@ -2281,14 +2287,35 @@ export class AgentServer {
       }
       return true;
     };
+    // SEC-170 §5: with a small share a few typos can spend it, so a spent share alone is not called an
+    // attack. It alerts when the share was spent by more than one source, or spent in two windows in a row.
+    const SHARE_WINDOW_MS = 5 * 60 * 1000;
+    let shareWindowStart = 0;
+    let shareSources = new Set<string>();
+    let lastShareSpentWindow = -1;
+    let lastShareAlertAt = -Infinity;
+    const noteShareSource = (ip: string, now: number): void => {
+      if (now - shareWindowStart >= SHARE_WINDOW_MS) { shareWindowStart = now; shareSources = new Set(); }
+      if (shareSources.size < 64) shareSources.add(ip || 'unattributed');
+    };
+    const shareSpentIsAttack = (ip: string, now: number): boolean => {
+      noteShareSource(ip, now);
+      const window = Math.floor(now / SHARE_WINDOW_MS);
+      const twoInARow = lastShareSpentWindow === window - 1;
+      lastShareSpentWindow = window;
+      return shareSources.size > 1 || twoInARow;
+    };
     const publicPinFailure = (c: PublicPinCtx, now: number): void => {
       if (!c.isLocalDirect || c.markerId) {
         const { alert } = pinThrottle.recordFailure(c.ip, c.markerId, now);
+        let shareAlert = false;
         if (!c.isLocalDirect && !c.markerId) {
+          noteShareSource(c.ip, now);
           if (c.ip) this.pinAttemptStore?.recordFailure(c.ip);
-          this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
+          const left = this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, globalPinCap());
+          if (left === 0 && this.pinShare?.state().enabled && shareSpentIsAttack(c.ip, now) && now - lastShareAlertAt >= 30 * 60 * 1000) { lastShareAlertAt = now; shareAlert = true; }
         }
-        if (alert) {
+        if (alert || shareAlert) {
           // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
           DegradationReporter.getInstance().report({
             feature: 'DashboardPin.bruteForce',
@@ -6839,6 +6866,7 @@ export class AgentServer {
       meteredLaneRuntime: this.meteredLaneRuntime,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      pinShare: this.pinShare,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,

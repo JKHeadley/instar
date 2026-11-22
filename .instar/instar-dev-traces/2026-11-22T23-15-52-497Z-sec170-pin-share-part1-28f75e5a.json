@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "sec170-pin-share-part1",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T23:15:52.497Z",
+  "artifactPath": "upgrades/side-effects/sec170-pin-share-part1.md",
+  "artifactSha256": "8b79e55b2052725ed18ca87a3a9c06c2217fe8f3edd6e4721f29d3861feca765",
+  "specPath": "docs/specs/pool-wide-pin-budget.md",
+  "coveredFiles": [
+    "docs/specs/pool-wide-pin-budget.eli16.md",
+    "docs/specs/pool-wide-pin-budget.md",
+    "docs/specs/reports/pool-wide-pin-budget-convergence.md",
+    "docs/specs/sec170-pin-share-part1.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PinAttemptStore.ts",
+    "src/core/PinShare.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/server/AgentServer.ts",
+    "src/server/mandatePin.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sec170-pin-share-alive.test.ts",
+    "tests/unit/sec170-pin-share.test.ts",
+    "tests/unit/sec170-pin-store-strict.test.ts",
+    "upgrades/next/sec170-pin-share-part1.md",
+    "upgrades/side-effects/sec170-pin-share-part1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "SEC-170 part 1 of 2: per-machine shares of the agent's unknown-browser PIN budget on the three public PIN routes, from the converged and approved spec; dev-gated; independently reviewed.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the store write retry is bounded to once a second and only while a PIN check runs"
+  }
+}
