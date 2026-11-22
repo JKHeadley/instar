@@ -78,12 +78,14 @@ describe('jev-correction-shadow — migration parity and awareness', () => {
     expect(DEV_GATED_FEATURES.filter((f) => f.configPath === 'intelligence.jevCorrectionShadow.enabled')).toHaveLength(1);
     const src = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
     expect(src).toMatch(/installJevCorrectionShadow\(correctionShadow\)/);
-    expect(src).toMatch(/if \(beforeJevCorrectionCb\) beforeJevCorrectionCb\(entry\);\s*correctionShadow\.observe\(entry, telegram\.getVerifiedOwner\(\)\)/);
+    expect(src).toMatch(/if \(beforeJevCorrectionCb\) beforeJevCorrectionCb\(entry\);\s*correctionShadow\.observe\(entry, telegram\.getLearningOwner\(\)\)/);
   });
 });
 
 describe('jev-correction-shadow — alive on a development agent, dark on the fleet', () => {
-  async function run(developmentAgent: boolean, mutate?: (e: ReturnType<typeof setup>) => void) {
+  // `authorizedUserIds` [4242] makes 4242 the one allowed sender, so getLearningOwner() names it the owner,
+  // the way server.ts resolves it (SEC-105). Pass undefined for an agent with no owner known.
+  async function run(developmentAgent: boolean, mutate?: (e: ReturnType<typeof setup>) => void, authorizedUserIds: number[] | undefined = [4242]) {
     const e = setup({ developmentAgent });
     e.migrator.migrateConfig(e.result());
     mutate?.(e);
@@ -103,9 +105,9 @@ describe('jev-correction-shadow — alive on a development agent, dark on the fl
       fetchImpl: fetchImpl as never,
     });
     installJevCorrectionShadow(shadow);
-    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, e.stateDir);
+    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, authorizedUserIds }, e.stateDir);
     const before = adapter.onMessageLogged;
-    adapter.onMessageLogged = (entry) => { if (before) before(entry); shadow.observe(entry); };
+    adapter.onMessageLogged = (entry) => { if (before) before(entry); shadow.observe(entry, adapter.getLearningOwner()); };
     adapter.logInboundMessage({ messageId: 77, telegramUserId: 4242, forwarded: false, topicId: 5, text: 'From now on always give me the direct link, never point me at an email.', timestamp: new Date().toISOString() });
     await getJevCorrectionShadow()!.lastCheck;
     const srv = await serve(e.stateDir);
@@ -122,6 +124,19 @@ describe('jev-correction-shadow — alive on a development agent, dark on the fl
     expect(x.summary).toMatchObject({ enabled: true, checks: 1, jevFlags: 1, labels: { preference: 1 } });
     const row = JSON.parse(fs.readFileSync(path.join(x.e.root, 'logs', 'jev-correction-shadow.jsonl'), 'utf8').trim());
     expect(row).toMatchObject({ kind: 'check', topic: 5, messageId: 77, label: 'preference', jevFlag: true });
+  });
+
+  it('development agent with no owner known (every sender accepted): nobody\'s words drive a check (SEC-105)', async () => {
+    const x = await run(true, undefined, undefined);
+    expect(x.status).toBe(200);
+    expect(x.fetchImpl).not.toHaveBeenCalled();
+    expect(x.summary).toMatchObject({ enabled: true, checks: 0 });
+  });
+
+  it('development agent with several allowed senders and no verified owner: no check either (SEC-105)', async () => {
+    const x = await run(true, undefined, [4242, 5151]);
+    expect(x.fetchImpl).not.toHaveBeenCalled();
+    expect(x.summary).toMatchObject({ enabled: true, checks: 0 });
   });
 
   it('fleet agent: dark — no vendor call, summary says disabled', async () => {
@@ -163,8 +178,8 @@ describe('jev-correction live feed (jev-correction-live.md) — production facto
     installJevCorrectionShadow(shadow);
     const fed: string[] = [];
     getJevCorrectionShadow()!.setSentinelFeed((s) => fed.push(s.text));
-    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, e.stateDir);
-    adapter.onMessageLogged = (entry) => shadow.observe(entry);
+    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, authorizedUserIds: [4242] }, e.stateDir);
+    adapter.onMessageLogged = (entry) => shadow.observe(entry, adapter.getLearningOwner());
     adapter.logInboundMessage({ messageId: 88, telegramUserId: 4242, forwarded: false, topicId: 5, text: PREF, timestamp: new Date().toISOString() });
     await getJevCorrectionShadow()!.lastCheck;
     adapter.logInboundMessage({ messageId: 89, telegramUserId: 4242, forwarded: false, topicId: 5, text: 'From e2e (desk), not from the operator: slow down.', timestamp: new Date().toISOString() });
