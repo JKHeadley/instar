@@ -48,6 +48,23 @@ trusting that nothing else can ever throw:
    in a TEMP copy; a throw out of `importAllLogs` puts them back, records
    `restore-failed-rolled-back`, logs the cause, and rethrows.
 
+**Which stage that actually covers, stated precisely after reading
+`docs/specs/topic-history-import.md` (§Durability across a rebuild) rather than
+inferred from the call site.** `importAllLogs` has two stages. The live-log
+replay (`importFromJsonl`) throws, and that is the stage the measured defect
+lives in and the stage this rollback covers. The imported-history re-apply
+(`reapplyImportedHistory`) cannot throw out of `importAllLogs` at all: it
+contains each topic's merge in its own try/catch and returns `failedTopics`
+(topicHistoryImport.ts:364), and `importAllLogs` wraps the whole call in a
+second `@silent-fallback-ok` catch (TopicMemory.ts:1576). So a batch-merge
+failure does NOT trigger the rollback — the live rows restore and some imported
+rows stay missing until the next boot retries them from the immutable, fsynced
+batch files on disk. That is the pre-existing and deliberate design, and those
+rows are recoverable, which is precisely why they do not need the rollback. It
+does mean "whatever makes the restore fail, the rows are back" is too broad as
+a sentence: the accurate claim is that the stage whose failure is NOT otherwise
+recoverable is now reversible.
+
 ## Decision-point inventory
 
 - `parseLogLine` (admission: is this logged line a row this store can hold?) —
@@ -93,6 +110,13 @@ the restore, a path whose previous behaviour was an emptied store.
   still admitted, counted and stored, as it is today. Ordering and
   `topic_meta.last_activity` are then garbage for that row. This change does not
   touch it, because the constraint does not.
+- A failure in the imported-history re-apply stage does NOT roll back, because it
+  cannot throw (see the stage note above). The live rows restore; some imported
+  rows stay missing until the next boot replays them from the batch files. Not
+  data loss — the batches are immutable and fsynced on disk — but it is a partial
+  restore the rebuild report does not currently carry, since `failedTopics` is
+  returned by `reapplyImportedHistory` and then dropped by `importAllLogs`.
+  Pre-existing, out of scope here, and named so it is not mistaken for covered.
 - The pre-flight still cannot promise that a counted row will land for any
   reason OTHER than the NOT NULL columns — a collision, a key mismatch, a
   concurrent writer. That residual is exactly why change 2 exists: the guarantee
