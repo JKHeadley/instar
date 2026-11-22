@@ -10,7 +10,7 @@ import { TopicProfileStore } from '../../src/core/TopicProfileStore.js';
 import { TopicProfileResolver } from '../../src/core/TopicProfileResolver.js';
 import { TopicProfileWriteSurface } from '../../src/core/topicProfileWriteSurface.js';
 import { ProfileConfirmSlots } from '../../src/core/topicProfileIngress.js';
-import { handleAndAcknowledgeProfileProposalReply } from '../../src/core/handleProfileProposalReply.js';
+import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext } from '../../src/core/handleProfileProposalReply.js';
 import { crossTopicEligible } from '../../src/core/topicCreationProvenance.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { NotificationSelectivityGate, verifiedReplyEnvelope, requireTelegramDelivery } from '../../src/messaging/NotificationSelectivityGate.js';
@@ -78,7 +78,7 @@ function harness() {
     return { ...out, written: out.result?.ok ?? false, reply: out.result?.reply };
   };
 
-  return { stateDir, store, surface, slots, telegram, sent, respawns, bind, propose, remind, confirm };
+  return { stateDir, store, surface, slots, telegram, sent, respawns, bind, propose, remind, confirm, operators: server.getTopicOperatorStore()! };
 }
 
 describe('Owner framework confirmation is alive through production composition', () => {
@@ -120,6 +120,31 @@ describe('Owner framework confirmation is alive through production composition',
     await polling.processUpdate({ update_id: 2, message: { ...update, message_id: 991 } });
     expect(outcome).toMatchObject({ written: true });
     expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.respawns).toEqual([String(TARGET)]);
+  });
+
+  it('supplies the referenced server question to the ordinary agent turn without treating numbered yes as consent', async () => {
+    const h = harness(); const a = await h.propose(SOURCE); const b = await h.propose(SOURCE, { framework: 'claude-code' });
+    expect(a.status).toBe(200); expect(b.status).toBe(200);
+    let context = ''; let words = '';
+    h.telegram.onTopicMessage = async message => {
+      words = message.content;
+      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE),
+        replyTo: message.metadata?.replyToMessageId, messageId: Number(message.id.slice(3)), forwarded: message.metadata?.forwarded === true,
+        authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId,
+        eligible: dest => crossTopicEligible({ ownerUid: String(OWNER), confirmerUid: message.userId,
+          sourceConfined: false, destKnown: h.telegram.getTopicName(Number(dest)) !== null,
+          destBinding: h.operators.getBinding(dest), destVerifiedUid: h.operators.getOperator(dest)?.uid ?? null, destConfined: false }).ok,
+        placement: () => 'standalone', currentEcho: p => { const fresh = h.surface.renderProposalEcho(p.target, p.patch, h.telegram.getTopicName(Number(p.target))!); return fresh.ok ? fresh.echo : null; },
+      });
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    const message = { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000),
+      from: { id: OWNER, first_name: 'Fixture' }, chat: { id: -1001, type: 'supergroup' }, text: '1) yes', reply_to_message: { message_id: 902 } };
+    await polling.processUpdate({ update_id: 1, message });
+    expect(words).toBe('1) yes'); expect(context).toContain(b.body.requestId); expect(context).not.toContain(a.body.requestId);
+    expect(context).toContain('Use Claude'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.slots.proposals.list(String(SOURCE))).toHaveLength(2);
+    await polling.processUpdate({ update_id: 2, message: { ...message, message_id: 991, forward_origin: { type: 'user' } } });
+    expect(context).toBe(''); expect(h.store.resolve(TARGET)).toBeNull();
   });
 
   it('delivers an in-topic proposal visibly while an ordinary automated report stays quiet', async () => {

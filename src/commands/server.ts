@@ -3,7 +3,7 @@ import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { crossTopicEligible, applyCrossTopicConfirm, safeConversationName } from '../core/topicCreationProvenance.js';
 import { profileProposalPlacement } from '../core/profileProposalPlacement.js';
-import { handleAndAcknowledgeProfileProposalReply } from '../core/handleProfileProposalReply.js';
+import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext } from '../core/handleProfileProposalReply.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
@@ -3165,7 +3165,29 @@ export function wireTelegramRouting(
     const inboundMedia = Array.isArray(msg.metadata?.media) ? (msg.metadata!.media as InboundMediaLocal[]) : null;
     // The local form (with this machine's own download path) stays in process and in this machine's
     // queue; every send to another machine strips it to ids (SessionRouter, the spawn hop).
-    const sessionTextFor = (): Promise<string> => buildTelegramSessionText(topicId, text, inboundMedia, resolveInboundTelegramMessageId(msg));
+    const sessionTextFor = async (): Promise<string> => {
+      const original = await buildTelegramSessionText(topicId, text, inboundMedia, resolveInboundTelegramMessageId(msg));
+      const requests = _topicProfileConfirmSlots?.proposals;
+      const surface = _topicProfileWriteSurface;
+      if (!requests || !surface || msg.metadata?.teamPhone === true) return original;
+      const source = String(topicId);
+      const context = profileProposalConversationContext({ requests, source,
+        replyTo: msg.metadata?.replyToMessageId, messageId: platformMessageIdFrom(msg.id),
+        forwarded: msg.metadata?.forwarded === true,
+        authenticatedOwner: () => {
+          const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
+          return telegramUserId > 0 && telegram.isAuthorizedSender(telegramUserId)
+            && bound?.platform === 'telegram' && bound.uid === String(telegramUserId);
+        },
+        eligible: target => _crossTopicEligibility?.(telegram, String(telegramUserId), target, source).ok ?? false,
+        placement: target => _proposalPlacementSnapshot?.(source, target) ?? null,
+        currentEcho: proposal => {
+          const fresh = surface.renderProposalEcho(proposal.target, proposal.patch, safeConversationName(telegram.getTopicName(Number(proposal.target)), proposal.target));
+          return fresh.ok ? fresh.echo : null;
+        },
+      });
+      return context ? `${original}\n\n${context}` : original;
+    };
 
     // Resolve user profile for context injection (Gap 8)
     // An inbound the lifeline-secret gate accepted WITHOUT proof of the

@@ -9,3 +9,5 @@ Only an exact yes tied to a delivered question applies the change. If you write 
 No model decides that you gave permission. The server still checks your verified identity, which question you answered, and the exact change it offered. Changed settings, expired questions or a conversation moving to another machine can require a fresh question. It never invents an old approval after a restart.
 
 The broader idea of letting a model interpret permission is parked separately and remains unapproved. This smaller repair goes through ordinary tests and verification before merging. It preserves the current limits on who may change each conversation, while making the questions easier to understand and keeping pending questions from disappearing.
+
+If you answer a question posted by the server, the conversation agent also receives that specific question as context. It can give a useful reminder instead of claiming that no question exists. That context is checked against the current owner, audience and unchanged change; it never turns your wording into permission.

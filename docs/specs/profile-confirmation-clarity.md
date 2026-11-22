@@ -98,3 +98,8 @@ Chief of Staff requested the converged result and conformance check before merge
 ## Open questions
 
 *(none)*
+
+
+## Live-proof clarification of conversational context
+
+A server-posted question may not exist in an already running agent's model context. For a native reply to one active registered request, attach server-owned question/reference data to the ordinary conversational turn, separately from the unchanged user text. Recheck the verified source operator, current target eligibility, both ownership epochs and current rendered consequence before disclosure. Shared, unreadable, changed, forwarded, expired, consumed and unknown references disclose no pending context. The model may remind or clarify only; this context never authorizes mutation or classifies the user's words. Exact consent remains the first-party tuple above. This closes the live case where a numbered answer reached the agent but it incorrectly claimed no question existed. No general context expansion to unrelated Telegram messages is introduced.

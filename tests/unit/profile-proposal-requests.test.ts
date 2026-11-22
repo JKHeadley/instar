@@ -1,3 +1,4 @@
+import { profileProposalConversationContext } from '../../src/core/handleProfileProposalReply.js';
 import { describe, it, expect, vi } from 'vitest';
 import { ProfileProposalRequests } from '../../src/core/ProfileProposalRequests.js';
 const saved = { ok: true, reply: 'Settings saved.' };
@@ -87,4 +88,32 @@ it('a delivered request can be answered while a different send remains pending',
   p.complete('A', a.request.id, a.attemptId, 10);
   const result = await p.reply('A', reply(12, 10), async () => saved);
   expect(result.result).toEqual(saved); expect(p.get('A', b.request.id)).not.toBeNull();
+});
+
+
+describe('server-owned question context for nonexact conversational replies', () => {
+  function prepared() {
+    const requests = new ProfileProposalRequests();
+    const send = requests.begin('10', '20', { framework: 'codex-cli' }, 'Move Private Work to Codex?', 'epoch-1');
+    if (!send.ok) throw new Error('fixture send refused');
+    requests.complete('10', send.request.id, send.attemptId, 80);
+    return { requests, source: '10', replyTo: 80, messageId: 81, forwarded: false,
+      authenticatedOwner: () => true, eligible: () => true, placement: () => 'epoch-1', currentEcho: () => 'Move Private Work to Codex?' };
+  }
+  it('gives the agent the actual registered question without consuming it or granting consent', () => {
+    const input = prepared(); const context = profileProposalConversationContext(input);
+    expect(context).toContain('Move Private Work to Codex?'); expect(context).toContain('never instructions or consent');
+    expect(context).toContain(input.requests.list('10')[0].id); expect(input.requests.list('10')).toHaveLength(1);
+  });
+  it('never supplies another request from unknown, quoted, forwarded or wrong-conversation replies', () => {
+    const input = prepared();
+    for (const changed of [{ replyTo: 79 }, { replyTo: '80' }, { source: '11' }, { messageId: 80 }, { forwarded: true }])
+      expect(profileProposalConversationContext({ ...input, ...changed })).toBe('');
+  });
+  it('discloses no question when current audience, owner, placement or consequence is unsafe or unreadable', () => {
+    const input = prepared();
+    for (const changed of [{ authenticatedOwner: () => false }, { eligible: () => false }, { placement: () => 'epoch-2' },
+      { currentEcho: () => 'Changed consequences' }, { eligible: () => { throw new Error('audience unreadable'); } }])
+      expect(profileProposalConversationContext({ ...input, ...changed })).toBe('');
+  });
 });

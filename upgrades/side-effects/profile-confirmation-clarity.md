@@ -11,6 +11,8 @@ Tier 2: security-sensitive confirmation plumbing across Telegram ingress, the pr
 
 The first real-user demo run failed: actual Telegram reply IDs were dropped at polling and lifeline composition. The amendment preserves native reply metadata only from those first-party seams; bearer-only/mobile assertions never establish it. A separate Codex rollout-capture failure blocks normal conversational reminders and is not bypassed. Live proof remains a hard merge hold.
 
+The second live run proved exact writes and independent requests, but the agent lacked the referenced server question and gave the wrong reminder. Conversational context now carries only the currently eligible registered question for that native reply, separately from unchanged user text. It does not classify or authorize the answer. A fresh matrix remains required.
+
 ## Decision-point inventory
 
 - Proposal delivery and receipt selection — modified: each send belongs to an immutable request and actual platform receipt; failed sends grant no authority.
@@ -76,6 +78,8 @@ The review produced server-owned privacy-safe clarification and a committed-resu
 
 **Reviewer:** Independent internal security reviewer plus real external cross-model reviewer.
 **Independent read of the artifact: concur (scoped).** Internal security independently reran three HTTP cases and one lifecycle case: all passed. It concurs only that server-rendered clarification reveals no request details for shared or unreadable audiences, and a failed acknowledgment neither erases nor replays a committed write. External corrected runtime review returned MINOR ISSUES, DESIGN=0 with no truncated prompt. No full source audit, full Local Verify or live Telegram roundtrip is certified.
+
+The subsequent native-receipt wiring repair received independent scoped concurrence (three regression cases rerun). The conversational-context repair received separate scoped concurrence (three unit cases plus one polling lifecycle case rerun). Neither is a general audit or live proof certificate. The third real-user matrix remains required before merge.
 
 ## Evidence pointers
 
