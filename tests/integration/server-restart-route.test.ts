@@ -17,7 +17,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
-import { resetBootReadinessForTests } from '../../src/server/BootReadiness.js';
+import { bootReadiness, resetBootReadinessForTests } from '../../src/server/BootReadiness.js';
 import { recordRestartRequest, restartRequestsLogPath } from '../../src/core/restartRequestAttribution.js';
 
 const TOKEN = 'server-restart-route-token';
@@ -107,6 +107,24 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
     } finally {
       SafeFsExecutor.safeUnlinkSync(restartRequestsLogPath(stateDir), { operation: 'tests/integration/server-restart-route.test.ts' });
       try { SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' }); } catch { /* none */ }
+    }
+  });
+
+  it.each(['kept', 'unknown', 'stopped'] as const)('a lifeline outcome %s affects the restart refusal only when stopped was observed', async (serverOutcome) => {
+    recordRestartRequest(stateDir, { requestedBy: 'TelegramLifeline', reason: 'Telegram conflict recovery' }, 'lifeline', new Date(), { serverOutcome });
+    try {
+      const res = await post({ requestedBy: 'tester', reason: 'load a setting' });
+      expect(res.status).toBe(serverOutcome === 'stopped' ? 429 : 202);
+      // /health exposes the boot snapshot, so simulate the next boot's ledger read.
+      bootReadiness().init(stateDir);
+      const health = await request(app).get('/health').set('Authorization', `Bearer ${TOKEN}`);
+      expect(health.status).toBe(200);
+      if (serverOutcome === 'stopped') expect(health.body.bootReadiness.previousRestart.requestedBy).toBe('TelegramLifeline');
+      else expect(health.body.bootReadiness.previousRestart).toBeNull();
+    } finally {
+      SafeFsExecutor.safeUnlinkSync(restartRequestsLogPath(stateDir), { operation: 'tests/integration/server-restart-route.test.ts' });
+      if (fs.existsSync(flagPath())) SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
+      bootReadiness().init(stateDir);
     }
   });
 

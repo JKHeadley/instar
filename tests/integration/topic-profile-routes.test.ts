@@ -25,6 +25,8 @@ import { TopicProfileResolver } from '../../src/core/TopicProfileResolver.js';
 import { TopicProfileWriteSurface, type ProfileWriteRegime } from '../../src/core/topicProfileWriteSurface.js';
 import { ProfileConfirmSlots } from '../../src/core/topicProfileIngress.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { notificationContext } from '../../src/messaging/NotificationSelectivityGate.js';
+import { TEAM_ACCESS_DIR } from '../../src/core/TeamAccessLog.js';
 
 let tmpDir: string;
 let stateDir: string;
@@ -74,7 +76,7 @@ function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean
   return { store, resolver, surface, confirmSlots, respawns, disclosures };
 }
 
-function buildApp(bundle: Bundle | null): express.Express {
+function buildApp(bundle: Bundle | null, extra: Record<string, unknown> = {}): express.Express {
   const ctx = {
     config: {
       projectName: 'test-project',
@@ -108,6 +110,7 @@ function buildApp(bundle: Bundle | null): express.Express {
       ? { store: bundle.store, resolver: bundle.resolver, surface: bundle.surface, confirmSlots: bundle.confirmSlots }
       : null,
     startTime: new Date(),
+    ...extra,
   } as unknown as RouteContext;
   const app = express();
   app.use(express.json());
@@ -386,3 +389,147 @@ describe('effort pin (POST→store→GET data-flow)', () => {
     expect(res.body.resolved.effort).toBeNull();
   });
 });
+
+describe('identity-security-creation-provenance v5: propose with confirmIn', () => {
+  const OWNER = 7812716706;
+  function fakes(o: { sourceOperator?: number | null; destBinding?: number | null; destVerified?: boolean; fleet?: boolean } = {}) {
+    const sends: Array<{ topic: number; text: string; category?: string }> = [];
+    let mid = 900;
+    return {
+      sends,
+      extra: {
+        // The switch is live on a development agent (umbrella §10 per-piece switch).
+        config: { projectName: 'test-project', projectDir: path.dirname(stateDir), stateDir, port: 0, sessions: {}, scheduler: {}, ...(o.fleet ? {} : { developmentAgent: true }) },
+        telegram: {
+          sendToTopic: async (topic: number, text: string) => { sends.push({ topic, text, category: notificationContext.getStore()?.category }); return { messageId: ++mid }; },
+          getOwnerUserId: () => OWNER,
+          getTopicName: (t: number) => (t === 23 ? 'Scaling' : t === 130715 ? 'Main' : null),
+        },
+        topicOperatorStore: {
+          getOperator: (t: number | string) => {
+            if (String(t) === '130715') return o.sourceOperator === null ? null : { platform: 'telegram', uid: String(o.sourceOperator ?? OWNER) };
+            return o.destBinding && o.destVerified !== false ? { platform: 'telegram', uid: String(o.destBinding) } : null;
+          },
+          getBinding: (t: number | string) => (String(t) !== '130715' && o.destBinding ? { platform: 'telegram', uid: String(o.destBinding) } : null),
+        },
+      },
+    };
+  }
+
+  it.each([{ framework: 'codex-cli' }, { model: 'opus' }])('posts the exact run-setting proposal %j to the asking conversation without writing', async patch => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const f = fakes();
+    const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ ...patch, confirmIn: 130715 });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(f.sends).toHaveLength(1);
+    expect(f.sends[0].topic).toBe(130715);
+    expect(f.sends[0].category).toBe('owner-decision');
+    expect(f.sends[0].text).toContain('framework' in patch ? 'framework → codex-cli' : 'model → opus');
+    expect(f.sends[0].text).toContain('Reply "yes" to apply exactly the above.');
+    expect(f.sends[0].text).toContain('Proposed change for the conversation "Scaling" (not this one):');
+    expect(bundle.confirmSlots.peek('130715')?.targetTopicKey).toBe('23');
+    expect(bundle.confirmSlots.peek('23')).toBeNull();
+    expect(bundle.store.resolve(23)).toBeNull(); // nothing written until the owner says yes
+  });
+
+  it('also accepts a target already verified to the same owner', async () => {
+    const bundle = buildBundle(FLEET_REGIME);
+    const f = fakes({ destBinding: OWNER });
+    const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(res.status).toBe(200);
+    expect(bundle.confirmSlots.peek('130715')?.patch).toEqual({ framework: 'codex-cli' });
+    expect(bundle.store.resolve(23)).toBeNull();
+  });
+
+  it('refuses and arms nothing when the asker is not the owner, B is run by someone else, or B is a candidate binding; the owner hears a refusal about B', async () => {
+    const cases: Array<[ReturnType<typeof fakes>, string, number]> = [
+      [fakes({ sourceOperator: 7000001 }), 'source-not-owner', 0],
+      [fakes({ sourceOperator: null }), 'source-not-owner', 0],
+      [fakes({ destBinding: 7000001 }), 'destination-bound', 1],
+      [fakes({ destBinding: OWNER, destVerified: false }), 'destination-bound', 1],
+    ];
+    for (const [f, reason, notices] of cases) {
+      const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+      const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+        .send({ framework: 'codex-cli', confirmIn: 130715 });
+      expect(res.status, reason).toBe(422);
+      expect(res.body.refusal).toBe(reason);
+      expect(f.sends, reason).toHaveLength(notices);
+      if (notices) expect(f.sends[0].text).toContain("I can't change the conversation \"Scaling\" from here");
+      expect(bundle.confirmSlots.peek('130715')).toBeNull();
+    }
+  });
+
+  it('dark on the fleet: confirmIn is refused (503) and nothing is posted', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const f = fakes({ fleet: true });
+    const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(res.status).toBe(503);
+    expect(res.body.reason).toBe('confirmIn-dark');
+    expect(f.sends).toHaveLength(0);
+  });
+
+  it('a malformed confirmIn, one naming the same conversation, or a field outside everyday run settings is a 400', async () => {
+    for (const confirmIn of ['x', 0, 23]) {
+      const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+      const res = await request(buildApp(bundle, fakes().extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+        .send({ model: 'opus', confirmIn });
+      expect(res.status, String(confirmIn)).toBe(400);
+    }
+    for (const field of ['messageOriginDisplay', 'escalationOverride']) {
+      const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+      const res = await request(buildApp(bundle, fakes().extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+        .send({ [field]: 'codex-cli', confirmIn: 130715 });
+      expect(res.status, field).toBe(400);
+    }
+  });
+
+  it.each(['source', 'destination'])('refuses a framework proposal when the %s conversation belongs to a team member', async (which) => {
+    const dir = path.join(stateDir, TEAM_ACCESS_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'confined.json'), JSON.stringify({ entries: [{ ref: `telegram:${which === 'source' ? 130715 : 23}` }] }));
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const f = fakes();
+    const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(res.status).toBe(422);
+    expect(res.body.refusal).toBe(which === 'source' ? 'source-shared' : 'destination-confined');
+    expect(bundle.confirmSlots.peek('130715')).toBeNull();
+    expect(bundle.store.resolve(23)).toBeNull();
+  });
+
+  it('refuses an invalid framework before arming or sending the proposal', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const f = fakes();
+    const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'unknown-engine', confirmIn: 130715 });
+    expect(res.status).toBe(400);
+    expect(f.sends).toHaveLength(0);
+    expect(bundle.confirmSlots.peek('130715')).toBeNull();
+  });
+
+  it('disarms an unseen proposal when Telegram records it quiet instead of delivering it', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const f = fakes();
+    const extra = { ...f.extra, telegram: { ...f.extra.telegram, sendToTopic: async () => ({ recorded: true, delivered: false, quietId: 'budget' }) } };
+    const res = await request(buildApp(bundle, extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(res.status).toBe(502);
+    expect(bundle.confirmSlots.peek('130715')).toBeNull();
+    expect(bundle.store.resolve(23)).toBeNull();
+  });
+
+  it('without confirmIn the propose lane is unchanged: proposal in the same conversation, no target', async () => {
+    const bundle = buildBundle(FLEET_REGIME);
+    const f = fakes();
+    const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli' });
+    expect(res.status).toBe(200);
+    expect(f.sends[0].topic).toBe(23);
+    expect(f.sends[0].category).toBe('owner-decision');
+    expect(bundle.confirmSlots.peek('23')?.targetTopicKey).toBeUndefined();
+  });
+});
+

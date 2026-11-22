@@ -26,6 +26,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { TopicMemory, type TopicMessage } from '../../src/memory/TopicMemory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SESSION_HISTORY_MESSAGE_CHARS } from '../../src/memory/TopicMemory.js';
 
 describe('TopicMemory', () => {
   let tmpDir: string;
@@ -328,6 +329,25 @@ describe('TopicMemory', () => {
       expect(messages[2].senderName).toBeUndefined(); // Agent message
       expect(messages[3].senderName).toBe('Alice');
       expect(messages[3].telegramUserId).toBe(111);
+    });
+  });
+
+  describe('formatContextForSession per-message bound (bounded-input review)', () => {
+    it('passes a long Telegram-sized operator message whole (the old 2000 cut it in half)', () => {
+      const instruction = `Plan: ${'step and its reason; '.repeat(150)}FINAL: deploy only after the canary passes.`;
+      expect(instruction.length).toBeGreaterThan(2000);
+      expect(instruction.length).toBeLessThanOrEqual(4096);
+      topicMemory.insertMessage({ messageId: 1, topicId: 100, text: instruction, fromUser: true, timestamp: '2026-03-01T12:00:00Z', sessionName: null });
+      const context = topicMemory.formatContextForSession(100);
+      expect(context).toContain('FINAL: deploy only after the canary passes.');
+      expect(context).not.toContain('[BOUNDED INPUT:');
+    });
+
+    it('a message past the bound is cut AND says so', () => {
+      topicMemory.insertMessage({ messageId: 1, topicId: 100, text: 'x'.repeat(9000), fromUser: true, timestamp: '2026-03-01T12:00:00Z', sessionName: null });
+      const context = topicMemory.formatContextForSession(100);
+      expect(context).toContain('LATER content was omitted');
+      expect(context).not.toContain('x'.repeat(SESSION_HISTORY_MESSAGE_CHARS));
     });
   });
 

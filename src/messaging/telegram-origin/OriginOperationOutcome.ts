@@ -40,7 +40,10 @@ export interface OperationOutcomeVerdict {
 export const SUPPRESSION_REASONS = ['quiet-notification-recorded', 'duplicate-content', 'historical-notice-retired', 'recorded-by-caller', 'suppressed-at-holder',
   // native-conversation-forwarded-advisory item 2 — the holder's copy ended by the outbound check:
   // handed back to its author with an advisory, or refused outright. Neither is ever resent.
-  'tone-advisory', 'policy-refused'] as const;
+  'tone-advisory', 'policy-refused',
+  // held-and-startup-parked-send-release §3 — a held or startup-parked reply past the
+  // staleness bound, handed back to its author; and one retired by the operator by id.
+  'stale-hold-handed-back', 'retired-by-operator'] as const;
 export type SuppressionReason = typeof SUPPRESSION_REASONS[number];
 /** §3a item 8 — the closed set of definite-failure causes. */
 export const FAILURE_CAUSES = ['refused', 'never-left', 'deadline'] as const;
@@ -145,6 +148,20 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
       detail: 'Not sent: the outbound check refused it. Rewrite it before sending again.' };
     if (reason === 'tone-advisory') return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason,
       detail: 'Not sent: the outbound check handed it back to the session that wrote it. Do not resend it as it is.' };
+    // A holder-side retirement (`suppressed-at-holder` naming a retirement reason) reads like the local one.
+    const retiredAs = reason === 'stale-hold-handed-back' || reason === 'retired-by-operator' ? reason
+      : reason === 'suppressed-at-holder' && (holderReason === 'stale-hold-handed-back' || holderReason === 'retired-by-operator') ? holderReason : null;
+    if (retiredAs) {
+      // §3 — the prior last attempt decides: a forward whose holder never confirmed, or a
+      // local send that started, may already be with the user. Never "safe to resend" then.
+      const prior = holdDetail?.priorLastAttempt ?? holdDetail?.lastAttempt;
+      if (prior === 'outcome-unknown' || prior === 'local-sent') return { operationId, outcome: 'unknown', safeToResend: false, source: 'origin-store', messageIds, state, reason,
+        detail: 'It may have arrived before it was retired. Do not resend.' };
+      if (retiredAs === 'stale-hold-handed-back') return { operationId, outcome: 'not-delivered', safeToResend: true, source: 'origin-store', messageIds, state, reason,
+        detail: 'Not sent: it waited longer than 30 minutes and was handed back to the session that wrote it. Send it again only if it is still right.' };
+      return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason,
+        detail: 'Not sent: retired by the operator. Do not resend unless asked.' };
+    }
     if (reason && ENDED_ON_PURPOSE.has(reason)) return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason,
       detail: 'It was ended on purpose; do not resend.' };
     if (reason === 'suppressed-at-holder' && holderReason && ENDED_ON_PURPOSE.has(holderReason)) return { operationId, outcome: 'not-delivered', safeToResend: false,
@@ -157,6 +174,11 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
     return { operationId, outcome: supersededBy ? 'pending' : 'unknown', safeToResend: false, source: 'origin-store', messageIds, state, supersededBy,
       detail: supersededBy ? 'A newer copy of the same message carries it; its outcome is the answer.' : 'A newer copy carries it, and that copy is not named here.' };
   }
+  // held-and-startup-parked-send-release §3 — an `outcome-unknown` operation with no
+  // dispatched attempt (an imported queue row that could not be proved unsent) is never
+  // retried, so it must not read "pending, the server retries it".
+  if (state === 'outcome-unknown') return { operationId, outcome: 'unknown', safeToResend: false, source: 'origin-store', messageIds, state,
+    detail: 'No send was confirmed and the server will not retry it. It may have arrived; do not resend unless the user says it is missing.' };
   if (state === 'held' && holdDetail && typeof holdDetail.ownerUnstated === 'object' && holdDetail.ownerUnstated !== null) {
     return { operationId, outcome: 'unknown', safeToResend: false, source: 'origin-store', messageIds, state,
       detail: 'The machine that sends to Telegram ended it and gave no reason. The user may already have this text.' };

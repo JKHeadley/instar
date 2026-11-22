@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-17T22:24:43.690Z",
+  "slug": "codex-gpt-6-2-default",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

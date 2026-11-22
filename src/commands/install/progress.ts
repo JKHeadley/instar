@@ -24,7 +24,7 @@ export interface InstallProgress {
   answers: WizardAnswers;
   completed: Record<string, { at: string; note?: string }>;
   /** Set while status is awaiting-person. Plain words for the person, nothing secret. */
-  awaiting?: { state: string; instruction: string; loginPid?: number; loginStamp?: string };
+  awaiting?: { state: string; instruction: string; loginPid?: number; loginStamp?: string; accounts?: Array<{ id: string; label: string; plan: string | null; borrowedFrom: string | null; isDefault: boolean }> };
   /** Set while status is needs-answers: the answers-file field that is missing or refused. */
   needs?: { state: string; field: string; reason?: string };
   /** Set while status is failed. */

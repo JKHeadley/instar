@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "stop-gate-marker-own-dir",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T01:54:46.498Z",
+  "artifactPath": "upgrades/side-effects/stop-gate-marker-own-dir.md",
+  "artifactSha256": "683b101302fbda2cf85910e7f4be1f9b9a6a9086f99df36225d3fe7eb8082f9c",
+  "coveredFiles": [
+    "docs/specs/stop-gate-marker-own-dir.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/stop-gate-greenpr-marker.test.ts",
+    "upgrades/next/stop-gate-marker-own-dir.md",
+    "upgrades/side-effects/stop-gate-marker-own-dir.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-131: the stop-gate one-shot marker moves from the shared temp dir to the agent state dir, created exclusively; one block of hook text, no state migration, reversible by revert; independent review concurred.",
+  "eli16Path": "docs/specs/stop-gate-marker-own-dir.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stop-gate-marker-own-dir.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -27,7 +27,9 @@ function createMockApp() {
 function createMockBackend(overrides: Partial<BusinessApiBackend> = {}) {
   return {
     verifyWebhook: vi.fn().mockReturnValue(null),
+    verifyPayloadSignature: vi.fn().mockReturnValue('ok'),
     handleWebhook: vi.fn().mockResolvedValue(undefined),
+    noteUnverifiedDelivery: vi.fn(),
     ...overrides,
   } as unknown as BusinessApiBackend;
 }
@@ -255,6 +257,39 @@ describe('WhatsAppWebhookRoutes', () => {
       );
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe('POST signature gate (SEC-086)', () => {
+    async function post(verdict: string, headers: Record<string, string> = {}) {
+      const { app, routes } = createMockApp();
+      const backend = createMockBackend({ verifyPayloadSignature: vi.fn().mockReturnValue(verdict) } as Partial<BusinessApiBackend>);
+      mountWhatsAppWebhooks({ app, backend });
+      const req = { query: {}, body: { object: 'whatsapp_business_account', entry: [] }, rawBody: Buffer.from('{}'), headers } as unknown as Request;
+      const res = createMockRes();
+      await routes['POST:/webhooks/whatsapp'].handler(req, res);
+      return { backend, res };
+    }
+
+    it('refuses a body whose signature does not verify, without processing it', async () => {
+      const { backend, res } = await post('bad-signature', { 'x-hub-signature-256': 'sha256=00' });
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(backend.handleWebhook).not.toHaveBeenCalled();
+    });
+
+    it('with no app secret, keeps delivering (observe mode) and notes the unverified delivery', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { backend, res } = await post('no-secret');
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(backend.handleWebhook).toHaveBeenCalled();
+      expect(backend.noteUnverifiedDelivery).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('passes the raw body and the signature header to the backend', async () => {
+      const { backend } = await post('ok', { 'x-hub-signature-256': 'sha256=ab' });
+      expect(backend.verifyPayloadSignature).toHaveBeenCalledWith(Buffer.from('{}'), 'sha256=ab');
+      expect(backend.handleWebhook).toHaveBeenCalled();
     });
   });
 });

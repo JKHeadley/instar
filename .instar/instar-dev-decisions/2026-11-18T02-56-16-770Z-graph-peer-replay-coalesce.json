@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T02:56:16.770Z",
+  "slug": "graph-peer-replay-coalesce",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts",
+      "src/server/GraphPeerReplayGuard.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 86
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -12,6 +12,7 @@ import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import crypto from 'node:crypto';
 import type { Application, Request, Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { DeviceRegistry, parseDevicePublicKey, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { noteLocalOwnerTicketFailure, ownMachineId, readLocalOwnerTicket, removeLocalOwnerTicket, sameLocalOwnerTicket } from '../core/localOwnerTicket.js';
@@ -40,7 +41,8 @@ export function isLocalOwnerDeviceEnabled(svc: MobilePairingService): boolean {
 /** This server's own loopback Host, exactly, from a loopback peer with no forwarding header; else null. */
 export function sameMacHost(req: Pick<Request, 'headers' | 'socket'>, port: number): string | null {
   const raw = typeof req.headers.host === 'string' ? req.headers.host.trim().toLowerCase() : '';
-  if (!isLoopbackPeer(req.socket.remoteAddress)) return null;
+  // Identity A4: nothing that arrived on the same-network listener is this Mac, whatever its address.
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress)) return null;
   if (hasForwardingHeaders(req.headers as Record<string, unknown>)) return null;
   // Only the numeric address: one spelling, so a retry always names the same host (second-pass review).
   if (raw !== `127.0.0.1:${port}`) return null;
@@ -53,7 +55,7 @@ export function sameMacHost(req: Pick<Request, 'headers' | 'socket'>, port: numb
  */
 export function localBindingOk(d: Pick<DeviceRecord, 'host' | 'localBinding'>, req: Pick<Request, 'headers' | 'socket'>, selfMachineId: string | null | undefined): boolean {
   if (!d.localBinding || !isLoopbackHost(d.host)) return false;
-  if (!isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) return false;
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) return false;
   const raw = typeof req.headers.host === 'string' ? req.headers.host.trim().toLowerCase() : '';
   if (raw !== d.host) return false;
   const bound = d.localBinding.machineId;

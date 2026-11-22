@@ -1266,6 +1266,12 @@ export interface IntelligenceOptions {
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
   requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  /**
+   * Keep this call on one provider family: no category or nature routing and no
+   * failure swap. If that framework is unavailable the call throws; it never moves
+   * to another vendor (context-budget §9: conversation content stays on its family).
+   */
+  pinnedFramework?: IntelligenceFramework;
   /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
   launchGuard?: () => boolean;
   /** Maximum tokens for the response */
@@ -2886,6 +2892,9 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** N73 rollout: endpoint is always available; enable send-time generation
+   * binding only after the receiving pool supports it. Absent/false is off. */
+  messageSessionGeneration?: { enabled?: boolean };
   /** Storage prerequisite only; never enables the Conversations read/UI increment. */
   conversationGraph?: {
     /** Release switches: leave absent/off until increment-A acceptance. Storage
@@ -3090,6 +3099,51 @@ export interface MultiMachineConfig {
    * namespace. See docs/specs/multi-machine-lease-self-heal.md.
    */
   leaseSelfHeal?: LeaseSelfHealConfig;
+  /**
+   * takeover-ready-pool (docs/specs/takeover-ready-pool.md) — losing any machine never
+   * silences a multi-machine agent. `enabled: false` turns every part off (the rollback);
+   * each part rides the development-agent gate (live on a development agent, dark on the
+   * fleet) unless set explicitly.
+   */
+  takeoverReadyPool?: {
+    enabled?: boolean;
+    /**
+     * stall-wake-lease-reconfirm (fb-fdb55c1c-a79): after a gap in this machine's awake clock
+     * (a long main-thread stall or a sleep, above 30% of the lease TTL by default), a claim on a
+     * lapsed-looking lease waits for evidence gathered after the gap: a full TTL awake with a pull
+     * round started after the gap and completed, or the ten-TTL chain cap. Dark: only an explicit
+     * `enabled: true` turns it on; `takeoverReadyPool.enabled: false` turns it off.
+     */
+    stallReconfirm?: {
+      enabled?: boolean;
+      /** Running time lost within one TTL that opens an episode, in ms (clamped to 1000..TTL/2). Default 30% of the lease TTL, floor 5 s. */
+      stallGapMs?: number;
+    };
+    /**
+     * R1 boot claim safety (fb-2bf6ccd0-705): a restarted machine never claims from its own
+     * lapsed lease before asking its peers, never claims while the named preferred machine
+     * answers, and claims only after the preferred machine (every known peer when none is
+     * named) has been silent on `silentProbes` probes spanning `silentSpanMs`.
+     */
+    bootClaimSafety?: {
+      enabled?: boolean;
+      /** Default 3. */
+      silentProbes?: number;
+      /** Default 45000. */
+      silentSpanMs?: number;
+    };
+    /**
+     * planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending, a
+     * holder's renewals carry a bounded window as their expiry and are persisted, so the lead
+     * survives its own boot; at boot a window lease is held only after a peer confirms. Rides the
+     * development-agent gate; `takeoverReadyPool.enabled: false` is the rollback.
+     */
+    plannedRestartLeaseContinuity?: {
+      enabled?: boolean;
+      /** Replaces the measured base of the window (still under the peer-enforced caps). */
+      windowMs?: number;
+    };
+  };
   /**
    * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
    * Cloudflare failover). Ships ENABLED (Layers 0-2 are strictly additive); a
@@ -3466,6 +3520,8 @@ export interface SessionPoolConfig {
     ambiguityCeilingMultiple?: number;
     /** P19 per-tick claim cap. Default 2. */
     maxClaimsPerTick?: number;
+    /** Unroutable-owner release: claims from a revoked / unregistered-silent owner land even in dryRun. Default true. */
+    unroutableOwnerLive?: boolean;
     /** Bootstrap (R-r2-2): never-observed-since-boot expiry multiple. Default 3. */
     bootstrapNonObservationMultiple?: number;
     /** The owner self-fence TTL the §2.3 ordering invariant checks against. Default 60000. */
@@ -5072,6 +5128,14 @@ export interface InstarConfig {
     toneTierDryRun?: boolean;
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
+    /**
+     * B26_WAITING_ASK_UNLINKED (docs/specs/waiting-on-you-links.md): a reply that refers to
+     * something the agent is waiting on the person for must carry the ask's link and a
+     * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
+     */
+    waitingAskLinks?: { enabled?: boolean };
+    /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
+    siblingReach?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
@@ -5116,6 +5180,9 @@ export interface InstarConfig {
   dashboardPinGeneration?: string;
   /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
+    /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
+     *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
+    ownerRecord?: { enabled?: boolean };
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
       enabled?: boolean;
@@ -5291,6 +5358,23 @@ export interface InstarConfig {
      *  failure falls back to the rollout-tail reader, so `false` only forces
      *  the old rollout-only behaviour. */
     codexLiveQuota?: boolean;
+    /**
+     * Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable history of every
+     * quota reading and a read-only forecast (GET /quota-pacing). `enabled` is OMITTED from the
+     * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
+     * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
+     */
+    pacing?: {
+      enabled?: boolean;
+      /**
+       * Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads
+       * each limit window as it stands now (paired weekly deadlines, the Fable window for Fable
+       * launches, unmeasured never counted as room) and logs one shadow row per placement.
+       * OMITTED from defaults: resolved through the dev-agent gate (on for development agents,
+       * off for the fleet); an explicit value always wins.
+       */
+      windowAwareChoice?: boolean;
+    };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
@@ -6701,6 +6785,12 @@ export interface DispatchConfig {
   version?: string;
   /** Whether to auto-apply safe dispatches (lesson, strategy types with non-critical priority) */
   autoApply?: boolean;
+  /**
+   * SEC-153: pinned Ed25519 public keys (keyId → PEM) of the dispatch server. Only a dispatch signed by
+   * one of these is auto-applied or executed; every other dispatch waits for review. Not patchable over
+   * the API: set in the config file only.
+   */
+  trustedKeys?: Record<string, string>;
 }
 
 export interface UpdateConfig {

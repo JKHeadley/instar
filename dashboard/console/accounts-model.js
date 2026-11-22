@@ -147,6 +147,7 @@ export function accountNotices(accounts, { partial = false, now = Date.now() } =
   const scope = partial ? ' (on the machines that answered)' : '';
   const byMachine = new Map();
   for (const a of accounts) for (const c of a.cells) {
+    if (c.missing) continue; // an account a machine never held does not make that machine empty
     const g = byMachine.get(c.machineId) || { name: c.machine, states: [], canSignIn: false };
     g.states.push(c.state);
     if (c.state === 'attn' && c.actionable) g.canSignIn = true;
@@ -202,7 +203,8 @@ export function accountCounts(accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
   let ready = 0, needSignIn = 0, inProgress = 0;
   for (const a of list) {
-    const cells = Array.isArray(a && a.cells) ? a.cells : [];
+    // A machine that does not hold the account says nothing about whether the account is ready.
+    const cells = (Array.isArray(a && a.cells) ? a.cells : []).filter((c) => !c.missing);
     if (cells.some((c) => c.state === 'attn')) needSignIn++;
     else if (cells.length && cells.every((c) => c.state === 'ok')) ready++;
     else inProgress++;
@@ -238,6 +240,24 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
     const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
     if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
     byId.set(r.id, g);
+  }
+  // A machine that answered but does not hold an account gets a "missing" cell, so a machine that
+  // was offline (or rebuilt) when an account was added elsewhere shows the gap and can be set up from
+  // here. A machine that did not answer is left out: its accounts are unknown, not missing. A missing
+  // cell is never "needs you" — not every account belongs on every machine — it is a quiet Set up.
+  const failedIds = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+  const answered = new Map();
+  for (const r of rows) if (r && r.machineId && !failedIds.has(r.machineId) && !answered.has(r.machineId)) {
+    answered.set(r.machineId, verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable');
+  }
+  for (const g of byId.values()) {
+    const held = new Set(g.cells.map((c) => c.machineId));
+    for (const [machineId, machine] of answered) {
+      if (held.has(machineId)) continue;
+      const ep = epFor(g.id, machineId);
+      const working = ep && cellState({}, ep, null, now).state === 'working';
+      g.cells.push({ machineId, machine, ...(working ? { state: 'working', label: 'signing in' } : { state: 'missing', label: 'not on this machine' }), missing: true, episode: ep, row: {} });
+    }
   }
   const accounts = [...byId.values()].map((g) => {
     const t = tightest(g.reading, now);

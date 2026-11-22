@@ -14,6 +14,7 @@
  * - Full Disk Access for the process reading chat.db
  */
 
+import { serviceProvesSender, UNPROVEN_TEXT_PLACEHOLDER } from './smsProvenance.js';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -175,7 +176,7 @@ export class NativeBackend extends EventEmitter {
 
       // Context history query — filters by sender handle (phone/email)
       this.stmtContextHistory = this.db.prepare(`
-        SELECT m.ROWID, m.text, m.date, m.is_from_me, h.id AS sender
+        SELECT m.ROWID, m.text, m.date, m.is_from_me, m.service, h.id AS sender
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -293,10 +294,14 @@ export class NativeBackend extends EventEmitter {
       chatId,
       messageId: row.guid,
       sender: row.sender || chatId,
-      text: row.text || '',
+      // identity-security-piece1eb: an unproven row's words are not served (sessions read this route);
+      // the owner has them in Messages.
+      text: row.is_from_me === 1 || serviceProvesSender(row.service) ? (row.text || '') : UNPROVEN_TEXT_PLACEHOLDER,
       timestamp: this._cocoaToUnix(row.date),
       isFromMe: row.is_from_me === 1,
       service: row.service,
+      // identity-security-piece1eb: whether the row can prove its sender (an iMessage, or our own).
+      senderProven: row.is_from_me === 1 || serviceProvesSender(row.service),
     }));
   }
 
@@ -305,7 +310,7 @@ export class NativeBackend extends EventEmitter {
    * Returns a formatted string of recent messages suitable for injection
    * into a Claude Code session as conversation history.
    */
-  getConversationContext(sender: string, limit = 20): string {
+  getConversationContext(sender: string, limit = 20, mayAct?: (row: { service: string | null; sender: string; isFromMe: boolean }) => boolean): string {
     if (!this.db || !this.stmtContextHistory) {
       return '';
     }
@@ -316,6 +321,7 @@ export class NativeBackend extends EventEmitter {
         text: string | null;
         date: number;
         is_from_me: number;
+        service?: string | null;
         sender: string | null;
       }>;
 
@@ -324,7 +330,16 @@ export class NativeBackend extends EventEmitter {
       // Reverse to chronological order (query returns newest first)
       rows.reverse();
 
-      const lines = rows.map((row) => {
+      // identity-security-piece1eb: rows that can't prove their sender stay out of a session's
+      // starting context; the agent's own rows always stay.
+      const kept = mayAct
+        ? rows.filter((r) => r.is_from_me === 1 || mayAct({ service: r.service ?? null, sender: r.sender || sender, isFromMe: false }))
+        : rows;
+      const leftOut = rows.length - kept.length;
+      // Nothing provable to resume: no history, so the session is not told it is continuing.
+      if (kept.length === 0) return '';
+
+      const lines = kept.map((row) => {
         const time = new Date(this._cocoaToUnix(row.date) * 1000);
         const hh = time.getHours().toString().padStart(2, '0');
         const mm = time.getMinutes().toString().padStart(2, '0');
@@ -333,7 +348,8 @@ export class NativeBackend extends EventEmitter {
         return `[${hh}:${mm}] ${who}: ${text}`;
       });
 
-      return `--- Conversation History (last ${rows.length} messages) ---\n${lines.join('\n')}\n--- End History ---`;
+      const note = leftOut > 0 ? `\n(${leftOut} message(s) left out: they were not iMessages, so they can't prove who sent them.)` : '';
+      return `--- Conversation History (last ${kept.length} messages) ---\n${lines.join('\n')}${note}\n--- End History ---`;
     } catch {
       return '';
     }
@@ -396,7 +412,17 @@ export class NativeBackend extends EventEmitter {
 
         // Attachments: fetch from DB, hardlink each file into attachmentsDir so
         // the daemon can read them without FDA on ~/Library/Messages/Attachments.
-        if (this.includeAttachments && this.stmtAttachments) {
+        /*
+         * CONTRACT-EVIDENCE: EXEMPT — identity-security-piece1eb (iMessage SMS provenance). No request or
+         * response shape crosses the Messages boundary differently: the only database change selects
+         * `message.service`, a column the backend already reads in its new-message and history queries.
+         * The change decides locally what to do with a row it already read. No iMessage contract suite
+         * exists to run (the contract runner covers Slack only), and a live run could not falsify a local
+         * routing decision; the unit suite drives the real reader on a chat.db-schema database.
+         */
+        // identity-security-piece1eb: a row that can't prove its sender is set aside by the adapter, so
+        // its attachments are never copied into the agent's folder, where a session could read them.
+        if (this.includeAttachments && this.stmtAttachments && serviceProvesSender(row.service)) {
           try {
             const attRows = this.stmtAttachments.all(row.ROWID) as Array<{
               filename: string | null;

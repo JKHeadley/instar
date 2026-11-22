@@ -184,6 +184,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | TaskClassifier / OverrideDetector / AutoApprover / IntegrationGate / PromptGate | src/providers/uxConfirm/* | classification / approval verdicts | A | OC(fast) | ⚠ mostly nature A |
 | DiscoveryEvaluator | src/core/DiscoveryEvaluator.ts:467 | surface a feature discovery? | A | OC(fast) | ⚠ |
 | IntentLlmJudge / LlmIntentClassifier / AmbientContributionGate | src/core/IntentTestHarness.ts:246; src/permissions/* | intent-vs-org / permission intent / speak? | B·gating (explicit category) | OC(fast) | ✅ explicit-category, correct |
+| OrgPolicyJudge | src/core/IntentTestHarness.ts:318 | does this action or message break the organization's never rules? (org-never-actions) | B·gating (explicit category) | OC(fast) | ✅ explicit-category; observe by default, blocking only per org-never-actions block mode |
 | RelationshipAnomalyScorer | src/permissions/RelationshipAnomalyScorer.ts:387 | voice match vs principal | A·gating (explicit) | OC(fast) | ✅ |
 | **ResumeValidator** ⚠ | src/core/ResumeValidator.ts:211 | resume UUID matches topic? | A | **AD(fast) → Claude** | ❌ not in map |
 
@@ -205,6 +206,8 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **PreCompactionFlush** ⚠ | src/core/PreCompactionFlush.ts:162 | extract durable facts pre-compaction | D | **AD(default) → Claude** | ❌ not in map |
 | ContextLayerChunk | src/monitoring/contextLayers/chunkBuilder.ts | chunk (C) and range (C2) summaries of an archived transcript span (context-budget §6.5) | D | reflector (fast), queued background lane | ✅ in map (reflector); bench pending |
 | ContextLayerH3 | src/monitoring/contextLayers/h3Builder.ts | H3, the long-term view rebuilt from a bounded chunk/C2 selection; the topic summary table's single writer (context-budget §6, §6.5) | D | reflector (fast), queued background lane | ✅ in map (reflector); bench pending |
+| FoldAudit | src/monitoring/foldAudit.ts | checks a session's handoff note in a practice fold (context-budget §7.4) | D | **pinned to the conversation's provider family (Claude), no swap** (§9) | ✅ in map (reflector); bench pending |
+| FoldProbe | src/monitoring/foldProbe.ts, foldGrade.ts | writes and grades a practice fold's held-out quiz (context-budget §10) | D | **pinned to the conversation's provider family (Claude), no swap** (§9) | ✅ in map (reflector); bench pending |
 | **SessionSummarySentinel** ⚠ | src/messaging/SessionSummarySentinel.ts:181 | summarize tmux → task/phase | D | **AD(fast) → Claude** | ❌ not in map |
 | **openConversationBrief** ⚠ | src/threadline/openConversationBrief.ts:265 | A2A conversation brief | D | **AD(fast) → Claude** | ❌ not in map |
 | **TreeSynthesis** ⚠ | src/knowledge/TreeSynthesis.ts:63 | synthesize fragments → answer | D | **AD(fast) → Claude** | ❌ not in map |

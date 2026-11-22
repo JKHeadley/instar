@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "org-never-actions",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T06:00:13.523Z",
+  "artifactPath": "upgrades/side-effects/org-never-actions.md",
+  "artifactSha256": "1d9f71a8f0aba7fb192b90a1d688f38278b245cd2ac17df7a45ff94681a0209b",
+  "coveredFiles": [
+    "docs/specs/org-never-actions.eli16.md",
+    "docs/specs/org-never-actions.md",
+    "src/core/OrgPolicyGateHooks.ts",
+    "upgrades/side-effects/org-never-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Rule-test fixes: annotate three recorded catches in the hook script; ladder line says not applicable with its reason.",
+  "eli16Path": "docs/specs/org-never-actions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
+  "secondPass": "false",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "annotations and a doc line"
+  }
+}
