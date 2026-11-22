@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express, { type Application, type Request, type Response } from 'express';
 import type { AddressInfo } from 'node:net';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { hasForwardingHeaders, verifyP256 } from './mobileBrowserDevices.js';
 import { parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
@@ -120,6 +121,7 @@ function requestHost(req: Request): string {
  * path in to relay through), from a loopback peer, with no forwarding header.
  */
 export function localPeer(req: Pick<Request, 'socket' | 'headers'>): boolean {
+  if (!mayBeLocalArrival(req)) return false;
   const la = req.socket.localAddress;
   if (la !== '127.0.0.1' && la !== '::ffff:127.0.0.1') return false;
   return isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>);

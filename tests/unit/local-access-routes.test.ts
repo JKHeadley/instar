@@ -9,6 +9,7 @@ import {
 import { detectStartedBy, resolveAgentDir } from '../../src/commands/dashboardOpen.js';
 import { KEY_MATERIAL_DYNAMIC_DIRS, KEY_MATERIAL_FILES, KEY_MATERIAL_PATHS } from '../../src/core/keyMaterialPaths.js';
 import { DEV_GATED_FEATURES } from '../../src/core/devGatedFeatures.js';
+import { markSameNetworkSocket } from '../../src/core/requestArrival.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const OP = 'tests/unit/local-access-routes.test.ts:cleanup';
@@ -35,6 +36,13 @@ describe('local access link — helpers', () => {
     expect(localPeer(req('127.0.0.1', '192.168.1.5'))).toBe(false);
     expect(localPeer(req('127.0.0.1', '127.0.0.1', { 'x-forwarded-for': '1.2.3.4' }))).toBe(false);
     expect(localPeer(req('127.0.0.1', '127.0.0.1', { 'cf-connecting-ip': '1.2.3.4' }))).toBe(false);
+  });
+
+  it('rejects a same-network arrival before inspecting loopback addresses', () => {
+    const request = req('127.0.0.1', '127.0.0.1');
+    markSameNetworkSocket(request.socket);
+    Object.defineProperty(request.socket, 'localAddress', { get() { throw new Error('address read before arrival check'); } });
+    expect(localPeer(request)).toBe(false);
   });
 
   it('names the verified-local budget with fallbacks, never undefined', () => {
