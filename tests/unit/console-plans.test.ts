@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  buildPlansPage, buildInTheWay, buildAutonomousRuns, projectNeedsOk, currentRoundIndex, projectLine, initiativeLine, needsYouWords,
+  buildPlansPage, buildInTheWay, buildAutonomousRuns, projectNeedsOk, currentRoundIndex, projectLine, initiativeLine, needsYouWords, roundNameSuffix,
   roundWord, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, blockerRow, blockerStory, linkChips, stepList, autonomousRow, OLDER_MS, MOVING_MS,
 } from '../../dashboard/console/plans-model.js';
 import { NATIVE_PAGES, tabHref } from '../../dashboard/console/nav-model.js';
@@ -66,7 +66,7 @@ describe('plans page model — sorting', () => {
     const needs = page.sections.needsYou.map((r: { needs: string }) => r.needs);
     expect(needs).toContain('Waiting on you: approve the copy');
     expect(needs).toContain('Waiting on you');
-    expect(needs).toContain('Waiting for your OK on round 2');
+    expect(needs).toContain('Waiting for your OK on round 2: Work group');
     expect(needs).toContain('I need access to continue');
     expect(page.headline).toBe('4 plans in flight. 4 need you.'); // the blocker is counted as needing you, not as a plan
     expect(page.tone).toBe('attn');
@@ -125,7 +125,12 @@ describe('project decisions', () => {
     expect(projectNeedsOk(project({ firstLaunchAckAt: undefined, rounds: [round(), round()] }))).toBe(true);
     expect(projectNeedsOk(project())).toBe(false);
     expect(projectNeedsOk(project({ status: 'completed', unacknowledgedAdvanceCount: 1 }))).toBe(false);
-    expect(needsYouWords(project({ firstLaunchAckAt: undefined, rounds: [round(), round()] }), null)).toBe('Waiting for your OK on round 1');
+    expect(needsYouWords(project({ firstLaunchAckAt: undefined, rounds: [round({ name: '' }), round()] }), null)).toBe('Waiting for your OK on round 1');
+    // A named round says what the OK is for.
+    expect(needsYouWords(project({ firstLaunchAckAt: undefined, rounds: [{ ...round(), name: 'Tier 1 - stop silent loss of local fixes' }, round()] }), null))
+      .toBe('Waiting for your OK on round 1: Tier 1 - stop silent loss of local fixes');
+    expect(roundNameSuffix({ rounds: [{ name: 'word '.repeat(40) }] }, 0)).toMatch(/^: (word )*word…$/);
+    expect(roundNameSuffix({ rounds: [{ name: '   ' }] }, 0)).toBe('');
   });
 
   it('the current round is the first not done; the line reads in words', () => {
