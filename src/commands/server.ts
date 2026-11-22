@@ -15812,6 +15812,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Set up dispatch system with auto-dispatcher
     let dispatches: DispatchManager | undefined;
     let autoDispatcher: AutoDispatcher | undefined;
+    // SEC-153: the config migration rewrote the file after this process loaded it; apply the same
+    // change in memory so the first boot after the update does not poll the old address.
+    if (config.dispatches) {
+      const { migrateConfigLegacyDispatchUrl } = await import('../core/PostUpdateMigrator.js');
+      if (migrateConfigLegacyDispatchUrl(config as unknown as Record<string, unknown>)) {
+        console.log(pc.yellow('  Dispatch polling of the old unsigned address is off (SEC-153)'));
+      }
+    }
     if (config.dispatches) {
       dispatches = new DispatchManager({
         ...config.dispatches,
@@ -15841,6 +15849,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { DispatchDecisionJournal } = await import('../core/DispatchDecisionJournal.js');
       const dispatchDecisionJournal = new DispatchDecisionJournal(config.stateDir);
       autoDispatcher.setDecisionJournal(dispatchDecisionJournal);
+      // SEC-153: the dispatch server's pinned keys, from the config file only. With none, no dispatch is
+      // auto-applied or executed: each waits for review.
+      const pinnedDispatchKeys = config.dispatches.trustedKeys && typeof config.dispatches.trustedKeys === 'object' && !Array.isArray(config.dispatches.trustedKeys)
+        ? Object.fromEntries(Object.entries(config.dispatches.trustedKeys).filter(([k, v]) => typeof k === 'string' && k.length <= 128 && typeof v === 'string' && v.includes('PUBLIC KEY')))
+        : {};
+      if (Object.keys(pinnedDispatchKeys).length > 0) {
+        const { DispatchVerifier } = await import('../core/DispatchVerifier.js');
+        autoDispatcher.setSignatureGate(new DispatchVerifier({ trustedKeys: pinnedDispatchKeys, required: true }));
+      }
 
       autoDispatcher.start();
       console.log(pc.green('  Dispatch system enabled (auto-polling active)'));
