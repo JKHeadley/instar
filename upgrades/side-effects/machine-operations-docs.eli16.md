@@ -1,0 +1,7 @@
+# A Reference For Machine Operations
+
+The automated documentation check on the main branch was failing because too many machine-related source modules had no usable reference in the published documentation. The check reported class coverage of 54 percent against a 55 percent floor. That makes the failing build useful evidence of missing explanations, rather than a reason to lower the quality floor.
+
+This change adds one source-linked reference for people maintaining a multi-machine agent. It explains how machine observations differ from ownership authority, what peer transports can prove, why unfinished work must be preserved, and which recovery components only report conditions. Each entry describes actual responsibilities and an operational limit. Some PascalCase source files contain functions rather than classes; the reference says so instead of inventing services that do not exist.
+
+The page is linked from the existing File Structure reference. No runtime code, permissions, schedules, backups, cleanup behavior, or deployment settings change. The unchanged coverage check now reports 56 percent class coverage and 57 percent overall coverage. All 43 source links resolve to files in the checkout used to write the page. The class floor stays at 55 percent and no environment override is used. Reverting the documentation removes this change without a migration; it would also restore the coverage gap unless other documentation had landed meanwhile.
