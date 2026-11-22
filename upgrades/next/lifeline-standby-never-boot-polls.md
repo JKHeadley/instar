@@ -15,3 +15,5 @@ None — this repairs existing multi-machine startup and recovery.
 ## Evidence
 
 The emergency-availability correction passed the poll-decision/startup unit checks and all 19 startup/server-adoption lifecycle tests, including an actual /restart command when the server cannot boot. Typecheck passed. The earlier unchanged HTTP outcome tests passed all 10 cases. Full suite remains pending for this corrected candidate. The lifecycle checks preserve the real server pane process across a conflict watchdog recovery and successor adoption. The full test suite remains a shared Local Verify release gate; no live deployment is claimed by this change.
+
+The first full-unit run exposed a legacy fixture without machine identity and a spec ladder exemption spelling mismatch. The fixture now uses a real isolated machine identity and removes the actual intent file; all existing safety assertions stay intact. Normal build refreshes the generated ignored manifest. No production behavior changed in this test repair.

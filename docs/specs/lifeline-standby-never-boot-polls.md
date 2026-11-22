@@ -76,7 +76,7 @@ None.
 
 ## Maturation plan
 
-- **ladder:** not applicable (narrow reversible live bug repair)
+- **ladder:** not applicable: narrow reversible live bug repair
 - **dark-window:** none; no new authority, migration or config is introduced
 - **test-agent-live:** unit, isolated integration and lifecycle tests cover muted startup, legitimate ownership and restart outcomes
 - **dev-agent-live:** parent outage run checks standby suppression, same Studio server process through conflict recovery, and ledger outcomes after released install

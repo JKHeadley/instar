@@ -80,3 +80,19 @@ Node 24.14.1 with the private dependency tree: 46 unit tests in the poll-decisio
 Focused independent reviewer /root/finish_n72/n72_review concurs with this correction: separate emergency flag, mute/fresh-false cancellation, strict ordinary starts and actual command path verified; no new material concern. This was a focused code review, not a new full spec round. Multiple unmuted emergency collectors remain an explicitly documented inherited tradeoff. Full suite still pending for the corrected candidate.
 
 An initial correction-test run exposed fixture object reuse: the late-mute test mutated a shared config object and incorrectly muted subsequent cases. Each fixture now clones its own config, and the clean rerun passed all 19 tests.
+
+## Repair after the first full-suite run
+
+The full run of candidate 3fc8353d ended with 14 failed unit tests across three files, 73,619 passed and 24 skipped. Integration and E2E did not run after the unit failure. The original evidence remains at /tmp/n72-test-all.log and /tmp/n72-test-all-result.json.
+
+The legacy Object.create poll-start rig lacked a canonical machine identity, so production correctly treated it as a single-machine agent with leftover lease-following flags and bypassed coordination. Its helper also removed the wrong location when simulating a missing poll intent. The fixture now creates a real isolated MachineIdentityManager identity and deletes the actual pollIntentPath file. Every original assertion remains, including the start deadline, fresh/stale 409, cancellation and force-poll boundaries. No runtime authority or production source changed.
+
+The spec's ladder exemption now uses the registry's required `not applicable: <reason>` spelling. A normal Node24 npm run build succeeded and refreshed the ignored builtin manifest. Generated files remain ignored and are not committed. The build's normal release-signing step reported no local private release key and skipped lock-file generation; no key was requested or created.
+
+The preliminary focused pass covered 71 tests across five files and passed. All three full-suite failed files are then run together against the rebuilt artifact as the required preflight; its final result is recorded below. Full suite remains pending a fresh explicitly allocated slot after the N73 run.
+
+### Combined preflight and root review
+
+The required single targeted run of all three failed files passed: 35 tests in builtin-manifest.test.ts, feature-ladders-coverage.test.ts and lifeline-poll-start.test.ts. Log: /tmp/n72-unit-repair-three-failed.log. The earlier extra focused run passed 71 tests across five files (/tmp/n72-unit-repair-focused.log), and normal Node24 build passed (/tmp/n72-unit-repair-build.log).
+
+Root focused concurrence: reviewed all four changed files and the actual combined log. The real isolated identity restores the intended coordinated path, noIntent deletes canonical pollIntentPath, every existing assertion remains unchanged, the colon exemption is metadata only, and no production authority changed. No new subagent or full test run was started for this repair.
