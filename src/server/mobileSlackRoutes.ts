@@ -27,6 +27,8 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { deviceIcon, mirrorPrefix, openItHint, requestDeviceClient, type DeviceClient } from '../core/deviceClientWording.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -401,15 +403,19 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     // Slack is dispatched on the serving machine. Refused BEFORE anything is saved, so the app
     // keeps the text and nothing is stored twice (the Telegram chat route's rule).
     if (!bridge.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly.' }); return; }
-    const removed = removeAuthorityTokens(text);
+    // SEC-164 §3.5: live keys are masked after the device signature check and before the authority
+    // tokens are removed; their kinds join the signed redaction attestation.
+    const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+    const removed = removeAuthorityTokens(credMasked.text);
     const delivered = removed.text;
     const removedKinds: string[] = [...removed.kinds];
+    if (credMasked.outcome === 'masked' || credMasked.outcome === 'fallback') for (const k of credMasked.kinds) if (!removedKinds.includes(k)) removedKinds.push(k);
     // Media preflight (chat-media §4.3): each upload is this device's finished upload for THIS
     // conversation (its canonical key), with exactly the signed fields.
     let uploadIds: string[] = [];
     let stored: AppAttachment[] = [];
     if (signedFiles) {
-      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: conv.key, messageId, files: signedFiles, scanInbound: (x) => deps.pairing.scanInbound(x) });
+      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: conv.key, messageId, files: signedFiles, scanInbound: (x) => deps.pairing.scanInbound(x), maskCredentials: appCredentialScrubOn(deps.config) });
       if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
       uploadIds = pre.uploadIds;
       stored = pre.stored;
@@ -790,4 +796,14 @@ export async function mirrorMediaToSlack(
   }
   if (!commented) await bridge.post(conv, line);
   for (const m of missing) await bridge.post(conv, m);
+}
+
+/** SEC-164: `security.credentialScrub.enabled`, read live from the settings file; unreadable is off. */
+const appCredentialScrubReaders = new Map<string, () => boolean>();
+function appCredentialScrubOn(config: { projectDir?: string } | null | undefined): boolean {
+  const dir = config?.projectDir;
+  if (!dir) return false;
+  let reader = appCredentialScrubReaders.get(dir);
+  if (!reader) { reader = credentialScrubEnabledReader(dir); appCredentialScrubReaders.set(dir, reader); }
+  try { return reader(); } catch { return false; } // @silent-fallback-ok — an unreadable switch is off, as before
 }

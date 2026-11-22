@@ -25,6 +25,7 @@
  *       → No: queue to outbound directory for git-sync fallback
  */
 
+import { maskInbound } from './inboundCredentialMask.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -104,6 +105,11 @@ export interface MessageRouterConfig {
    * the router). Absent ⇒ cross-machine session messages fail with no address.
    */
   peerAddresses?: (machineId: string) => string[];
+  /**
+   * SEC-164 part 1 §3.5: read live for each send; when true, live keys in the subject and body are
+   * masked before the envelope is saved, signed or delivered. Absent ⇒ off (tests and embedders).
+   */
+  credentialScrubEnabled?: () => boolean;
 }
 
 /** What the target's server said to a same-machine relay POST. */
@@ -429,6 +435,14 @@ export class MessageRouter implements IMessageRouter {
     generationBudgetMs = 5_000,
     generationBinding = false,
   ): Promise<SendResult> {
+    // SEC-164 §3.5: mask live keys before the envelope is saved or signed. A queued envelope is never
+    // rewritten; only a new send is masked. Never throws: a failed check sends the text unchanged.
+    if (this.config.credentialScrubEnabled) {
+      let enabled = false;
+      try { enabled = this.config.credentialScrubEnabled(); } catch { enabled = false; } // @silent-fallback-ok — unreadable switch is off
+      subject = maskInbound(subject, { enabled }).text;
+      body = maskInbound(body, { enabled }).text;
+    }
     // Intelligent routing: resolve session: "best" to actual session.
     // Pass `from.session` as an exclusion so the sender's own session is
     // never selected as the target — otherwise a self-to-self match would
