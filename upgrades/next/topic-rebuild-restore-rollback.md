@@ -43,8 +43,9 @@ so where someone would look.
 
 ## Evidence
 
-- `tests/unit/topic-rebuild-aborted-restore.test.ts`: 8 cases, 6 of which fail on
-  `68834ded8` and pass with the change. Three fail there with the measured
+- `tests/unit/topic-rebuild-aborted-restore.test.ts`: 9 cases, 6 of which fail on
+  `68834ded8` and pass with the change (measured in a worktree detached at that
+  commit, with the fix verified absent by reading `parseLogLine` there). Three fail there with the measured
   `SqliteError: NOT NULL constraint failed: topic_meta.last_activity`, raised at
   the `topic_meta` upsert and reaching `rebuildUnlocked` on the line after the
   two `DELETE`s; three fail on the store's contents (2 rows where 4 were

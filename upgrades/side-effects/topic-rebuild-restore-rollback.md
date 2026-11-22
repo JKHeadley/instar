@@ -306,14 +306,17 @@ protection without another patch.
 ## Evidence pointers
 
 - **Reproduction on unmodified `68834ded8`**, before the fix was written:
-  `tests/unit/topic-rebuild-aborted-restore.test.ts` → 6 of 8 cases fail. Three
+  `tests/unit/topic-rebuild-aborted-restore.test.ts` → 6 of its 9 cases fail. Three
   fail with the row's measured error, `SqliteError: NOT NULL constraint failed:
   topic_meta.last_activity`, raised at `TopicMemory.insertMessage` (the
   `topic_meta` upsert) and reaching `rebuildUnlocked` at the line AFTER the two
   `DELETE`s. Three fail on the store's contents: 2 rows where 4 were expected
   (the partial import, originals gone), 0 where 1 was expected, 0 where 2 were
   expected.
-- **After the fix:** 8/8 pass. `tsc --noEmit` exit 0 — verified non-vacuously by
+- **After the fix:** 9/9 pass. The 3 that pass on BOTH arms are the two CONTROLs and
+  the SCOPE case, which pins behaviour this change deliberately preserves (an
+  empty-string timestamp still imports), so passing on unmodified main is the
+  correct result for it rather than a weak test. `tsc --noEmit` exit 0 — verified non-vacuously by
   planting `const probeX: number = "definitely not a number";` in
   `src/memory/TopicMemory.ts` and confirming tsc reports TS2322 at that line and
   exits 1, then restoring the file byte-identically. A green typecheck that

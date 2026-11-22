@@ -142,6 +142,20 @@ describe('TopicMemory.rebuild() — a restore that cannot finish keeps the rows'
     expect(stats.imported).toBe(0);
   });
 
+  it('SCOPE: an empty-string timestamp is still admitted and still stored', async () => {
+    // The refusal is scoped to NULL and absent, because NULL is what the
+    // constraint refuses. `timestamp: ''` satisfies NOT NULL and has always
+    // stored; widening the check to `!entry.timestamp` would silently stop
+    // importing rows that import today. Pinned so nobody widens it by reflex.
+    const row = slackRow('1762300000.000100', 'empty string timestamp');
+    row.timestamp = '';
+    writeJsonl(slackLog, [row]);
+
+    expect(await tm.importFromJsonl(slackLog)).toBe(1);
+    expect(tm.getLastImportStats()!.missingFields).toBe(0);
+    expect(tm.getMessageCount(slackSyntheticTopicId(CHANNEL))).toBe(1);
+  });
+
   it('the pre-flight count is the number the import actually lands', async () => {
     writeJsonl(telegramLog, TELEGRAM_ROWS);
     writeJsonl(slackLog, [
