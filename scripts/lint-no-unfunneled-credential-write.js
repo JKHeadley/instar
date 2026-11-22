@@ -84,7 +84,9 @@ const PATTERNS = [
 // A raw keychain write is flagged ONLY in a file that also references the guarded service —
 // so WorktreeKeyVault / SecretStore / GlobalSecretStore / RemediationKeyVault (distinct
 // services) are never false-positived.
-const RAW_KEYCHAIN_WRITE = /add-generic-password/;
+// SEC-155: also the stdin keychain-write helper (keychainWriteSync / keychainWriteAsync), which builds the
+// add-generic-password line itself, so a call to it never contains that literal.
+const RAW_KEYCHAIN_WRITE = /add-generic-password|\bkeychainWrite(?:Sync|Async)\s*\(/;
 
 // ── Evasion-resistant detection (2026-08-14) ─────────────────────────────
 // A peer-agent audit classified this check DEFEATABLE by ordinary renaming,

@@ -32,6 +32,7 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { keychainWriteSync } from './keychainStdinWrite.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -430,12 +431,8 @@ export class GlobalSecretStore {
         // Entry may not exist
       }
 
-      this.exec('security', [
-        'add-generic-password',
-        '-s', KEYCHAIN_SERVICE,
-        '-a', KEYCHAIN_ACCOUNT,
-        '-w', key.toString('base64'),
-      ], { stdio: 'pipe', timeout: 5000 });
+      // SEC-155: the master key goes on standard input, never on the command line.
+      keychainWriteSync({ account: KEYCHAIN_ACCOUNT, service: KEYCHAIN_SERVICE, secret: key.toString('base64') }, { stdio: 'pipe', timeout: 5000, exec: this.exec });
       return true;
     } catch {
       // @silent-fallback-ok — fallback to local store when global unavailable

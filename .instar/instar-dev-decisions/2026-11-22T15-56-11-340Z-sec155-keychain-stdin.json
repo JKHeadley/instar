@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-22T15:56:11.340Z",
+  "slug": "sec155-keychain-stdin",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/GlobalSecretStore.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/core/SecretStore.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 162,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-no-unfunneled-credential-write.js",
+      "src/core/CredentialSwapExecutor.ts",
+      "src/core/GlobalSecretStore.ts",
+      "src/core/OAuthRefresher.ts",
+      "src/core/SecretStore.ts",
+      "src/core/WorktreeKeyVault.ts",
+      "src/core/keychainStdinWrite.ts",
+      "src/monitoring/CredentialProvider.ts",
+      "src/remediation/RemediationKeyVault.ts"
+    ],
+    "addedLines": 99,
+    "deletedLines": 63
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the same single keychain write per call; no retry, schedule or loop added"
+  },
+  "verdict": "pass"
+}

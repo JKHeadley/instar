@@ -97,6 +97,28 @@ describe('lint-no-unfunneled-credential-write (Step 4b)', () => {
     expect(result.stderr).toContain('add-generic-password');
   });
 
+  it('flags the SEC-155 stdin keychain-write helper aimed at the guarded service', () => {
+    const fixture = tmpFixture(
+      `import { keychainWriteSync } from './keychainStdinWrite.js';\n` +
+      `export function bad(raw: string) {\n` +
+      `  keychainWriteSync({ account: 'me', service: 'Claude Code-credentials', secret: raw, update: true }, { timeout: 3000 });\n` +
+      `}\n`,
+    );
+    const result = runLint(fixture);
+    expect(result.code).toBe(1);
+  });
+
+  it('does NOT flag the stdin keychain-write helper for a DIFFERENT service (distinct vault)', () => {
+    const fixture = tmpFixture(
+      `import { keychainWriteSync } from './keychainStdinWrite.js';\n` +
+      `export function ok(val: string) {\n` +
+      `  keychainWriteSync({ account: 'a', service: 'Instar Worktree Vault', secret: val }, { timeout: 5000 });\n` +
+      `}\n`,
+    );
+    const result = runLint(fixture);
+    expect(result.code).toBe(0);
+  });
+
   it('does NOT flag a raw add-generic-password to a DIFFERENT service (distinct vault)', () => {
     const fixture = tmpFixture(
       `import { execFileSync } from 'node:child_process';\n` +

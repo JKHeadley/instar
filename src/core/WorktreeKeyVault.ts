@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { keychainWriteSync } from './keychainStdinWrite.js';
 
 const SECURE_FILE_MODE = 0o600;
 const SCRYPT_PARAMS = { N: 1 << 16, r: 8, p: 1 }; // ~64MB, ~250ms
@@ -127,9 +128,8 @@ function macWriteItem(account: string, value: string): void {
       stdio: 'pipe', timeout: 5000,
     });
   } catch { /* @silent-fallback-ok */ }
-  execFileSync('security', [
-    'add-generic-password', '-s', KEYCHAIN_SERVICE, '-a', account, '-w', encodeForKeychain(value),
-  ], { stdio: 'pipe', timeout: 5000 });
+  // SEC-155: the value goes on standard input, never on the command line.
+  keychainWriteSync({ account, service: KEYCHAIN_SERVICE, secret: encodeForKeychain(value) }, { stdio: 'pipe', timeout: 5000 });
 }
 
 function linuxReadItem(account: string): string | null {
