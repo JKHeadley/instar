@@ -886,6 +886,7 @@ import { resolvePendingRelayPath } from '../messaging/pending-relay-store.js';
 import Database from 'better-sqlite3';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
+import { parseChangeFeedAfter, atOrAfterCutoff, changeFeedEcho } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
@@ -23677,6 +23678,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'beforeMessageId requires before and a positive message id' }); return;
       }
     }
+    // Change feed (docs/specs/telegram-slack-change-feed.md): `after` is the newest row time the
+    // caller holds; only rows at or after it minus the lookback come back. The window trims the
+    // finished answer, after every join and merge, so it changes which rows are sent, never which copy.
+    const feed = parseChangeFeedAfter(req.query.after);
+    if (feed === 'invalid') { res.status(400).json({ error: '"after" must be an ISO time or epoch milliseconds' }); return; }
+    if (feed && beforeMs !== null) { res.status(400).json({ error: '"after" cannot be combined with "before"' }); return; }
+    const sinceFeed = <T extends { timestamp?: unknown }>(list: ReadonlyArray<T>): T[] => (feed ? list.filter((m) => atOrAfterCutoff(m.timestamp, feed.cutoffMs)) : [...list]);
+    const feedField = (): Record<string, unknown> => (feed ? { changeFeed: changeFeedEcho(feed) } : {});
     const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
       : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
@@ -23701,8 +23710,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const pinsField = (): Record<string, unknown> => (ctx.appConversations && isConversationPinsEnabled(ctx.config) ? { pins: pinRowsFor(ctx.appConversations.store, `telegram:${topicId}`) } : {});
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
-      const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
+      // The window is applied to the JOINED rows: the device join re-adds any app-sent row it was not
+      // given, so filtering first would swap full Telegram rows for weaker store copies.
+      const shaped = sinceFeed(withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined);
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField(), ...feedField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -23831,8 +23842,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return true;
       })
       .slice(-limit);
-    const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
+    // After the merge, own-row-wins dedupe and the device join, never before (same reason as above).
+    const joinedPool = sinceFeed(joinForDevice(merged));
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField(), ...feedField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────

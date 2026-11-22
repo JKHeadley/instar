@@ -247,6 +247,23 @@ export function sortBubbles(list) {
   return list.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')) || a.id.localeCompare(b.id));
 }
 /** Merges new bubbles over the ones shown (a newer reading of the same id wins). */
+/**
+ * The change feed (docs/specs/telegram-slack-change-feed.md): the newest row time in a Telegram or
+ * Slack history answer, as an ISO string, or null when the answer has none. The leader sends it as
+ * `after` on the next quick read so only what changed comes back.
+ */
+export function newestRowTime(rows, prev = null) {
+  let best = typeof prev === 'string' && !Number.isNaN(Date.parse(prev)) ? prev : null;
+  let bestMs = best ? Date.parse(best) : -Infinity;
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || typeof r !== 'object') continue;
+    const t = iso(r.at) || iso(r.timestamp);
+    const ms = t ? Date.parse(t) : NaN;
+    if (Number.isFinite(ms) && ms > bestMs) { bestMs = ms; best = new Date(ms).toISOString(); }
+  }
+  return best;
+}
+
 export function mergeBubbles(prev, next) {
   const m = new Map(prev.map((b) => [b.id, b]));
   for (const b of next) m.set(b.id, b);

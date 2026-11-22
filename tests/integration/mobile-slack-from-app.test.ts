@@ -169,6 +169,25 @@ describe('Slack from the app — list and history', () => {
     expect((await signed(e, 'GET', `/mobile/chat/slack/${e.threadId}/messages?machine=m1`)).body.messages).toHaveLength(0);
   });
 
+  it('the change feed (after=): only rows inside the two-minute window, with the window echoed; bad input refused', async () => {
+    const e = await setup();
+    const old = new Date(Date.now() - 10 * 60_000).toISOString();
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    fs.appendFileSync(e.logPath, `${JSON.stringify({ messageId: '1793615200.000000', channelId: 'C0123ABC', text: 'ten minutes ago', fromUser: true, timestamp: old, senderName: 'Ada' })}\n`);
+    fs.appendFileSync(e.logPath, `${JSON.stringify({ messageId: '1793615300.000000', channelId: 'C0123ABC', text: 'a minute ago', fromUser: false, timestamp: recent })}\n`);
+    const plain = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1`);
+    expect(plain.body.messages.map((m: { text: string }) => m.text)).toEqual(['ten minutes ago', 'a minute ago']);
+    expect(plain.body.changeFeed).toBeUndefined();
+    const after = new Date().toISOString();
+    const feed = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1&after=${encodeURIComponent(after)}`);
+    expect(feed.status).toBe(200);
+    expect(feed.body.messages.map((m: { text: string }) => m.text)).toEqual(['a minute ago']);
+    expect(feed.body.changeFeed).toEqual({ since: new Date(Date.parse(after) - 120_000).toISOString(), lookbackMs: 120_000 });
+    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1&after=soon`)).body.error).toBe('bad-after');
+    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1&after=${Date.now()}`)).body.error).toBe('bad-after');
+    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1&after=${encodeURIComponent(after)}&before=${encodeURIComponent(`${after},x`)}`)).body.error).toBe('after-with-before');
+  });
+
   it('a dispatched message is still returned from the store after slack-messages.jsonl rotates away', async () => {
     const e = await setup();
     await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'survives rotation', requestId: rid() });

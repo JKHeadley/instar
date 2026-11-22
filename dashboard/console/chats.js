@@ -22,7 +22,7 @@ import {
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
   LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
-  effortMembers, trackedProjects, projectsForGroups, groupSections,
+  effortMembers, trackedProjects, projectsForGroups, groupSections, newestRowTime,
 } from './chats-model.js';
 
 /**
@@ -94,6 +94,7 @@ class ChatsPage {
     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
     this.announcements = new Map();
     this.cursors = new Map();   // ref → events cursor (shared by broadcast so a new leader carries on)
+    this.newestSeen = new Map(); // ref → newest Telegram/Slack row time seen (the change feed's `after`)
     this.leader = false;
     this.union = [];
     this.scheduler = createScheduler();
@@ -712,11 +713,21 @@ class ChatsPage {
     }).catch(() => {});
   }
 
-  historyPath(v, { pool, before } = {}) {
+  historyPath(v, { pool, before, after } = {}) {
     const { kind, id } = v.ref;
     if (kind === 'app') return `/mobile/chat/app/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    // Change feed (telegram-slack-change-feed): `after` asks only for what changed; never with `before`.
+    const since = after && !before ? `&after=${encodeURIComponent(after)}` : '';
+    if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
+    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
+  }
+  /** Remembers the newest row time a quick (this-machine) Telegram/Slack read carried; it never moves backwards. */
+  noteNewest(ref, data) {
+    const p = typeof ref === 'string' ? parseConversationRef(ref) : ref;
+    if (!p || p.kind === 'app' || !data || !Array.isArray(data.messages)) return;
+    const key = refString(p);
+    const t = newestRowTime(data.messages, this.newestSeen.get(key) || null);
+    if (t) this.newestSeen.set(key, t);
   }
   /**
    * The machine a Slack conversation was listed from (a Slack id is local to it; the routes require it).
@@ -1428,7 +1439,8 @@ class ChatsPage {
     const v = { ref };
     if (task.mode === 'fallback') return this.historyPath(v, { pool: true });
     if (task.mode === 'pool') return this.historyPath(v, { pool: ref.kind === 'telegram' });
-    return this.historyPath(v, { pool: false });
+    // The quick read asks only for what changed; the 30 s pool read above stays full (the safety net).
+    return this.historyPath(v, { pool: false, after: task.mode === 'newest' ? this.newestSeen.get(task.ref) || null : null });
   }
 
   async runTask(task) {
@@ -1467,6 +1479,8 @@ class ChatsPage {
     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
     if (!m.mode || !m.data) return;
     if (m.mode === 'list') { this.applyList(m.data, false); return; }
+    // Only this machine's own quick read sets the cursor: a pool answer carries other machines' clocks.
+    if (m.mode === 'newest' && m.ref) this.noteNewest(m.ref, m.data);
     const v = this.view;
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
     if (m.mode === 'events') {

@@ -18,6 +18,17 @@ describe('buildSlackHolderRead', () => {
     expect(calls[0]![1]?.method).toBeUndefined();
   });
 
+  it('forwards the change feed\'s after (telegram-slack-change-feed) and refuses an oversized one', async () => {
+    const calls: string[] = [];
+    const read = buildSlackHolderRead(deps((async (u: string) => { calls.push(u); return good(); }) as typeof fetch));
+    expect((await read({ ...ask(), after: '2026-11-22T08:00:00.000Z' })).status).toBe(200);
+    expect(calls[0]).toContain('&after=2026-11-22T08%3A00%3A00.000Z');
+    expect((await read(ask())).status).toBe(200);
+    expect(calls[1]).not.toContain('after=');
+    expect((await read({ ...ask(), after: 'x'.repeat(301) })).status).toBe(400);
+    expect(calls).toHaveLength(2);
+  });
+
   it('refuses an oversized cursor and a missing token with no request', async () => {
     let calls = 0;
     const f = (async () => { calls++; return good(); }) as unknown as typeof fetch;

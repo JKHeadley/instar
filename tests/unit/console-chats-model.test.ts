@@ -577,3 +577,12 @@ describe('messagePieces: inline markdown in a message (console-chat-markdown)', 
     expect(m.groupSections(null, projects)).toEqual({ projects: [], groups: [] });
   });
 });
+
+describe('newestRowTime (telegram-slack-change-feed)', () => {
+  it('takes the newest of Telegram timestamps and Slack at, as ISO, and never moves backwards', () => {
+    expect(m.newestRowTime([])).toBeNull();
+    expect(m.newestRowTime([{ timestamp: '2026-11-22T08:00:00.000Z' }, { at: '2026-11-22T08:05:00.000Z' }, { timestamp: 'nonsense' }, null])).toBe('2026-11-22T08:05:00.000Z');
+    expect(m.newestRowTime([{ timestamp: '2026-11-22T07:00:00.000Z' }], '2026-11-22T08:00:00.000Z')).toBe('2026-11-22T08:00:00.000Z');
+    expect(m.newestRowTime([{ timestamp: Date.parse('2026-11-22T09:00:00.000Z') }], 'garbage')).toBe('2026-11-22T09:00:00.000Z');
+  });
+});
