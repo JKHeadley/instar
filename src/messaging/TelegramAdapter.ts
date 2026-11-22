@@ -7,7 +7,7 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
-/** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
+/** cos-owner-decision-delivery: trusted owner offers; profile proposals use their own registered producer. */
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
@@ -2730,6 +2730,14 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
   /**
+   * SEC-164 part 1 §3.5: masks a live key in a message read here (no lifeline poll owner) before the
+   * trust-account receipt, the unknown-user path, the log or the session see it. Returns the text to
+   * use; null or a throw leaves the message unchanged (the operator channel fails toward delivery).
+   */
+  public inboundCredentialMasker: ((input: {
+    text: string; topicId: number; messageId: number; fromId: number | undefined; notFromThePerson: boolean;
+  }) => string | null) | null = null;
+  /**
    * Pinned messages (docs/specs/conversation-pinned-messages.md): an authorized person pinned a
    * message in a topic. Telegram sends no update for an unpin, so only pins are handed over.
    */
@@ -4334,6 +4342,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
+      channel: 'telegram',
       mediaType: 'audio/ogg',
       timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
@@ -6660,6 +6669,23 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+    // SEC-164 §3.5: mask live keys in the text and the caption before anything below keeps them.
+    if (this.inboundCredentialMasker) {
+      const raw = msg as unknown as Record<string, unknown>;
+      const notFromThePerson = !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot)
+        || (msg.from as { is_bot?: boolean } | undefined)?.is_bot === true;
+      for (const field of ['text', 'caption'] as const) {
+        const value = raw[field];
+        if (typeof value !== 'string' || !value) continue;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: value, topicId: msg.message_thread_id ?? GENERAL_TOPIC_ID, messageId: msg.message_id,
+            fromId: msg.from?.id, notFromThePerson,
+          });
+          if (typeof masked === 'string') raw[field] = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
+    }
 
     // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
     // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
@@ -7013,6 +7039,17 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     try {
       if (transcript === null) throw transcribeError ?? new Error('no transcript');
+      // SEC-164 §3.5: a voice transcript is masked at the same point as its channel's text.
+      if (this.inboundCredentialMasker) {
+        const raw = msg as unknown as Record<string, unknown>;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: transcript, topicId, messageId: msg.message_id, fromId: msg.from?.id,
+            notFromThePerson: !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot),
+          });
+          if (typeof masked === 'string') transcript = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription

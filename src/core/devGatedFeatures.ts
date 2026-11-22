@@ -62,6 +62,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
   },
   {
+    name: 'usageLedgerServedAccount',
+    configPath: 'usage.ledger.servedAccount',
+    description: 'Spend by served account (docs/specs/quota-pacing-spend-by-account.md): each usage-ledger row records the account that actually served it (from the transcript folder and the recorded identity checks, with its basis), and GET /usage/accounts, /usage/accounts/size and /usage/account-mismatches report spend by login, the size of a point and tagged-vs-served disagreements; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only measurement: it adds nullable columns to the ledger\'s own raw-row table and two small state logs (identity checks, switch history), changes no placement, swap, shedding or model choice, and sends no notice. enabled:false writes rows as basis "off" and the three routes answer 503; the columns stay inert.',
+  },
+  {
     name: 'contextBudgetLayers',
     configPath: 'contextBudget.enabled',
     description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',
@@ -990,6 +996,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'subscriptionPool.pacing.enabled',
     description: 'Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable, bounded history of every subscription quota reading and a read-only forecast of where each account lands at its reset and whether each provider keeps weekly room (GET /quota-pacing).',
     justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
+  },
+  {
+    name: 'windowAwareAccountChoice',
+    configPath: 'subscriptionPool.pacing.windowAwareChoice',
+    description: 'Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads each limit window as it stands now — the weekly deadline pairs with weekly room (never the 5-hour reset), the Fable window binds Fable launches (never emptying the pick), and a window that reset, is a placeholder or was not read recently is unmeasured (never 0% and never last cycle\'s number) and triggers a deduped out-of-cycle read. One shadow row per placement (GET /quota-pacing/account-choice).',
+    justification: 'Placement already decides where a session runs; this changes only the inputs and the ranking it reads, and the measured tier always outranks an unread account, so it never certifies capacity nobody read. Off = every picker runs today\'s code unchanged. The shadow log is bounded (30-day self-trim) and sync-excluded with the other logs. Dev agents first so two weekly resets of shadow evidence exist before the fleet rung.',
   },
   {
     name: 'ecosystemIdeas',

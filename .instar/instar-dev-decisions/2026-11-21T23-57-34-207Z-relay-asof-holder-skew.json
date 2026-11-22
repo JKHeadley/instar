@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-21T23:57:34.207Z",
+  "slug": "relay-asof-holder-skew",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/CrossMachineRelayQueue.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 981,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/types.ts",
+      "src/data/awareness/messages-reach-renamed-sessions.md",
+      "src/data/feature-ladders.json",
+      "src/messaging/CrossMachineRelayQueue.ts",
+      "src/messaging/DeliveryRetryManager.ts",
+      "src/messaging/MessageDelivery.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/messaging/SenderNotifier.ts",
+      "src/messaging/peerMessageTarget.ts",
+      "src/messaging/sessionAddressResolver.ts",
+      "src/messaging/types.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/machineRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 862,
+    "deletedLines": 119
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

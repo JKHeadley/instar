@@ -333,6 +333,75 @@ describe('Conversations page', () => {
     expect(doc.querySelector('.chat-title')?.textContent).toBe('Plans for Saturday');
   }, 15_000);
 
+  it('change feed: quick reads send known row hashes and reconstruct unchanged rows; pool reads stay full (telegram-slack-change-feed)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const newest = new Date(Date.now() - 1000).toISOString();
+    const older = new Date(Date.now() - 600_000).toISOString();
+    const quick: string[] = [];
+    const pool: string[] = [];
+    const rows = [
+      { messageId: 1, text: 'older', timestamp: older, fromUser: true },
+      { messageId: 2, text: 'newest', timestamp: newest, fromUser: false },
+    ];
+    const hashes = rows.map((row) => crypto.createHash('sha256').update(JSON.stringify(row)).digest('hex'));
+    const broadcasts: Array<{ mode?: string; quickFullPage?: boolean; data?: { messages?: unknown[] } }> = [];
+    const observer = RealBroadcastChannel ? new BroadcastChannel('instar-chat') : null;
+    if (observer) observer.onmessage = (ev) => broadcasts.push(ev.data);
+    let reopened = false;
+    let emptyDeltas = 0;
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: 145738, platform: 'telegram', title: 'Parity', lastActivity: newest, lastPreview: 'hi' }], nextCursor: null } };
+      if (c.url.startsWith('/telegram/topics/145738/messages')) {
+        (c.url.includes('scope=pool') ? pool : quick).push(c.url);
+        if (c.url.includes('scope=pool')) return { status: 200, body: { topicId: 145738, historyCursorVersion: 2, messages: reopened ? [] : rows } };
+        const known = new URL(c.url, 'http://localhost').searchParams.get('knownRows') || '';
+        const changed = rows.filter((_, i) => !known.split(',').includes(hashes[i]));
+        if (!changed.length) emptyDeltas++;
+        return { status: 200, body: { topicId: 145738, historyCursorVersion: 2, messages: changed, changeFeed: { rowHashes: hashes } } };
+      }
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent('telegram:145738')}`, idb);
+    for (let i = 0; i < 20; i++) await flush();
+    // A focus brings the open conversation into the leader's plan and reads it now (the quick read).
+    for (let n = 0; n < 4 && quick.length < 2; n++) {
+      // Under this page's boot number, so the poll loop it re-arms can never answer a later test.
+      bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+      for (let i = 0; i < 20; i++) await flush();
+    }
+    expect(quick.length).toBeGreaterThanOrEqual(2);
+    expect(new URL(quick[0], 'http://localhost').searchParams.get('knownRows')).toBe('');
+    expect(new URL(quick[1], 'http://localhost').searchParams.get('knownRows')).toBe(hashes.join(','));
+    expect(quick.every((u) => !u.includes('after='))).toBe(true);
+    expect(pool.length).toBeGreaterThan(0);
+    expect(pool.every((u) => !u.includes('knownRows=') && !u.includes('after='))).toBe(true);
+    expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+    expect(emptyDeltas).toBeGreaterThan(0);
+    if (observer) {
+      const result = broadcasts.filter((m) => m.mode === 'newest').at(-1);
+      expect(result?.quickFullPage).toBe(true);
+      expect(result?.data?.messages).toEqual(rows); // another tab gets rows, not an empty network delta
+    }
+
+    // Reopening creates an empty view. Even if its pool snapshot has no local copies, an
+    // unchanged quick read must repopulate it from the complete cache instead of hiding rows.
+    reopened = true;
+    dom.window.location.hash = '#/work/chats';
+    for (let i = 0; i < 5; i++) await flush();
+    dom.window.location.hash = `#/work/chats?c=${encodeURIComponent('telegram:145738')}`;
+    for (let i = 0; i < 10; i++) await flush();
+    const beforeReopen = quick.length;
+    for (let n = 0; n < 4 && quick.length === beforeReopen; n++) {
+      bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+      for (let i = 0; i < 15; i++) await flush();
+    }
+    expect(quick.length).toBeGreaterThan(beforeReopen);
+    expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+  });
+
   it('a Slack conversation names its machine on the history read and the send (live proof finding)', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');
