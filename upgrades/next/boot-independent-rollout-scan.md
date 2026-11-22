@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Feature-release discovery now awaits safe Git operations and file reads instead of blocking the server's event loop. Reconciliation shares one flight, yields between tracker updates, and cancels its owned discovery before storage closes. Canonical snapshots follow the published main branch, including rewinds, and incomplete observations cannot be applied as a successful inventory.
+
+## What to Tell Your User
+
+The agent can stay available while it checks which features have been released. Those background checks previously could delay health responses and the regular renewal that keeps one machine in charge. This repair keeps the existing leadership and restart rules. Availability on your machines still depends on the normal update and verification process.
+
+## Summary of New Capabilities
+
+Patch: keep feature-release scans from monopolizing the server loop.
+
+## Evidence
+
+Allocated corrected targets passed 13 unit, 2 HTTP responsiveness and 16 initialized lifecycle tests. The HTTP checks reproduced the synchronous failure and verified real isolated lease renewals and external health across canonical and complete local discovery. The supported throwaway startup check passed with CLI exit zero and independent process, listener and home cleanup. Complete normal verification of the final revision remains required; this is not a production-deployment claim.
