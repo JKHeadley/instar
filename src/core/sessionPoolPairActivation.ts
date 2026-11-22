@@ -7,6 +7,7 @@
  * joiner arbitrary config.
  */
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { announceRestartRequested } from './restartRequestSignal.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { migrateSecrets } from './SecretMigrator.js';
@@ -226,6 +227,9 @@ function roleForJoiner(stateDir: string): PairRole {
 
 /** The inviter reads activation at boot, so it restarts once the joiner has its answer. */
 export function requestPairActivationRestart(stateDir: string, now: Date): void {
+  // planned-restart-keeps-lead §1 step 1: the holder's window renewal is signed and persisted before
+  // this returns (its broadcast completes in the background); the file is published at once.
+  void announceRestartRequested({ requestedBy: 'session-pool-activation', reason: 'sharing turned on at the first pairing', requestedAt: now.toISOString() });
   const flagPath = path.join(stateDir, 'state', 'restart-requested.json');
   fs.mkdirSync(path.dirname(flagPath), { recursive: true });
   const temp = `${flagPath}.${process.pid}.tmp`;

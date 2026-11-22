@@ -95,7 +95,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       if (!rt) return { enabled: false };
       return {
         enabled: true, cards: rt.svc.cardIds().length, waitingOnOwner: rt.svc.waitingOnOwnerCount(), policy: rt.svc.policy(), pickups: rt.controller.status(),
-        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /work-board/lessons', 'GET /mobile/work-board', 'GET /mobile/work-board/cards/:id (owner phone)', 'POST /mobile/work-board/cards (owner phone, Face ID: make a card from a message)', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
+        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/notes (agent, or the session that recorded the request: a progress note into the card\'s conversation)', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/not-started/approve (owner, PIN: approve the shown not-started internal cards)', 'POST /work-board/not-started/approve-and-widen (owner, PIN: approve them and raise the board-policy request)', 'POST /work-board/settings (person, PIN)', 'GET /work-board/lessons', 'GET /mobile/work-board', 'GET /mobile/work-board/cards/:id (owner phone)', 'POST /mobile/work-board/cards (owner phone, Face ID: make a card from a message)', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
       };
     },
   },
@@ -342,7 +342,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'neverSilent',
     prefixes: ['/never-silent'],
-    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message, the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess.',
+    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message (and, under sendHolds, each reply this machine held at the send boundary for the lease, with its delivery time), the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess.',
     build: () => ({
       configured: true,
       endpoints: ['GET /never-silent/incidents'],
@@ -1780,6 +1780,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'POST /trust/grant — set a trust level (a stricter level applies; a wider one is refused with 403 naming the approval it needs)',
             'POST /trust/requests { change } — open the person\'s approval request for a raise (card to their direct chat; they reply approve <code>; with no chat, sent to the Instar app devices that accepted approvals)',
             'GET /trust/requests — open and past approval requests',
+            'DELETE /trust/requests/:id — withdraw a request the agent raised that no person has answered (never a board-policy request; the same change cannot be re-asked until the card would have expired)',
             'GET /trust/elevations — pending elevation suggestions',
             'GET /trust/changelog — recent trust changes',
           ]

@@ -26,6 +26,7 @@ import { Command } from 'commander';
 import { initProject } from './commands/init.js';
 import { SUPPORTED_FRAMEWORKS } from './core/TopicFrameworksStore.js';
 import { SafeFsExecutor } from './core/SafeFsExecutor.js';
+import { pinGlobalFetchToHttp1 } from './core/http1GlobalFetch.js';
 // setup.ts is imported dynamically — it depends on @inquirer/prompts which requires Node 20.12+
 import { startServer, stopServer, restartServer } from './commands/server.js';
 import { showStatus } from './commands/status.js';
@@ -2921,5 +2922,8 @@ program
     return route(taskPrompt, opts);
   });
 
+// Every instar process (server, lifeline, CLI) keeps Node's fetch on HTTP/1.1 — Node 26's
+// default HTTP/2 path ballooned the agent server to 10-37 GB (2026-11-20 post-mortem A3).
+await pinGlobalFetchToHttp1();
 rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();

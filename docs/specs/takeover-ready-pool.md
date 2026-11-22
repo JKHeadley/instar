@@ -120,8 +120,11 @@ every claim, whatever `survivorMayHold()`, `soloCaptainHold` or `preferredAwakeM
    local write proves nothing about a peer.
 
 After the hold, the normal rules still require the holder's lease to have lapsed. The preferred machine is not exempt
-from rule 1: on return it adopts the current epoch and gets the lead back only through `LeaseHandbackReconciler`. Each
-decision is logged `boot-hold: <rule> <verdict>`.
+from rule 1: on return from a lapse it adopts the current epoch and gets the lead back only through
+`LeaseHandbackReconciler`. A holder that restarted for a *planned* reason does not lapse: while its restart request was
+pending it renewed with a bounded window as the expiry, and at boot it holds that window lease only after a peer's
+identity-verified answer with no newer epoch (rule 1b, docs/specs/planned-restart-keeps-lead.md), so it keeps its own
+epoch rather than adopting one. Each decision is logged `boot-hold: <rule> <verdict>`.
 
 **What it changes.** Four places: `LeaseCoordinator` (rule 1 drops the `survivorMayHold()` and `soloCaptainHold`
 conjuncts from the ask-peers branch and reuses `pullWithin`; rules 2–4), `HttpLeaseTransport` (a `responded` outcome
@@ -349,8 +352,12 @@ wait when that is smaller. If the floor wins, the five-minute budget cannot be m
 `slow-pool` with the measured time. Claim-to-reply time (lease claim to a
 delivered tool-using reply: poll start ~35 s, session spawn, tool call, send) is measured by every drill and every real
 takeover and published in posture rows; until five observations exist, 125 s is assumed, and with fewer than twenty the maximum is used instead of a p95, so W defaults to 140 s with a 20 s renewal
-interval. There is no planned-restart extension: with no role restarts, a holder slower to restart than W (the Laptop,
-~4 min) is taken over once and gets the lead back at most once through hand-back. Each holder publishes its restart
+interval. A *planned* restart (one that writes the request file) carries a planned-restart extension: the holder's
+renewals while the request is pending use a bounded window as the expiry (docs/specs/planned-restart-keeps-lead.md), so
+a holder slower to restart than W is not taken over for a restart it asked for. An *unplanned* restart (a crash, a power
+loss, a kill) has no extension: with no role restarts, such a holder slower than W (the Laptop, ~4 min) is taken over once
+and gets the lead back at most once through hand-back; with role restarts still present that was a loop, which is why the
+extension exists. Each holder publishes its restart
 time (persisted wall-clock stamp at exit to first confirmed renewal) as `restartBudgetMs`; above W it is reported as
 `slow-start`. With it, each machine's signed pull reply says whether it is still in its own boot hold (R1), and a
 deferring machine's signed-answer bound extends while the preferred machine reports that, within the 10-minute
@@ -643,7 +650,10 @@ member-unreachable, foreign poller):
 5. **The automated drill uses a `drill` principal and states what it cannot prove;** real owner traffic after each
    failover covers person-typed inbound.
 6. **Drill notices are delivered silently to the drill topic.**
-7. **A slow-restarting holder is taken over once rather than waited for,** because W must fit the five-minute bound.
+7. **A holder slow to restart for an unplanned reason is taken over once rather than waited for,** because W must fit the
+   five-minute bound. A planned restart is waited for within its own window instead
+   (docs/specs/planned-restart-keeps-lead.md): peers already enforce the caps that window stays under, so the wait costs
+   the pool nothing new, and without it hand-back plus a boot longer than the TTL was a loop, not "once".
 8. **Machine replacement always needs the owner's tap,** because it removes a machine from the pool everywhere.
 9. **One spec for the project.** Splitting into four was considered in round 2. The drill proves all requirements
    together and they share record signing, so one design is kept; each increment is built and reviewed separately
@@ -668,7 +678,8 @@ member-unreachable, foreign poller):
 | Conductor dies mid-drill | the holder's dead-man timer restarts its server at the hold's end |
 | Forged or competing replacement | refused (signature, approval, old id live) or resolved to the same winner everywhere |
 | Member reachable by nobody (M5 Pro) | `member-unreachable` after three days, one pool line |
-| Holder restarts slower than W | one takeover, no role restarts, at most one hand-back; `slow-start` shown |
+| Holder restarts slower than W, unplanned (crash, power loss, kill) | one takeover, no role restarts, at most one hand-back; `slow-start` shown |
+| Holder restarts slower than W, planned (request file written) | no takeover inside its window; same epoch confirmed back by a peer at boot; a boot longer than the window lapses as unplanned |
 | Older-release member | `version-skew` for 24 h, then "update <machine>" |
 
 ## Testing

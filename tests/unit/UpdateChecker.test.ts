@@ -147,12 +147,11 @@ describe('UpdateChecker', () => {
         : 'throw new Error("native binding unavailable")');
     };
 
-    // Only npm is faked. Candidate validation runs through the same async helper since it moved off
-    // the event loop, and it must stay real: these tests prove the real node probes reject a bad install.
+    // Only npm is faked, at the npm seam (npmExec runs npm under the runtime node, so the
+    // command is no longer a bare 'npm'). Candidate validation runs through the exec helper
+    // and must stay real: these tests prove the real node probes reject a bad install.
     const fakeNpm = (onNpm: (args: string[]) => void) => {
-      const real = (checker as any).execAsync.bind(checker);
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (cmd: string, args: string[], timeoutMs: number) => {
-        if (cmd !== 'npm') return real(cmd, args, timeoutMs);
+      vi.spyOn(checker as any, 'npmExec').mockImplementation(async (args: string[]) => {
         onNpm(args);
         return '';
       });

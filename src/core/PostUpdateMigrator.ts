@@ -3366,6 +3366,7 @@ export class PostUpdateMigrator {
     this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
+    this.migrateFeedbackSkillSource(result);
     this.migrateSchedulerSkillReportChoice(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
@@ -7098,6 +7099,30 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/instar-scheduler/SKILL.md (per-job report choice)');
     } catch (err) {
       result.errors.push(`skills/instar-scheduler/SKILL.md report choice migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * agent-work-cards-default §3 "Feedback is not a trigger": `POST /feedback` requires a `source` from Bearer callers when
+   * the board is on. The built-in /feedback skill is existing content (installBuiltinSkills never overwrites), so this
+   * dedicated idempotent step adds `"source": {"kind": "agent"}` to its Quick Submit body once. A customized skill whose
+   * body no longer has the stock description line is left untouched.
+   */
+  private migrateFeedbackSkillSource(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'feedback', 'SKILL.md');
+    if (!fs.existsSync(skillFile)) return;
+    try {
+      const original = fs.readFileSync(skillFile, 'utf8');
+      if (original.includes('"source"')) return;
+      const stock = '"description": "Full context: what happened, what you expected, error messages, steps to reproduce"\n  }\'';
+      if (!original.includes(stock)) return;
+      const updated = original.replace(stock, '"description": "Full context: what happened, what you expected, error messages, steps to reproduce",\n    "source": {"kind": "agent"}\n  }\'');
+      if (updated !== original) {
+        fs.writeFileSync(skillFile, updated);
+        result.upgraded.push('skills/feedback/SKILL.md (POST /feedback body carries source: {kind: agent})');
+      }
+    } catch (err) {
+      result.errors.push(`skills/feedback/SKILL.md source migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -19409,10 +19434,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // dev-agent gate (live on a development agent, dark on the fleet).
     {
       const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      // agent-work-cards-default §Migration: the request-to-card and notes defaults join the block, each added only when
+      // missing. `requestCards.enabled` is deliberately NOT written (omitted ⇒ on where the board is on).
       const defaults: Record<string, unknown> = {
         softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
-        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200, noteText: 4000 },
         pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+        requestCards: { duplicateHintHours: 24, backfillMaxAgeDays: 14, sweepPerTick: 25, unrecordedWorkMinutes: 10, floorRecentHours: 72 },
+        maxNotesPerCardPerDay: 50, noteCoalesceMinutes: 60, noteDrainPerTick: 25, softOpenBlockers: 10, maxOpenAsksPerCard: 5,
       };
       let added = false;
       for (const [k, v] of Object.entries(defaults)) {

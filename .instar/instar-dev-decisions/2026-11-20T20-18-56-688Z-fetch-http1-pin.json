@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-20T20:18:56.688Z",
+  "slug": "fetch-http1-pin",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/http1GlobalFetch.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

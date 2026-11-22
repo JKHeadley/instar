@@ -15,22 +15,35 @@ describe('the boot hold is wired into the lifeline', () => {
     const held = src.indexOf('if (holdForLease) {', start);
     const firstPoll = src.indexOf('this.poll();', start);
     expect(start).toBeGreaterThan(0);
+    const supervisor = src.indexOf('await this.supervisor.start()');
+    const startup = src.indexOf('await this.startPollingAtBoot()');
+    expect(supervisor).toBeGreaterThan(0);
+    expect(startup).toBeGreaterThan(supervisor);
     expect(held).toBeGreaterThan(start);
     expect(firstPoll).toBeGreaterThan(src.indexOf('} else if (telegramPollingEnabled) {', held));
     expect(src.slice(held, src.indexOf('} else if (telegramPollingEnabled) {', held))).toContain('this.bootPollHeldSinceMs = Date.now()');
   });
 
-  it('the reconcile steps the hold before the normal decision, and an expired hold starts the poll', () => {
+  it('the reconcile holds before the normal decision and restores emergency polling only for an unmuted expired hold', () => {
     const step = src.indexOf('bootHoldStep({ heldSinceMs');
     const decide = src.indexOf('const action = decidePollAction({', step);
     expect(step).toBeGreaterThan(0);
     expect(decide).toBeGreaterThan(step);
     const block = src.slice(step, decide);
     expect(block).toContain("if (step === 'wait') return;");
-    expect(block).toContain('this.startPollAfterFlush(stateDir)');
+    const expired = block.indexOf("if (step === 'expired') {");
+    const muted = block.indexOf("if (override === 'force-mute') return;", expired);
+    const emergency = block.indexOf('this.startPollAfterFlush(stateDir, forcePoll, true);', expired);
+    expect(expired).toBeGreaterThan(0);
+    expect(muted).toBeGreaterThan(expired);
+    expect(emergency).toBeGreaterThan(muted);
+    expect(block).not.toContain('this.polling = true;');
   });
 
   it('the hold reads the same gate the reconcile does', () => {
-    expect(src).toContain('followsLeaseEnabled: resolveDevAgentGate(mmPoll?.pollFollowsLease?.enabled');
+    expect(src).toContain('followsLeaseEnabled: this.leasePollIntentSupported() && resolveDevAgentGate(mmPoll?.pollFollowsLease?.enabled');
+    const reconcile = src.slice(src.indexOf('private reconcilePolling(): void {'));
+    expect(reconcile).toContain('const enabled = resolveDevAgentGate(mm?.pollFollowsLease?.enabled');
+    expect(reconcile).toContain('if (!enabled || !this.leasePollIntentSupported()) return;');
   });
 });

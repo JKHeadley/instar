@@ -226,6 +226,10 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!isUuid(req.params.id)) { next(); return; }
     if (off(res)) return;
     pageHeaders(res);
+    // no-transform: the tunnel's CDN must not rewrite the page. Cloudflare's automatic Web Analytics
+    // otherwise injects a third-party beacon script into this HTML; the CSP blocks it, but the page
+    // then logs a CSP violation on every open and is no longer the bytes instar served.
+    res.setHeader('Cache-Control', 'no-store, no-transform');
     res.type('html').send(PAGE_SHELL);
   });
 

@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "lifeline-standby-never-boot-polls",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-22T00:41:31.978Z",
+  "artifactPath": "upgrades/side-effects/lifeline-standby-never-boot-polls.md",
+  "artifactSha256": "79a00afcd492bf17d898ccee1df520d64083fd8065516b02b711987fe6023682",
+  "coveredFiles": [
+    "docs/specs/lifeline-standby-never-boot-polls.md",
+    "tests/unit/lifeline-poll-start.test.ts",
+    "upgrades/next/lifeline-standby-never-boot-polls.md",
+    "upgrades/side-effects/lifeline-standby-never-boot-polls.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test fixture and metadata repair only: canonical isolated identity and intent path, all original assertions preserved; normal build refreshes ignored manifest, no production source or authority change.",
+  "eli16Path": "docs/specs/lifeline-standby-never-boot-polls.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifeline-standby-never-boot-polls.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "root-focused-review",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/lifeline-standby-never-boot-polls-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

@@ -364,6 +364,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Pure reach-record builder/renderer for the tone gate's B17 context (no I/O beyond the injected registry read, no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
     },
     {
+      "file": "src/core/sibling-holdings.ts",
+      "reason": "Memory-only cache of what the agent's other machines hold, feeding the tone gate's OTHER MACHINES context through agent-reach (injected fetch and roster, no delivery logic, no I/O of its own); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/sibling-machine-reach.test.ts"
+    },
+    {
       "file": "src/core/internal-id-leak.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
