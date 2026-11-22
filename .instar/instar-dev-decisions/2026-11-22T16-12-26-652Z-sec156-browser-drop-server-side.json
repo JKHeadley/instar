@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-22T16:12:26.652Z",
+  "slug": "sec156-browser-drop-server-side",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/templates/scripts/secret-drop-retrieve.mjs matches SecretDrop / never-on-disk invariant",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 152,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/secret-drop-retrieve.mjs"
+    ],
+    "addedLines": 127,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one driver run per request, single-flight per drop; no retry or schedule"
+  },
+  "verdict": "pass"
+}

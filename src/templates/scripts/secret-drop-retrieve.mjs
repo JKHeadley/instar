@@ -55,7 +55,6 @@
 
 import * as fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const token = args[0];
@@ -125,6 +124,57 @@ const res = await fetch(url, {
     ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
   },
 });
+
+// SEC-156: a browser-only password never comes back to this helper. The server refuses it (409) with the
+// field names and the host; --names lists them, and --browser asks the server to type it, server-side.
+if (res.status === 409) {
+  let info = null;
+  try { info = await res.json(); } catch { /* @silent-fallback-ok — handled as a plain error below */ }
+  if (info?.error === 'browser-only') {
+    const host = typeof info.browserHost === 'string' ? info.browserHost : 'the browser';
+    const refs = Array.isArray(info.fieldRefs) ? info.fieldRefs.filter((r) => typeof r === 'string') : [];
+    if (mode === '--names') {
+      if (info.origin === 'unverified') process.stderr.write('retrieve: this request [unverified origin: made without the agent key]\n');
+      refs.forEach((r) => process.stderr.write(`  ${r.startsWith('#') ? `'${r}'` : r}\n`));
+      process.exit(0);
+    }
+    if (!browserMode) {
+      process.stderr.write(`retrieve: this password is for ${host} and leaves only with --browser; nothing was printed or consumed\n`);
+      process.exit(1);
+    }
+    let typed;
+    try {
+      const r = await fetch(`http://localhost:${resolvedPort}/secrets/type/${token}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+          ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
+        },
+        body: JSON.stringify({ field: mode, profile: process.env.XD_PROFILE || '' }),
+      });
+      typed = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+      if (!r.ok) {
+        process.stderr.write(`browser: ${typeof typed?.error === 'string' ? typed.error : `HTTP ${r.status}`}${typeof typed?.detail === 'string' ? ` (${typed.detail})` : ''} — secret NOT consumed (safe to retry)\n`);
+        process.exit(1);
+      }
+    } catch (e) {
+      process.stderr.write(`browser: could not reach the agent server (${e.message}) — secret NOT consumed (safe to retry)\n`);
+      process.exit(1);
+    }
+    if (typeof typed.output === 'string' && typed.output) process.stderr.write(typed.output.endsWith('\n') ? typed.output : `${typed.output}\n`);
+    if (typed.typed) {
+      process.stderr.write(typed.consumed
+        ? 'browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n'
+        : 'browser: typed. If the sign-in fails, ask for a new Secret Drop.\n');
+      process.exit(0);
+    }
+    process.stderr.write(`browser: exited ${typed.exitCode ?? 1} — secret NOT consumed (read the page before retrying).\n`);
+    process.exit(typeof typed.exitCode === 'number' && typed.exitCode > 0 ? typed.exitCode : 1);
+  }
+  process.stderr.write(`HTTP 409: ${typeof info?.error === 'string' ? info.error : '(no error message)'}\n`);
+  process.exit(1);
+}
 
 if (!res.ok) {
   // Surface ONLY status + the structured error message field, never the body.
@@ -232,27 +282,11 @@ async function consumeSubmission() {
 }
 
 if (browserMode) {
-  const here = fileURLToPath(new URL('.', import.meta.url));
-  const child = spawnSync(`${here}browser/xdrive.sh`, ['typesecret', browserHost], {
-    input: v,
-    stdio: ['pipe', 'inherit', 'inherit'],
-    encoding: 'utf-8',
-    env: { ...process.env, XD_SECRET_BROWSER: '1' },
-  });
-  if (child.error) {
-    process.stderr.write(`browser: failed to launch xdrive.sh: ${child.error.message} — secret NOT consumed (safe to retry)\n`);
-    process.exit(1);
-  }
-  const code = child.status ?? 1;
-  if (code === 0) {
-    const consumed = await consumeSubmission();
-    process.stderr.write(consumed
-      ? 'browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n'
-      : 'browser: typed. If the sign-in fails, ask for a new Secret Drop.\n');
-  } else {
-    process.stderr.write(`browser: exited ${code} — secret NOT consumed (read the page before retrying).\n`);
-  }
-  process.exit(code);
+  // SEC-156: the server types a browser password itself (POST /secrets/type) and never returns it; the
+  // 409 branch above handles that. A server that still returned one here is older than this helper:
+  // refuse rather than handle the value.
+  process.stderr.write('browser: this agent server returned a browser password instead of typing it; update the agent. Nothing was typed or consumed.\n');
+  process.exit(1);
 }
 
 if (runMode) {

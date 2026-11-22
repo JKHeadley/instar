@@ -291,7 +291,7 @@ describe('Secret Drop — consume removes the stored copy first', () => {
     expect(vaultHas(token)).toBe(false);
   });
 
-  it('a browser password (never stored) is consumed even if the vault cannot be written', async () => {
+  it('a browser password (never stored) is refused by retrieve and consumed by the server-side type, even if the vault cannot be written', async () => {
     const app = mount(tmpDir);
     const reqRes = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`)
       .send({ label: 'Site', fields: [{ name: 'password', label: 'Password' }], browserHost: 'accounts.example.com' });
@@ -300,9 +300,17 @@ describe('Secret Drop — consume removes the stored copy first', () => {
     const csrf = /name="_csrf" value="([^"]+)"/.exec(form.text)?.[1];
     await request(app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, password: 'pw' }).expect(200);
     const spy = vi.spyOn(SecretStore.prototype, 'delete').mockImplementation(() => { throw new Error('vault unreadable'); });
-    const r = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    // SEC-156: the API-key retrieve refuses a browser password outright, and consumes nothing.
+    const refused = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe('browser-only');
+    // It is consumed by the server-side type, with no vault write (a browser password is never stored).
+    const browserDir = path.join(tmpDir, '.instar', 'scripts', 'browser');
+    fs.mkdirSync(browserDir, { recursive: true });
+    fs.writeFileSync(path.join(browserDir, 'xdrive.sh'), '#!/bin/bash\ncat >/dev/null\nexit 0\n', { mode: 0o755 });
+    const r = await request(app).post(`/secrets/type/${token}`).set('Authorization', `Bearer ${AUTH}`).send({ field: 'password', profile: 'site' });
     expect(r.status).toBe(200);
-    expect(r.body.consumed).toBe(true);
+    expect(r.body).toMatchObject({ typed: true, consumed: true });
     expect(spy).not.toHaveBeenCalled();
   });
 

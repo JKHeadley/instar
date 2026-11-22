@@ -202,7 +202,8 @@ export function isThreadlinePublicRoute(method: string, reqPath: string): boolea
  * follow-up SEC-002c (a blocklist cannot be proven complete against indirect reach). The master
  * token (API/CLI callers) is unaffected — it never takes this branch.
  */
-const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/retrieve', '/secrets/sync-status', '/identity-recovery/rotate'];
+// SEC-156: /secrets/type spends a browser-only Secret Drop password, the same standing reach as /secrets/retrieve.
+const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/retrieve', '/secrets/type', '/secrets/sync-status', '/identity-recovery/rotate'];
 const DST_CREDENTIAL_EXACT = new Set<string>([
   '/identity-recovery/rotate',
   // SEC-045: "sign out all dashboard sessions on this agent" needs a fresh-PIN step-up. The route is

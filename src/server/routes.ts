@@ -499,6 +499,8 @@ import { StopGateDb, dayKeyFor, type EvalMode } from '../core/StopGateDb.js';
 import { summarizeJobFailures, JOB_FAILURE_WINDOW_MS } from './jobFailureCurrency.js';
 import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
+/** SEC-156: how long the server waits for the browser driver to type a Secret Drop password. */
+const SECRET_TYPE_TIMEOUT_MS = 180_000;
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -31337,6 +31339,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Secret Drop (secure secret submission) ─────────────────────
 
   const secretDrop = new SecretDrop(ctx.config.projectName || 'Agent');
+  // SEC-156: drops being typed into the browser right now (one typing run per drop at a time).
+  const secretTypeInFlight = new Set<string>();
 
   // Stuck-consumer hardening: when an agent's consumer chain fails to
   // claim a submitted secret within the grace window, route a visible
@@ -31926,6 +31930,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
 
     let submission = secretDrop.peekReceived(token);
+    // SEC-156: a browser-only password never leaves through this API-key route, peek or consume. The agent
+    // server types it into the browser itself (POST /secrets/type/:token). Names and the host are enough for
+    // the helper's --names listing and its message.
+    if (submission?.browserHost) {
+      res.status(409).json({
+        error: 'browser-only',
+        detail: 'This password is only typed into the browser, by the agent server. Use the Secret Drop helper with --browser.',
+        browserHost: submission.browserHost,
+        label: submission.label,
+        origin: mintIsUnverified(submission.mintAuth) ? 'unverified' : 'verified',
+        fieldRefs: Object.keys(submission.values).map((n, i) => fieldRef(n, i)),
+      });
+      return;
+    }
     if (submission && consume) {
       // A browser password is never stored, so there is no stored copy to remove.
       if (!submission.browserHost && !durableDeleted()) { refuseUnconsumed(); return; }
@@ -31973,6 +31991,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       fieldRefs: names.map((n, i) => fieldRef(n, i)),
       consumed: consume,
     });
+  });
+
+  // SEC-156: type a browser-only Secret Drop password into the agent's browser, server-side. The value goes
+  // to xdrive.sh (the agent's installed browser driver) on standard input and is never returned to the caller.
+  // Consumed only after a typed success; a failure keeps it for a retry (the same rule the helper had).
+  // One typing run per drop at a time.
+  // @write-domain:none — consumes only the in-memory browser drop (never stored on disk); no durable or replicated write.
+  router.post('/secrets/type/:token', (req, res) => {
+    const token = req.params.token;
+    const submission = secretDrop.peekReceived(token);
+    if (!submission) { res.status(404).json({ error: 'No submission found for this token' }); return; }
+    if (!submission.browserHost) { res.status(409).json({ error: 'not-browser-only', detail: 'This secret was not requested for a browser. Use the Secret Drop helper without --browser.' }); return; }
+    const body = (req.body ?? {}) as { field?: unknown; profile?: unknown };
+    const names = Object.keys(submission.values);
+    const pos = typeof body.field === 'string' ? /^#(\d{1,3})$/.exec(body.field) : null;
+    const fieldName = pos ? names[Number(pos[1]) - 1] : (typeof body.field === 'string' ? body.field : undefined);
+    const value = fieldName !== undefined && Object.prototype.hasOwnProperty.call(submission.values, fieldName) ? submission.values[fieldName] : undefined;
+    if (typeof value !== 'string') { res.status(404).json({ error: 'field-not-found', fieldRefs: names.map((n, i) => fieldRef(n, i)) }); return; }
+    const profile = typeof body.profile === 'string' ? body.profile : '';
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(profile)) { res.status(400).json({ error: 'bad-profile', detail: 'Name the browser profile to type into (XD_PROFILE).' }); return; }
+    const driver = path.join(ctx.config.stateDir, 'scripts', 'browser', 'xdrive.sh');
+    if (!fs.existsSync(driver)) { res.status(503).json({ error: 'browser-driver-missing', detail: 'The browser driver is not installed on this agent.' }); return; }
+    if (secretTypeInFlight.has(token)) { res.status(409).json({ error: 'typing-in-progress' }); return; }
+    secretTypeInFlight.add(token);
+    const host = submission.browserHost;
+    let child: ReturnType<typeof execFileCb>;
+    try {
+      child = execFileCb(driver, ['typesecret', host], {
+        timeout: SECRET_TYPE_TIMEOUT_MS,
+        maxBuffer: 256 * 1024,
+        env: { ...process.env, XD_SECRET_BROWSER: '1', XD_PROFILE: profile },
+      }, (err, stdout, stderr) => {
+        secretTypeInFlight.delete(token);
+        const exitCode = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0;
+        const typed = exitCode === 0;
+        // Typed: the browser drop is gone (it was never on disk). Not typed: kept for a retry.
+        if (typed) secretDrop.consumeReceived(token);
+        const consumed = typed;
+        // The driver's own messages (never the value: it reads the value from standard input only).
+        const output = `${String(stdout ?? '')}${String(stderr ?? '')}`.slice(-2000);
+        res.json({ typed, exitCode, consumed, browserHost: host, output });
+      });
+    } catch (err) {
+      secretTypeInFlight.delete(token);
+      res.status(500).json({ error: 'browser-driver-failed', detail: err instanceof Error ? err.message : 'could not start the browser driver' });
+      return;
+    }
+    child.stdin?.on('error', () => { /* @silent-fallback-ok — the exit callback reports the failure */ });
+    child.stdin?.end(value);
   });
 
   // ── Tunnel Status ──────────────────────────────────────────────

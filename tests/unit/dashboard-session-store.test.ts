@@ -252,6 +252,8 @@ describe('isDashboardCredentialRoute (dst_ step-up deny-list)', () => {
     expect(isDashboardCredentialRoute('GET', '/credentials/locations')).toBe(true); // reading creds too
     expect(isDashboardCredentialRoute('POST', '/identity-recovery/rotate')).toBe(true);
     expect(isDashboardCredentialRoute('GET', '/secrets/pending')).toBe(true);
+    expect(isDashboardCredentialRoute('POST', '/secrets/retrieve/tok')).toBe(true);
+    expect(isDashboardCredentialRoute('POST', '/secrets/type/tok')).toBe(true); // SEC-156: types a browser password
     expect(isDashboardCredentialRoute('POST', '/dashboard/pin/change')).toBe(true);
     // trailing slash / case tolerant
     expect(isDashboardCredentialRoute('post', '/credentials/swap/')).toBe(true);

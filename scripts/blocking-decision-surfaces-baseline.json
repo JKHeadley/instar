@@ -186,8 +186,8 @@
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
-      "sha256": "18bde3905bcde5d8fb23ca660048ac3a2a97f2c5981d374722111efee19c2dad",
-      "reason": "Re-declared 2026-11-17 (secret-drop-self-mint-hardening + secret-drops-machine-local): supports safe #N field selection and reports/retries refused consume. No message or session blocking authority; browser handoff refusal stays scoped to the requested operation."
+      "sha256": "55dc2d028cb2ccdfed758bd51feb17390bc95524aabbc84c0c4899b3ca014faf",
+      "reason": "Re-declared 2026-11-22 (SEC-156): --browser now asks the agent server to type a browser-only password (POST /secrets/type) and only reports the outcome; the old local typing path is a plain refusal. Earlier: safe #N field selection and reported/retried refused consume (2026-11-17). No message or session blocking authority; every refusal stays scoped to the requested operation."
     },
     {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",

@@ -72,16 +72,34 @@ describe('the Secret Drop helper', () => {
   let server: http.Server;
   let port = 0;
   let consumed: string[] = [];
+  // SEC-156: the server never returns a browser-only value. Its retrieve answers 409 with names and the
+  // host, and POST /secrets/type/:token types it server-side. This fake records what the helper asks.
+  let typeRequests: Array<{ token: string; body: Record<string, unknown> }> = [];
+  let typeExit = 0;
   const submissions: Record<string, unknown> = {
-    browser: { values: { password: 'S3cret!' }, browserHost: 'accounts.example.com' },
     plain: { values: { password: 'S3cret!' } },
   };
   beforeAll(async () => {
     server = http.createServer((req, res) => {
       const url = new URL(req.url ?? '', 'http://x');
       const token = url.pathname.split('/').pop() ?? '';
-      if (url.searchParams.get('consume') === 'true') consumed.push(token);
       res.setHeader('Content-Type', 'application/json');
+      if (url.pathname.startsWith('/secrets/type/')) {
+        let raw = '';
+        req.on('data', (d) => { raw += d; });
+        req.on('end', () => {
+          typeRequests.push({ token, body: JSON.parse(raw || '{}') });
+          if (typeExit === 0) consumed.push(token);
+          res.end(JSON.stringify({ typed: typeExit === 0, exitCode: typeExit, consumed: typeExit === 0, browserHost: 'accounts.example.com', output: 'OK typed\n' }));
+        });
+        return;
+      }
+      if (token === 'browser') {
+        res.statusCode = 409;
+        res.end(JSON.stringify({ error: 'browser-only', browserHost: 'accounts.example.com', fieldRefs: ['password'], origin: 'verified' }));
+        return;
+      }
+      if (url.searchParams.get('consume') === 'true') consumed.push(token);
       res.end(JSON.stringify(submissions[token] ?? {}));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -92,7 +110,7 @@ describe('the Secret Drop helper', () => {
   function helper(home: string, args: string[]): Promise<{ code: number | null; out: string; err: string }> {
     return new Promise((resolve) => {
       const child = spawn('node', ['.instar/scripts/secret-drop-retrieve.mjs', ...args], {
-        cwd: home, env: { PATH: process.env.PATH ?? '', INSTAR_AUTH_TOKEN: 't', INSTAR_PORT: String(port) },
+        cwd: home, env: { PATH: process.env.PATH ?? '', INSTAR_AUTH_TOKEN: 't', INSTAR_PORT: String(port), XD_PROFILE: 'work-google' },
       });
       let out = ''; let err = '';
       child.stdout.on('data', (d) => { out += d; });
@@ -108,23 +126,26 @@ describe('the Secret Drop helper', () => {
     return file;
   }
 
-  it('passes the stored host and the value on stdin, and consumes on exit 0', async () => {
-    consumed = [];
+  it('asks the server to type it (the field and the browser profile), never sees the value, and reports a typed success', async () => {
+    consumed = []; typeRequests = []; typeExit = 0;
     const home = homeWithScripts();
     const file = recorder(home, 0);
     const r = await helper(home, ['browser', 'password', '--browser']);
     expect(r.code).toBe(0);
-    expect(fs.readFileSync(file, 'utf8')).toBe('args=typesecret accounts.example.com\nmarker=1\nstdin=S3cret!\n');
+    expect(typeRequests).toEqual([{ token: 'browser', body: { field: 'password', profile: 'work-google' } }]);
+    expect(fs.existsSync(file)).toBe(false); // the helper no longer runs the driver itself
     expect(consumed).toEqual(['browser']);
+    expect(r.err).toContain('browser: typed — secret consumed');
     expect(r.out + r.err).not.toContain('S3cret!');
   });
 
-  it('keeps the submission when typing fails', async () => {
-    consumed = [];
-    const home = homeWithScripts();
-    recorder(home, 2);
-    expect((await helper(home, ['browser', 'password', '--browser'])).code).toBe(2);
+  it('keeps the submission when typing fails, and exits with the driver\'s code', async () => {
+    consumed = []; typeRequests = []; typeExit = 2;
+    const r = await helper(homeWithScripts(), ['browser', 'password', '--browser']);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('secret NOT consumed');
     expect(consumed).toEqual([]);
+    typeExit = 0;
   });
 
   it('refuses every other exit for a browser password, and a stray --consume destroys nothing', async () => {
