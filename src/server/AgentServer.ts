@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
@@ -7258,6 +7259,8 @@ export class AgentServer {
           const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
+            // SEC-164 §3.5: a server transcript has its live keys masked before it is stored.
+            credentialScrubEnabled: credentialScrubEnabledReader(options.config.projectDir),
             confineStranded: () => { throw new Error('pairing-not-ready'); },
             documentNotes: (key: string) => this.documentNotesFor(`app:${key}`),
             stateDir: options.config.stateDir,

@@ -9,3 +9,5 @@ If you send your agent a key on purpose, it still removes it from the conversati
 Some honest limits. A key you sent through Telegram still sits on Telegram's own servers until you delete that message there. The messages already stored before this change are cleaned in a second part, which is planned and has a due date. And this arrives carefully: it runs on the development agent first, and the part that rewrites session records starts by only noting what it would change. It switches on after those notes are checked, and reaches every agent only after a week of that, once the person in charge of the agents has said yes.
 
 Its progress from the development agent to every agent is tracked on the agents' maturation board, so each step is checked against recorded evidence rather than remembered.
+
+Messages your agent sends to other agents are cleaned the same way. The one exception is a key you deliberately share with an agent you have verified and paired with: that key travels sealed to that agent only, and your agent's own records still hold the cleaned version.

@@ -1,4 +1,6 @@
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { PairingOutcomeWatches, type SendResult as OutcomeSendResult, type OperationResult as OutcomeOperationResult } from '../core/PairingOutcomeWatches.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
@@ -2214,10 +2216,15 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let delivered = text;
     let removedKinds: string[] = [];
     let credentialShaped = false;
+    let appCredKinds: string[] = [];
     if (svc.nativeOn) {
-      const removed = removeAuthorityTokens(text);
+      // SEC-164 §3.5: live keys are masked first (superseding the earlier flag-only rule for storage,
+      // Chief of Staff d2060363); their kinds join the signed redaction attestation.
+      const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+      const removed = removeAuthorityTokens(credMasked.text);
       delivered = removed.text;
-      removedKinds = removed.kinds;
+      appCredKinds = credMasked.outcome === 'masked' || credMasked.outcome === 'fallback' ? credMasked.kinds : [];
+      removedKinds = [...removed.kinds, ...appCredKinds];
       credentialShaped = detectOutboundCredential(text).detected;
     } else {
       if (PairingInviteTelegram.carriesInvite(text) || /^\/desktop(?:\s|$)/i.test(text)) { res.status(422).json({ error: 'not-from-the-app' }); return; }
@@ -2255,7 +2262,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       for (const k of resent.origin?.redaction?.kinds ?? []) if (!removedKinds.includes(k)) removedKinds = [...removedKinds, k];
       credentialShaped = detectOutboundCredential([text, ...signedFiles!.map((a) => a.transcript ?? '')].join('\n')).detected;
     } else if (signedFiles && app) {
-      const pre = preflightMediaAttachments(app, { deviceId: p.deviceId, conversationRef: storeKey, messageId: storeMessageId, files: signedFiles, scanInbound: (x) => svc.scanInbound(x) });
+      const pre = preflightMediaAttachments(app, { deviceId: p.deviceId, conversationRef: storeKey, messageId: storeMessageId, files: signedFiles, scanInbound: (x) => svc.scanInbound(x), maskCredentials: appCredentialScrubOn(deps.config) });
       if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
       uploadIds = pre.uploadIds;
       stored = pre.stored;
@@ -2342,6 +2349,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       body: {
         topicId, text: delivered, media, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         ...(sender.role === 'owner' ? { fromUserId: ownerId } : {}), fromFirstName: senderName, forwarded: false,
+        // SEC-164 §4.5: the text was masked above, so the inbound core is told, and sends the notice.
+        ...(appCredKinds.length > 0 ? { credentialRemovedKinds: appCredKinds } : {}),
       },
     };
     try {
@@ -3288,4 +3297,14 @@ export function deviceAdmittedAt(req: Request): number | null {
 /** Private-view links carry a token-derived signature; a device never receives one. */
 export function stripViewSignatures<T>(value: T): T {
   return JSON.parse(JSON.stringify(value).replace(/([?&]sig=)[0-9a-fA-F]{16,}/g, '$1removed')) as T;
+}
+
+/** SEC-164: `security.credentialScrub.enabled`, read live from the settings file; unreadable is off. */
+const appCredentialScrubReaders = new Map<string, () => boolean>();
+function appCredentialScrubOn(config: { projectDir?: string } | null | undefined): boolean {
+  const dir = config?.projectDir;
+  if (!dir) return false;
+  let reader = appCredentialScrubReaders.get(dir);
+  if (!reader) { reader = credentialScrubEnabledReader(dir); appCredentialScrubReaders.set(dir, reader); }
+  try { return reader(); } catch { return false; } // @silent-fallback-ok — an unreadable switch is off, as before
 }

@@ -10881,6 +10881,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         }) : null;
         const appSvc = new AppConversationService({
           signer: appSigner, keyLookup: appKeyLookup, keyLedger: appKeyLedger,
+          // SEC-164 §3.5: a server transcript has its live keys masked before it is stored.
+          credentialScrubEnabled: credentialScrubEnabledReader(config.projectDir),
           // Replaced once the pairing service exists. Until then a recovery pass stops here and the
           // next one retries, so a team person's create never lands unconfined.
           confineStranded: () => { throw new Error('pairing-not-ready'); },
@@ -21865,6 +21867,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       log: (line) => console.log(line),
     });
     const messageRouter = new MessageRouter(messageStore, messageDelivery, {
+      // SEC-164 §3.5: masks live keys in a new same-agent message before it is saved or signed.
+      credentialScrubEnabled: credentialScrubEnabledReader(config.projectDir),
       localAgent: config.projectName,
       localMachine: machineId,
       serverUrl: `http://localhost:${config.port}`,

@@ -1,0 +1,22 @@
+# Live keys are masked in new incoming messages
+
+<!-- bump: patch -->
+
+## What Changed
+
+SEC-164, part 1b. On a development agent (the `security.credentialScrub.enabled` switch, dev-gated), a live key in a new incoming message is replaced with `[credential removed]` before anything keeps the text: Telegram (through the lifeline or read by the server itself, including captions and voice transcripts), Slack, WhatsApp, iMessage, messages from the app (stored masked, with the removal signed into the message's verified origin), the agent's messages between its own sessions, and the lifeline's queue and dropped-message record when the server is down. Every key masks to the same marker, so a re-sent message stays identical and its author is still recognized. The receiving session sees a one-line note that a key was removed. A team member on Telegram or Slack, or the owner writing to a Telegram topic from the app, gets one fixed message right away saying the key was removed and not saved or used, with a one-tap Secret Drop link to send it safely. Strangers get no message; their keys are simply removed.
+
+## What to Tell Your User
+
+- **Keys you send me are kept out of the chat**: "If you paste a key into a message, I now remove it before I save anything, so it never sits in our conversation history. I'll tell you right away and give you a one-tap link to send it safely instead."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Live keys masked in new incoming messages, with a one-tap Secret Drop resend link for team members | Automatic on development agents; the switch is `security.credentialScrub.enabled` |
+
+## Evidence
+
+- `tests/unit/sec164-inbound-mask.test.ts` (28 cases): masking and replay identity, the team rule (forwards, chat posts, bots, guests and unknown senders never count), the notice with its link and once per message, the notice when no link can be made, failures reported and never thrown, the lifeline queue holding only masked text with its kinds, and source-order checks that each way in masks before its first store.
+- `tests/integration/mobile-native-signed-records.test.ts`: a signed app message with a key is stored masked, reads as redacted (verified through its attestation), and the key is in no file on disk.

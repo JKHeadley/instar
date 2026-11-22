@@ -228,6 +228,75 @@ describe('Verified Pairing — wiring integrity (deps are real, not null/no-op)'
     expect(res.body.reason).not.toBe('peer-not-mutually-verified');
   });
 
+  // SEC-164 §3.5 (Chief of Staff c835d801): outgoing agent-to-agent text is masked; only a send the
+  // credential-share gate itself allowed carries the raw text, and only on the pinned encrypted send.
+  function spyRelay() {
+    const sent: Array<{ via: 'pinned' | 'auto'; text: string }> = [];
+    return {
+      sent,
+      client: {
+        ...encryptedPath(true),
+        getKnownAgents: () => [],
+        sendCredentialToPinned: (_fp: string, _pub: string, text: string) => { sent.push({ via: 'pinned', text }); return { messageId: 'm1', threadId: 't1' }; },
+        sendAutoWithThread: (_fp: string, text: string) => { sent.push({ via: 'auto', text }); return { messageId: 'm2', threadId: 't2' }; },
+        awaitRelayAck: async () => ({ status: 'delivered' }),
+        noteUnconfirmedSettled: () => {},
+        banSuspected: false,
+      },
+    };
+  }
+  function switchOn(stateDir: string): void {
+    fs.mkdirSync(path.join(stateDir, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, '.instar', 'config.json'), JSON.stringify({ developmentAgent: true }));
+  }
+  const fakeKey = () => 'ghp_' + 'x'.repeat(36); // built at run time: no key-shaped literal in the source
+
+  it('SEC-164 a. an UNMARKED send containing a key is masked even to a verified paired agent', async () => {
+    const stateDir = mkStateDir(); switchOn(stateDir);
+    const tm = new AgentTrustManager({ stateDir });
+    const self = makePeer(); const peer = makePeer();
+    seedPairing(tm, self, peer, true);
+    const relay = spyRelay();
+    const app = appWith({ enabled: true, trustManager: tm, stateDir, knownAgents: { agents: [{ name: 'dawn', fingerprint: peer.fp }] }, relayClient: relay.client });
+    await request(app).post('/threadline/relay-send').send({ targetAgent: 'dawn', message: `use ${fakeKey()} please` });
+    expect(relay.sent.length).toBeGreaterThan(0);
+    for (const m of relay.sent) { expect(m.text).not.toContain(fakeKey()); expect(m.text).toContain('[credential removed]'); }
+  });
+
+  it('SEC-164 b. a credential share the gate allows carries the raw key on the pinned send only', async () => {
+    const stateDir = mkStateDir(); switchOn(stateDir);
+    const tm = new AgentTrustManager({ stateDir });
+    const self = makePeer(); const peer = makePeer();
+    seedPairing(tm, self, peer, true);
+    const relay = spyRelay();
+    const app = appWith({ enabled: true, trustManager: tm, stateDir, knownAgents: { agents: [{ name: 'dawn', fingerprint: peer.fp }] }, relayClient: relay.client });
+    await request(app).post('/threadline/relay-send').send({ targetAgent: 'dawn', message: `use ${fakeKey()} please`, kind: 'credential-share' });
+    expect(relay.sent).toEqual([{ via: 'pinned', text: `use ${fakeKey()} please` }]);
+  });
+
+  it('SEC-164 c. a share marked by the caller but refused by the gate sends nothing, and the flag alone never unmasks', async () => {
+    const stateDir = mkStateDir(); switchOn(stateDir);
+    const tm = new AgentTrustManager({ stateDir });
+    const self = makePeer(); const peer = makePeer();
+    seedPairing(tm, self, peer, false); // not verified
+    const relay = spyRelay();
+    const app = appWith({ enabled: true, trustManager: tm, stateDir, knownAgents: { agents: [{ name: 'dawn', fingerprint: peer.fp }] }, relayClient: relay.client });
+    const res = await request(app).post('/threadline/relay-send').send({ targetAgent: 'dawn', message: `use ${fakeKey()} please`, kind: 'credential-share' });
+    expect(res.status).toBe(403);
+    expect(relay.sent).toEqual([]);
+  });
+
+  it('SEC-164 d. with verified pairing off, a send marked as a share is masked like any other', async () => {
+    const stateDir = mkStateDir(); switchOn(stateDir);
+    const tm = new AgentTrustManager({ stateDir });
+    const self = makePeer(); const peer = makePeer();
+    seedPairing(tm, self, peer, true);
+    const relay = spyRelay();
+    const app = appWith({ enabled: false, trustManager: tm, stateDir, knownAgents: { agents: [{ name: 'dawn', fingerprint: peer.fp }] }, relayClient: relay.client });
+    await request(app).post('/threadline/relay-send').send({ targetAgent: 'dawn', message: `use ${fakeKey()} please`, kind: 'credential-share' });
+    for (const m of relay.sent) { expect(m.via).toBe('auto'); expect(m.text).not.toContain(fakeKey()); }
+  });
+
   it('6. the pair-verify path actually VERIFIES signatures — a bad signature is a no-op on state', () => {
     const tm = new AgentTrustManager({ stateDir: mkStateDir() });
     const self = makePeer(); const peer = makePeer();
