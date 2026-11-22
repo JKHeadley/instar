@@ -132,3 +132,27 @@ Ready to ship dark (dev agents). The fleet turn-on of documents is gated separat
 - Unit: `tests/unit/team-computers.test.ts`, `tests/unit/mobile-device-keys.test.ts`, `tests/unit/documents-page-model.test.ts`, `tests/unit/html-site-ratchet.test.ts`, `tests/unit/awareness-entry-registry.test.ts`.
 - Integration: `tests/integration/documents-join.test.ts`, `tests/integration/mobile-dashboard-pairing.test.ts`, plus the existing documents, pairing and team suites (751 tests green).
 - E2E: `tests/e2e/documents-join.test.ts`, plus the existing documents, team and pairing e2e suites (15 files green).
+
+## Follow-up slice: the owner's phone removes a member's computer (2026-11-20)
+
+The Apple app session (build 119) found that the owner's phone could not remove a member's computer. Only the agent token could, and `GET /mobile/team/people` carried no computers. This slice adds two things:
+- An owner-only route, `POST /mobile/team/people/:personKey/computers/:deviceId/forget`. It is in the device allowlist with `ownerOnly`, re-checked in the route, and shares the forget helper with the agent's route.
+- A `computers` array on owner reads of `GET /mobile/team/people`. A member's read is unchanged.
+
+It takes access away only, and the owner is the one who may. Over-block, under-block and interactions: none new. It reuses the forget helper (ledger revocation plus `browser-unbind`). Multi-machine: the removal replicates as before. Rollback: revert, and the app's Computers section simply stays hidden. E2E: an owner phone lists and removes a computer, and a member's phone gets 403 and no list.
+
+## Browser live proof and fix (2026-11-20)
+
+A headless Chromium proof covered seven steps against a throwaway AgentServer behind a TLS front. Steps 1 to 6 all passed:
+- the join page asks for the code and shows check letters;
+- a wrong code is explained;
+- the right code opens the document with the joined key;
+- a comment through the page UI is stored signed by the joined computer;
+- "You're set up" shows with no fragment;
+- Forget ends the computer and the page returns to the no-key screen.
+
+Step 7 failed at first: the owner's phone removed a joined computer, then the member's phone linked the same browser, and the document never opened. Two causes, both fixed here:
+- The join routes named the machine with `meshSelfId ?? null` only. With no mesh id, the joined record was stored under `join:<host>` instead of the machine id the link flow uses. The join routes now fall back to the coordinator's machine id, as the link routes do.
+- The page's `activeFor` took the first active record. It now takes the newest.
+
+A key the server refuses stays stored, because it may be refused for a passing reason such as the browser switch being off. A key linked or joined afterwards takes the machine's slot and is the newest. After the fix, all 7 steps pass with no JavaScript errors; the only console lines are the expected HTTP refusals.
