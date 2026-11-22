@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "topic-rebuild-restore-rollback",
+  "sessionId": "b0ecb089-318e-4528-abee-c542f144441c",
+  "timestamp": "2026-11-22T02:49:16.632Z",
+  "artifactPath": "upgrades/side-effects/topic-rebuild-restore-rollback.md",
+  "artifactSha256": "dadef53be1e85f3d2d624769156b817814a4e0156fbda1a945a75e588f71ff7e",
+  "coveredFiles": [
+    "src/memory/TopicMemory.ts",
+    "tests/unit/topic-rebuild-aborted-restore.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two files, ~90 source lines in one module, no new decision authority, no persistent state, no operator surface, no external call. The refusal it adds is an invariant read off the table's own NOT NULL constraints, and the rollback restores rows into the store it just read.",
+  "eli16Path": "docs/specs/topic-rebuild-restore-rollback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-rebuild-restore-rollback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

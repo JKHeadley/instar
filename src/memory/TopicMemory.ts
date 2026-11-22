@@ -279,6 +279,20 @@ function parseLogLine(line: string): ParsedLogLine {
   }
 
   if (!entry || !entry.text) return { kind: 'missing-fields' };
+  // The admission test models the TABLE, not only the parser. `text` and
+  // `timestamp` are the two columns the writers bind from the entry that the
+  // schema declares NOT NULL: `messages.text`, `messages.timestamp`, and
+  // `topic_meta.last_activity`, which `insertMessage` fills from that same
+  // `timestamp`. A line without one cannot become a row, so counting it as
+  // restorable made `rebuild()`'s pre-flight promise a restore the import
+  // could not perform — and `rebuild()` deletes on the strength of that count.
+  // Measured 2026-11-16: a Slack-keyed line with no `timestamp` was counted
+  // restorable, the delete ran, and the keyed insert then threw
+  // `NOT NULL constraint failed: topic_meta.last_activity` with the store
+  // already empty. Nothing is lost by refusing it here: no row of this shape
+  // has ever been storable. Only NULL/absent is refused, because NULL is what
+  // the constraint refuses — `timestamp: ''` stores, and always has.
+  if (entry.timestamp == null) return { kind: 'missing-fields' };
 
   const key = topicMemoryKeyForLogEntry(entry);
   if (key.kind === 'none') return { kind: 'missing-fields' };
@@ -340,7 +354,9 @@ function emptyImportStats(): TopicImportStats {
 export interface TopicRebuildReport {
   /** True when the rebuild declined to delete: nothing could have restored it. */
   refused: boolean;
-  reason: 'no-source-log' | 'sources-hold-no-restorable-message' | 'import-batch-unreadable' | null;
+  reason: 'no-source-log' | 'sources-hold-no-restorable-message' | 'import-batch-unreadable'
+    /** The restore threw and the delete was rolled back: the store holds what it held. */
+    | 'restore-failed-rolled-back' | null;
   /** The logs the rebuild read, in order. */
   sources: string[];
   /** Rows in the store before the rebuild. */
@@ -1719,12 +1735,44 @@ export class TopicMemory {
       return 0;
     }
 
+    // The pre-flight above establishes that the sources HOLD rows. It cannot
+    // establish that every one of them will LAND, and a restore that throws
+    // part-way used to leave the store empty with the exception on its way to
+    // the caller — the same outcome the pre-flight exists to prevent, reached
+    // through a different door. So the delete is reversible for the length of
+    // the restore: one copy of rows that are about to be deleted anyway,
+    // dropped on the way out either way.
+    //
+    // NOT covered, stated rather than implied: the copy lives for this
+    // connection, so a hard CRASH mid-restore (not an exception) still leaves
+    // the store as the import left it. Covering that needs a durable copy and
+    // a rule for a second process opening the store mid-rebuild, which is a
+    // decision this change does not make.
+    this.snapshotForRebuild();
     this.db.exec('DELETE FROM messages');
     this.db.exec('DELETE FROM topic_meta');
     // Keep summaries — they're LLM-generated and expensive to recreate
     this.db.exec(`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')`);
 
-    const { total: restored } = await this.importAllLogs(jsonlPath);
+    let restored: number;
+    try {
+      ({ total: restored } = await this.importAllLogs(jsonlPath));
+    } catch (err) {
+      this.restoreRebuildSnapshot();
+      this._lastRebuild = {
+        refused: true, reason: 'restore-failed-rolled-back', sources, existingMessages,
+        restorable, deleted: 0, restored: 0,
+      };
+      this._lastImportStats = emptyImportStats();
+      console.error(
+        `[TopicMemory] rebuild FAILED and was ROLLED BACK: the restore threw after the delete, and the `
+        + `${existingMessages} message(s) that were in the store are in it again. Nothing was lost. `
+        + `Cause: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    } finally {
+      this.dropRebuildSnapshot();
+    }
 
     this._lastRebuild = {
       refused: false, reason: null, sources, existingMessages, restorable,
@@ -1738,6 +1786,44 @@ export class TopicMemory {
       );
     }
     return restored;
+  }
+
+  /**
+   * Hold a copy of every row a rebuild's destructive step is about to delete.
+   *
+   * TEMP, so it belongs to this connection and cannot outlive it or be read as
+   * live data: its only reader is `restoreRebuildSnapshot`, microseconds-to-
+   * seconds later in the same call. `CREATE TABLE AS SELECT *` copies the
+   * columns in declaration order, including `id` — which the restore's
+   * `INSERT INTO ... SELECT *` depends on, and which `insertKeyedMessage`'s
+   * adopt path keys on, so a restored row is the same row.
+   */
+  private snapshotForRebuild(): void {
+    if (!this.db) return;
+    this.dropRebuildSnapshot();
+    this.db.exec('CREATE TEMP TABLE rebuild_snapshot_messages AS SELECT * FROM main.messages');
+    this.db.exec('CREATE TEMP TABLE rebuild_snapshot_topic_meta AS SELECT * FROM main.topic_meta');
+  }
+
+  /** Put the store back as `snapshotForRebuild` found it. */
+  private restoreRebuildSnapshot(): void {
+    if (!this.db) return;
+    const db = this.db;
+    db.transaction(() => {
+      db.exec('DELETE FROM main.messages');
+      db.exec('DELETE FROM main.topic_meta');
+      db.exec('INSERT INTO main.messages SELECT * FROM temp.rebuild_snapshot_messages');
+      db.exec('INSERT INTO main.topic_meta SELECT * FROM temp.rebuild_snapshot_topic_meta');
+    })();
+    // messages_fts is external-content over messages: re-derive it so a
+    // restored row is searchable again, as the delete path does.
+    db.exec(`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')`);
+  }
+
+  private dropRebuildSnapshot(): void {
+    if (!this.db) return;
+    this.db.exec('DROP TABLE IF EXISTS temp.rebuild_snapshot_messages');
+    this.db.exec('DROP TABLE IF EXISTS temp.rebuild_snapshot_topic_meta');
   }
 
   /**
