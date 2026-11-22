@@ -40,3 +40,5 @@ Revert the code and redeploy normally. No migration, source-state edits or appro
 
 ## Validation and review
 68 focused tests passed across console-plans, console-needs-pages and needs-read. Includes a real server composer test with tracking, scheduled and explicit owner requests, mixed-source grouping, paging, denied reads and scroll-position preservation. Three independent reviewers checked correctness, gaps and missing tests. Correctness and accessibility reviewers re-read corrections and concurred. Complete verification will run through the throughput coordinator; targeted checks are not a full-green claim. Browser previews use captured live /needs data and current source assets, not a released deployment.
+
+Browser review: previews at 1440×1000 and 390×844 use captured live data and current assets. The count appeared twice in the expanded heading, so the earlier saved wording repair is included here: the badge alone carries the count. Pre-push rejected a malformed release fragment before sending; corrected by adding its required section heading. No gate was waived.

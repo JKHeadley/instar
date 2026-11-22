@@ -48,7 +48,7 @@ export function stripModel(res, { expanded = false } = {}) {
     // "12+" when some place could not be checked: at least that many (the line under it names what was missed).
     badge: `${count}${complete ? '' : '+'}`,
     incomplete: !complete,
-    title: count > 0 ? `Needs you · ${count}` : 'Nothing found so far',
+    title: count > 0 ? 'Needs you' : 'Nothing found so far',
     rows,
     more: Math.max(0, items.length - rows.length),
     truncated,
