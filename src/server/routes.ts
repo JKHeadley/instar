@@ -368,6 +368,7 @@ import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
 import { isValidTimeZone } from '../core/RoutingSpendCapsStore.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { durableDropExpired, sweepExpiredDurableDrops } from './secretDropDurable.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
   PlaywrightProfileRegistry,
@@ -31337,6 +31338,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Secret Drop (secure secret submission) ─────────────────────
 
   const secretDrop = new SecretDrop(ctx.config.projectName || 'Agent');
+  // SEC-157: stored Secret Drop copies older than their age limit are removed when the routes start.
+  // Only when a secret store already exists here: never creates one, and never throws during route setup
+  // (a minimal context with no state folder has none).
+  if (ctx.config.secrets?.persistDrops !== false && typeof ctx.config.stateDir === 'string' && ctx.config.stateDir) {
+    try {
+      const bootStore = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+      if (bootStore.exists) {
+        const removed = sweepExpiredDurableDrops(bootStore as never, Date.now());
+        if (removed > 0) console.log(`[secret-drop] removed ${removed} stored submission(s) past their age limit`);
+      }
+    } catch (err) {
+      // @silent-fallback-ok — logged; the retrieve fallback still refuses an expired copy, and the next submission sweeps again
+      console.warn(`[secret-drop] startup sweep of stored submissions failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // Stuck-consumer hardening: when an agent's consumer chain fails to
   // claim a submitted secret within the grace window, route a visible
@@ -31687,6 +31703,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (ctx.config.secrets?.persistDrops !== false && !submission.browserHost) {
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+        // SEC-157: each new submission also clears stored copies past their age limit.
+        try { sweepExpiredDurableDrops(store as never, Date.now()); } catch { /* @silent-fallback-ok — the persist below still runs; the fallback refuses expired copies */ }
         store.set(`secretDrops.${req.params.token}`, {
           mintAuth: submission.mintAuth ?? 'none',
           label: submission.label,
@@ -31815,7 +31833,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
-        fs.writeFileSync(ctxPath, contextLines.join('\n'));
+        // SEC-157: the thread history is private: owner-only, not the default world-readable mode.
+        fs.writeFileSync(ctxPath, contextLines.join('\n'), { mode: 0o600 });
 
         const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
         const relayBlock = buildTelegramRelayBlock({ topicId, framework: 'claude-code' });
@@ -31941,7 +31960,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const durable = store.get(`secretDrops.${token}`) as
           | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string>; mintAuth?: MintAuth }
           | undefined;
-        if (durable && durable.values) {
+        if (durable && durable.values && durableDropExpired(durable.receivedAt, Date.now())) {
+          // SEC-157: past its age limit, a stored copy is gone. Delete it rather than hand it out.
+          try { store.delete(`secretDrops.${token}`); } catch { /* @silent-fallback-ok — never returned either way; the next sweep removes it */ }
+        } else if (durable && durable.values) {
           if (consume && !durableDeleted()) { refuseUnconsumed(); return; }
           submission = {
             mintAuth: durable.mintAuth, // absent on records stored before this change = unverified

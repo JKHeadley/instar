@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "sec157-drop-copy-age-limit",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T16:20:16.817Z",
+  "artifactPath": "upgrades/side-effects/sec157-drop-copy-age-limit.md",
+  "artifactSha256": "529d59ff558ba421377b00fb4e3b6a6b135cf4bea884c18c7c88c8a66129d9fc",
+  "coveredFiles": [
+    "docs/specs/sec157-drop-copy-age-limit.eli16.md",
+    "src/server/SecretDrop.ts",
+    "src/server/routes.ts",
+    "src/server/secretDropDurable.ts",
+    "tests/e2e/secret-drop-store-first-lifecycle.test.ts",
+    "tests/integration/secret-drop-store-first.test.ts",
+    "tests/unit/sec157-drop-copy-age-limit.test.ts",
+    "upgrades/next/sec157-drop-copy-age-limit.md",
+    "upgrades/side-effects/sec157-drop-copy-age-limit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-157: stored Secret Drop copies get a 24-hour age limit (fallback refuses and deletes, startup and on-submit sweeps), the session context file is owner-only, the form wording is corrected; reversible by revert; independently reviewed.",
+  "eli16Path": "docs/specs/sec157-drop-copy-age-limit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec157-drop-copy-age-limit.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "two bounded one-pass sweeps, at route setup and on a person submission; no timer, retry or loop"
+  }
+}
