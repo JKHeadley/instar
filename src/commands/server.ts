@@ -8093,6 +8093,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
+        // lease-freshness-lapse-retry — the coordinator's one-snapshot lease verdict and renewal gap, so a send refused
+        // at the boundary is named by what the coordinator observed (null without a lease coordinator).
+        leaseFreshness: () => coordinator.leaseFreshness(),
         isSessionLive: binding => {
           const session = state.getSession(binding.sessionId);
           return session?.status === 'running' && session.framework === binding.harnessId;
@@ -20794,6 +20797,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
       });
       setNeverSilentInstance({ store: neverSilent.store, enabled: () => nsCfg().enabled });
+      // lease-freshness-lapse-retry — count this machine's replies held at the send boundary for the lease. The
+      // origin runtime boots before never-silent exists, so the recorder is assigned late (as readDetectorHealth is).
+      // The conversation key follows the delivery notice: the topic for the main chat, the offset topic for the
+      // issues chat, `chat:<id>` for any other authorized destination. No-op while never-silent reads disabled.
+      if (telegramOriginBoot && originTelegramConfig) {
+        const chats = originTelegramConfig.config as { chatId?: unknown; issuesChatId?: unknown };
+        const conversationKey = (chatId: string | null, topicId: string | null): string => {
+          const topic = topicId === null ? 1 : Number(topicId);
+          if (chatId !== null && chatId === String(chats.chatId)) return String(topic);
+          if (chatId !== null && chats.issuesChatId != null && chatId === String(chats.issuesChatId)) return String(10_000_000_000 + topic);
+          return `chat:${chatId ?? 'unknown'}`;
+        };
+        telegramOriginBoot.runtime.options.sendHoldIncidents = {
+          held: (input) => {
+            if (!nsCfg().enabled) return;
+            neverSilent.store.recordSendHold('telegram', conversationKey(input.chatId, input.topicId),
+              { operationId: input.operationId, reason: input.reason, heldAt: input.heldAt, deadlineAt: input.deadlineAt });
+          },
+          delivered: (input) => { if (nsCfg().enabled) neverSilent.store.recordSendHoldDelivered(input.operationId, input.deliveredAt); },
+        };
+      }
       if (nsTelegram) {
         nsTelegram.setNeverSilentAskHandler((tap) => neverSilent.handleTelegramTap(tap));
         const priorNs = nsTelegram.onMessageLogged;

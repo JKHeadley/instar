@@ -2667,13 +2667,15 @@ export class TelegramAdapter implements MessagingAdapter {
   static readonly OWNER_DM_HELD = -1;
   /**
    * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
-   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
-   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
-   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   * (a unit test keeps this list a superset of it) plus the request-bound local refusals
+   * (ORIGIN_LOCAL_REFUSAL_REASONS: credential-capacity-unavailable, which the capacity owner releases and the
+   * recovery path re-sends (2026-11-14: such holds on Echo landed late), and the two lease refusals, retried
+   * within seconds once the lease is held again). Any other "held" error is a refusal with no retry behind it
+   * (held is the error's default outcome).
    */
   static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
     'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
-    'credential-capacity-unavailable',
+    'credential-capacity-unavailable', 'lease-freshness-lapsed', 'lease-not-held-at-send',
   ]);
 
   /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */

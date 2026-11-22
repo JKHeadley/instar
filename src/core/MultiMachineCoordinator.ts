@@ -23,7 +23,7 @@ import { HeartbeatManager } from './HeartbeatManager.js';
 import { SecurityLog } from './SecurityLog.js';
 import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
-import type { LeaseCoordinator } from './LeaseCoordinator.js';
+import type { LeaseCoordinator, LeaseHoldVerdict } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
 import { ChurnBreaker } from './churnBreaker.js';
@@ -1270,6 +1270,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** Whether this machine structurally holds the lease (false if none attached). */
   holdsLease(): boolean {
     return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
+  }
+
+  /**
+   * lease-freshness-lapse-retry — how long since this machine last CONFIRMED a lease
+   * renewal, and the lease lifetime, so a send refused at the network boundary can say
+   * whether the renewal lapsed or the lease was lost within its lifetime. Null when no
+   * lease coordinator is attached (nothing to measure). Read-only.
+   */
+  leaseFreshness(): { msSinceConfirmedRenewal: number | null; ttlMs: number; verdict: LeaseHoldVerdict } | null {
+    return this.leaseCoordinator?.renewalFreshness() ?? null;
   }
 
   /**
