@@ -55,6 +55,7 @@ import {
   type ValidatedProfilePatch,
 } from './topicProfileValidation.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { FRAMEWORK_DISPLAY_NAMES, CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
 import { CROSS_TOPIC_FIELDS } from './topicCreationProvenance.js';
 
 // ── locally-defined shared types (noted in the build report) ────────────────
@@ -168,6 +169,7 @@ const NEW_AXES = ['model', 'modelTier', 'thinkingMode', 'effort', 'escalationOve
 const ALL_FIELDS = ['framework', ...NEW_AXES] as const;
 const EXECUTION_FIELDS = ALL_FIELDS.filter(field => field !== 'messageOriginDisplay');
 const DEFAULT_REAPPLY_COOLDOWN_MS = 600_000;
+class ProposalChangedError extends Error {}
 
 export class TopicProfileWriteSurface {
   private readonly deps: TopicProfileWriteSurfaceDeps;
@@ -194,6 +196,8 @@ export class TopicProfileWriteSurface {
     discloseInReply?: boolean;
     /** §10.1 propose-confirm provenance flag for the audit. */
     agentComposedPayload?: boolean;
+    /** Server-held disclosure and eligibility fence; never read from HTTP bodies. */
+    confirmation?: { echo: string; name?: string; eligible: () => boolean; validAtCommit?: () => boolean };
     /** Trusted HTTP cosmetic compare-and-set; store checks under its lock. */
     expectedDisplayRevision?: string;
     /**
@@ -309,26 +313,38 @@ export class TopicProfileWriteSurface {
     const before = this.profileSnapshot(topicKey);
     let supersededParked = false;
     let changed = false;
-    if (liveFields.length > 0) {
+    if (liveFields.length > 0 || req.confirmation) {
       try {
         const result = await this.deps.store.mutate(
           topicKey,
           { ...livePatch, updatedBy },
           // §5.1 cadence: every accepted write here is individually disclosed
           // (no §8 coalescing window until the orchestrator is live).
-          { shiftPrevious: true, expectedDisplayRevision: req.expectedDisplayRevision },
+          { shiftPrevious: true, expectedDisplayRevision: req.expectedDisplayRevision,
+            ...(req.confirmation ? {
+              beforeWrite: () => {
+                const fresh = this.renderProposalEcho(topicKey, req.patch, req.confirmation!.name);
+                if (!req.confirmation!.eligible() || req.confirmation!.validAtCommit?.() === false
+                  || !fresh.ok || fresh.echo !== req.confirmation!.echo) throw new ProposalChangedError();
+              },
+              ...(shadowFields.length ? { shadow: shadowNewAxes } : {}),
+            } : {}),
+          },
         );
         changed = result.changed;
         supersededParked = result.supersededParked;
       } catch (err) {
+        if (err instanceof ProposalChangedError) return { ok: false,
+          reply: 'The settings or ownership changed after that question. I need to send a fresh question before changing anything.',
+          refusal: { reason: 'proposal-changed' } };
         return this.writeFailure(err, topicKey, updatedBy, req.origin);
       }
       // §5.3: the mutate's flush durably landed (mutate resolved) — a local
       // operator/HTTP write cancels any pending transfer-pull REPLACE.
-      this.notifyLocalWriteDurable(topicKey, req.origin);
+      if (liveFields.length > 0) this.notifyLocalWriteDurable(topicKey, req.origin);
     }
 
-    if (shadowFields.length > 0) {
+    if (shadowFields.length > 0 && !req.confirmation) {
       try {
         // §14: the dry-run shadow records the intent; resolution never reads it.
         const current = this.deps.store.get(topicKey)?.intendedProfile?.fields ?? {};
@@ -354,6 +370,12 @@ export class TopicProfileWriteSurface {
       new: after,
       ...(supersededParked ? { supersededParked: true } : {}),
     }) ?? new Date(this.now()).toISOString();
+
+    if (req.confirmation && !req.confirmation.eligible()) {
+      const reply = 'The settings were saved. I did not start or restart the conversation because I could no longer verify permission to do that.';
+      if (!req.discloseInReply) await this.deps.disclose(topicKey, reply).catch(() => {});
+      return { ok: true, reply, appliedLive: liveFields, shadowed: shadowFields };
+    }
 
     // ── application arm ─────────────────────────────────────────────────────
     const fullyLive = regime.enabled && !regime.dryRun;
@@ -659,6 +681,7 @@ export class TopicProfileWriteSurface {
   renderProposalEcho(
     topicKey: string | number,
     patch: ProfilePatchInput,
+    conversationName?: string,
   ): { ok: true; echo: string; patch: ValidatedProfilePatch } | { ok: false; reply: string; validation?: ProfileValidationError } {
     const key = String(topicKey);
     const resolved = this.deps.resolver.resolve(key);
@@ -670,27 +693,37 @@ export class TopicProfileWriteSurface {
       return { ok: false, reply: 'This topic has a local-model binding — clear it first to pin a cloud model.' };
     }
     const regime = this.deps.regime();
-    const lines: string[] = ['Proposed profile change for this topic:'];
+    const name = conversationName ? `“${conversationName}”` : 'this conversation';
+    const lines: string[] = [`Change how ${name} runs?`];
+    const labels: Record<string, string> = { model: 'Model', modelTier: 'Model level', thinkingMode: 'Thinking level',
+      effort: 'Reasoning effort', escalationOverride: 'Automatic model upgrades', messageOriginDisplay: 'Message signatures' };
     for (const field of ALL_FIELDS) {
       const value = (validated.patch as Record<string, unknown>)[field];
       if (value === undefined) continue;
       const rendered = value === null ? 'cleared' : typeof value === 'object' ? JSON.stringify(value) : String(value);
       if (field === 'framework') {
-        lines.push(`  • framework → ${rendered}: switches now (live)`);
+        const engine = value === null ? 'the default engine' : FRAMEWORK_DISPLAY_NAMES[value as IntelligenceFramework] ?? rendered;
+        lines.push(`Use ${engine} for ${name}.`);
+        lines.push(regime.enabled && !regime.dryRun && this.deps.orchestrator
+          ? 'If a session is running, it will wait for an idle moment before restarting with a summary of recent work. Otherwise, this engine applies when the conversation next starts. The full transcript may not carry over.'
+          : 'If a session is running, it will restart with a summary of recent work. Otherwise, this engine applies when the conversation next starts. The full transcript may not carry over.');
+        if (regime.enabled && !regime.dryRun && resolved.framework === CLAUDE_CODE_FRAMEWORK && value !== null && value !== CLAUDE_CODE_FRAMEWORK) lines.push('Automatic upgrades to a stronger model for heavy work will no longer be available in this conversation.');
       } else if (field === 'messageOriginDisplay') {
-        lines.push(`  • Message signature display → ${rendered}: applies to new messages after confirmation; recording continues`);
+        const signatureLabels: Record<string, string> = { enabled: 'Message signatures', machine: 'Machine name', harness: 'Engine name', model: 'Model name' };
+        lines.push(value === null ? 'Return message signatures to the defaults.'
+          : Object.entries(value as Record<string, boolean>).map(([key, enabled]) => `${signatureLabels[key]}: ${enabled ? 'show' : 'hide'}.`).join(' '));
+        lines.push('This affects new messages; origin recording continues.');
       } else if (value === null) {
-        lines.push(`  • ${field} → ${rendered}: applies now (recovery write, live in every regime)`);
+        lines.push(`${labels[field]}: return to the default setting after confirmation.`);
       } else if (!regime.enabled) {
-        lines.push(`  • ${field} → ${rendered}: refused — the ${field} control isn't enabled on this agent`);
+        lines.push(`${labels[field]}: ${rendered} cannot be applied because this setting is not enabled.`);
       } else if (regime.dryRun) {
-        lines.push(`  • ${field} → ${rendered}: recorded as a dry-run intent (not applied)`);
+        lines.push(`${labels[field]}: ${rendered} will be recorded for preview only. It will not change the running model.`);
       } else {
-        lines.push(`  • ${field} → ${rendered}: applies after you confirm`);
+        lines.push(`${labels[field]}: ${rendered} will apply after confirmation, when the conversation can restart safely.`);
       }
     }
     if (lines.length === 1) return { ok: false, reply: 'Nothing to propose — the delta is empty.' };
-    lines.push('Reply "yes" to apply exactly the above.');
     return { ok: true, echo: lines.join('\n'), patch: validated.patch };
   }
 
