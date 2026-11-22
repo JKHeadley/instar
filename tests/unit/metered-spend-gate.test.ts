@@ -65,6 +65,15 @@ function mkGate(opts: {
       designatedMachineId: opts.designated ?? 'm1',
     });
   }
+  // gemini-payg §2/§5: every non-probe door needs a door policy naming its callers
+  // (deny by default, re-checked under the reservation lock). Limits here are wide so
+  // this matrix keeps exercising the parent gate's own checks.
+  capsStore.setDoorPolicy('test', capsStore.version(), 'openrouter-api', {
+    perCallCeilingUsd: 1000, provisionalCeilingUsd: 1000, e2MonthSharePct: 0, e2DayCapUsd: 0, e1PassesPerRound: 0,
+    keyGeneration: null, meteredCallers: { callers: ['doorway-liveness'], e3Components: [] }, throughputFloorTps: {},
+    releaseState: 'armed-pending-proof', designationEpoch: 1,
+  });
+  capsStore.recordReleaseLive('test', 'openrouter-api', { proofReserveId: 'p', intentHash: 'h' });
   if (opts.frozen) capsStore.freeze('test', 'metered_openrouter_bench');
   const prices = new RoutingPriceAuthority({ projectDir, stateDir, now });
   const gate = new MeteredSpendGate({
@@ -78,7 +87,7 @@ function mkGate(opts: {
   return { gate, ledger, capsStore };
 }
 
-const REQ = { door: 'openrouter-api', modelId: 'openai/gpt-5.5', inputTokens: 1_000_000, maxOutputTokens: 100_000 };
+const REQ = { door: 'openrouter-api', modelId: 'openai/gpt-5.5', inputTokens: 1_000_000, maxOutputTokens: 100_000, component: 'gate-matrix', caller: 'doorway-liveness' as const };
 
 async function refusal(p: Promise<unknown>): Promise<MoneyGateRefusal> {
   try {
@@ -184,6 +193,13 @@ describe('MeteredSpendGate — fail-closed matrix', () => {
     const { gate } = mkGate({ caps: { lifetimeCapUsd: 60, dailyCapUsd: 10 } });
     const first = await gate.admit(REQ); // $8 of a $10 daily cap
     expect(first.reserveUsd).toBeCloseTo(8, 6);
+    // While the first is still OUTSTANDING, settled($0) + 8 would fit: the caller
+    // should retry shortly (gemini-payg §5 `reserves-outstanding`), not give up.
+    const pending = await refusal(gate.admit(REQ));
+    expect(pending.reason).toBe('reserves-outstanding');
+    expect(pending.facts?.retryAfterSec).toBeGreaterThan(0);
+    // Once it SETTLES at $8, settled 8 + 8 > 10 is a genuine cap-exceeded.
+    await gate.settleActual(first.keyRef, first.reserveId, 8);
     expect((await refusal(gate.admit(REQ))).reason).toBe('cap-exceeded'); // 8 + 8 > 10
   });
 
@@ -194,7 +210,9 @@ describe('MeteredSpendGate — fail-closed matrix', () => {
     const refused = results.filter((r) => r.status === 'rejected');
     expect(ok.length).toBe(1); // $8 fits; the second $8 would breach $12
     expect(refused.length).toBe(1);
-    expect(((refused[0] as PromiseRejectedResult).reason as MoneyGateRefusal).reason).toBe('cap-exceeded');
+    // The second SEES the first's outstanding reserve (committed 8 + 8 > 12); since
+    // settled 0 + 8 would fit, it is `reserves-outstanding` (gemini-payg §5).
+    expect(((refused[0] as PromiseRejectedResult).reason as MoneyGateRefusal).reason).toBe('reserves-outstanding');
   });
 
   it('settle path: no-charge outcomes settle $0 and release headroom', async () => {

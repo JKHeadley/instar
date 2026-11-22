@@ -119,7 +119,7 @@ export type ProposeResult =
   | { status: 'awaiting-acceptance' | 'sent'; requestId: string; code: string; expiresAt: string; deduped?: boolean; via?: 'chat' | 'device' }
   | { status: 'undelivered'; message: string }
   | { status: 'not-recorded'; message: string }
-  | { status: 'too-large' | 'too-many-open'; message: string };
+  | { status: 'too-large' | 'too-many-open' | 'too-many-undelivered' | 'withdrawn-recently'; message: string };
 
 /** The card's change lines may not exceed this (the card must fit whole in one message). */
 export const MAX_CARD_SUMMARY = 3000;
@@ -158,6 +158,9 @@ export class AccountPathService {
       if (dup.adapter === 'device') return { status: 'sent', via: 'device', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true };
       return { status: dup.cardMessageId ? 'sent' : 'awaiting-acceptance', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true };
     }
+    // agent-work-cards-default §5 (b): a withdrawn proposal cannot be re-raised for `cardTtlDays`, so withdraw-and-re-raise mints no fresh cards.
+    const recentlyWithdrawn = this.d.store.allRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && r.status === 'withdrawn' && new Date(r.expiresAt) > this.now());
+    if (recentlyWithdrawn) return { status: 'withdrawn-recently', message: `This exact change was withdrawn by the agent and cannot be asked again until ${recentlyWithdrawn.expiresAt}.` };
     const code = newApprovalCode((c) => this.d.store.codeTaken(c));
     const expiresAt = new Date(this.now().getTime() + this.d.cardTtlDays() * 86_400_000).toISOString();
     const requestId = `tr-${proposalHash.slice(0, 12)}-${code}`;
@@ -165,9 +168,15 @@ export class AccountPathService {
     if (summary.join('\n').length > MAX_CARD_SUMMARY) {
       return { status: 'too-large', message: 'This change is too large to show whole on one card, so no card was sent. Split it into smaller changes.' };
     }
-    // At most a few open requests per person, so the person is never flooded toward approving.
-    if (this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now()).length >= MAX_OPEN_REQUESTS) {
+    // At most a few open requests per person, so the person is never flooded toward approving. Only a DELIVERED
+    // request (a card in the chat, or a device request) counts toward the open cap (agent-work-cards-default §5):
+    // undelivered chat requests have their own cap of the same size, and the acceptance flush sends what fits.
+    const live = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now());
+    if (live.filter((r) => this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
       return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting for the person; no new card is sent until one is answered or expires.` };
+    }
+    if (live.filter((r) => !this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
+      return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting to be delivered to the person (their chat has not accepted approvals yet); no new one is recorded until one is sent, answered or expires.` };
     }
     if (!adapter) {
       // No chat: the request goes to the accepted devices (app-trust-approval §B, When there's no chat).
@@ -281,7 +290,12 @@ export class AccountPathService {
         await this.d.store.write('acceptance', { acceptanceId: `acc-${r.uniqueKey}`, principal, adapter, accountId: ownerId, acceptedAt: this.now().toISOString(), messageId: r.messageId });
       }
       await this.d.adapters[adapter]?.replyTo(r.chatId, r.messageId, 'Recorded. Your replies from this account now count as your approval. You can withdraw this at any time by saying so.');
-      for (const q of this.d.store.openRequests().filter((x) => x.principal === principal && x.adapter === adapter && !x.cardMessageId)) {
+      // The flush is bounded (agent-work-cards-default §5): min(cap − delivered open, undelivered), newest first; the
+      // rest stay undelivered and expire at `cardTtlDays`.
+      const open = this.d.store.openRequests().filter((x) => x.principal === principal && new Date(x.expiresAt) > this.now());
+      const room = Math.max(0, MAX_OPEN_REQUESTS - open.filter((x) => this.delivered(x)).length);
+      const undelivered = open.filter((x) => x.adapter === adapter && !x.cardMessageId).sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : a.expiresAt > b.expiresAt ? -1 : 0));
+      for (const q of undelivered.slice(0, room)) {
         await this.sendCard(q);
       }
       return 'acceptance-recorded';
@@ -385,6 +399,32 @@ export class AccountPathService {
   }
 
   /** The person withdraws their acceptance (a narrowing: stops new consumption, keeps committed grants). */
+  /** A request counts as delivered when its card is in the person's chat, or it is a device request. */
+  private delivered(r: { adapter: string; cardMessageId: string }): boolean { return r.adapter === 'device' || !!r.cardMessageId; }
+
+  /**
+   * agent-work-cards-default §5 (b): withdraw a request the agent raised and that no person has answered. The stored
+   * request becomes `withdrawn`, its chat card (when delivered) is told so, a reply with its code is refused, and the
+   * same `proposalHash` cannot be re-raised for `cardTtlDays`. A `board-policy` request (the owner's path to the lighter
+   * policy) cannot be withdrawn by the agent. Withdrawing never approves anything.
+   */
+  async withdraw(requestId: string): Promise<{ ok: true; status: 'withdrawn'; cardTold: boolean } | { ok: false; reason: 'not-found' | 'not-open' | 'board-policy-not-withdrawable' | 'not-recorded' }> {
+    const req = this.d.store.request(requestId);
+    if (!req) return { ok: false, reason: 'not-found' };
+    if (req.status !== 'open') return { ok: false, reason: 'not-open' };
+    if ((req.change as { kind?: string } | undefined)?.kind === 'board-policy') return { ok: false, reason: 'board-policy-not-withdrawable' };
+    const w = await this.d.store.write('request-status', { requestId, status: 'withdrawn' });
+    if (!w.ok) return { ok: false, reason: 'not-recorded' };
+    this.d.log?.('trust-request-withdrawn', { requestId, proposalHash: req.proposalHash });
+    let cardTold = false;
+    if (req.adapter !== 'device' && req.cardMessageId) {
+      const port = this.d.adapters[req.adapter];
+      // The port has no edit verb: the card is told in a threaded reply, which every reader of the card sees.
+      cardTold = !!(await port?.replyTo(req.cardChatId, req.cardMessageId, 'The agent withdrew this request. Replying to it approves nothing now.').catch(() => false));
+    }
+    return { ok: true, status: 'withdrawn', cardTold };
+  }
+
   async withdrawAcceptance(principal: string, adapter: AdapterKind): Promise<boolean> {
     const a = this.d.store.acceptance(principal, adapter);
     if (!a) return false;

@@ -29,6 +29,7 @@ import type {
   SubscriptionFramework,
 } from './SubscriptionPool.js';
 import { isLocallyExecutable, requiresOwnerRelogin } from './SubscriptionPool.js';
+import { rankAccounts, windowAwareBindingPct, windowNow, isValidState } from './windowAwareChoice.js';
 
 /** The binding window for swap decisions: the 7-day window is the scarce one. */
 export interface SelectionOptions {
@@ -39,6 +40,21 @@ export interface SelectionOptions {
   nowMs?: number;
   /** Restrict placement/headroom to accounts usable by this session framework. */
   framework?: SubscriptionFramework;
+  /**
+   * quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): read each window as it
+   * stands now and rank in two tiers. Absent/false = today's selection, unchanged.
+   */
+  windowAware?: boolean;
+  /** The model the session will launch (window-aware only; Fable binds the Fable window). */
+  model?: string | null;
+  /** Fire-and-forget request for an out-of-cycle reading (window-aware only). */
+  requestRead?: (accountId: string) => void;
+  /** Consecutive failed out-of-cycle reads (window-aware only; ends the 5-hour grace). */
+  failedReads?: (accountId: string) => number;
+  /** The poll cadence the 5-hour grace is measured in (window-aware only). */
+  pollIntervalMs?: number;
+  /** The account's out-of-cycle re-read breaker is open (window-aware poolHeadroom reports it). */
+  breakerOpen?: (accountId: string) => boolean;
 }
 
 const DEFAULT_SOFT_THRESHOLD = 90;
@@ -54,7 +70,21 @@ const DEFAULT_SOFT_THRESHOLD = 90;
  * input, which is why the anti-thrash validity gate exists on top:
  * swap-continuity-antithrash §3.3 bound 0).
  */
-export function bindingUtilization(snap: AccountQuotaSnapshot | null | undefined): number {
+export function bindingUtilization(snap: AccountQuotaSnapshot | null | undefined): number;
+/**
+ * Window-aware form (quota pacing step 2, §2): the highest VALID percent over the binding
+ * windows (a rolled, unknown, unread or stale window contributes nothing), or null when none
+ * is valid. Display callers keep the one-argument form, unchanged.
+ */
+export function bindingUtilization(
+  snap: AccountQuotaSnapshot | null | undefined,
+  at: { nowMs: number; model?: string | null; provider?: string },
+): number | null;
+export function bindingUtilization(
+  snap: AccountQuotaSnapshot | null | undefined,
+  at?: { nowMs: number; model?: string | null; provider?: string },
+): number | null {
+  if (at) return windowAwareBindingPct(snap, at);
   if (!snap) return 0;
   const utils: number[] = [];
   if (snap.sevenDay) utils.push(snap.sevenDay.utilizationPct);
@@ -106,6 +136,18 @@ export function selectAccount(
 ): SubscriptionAccount | null {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
   const nowMs = opts.nowMs ?? Date.parse('2026-01-01T00:00:00Z'); // tests pass nowMs; prod callers always set it
+  if (opts.windowAware === true) {
+    return rankAccounts(accounts, {
+      nowMs,
+      softThresholdPct: soft,
+      framework: opts.framework,
+      model: opts.model,
+      excludeId,
+      failedReads: opts.failedReads,
+      pollIntervalMs: opts.pollIntervalMs,
+      onNeedsRead: opts.requestRead,
+    }).ranked[0]?.account ?? null;
+  }
   const eligible = accounts.filter(
     (a) =>
       isLocallyExecutable(a) &&
@@ -156,8 +198,11 @@ export function poolHeadroom(
    * changed job scheduling for agents that never opted into grok.
    */
   bestFramework?: SubscriptionFramework;
+  /** quota-pacing step 2: the best account's out-of-cycle re-read breaker is open. */
+  rereadBreaker?: 'open';
 } {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
+  if (opts.windowAware === true) return windowAwarePoolHeadroom(accounts, opts, soft);
   const eligible = accounts.filter(
     (a) =>
       isLocallyExecutable(a) &&
@@ -177,6 +222,56 @@ export function poolHeadroom(
   const fiveHourPercent = clamp(best.lastQuota?.fiveHour?.utilizationPct);
   const degraded = weeklyPercent === null && fiveHourPercent === null;
   return { placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.framework };
+}
+
+/**
+ * Window-aware pool headroom (quota pacing step 2, §3). Model-blind by design, and it
+ * counts unmeasured-tier accounts as placeable exactly as `selectAccount` falls back to that
+ * tier, so `placeable ⟺ selectAccount(...) !== null` holds for every model (a Fable window
+ * can only reorder or fall back, never empty the pick). The best account comes from the
+ * measured tier first (most headroom); only a best account from the unmeasured tier sets
+ * `degraded`. A rolled, unknown or unread window reports null, never last cycle's number.
+ */
+function windowAwarePoolHeadroom(
+  accounts: SubscriptionAccount[],
+  opts: SelectionOptions,
+  soft: number,
+): ReturnType<typeof poolHeadroom> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const ranked = rankAccounts(accounts, {
+    nowMs,
+    softThresholdPct: soft,
+    framework: opts.framework,
+    model: null,
+    failedReads: opts.failedReads,
+    pollIntervalMs: opts.pollIntervalMs,
+  }).ranked;
+  if (ranked.length === 0) {
+    return { placeable: false, weeklyPercent: null, fiveHourPercent: null, degraded: false };
+  }
+  const measured = ranked.filter((x) => x.tier === 'measured');
+  const pool = measured.length > 0 ? measured : ranked;
+  let best = pool[0];
+  for (const x of pool) {
+    const bx = x.bindingPct ?? 101;
+    const bb = best.bindingPct ?? 101;
+    if (bx < bb || (bx === bb && x.account.id < best.account.id)) best = x;
+  }
+  const clamp = (v: number | null): number | null =>
+    typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
+  const pctOf = (key: 'sevenDay' | 'fiveHour'): number | null => {
+    const r = windowNow(best.account.lastQuota, key, nowMs, { provider: best.account.provider });
+    return isValidState(r.state) ? clamp(r.pct) : null;
+  };
+  const weeklyPercent = pctOf('sevenDay');
+  const fiveHourPercent = pctOf('fiveHour');
+  const degraded = best.tier === 'unmeasured' || (weeklyPercent === null && fiveHourPercent === null);
+  let breakerOpen = false;
+  try { breakerOpen = opts.breakerOpen?.(best.account.id) === true; } catch { breakerOpen = false; } // @silent-fallback-ok: display-only field
+  return {
+    placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.account.framework,
+    ...(breakerOpen ? { rereadBreaker: 'open' as const } : {}),
+  };
 }
 
 /** Is this account at/over the soft pressure threshold on its binding window? */
@@ -246,6 +341,16 @@ export interface QuotaAwareSchedulerConfig {
   softThresholdPct?: number;
   /** Anti-thrash observation + revalidation hooks (optional, additive). */
   antiThrash?: QuotaSwapAntiThrashHooks;
+  /**
+   * quota-pacing step 2: window-aware selection inputs, read live per decision. Absent, or
+   * `enabled()` false = today's selection, unchanged.
+   */
+  windowAware?: {
+    enabled: () => boolean;
+    requestRead?: (accountId: string) => void;
+    failedReads?: (accountId: string) => number;
+    pollIntervalMs?: () => number;
+  };
   logger?: { log: (m: string) => void; warn: (m: string) => void };
 }
 
@@ -273,7 +378,22 @@ export class QuotaAwareScheduler {
       softThresholdPct: this.cfg.softThresholdPct,
       nowMs,
       framework,
+      ...this.windowAwareOpts(),
     });
+  }
+
+  /** The window-aware selection options when the switch is on, else nothing (today's rule). */
+  private windowAwareOpts(): Partial<SelectionOptions> {
+    const wa = this.cfg.windowAware;
+    let on = false;
+    try { on = wa?.enabled() === true; } catch { on = false; } // @silent-fallback-ok: an unreadable switch is off
+    if (!wa || !on) return {};
+    return {
+      windowAware: true,
+      requestRead: wa.requestRead,
+      failedReads: wa.failedReads,
+      pollIntervalMs: wa.pollIntervalMs?.(),
+    };
   }
 
   /**
@@ -369,7 +489,7 @@ export class QuotaAwareScheduler {
       // ── Reactive semantics — byte-identical to v1.3.722 (I6) ──
       next = selectAccount(
         accounts,
-        { softThresholdPct: this.cfg.softThresholdPct, nowMs, framework },
+        { softThresholdPct: this.cfg.softThresholdPct, nowMs, framework, ...this.windowAwareOpts() },
         exhaustedAccountId,
       );
       if (!next) {

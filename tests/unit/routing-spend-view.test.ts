@@ -17,6 +17,7 @@ import {
   buildRoutingSpendSummary,
   buildRoutingSpendCaps,
   meteredKeysFromChains,
+  meteredKeyDoors,
   DEFAULT_METERED_CAPS,
 } from '../../src/core/routingSpendView.js';
 import type { SpendTokenBucket } from '../../src/monitoring/FeatureMetricsLedger.js';
@@ -118,25 +119,38 @@ describe('buildRoutingSpendSummary', () => {
 });
 
 describe('buildRoutingSpendCaps', () => {
-  it('lists every metered key from the routing chains, $0 committed + not-live', () => {
+  it('lists every metered key from the caps defaults (not the chains), $0 committed + not-live', () => {
     const caps = buildRoutingSpendCaps();
     const keys = caps.keys.map((k) => k.keyRef).sort();
-    expect(keys).toEqual(['metered_gemini_bench', 'metered_groq_bench', 'metered_openrouter_bench']);
+    expect(keys).toEqual(['gemini_api_key_payg', 'metered_groq_bench', 'metered_openrouter_bench']);
     for (const k of caps.keys) {
       expect(k.committedLifetimeUsd).toBe(0);
       expect(k.committedDayUsd).toBe(0);
+      expect(k.committedMonthUsd).toBe(0);
       expect(k.goLiveState).toBe('not-live');
-      expect(k.lifetimeCapUsd).toBe(DEFAULT_METERED_CAPS[k.keyRef].lifetimeCapUsd);
+      expect(k.lifetimeCapUsd).toBe(DEFAULT_METERED_CAPS[k.keyRef].lifetimeCapUsd ?? null);
+      expect(k.retired).toBe(false);
     }
+    const g = caps.keys.find((k) => k.keyRef === 'gemini_api_key_payg')!;
+    expect(g).toMatchObject({ door: 'gemini-api', monthlyCapUsd: 50, dailyCapUsd: 10, lifetimeCapUsd: null, periodTimeZone: 'America/Los_Angeles' });
     expect(caps.meteredLiveYet).toBe(false);
   });
 
-  it('derives the metered (keyRef → door) pairs from the shipped chains', () => {
-    const pairs = meteredKeysFromChains();
-    expect(pairs).toEqual(expect.arrayContaining([
-      { keyRef: 'metered_gemini_bench', door: 'gemini-api' },
-      { keyRef: 'metered_openrouter_bench', door: 'openrouter-api' },
-      { keyRef: 'metered_groq_bench', door: 'groq-api' },
-    ]));
+  it('gemini-payg §2: the chains no longer drive the key list — they carry no metered position', () => {
+    expect(meteredKeysFromChains()).toEqual([]);
+    expect(meteredKeyDoors().map((m) => m.door).sort()).toEqual(['gemini-api', 'groq-api', 'openrouter-api']);
+  });
+
+  it('a store holding the retired metered_gemini_bench lists it as retired; the probe key never appears', () => {
+    const caps = buildRoutingSpendCaps({
+      capsOverride: {
+        metered_gemini_bench: { provider: 'google', lifetimeCapUsd: 40, dailyCapUsd: 15, frozen: false },
+        __probe__: { provider: 'null-provider', lifetimeCapUsd: 0.01, dailyCapUsd: 0.01, frozen: false },
+      },
+      moneyLive: true,
+    });
+    const retired = caps.keys.find((k) => k.keyRef === 'metered_gemini_bench')!;
+    expect(retired).toMatchObject({ retired: true, door: 'gemini-api', lifetimeCapUsd: 40 });
+    expect(caps.keys.some((k) => k.keyRef === '__probe__')).toBe(false);
   });
 });

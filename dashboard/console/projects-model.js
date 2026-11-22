@@ -4,7 +4,7 @@
 import { verifiedDisplayName } from './display-identity.js';
 
 /** Tone per state: what needs the person stands out, finished and paused are quiet. */
-const TONE = { 'waiting-on-you': 'attn', 'stopped-retrying': 'bad', stalled: 'bad', drifting: 'attn', 'claims-done': 'attn', moving: 'ok', unknown: 'unknown', paused: 'quiet', done: 'quiet' };
+const TONE = { 'waiting-on-you': 'attn', 'stopped-retrying': 'bad', stalled: 'bad', drifting: 'attn', 'claims-done': 'attn', moving: 'ok', quiet: 'quiet', unknown: 'unknown', paused: 'quiet', done: 'quiet' };
 
 /** A conversation key ("telegram:142909", or a bare app conversation id) as the console's chat link. */
 export function conversationHref(key) {

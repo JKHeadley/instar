@@ -436,9 +436,11 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -546,6 +548,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
   installSecretGet(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
+  installSecretSet(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-set.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
   installBrowserScripts(projectDir);
@@ -806,9 +810,11 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -955,6 +961,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
+  installSecretSet(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/secret-set.mjs');
   installBrowserScripts(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)');
 
@@ -1628,8 +1636,10 @@ When something isn't working with instar, or the user wants a feature, use your 
 \`\`\`bash
 curl -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -H 'Content-Type: application/json' \\
-  -d '{"type":"bug","title":"Short description","description":"Full details with context"}'
+  -d '{"type":"bug","title":"Short description","description":"Full details with context","source":{"kind":"agent"}}'
 \`\`\`
+
+\`source\` says who the report is from (\`agent\`, \`other-agent\`, \`user\`). A request the person you serve makes of you directly is never feedback: record it as a commitment (POST /commitments) and it becomes a work card you carry.
 
 This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`, \`hallucination\`.
 
@@ -2137,7 +2147,8 @@ curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -d '{
     "type": "bug",
     "title": "Brief description of the issue",
-    "description": "Full context: what happened, what you expected, error messages, steps to reproduce"
+    "description": "Full context: what happened, what you expected, error messages, steps to reproduce",
+    "source": {"kind": "agent"}
   }' | python3 -m json.tool
 \`\`\`
 
@@ -5284,6 +5295,39 @@ function installSecretGet(projectDir: string): void {
   const candidates = [
     path.resolve(modDir, '..', 'templates', 'scripts', 'secret-get.mjs'),
     path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-get.mjs'),
+  ];
+
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+
+  if (!scriptContent) {
+    return;
+  }
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
+ * Install the vault WRITE helper (.instar/scripts/secret-set.mjs): the value is read
+ * from stdin only and never printed — the target of the no-echo transfer
+ * (`secret-drop-retrieve.mjs <token> <field> --run -- node .instar/scripts/secret-set.mjs <name>`,
+ * docs/specs/gemini-payg-metered-lane.md §4).
+ */
+function installSecretSet(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  const scriptPath = path.join(scriptsDir, 'secret-set.mjs');
+
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'secret-set.mjs'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-set.mjs'),
   ];
 
   let scriptContent = '';

@@ -68,6 +68,8 @@ export function readBoard(body) {
     pickups: isObj(body.pickups) ? body.pickups : null,
     behind: isObj(body.behind) ? body.behind : null,
     settings: isObj(body.settings) ? body.settings : null,
+    // agent-work-cards-default §1: the team's not-started internal cards (one aggregated Needs-you row). Absent on an older server.
+    notStartedCards: isObj(body.notStartedCards) && typeof body.notStartedCards.count === 'number' ? body.notStartedCards : null,
   };
 }
 
@@ -231,6 +233,8 @@ export function cardActions(card, { inSheet = false } = {}) {
   const approved = Boolean(card.approved);
   switch (card.status) {
     case 'needs-approval': add('approve', 'primary'); break;
+    // agent-work-cards-default §7: the card's own Approve; "Approve and widen" lives on the aggregated row (needs-model.js).
+    case 'not-started': add('approve', 'primary'); break;
     case 'waiting-on-person': if (card.question) add('answer', 'primary'); break;
     case 'claims-done': if (card.claim) { add('confirm-done', 'primary'); add('reopen'); } break;
     case 'done': if (card.claim) add('reopen'); break;
@@ -547,6 +551,13 @@ export function workBoardNeedRows(wb) {
     cardId: c.id,
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
+  // agent-work-cards-default §1 "One aggregated row, not zero": the team's `not-started` internal cards, ONE row, deduped
+  // by team, never per card; it disappears when none is not-started. The row opens the board's not-started view, whose
+  // Approve shown / Approve and widen controls are the owner's (PIN).
+  const ns = b.notStartedCards;
+  if (ns && typeof ns.count === 'number' && ns.count > 0) {
+    rows.push({ key: 'work:not-started', main: ns.count === 1 ? '1 internal card is waiting for your approval or board setting' : `${ns.count} internal cards are waiting for your approval or board setting`, sub: 'Approve the ones shown, or let internal cards start without asking.', href: '#/work/board?s=not-started', notStarted: ns.count });
+  }
   return rows;
 }
 
@@ -698,6 +709,8 @@ export function cardBrief(card) {
 const STATUS_WORDS = {
   'needs-approval': 'Needs your approval', 'with-person': 'Waiting on you', 'waiting-on-person': 'Waiting for your answer',
   'claims-done': 'Says it is done', held: 'On hold', 'with-agent': 'With the agent', parked: 'Parked', quiet: 'Quiet',
+  // agent-work-cards-default §1/§7: an agent-work card the owner has not let start (one aggregated Needs-you row, never per card).
+  'not-started': 'Not started',
   done: 'Done', archived: 'Closed', removed: 'Removed', unknown: 'Partly unreadable',
 };
 export function statusChip(card) {

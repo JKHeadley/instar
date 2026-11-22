@@ -20,6 +20,7 @@ import type { MachineStanding } from '../core/TeamAccessSync.js';
 import { isTeamSwitchSetting, teamSwitchSummary, type TeamSwitchSetting, type TurnOnResult } from '../core/TeamSwitches.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 import { devicePersonOf, principalOf, type MobilePairingService } from './mobilePairingRoutes.js';
+import { computersOfPerson } from './documentJoinRoutes.js';
 
 export interface TeamRouteDeps {
   signer: () => MachineSigner | null;
@@ -528,7 +529,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       personKey: p.personKey, name: p.name, role: p.role, tier: tierOfRole(p.role),
       conversations: [...(log?.state().grants.get(p.personKey)?.entries() ?? [])].map(([ref, access]) => ({ ref, access })),
     }));
-    if (person?.role === 'owner') { res.json({ people: rows, teamOn: svc.teamOn() }); return; }
+    // The owner also sees each person's computers, both kinds (member-browser-any-computer §3.3.6); never a member.
+    if (person?.role === 'owner') { const t = Date.now(); res.json({ people: rows.map((r) => ({ ...r, computers: computersOfPerson(svc, r.personKey, t) })), teamOn: svc.teamOn() }); return; }
     res.json({ people: rows.filter((r) => r.personKey === person?.userId), disclosure: TEAM_DISCLOSURE });
   });
 

@@ -40,6 +40,23 @@ import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
  * itself become a source of boot latency or failure. Any error binding the
  * beacon is non-fatal to boot (the caller logs + proceeds without it).
  */
+/**
+ * The exact body the beacon answers every request with. Exported so the Telegram
+ * origin outbox's proof that a queued reply never left (OriginLegacy.isBootBeaconBody)
+ * is checked against this builder by a contract test: a field added here without
+ * updating that proof would otherwise silently turn every reply sent during a
+ * restart into "may have arrived" (held-and-startup-parked-send-release §1).
+ */
+export function bootBeaconResponseBody(snap: ReturnType<ReturnType<typeof bootReadiness>['snapshot']>, retryAfter: number): string {
+  return JSON.stringify({
+    error: 'starting',
+    status: 'starting',
+    message: `The server is starting. Retry after ${retryAfter} s.`,
+    retryAfterSeconds: retryAfter,
+    bootReadiness: snap,
+  });
+}
+
 export class BootHealthBeacon {
   private server?: http.Server;
   private startedAt = 0;
@@ -67,13 +84,7 @@ export class BootHealthBeacon {
       else this.notReadyAnswers += 1;
       const retryAfter = snap.retryAfterSeconds ?? 5;
       res.writeHead(503, { 'content-type': 'application/json', 'retry-after': String(retryAfter), 'cache-control': 'no-store', [BOOT_STATE_HEADER]: 'starting', ...(this.machineMarker ? { [INSTAR_MACHINE_HEADER]: this.machineMarker } : {}) });
-      res.end(JSON.stringify({
-        error: 'starting',
-        status: 'starting',
-        message: `The server is starting. Retry after ${retryAfter} s.`,
-        retryAfterSeconds: retryAfter,
-        bootReadiness: snap,
-      }));
+      res.end(bootBeaconResponseBody(snap, retryAfter));
     });
     // Don't let an idle keep-alive socket hold the port at handoff time.
     server.keepAliveTimeout = 1;
