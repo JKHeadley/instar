@@ -59,7 +59,7 @@ export function bearerConfigWriteRefusal(
   if (top === 'sessions') {
     const keys = second !== undefined ? [second] : (value && typeof value === 'object' ? Object.keys(value as object) : []);
     if (keys.some((k) => opts.operatorOnlySessionKeys.includes(k))) {
-      return 'the settings that choose which program a session runs can only be set on the machine';
+      return 'the settings that choose which program a session runs, where Claude sessions connect and which account pays can only be set on the machine';
     }
   }
   if (top === 'dispatches') {

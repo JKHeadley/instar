@@ -3111,6 +3111,15 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
   'frameworkBinaryPaths',
   'claudePath',
   'grokInteractiveSessions',
+  // SEC-145: the same authority class. `tmuxPath` chooses the binary the server runs for every
+  // session; the Anthropic base URL, API key and `credentials` decide where every Claude session's
+  // conversation and tool calls go and whose account pays; `retainedClaudeBinary` names a binary
+  // directory the retainer runs from. Set them in .instar/config.json, not through the API.
+  'tmuxPath',
+  'anthropicBaseUrl',
+  'anthropicApiKey',
+  'credentials',
+  'retainedClaudeBinary',
 ];
 
 /** Keys that name JavaScript's object machinery; never valid as config keys (SEC-071). */
@@ -39286,8 +39295,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (offending.length > 0) {
         res.status(400).json({
           error: `sessions.${offending.join(', sessions.')} is not patchable via the API — these `
-            + 'select which executable a session spawns, or admit a session lane that spends '
-            + 'against an unmetered pool. Set them in .instar/config.json (or via the '
+            + 'select which program a session runs, where Claude sessions connect and which account '
+            + 'pays, or admit a session lane that spends against an unmetered pool. Set them in '
+            + '.instar/config.json (or via the '
             + 'per-framework env lever) so the change is an operator act on the machine.',
         });
         return;
