@@ -11,3 +11,5 @@ Some honest limits. A key you sent through Telegram still sits on Telegram's own
 Its progress from the development agent to every agent is tracked on the agents' maturation board, so each step is checked against recorded evidence rather than remembered.
 
 Messages your agent sends to other agents are cleaned the same way. The one exception is a key you deliberately share with an agent you have verified and paired with: that key travels sealed to that agent only, and your agent's own records still hold the cleaned version.
+
+Follow-up after the first full test run of part 1b: the check that reads whether key removal is switched on could crash when there was no project folder to read from, which only happens in tests. It now just treats the switch as off in that case, the same as when the settings file cannot be read.

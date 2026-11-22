@@ -40,12 +40,17 @@ Masking changes stored text and never refuses or holds a message: every failure 
 
 Set `security.credentialScrub.enabled` to false (read live, within the reader's short cache). Text already masked stays masked by design.
 
+## Follow-up after Local Verify (2026-11-22)
+
+The first full run (head 3d7bba99d) failed 158 end-to-end tests across many lifecycle files. One cause: `createRoutes` now builds the credential-scrub switch reader while the routes are assembled, and many tests build routes from a minimal context with no `projectDir`. `credentialScrubEnabledReader` joined `undefined` into a path and threw, so route setup failed in every such test. The fix is in the reader: with no project folder it returns a reader that always reports off, the same as its existing behavior for an unreadable settings file. A real agent always has a project folder, so live behavior does not change. New regression test `tests/unit/sec164-reader-no-project-dir.test.ts` fails without the fix with the same path error and passes with it. No test was loosened.
+
 ## Second-pass review
 
 **Reviewer:** Claude Sonnet (independent subagent), which read the full diff and the real code paths and ran the new unit tests.
 - **Round one: CONCUR, no blocking defect.** It confirmed that no way in stores, logs, hashes or hands raw text to a session before the mask, and that no stranger, forward, bot, unverified lifeline caller or app device can trigger a notice or set the removed-kinds field. Every failure delivers the text unchanged, and authorship, replay identity and app signed-origin verification hold.
 - It left six non-blocking notes. The empty-id dedupe is fixed, with a test. The Slack lifeline kinds, the session note in stored text and the Slack link scope are recorded above. The per-call `UserManager` is accepted, because it is built only when a key was removed. This line was filled in.
 - **Round two: CONCUR, no blocking defect.** It covered the outgoing agent-to-agent masking, added after round one on the Chief of Staff's decision. It confirmed that `rawMessage` is read only by the mask and by the pinned send. The flag is set only on the gate's allow branch. With verified pairing off, the send goes through the masked path, and a standby never forwards a share. Its non-blocking gaps: a test for verified pairing off was added (case d). A share to a same-machine agent never takes the plaintext local route (5c), so it goes through the gated pinned send or is refused; it is never sent raw anywhere else. No test asserts the thread log's text directly; the log takes `message`, which is the masked text.
+- **Round three (Local Verify follow-up, 2026-11-22): CONCUR.** A fresh Claude Sonnet subagent checked the reader fix. It confirmed the root cause, found no other construction-time code in this PR that throws on a minimal context, confirmed that a real agent always has `config.projectDir` set (Config.ts sets it from `projectDir || detectProjectDir()`), so the off default can only apply to tests and minimal contexts, and confirmed the new test fails without the fix.
 
 ## Tests
 
