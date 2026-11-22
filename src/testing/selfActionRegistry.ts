@@ -58,6 +58,7 @@ import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../core/StageAdvancer.js';
 import { nextSiblingAttemptAtMs, SIBLING_DEFAULT_INTERVAL_MS, SIBLING_DEFAULT_MAX_AGE_MS, SIBLING_FIRST_RETRY_MS } from '../core/sibling-holdings.js';
 import { SessionPoolRolloutDriver } from '../core/SessionPoolRolloutDriver.js';
+import { layer2RetryDecision, LAYER2_MAX_RETRIES, LAYER2_RETRY_INTERVAL_MS } from '../messaging/DeliveryRetryManager.js';
 import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionPoolE2EResultStore.js';
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
@@ -6157,6 +6158,50 @@ const siblingHoldingsRefresh: SelfActionController = {
   },
 };
 
+
+/** message-holder-redelivery (relay-asof-holder-skew §2): a message whose role is known but
+ * has no accepted holder is re-resolved by the Layer-2 lane every 30 s. Under pressure the
+ * holder never appears: ten redeliveries, one dead letter with the plain reason, then quiet. */
+const messageHolderRedelivery: SelfActionController = {
+  id: 'message-holder-redelivery',
+  actionVerb: 'retry',
+  models: 'src/messaging/DeliveryRetryManager.ts (doCycle — layer2RetryDecision over a holderPending envelope; dead letter + sender notice at LAYER2_MAX_RETRIES)',
+  modelsPath: 'src/messaging/DeliveryRetryManager.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+  },
+  boundK: LAYER2_MAX_RETRIES + 1,
+  perTargetBoundK: LAYER2_MAX_RETRIES + 1,
+  ticks: 4 * 60 * 4, // one hour of 15 s ticks
+  tickMs: 15_000,
+  makeUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+};
+
+function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'message-holder-redelivery:episode';
+  return {
+    tick() {
+      sink.considered += 1;
+      const persisted = f.durableState.get(key) as { attempts: number; lastAttemptAt: number; firstAttemptAt?: number; deadLettered?: boolean } | undefined;
+      if (persisted?.deadLettered) return;
+      const now = f.clock.nowMs();
+      const decision = layer2RetryDecision(persisted ?? { attempts: 0, lastAttemptAt: 0, firstAttemptAt: now }, now);
+      if (decision === 'wait') return;
+      if (decision === 'give-up') {
+        f.durableState.set(key, { ...persisted, deadLettered: true });
+        sink.emit({ verb: 'notify', target: 'sender:echo-lead' });
+        return;
+      }
+      f.durableState.set(key, { attempts: (persisted?.attempts ?? 0) + 1, lastAttemptAt: now, firstAttemptAt: persisted?.firstAttemptAt ?? now });
+      void f.targetAlwaysRejects();
+      sink.emit({ verb: 'retry', target: 'echo-topic-144319' });
+      void LAYER2_RETRY_INTERVAL_MS;
+    },
+  };
+}
+
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
@@ -6182,6 +6227,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   learnedSkillReconciler,
   failureCalloutInvestigation,
   attributionAuditRetry,
+  messageHolderRedelivery,
   reachSecondPersonNotice,
   presenceUsageNotice,
 

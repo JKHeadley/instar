@@ -153,8 +153,8 @@ export function crossTopicEligible(input: {
   return { ok: true };
 }
 
-/** The only fields a cross-conversation yes may change: everyday run settings. */
-export const CROSS_TOPIC_FIELDS: readonly string[] = ['model', 'modelTier', 'thinkingMode', 'effort'];
+/** The run settings an eligible owner may confirm from another conversation. */
+export const CROSS_TOPIC_FIELDS: readonly string[] = ['framework', 'model', 'modelTier', 'thinkingMode', 'effort'];
 
 /** A conversation name as shown inside the proposal: no quotes or line breaks, bounded. */
 export function safeConversationName(name: string | null, topicKey: string): string {

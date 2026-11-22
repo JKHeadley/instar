@@ -501,10 +501,11 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'multiMachinePool',
     prefixes: ['/pool', '/machines'],
-    description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',
+    description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired. When multiMachine.messageSessionGeneration.enabled is explicitly true, named cross-machine messages use POST /api/messages/session-generation (signed machine authentication) to bind the exact recipient before message creation.',
     build: ({ ctx }) => ({
       configured: !!ctx.machinePoolRegistry,
-      endpoints: ['GET /pool', 'PATCH /pool/machines/:id', 'GET /machines/ssh-health'],
+      sessionGenerationBinding: ctx.messageRouter?.isGenerationBindingEnabled() ?? false,
+      endpoints: ['GET /pool', 'PATCH /pool/machines/:id', 'GET /machines/ssh-health', 'POST /api/messages/session-generation'],
     }),
   },
   {
