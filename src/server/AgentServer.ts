@@ -1391,6 +1391,8 @@ export class AgentServer {
     sessionManager: SessionManager;
     /** SEC-170: this machine's share of the agent's unknown-browser PIN budget. Absent = 20 per machine (today). */
     pinShare?: import('../core/PinShare.js').PinShareProvider | null;
+    /** SEC-170 part 2: the agreement protocol's machine-route hooks (signed state report, hand-down). */
+    pinBudgetMachineHooks?: Pick<import('./machineRoutes.js').MachineRouteContext, 'pinBudgetState' | 'pinBudgetHandDown'> | null;
     terminateSessionAuthority?: SessionTerminateAuthority;
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
     apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
@@ -2278,7 +2280,12 @@ export class AgentServer {
       if (!c.isLocalDirect && !c.markerId) {
         // Durable cross-restart backstops, never applied to a known browser: the real client's own
         // budget, and the shared unmarked budget (a restart no longer resets it).
-        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, globalPinCap())) {
+        const shareSpent = !!this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, globalPinCap());
+        if (shareSpent && this.pinShare?.state().enabled) {
+          // SEC-170 ladder evidence: a refusal caused by this machine's spent share (one row per minute, with the count it stands for).
+          featureEvidence.recordAtMostEvery('pinBudgetPoolWide', 'share-spent', 60_000, { kind: 'fired', reason: 'unknown browser refused: this machine\'s PIN share is spent', context: { share: globalPinCap() } });
+        }
+        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || shareSpent) {
           res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
             ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
             : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
@@ -2937,6 +2944,10 @@ export class AgentServer {
         if (!docs) throw new Error('documents-unavailable');
         return applySyncPage(docs.store, page);
       };
+      if (options.pinBudgetMachineHooks) {
+        machineRouteContext.pinBudgetState = options.pinBudgetMachineHooks.pinBudgetState;
+        machineRouteContext.pinBudgetHandDown = options.pinBudgetMachineHooks.pinBudgetHandDown;
+      }
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);
       this.app.use(machineRoutes);
