@@ -95,3 +95,7 @@ Root concurrence covers source, side effects and deployment plan only. Complete 
 ## Normal Commit Gate Evidence
 
 Attempt1 ran55 lint steps:54 passed, offline carrier resolvability rejected the feedback marker because its parser requires a real CMT excerpt. Corrected through sanctioned workflow: actual CMT-2183 and CMT-2184 reference the existing feedback items and root-assigned owner/next steps; refresh-carrier-ledger.mjs generated the checked-in snapshot, and the spec freezes the actual returned excerpts. Tracking remains intact, no completion/owner acknowledgement is fabricated, and foundation work remains outstanding under the program pause. Root explicitly authorized this carrier-only correction without another source review round.
+
+## Post-commit Full-suite Failure Follow-up
+
+The exact318922be1 full unit run failed3 tests and stopped before integration/E2E. The separate failure-followup report preserves the original evidence and traces each root cause. A narrow corrective delta restores explicit retryable handling only for known read-only preflight errors, documents/test-proves the already observable audit-loss warning without increasing baseline494, and gives the remediation test its real typed retryable result. All three original failed files pass together plus focused boundary tests (99), HTTP integration15, lifecycle/wiring7 and build. Root concurrence on this corrective delta is pending; complete test:all is not claimed green.

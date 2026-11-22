@@ -1060,6 +1060,7 @@ export class MessageRouter implements IMessageRouter {
     this.refusalAuditTail = append.then(() => undefined, () => undefined); // @silent-fallback-ok: the caller below reports the audit failure
     try { await append; }
     catch (error) {
+      // @silent-fallback-ok: audit loss emits the warning below once until recovery; the delivery outcome remains durable
       this.refusalAuditReady = null;
       if (!this.refusalAuditWarned) {
         this.refusalAuditWarned = true;

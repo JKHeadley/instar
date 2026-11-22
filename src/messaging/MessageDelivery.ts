@@ -74,18 +74,17 @@ export class MessageDelivery implements IMessageDelivery {
   }
 
   async deliverToSession(sessionId: string, envelope: MessageEnvelope): Promise<DeliveryResult> {
-    // Step 1: Is the session alive?
-    if (!this.tmux.isSessionAlive(sessionId)) {
-      return {
-        success: false,
-        phase: 'queued',
-        failureReason: 'Session not alive',
-        shouldRetry: true,
-      };
+    let safety: InjectionSafety;
+    try {
+      // These operations only inspect state; no physical injection has begun.
+      if (!this.tmux.isSessionAlive(sessionId)) {
+        return { success: false, phase: 'queued', failureReason: 'Session not alive', shouldRetry: true };
+      }
+      safety = await this.checkInjectionSafety(sessionId);
+    } catch (error) {
+      // @silent-fallback-ok: explicit retryable pre-injection refusal is persisted by the caller; sendKeys was never reached
+      return { success: false, phase: 'queued', failureReason: error instanceof Error ? error.message : String(error), shouldRetry: true };
     }
-
-    // Step 2: Check injection safety
-    const safety = await this.checkInjectionSafety(sessionId);
 
     if (!safety.isSafeProcess) {
       return {

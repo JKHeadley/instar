@@ -51,6 +51,33 @@ describe('messages-reach-renamed-sessions PR-A', () => {
     sessions, sessionNameForTopic: () => 'echo-echo-machine-stewardship', isStandingDown: () => false, prefix: 'echo', asOf,
   });
 
+  it('audit write errors warn once until recovery while the message outcome stays durable', async () => {
+    const parent = path.join(dir, 'audit-parent');
+    fs.writeFileSync(parent, 'obstruct directory creation');
+    const file = path.join(parent, 'refusals.jsonl');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const t = tmux();
+    const router = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), t as any), {
+      localAgent: 'echo', localMachine: 'm1', serverUrl: 'fixture', refusalAuditPath: file,
+      resolveSession: () => ({ kind: 'none', reason: 'no-session-holds-this-role', known: true }),
+    });
+    const send = () => router.send({ agent: 'echo', session: 'sender', machine: 'm1' }, { agent: 'echo', session: 'echo-worker', machine: 'local' }, 'info', 'low', 'fixture', 'body');
+    for (let i = 0; i < 2; i++) {
+      const result = await send();
+      expect((await store.get(result.messageId))?.delivery).toMatchObject({ phase: 'received', holderPending: true, failureReason: 'no-session-holds-this-role' });
+    }
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenLastCalledWith(expect.stringContaining('refusal audit unavailable'));
+    SafeFsExecutor.safeUnlinkSync(parent, { operation: 'tests/unit/messages-reach-renamed-sessions.test.ts' });
+    const recovered = await send();
+    expect(JSON.parse(fs.readFileSync(file, 'utf8').trim()).messageId).toBe(recovered.messageId);
+    SafeFsExecutor.safeRmSync(parent, { recursive: true, force: true, operation: 'tests/unit/messages-reach-renamed-sessions.test.ts' });
+    fs.writeFileSync(parent, 'obstruct again');
+    await send();
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(t.sendKeys).not.toHaveBeenCalled();
+  });
+
   it('a send to the old name of a respawned topic session is typed into the holder, pinned, and reported', async () => {
     const t = tmux();
     const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), t as any), {

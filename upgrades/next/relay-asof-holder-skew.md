@@ -15,3 +15,5 @@ Machine-authenticated POST /api/messages/session-generation; sender-only live mu
 ## Evidence
 
 Targeted unit, fifteen authenticated HTTP integration checks and seven AgentServer lifecycle/wiring checks pass. The shared full suite awaits its reserved slot. Proactive terminal notices remain best-effort under separately tracked fb-292ec9c9-9d3. No release or deployment has occurred.
+
+The initial full-unit candidate exposed three compatibility/diagnostic test failures. Their narrow follow-up is covered by99 focused unit checks (including all original failed files),15 HTTP checks,7 lifecycle/wiring checks and build. Complete-suite verification still requires its separately reserved rerun; this note does not claim it passed.
