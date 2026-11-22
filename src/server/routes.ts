@@ -1843,6 +1843,8 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** SEC-164 part 1d: the credential sweeper; null where it could not start. */
+  credentialSweeper?: import('../core/credentialSweepRunner.js').CredentialSweepRunner | null;
   /** Unified usage ledger read routes (docs/specs/unified-usage-ledger.md). Absent/null = ledger off (503). */
   usageRouteDeps?: () => import('./usageRoutes.js').UsageRouteDeps | null;
   /** Zero-spend live codex quota reader (`codex app-server` →
@@ -25264,6 +25266,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         'inbound-shaped payload on an outbound route — re-point owned by Phase 2.2 ' +
         '(SlackLifeline / session injection parity with /internal/telegram-forward)',
     });
+  });
+
+  // ── SEC-164 part 1d: the credential sweeper's status (docs/specs/credential-scrub-at-rest.md §6) ──
+  // Counts by kind, the first pass's progress, bytes pending and unmeasured files by hashed name and
+  // reason. Never a value, never a path. Machine-local: the pool view is each machine's own route.
+  router.get('/credential-scrub', (_req, res) => {
+    const sweeper = ctx.credentialSweeper;
+    if (!sweeper) { res.status(503).json({ error: 'credential-sweeper-unavailable', detail: 'The credential sweeper did not start on this machine.' }); return; }
+    try {
+      res.json(sweeper.status());
+    } catch (err) {
+      res.status(500).json({ error: 'credential-scrub-status-failed', detail: operatorError(err, res.app?.locals?.stateDir) });
+    }
   });
 
   router.get('/slack/channels', async (req, res) => {

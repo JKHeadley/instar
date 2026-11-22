@@ -1,6 +1,13 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { CredentialSweepRunner } from '../core/credentialSweepRunner.js';
+import { credentialScrubModeReader } from '../core/outputCredentialScrub.js';
+import { OwnCredentialMatcher } from '../messaging/outbound-credential-guard.js';
+import { DURABLE_SECRET_PATTERNS } from '../core/durableSecretScrub.js';
+import { getActiveWorkAdmission } from '../core/workAdmission.js';
+import type { LoadVerdict } from '../core/machineLoadReport.js';
+import { codexHomeFromConfig } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { mayBeLocalArrival } from '../core/requestArrival.js';
@@ -995,8 +1002,12 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
+  /** SEC-164 part 1d: the session-record and log sweeper (machine-local). */
+  private credentialSweeper: CredentialSweepRunner | null = null;
   /** The token ledger (read-only), for in-process consumers built after the server (the context budget's shadow runner). */
   getTokenLedger(): TokenLedger | null { return this.tokenLedger; }
+  /** SEC-164 part 1d: the credential sweeper, for the lifecycle test and the status route. */
+  getCredentialSweeper(): CredentialSweepRunner | null { return this.credentialSweeper; }
   private usageLedger: UsageLedger | null = null;
   private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
@@ -3042,6 +3053,49 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
       this.tokenLedger = null;
+    }
+
+    // ── SEC-164 part 1d: the credential sweeper (docs/specs/credential-scrub-at-rest.md §4) ──
+    // Masks live keys in this agent's session records and logs where they sit. Off unless
+    // security.credentialScrub.enabled (dev-gated); in dry run until inPlace is on. Never throws.
+    try {
+      const projectDir = options.config.projectDir;
+      const subscriptionPoolForSweep = options.subscriptionPool ?? null;
+      const ownSweepKeys = (): string[] => {
+        const tg = options.config.messaging?.find((m) => m.type === 'telegram')?.config as { token?: string } | undefined;
+        const sl = options.config.messaging?.find((m) => m.type === 'slack')?.config as { botToken?: string; appToken?: string } | undefined;
+        return [options.config.authToken, tg?.token, sl?.botToken, sl?.appToken, (options.config.tunnel as { token?: string } | undefined)?.token]
+          .filter((v): v is string => typeof v === 'string' && v.length > 0 && !/^[-+]?\d+$/.test(v));
+      };
+      let ownMatcher: { at: number; m: OwnCredentialMatcher } | null = null;
+      this.credentialSweeper = new CredentialSweepRunner({
+        projectDir, stateDir: options.config.stateDir,
+        mode: credentialScrubModeReader(projectDir),
+        intervalSeconds: () => {
+          const v = (options.config as { security?: { credentialScrub?: { sweepIntervalSeconds?: unknown } } }).security?.credentialScrub?.sweepIntervalSeconds;
+          return typeof v === 'number' && v > 0 ? v : 15;
+        },
+        loadVerdict: () => ((getActiveWorkAdmission()?.status() as { lastVerdict?: LoadVerdict } | undefined)?.lastVerdict ?? 'unknown'),
+        configHomes: () => [...new Set(claudeTranscriptRoots({ pool: subscriptionPoolForSweep }).map((d) => path.dirname(d)))],
+        codexHome: () => { try { return codexHomeFromConfig(); } catch { return null; } }, // @silent-fallback-ok — no Codex home, no Codex root
+        ownCredentials: () => {
+          const now = Date.now();
+          if (!ownMatcher || now - ownMatcher.at > 60_000) ownMatcher = { at: now, m: new OwnCredentialMatcher(ownSweepKeys()) };
+          return ownMatcher.m;
+        },
+        shortCredentialCount: () => ownSweepKeys().filter((v) => v.length < 12).length,
+        patternsSource: DURABLE_SECRET_PATTERNS.map((p) => `${p.kind}:${p.regex.source}`).join('|'),
+        report: (reason) => DegradationReporter.getInstance().report({
+          feature: 'credentialScrub.sweeper', primary: 'Mask live keys in session records and logs where they sit',
+          fallback: 'The sweeper waits and retries; new messages and logs are still masked as they are written',
+          reason, impact: 'A key already in a session record or log may stay there until the sweeper runs again',
+        }),
+        evidence: (kind, reason, context) => { featureEvidence.record('credentialScrub', { kind, reason, context }); },
+      });
+      this.credentialSweeper.start();
+    } catch (err) {
+      console.warn('[instar] credential sweeper init failed (non-fatal):', err instanceof Error ? err.message : err);
+      this.credentialSweeper = null;
     }
 
     // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
@@ -6778,6 +6832,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      credentialSweeper: this.credentialSweeper,
       usageRouteDeps: () => this.usageRouteDeps,
       // Zero-spend live codex quota (app-server) for GET /codex/usage. Wired
       // here — the composition root — so tests that build routes with a bare
@@ -10501,6 +10556,8 @@ export class AgentServer {
     if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
     this.usagePuller?.stop(); this.usagePuller = null;
     if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
+    try { this.credentialSweeper?.stop(); } catch { /* @silent-fallback-ok — shutdown stop is best-effort */ }
+    this.credentialSweeper = null;
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
       try {

@@ -566,6 +566,22 @@ export class SafeFsExecutor {
     }
   }
 
+  /**
+   * SEC-164 §3.3: a same-length positioned overwrite on an already-open handle, for the credential
+   * sweeper. It never truncates or extends the file: exactly `bytes.length` bytes at `offset`, or it
+   * throws. Every write is audited. The caller checks identity and the original bytes around it.
+   */
+  static safeSameLengthWriteSync(fd: number, target: string, offset: number, bytes: Buffer, opts: { operation: string }): void {
+    try {
+      const n = fs.writeSync(fd, bytes, 0, bytes.length, offset);
+      if (n !== bytes.length) throw new Error(`short write ${n}/${bytes.length}`);
+      audit('safeSameLengthWriteSync', opts.operation, target, 'allowed');
+    } catch (err) {
+      audit('safeSameLengthWriteSync', opts.operation, target, 'denied', `write-error: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
   /** Async fs.promises.unlink wrapper. */
   static async safeUnlink(target: string, opts: SafeFsOptions): Promise<void> {
     const canonical = guard(target, opts.operation, 'safeUnlink', { localVerifyScopeOk: opts.localVerifyScopeOk, nukeAgentHomeScope: opts.nukeAgentHomeScope, worktreeTrash: trashOf(opts.worktreeTrashScope) });

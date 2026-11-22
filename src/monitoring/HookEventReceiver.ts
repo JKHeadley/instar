@@ -10,6 +10,8 @@
  * - Item 3 (New Hook Events): Observability events processing
  */
 
+import { maskJsonLine } from '../core/credentialLineMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -85,6 +87,8 @@ export interface SessionEventSummary {
 }
 
 export interface HookEventReceiverConfig {
+  /** SEC-164: the masking switch; defaults to reading the agent's settings file live. */
+  credentialScrubEnabled?: () => boolean;
   /** State directory for persisting events */
   stateDir: string;
   /** Max events to keep per session (default: 500). Reaching it trims to 80% (hysteresis). */
@@ -175,9 +179,13 @@ export class HookEventReceiver extends EventEmitter {
   /** instar_session_id -> safe Claude session ids (one per incarnation; more after /clear). */
   private incarnationIndex: Map<string, Set<string>> = new Map();
 
+  /** SEC-164: `security.credentialScrub.enabled`, read live. */
+  private readonly credentialScrubOn: () => boolean;
+
   constructor(config: HookEventReceiverConfig) {
     super();
     this.config = config;
+    this.credentialScrubOn = config.credentialScrubEnabled ?? credentialScrubEnabledReader(path.dirname(config.stateDir));
     this.eventsDir = path.join(config.stateDir, 'hook-events');
     if (!fs.existsSync(this.eventsDir)) {
       fs.mkdirSync(this.eventsDir, { recursive: true });
@@ -209,7 +217,12 @@ export class HookEventReceiver extends EventEmitter {
     // Append to session event file (JSONL)
     const sessionFile = this.getSessionFile(sessionId);
     try {
-      fs.appendFileSync(sessionFile, JSON.stringify(stored) + '\n');
+      // SEC-164 §3.3: live keys are masked at write time, at the same length, before the line lands.
+      let line: Buffer = Buffer.from(JSON.stringify(stored) + '\n', 'utf8');
+      if (this.credentialScrubOn()) {
+        try { line = maskJsonLine(line, { apply: true }).line; } catch { /* @silent-fallback-ok — the sweeper masks the stored line later */ }
+      }
+      fs.appendFileSync(sessionFile, line);
     } catch {
       return false;
     }
@@ -463,7 +476,9 @@ export class HookEventReceiver extends EventEmitter {
 
     const trimmed = events.slice(events.length - keepEvents);
     const file = this.getSessionFile(sessionId);
-    fs.writeFileSync(file, trimmed.map(e => JSON.stringify(e)).join('\n') + '\n');
+    // SEC-164 §3.3: a temporary file renamed over the old one, so a reader (the credential sweeper)
+    // sees a new file and checks it from the start, never a file rewritten under it in place.
+    SafeFsExecutor.atomicWriteFileSync(file, trimmed.map(e => JSON.stringify(e)).join('\n') + '\n', { operation: 'HookEventReceiver:trim' });
     this.rebuildMeta(key, trimmed);
   }
 
