@@ -178,7 +178,8 @@ import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes, serveTopicIntentBriefing } from './topicIntentRoutes.js';
 import { createPromptContextRoutes } from './promptContextRoutes.js';
-import { SeedFetchLog } from '../monitoring/contextLayers/promptContext.js';
+import { computeOverallRework } from '../monitoring/contextBudgetMetrics.js';
+import { SeedFetchLog, reworkBaselineOf, type ReworkBaseline } from '../monitoring/contextLayers/promptContext.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
@@ -7528,6 +7529,7 @@ export class AgentServer {
     const promptLayerFreshness = options.contextLayers && options.topicMemory
       ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
       : null;
+    let reworkMemo: { at: number; value: ReworkBaseline | null } | null = null;
     this.app.use(createPromptContextRoutes({
       stateDir: options.config.stateDir,
       shadowOn: () => !!options.contextLayers,
@@ -7540,6 +7542,16 @@ export class AgentServer {
       },
       messages: (topicId, limit) => (options.telegram ? options.telegram.getTopicHistory(topicId, limit) as unknown as Array<Record<string, unknown>> : null),
       seedFetches: promptSeedFetches,
+      // The measurement backend's rework rate (S13) is the delta comparison's baseline;
+      // synchronous SQLite reads, so one result is reused for 5 minutes.
+      rework: () => {
+        const at = Date.now();
+        if (reworkMemo && at - reworkMemo.at < 300_000) return reworkMemo.value;
+        const m = computeOverallRework(this.tokenLedger);
+        const value = m ? reworkBaselineOf(m) : null;
+        reworkMemo = { at, value };
+        return value;
+      },
     }));
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
