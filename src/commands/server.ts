@@ -11029,6 +11029,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
             replMod.buildAppConversationRecordData(ev),
           ));
+          // agent-work-cards-default §2: the same emit, run FIRST by appendWithEmit so a note exists on every machine or on none.
+          appSvc.store.setReservingReplicationHook((ev) => emitter.emit(
+            replMod.APP_CONVERSATIONS_STORE_KEY,
+            replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
+            replMod.buildAppConversationRecordData(ev),
+          ));
         }
         if (replicatedRecordEmitter && appKeyLedger) {
           const emitter = replicatedRecordEmitter;
@@ -11194,6 +11200,36 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const m = appSvc.store.browseMessages(conversationKey, null, 20).messages.filter((x) => x.role === 'operator');
                   return m.length ? m.reduce((a, b) => (a.at > b.at ? a : b)).at : null;
                 },
+                // agent-work-cards-default §2: the agent's progress note, emit reserved first (appendWithEmit); nothing is written on a refused emit.
+                appendNoteEvent: (conversationKey, eventId, text, writerBinding) => {
+                  const r = appSvc.store.appendWithEmit({ eventId, conversationKey, messageId: eventId, role: 'agent', text, at: new Date().toISOString(), machineId: wbSelf, kind: 'message', systemSource: 'work-board-note', writerBinding });
+                  return r.outcome;
+                },
+                noteEvent: (conversationKey, eventId) => {
+                  const ev = appSvc.store.getEvent(conversationKey, eventId) as { kind?: string; text?: string; at?: string } | null;
+                  return ev && ev.kind === 'message' && typeof ev.text === 'string' && typeof ev.at === 'string' ? { text: ev.text, at: ev.at } : null;
+                },
+                // Boot seed for the note drain: every note event on the card's conversation, by event id (bounded by the conversation's size).
+                noteEventIds: (conversationKey) => {
+                  const out: Array<{ eventId: string; at: string }> = [];
+                  let cursor: string | null = null;
+                  for (let page = 0; page < 200; page++) {
+                    const b = appSvc.store.browseMessages(conversationKey, cursor, 200);
+                    for (const m of b.messages) if (m.systemSource === 'work-board-note') out.push({ eventId: m.eventId, at: m.at });
+                    if (!b.nextBefore || b.messages.length === 0) break;
+                    cursor = b.nextBefore;
+                  }
+                  return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+                },
+                // §3 "Pickup hold": is the RECORDING conversation's session live? App through the app alias; a Telegram topic through
+                // the running sessions; Slack cannot be told here yet (null ⇒ treated as live: no second worker on a guess).
+                recordingSessionLive: (conversationKey) => {
+                  const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+                  if (tg) { const topic = Number(tg[1]); return sessionManager.listRunningSessions().some((x) => (x as { topicId?: number }).topicId === topic); }
+                  if (conversationKey.startsWith('slack:')) return null;
+                  const name = appSvc.sessionFor(conversationKey);
+                  return !!name && sessionManager.listRunningSessions().some((x) => x.tmuxSession === name);
+                },
               },
               relayReady: () => (_appRelayReady ? _appRelayReady().ready : false),
               capacityProbe: () => sessionManager.interactiveSpawnCapacity(() => getActiveWorkAdmission()?.check()),
@@ -11217,6 +11253,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
             // Conversations of archived or removed cards are left out of every conversation list (§2).
             appSvc.store.hiddenConversationKeys = () => wbRuntime.hiddenConversationKeys();
+            // agent-work-cards-default §2: note events (local and replicated) feed the holder's pending set by event id.
+            appSvc.store.addAppendListener((ev) => {
+              if (ev.kind !== 'message' || (ev as { systemSource?: string }).systemSource !== 'work-board-note') return;
+              try { wbRuntime.onNoteEvent(ev.conversationKey, ev.eventId, ev.at); } catch { /* @silent-fallback-ok: the boot seed scan finds it on the next takeover */ }
+            });
             wbRuntime.start();
             const wbLeaseWatch = setInterval(() => { try { wbRuntime.noteLeaseHolder(); } catch { /* @silent-fallback-ok: a lease read fault is retried on the next 15 s tick */ } }, 15_000);
             wbLeaseWatch.unref();
