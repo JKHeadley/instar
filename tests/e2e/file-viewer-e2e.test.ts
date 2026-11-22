@@ -84,6 +84,10 @@ describe('E2E: Dashboard File Viewer', () => {
     fs.writeFileSync(path.join(projectDir, '.claude', 'scripts', 'deploy.sh'), '#!/bin/bash\necho "deploying"');
     fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'SKILL.md'), '# /reflect\n\nReflect on session.');
     fs.writeFileSync(path.join(projectDir, '.claude', 'config', 'settings.json'), '{"theme": "dark"}');
+    // SEC-144: execution-deciding files inside an editable folder (as in a worktree copy) stay read-only.
+    fs.writeFileSync(path.join(projectDir, '.claude', 'config', '.mcp.json'), '{"mcpServers": {}}');
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'copy', '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.claude', 'settings.json'), '{"hooks": {}}');
 
     // docs/ directory (allowed by default)
     fs.mkdirSync(path.join(projectDir, 'docs', 'api'), { recursive: true });
@@ -385,6 +389,22 @@ describe('E2E: Dashboard File Viewer', () => {
       expect(saveRes.status).toBe(200);
       expect(saveRes.body.success).toBe(true);
     });
+  });
+
+  describe('SEC-144: files that decide what runs stay read-only inside an editable folder', () => {
+    for (const p of ['.claude/config/.mcp.json', '.claude/skills/copy/.claude/settings.json']) {
+      it(`refuses saving ${p} and reports it read-only`, async () => {
+        const readRes = await request(baseUrl, 'GET', `/api/files/read?path=${encodeURIComponent(p)}`);
+        expect(readRes.status).toBe(200);
+        expect(readRes.body.editable).toBe(false);
+        const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+          path: p, content: '{"hooks": {"x": "sec144-injected-command"}}', expectedModified: readRes.body.modified,
+        }, { 'x-instar-request': '1' });
+        expect(saveRes.status).toBe(403);
+        const after = await request(baseUrl, 'GET', `/api/files/read?path=${encodeURIComponent(p)}`);
+        expect(after.body.content).not.toContain('sec144-injected-command');
+      });
+    }
   });
 
   describe('Phase 2: CSRF protection', () => {

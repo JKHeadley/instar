@@ -19,6 +19,11 @@ describe('notification producer census ratchet', () => {
   it('accepts only a source-bound routine stamper for a new producer', () => {
     expect(check("const stamp = notificationStamper('src/newProducer.ts'); withNotificationEnvelope(stamp(), () => telegram.sendToTopic(42, 'routine')); ").status).toBe(0);
   });
+  it('permits profile confirmation only from its registered routes composition', () => {
+    const source = "const stamp = notificationStamper('src/server/routes.ts', 'profile-confirmation'); withNotificationEnvelope(stamp(), () => telegram.sendToTopic(42, 'Confirm the exact change'));";
+    expect(check(source, 'src/server/routes.ts').status).toBe(0);
+    expect(check(source.replace('src/server/routes.ts', 'src/newProducer.ts')).status).toBe(1);
+  });
   it('restricts the human mirror capability to its admitted route, never the shared helper', () => {
     const mirror = "withNotificationEnvelope(verifiedInboundMirrorEnvelope('native'), () => telegram.sendToTopic(42, 'copy'));";
     expect(check("router.post('/mobile/chat/:topicId', async () => { " + mirror + " });", 'src/server/mobilePairingRoutes.ts').status).toBe(0);

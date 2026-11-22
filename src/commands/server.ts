@@ -1,3 +1,5 @@
+import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
+import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
@@ -94,6 +96,7 @@ function repairedSlackRelayReadiness(config: { stateDir: string; projectDir: str
   return repairSlackReplyRelayIfStale({ projectDir: config.projectDir, stateDir: config.stateDir, config, template, warn: (m) => console.warn(`[slack-relay] ${m}`) });
 }
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
+import { scrubOutputText, credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted, aspClassifiedText, framingLabel, reconcileSignedLabel } from '../messaging/shared/signedInbound.js';
 import { markedInboundPrefix, markedHistoryLabel } from '../messaging/shared/onBehalfMarker.js';
@@ -110,6 +113,7 @@ import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
+import { sanitizeTypedText } from '../core/terminalControlBytes.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
@@ -207,7 +211,7 @@ import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
 import { AgentServer } from '../server/AgentServer.js';
 import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
-import { resolveBootClaimSafety } from '../core/BootClaimHold.js';
+import { resolveBootClaimSafety, resolvePlannedRestartLeaseContinuity, UNSIGNED_WINDOW_CEILING_MS } from '../core/BootClaimHold.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
@@ -375,7 +379,10 @@ import { IdentityRecoveryBearerAuthority } from '../core/IdentityRecoveryBearer.
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
-import { describeRestartRequester } from '../core/restartRequestAttribution.js';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
+import { describeRestartRequester, findRestartRequestRecord, cleanString as cleanRestartField } from '../core/restartRequestAttribution.js';
+import { LeaseContinuityStore } from '../core/LeaseContinuity.js';
+import { resolveShutdownDeadlineMs as resolveShutdownDeadlineForLease } from '../core/shutdownDeadline.js';
 import { bootReadiness, isPeerBooting } from '../server/BootReadiness.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import { EvolutionArchiveSync } from '../core/EvolutionArchiveSync.js';
@@ -690,11 +697,23 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
     // Request a graceful server restart — write to state/ subdirectory where
     // the supervisor and ForegroundRestartWatcher poll for it.
     const restartFile = path.join(deps.config.stateDir, 'state', 'restart-requested.json');
-    fs.writeFileSync(restartFile, JSON.stringify({
-      requestedAt: new Date().toISOString(),
-      reason: 'User requested restart via Agent Attention fix command',
+    const requestedAt = new Date().toISOString();
+    const reason = 'User requested restart via Agent Attention fix command';
+    // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+    // before the request is visible; the request carries the same fields as every planned writer.
+    await announceRestartRequested({ requestedBy: 'fix-command', reason, requestedAt });
+    fs.mkdirSync(path.dirname(restartFile), { recursive: true });
+    const restartTmp = `${restartFile}.${process.pid}.tmp`;
+    fs.writeFileSync(restartTmp, JSON.stringify({
+      requestedAt,
+      reason,
       requestedBy: 'fix-command',
-    }));
+      plannedRestart: true,
+      bypassHolds: true, // the operator asked for it now
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      pid: process.pid,
+    }, null, 2));
+    fs.renameSync(restartTmp, restartFile);
     await send('Restart requested. Your agent will restart momentarily.');
     return true;
   }
@@ -4982,17 +5001,20 @@ function setupServerLog(stateDir: string): void {
 
   const timestamp = () => new Date().toISOString();
 
+  // SEC-164: this stream writes logs/server.log directly, not through stdout, so it is masked here too.
+  const scrubOn = credentialScrubEnabledReader(path.join(stateDir, '..'));
+  const scrubbed = (line: string) => (scrubOn() ? scrubOutputText(line) : line);
   console.log = (...args: unknown[]) => {
     origLog(...args);
-    logStream.write(`${timestamp()} [LOG] ${args.map(String).join(' ')}\n`);
+    logStream.write(scrubbed(`${timestamp()} [LOG] ${args.map(String).join(' ')}\n`));
   };
   console.warn = (...args: unknown[]) => {
     origWarn(...args);
-    logStream.write(`${timestamp()} [WARN] ${args.map(String).join(' ')}\n`);
+    logStream.write(scrubbed(`${timestamp()} [WARN] ${args.map(String).join(' ')}\n`));
   };
   console.error = (...args: unknown[]) => {
     origError(...args);
-    logStream.write(`${timestamp()} [ERROR] ${args.map(String).join(' ')}\n`);
+    logStream.write(scrubbed(`${timestamp()} [ERROR] ${args.map(String).join(' ')}\n`));
   };
 }
 
@@ -5283,6 +5305,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     console.log(`  State: ${config.stateDir}`);
     console.log();
 
+    // SEC-164: mask live credentials in the server's own output before any log captures it.
+    {
+      const { installOutputScrub, credentialScrubEnabledReader } = await import('../core/outputCredentialScrub.js');
+      installOutputScrub(credentialScrubEnabledReader(config.projectDir));
+    }
     // Set up file logging for observability
     setupServerLog(config.stateDir);
     guardProcessStdio();
@@ -6864,6 +6891,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // honesty observer that STOPS attempting goes BLIND if the registry recovers.
     const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
+    // planned-restart-keeps-lead — the role this machine booted with, known once the lease is initialised.
+    let bootRoleAwakeForLease: boolean | null = null;
     // Hoisted (skill-learning slice 2): the commit protocol's WriterFence pulls through it at write time.
     let gitSyncRef: GitSyncManager | undefined;
     // U4.3/U4.5 — hoisted rope-health seams. The resolver + prober are closure-locals
@@ -7255,6 +7284,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const sch = config.multiMachine?.leaseSelfHeal?.soloCaptainHold;
             return sch?.enabled ? { enabled: true } : null;
           },
+          // stall-wake-lease-reconfirm (fb-fdb55c1c-a79) — read live; dark unless set explicitly.
+          stallReconfirm: () => resolveStallReconfirm(config),
           isPreferredAwakeAgreed: () => {
             const pref = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
             return !!pref && pref === selfMachineId;
@@ -7265,6 +7296,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           // takeover-ready-pool R1 (boot claim safety, fb-2bf6ccd0-705) — read live; the
           // preferred machine named here only decides whom a deferring machine waits for.
           bootClaimSafety: () => resolveBootClaimSafety(config),
+          // planned-restart-keeps-lead (fb-135e3043-add) — read live; off keeps today's renewal exactly.
+          plannedRestartContinuity: () => resolvePlannedRestartLeaseContinuity(config),
+          continuity: new LeaseContinuityStore({
+            stateDir: config.stateDir,
+            selfMachineId,
+            sign: (canonical) => fencedLease.signContinuityMeta(canonical),
+            verify: (canonical, signature, holder) => fencedLease.verifyContinuityMeta(canonical, signature, holder),
+            verifyLease: (lease) => fencedLease.verifyLease(lease),
+            unsignedCeilingMs: UNSIGNED_WINDOW_CEILING_MS,
+            logger: (m) => console.log(pc.dim(`  [lease] ${m}`)),
+          }),
+          renewIntervalMs: () => coordinator.leaseRenewIntervalMs(),
+          broadcastDeadlineMs: () => 8_000,
+          shutdownDeadlineMs: () => resolveShutdownDeadlineForLease(process.env.INSTAR_SHUTDOWN_DEADLINE_MS),
+          readRequestFile: () => {
+            const file = path.join(config.stateDir, 'state', 'restart-requested.json');
+            if (!fs.existsSync(file)) return { present: false };
+            const row = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+            return { present: true, requestedBy: cleanRestartField(row.requestedBy), reason: cleanRestartField(row.reason), requestedAt: cleanRestartField(row.requestedAt) };
+          },
+          findConsumption: (lookup) => findRestartRequestRecord(config.stateDir, lookup),
+          bootRoleAwake: () => bootRoleAwakeForLease,
+          onEpisodeChange: (pending) => coordinator.noteLeaseEpisodeChange(pending),
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
@@ -7472,6 +7526,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           return { enabled: o.enabled === true, dryRun: o.dryRun !== false };
         };
         await coordinator.initializeLease().catch(error => { releaseOriginLeaseRenewal(); throw error; });
+        bootRoleAwakeForLease = coordinator.isAwake;
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
 
         // ── U4.3 — traffic-independent rope-health recovery probe ──────────
@@ -8055,6 +8110,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
+        // lease-freshness-lapse-retry — the coordinator's one-snapshot lease verdict and renewal gap, so a send refused
+        // at the boundary is named by what the coordinator observed (null without a lease coordinator).
+        leaseFreshness: () => coordinator.leaseFreshness(),
         isSessionLive: binding => {
           const session = state.getSession(binding.sessionId);
           return session?.status === 'running' && session.framework === binding.harnessId;
@@ -9432,7 +9490,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Losing authority stops jobs NOW, whatever a restart is waiting on: a throttled restart
     // must never mean jobs running in two places.
     const bootAwake = coordinator.isAwake;
+    // planned-restart-keeps-lead: the request waits (bounded) for the lease renewal; single-flight.
+    let roleRestartInFlight = false;
     const reconcileRole = (): void => {
+      if (roleRestartInFlight) return;
       try {
         const nowAwake = coordinator.isAwake;
         if (nowAwake === bootAwake) {
@@ -9451,7 +9512,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (decision === 'restart') {
           console.log(pc.yellow(`  [lease] role is now ${coordinator.role}: restarting once so boot builds what it needs`));
-          requestRoleRestart({ stateDir: config.stateDir, leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity?.machineId }, nowAwake);
+          roleRestartInFlight = true;
+          void requestRoleRestart({ stateDir: config.stateDir, leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity?.machineId, stillNeeded: () => coordinator.isAwake !== bootAwake }, nowAwake)
+            .catch((err) => console.warn(`  [lease] role restart request failed: ${err instanceof Error ? err.message : String(err)}`)) // @silent-fallback-ok: logged, and the timer below retries
+            .finally(() => { roleRestartInFlight = false; reconcileRole(); });
         }
       } catch (err) {
         console.warn(`  [lease] role restart check failed: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok: logged, and the timer below retries
@@ -10881,6 +10945,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Replaced once the pairing service exists. Until then a recovery pass stops here and the
           // next one retries, so a team person's create never lands unconfined.
           confineStranded: () => { throw new Error('pairing-not-ready'); },
+          // SEC-164 §3.5: a server transcript has its live keys masked before it is stored.
+          credentialScrubEnabled: credentialScrubEnabledReader(config.projectDir),
           stateDir: config.stateDir,
           machineId: () => _meshSelfId ?? os.hostname(),
           // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
@@ -10981,6 +11047,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (replicatedRecordEmitter) {
           const emitter = replicatedRecordEmitter;
           appSvc.store.setReplicationHook((ev) => emitter.emit(
+            replMod.APP_CONVERSATIONS_STORE_KEY,
+            replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
+            replMod.buildAppConversationRecordData(ev),
+          ));
+          // agent-work-cards-default §2: the same emit, run FIRST by appendWithEmit so a note exists on every machine or on none.
+          appSvc.store.setReservingReplicationHook((ev) => emitter.emit(
             replMod.APP_CONVERSATIONS_STORE_KEY,
             replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
             replMod.buildAppConversationRecordData(ev),
@@ -11150,6 +11222,36 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const m = appSvc.store.browseMessages(conversationKey, null, 20).messages.filter((x) => x.role === 'operator');
                   return m.length ? m.reduce((a, b) => (a.at > b.at ? a : b)).at : null;
                 },
+                // agent-work-cards-default §2: the agent's progress note, emit reserved first (appendWithEmit); nothing is written on a refused emit.
+                appendNoteEvent: (conversationKey, eventId, text, writerBinding) => {
+                  const r = appSvc.store.appendWithEmit({ eventId, conversationKey, messageId: eventId, role: 'agent', text, at: new Date().toISOString(), machineId: wbSelf, kind: 'message', systemSource: 'work-board-note', writerBinding });
+                  return r.outcome;
+                },
+                noteEvent: (conversationKey, eventId) => {
+                  const ev = appSvc.store.getEvent(conversationKey, eventId) as { kind?: string; text?: string; at?: string } | null;
+                  return ev && ev.kind === 'message' && typeof ev.text === 'string' && typeof ev.at === 'string' ? { text: ev.text, at: ev.at } : null;
+                },
+                // Boot seed for the note drain: every note event on the card's conversation, by event id (bounded by the conversation's size).
+                noteEventIds: (conversationKey) => {
+                  const out: Array<{ eventId: string; at: string }> = [];
+                  let cursor: string | null = null;
+                  for (let page = 0; page < 200; page++) {
+                    const b = appSvc.store.browseMessages(conversationKey, cursor, 200);
+                    for (const m of b.messages) if (m.systemSource === 'work-board-note') out.push({ eventId: m.eventId, at: m.at });
+                    if (!b.nextBefore || b.messages.length === 0) break;
+                    cursor = b.nextBefore;
+                  }
+                  return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+                },
+                // §3 "Pickup hold": is the RECORDING conversation's session live? App through the app alias; a Telegram topic through
+                // the running sessions; Slack cannot be told here yet (null ⇒ treated as live: no second worker on a guess).
+                recordingSessionLive: (conversationKey) => {
+                  const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+                  if (tg) { const topic = Number(tg[1]); return sessionManager.listRunningSessions().some((x) => (x as { topicId?: number }).topicId === topic); }
+                  if (conversationKey.startsWith('slack:')) return null;
+                  const name = appSvc.sessionFor(conversationKey);
+                  return !!name && sessionManager.listRunningSessions().some((x) => x.tmuxSession === name);
+                },
               },
               relayReady: () => (_appRelayReady ? _appRelayReady().ready : false),
               capacityProbe: () => sessionManager.interactiveSpawnCapacity(() => getActiveWorkAdmission()?.check()),
@@ -11173,6 +11275,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
             // Conversations of archived or removed cards are left out of every conversation list (§2).
             appSvc.store.hiddenConversationKeys = () => wbRuntime.hiddenConversationKeys();
+            // agent-work-cards-default §2: note events (local and replicated) feed the holder's pending set by event id.
+            appSvc.store.addAppendListener((ev) => {
+              if (ev.kind !== 'message' || (ev as { systemSource?: string }).systemSource !== 'work-board-note') return;
+              try { wbRuntime.onNoteEvent(ev.conversationKey, ev.eventId, ev.at); } catch { /* @silent-fallback-ok: the boot seed scan finds it on the next takeover */ }
+            });
             wbRuntime.start();
             const wbLeaseWatch = setInterval(() => { try { wbRuntime.noteLeaseHolder(); } catch { /* @silent-fallback-ok: a lease read fault is retried on the next 15 s tick */ } }, 15_000);
             wbLeaseWatch.unref();
@@ -15715,6 +15822,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Set up dispatch system with auto-dispatcher
     let dispatches: DispatchManager | undefined;
     let autoDispatcher: AutoDispatcher | undefined;
+    // SEC-153: the config migration rewrote the file after this process loaded it; apply the same
+    // change in memory so the first boot after the update does not poll the old address.
+    if (config.dispatches) {
+      const { migrateConfigLegacyDispatchUrl } = await import('../core/PostUpdateMigrator.js');
+      if (migrateConfigLegacyDispatchUrl(config as unknown as Record<string, unknown>)) {
+        console.log(pc.yellow('  Dispatch polling of the old unsigned address is off (SEC-153)'));
+      }
+    }
     if (config.dispatches) {
       dispatches = new DispatchManager({
         ...config.dispatches,
@@ -15744,6 +15859,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { DispatchDecisionJournal } = await import('../core/DispatchDecisionJournal.js');
       const dispatchDecisionJournal = new DispatchDecisionJournal(config.stateDir);
       autoDispatcher.setDecisionJournal(dispatchDecisionJournal);
+      // SEC-153: the dispatch server's pinned keys, from the config file only. With none, no dispatch is
+      // auto-applied or executed: each waits for review.
+      const pinnedDispatchKeys = config.dispatches.trustedKeys && typeof config.dispatches.trustedKeys === 'object' && !Array.isArray(config.dispatches.trustedKeys)
+        ? Object.fromEntries(Object.entries(config.dispatches.trustedKeys).filter(([k, v]) => typeof k === 'string' && k.length <= 128 && typeof v === 'string' && v.includes('PUBLIC KEY')))
+        : {};
+      if (Object.keys(pinnedDispatchKeys).length > 0) {
+        const { DispatchVerifier } = await import('../core/DispatchVerifier.js');
+        autoDispatcher.setSignatureGate(new DispatchVerifier({ trustedKeys: pinnedDispatchKeys, required: true }));
+      }
 
       autoDispatcher.start();
       console.log(pc.green('  Dispatch system enabled (auto-polling active)'));
@@ -15861,6 +15985,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Instead, we wire the 'restartDetected' event to the graceful shutdown
       // function (defined below) which closes all resources before exiting.
       exitOnRestart: false,
+      // planned-restart-keeps-lead §1 step 3: before consuming, let the lease holder persist a window
+      // renewal for this request (bounded inside the coordinator; null when there is nothing to extend).
+      beforeConsume: (request) => leaseCoordinatorRef?.awaitWindowRenewalForConsumer({ requestedBy: request.requestedBy, reason: request.reason, requestedAt: request.requestedAt }) ?? null,
       onRestartDetected: async (request) => {
         // Only notify if there are active sessions — silent restart otherwise.
         // Phase 1C of GRACEFUL_UPDATES: reduce noise for routine maintenance.
@@ -17567,6 +17694,43 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): window-aware account choice.
+    // Built BEFORE the throttle wiring below (the throttle reads it); the poller it reads is
+    // constructed later and is only touched when a decision runs. One set of live inputs shared by every picker on this machine; the switch is read live per
+    // decision through the dev-agent gate, and the shadow log records one row per placement.
+    const { AccountChoiceShadowLog, shadowLogPath } = await import('../monitoring/AccountChoiceShadowLog.js');
+    let accountChoiceShadow: InstanceType<typeof AccountChoiceShadowLog> | null = null;
+    const windowAwareEnabled = () => resolveDevAgentGate(
+      (() => {
+        const v = liveConfig.get<boolean | undefined>('subscriptionPool.pacing.windowAwareChoice', config.subscriptionPool?.pacing?.windowAwareChoice);
+        return typeof v === 'boolean' ? v : undefined;
+      })(),
+      config,
+    );
+    const windowAwareDeps: import('../core/windowAwarePlacement.js').WindowAwareDeps = {
+      enabled: windowAwareEnabled,
+      requestRead: (id) => quotaPoller.requestRead(id),
+      failedReads: (id) => quotaPoller.outOfCycleFailures(id),
+      breakerOpen: (id) => quotaPoller.rereadBreakerOpen(id),
+      pollIntervalMs: () => quotaPoller.pollInterval(),
+      record: (row) => {
+        if (!config.stateDir) return;
+        if (!accountChoiceShadow) {
+          accountChoiceShadow = new AccountChoiceShadowLog({ file: shadowLogPath(config.stateDir), machineId: subscriptionPoolMachineId ?? 'local' });
+        }
+        accountChoiceShadow.record(row);
+      },
+    };
+    const windowAwareSelection = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, requestRead: windowAwareDeps.requestRead, failedReads: windowAwareDeps.failedReads, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
+    // The throttle's headroom read (model-blind): window-aware inputs plus the re-read breaker,
+    // behind the same live switch. It never requests reads (it is not a placement).
+    const windowAwareThrottleOpts = (): Partial<import('../core/QuotaAwareScheduler.js').SelectionOptions> =>
+      windowAwareEnabled()
+        ? { windowAware: true, failedReads: windowAwareDeps.failedReads, breakerOpen: windowAwareDeps.breakerOpen, pollIntervalMs: quotaPoller.pollInterval() }
+        : {};
     // POOL-AWARE QUOTA THROTTLE wiring (docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md):
     // give the global quota brake the SAME placeability predicate the placement layer
     // (selectAccount) uses, reading the LIVE SubscriptionPool. Effect: the brake never
@@ -17585,6 +17749,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), {
         nowMs: Date.now(),
         framework: config.sessions.framework ?? 'claude-code',
+        // quota-pacing step 2: rolled/unknown windows report null and an unmeasured best sets degraded.
+        ...windowAwareThrottleOpts(),
       }));
       console.log(pc.green('  Pool-aware quota throttle: wired (placement-shared eligibility, most-headroom gating)'));
     }
@@ -18231,6 +18397,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const dlTelegram = telegram;
         codexDeviceLimit = buildCodexDeviceLimitWiring({
           pool: subscriptionPool,
+          windowAwareSelection,
           ledger: subscriptionLoginLedger ?? null,
           quotaPoller,
           machineId: subscriptionPoolMachineId,
@@ -20707,6 +20874,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
       });
       setNeverSilentInstance({ store: neverSilent.store, enabled: () => nsCfg().enabled });
+      // lease-freshness-lapse-retry — count this machine's replies held at the send boundary for the lease. The
+      // origin runtime boots before never-silent exists, so the recorder is assigned late (as readDetectorHealth is).
+      // The conversation key follows the delivery notice: the topic for the main chat, the offset topic for the
+      // issues chat, `chat:<id>` for any other authorized destination. No-op while never-silent reads disabled.
+      if (telegramOriginBoot && originTelegramConfig) {
+        const chats = originTelegramConfig.config as { chatId?: unknown; issuesChatId?: unknown };
+        const conversationKey = (chatId: string | null, topicId: string | null): string => {
+          const topic = topicId === null ? 1 : Number(topicId);
+          if (chatId !== null && chatId === String(chats.chatId)) return String(topic);
+          if (chatId !== null && chats.issuesChatId != null && chatId === String(chats.issuesChatId)) return String(10_000_000_000 + topic);
+          return `chat:${chatId ?? 'unknown'}`;
+        };
+        telegramOriginBoot.runtime.options.sendHoldIncidents = {
+          held: (input) => {
+            if (!nsCfg().enabled) return;
+            neverSilent.store.recordSendHold('telegram', conversationKey(input.chatId, input.topicId),
+              { operationId: input.operationId, reason: input.reason, heldAt: input.heldAt, deadlineAt: input.deadlineAt });
+          },
+          delivered: (input) => { if (nsCfg().enabled) neverSilent.store.recordSendHoldDelivered(input.operationId, input.deliveredAt); },
+        };
+      }
       if (nsTelegram) {
         nsTelegram.setNeverSilentAskHandler((tap) => neverSilent.handleTelegramTap(tap));
         const priorNs = nsTelegram.onMessageLogged;
@@ -21782,6 +21970,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const messageFormatter = new MessageFormatter();
     const tmuxBin = config.sessions.tmuxPath;
     const tmuxOps: TmuxOperations = {
+      currentSessionGeneration: (name) => sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.id ?? null,
+      isSessionGeneration: (tmuxSession, sessionId) =>
+        sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
       getForegroundProcess(tmuxSession: string): string {
         try {
           return execFileSync(tmuxBin, ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_current_command}'], {
@@ -21803,7 +21994,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           const target = `=${tmuxSession}:`;
           // Chunked — see src/core/tmuxLiteralSend.ts (`send-keys -l` payload
           // is one argv element and blows ARG_MAX on large text).
-          for (const chunk of chunkLiteralForTmux(text)) {
+          // SEC-137: peer-authored text is typed key-by-key here, so a CR, Ctrl-U or ESC inside it would act
+          // as a keystroke (early submit, erased sender tag). Same cleaning as SessionManager.rawInject.
+          for (const chunk of chunkLiteralForTmux(sanitizeTypedText(text))) {
             execFileSync(tmuxBin, buildLiteralSendArgs(target, chunk), { encoding: 'utf-8', timeout: 5000 });
           }
           execFileSync(tmuxBin, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
@@ -21863,6 +22056,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       log: (line) => console.log(line),
     });
     const messageRouter = new MessageRouter(messageStore, messageDelivery, {
+      // SEC-164 §3.5: masks live keys in a new same-agent message before it is saved or signed.
+      credentialScrubEnabled: credentialScrubEnabledReader(config.projectDir),
       localAgent: config.projectName,
       localMachine: machineId,
       serverUrl: `http://localhost:${config.port}`,
@@ -21888,9 +22083,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         prefix: path.basename(config.projectDir),
         asOf,
       }),
+      // relay-asof-holder-skew §3: one JSONL row per holder refusal, next to the other delivery audits.
+      refusalAuditPath: path.join(config.stateDir, '..', 'logs', 'message-delivery-refusals.jsonl'),
       // §C: a terminal failure tells the proven sender session once.
       onDeliveryFailure: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
       undeliveredCounts: () => Object.fromEntries(senderNotifier.undelivered),
+      // N73: a signed generation proof works on every registered rope, including
+      // LAN HTTP; it carries no bearer credential and authenticates the reply.
+      generationBindingEnabled: () => liveConfig.get<boolean>('multiMachine.messageSessionGeneration.enabled', false) === true,
+      generationEvidence: (kind, reason, messageId) => featureEvidence.record('multiMachine.messageSessionGeneration', { kind, reason, context: { messageId } }),
+      peerSessionGeneration: (targetMachine, target, timeoutMs) => crossMachineDeps
+        ? readPeerMessageGeneration({
+          peer: (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === targetMachine) ?? null,
+          target, timeoutMs, selfMachine: machineId, signingKeyPem: crossMachineDeps.signingKeyPem,
+          peerPublicKeyPem: crossMachineDeps.identityManager.getSigningPublicKeyPem(targetMachine) ?? null,
+        })
+        : Promise.resolve({ reason: 'cross-machine messaging is unavailable' }),
       // §D.3: guarded relay addresses, read at call time (the mesh block below sets them up).
       peerAddresses: (machineId: string) => {
         const peer = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
@@ -21971,6 +22179,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Start delivery retry manager for automatic retries, watchdog, and TTL expiry
     const retryManager = new DeliveryRetryManager(messageStore, messageDelivery, {
       agentName: config.projectName,
+      currentSessionGeneration: (name) => sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.id ?? null,
+      generationEvidence: (kind, reason, messageId) => featureEvidence.record('multiMachine.messageSessionGeneration', { kind, reason, context: { messageId } }),
       // messages-reach-renamed-sessions §B/§C.
       isLocalEnvelope: (envelope) => {
         const m = envelope.message.to.machine;
@@ -21979,6 +22189,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       isPinnedSessionLive: (tmuxSession, sessionId) =>
         sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
       onDeadLetter: (envelope, reason) => { messageRouter.reportTerminalFailure(envelope, reason); },
+      // relay-asof-holder-skew §2: a role with no accepted holder yet is re-resolved each pass.
+      redeliverUnresolved: (envelope, claim) => messageRouter.redeliverSameAgentLocal(envelope, claim),
       // §D.6: the origin copy of a cross-machine message stays open for a late notice.
       holdForRemoteNotice: (envelope) => {
         const m = envelope.message.to.machine;
@@ -25077,6 +25289,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       _swapAntiThrashEngine = new SwapAntiThrashEngine({
         ledger: swapLedger,
         getKnobs: antiThrashKnobsGetter,
+        // quota-pacing step 2: rolled / unknown / unread readings are invalid for proactive moves.
+        windowAware: windowAwareEnabled,
+        outOfCycleFailures: (id) => quotaPoller.outOfCycleFailures(id),
         machineId: _meshSelfId ?? 'local',
         // P17: episode-deduped attention (the engine dedupes on episodeId;
         // the id passed here is the stable per-episode dedupe key).
@@ -25534,13 +25749,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       _quotaAwareScheduler = new QuotaAwareScheduler({
         listAccounts: () => subscriptionPool.list(),
         softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct,
+        // quota-pacing step 2: window-aware selection inputs (read live; off = today's rule).
+        windowAware: {
+          enabled: windowAwareEnabled,
+          requestRead: windowAwareDeps.requestRead,
+          failedReads: windowAwareDeps.failedReads,
+          pollIntervalMs: () => quotaPoller.pollInterval(),
+        },
         // swap-continuity-antithrash — the anti-thrash observation + execute-time
         // revalidation hooks. Reactive decision behavior is untouched (I6):
         // these only OBSERVE reactive swaps (dwell clock-start, hop alerts,
         // failed rows) and revalidate PROACTIVE explicit-target calls (§3.3).
         antiThrash: _swapAntiThrashEngine
           ? {
-              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs).valid,
+              readingValid: (acct, nowMs) => readingValidity(acct, nowMs, antiThrashKnobsGetter().quotaFreshnessMs, { windowAware: windowAwareEnabled() }).valid,
               getKnobs: () => {
                 const k = antiThrashKnobsGetter();
                 return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
@@ -25611,6 +25833,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         );
       _usageWallRescue = new UsageWallRescue({
         readConfig: readWallRescueConfig,
+        // quota-pacing step 2: window-aware account choice (read live; off = today's rule).
+        windowAware: windowAwareDeps,
         listAccounts: () => subscriptionPool.list(),
         getSession: (name) => state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === name),
         configHomeForSession: (name) => sessionManager.configHomeForSession(name),
@@ -25682,18 +25906,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        const pinnedAccount = () => {
-          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
+        const { decideWindowAwarePlacement, windowAwareOn } = await import('../core/windowAwarePlacement.js');
+        const pinnedAccount = (ctx?: import('../core/windowAwarePlacement.js').SpawnPlacementContext) => {
+          const nowMs = Date.now();
+          const accounts = subscriptionPool.list();
+          const framework = 'claude-code' as const;
+          const softThresholdPct = config.subscriptionPool?.swapSoftThresholdPct ?? 90;
+          const oldPick = () => selectAccount(accounts, { nowMs, framework, softThresholdPct });
+          // quota-pacing step 2: the shared tiered score when the switch is on (shadow row per placement).
+          const acct = windowAwareOn(windowAwareDeps)
+            ? decideWindowAwarePlacement({
+                accounts,
+                framework,
+                softThresholdPct,
+                nowMs,
+                ctx,
+                deps: windowAwareDeps,
+                caller: 'spawn-pinned',
+                oldPick,
+              })
+            : oldPick();
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         };
         sessionManager.setSpawnAccountResolver(pinnedAccount);
         // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
         // the default login, which is signed out on a machine whose logins all live in the pool.
-        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
+        configureClaudeReviewerLogin(() => pinnedAccount({ shadow: false })?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
-        sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
-        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
+        sessionManager.setSpawnAccountResolver((ctx) => wallRescue.spawnAccount(ctx));
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount({ shadow: false })?.configHome ?? null);
       }
       // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
       // never launch on a Codex account the pool reads at its wall; tag the
@@ -27823,7 +28065,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, teamLogComputerRows: true, documentsOrigin: (config.tunnel as { type?: string; hostname?: string } | undefined)?.type === 'named' && (config.tunnel as { hostname?: string } | undefined)?.hostname ? `https://${String((config.tunnel as { hostname?: string }).hostname).toLowerCase()}` : null, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun
@@ -38337,6 +38579,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         process.exit(1);
       }
       _shuttingDown = true;
+      // planned-restart-keeps-lead §1 step 5 — the one synchronous action before anything else: stamp
+      // the exit time into this machine's continuity record so the next boot can measure itself.
+      try { leaseCoordinatorRef?.stampContinuityExit(); } catch { /* @silent-fallback-ok: a missing stamp costs only the boot measurement */ }
       // CMT-1677: open pane observations end as observer-lost (unresolved), never silently dropped.
       try { promptDetector?.disposeOutcomeObserver(); } catch { /* best effort: observation only */ }
       if (localVerifyTimer) { clearInterval(localVerifyTimer); localVerifyTimer = null; }

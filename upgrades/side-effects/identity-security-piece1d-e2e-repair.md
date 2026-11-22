@@ -16,3 +16,7 @@ Independent review identified a constructor-owned callback registry timer. Teard
 Review concurred after timer cleanup. Initial focused run passed all 14 tests; repeat including teardown cleanup is in progress. Full exact-head verification remains pending.
 
 Final focused run including timer cleanup: 14/14 tests pass, no unhandled errors.
+
+Main merge conflict resolution: preserve the owner-secret always-deliver branch and main's expanded owner-decision producer documentation. Preserve main's inbound credential masker before the private-owner trigger; the trigger reads only chat and sender metadata, never message text. No notification budget, masker policy, or PIN recipient rule is weakened. Full exact-head verification remains delegated.
+
+Independent conflict-resolution review concurred: owner-secret rule, owner-decision budget, credential masking and private recipient rules are all retained.

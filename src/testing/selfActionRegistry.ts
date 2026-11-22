@@ -58,6 +58,7 @@ import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../core/StageAdvancer.js';
 import { nextSiblingAttemptAtMs, SIBLING_DEFAULT_INTERVAL_MS, SIBLING_DEFAULT_MAX_AGE_MS, SIBLING_FIRST_RETRY_MS } from '../core/sibling-holdings.js';
 import { SessionPoolRolloutDriver } from '../core/SessionPoolRolloutDriver.js';
+import { layer2RetryDecision, LAYER2_MAX_RETRIES, LAYER2_RETRY_INTERVAL_MS } from '../messaging/DeliveryRetryManager.js';
 import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionPoolE2EResultStore.js';
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
@@ -79,6 +80,7 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktreeReaper.js';
+import { EPISODE_CAP_MS, PENDING_RENEW_CADENCE_MS, REQUEST_POLL_MAX_MS, nextRequestPollMs, pendingRenewalDue } from '../core/LeaseContinuity.js';
 import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
@@ -322,6 +324,55 @@ const codexArmSessionSweep: SelfActionController = {
           sink.emit({ verb: 'killSession', target: name });
           if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
           else failures.delete(name);
+        }
+      },
+    };
+  },
+};
+
+/**
+ * planned-restart-lease-continuity (docs/specs/planned-restart-keeps-lead.md §1): while a restart request
+ * is pending the holder renews its lease with a window as the expiry once per pending cadence (10 s on a
+ * tunnel) and polls the request file every 2 s (doubling to 60 s on a read error). The pinned pressure
+ * is a request that is never consumed: the renewals keep their cadence (never faster) and stop at the
+ * episode's four-hour cap, which the episode rule ends; the poll's read always fails, so it backs off to
+ * its 60 s ceiling and stays there. Both are rate-floored sentinels, not count-bounded loops.
+ */
+const plannedRestartLeaseContinuity: SelfActionController = {
+  id: 'planned-restart-lease-continuity',
+  actionVerb: 'retry',
+  models: 'src/core/LeaseCoordinator.ts (pending window renewals, pendingRenewalDue) + src/core/MultiMachineCoordinator.ts (request-file poll, nextRequestPollMs)',
+  modelsPath: 'src/core/LeaseCoordinator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The episode is process memory; a restart is the event the renewal exists for, and the next process starts no episode until a request is seen again, so a restart cannot speed the cadence up.' },
+  boundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1 + Math.ceil((4 * 60 * 60_000) / REQUEST_POLL_MAX_MS) + 6,
+  perTargetBoundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1,
+  ticks: 2 * 60 * 60, // four hours at 2 s: the cap is reached inside the horizon
+  tickMs: 2_000,
+  eternalSentinel: { reason: 'While the request is pending the renewal must keep running at its cadence or the lead lapses during the boot it protects; it stops at the four-hour cap.', rateFloorMs: 2_000 },
+  delegatedGiveUp: 'The episode end rule (planned-restart-keeps-lead §1 step 3): withdrawn, absent 60 s with no ledger row, consumed but alive past the shutdown bound, or the four-hour cap',
+  makeUnderPressure(f, sink) {
+    const openedAt = f.clock.nowMs();
+    let lastRenewal: number | null = null;
+    let pollEvery = 2_000;
+    let nextPollAt = openedAt;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        // One action per tick: the renewal first (it protects the lead); the poll takes the next tick,
+        // so two emits never share a timestamp and the 2 s floor is the tick itself.
+        if (pendingRenewalDue({ nowMs: now, lastRenewalMs: lastRenewal, cadenceMs: PENDING_RENEW_CADENCE_MS, episodeOpenedAtMs: openedAt, capMs: EPISODE_CAP_MS })) {
+          lastRenewal = now;
+          sink.emit({ verb: 'retry', target: 'pending-window-renewal' });
+          sink.emitTimesMs.push(now);
+          return;
+        }
+        if (now >= nextPollAt) {
+          // The read fails for ever under pressure: the poll backs off and stays at its ceiling.
+          sink.emit({ verb: 'retry', target: 'restart-request-poll' });
+          sink.emitTimesMs.push(now);
+          pollEvery = nextRequestPollMs(false, pollEvery);
+          nextPollAt = now + pollEvery;
         }
       },
     };
@@ -6107,6 +6158,50 @@ const siblingHoldingsRefresh: SelfActionController = {
   },
 };
 
+
+/** message-holder-redelivery (relay-asof-holder-skew §2): a message whose role is known but
+ * has no accepted holder is re-resolved by the Layer-2 lane every 30 s. Under pressure the
+ * holder never appears: ten redeliveries, one dead letter with the plain reason, then quiet. */
+const messageHolderRedelivery: SelfActionController = {
+  id: 'message-holder-redelivery',
+  actionVerb: 'retry',
+  models: 'src/messaging/DeliveryRetryManager.ts (doCycle — layer2RetryDecision over a holderPending envelope; dead letter + sender notice at LAYER2_MAX_RETRIES)',
+  modelsPath: 'src/messaging/DeliveryRetryManager.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+  },
+  boundK: LAYER2_MAX_RETRIES + 1,
+  perTargetBoundK: LAYER2_MAX_RETRIES + 1,
+  ticks: 4 * 60 * 4, // one hour of 15 s ticks
+  tickMs: 15_000,
+  makeUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+};
+
+function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'message-holder-redelivery:episode';
+  return {
+    tick() {
+      sink.considered += 1;
+      const persisted = f.durableState.get(key) as { attempts: number; lastAttemptAt: number; firstAttemptAt?: number; deadLettered?: boolean } | undefined;
+      if (persisted?.deadLettered) return;
+      const now = f.clock.nowMs();
+      const decision = layer2RetryDecision(persisted ?? { attempts: 0, lastAttemptAt: 0, firstAttemptAt: now }, now);
+      if (decision === 'wait') return;
+      if (decision === 'give-up') {
+        f.durableState.set(key, { ...persisted, deadLettered: true });
+        sink.emit({ verb: 'notify', target: 'sender:echo-lead' });
+        return;
+      }
+      f.durableState.set(key, { attempts: (persisted?.attempts ?? 0) + 1, lastAttemptAt: now, firstAttemptAt: persisted?.firstAttemptAt ?? now });
+      void f.targetAlwaysRejects();
+      sink.emit({ verb: 'retry', target: 'echo-topic-144319' });
+      void LAYER2_RETRY_INTERVAL_MS;
+    },
+  };
+}
+
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
@@ -6132,6 +6227,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   learnedSkillReconciler,
   failureCalloutInvestigation,
   attributionAuditRetry,
+  messageHolderRedelivery,
   reachSecondPersonNotice,
   presenceUsageNotice,
 
@@ -6254,4 +6350,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   heldForwardExpiryReport,
   heldDebtLossNotice,
   workBoardPickup,
+  plannedRestartLeaseContinuity,
 ];

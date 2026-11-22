@@ -110,8 +110,11 @@ export interface MessageEvent extends AppEventBase {
   /**
    * Work Board §2: set ONLY by the server-side append of a `Work board:` line, never accepted from a
    * request body. An older build's validator drops it and falls back to the line's own prefix.
+   * `work-board-note` (agent-work-cards-default §2): the agent's progress note, written through the notes route.
    */
-  systemSource?: 'work-board';
+  systemSource?: 'work-board' | 'work-board-note';
+  /** agent-work-cards-default §2: the binding of the session that wrote a `work-board-note` (audit only; never authority). */
+  writerBinding?: string;
   /** team-roles-and-access, "Step 2b": what lets any machine judge who may read this. Absent on older events, which every grant opens. */
   accessStamp?: AccessStamp;
 }
@@ -223,8 +226,9 @@ export interface BrowsedMessage {
   /** Unread (mobile-unread-messages §3.4): the sender's registry person, so a count can tell a reader's own rows. */
   senderPerson?: ConversationOwner;
   agentOrigin?: MessageOriginEvidence;
-  /** Work Board §2: this line was written by the work board, not by the agent. */
-  systemSource?: 'work-board';
+  /** Work Board §2: this line was written by the work board, not by the agent; `work-board-note` is the agent's own progress note (agent-work-cards-default §2). */
+  systemSource?: 'work-board' | 'work-board-note';
+  writerBinding?: string;
   accessStamp?: AccessStamp;
 }
 
@@ -339,8 +343,12 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
         const agentOrigin = validateMessageOriginEvidence(r.agentOrigin);
         if (agentOrigin && agentOrigin.machineId === machineId) out.agentOrigin = agentOrigin;
       }
-      // Work Board §2: a server-written card line. Only on an agent-role plain message; any other value is dropped.
-      if (r.role === 'agent' && r.kind === 'message' && r.systemSource === 'work-board') (out as MessageEvent).systemSource = 'work-board';
+      // Work Board §2: a server-written card line, or (agent-work-cards-default §2) the agent's progress note. Only on an
+      // agent-role plain message; any other value is dropped. An older build drops `work-board-note` and keeps the line.
+      if (r.role === 'agent' && r.kind === 'message' && (r.systemSource === 'work-board' || r.systemSource === 'work-board-note')) {
+        (out as MessageEvent).systemSource = r.systemSource;
+        if (r.systemSource === 'work-board-note') { const wb = str(r.writerBinding, 200); if (wb) (out as MessageEvent).writerBinding = wb; }
+      }
       return out;
     }
     case 'delivery': {
@@ -640,6 +648,35 @@ export class AppConversationStore {
   private fileNameFor(canonicalKey: string): string {
     return `${crypto.createHash('sha256').update(canonicalKey).digest('hex')}.jsonl`;
   }
+
+  /**
+   * agent-work-cards-default §2 "Progress notes land in the conversation first": the replicated-journal emit is
+   * RESERVED before anything is written, and the durable local append runs only when the emit was accepted (enqueued
+   * for replication). A refused emit (`rate-limited`, or any other non-accepted outcome) writes nothing anywhere and
+   * is returned to the caller to retry; there is no rollback and no spool because nothing was written first.
+   * With no reserving hook configured (a single machine, or a test), this is a plain `append`.
+   */
+  appendWithEmit(input: AppEvent): { appended: boolean; ingestSeq: number; outcome: 'appended' | 'duplicate' | 'rate-limited' | 'not-accepted' } {
+    const stamp = (input.kind === 'message' || input.kind === 'media-message') && !input.accessStamp ? this.stamps?.stamp(input) ?? null : null;
+    const event = stamp ? { ...input, accessStamp: stamp } as AppEvent : input;
+    const canonicalKey = canonicalConversationKey(event.conversationKey);
+    const existing = this.db.prepare('SELECT ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, event.eventId) as { ingestSeq: number } | undefined;
+    if (existing) return { appended: false, ingestSeq: existing.ingestSeq, outcome: 'duplicate' };
+    if (this.reserveEmit) {
+      const r = this.reserveEmit(event);
+      const accepted = r.outcome === 'emitted' || r.outcome === 'disabled' || r.outcome === 'skipped';
+      if (!accepted) return { appended: false, ingestSeq: 0, outcome: /rate-limited/.test(r.outcome) ? 'rate-limited' : 'not-accepted' };
+      const w = this.write(event);
+      if (w.appended) this.notifyAppended(event, false);
+      return { ...w, outcome: w.appended ? 'appended' : 'duplicate' };
+    }
+    const r = this.append(event);
+    return { ...r, outcome: r.appended ? 'appended' : 'duplicate' };
+  }
+
+  /** The emit the reserving append runs FIRST (the same emitter the replication hook uses, returning its outcome). */
+  setReservingReplicationHook(hook: ((event: AppEvent) => { outcome: string }) | undefined): void { this.reserveEmit = hook; }
+  private reserveEmit: ((event: AppEvent) => { outcome: string }) | undefined;
 
   /** Append a locally-created event (dedup by eventId). The replication hook fires on a new commit. */
   append(input: AppEvent): { appended: boolean; ingestSeq: number } {

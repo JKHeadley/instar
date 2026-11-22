@@ -7,7 +7,7 @@ const server = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'
 
 describe('role restart wiring in server.ts', () => {
   const start = server.indexOf('const reconcileRole = (): void => {');
-  const block = server.slice(start, start + 2400);
+  const block = server.slice(start, start + 3200);
   it('subscribes to the role change', () => expect(start).toBeGreaterThan(-1));
   it('reads the role this process booted with, before the scheduler is built', () => {
     expect(start).toBeLessThan(server.indexOf('scheduler = new JobScheduler('));

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "quota-pacing-account-choice",
+  "sessionId": "7a939728-f841-4924-ad99-4827adee98b7",
+  "timestamp": "2026-11-18T09:31:17.856Z",
+  "artifactPath": "upgrades/side-effects/quota-pacing-account-choice.md",
+  "artifactSha256": "44165af051233ff6fd8db8ddb6807d0deec60341e69dc917ab875355c750ad3d",
+  "specPath": "docs/specs/quota-pacing-account-choice.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/QuotaAwareScheduler.ts",
+    "src/core/QuotaPoller.ts",
+    "tests/e2e/window-aware-account-choice-alive.test.ts",
+    "tests/unit/quota-poller-window-basis.test.ts",
+    "tests/unit/window-aware-placement.test.ts",
+    "upgrades/next/quota-pacing-account-choice.md",
+    "upgrades/side-effects/quota-pacing-account-choice.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Second-pass follow-up on placement-affecting change: wires the window-aware throttle, Codex conservative rolled rule, race fix; dev-gated.",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

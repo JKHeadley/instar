@@ -80,6 +80,11 @@ describe('per-prompt delta hook — alive on the production path', () => {
     expect(s.status).toBe(200);
     expect(s.body.prompts).toBe(1);
     expect(s.body.reduction).toEqual({ switchOn: false, allowed: false, reason: 'switch-off' });
+    // The rework baseline is wired to the measurement backend: a real rate, or unknown with a reason (never the old "not built yet").
+    expect(['ok', 'pending', 'partial-before-upgrade', 'unknown']).toContain(s.body.reworkBaseline.status);
+    if (s.body.reworkBaseline.status === 'unknown') expect(s.body.reworkBaseline.reason.length).toBeGreaterThan(10);
+    else expect(s.body.reworkBaseline.source).toBe('GET /context-budget/metrics');
+    expect(JSON.stringify(s.body.reworkBaseline)).not.toMatch(/not built yet/);
 
     // A compaction: the recovery seed fetches the briefing from THIS server, then writes the marker.
     expect((await request(b.app).get(`/topic-intent/${T}/briefing`).set('Authorization', `Bearer ${TOKEN}`)).status).toBe(200);

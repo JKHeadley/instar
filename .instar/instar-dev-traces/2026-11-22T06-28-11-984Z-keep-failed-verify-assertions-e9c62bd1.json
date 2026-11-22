@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "keep-failed-verify-assertions",
+  "sessionId": "1f8f1eef-9aae-4b54-82e0-4f42c80d8806",
+  "timestamp": "2026-11-22T06:28:11.984Z",
+  "artifactPath": "upgrades/side-effects/keep-failed-verify-assertions.md",
+  "artifactSha256": "993f99b40d4f0ddbb69331f70fff236ec0a981470a8e752cb32a27150e2ccf52",
+  "coveredFiles": [
+    "docs/specs/keep-failed-verify-assertions.eli16.md",
+    "src/data/awareness/failed-verification-evidence.md",
+    "src/localVerify/failureEvidence.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "tests/unit/localVerify/failureEvidence.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/keep-failed-verify-assertions.md",
+    "upgrades/side-effects/keep-failed-verify-assertions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible diagnostic repair; includes all implementation files and tests.",
+  "eli16Path": "docs/specs/keep-failed-verify-assertions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/keep-failed-verify-assertions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
