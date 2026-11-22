@@ -120,7 +120,9 @@ Job prompts are self-contained task descriptions. Most of CLAUDE.md is for conve
    Pass or unknown changes nothing. A fail sets that job to full and reports a degradation. The check runs on the first
    job-mode run of each job for each pair of instar version and Claude Code version, not on every run; an unknown
    result repeats the check on the next run, at most three runs per version pair, after which the pair is recorded as
-   unknown and reported once. Check state lives in one file per job, `.instar/state/job-mode-checks/<origin>-<slug>.json`, and every
+   unknown, reported once, and the job runs with full instructions until a version change or an operator clear
+   allows a fresh check (unmeasurable counts as a failure, never a pass; amendment 2026-11-21 under the proposed
+   article smaller-context-never-costs-coherence). Check state lives in one file per job, `.instar/state/job-mode-checks/<origin>-<slug>.json`, and every
    read-modify-write of a job's state (completion results and operator clears) runs under a per-job lock in the server
    process, so overlapping completions cannot overwrite each other. Each launch captures the job's check generation; an operator
    clear advances it, and a result from an earlier generation is discarded, so a stale probe can never restore a
@@ -147,9 +149,9 @@ Job prompts are self-contained task descriptions. Most of CLAUDE.md is for conve
 | Mode resolution order: override, job field, verified-origin default | invariant; basis: irreversible-consequence; evidence: a user or unverified job losing instructions its prompt depends on can act wrongly on an unwatched run, so only verified shipped jobs default to job-mode | Operator override always wins. |
 | Unknown value refused at validation | invariant; basis: enumerable-domain; evidence: two legal values | The field lives only in jobs.json and config, whose old readers ignore unknown keys. |
 | Restricted spawns (confinement, confined tools, required tool confinement, no auth env) skip job-mode | invariant; basis: enumerable-domain; evidence: confinement already owns the single settings source | Recorded in the launch record. |
-| Transcript check pass, fail, unknown | invariant; basis: enumerable-domain; evidence: the entry lists file paths and the snapshot holds the marker or not; anything else is unknown | Unknown never changes mode. |
+| Transcript check pass, fail, unknown | invariant; basis: enumerable-domain; evidence: the entry lists file paths and the snapshot holds the marker or not; anything else is unknown | A single unknown never changes mode; three in a row return the job to full instructions. |
 | A pass counts only after the positive control for that Claude Code version showed loading is visible | invariant; basis: enumerable-domain; evidence: the control either sees the sentinel file's record or not | Two tiny probes per Claude Code version per machine. |
-| Unknown check retried at most three runs per version pair | judgment-candidate; floor: an unknown never changes mode, so extra retries only cost reads; arbiter: the once-reported unknown lets the operator look | Three covers a transient truncation without reading every run forever. |
+| Unknown check retried at most three runs per version pair | judgment-candidate; floor: a single unknown never changes mode and exhausted unknowns fall back to full instructions; arbiter: the once-reported unknown lets the operator look | Three covers a transient truncation without reading every run forever. |
 | Overrides keyed by origin and slug | invariant; basis: enumerable-domain; evidence: the loader identifies a job by the pair (origin, slug) | A fork never inherits a shipped job's override. |
 | Re-probe after a fail on instar or Claude Code version change | invariant; basis: enumerable-domain; evidence: only those two programs decide how the flags are honoured | Operator can clear sooner. |
 | Render failure falls back to full | invariant; basis: irreversible-consequence; evidence: a run with neither instruction set acts without its rules | Reported per incident. |
@@ -181,6 +183,14 @@ Job prompts are self-contained task descriptions. Most of CLAUDE.md is for conve
 ## Maturation plan
 
 - **test-agent-live:** a throwaway agent home with one shipped reviewed job and one user job; the scheduler spawns both through the real path, and the run transcripts show the reviewed job loaded no CLAUDE.md, AGENTS.md or memory index while the user job loaded them.
+- **per-account checks (amendment 2026-11-21, from the second-pass review):** the positive control runs and is cached
+  per Claude config home, and a job's pass is recorded per config home for the current version pair; a run under a new
+  config home is checked even when the version pair is unchanged.
+- **constitution fit (amendment 2026-11-21, after the operator approved the article "A Smaller Context Never Costs
+  Coherence"):** at merge no job runs in job mode (`SHIPPED_JOBS_REVIEWED_FOR_JOB_MODE` is empty and no override is
+  set), so the code is inert. Before any job is switched over, the article's obligations apply: a paired replay of
+  recent runs of that job, full versus job mode, outcomes graded blind and every token counted through completion
+  (tracked on the context budget project's card for the paired replay), with outcome checks continuing while live.
 - **dev-agent-live:** live on Echo from the release that carries it, with commitment detection opted in by override. For 3 days, compare first-turn cache writes and reads of job-mode runs against the same jobs' last 3 days before the release, and count transcript-check results (pass, fail, unknown).
 - **fleet:** ships under a dev-agent gate (`scheduler.jobModeInstructions`, omitted means live on a development agent and dark on the fleet), then the fleet default flips after graduation.
 - **graduation criterion:** on Echo over 3 days, job-mode runs show at least a 40 percent drop in first-turn input tokens for the opted-in jobs, the transcript check records no fail and fewer than 5 percent unknown, and no job-mode run shows a job failing its task where its full-mode runs succeeded. Zero job-mode runs is not a pass.
@@ -218,7 +228,7 @@ Job prompts are self-contained task descriptions. Most of CLAUDE.md is for conve
 - Unit: no `instructionsMode` means no job-mode flags, including a `/sessions/spawn` call with a `jobSlug`.
 - Unit: resolution order (override beats field beats default); verified shipped job defaults to job-mode only when its slug and body hash are on the reviewed list; unverified shipped, user and legacy jobs default to full; an `instar:` override does not apply to a `user:` fork with the same slug; invalid values refused in config and job field.
 - Unit: a jobs.json entry carrying `instructions` still loads under the previous release's validator (fixture), so a revert keeps it firing.
-- Unit: transcript check returns pass, fail and unknown on fixtures captured from Claude Code 2.1.330 (job-mode run with no instructions entry, a run that loaded CLAUDE.md, a file truncated after a marker-bearing snapshot but before the first assistant message); fail flips the job to full; a version change allows one probe; unknown changes nothing and is retried at most three times.
+- Unit: transcript check returns pass, fail and unknown on fixtures captured from Claude Code 2.1.330 (job-mode run with no instructions entry, a run that loaded CLAUDE.md, a file truncated after a marker-bearing snapshot but before the first assistant message); fail flips the job to full; a version change allows one probe; unknown is retried at most three times, then the job runs with full instructions until a version change or clear.
 - Integration: a scheduled job spawn through the real `JobScheduler` path on a temp agent home produces a job-mode argv for a reviewed shipped job and a full argv for a user job.
 - Measurement: one real commitment-detection run before and after, first turn and whole run, cache writes and reads separately, in the PR (the table above is a probe with a tiny appended file).
 

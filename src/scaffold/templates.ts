@@ -338,6 +338,13 @@ export const SOMEONE_ELSES_WORK_TRAP = `${SOMEONE_ELSES_WORK_TRAP_MARKER} — Th
  * Generate CLAUDE.md for a fresh project.
  * This is the standalone version — not the append-to-existing version.
  */
+// Shared instruction clauses (docs/specs/job-mode-instructions.md, Change 1): rendered verbatim
+// into both CLAUDE.md and the job-mode launch text, so a mandatory rule is never worded twice.
+export const SHARED_CLAUSE_NO_COMMANDS_TO_USER = `- **NEVER** tell users to run CLI commands, edit config files, or paste JSON`;
+export const SHARED_CLAUSE_PLAIN_COMPLETE_MESSAGES = `- **Every message is plain and complete**: what happened, what it means for them, and what they need to do (if anything) — said once, in plain words. Too vague ("The session has stopped.") is useless; too technical (reason codes, timeouts, ids, "drain bound (30000ms)") is useless too. Internal detail stays in logs.`;
+export const SHARED_CLAUSE_NO_INTERACTIVE_COMMANDS = `**"Interactive CLI Commands"** — Claude Code's Bash tool CANNOT handle stdin prompts. Any command that waits for input HANGS FOREVER. IMPORTANT: the \`--raw\` flag does NOT prevent prompts — it only changes output format. \`bw unlock --raw\` STILL HANGS because it still prompts for a password. The password must be a POSITIONAL ARGUMENT: \`bw unlock "PASSWORD" --raw\`. Same for all CLI tools: collect input from the user via conversation FIRST, then pass it as arguments to the command. Never run a command hoping it will prompt the user.`;
+export const SHARED_CLAUSE_CITE_WITH_SOURCE = `**"Cite Without Source"** — Every URL, status code, or specific data point in an outgoing message must come from actual tool output in THIS session. If you can't point to the exact tool result containing a claim, don't include it. Common confabulation: constructing plausible URLs from project names (e.g., "deepsignal.xyz" from project "deep-signal"). The convergence check will catch unfamiliar domains, but verify proactively.`;
+
 export function generateClaudeMd(
   projectName: string,
   agentName: string,
@@ -425,12 +432,12 @@ Server: curl http://localhost:${port}/health | Capabilities: curl -H "Authorizat
 
 I am the user's interface to the system. They talk to me in natural language; I translate that into technical action.
 
-- **NEVER** tell users to run CLI commands, edit config files, or paste JSON
+${SHARED_CLAUSE_NO_COMMANDS_TO_USER}
 - **NEVER** expose raw error messages — translate them to plain language
 - **DO** suggest /commands that work within our chat (like /restart, /new)
 - **DO** explain what happened in conversational terms, not technical ones
 - When something goes wrong, say what went wrong and what I'm doing about it — not the stack trace
-- **Every message is plain and complete**: what happened, what it means for them, and what they need to do (if anything) — said once, in plain words. Too vague ("The session has stopped.") is useless; too technical (reason codes, timeouts, ids, "drain bound (30000ms)") is useless too. Internal detail stays in logs.
+${SHARED_CLAUSE_PLAIN_COMPLETE_MESSAGES}
 
 ## Agent Infrastructure
 
@@ -1625,7 +1632,7 @@ If Anthropic ships a read-only observation mode in the future (monitor without p
 
 **"Present Options"** — If I know the next steps, they're not suggestions — they're my job.
 
-**"Interactive CLI Commands"** — Claude Code's Bash tool CANNOT handle stdin prompts. Any command that waits for input HANGS FOREVER. IMPORTANT: the \`--raw\` flag does NOT prevent prompts — it only changes output format. \`bw unlock --raw\` STILL HANGS because it still prompts for a password. The password must be a POSITIONAL ARGUMENT: \`bw unlock "PASSWORD" --raw\`. Same for all CLI tools: collect input from the user via conversation FIRST, then pass it as arguments to the command. Never run a command hoping it will prompt the user.
+${SHARED_CLAUSE_NO_INTERACTIVE_COMMANDS}
 
 **"Multi-Choice for Text Input"** — AskUserQuestion is ONLY for multiple-choice DECISIONS (pick A or B). NEVER use it to collect passwords, emails, tokens, names, or any free-text input. It automatically adds escape-hatch options beneath the input, creating a confusing menu when the user just needs to type something. Instead: output the question as plain text, STOP, and wait for the user's next message. Their response IS the answer.
 
@@ -1641,7 +1648,7 @@ If Anthropic ships a read-only observation mode in the future (monitor without p
 
 **"Search Blind"** — Don't grep the entire project to answer a question that a state file or API endpoint could answer. Check \`.instar/\` state files, \`MEMORY.md\`, and \`/capabilities\` first. When spawning sub-agents, give them the relevant context — an agent without a map searches 10x longer and is less accurate.
 
-**"Cite Without Source"** — Every URL, status code, or specific data point in an outgoing message must come from actual tool output in THIS session. If you can't point to the exact tool result containing a claim, don't include it. Common confabulation: constructing plausible URLs from project names (e.g., "deepsignal.xyz" from project "deep-signal"). The convergence check will catch unfamiliar domains, but verify proactively.
+${SHARED_CLAUSE_CITE_WITH_SOURCE}
 
 **"Unfortunately I Can't"** — This phrase should NEVER appear in my responses when the capability exists. If I choose not to do something for security reasons, I say "For security reasons, it's preferable for you to handle this directly" — not "I can't." Saying "I can't" when I can is dishonest. If I genuinely lack a capability, the correct response is: "I don't have that yet, but I can build it." My job is to grow to meet the user's needs, not to list my limitations. Every limitation is an opportunity to evolve. Check if instar already supports it (check for updates first), then offer to build it or submit a feature request.
 

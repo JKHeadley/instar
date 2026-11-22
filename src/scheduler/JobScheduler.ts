@@ -1,4 +1,13 @@
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { generateJobModeText, jobModeMarker, resolveInstructionsMode, overrideKey, judgeTranscriptFile, findClaudeTranscript, candidateClaudeConfigHomes } from './jobModeInstructions.js';
+import { JobModeCheckStore } from './jobModeCheckStore.js';
+import { JobModePositiveControl } from './jobModePositiveControl.js';
+import { recoveryProbeAvailable } from './jobModeCheckStore.js';
+import { CLI_VERSION_UNKNOWN } from '../core/cliVersionReader.js';
+/** After a pass, one in this many runs of the same job and key is re-checked. */
+export const JOB_MODE_RECHECK_EVERY = 20;
+import { getInstarVersion } from '../core/Config.js';
+import { defaultClaudeConfigHome } from '../core/AgentOwnedMemory.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
 import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
@@ -245,6 +254,12 @@ export class JobScheduler {
   private tokenLedger: JobSessionLedger | null = null;
   private configReader: (() => Record<string, unknown> | null) | null = null;
   private configCache: { mtimeMs: number; value: Record<string, unknown> } | null = null;
+  /** job-mode-instructions: per-job check state, the positive control, and per-run check context. */
+  private jobModeChecks: JobModeCheckStore | null = null;
+  /** One positive control per Claude config home: a job's transcript format is validated in the account it ran under. */
+  private jobModeControls = new Map<string, JobModePositiveControl>();
+  private readonly jobModeRuns = new Map<string, { key: string; generation: number; versionPair: string; check: boolean; marker: string; probeId?: number; launchVersion?: string }>();
+  private readonly jobModeReported = new Set<string>();
   /** One degradation report per (slug, untrusted reason) per process. */
   private untrustedReported: Set<string> = new Set();
   /** Slugs already reported to logs/job-runner-migration.jsonl this process. */
@@ -3121,7 +3136,7 @@ export class JobScheduler {
     const spawnPromise = toolDecision.refuse
       ? Promise.reject(new Error(`confined-tools-unavailable: this job's tool list names tools that cannot be applied ` +
         `(${(toolDecision.unsupportedNames ?? []).join(', ')}) and it requires its list, so it was not started`))
-      : this.sessionManager.spawnSession({
+      : this.prepareJobMode(job, sessionName).then((jobMode) => this.sessionManager.spawnSession({
       name: sessionName,
       prompt,
       model: requestedModel,
@@ -3140,7 +3155,8 @@ export class JobScheduler {
       // Per-job thinking mode (job-launch-intent-record §3): the launching builder translates
       // or drops it, and the session's `launch` record says which.
       ...(job.thinkingMode !== undefined ? { thinkingMode: job.thinkingMode } : {}),
-    });
+      ...(jobMode ? { jobMode } : {}),
+    }));
     spawnPromise.then((session) => {
       gateSpawnAccepted = true;
       const toolOutcome = JobScheduler.toolEnforcementOutcome(toolDecision, session);
@@ -3208,6 +3224,13 @@ export class JobScheduler {
         metadata: { slug: job.slug, reason, model: job.model },
       });
     }).catch((err) => {
+      { // job-mode-instructions: a rejected job-mode spawn counts as an unknown verdict, so repeated rejections
+        // (possibly caused by the job-mode flags themselves) exhaust the unknown limit and fall back to full
+        // instructions instead of retrying the same flags forever. A rejected recovery probe uses up that attempt.
+        const failed = this.jobModeRuns.get(sessionName);
+        this.jobModeRuns.delete(sessionName);
+        if (failed) void this.jobModeStore().recordResult(failed.key, failed.generation, failed.versionPair, 'unknown', 'spawn-rejected', failed.probeId).catch(() => undefined); // @silent-fallback-ok — worst case the next launch re-decides from the stored state
+      }
       if (gateReceipt && !gateReceipt.consumed && !gateSpawnAccepted) {
         try { restoreJobGateReceipt(gateReceiptFile, gateReceipt.batchId); }
         catch (error) { console.warn('[scheduler] gate receipt restoration failed:', error instanceof Error ? error.message : 'unknown'); }
@@ -3565,6 +3588,11 @@ export class JobScheduler {
         error: failureError ?? (skipped ? `Declared skip: ${declaredSkip}` : undefined),
         outputSummary: output ? output.slice(-1000) : undefined,
         ...(emailOutboxId ? { emailOutboxId } : {}),
+      });
+      // job-mode-instructions Change 6: verify what a job-mode session actually loaded.
+      void this.afterJobModeRun(job, session).catch((err) => {
+        // @silent-fallback-ok — the check is a signal; a failure to run it leaves the job's mode unchanged.
+        console.warn(`[scheduler] job-mode check for "${job.slug}" did not run: ${err instanceof Error ? err.message : String(err)}`);
       });
 
       // Auto-extract handoff notes from session output if agent included [HANDOFF] marker
@@ -4889,7 +4917,12 @@ export class JobScheduler {
       const probe = (this.sessionManager as { probeLaunchVersion?: (s: Session) => Promise<string> }).probeLaunchVersion;
       if (typeof probe !== 'function') return;
       void probe.call(this.sessionManager, session)
-        .then((version) => { this.runHistory.recordLaunchVersion(runId, version); })
+        .then((version) => {
+          this.runHistory.recordLaunchVersion(runId, version);
+          // job-mode-instructions: the version of the binary this run ACTUALLY launched, for the post-run check.
+          const jm = this.jobModeRuns.get(session.name);
+          if (jm) jm.launchVersion = version;
+        })
         .catch(() => { /* @silent-fallback-ok — the row keeps cliVersion 'unknown' */ });
     } catch (err) {
       // @silent-fallback-ok — observability must never break a running job; logged.
@@ -4963,6 +4996,192 @@ export class JobScheduler {
    * fleet). A missing or unparseable config reads `'unreadable'` (fail-open toward running
    * the job as today, recorded distinctly from a deliberate `false`).
    */
+  // ── job-mode instructions (docs/specs/job-mode-instructions.md) ──────────────
+
+  /** The rollout gate `scheduler.jobModeInstructions`: omitted ⇒ live on a development agent, dark on the fleet. */
+  private jobModeGateOn(cfg: Record<string, unknown>): boolean {
+    const sched = (cfg.scheduler ?? {}) as { jobModeInstructions?: unknown };
+    const explicit = typeof sched.jobModeInstructions === 'boolean' ? sched.jobModeInstructions : undefined;
+    return resolveDevAgentGate(explicit, cfg as { developmentAgent?: boolean });
+  }
+
+  private jobModeStore(): JobModeCheckStore {
+    if (!this.jobModeChecks) this.jobModeChecks = new JobModeCheckStore(this.stateDir);
+    return this.jobModeChecks;
+  }
+
+  private jobModeReportOnce(id: string, reason: string, impact: string): void {
+    if (this.jobModeReported.has(id)) return;
+    this.jobModeReported.add(id);
+    DegradationReporter.getInstance().report({
+      feature: 'JobScheduler.jobModeInstructions',
+      primary: 'Launch reviewed scheduled jobs with the short job-mode instructions',
+      fallback: 'Launch the job with its full instructions (CLAUDE.md and memory index)',
+      reason,
+      impact,
+    });
+  }
+
+  /** The job's mode as configured (Change 3), without any local suppression. */
+  configuredJobMode(job: JobDefinition, opts: { ignoreGate?: boolean } = {}): { mode: 'job-mode' | 'full'; key: string; source: string } {
+    const cfg = this.readAgentConfig() ?? {};
+    const origin = job.execute?.type === 'agentmd' ? job.origin : undefined;
+    const key = overrideKey(origin, job.slug);
+    if (!opts.ignoreGate && !this.jobModeGateOn(cfg)) return { mode: 'full', key, source: 'gate-off' };
+    const sched = (cfg.scheduler ?? {}) as { instructionsOverrides?: unknown };
+    const overrides = sched.instructionsOverrides && typeof sched.instructionsOverrides === 'object'
+      ? sched.instructionsOverrides as Record<string, unknown> : undefined;
+    const bodyHash = job.execute?.type === 'agentmd' && typeof job.body === 'string'
+      ? `sha256:${crypto.createHash('sha256').update(job.body).digest('hex')}` : null;
+    const r = resolveInstructionsMode({
+      slug: job.slug,
+      origin,
+      lockTrust: (job as { lockTrust?: string }).lockTrust,
+      bodyHash,
+      field: origin === undefined ? (job as { instructions?: unknown }).instructions : undefined,
+    }, overrides);
+    if (r.invalid) {
+      this.jobModeReportOnce(`invalid:${key}`, `Invalid instructions value ignored: ${r.invalid}`,
+        `Job "${job.slug}" runs with full instructions until the value is "job-mode" or "full"`);
+    }
+    return { mode: r.mode, key, source: r.source };
+  }
+
+  /**
+   * Decide this launch (Change 6 state, Change 1 render). Never rejects: any error launches full.
+   */
+  private async prepareJobMode(job: JobDefinition, sessionName: string): Promise<{ text: string; markerVersion: string } | undefined> {
+    try {
+      if (this.isScriptRunnerJob(job)) return undefined;
+      const configured = this.configuredJobMode(job);
+      if (configured.mode !== 'job-mode') return undefined;
+      const instarVersion = getInstarVersion();
+      const claudeVersion = await this.sessionManager.claudeCliVersion();
+      // An unreadable Claude Code version is not a version change: launch full and leave the check state untouched,
+      // so a transient probe failure can never reset a fallback or reserve a probe.
+      if (!claudeVersion || claudeVersion === CLI_VERSION_UNKNOWN || !instarVersion) return undefined;
+      const versionPair = `${instarVersion}|${claudeVersion}`;
+      const decision = await this.jobModeStore().decideLaunch(configured.key, versionPair);
+      if (decision.launch === 'full') return undefined;
+      let text: string;
+      try {
+        text = generateJobModeText({ agentName: this.config.projectName ?? '', instarVersion });
+      } catch (err) {
+        this.jobModeReportOnce('render', `Rendering the job-mode text failed: ${err instanceof Error ? err.message : String(err)}`,
+          'Job-mode jobs launch with full instructions until rendering works');
+        return undefined;
+      }
+      this.jobModeReported.delete('render'); // a working render ends that incident
+      this.jobModeRuns.set(sessionName, {
+        key: configured.key, generation: decision.generation, versionPair, check: decision.check, marker: jobModeMarker(instarVersion), probeId: decision.launch === 'job-mode' ? decision.probeId : undefined,
+      });
+      return { text, markerVersion: instarVersion };
+    } catch (err) {
+      // @silent-fallback-ok — reported below; the job still runs, with its full instructions.
+      this.jobModeReportOnce('prepare', `Preparing the job-mode launch failed: ${err instanceof Error ? err.message : String(err)}`,
+        'The job launches with full instructions');
+      return undefined;
+    }
+  }
+
+  /** Change 6: after a job-mode run, check what the session actually loaded (first run per version pair). */
+  private async afterJobModeRun(job: JobDefinition, session: { name: string; jobMode?: { applied: boolean; claudeSessionId?: string; configHome?: string } }): Promise<void> {
+    const ctx = this.jobModeRuns.get(session.name);
+    this.jobModeRuns.delete(session.name);
+    if (!ctx) return;
+    await this.jobModeStore().noteLastRun(ctx.key, { applied: !!session.jobMode?.applied, reason: (session.jobMode as { reason?: string } | undefined)?.reason });
+    if (!session.jobMode?.applied || !session.jobMode.claudeSessionId) {
+      // The probe ran without job mode (a restricted spawn skipped the flags): give it back for the next run.
+      if (ctx.probeId !== undefined) await this.jobModeStore().releaseProbe(ctx.key, ctx.probeId);
+      return;
+    }
+    // A run under an account (config home) this job has not passed under is checked even when the
+    // version pair is unchanged: the pass and the positive control are per account.
+    // A pass is recorded per account AND launch path: a headless pass does not vouch for a rerouted interactive run.
+    // …and per launched Claude Code version: a pass never vouches for a run on a different binary version.
+    const runHome = `${session.jobMode.configHome || defaultClaudeConfigHome()}#${(session.jobMode as { lane?: string }).lane ?? 'headless'}#${ctx.launchVersion ?? CLI_VERSION_UNKNOWN}`;
+    const runConfigHome = session.jobMode.configHome || defaultClaudeConfigHome();
+    // After a pass, runs on the same key are re-checked on a sample (every JOB_MODE_RECHECK_EVERY-th run), so
+    // exclusions that stop working without a version change are still caught (checked while live).
+    if (!ctx.check && this.jobModeStore().hasPassedUnder(ctx.key, ctx.versionPair, runHome)) {
+      if (!(await this.jobModeStore().noteRunForRecheck(ctx.key, runHome, JOB_MODE_RECHECK_EVERY))) return;
+    }
+    // The same project folder the launcher used for the exclusions (recorded on the session), not a re-derived one.
+    const projectDir = (session.jobMode as { agentHome?: string }).agentHome || path.dirname(this.stateDir);
+    let judgement: ReturnType<typeof judgeTranscriptFile>;
+    try {
+    // Only the account the session ran under: a transcript found under another config home would credit the wrong account.
+    const homes = session.jobMode.configHome ? [session.jobMode.configHome] : candidateClaudeConfigHomes(undefined);
+    const transcript = findClaudeTranscript(session.jobMode.claudeSessionId, projectDir, homes);
+    judgement = judgeTranscriptFile(transcript, { agentHome: projectDir, marker: ctx.marker });
+    if (judgement.verdict === 'pass') {
+      const configHome = runConfigHome;
+      let controlRunner = this.jobModeControls.get(configHome);
+      if (!controlRunner) {
+        controlRunner = new JobModePositiveControl(this.stateDir, {
+          claudeBinary: this.sessionManager.claudeBinaryPath(),
+          configHome,
+          claudeVersion: () => this.sessionManager.claudeCliVersion(),
+        });
+        this.jobModeControls.set(configHome, controlRunner);
+      }
+      const control = await controlRunner.ensure();
+      // The binary the run actually launched (probed right after spawn), not the configured path's version.
+      const runClaudeVersion = ctx.launchVersion ?? CLI_VERSION_UNKNOWN;
+      if (runClaudeVersion === CLI_VERSION_UNKNOWN || control.claudeVersion === CLI_VERSION_UNKNOWN) judgement = { verdict: 'unknown', reason: 'claude-code-version-unreadable' };
+      else if (control.claudeVersion !== runClaudeVersion) judgement = { verdict: 'unknown', reason: `positive-control-version-mismatch: control ${control.claudeVersion}, run ${runClaudeVersion}` };
+      else if (control.result !== 'visible') judgement = { verdict: 'unknown', reason: `positive-control-${control.result}: ${control.detail}` };
+    }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: an error anywhere in the check is recorded as an unknown verdict, so
+      // repeated errors still reach the unknown limit and return the job to full instructions.
+      judgement = { verdict: 'unknown', reason: `check-error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200) };
+    }
+    const r = await this.jobModeStore().recordResult(ctx.key, ctx.generation, ctx.versionPair, judgement.verdict, runHome, ctx.probeId);
+    if (r.newlyFailed) {
+      this.jobModeReportOnce(`fail:${ctx.key}:${ctx.versionPair}`, `Job "${job.slug}" ran in job-mode but its session still loaded ${judgement.loaded?.join(', ') || 'without the job-mode text'} (${judgement.reason})`,
+        `Job "${job.slug}" launches with full instructions on this machine until a probe passes after an instar or Claude Code update, or the check is cleared`);
+    } else if (r.exhaustedUnknown) {
+      this.jobModeReportOnce(`unknown:${ctx.key}:${ctx.versionPair}`, `Could not confirm what job "${job.slug}" loaded after ${3} runs (${judgement.reason})`,
+        `Job "${job.slug}" launches with full instructions on this machine until an instar or Claude Code update or a cleared check allows a fresh check`);
+    }
+  }
+
+  /** Operator clear (`DELETE /jobs/:slug/job-mode-check`): lifts a local suppression and re-checks. */
+  async clearJobModeCheck(slug: string): Promise<{ key: string; generation: number } | null> {
+    const job = this.jobs.find(j => j.slug === slug);
+    if (!job) return null;
+    const key = overrideKey(job.execute?.type === 'agentmd' ? job.origin : undefined, job.slug);
+    const s = await this.jobModeStore().clear(key);
+    return { key, generation: s.generation };
+  }
+
+  /** Read-only view for the jobs API. */
+  jobModeStatus(slug: string): { configured: string; source: string; effective: { mode: 'job-mode' | 'full'; reason: string; asOfVersionPair: string | null; afterUpdate?: string }; lastRun: unknown; check: unknown } | null {
+    const job = this.jobs.find(j => j.slug === slug);
+    if (!job) return null;
+    // The job's own setting, read regardless of the rollout gate (the gate is reported separately as an effective reason).
+    const c = this.configuredJobMode(job, { ignoreGate: true });
+    const check = this.jobModeStore().read(c.key);
+    const cfg = this.readAgentConfig() ?? {};
+    // The next launch's mode as far as can be known before spawn. The framework is chosen at spawn (routing can
+    // move a job to another framework), so job mode applies only if that launch is Claude Code; `lastRun` says
+    // what the most recent launch actually did.
+    // The fallback states hold for the version pair they were recorded under (`asOfVersionPair`); after an instar
+    // or Claude Code update the next launch is decided afresh (a suppressed job gets one job-mode probe).
+    const base: { mode: 'job-mode' | 'full'; reason: string } =
+      this.isScriptRunnerJob(job) ? { mode: 'full', reason: 'script-runner-no-session' }
+      : !this.jobModeGateOn(cfg as Record<string, unknown>) ? { mode: 'full', reason: 'gate-off' }
+      : c.mode !== 'job-mode' ? { mode: 'full', reason: 'configured-full' }
+      : check.suppressed ? (recoveryProbeAvailable(check, Date.now())
+        ? { mode: 'job-mode', reason: 'probe-on-next-launch' } : { mode: 'full', reason: 'suppressed-after-failed-check' })
+      : check.result === 'unknown-exhausted' ? { mode: 'full', reason: 'unknown-after-retries' }
+      : { mode: 'job-mode', reason: 'claude-code-launches-only' };
+    const fallback = base.reason === 'suppressed-after-failed-check' || base.reason === 'unknown-after-retries';
+    const effective = { ...base, asOfVersionPair: check.versionPair, ...(fallback ? { afterUpdate: 'after an instar or Claude Code update the next launch is re-decided: a suppressed job gets one job-mode probe; exhausted unknowns are re-checked' } : {}) };
+    return { configured: c.mode, source: c.source, effective, lastRun: check.lastRun ?? null, check };
+  }
+
   toolAllowlistEnforcementGate(): ToolAllowlistGate {
     const cfg = this.readAgentConfig();
     if (!cfg) return { on: 'unreadable', explicitOff: false };

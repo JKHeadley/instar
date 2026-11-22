@@ -21652,6 +21652,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * Phase 4 — captures disabledAtBodyHash + flips enabled to false.
    * Spec §Dashboard UX "enabled toggle (records disabledAtBodyHash)".
    */
+  /**
+   * job-mode-instructions (docs/specs/job-mode-instructions.md, Change 6): a job's configured
+   * instructions mode and this machine's check state; DELETE clears a local suppression so the next
+   * run probes job-mode again.
+   */
+  router.get('/jobs/:slug/job-mode', (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) { res.status(400).json({ error: 'Invalid job slug' }); return; }
+    if (!ctx.scheduler) { res.status(503).json({ error: 'scheduler not running' }); return; }
+    const status = ctx.scheduler.jobModeStatus(req.params.slug);
+    if (!status) { res.status(404).json({ error: `no job "${req.params.slug}"` }); return; }
+    res.json(status);
+  });
+  router.delete('/jobs/:slug/job-mode-check', async (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) { res.status(400).json({ error: 'Invalid job slug' }); return; }
+    if (!ctx.scheduler) { res.status(503).json({ error: 'scheduler not running' }); return; }
+    try {
+      const cleared = await ctx.scheduler.clearJobModeCheck(req.params.slug);
+      if (!cleared) { res.status(404).json({ error: `no job "${req.params.slug}"` }); return; }
+      res.json({ ok: true, ...cleared });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
   router.post('/jobs/:slug/disable', async (req, res) => {
     if (!JOB_SLUG_RE.test(req.params.slug)) {
       res.status(400).json({ error: 'Invalid job slug' });

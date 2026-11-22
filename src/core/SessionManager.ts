@@ -7,6 +7,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  * and can be monitored/reaped by the server.
  */
 
+import { jobModeRestriction, newJobModeSessionId } from '../scheduler/jobModeLaunch.js';
 import { alwaysAvailableTokenInUse } from './alwaysAvailableToken.js';
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
@@ -1172,6 +1173,30 @@ export class SessionManager extends EventEmitter {
       const result = this.originLifecycle?.revoke(sessionId);
       if (result) void result.catch(() => report()); // DegradationReporter above receives the failure.
     } catch { report(); } // DegradationReporter above receives the failure.
+  }
+
+  /** job-mode-instructions: what the launch did, recorded without the text itself (marker + length). */
+  private jobModeRecord(
+    jm: { text: string; markerVersion: string },
+    skip: string | null,
+    launch: { sessionId: string; agentHome?: string } | undefined,
+    spec: { argv?: string[]; envOverrides?: Record<string, string | undefined> } | undefined,
+    lane: 'headless' | 'rerouted-interactive' = 'headless',
+  ): NonNullable<Session['jobMode']> {
+    if (launch && !(spec?.argv ?? []).includes(launch.sessionId)) {
+      // The flag helper adds nothing for a non-Claude framework.
+      return { applied: false, reason: 'not-claude-code', markerVersion: jm.markerVersion, textBytes: Buffer.byteLength(jm.text) };
+    }
+    if (!launch) return { applied: false, reason: skip ?? 'not-claude-code', markerVersion: jm.markerVersion, textBytes: Buffer.byteLength(jm.text) };
+    return {
+      applied: true,
+      lane,
+      claudeSessionId: launch.sessionId,
+      ...(launch.agentHome ? { agentHome: launch.agentHome } : {}),
+      configHome: spec?.envOverrides?.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome(),
+      markerVersion: jm.markerVersion,
+      textBytes: Buffer.byteLength(jm.text),
+    };
   }
 
   private originSpawnError(error: unknown): string {
@@ -4762,6 +4787,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * drops it; the returned session's `launch` records the outcome. Absent → unchanged launch.
      */
     thinkingMode?: import('./topicProfileValidation.js').ThinkingMode;
+    /**
+     * Job-mode instructions (docs/specs/job-mode-instructions.md): set only by the scheduler for a
+     * job resolved to job-mode. Skipped (and recorded) on any restricted spawn. Claude Code only.
+     */
+    jobMode?: { text: string; markerVersion: string };
   }): Promise<Session> {
     if (options.cwd !== undefined) {
       const worktreesRoot = path.resolve(this.config.projectDir, '.worktrees');
@@ -4775,6 +4805,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.confinement && options.confinedTools) throw new Error('confined-tools-conflicts-with-confinement');
     if (options.confinedTools && options.confinedTools.length === 0) throw new Error('confined-tools-invalid: empty tool list');
     if (options.useAgentDefaultModel) options = { ...options, model: undefined };
+    // job-mode-instructions Change 5: any restricted spawn keeps today's launch.
+    // A pinned or resumed session id is the caller's; job mode would add its own --session-id, so it is skipped on
+    // every launch path (not only the rerouted lane).
+    const jobModeSkip = options.jobMode
+      ? ((options as { sessionId?: string; resumeSessionId?: string }).sessionId || (options as { sessionId?: string; resumeSessionId?: string }).resumeSessionId ? 'session-id-pinned' : jobModeRestriction(options))
+      : null;
+    const jobModeLaunch = options.jobMode && !jobModeSkip
+      ? { agentHome: this.config.projectDir, text: options.jobMode.text, sessionId: newJobModeSessionId() }
+      : undefined;
     if (options.confinedTools) {
       // dontAsk refuses any tool the settings do not allow: the allowlist IS the tool list.
       // EVO-008 §3b: a confined prompt never starts with a control character. Typed into the
@@ -5008,6 +5047,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
           resolvedCwd,
           workTreeFencingToken,
           shimDir,
+          jobModeSkip,
+          jobModeLaunch,
         });
       }
       // gate refused — 'force' already threw inside evaluateRerouteGate; only
@@ -5051,6 +5092,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       allowedTools: options.allowedTools,
       disableProjectMcp: options.disableProjectMcp || Boolean(options.confinement),
       ...(options.confinement ? { confinementSettingsPath: options.confinement.settingsPath } : {}),
+      ...(jobModeLaunch ? { jobMode: jobModeLaunch } : {}),
     });
     if (options.confinement && !extraClaudeFlags.includes('--settings')) {
       throw new Error('confinement-adapter-missing: the --settings flag was not applied');
@@ -5309,6 +5351,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       completionMode: 'exit',
       // job-launch-intent-record §3: captured from the final tmux argv/env just before the spawn.
       ...(headlessLaunchCapture.launch ? { launch: headlessLaunchCapture.launch } : {}),
+      ...(options.jobMode ? { jobMode: this.jobModeRecord(options.jobMode, jobModeSkip, jobModeLaunch, headlessSpec) } : {}),
       // EVO-008: set ONLY after the final argv passed the confinement contract check.
       ...(headlessConfined ? { confinedTools: headlessConfined } : {}),
       ...(options.confinement ? { confinedConfigHome: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
@@ -5511,8 +5554,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     resolvedCwd: string;
     workTreeFencingToken: string | null;
     shimDir: string | null;
+    jobModeSkip: string | null;
+    jobModeLaunch: { agentHome: string; text: string; sessionId: string } | undefined;
   }): Promise<Session> {
     const { sessionId, tmuxSession, options, binaryPath, launchModel, resolvedCwd, workTreeFencingToken, shimDir } = args;
+    // A caller-pinned or resumed Claude session id already owns --session-id; job-mode is skipped then.
+    const jobModeSkip = args.jobModeLaunch && (options.sessionId || options.resumeSessionId) ? 'session-id-pinned' : args.jobModeSkip;
+    const jobModeLaunch = jobModeSkip ? undefined : args.jobModeLaunch;
     const lifetimeMinutes = this.config.subscriptionReroutedLifetimeMinutes ?? 45;
 
     // ── Completion sentinel (spec O1, "the crux") ──
@@ -5570,6 +5618,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       allowedTools: options.allowedTools,
       disableProjectMcp: options.disableProjectMcp || Boolean(options.confinement),
       ...(options.confinement ? { confinementSettingsPath: options.confinement.settingsPath } : {}),
+      ...(jobModeLaunch ? { jobMode: jobModeLaunch } : {}),
     });
     if (options.confinement && !extraClaudeFlags.includes('--settings')) {
       throw new Error('confinement-adapter-missing: the --settings flag was not applied');
@@ -5770,6 +5819,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(reroutedConfined ? { confinedTools: reroutedConfined } : {}),
       // job-launch-intent-record §3: captured from the final tmux argv/env just before the spawn.
       ...(reroutedLaunchCapture.launch ? { launch: reroutedLaunchCapture.launch } : {}),
+      ...(options.jobMode ? { jobMode: this.jobModeRecord(options.jobMode, jobModeSkip, jobModeLaunch, launchSpec, 'rerouted-interactive') } : {}),
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
@@ -7443,6 +7493,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * §4). Bounded at ~2 s; 'unknown' when it can't be read or the session has no launch record.
    * The scheduler calls this after the start row is written and patches only `launch.cliVersion`.
    */
+  /** job-mode-instructions: the configured Claude Code binary and its version (cached by the reader). */
+  claudeBinaryPath(): string {
+    return this.config.claudePath;
+  }
+  async claudeCliVersion(): Promise<string> {
+    try { return await this.cliVersionReader.probe(this.config.claudePath); } catch { return CLI_VERSION_UNKNOWN; /* @silent-fallback-ok — an unreadable version is recorded as unknown, which keeps job-mode checks from passing */ }
+  }
+
   async probeLaunchVersion(session: Pick<Session, 'id'>): Promise<string> {
     const bin = this.launchBinaries.get(session.id);
     if (!bin) return CLI_VERSION_UNKNOWN;

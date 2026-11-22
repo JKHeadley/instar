@@ -185,6 +185,103 @@ function writeManifest(scheduleDir: string, slug: string, origin: 'instar' | 'us
   return target;
 }
 
+
+// ── job-mode-instructions (docs/specs/job-mode-instructions.md, Change 3) ──────
+// A jobs.json entry's explicit `instructions` value is carried into the config override map under
+// the job's new origin:slug (never into Markdown frontmatter, whose validator skips unknown keys).
+// Each override this migration creates is journaled; abandon removes only those still holding the
+// value it wrote, so pre-existing overrides and later operator edits survive.
+const OVERRIDES_JOURNAL = '.instructions-overrides-created.json';
+
+function readJson(file: string): any {
+  try { return JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { return null; /* @silent-fallback-ok — absent or unreadable file reads as none */ }
+}
+
+function writeJsonAtomic(file: string, value: unknown): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, file);
+}
+
+export function carryInstructionsOverride(agentStateDir: string, origin: 'instar' | 'user', slug: string, entry: any, legacySlug: string = slug): boolean {
+  const field = entry?.instructions === 'job-mode' || entry?.instructions === 'full' ? entry.instructions as 'job-mode' | 'full' : undefined;
+  let v: 'job-mode' | 'full' | undefined = field;
+  const configPath = path.join(agentStateDir, 'config.json');
+  const cfg = readJson(configPath);
+  if (!cfg || typeof cfg !== 'object') {
+    // Not silent: the job's explicit choice could not be carried, so it resolves from overrides or defaults.
+    if (field) console.warn(`[jobs migrate] could not carry "instructions": "${field}" for ${origin}:${slug}: config.json is missing or unreadable`);
+    return false;
+  }
+  const key = `${origin}:${slug}`;
+  cfg.scheduler = cfg.scheduler && typeof cfg.scheduler === 'object' ? cfg.scheduler : {};
+  const map = cfg.scheduler.instructionsOverrides && typeof cfg.scheduler.instructionsOverrides === 'object'
+    ? cfg.scheduler.instructionsOverrides : {};
+  if (Object.prototype.hasOwnProperty.call(map, key)) return false; // an existing override wins
+  // The legacy job resolved its override under `user:<slug>`; an explicit override there beat its field before the
+  // move, so it is what the moved job carries (an override of "full" must never be lost to a field of "job-mode").
+  // Reproduce exactly what the job resolved to before the move when its override key changes: a valid legacy override
+  // is carried even with no field on the job; an INVALID legacy override resolved to full, so full is carried.
+  const legacyKey = `user:${legacySlug}`;
+  if (legacyKey !== key && Object.prototype.hasOwnProperty.call(map, legacyKey)) {
+    v = map[legacyKey] === 'job-mode' || map[legacyKey] === 'full' ? map[legacyKey] : 'full';
+  }
+  if (v === undefined) return false; // nothing explicit to carry
+  // Journal FIRST, then the config: an abandon can always find and undo an override this carried, even if the
+  // process stops between the two writes (an entry for an override that was never written is removed harmlessly).
+  const journalPath = path.join(agentStateDir, 'jobs', OVERRIDES_JOURNAL);
+  const journal = readJson(journalPath) ?? { created: [] };
+  journal.created = Array.isArray(journal.created) ? journal.created : [];
+  journal.created.push({ key, value: v, at: new Date().toISOString() });
+  try {
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+    writeJsonAtomic(journalPath, journal);
+  } catch (err) {
+    // Without the journal an abandon could not undo the override, so it is not written; the migration continues
+    // and the job resolves from defaults (full instructions today).
+    console.warn(`[jobs migrate] could not record the carried "instructions" override for ${key} (journal write failed), so it was not carried: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  map[key] = v;
+  cfg.scheduler.instructionsOverrides = map;
+  try {
+    writeJsonAtomic(configPath, cfg);
+  } catch (err) {
+    // Not fatal to the migration: the job then resolves from defaults (full instructions today). The journal entry
+    // just added is taken back out, so a later abandon can never delete a same-valued override someone sets by hand.
+    try {
+      journal.created = journal.created.filter((c: any, i: number) => !(i === journal.created.length - 1 && c?.key === key && c?.value === v));
+      writeJsonAtomic(journalPath, journal);
+    } catch { /* @silent-fallback-ok — the stale entry then remains, stated in the side-effects review */ }
+    console.warn(`[jobs migrate] could not write the carried "instructions" override for ${key}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  return true;
+}
+
+export function undoCarriedInstructionsOverrides(agentStateDir: string): number {
+  const journalPath = path.join(agentStateDir, 'jobs', OVERRIDES_JOURNAL);
+  const journal = readJson(journalPath);
+  if (!journal || !Array.isArray(journal.created) || journal.created.length === 0) return 0;
+  const configPath = path.join(agentStateDir, 'config.json');
+  const cfg = readJson(configPath);
+  if (!cfg || typeof cfg !== 'object') {
+    // Keep the journal: without a readable config nothing could be undone, and a later abandon must still find it.
+    console.warn('[jobs migrate] abandon could not read config.json; the instructions-override journal is kept for a later undo');
+    return 0;
+  }
+  let removed = 0;
+  const map = cfg?.scheduler?.instructionsOverrides;
+  if (map && typeof map === 'object') {
+    for (const c of journal.created) {
+      if (c && typeof c.key === 'string' && map[c.key] === c.value) { delete map[c.key]; removed++; }
+    }
+    if (removed > 0) writeJsonAtomic(configPath, cfg); // a failed write throws before the journal is removed
+  }
+  SafeFsExecutor.safeUnlinkSync(journalPath, { operation: 'jobsMigrate abandon: clear instructions-override journal' });
+  return removed;
+}
+
 export function jobsMigrate(opts: JobMigrateOptions): MigrationOutcome {
   const { agentStateDir, packageRoot } = opts;
   const defaultAction: DefaultAction = opts.defaultAction ?? 'fail';
@@ -212,6 +309,7 @@ export function jobsMigrate(opts: JobMigrateOptions): MigrationOutcome {
       JSON.stringify({ abandonedAt: new Date().toISOString(), reason: 'operator-initiated abandon' }, null, 2),
       'utf-8',
     );
+    undoCarriedInstructionsOverrides(agentStateDir);
     outcome.status = 'abandoned';
     return outcome;
   }
@@ -267,6 +365,7 @@ export function jobsMigrate(opts: JobMigrateOptions): MigrationOutcome {
       if (classification.kind === 'migrated-instar') {
         // Body matched. Write per-slug manifest pointing at the instar template.
         writeManifest(scheduleDir, slug, 'instar', entry);
+        carryInstructionsOverride(agentStateDir, 'instar', slug, entry);
         outcome.perEntry.push({ slug, action: 'migrated-instar' });
         continue;
       }
@@ -288,6 +387,7 @@ export function jobsMigrate(opts: JobMigrateOptions): MigrationOutcome {
         const targetSlug = defaultAction === 'rename' ? `${slug}-user` : slug;
         const tgt = writeUserTemplate(userDir, targetSlug, entry);
         writeManifest(scheduleDir, targetSlug, 'user', entry);
+        carryInstructionsOverride(agentStateDir, 'user', targetSlug, entry, slug); // renamed: the legacy override lives under the original slug
         outcome.perEntry.push({
           slug: targetSlug,
           action: defaultAction === 'rename' ? 'renamed-user' : 'forked-user',
@@ -300,6 +400,7 @@ export function jobsMigrate(opts: JobMigrateOptions): MigrationOutcome {
       if (classification.kind === 'kept-user' || classification.kind === 'forked-user') {
         const tgt = writeUserTemplate(userDir, slug, entry);
         writeManifest(scheduleDir, slug, 'user', entry);
+        carryInstructionsOverride(agentStateDir, 'user', slug, entry);
         outcome.perEntry.push({
           slug,
           action: classification.kind === 'kept-user' ? 'kept-user' : 'forked-user',

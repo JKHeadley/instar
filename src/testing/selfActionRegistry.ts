@@ -49,6 +49,7 @@ import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
+import { controlRerunDue, CONTROL_ERROR_RETRY_MS } from '../scheduler/jobModePositiveControl.js';
 import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
@@ -432,6 +433,35 @@ const attributionAuditRetry: SelfActionController = {
         sink.emit({ verb: 'retry', target: 'attribution-audit' });
         failures += 1;
         nextRunAt = nextAuditAfterFailure(failures, now).nextRunAt;
+      },
+    };
+  },
+};
+
+/** job-mode-positive-control: the probes keep erroring (no transcript, no reply) while job-mode runs keep finishing.
+ * The persisted record paces it: at most one three-probe attempt per 6 hours, for good, until a result succeeds. */
+const jobModePositiveControlProbes: SelfActionController = {
+  id: 'job-mode-positive-control',
+  actionVerb: 'spawn',
+  models: 'src/scheduler/jobModePositiveControl.ts (ensure — controlRerunDue over the persisted record; error retried every 6 h)',
+  modelsPath: 'src/scheduler/jobModePositiveControl.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The control record (result, version, time) is written to disk per config home, so a restart reads the same record and keeps the 6-hour pace.' },
+  boundK: 121,
+  perTargetBoundK: 121,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: { reason: 'While job-mode runs keep finishing, the control retries an error at a fixed 6-hour pace so a fixed Claude Code install recovers on its own; it never runs faster.', rateFloorMs: CONTROL_ERROR_RETRY_MS },
+  delegatedGiveUp: 'Each attempt is three small probe calls; job checks stay unknown (full instructions after three) while the control errors',
+  makeUnderPressure(f, sink) {
+    let rec: { claudeVersion: string; result: 'error'; detail: string; at: string; configHome: string } | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!controlRerunDue(rec, '2.1.330', '/cfg', now)) return;
+        sink.emit({ verb: 'spawn', target: 'job-mode-positive-control' });
+        sink.emitTimesMs.push(now);
+        rec = { claudeVersion: '2.1.330', result: 'error', detail: 'probe failed', at: new Date(now).toISOString(), configHome: '/cfg' };
       },
     };
   },
@@ -6158,6 +6188,7 @@ const siblingHoldingsRefresh: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  jobModePositiveControlProbes,
   siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
