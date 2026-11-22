@@ -29,6 +29,8 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
@@ -911,17 +913,22 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
       deps.pairing.scanInbound(text);
     }
-    const removed = removeAuthorityTokens(text);
+    // SEC-164 §3.5: after the device signature is checked, live keys are masked before the authority
+    // tokens are removed, and their kinds join the signed redaction attestation, so the stored record
+    // holds only the masked text and still verifies (the raw body is not kept when anything is removed).
+    const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+    const credRemovedKinds = credMasked.outcome === 'masked' || credMasked.outcome === 'fallback' ? credMasked.kinds : [];
+    const removed = removeAuthorityTokens(credMasked.text);
     const delivered = removed.text;
 
     // Media preflight (§4.3): every named upload must be this device's finished upload for this
     // conversation, with exactly the signed fields. Transcripts and filenames get the caption's
     // treatment, so a dictated code or a named invite never reaches a session or the store.
-    const removedKinds = new Set<string>(removed.kinds);
+    const removedKinds = new Set<string>([...removed.kinds, ...credRemovedKinds]);
     let uploadIds: string[] = [];
     let stored: AppAttachment[] = [];
     if (signedFiles) {
-      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t) });
+      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t), maskCredentials: appCredentialScrubOn(deps.config) });
       if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
       uploadIds = pre.uploadIds;
       stored = pre.stored;
@@ -1397,3 +1404,13 @@ export function withTelegramMediaForDevice(
   });
 }
 
+
+/** SEC-164: `security.credentialScrub.enabled`, read live from the settings file; unreadable is off. */
+const appCredentialScrubReaders = new Map<string, () => boolean>();
+function appCredentialScrubOn(config: { projectDir?: string } | null | undefined): boolean {
+  const dir = config?.projectDir;
+  if (!dir) return false;
+  let reader = appCredentialScrubReaders.get(dir);
+  if (!reader) { reader = credentialScrubEnabledReader(dir); appCredentialScrubReaders.set(dir, reader); }
+  try { return reader(); } catch { return false; } // @silent-fallback-ok — an unreadable switch is off, as before
+}

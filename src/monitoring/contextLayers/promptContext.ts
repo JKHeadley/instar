@@ -572,11 +572,52 @@ export interface DeltaShadowSummary {
   omittedItems: number;
   refetched: { status: 'nothing-omitted'; count: 0 } | { status: 'unknown'; reason: string; historyReadsAfterOmission: number };
   reductionRefusals: Record<string, number>;
-  reworkBaseline: { status: 'unknown'; reason: string };
+  reworkBaseline: ReworkBaseline;
   log: { file: string; bytes: number; rotatedBytes: number; maxBytes: number };
 }
 
-export function summarizeShadow(log: DeltaShadowLog, maxBytes = SHADOW_LOG_MAX_BYTES): DeltaShadowSummary {
+/**
+ * The rework rate the delta comparison is judged against (§16 Phase 1 exit: "no
+ * rework rise"). It comes from the measurement backend (GET /context-budget/metrics,
+ * S13): repeated tool inputs within the §11 window, summed over the sessions that
+ * backend lists. `unknown` (with its reason, never zero) when no ledger is wired.
+ */
+export type ReworkBaseline =
+  | { status: 'unknown'; reason: string }
+  | {
+      status: 'ok' | 'pending' | 'partial-before-upgrade';
+      rate: number | null;
+      toolInputs: number;
+      repeats: number;
+      windowTurns: number;
+      sessionsCounted: number;
+      /** The backend lists a bounded number of sessions: true when some in the window were not counted. */
+      partial: boolean;
+      sinceHours: number;
+      source: 'GET /context-budget/metrics';
+    };
+
+/** The shape of one session's rework in the measurement backend's output. */
+export interface ReworkSessionRow { status: 'ok' | 'pending' | 'partial-before-upgrade'; toolInputs: number; repeats: number; windowTurns: number }
+
+/** Sums the measurement backend's per-session rework into the delta comparison's baseline. */
+export function reworkBaselineOf(m: { sessions: Array<{ rework: ReworkSessionRow }>; sinceHours: number; sessionsTruncated: boolean; windowTurns: number }): ReworkBaseline {
+  if (m.sessions.length === 0) return { status: 'unknown', reason: 'No session in the measurement window has any recorded tool input yet.' };
+  const toolInputs = m.sessions.reduce((n, s) => n + s.rework.toolInputs, 0);
+  const repeats = m.sessions.reduce((n, s) => n + s.rework.repeats, 0);
+  const status = m.sessions.some((s) => s.rework.status === 'pending') ? 'pending' as const
+    : m.sessions.some((s) => s.rework.status === 'partial-before-upgrade') ? 'partial-before-upgrade' as const : 'ok' as const;
+  return {
+    status, toolInputs, repeats,
+    rate: toolInputs > 0 ? +(repeats / toolInputs).toFixed(4) : null,
+    windowTurns: m.windowTurns, sessionsCounted: m.sessions.length, partial: m.sessionsTruncated,
+    sinceHours: m.sinceHours, source: 'GET /context-budget/metrics',
+  };
+}
+
+const NO_REWORK_SOURCE: ReworkBaseline = { status: 'unknown', reason: 'The token ledger (the measurement backend\'s source) is not available on this machine.' };
+
+export function summarizeShadow(log: DeltaShadowLog, maxBytes = SHADOW_LOG_MAX_BYTES, rework: ReworkBaseline | null = null): DeltaShadowSummary {
   const rows = log.rows();
   const prompts = rows.filter((r): r is ShadowPromptRow => r.t === 'prompt');
   const full = prompts.map((r) => r.fullChars).sort((a, b) => a - b);
@@ -607,7 +648,7 @@ export function summarizeShadow(log: DeltaShadowLog, maxBytes = SHADOW_LOG_MAX_B
           historyReadsAfterOmission: reads,
         },
     reductionRefusals: refusals,
-    reworkBaseline: { status: 'unknown', reason: 'The rework rate comes from the measurement backend (Phase 1 S13), which is not built yet.' },
+    reworkBaseline: rework ?? NO_REWORK_SOURCE,
     log: { file: 'state/context-layers/_delta-shadow/prompts.jsonl', bytes: size(log.file()), rotatedBytes: size(log.rotated()), maxBytes },
   };
 }

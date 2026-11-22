@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-20T23:05:39.873Z",
+  "slug": "member-browser-any-computer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 80,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/member-computers.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/documentJoinRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/teamRoutes.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

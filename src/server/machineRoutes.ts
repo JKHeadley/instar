@@ -1,3 +1,4 @@
+import { generationProofId } from '../messaging/peerMessageTarget.js';
 /**
  * Multi-machine API routes.
  *
@@ -35,7 +36,7 @@ import type { HeartbeatManager, Heartbeat } from '../core/HeartbeatManager.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import type { MachineAuthContext, MachineAuthDeps } from './machineAuth.js';
 import { machineAuthMiddleware, ChallengeStore, signLeaseAck, signRelayAnswer } from './machineAuth.js';
-import { RELAY_MACHINE_PATH, RELAY_MACHINE_LEGACY_PATH } from '../messaging/types.js';
+import { MESSAGE_GENERATION_PATH, GENERATION_RELAY_MACHINE_PATH, RELAY_MACHINE_PATH, RELAY_MACHINE_LEGACY_PATH } from '../messaging/types.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import { PairingSessionStore } from '../core/PairingSessionStore.js';
 import { validatePairingCode } from '../core/PairingProtocol.js';
@@ -1386,6 +1387,36 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Relay failed' });
     }
   };
+  // N73: observe the receiver's exact incarnation before the sender creates a
+  // message. Existing machineAuth authenticates membership and rejects replay;
+  // the existing signed relay answer binds the complete observation digest.
+  router.post(MESSAGE_GENERATION_PATH, authMiddleware, (req, res) => {
+    const sender = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    if (!ctx.identityManager.isMachineActive(sender)) { res.status(403).json({ error: 'Machine not active' }); return; }
+    if (!ctx.messageRouter) { res.status(503).json({ error: 'Messaging not available' }); return; }
+    const target = req.body?.target;
+    if (typeof target !== 'string' || !target || target.length > 200 || target === '*' || target === 'best') {
+      res.status(400).json({ error: 'A named session target is required' }); return;
+    }
+    try {
+      const observation = { target, sessionId: ctx.messageRouter.currentSessionGeneration(target), observedAt: Date.now() };
+      const ack = { machineId: ctx.localMachineId, messageId: generationProofId(observation), reqNonce: String(req.headers['x-nonce'] ?? '') };
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ observation, ack, sig: signRelayAnswer(ack, ctx.localSigningKeyPem) });
+    } catch {
+      res.status(503).json({ error: 'The current session generation is unavailable' });
+    }
+  });
+  router.post(GENERATION_RELAY_MACHINE_PATH, authMiddleware, (req, res) => {
+    const recipient = req.body?.generationEnvelope?.message?.to;
+    if (req.body?.protocol !== 'session-generation-v1' || recipient?.sessionGenerationRequired !== true
+      || typeof recipient.sessionId !== 'string' || !recipient.sessionId || recipient.sessionId.length > 200) {
+      res.status(400).json({ error: 'Generation protocol wrapper required' }); return;
+    }
+    // Authentication covered the wrapper; only now unwrap for envelope verification.
+    req.body = req.body.generationEnvelope;
+    return relayMachineHandler(req, res);
+  });
   router.post(RELAY_MACHINE_PATH, authMiddleware, relayMachineHandler);
   router.post(RELAY_MACHINE_LEGACY_PATH, authMiddleware, relayMachineHandler);
 

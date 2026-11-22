@@ -122,7 +122,7 @@ describe('the idempotent create', () => {
     expect(r.kind).toBe('created'); if (r.kind !== 'created') return;
     expect(r.cardId).toBe(phoneCardId('justin', BODY.requestId));
     const created = journal.find((e) => e.data.recordType === 'created')!.data;
-    expect(created.by).toEqual({ kind: 'person', personKey: 'justin', proof: 'presence' });
+    expect(created.by).toEqual({ kind: 'person', personKey: 'justin', proof: 'presence', isOwner: true });
     expect(created.source).toEqual(BODY.source);
     expect(created.outward).toBe(false);
     expect((created.doneWhen as Array<Record<string, unknown>>)[0]).toEqual({ id: 'd1', text: 'The venue is booked' });
