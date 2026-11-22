@@ -80,18 +80,92 @@ describe('messages-reach-renamed-sessions PR-A', () => {
     const res = await r.send({ agent: 'echo', session: 's', machine: 'm1' }, { agent: 'echo', session: 'echo-nobody', machine: 'local' }, 'info', 'low', 'S', 'B');
     expect(res.phase).toBe('failed');
     expect(t.sendKeys).not.toHaveBeenCalled();
-    expect(failures).toEqual(['no-session-holds-this-role']);
+    // The sender hears plain words; the envelope keeps the code.
+    expect(failures).toEqual(['no session holds "echo-nobody"']);
+    expect((await store.get(res.messageId))!.delivery.failureReason).toBe('no-session-holds-this-role');
+    expect((await store.get(res.messageId))!.delivery.holderPending).toBeUndefined();
   });
 
-  it('a stale message (written before the holder started) is refused', async () => {
+  it('a stale message (written before the holder started) waits for a holder, then fails with the plain reason within the five-minute backoff window (relay-asof-holder-skew)', async () => {
     const t = tmux();
-    const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), t as any), {
+    const auditPath = path.join(dir, 'logs', 'message-delivery-refusals.jsonl');
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    const r = new MessageRouter(store, delivery, {
       localAgent: 'echo', localMachine: 'm1', serverUrl: 'http://x', isOwnSession: () => true,
       resolveSession: (target) => resolve(target, Date.parse('2026-11-17T12:00:00Z')),
+      refusalAuditPath: auditPath,
     });
     const res = await r.send({ agent: 'echo', session: 's', machine: 'm1' }, { agent: 'echo', session: 'echo-machine-stewardship', machine: 'local' }, 'info', 'low', 'S', 'B');
-    expect(res.phase).toBe('failed');
-    expect((await store.get(res.messageId))!.delivery.failureReason).toBe('role-respawned-after-message');
+    expect(res.phase).toBe('received');
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    const queued = (await store.get(res.messageId))!;
+    expect(queued.delivery.failureReason).toBe('role-respawned-after-message');
+    expect(queued.delivery.holderPending).toBe(true);
+    expect(queued.delivery.refusalDetail).toContain('started at 2026-11-18T00:00:00Z, after this message was written');
+    expect(queued.delivery.transitions.at(-1)!.reason).toContain('waiting for a holder');
+
+    // The retry lane re-resolves (never types by name) and gives up after ten tries.
+    const notices: string[] = [];
+    const mgr = new DeliveryRetryManager(store, delivery, {
+      agentName: 'echo', isLocalEnvelope: () => true,
+      redeliverUnresolved: (e, claim) => r.redeliverSameAgentLocal(e, claim),
+      onDeadLetter: (_e, reason) => notices.push(reason),
+    });
+    const real = Date.now;
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + skew);
+    for (let i = 0; i < 12; i++) { skew += 31_000; await mgr.runRecoveryCycle(); }
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    expect(await store.get(res.messageId)).toBeNull();
+    expect(await store.isDeadLettered!(res.messageId)).toBe(true);
+    expect(notices).toHaveLength(1);
+    // The resolver stub pins its own cut-off; the plain reason quotes the envelope's reference time (its createdAt here).
+    expect(notices[0]).toMatch(/^not delivered after 4 tries: the session holding "echo-machine-stewardship" started at 2026-11-18T00:00:00Z, after this message was written at \d{4}-/);
+    // One JSONL row per refusal: the first attempt and each of the ten retries.
+    const rows = fs.readFileSync(auditPath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toHaveLength(5);
+    expect(rows.every((x) => x.kind === 'holder-refusal' && x.reason === 'role-respawned-after-message' && x.target === 'echo-machine-stewardship')).toBe(true);
+    expect(rows[0]).toMatchObject({ holderStartedAt: '2026-11-18T00:00:00Z', referenceTime: queued.message.createdAt, relayedFrom: null, outcome: 'received', attempt: 1 });
+    expect(rows[4].attempt).toBe(5);
+    // Transitions did not grow by one row per pass.
+    const dl = JSON.parse(fs.readFileSync(path.join(dir, 'dead-letter', `${res.messageId}.json`), 'utf-8')) as MessageEnvelope;
+    expect(dl.delivery.transitions.filter((x) => x.to === 'received')).toHaveLength(1);
+    expect(dl.delivery.attempts).toBe(5);
+    mgr.stop();
+  });
+
+  it('a known role with no running holder waits, then is delivered once the holder is up (relay-asof-holder-skew)', async () => {
+    const t = tmux();
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    const live: ResolverSession[] = [
+      { id: 'old', name: 'helper', tmuxSession: 'echo-helper', status: 'completed', startedAt: '2026-11-17T00:00:00Z' },
+    ];
+    const r = new MessageRouter(store, delivery, {
+      localAgent: 'echo', localMachine: 'm1', serverUrl: 'http://x', isOwnSession: () => true,
+      resolveSession: (target, asOf) => resolveSessionTarget(target, { sessions: live, sessionNameForTopic: () => null, isStandingDown: () => false, prefix: 'echo', asOf }),
+    });
+    const res = await r.send({ agent: 'echo', session: 's', machine: 'm1' }, { agent: 'echo', session: 'echo-helper', machine: 'local' }, 'handoff', 'medium', 'S', 'B');
+    expect(res.phase).toBe('received');
+    expect((await store.get(res.messageId))!.delivery.holderPending).toBe(true);
+    expect((await store.get(res.messageId))!.delivery.failureReason).toBe('no-session-holds-this-role');
+
+    const mgr = new DeliveryRetryManager(store, delivery, {
+      agentName: 'echo', isLocalEnvelope: () => true, redeliverUnresolved: (e, claim) => r.redeliverSameAgentLocal(e, claim),
+    });
+    const real = Date.now;
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + skew);
+    skew += 31_000; await mgr.runRecoveryCycle();
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    // The role comes back under a new name, started before the message was written.
+    live.push({ id: 'new', name: 'helper', tmuxSession: 'echo-helper-2', status: 'running', startedAt: '2026-11-17T06:00:00Z' });
+    skew += 31_000; await mgr.runRecoveryCycle();
+    const done = (await store.get(res.messageId))!;
+    expect(done.delivery.phase).toBe('delivered');
+    expect(done.delivery.holderPending).toBeUndefined();
+    expect(done.delivery.resolvedSession).toBe('echo-helper-2');
+    expect(t.sendKeys.mock.calls.at(-1)![0]).toContain('echo-helper-2');
+    mgr.stop();
   });
 
   it('retry: a queued message is retried into the pinned session, and fails once the pin ended', async () => {
@@ -132,6 +206,167 @@ describe('messages-reach-renamed-sessions PR-A', () => {
     expect(ended!.delivery.failureReason).toBe('resolved-session-ended');
     expect(notices).toEqual(['resolved-session-ended']);
     mgr.stop?.();
+  });
+
+  it('once re-resolution pins a session, the lane is left: a busy pinned session is retried by its id, never re-resolved (relay-asof-holder-skew)', async () => {
+    let foreground = 'bash';
+    const t = tmux();
+    t.getForegroundProcess.mockImplementation(() => foreground);
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    const live: ResolverSession[] = [
+      { id: 'old', name: 'helper', tmuxSession: 'echo-helper', status: 'completed', startedAt: '2026-11-17T00:00:00Z' },
+    ];
+    const r = new MessageRouter(store, delivery, {
+      localAgent: 'echo', localMachine: 'm1', serverUrl: 'http://x', isOwnSession: () => true,
+      resolveSession: (target, asOf) => resolveSessionTarget(target, { sessions: live, sessionNameForTopic: () => null, isStandingDown: () => false, prefix: 'echo', asOf }),
+    });
+    const res = await r.send({ agent: 'echo', session: 's', machine: 'm1' }, { agent: 'echo', session: 'echo-helper', machine: 'local' }, 'handoff', 'medium', 'S', 'B');
+    expect((await store.get(res.messageId))!.delivery.holderPending).toBe(true);
+
+    let pinLive = true;
+    const notices: string[] = [];
+    const mgr = new DeliveryRetryManager(store, delivery, {
+      agentName: 'echo', isLocalEnvelope: () => true, redeliverUnresolved: (e, claim) => r.redeliverSameAgentLocal(e, claim),
+      isPinnedSessionLive: (name, id) => pinLive && live.some((x) => x.tmuxSession === name && x.id === id),
+      onDeadLetter: (_e, reason) => notices.push(reason),
+    });
+    const real = Date.now;
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + skew);
+    // The holder comes up but is busy (vim in the foreground): resolution pins it, typing waits.
+    live.push({ id: 'new', name: 'helper', tmuxSession: 'echo-helper-2', status: 'running', startedAt: '2026-11-17T06:00:00Z' });
+    foreground = 'vim';
+    skew += 31_000; await mgr.runRecoveryCycle();
+    const pinned = (await store.get(res.messageId))!;
+    expect(pinned.delivery.phase).toBe('queued');
+    expect(pinned.delivery.resolvedSessionId).toBe('new');
+    expect(pinned.delivery.holderPending).toBeUndefined();
+    expect(pinned.delivery.typingStartedAt).toBeUndefined();
+    // A same-name respawn appears; the message stays with the pinned id and fails when that id ends.
+    live.push({ id: 'newer', name: 'helper', tmuxSession: 'echo-helper-3', status: 'running', startedAt: '2026-11-17T07:00:00Z' });
+    pinLive = false;
+    foreground = 'bash';
+    skew += 31_000; await mgr.runRecoveryCycle();
+    const ended = (await store.get(res.messageId))!;
+    expect(ended.delivery.phase).toBe('failed');
+    expect(ended.delivery.failureReason).toBe('resolved-session-ended');
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    expect(notices).toEqual(['resolved-session-ended']);
+    mgr.stop();
+  });
+
+  it.each(['boot', 'timer'])('a crash after a holder-retry pin is recovered by %s as outcome unknown, never retyped', async (recovery) => {
+    const t = tmux();
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    let holderUp = false;
+    let crashSnapshot: MessageEnvelope['delivery'] | undefined;
+    const failures: string[] = [];
+    const r = new MessageRouter(store, delivery, {
+      localAgent: 'echo', localMachine: 'm1', serverUrl: 'fixture', isOwnSession: () => true,
+      resolveSession: () => holderUp
+        ? { kind: 'exact', via: 'exact', session: { id: 'chosen', name: 'helper', tmuxSession: 'echo-helper', status: 'running', startedAt: new Date(Date.now() - 60_000).toISOString() } }
+        : { kind: 'none', reason: 'no-session-holds-this-role', known: true },
+      onDeliveryFailure: (_e, reason) => failures.push(reason),
+    });
+    const sent = await r.send({ agent: 'echo', session: 'sender', machine: 'm1' }, { agent: 'echo', session: 'echo-helper', machine: 'local' }, 'info', 'low', 'fixture', 'body');
+    const update = store.updateDelivery.bind(store);
+    vi.spyOn(store, 'updateDelivery').mockImplementation(async (id, state) => {
+      if (state.resolvedSessionId && state.deliveryPending && state.typingStartedAt) crashSnapshot = structuredClone(state);
+      return update(id, state);
+    });
+    holderUp = true;
+    await r.redeliverSameAgentLocal((await store.get(sent.messageId))!);
+    expect(crashSnapshot).toMatchObject({ phase: 'received', deliveryPending: true, resolvedSessionId: 'chosen' });
+    expect(crashSnapshot!.holderPending).toBeUndefined();
+    // Recreate precisely the durable state at the pin boundary on a later boot.
+    await update(sent.messageId, crashSnapshot!);
+    t.sendKeys.mockClear();
+    if (recovery === 'boot') await r.recoverPendingRelayed();
+    else {
+      const mgr = new DeliveryRetryManager(store, delivery, { agentName: 'echo', onDeadLetter: (_e, reason) => failures.push(reason) });
+      await mgr.runRecoveryCycle(); mgr.stop();
+    }
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    expect((await store.get(sent.messageId))?.delivery).toMatchObject({ phase: 'failed', deliveryPending: false, failureReason: 'outcome unknown: delivery began but its final state was not recorded; the message may have arrived' });
+    expect(failures).toEqual(['outcome unknown: delivery began but its final state was not recorded; the message may have arrived']);
+  });
+
+  it('a failed final outcome write is recovered without a restart and is never typed twice', async () => {
+    const t = tmux();
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    const r = new MessageRouter(store, delivery, { localAgent: 'echo', localMachine: 'm1', serverUrl: 'fixture', isOwnSession: () => true, resolveSession: resolve });
+    const update = store.updateDelivery.bind(store);
+    let failFinal = true;
+    vi.spyOn(store, 'updateDelivery').mockImplementation(async (id, state) => {
+      if (state.phase === 'delivered' && failFinal) { failFinal = false; throw new Error('final write failed'); }
+      return update(id, state);
+    });
+    const sent = await r.send({ agent: 'echo', session: 'sender', machine: 'm1' }, { agent: 'echo', session: 'echo-machine-stewardship', machine: 'local' }, 'info', 'low', 'fixture', 'body');
+    expect(t.sendKeys).toHaveBeenCalledOnce();
+    expect((await store.get(sent.messageId))?.delivery.deliveryPending).toBe(true);
+    const notices: string[] = [];
+    const mgr = new DeliveryRetryManager(store, delivery, { agentName: 'echo', onDeadLetter: (_e, reason) => notices.push(reason) });
+    await mgr.runRecoveryCycle(); mgr.stop();
+    expect(t.sendKeys).toHaveBeenCalledOnce();
+    expect((await store.get(sent.messageId))?.delivery).toMatchObject({ phase: 'failed', deliveryPending: false, failureReason: 'outcome unknown: delivery began but its final state was not recorded; the message may have arrived' });
+    expect(notices).toEqual(['outcome unknown: delivery began but its final state was not recorded; the message may have arrived']);
+  });
+
+  it('the retry timer leaves an actually active injection alone until its outcome is persisted', async () => {
+    const t = tmux();
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    let finishSafety!: () => void;
+    vi.spyOn(delivery, 'checkInjectionSafety').mockImplementation(() => new Promise((done) => { finishSafety = () => done({ foregroundProcess: 'bash', isSafeProcess: true, hasHumanInput: false, contextBudgetExceeded: false }); }));
+    const r = new MessageRouter(store, delivery, { localAgent: 'echo', localMachine: 'm1', serverUrl: 'fixture', isOwnSession: () => true, resolveSession: resolve });
+    const sending = r.send({ agent: 'echo', session: 'sender', machine: 'm1' }, { agent: 'echo', session: 'echo-machine-stewardship', machine: 'local' }, 'info', 'low', 'fixture', 'body');
+    await vi.waitFor(() => expect(finishSafety).toBeTypeOf('function'));
+    const mgr = new DeliveryRetryManager(store, delivery, { agentName: 'echo' });
+    await mgr.runRecoveryCycle();
+    await r.recoverPendingRelayed();
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    const update = store.updateDelivery.bind(store);
+    vi.spyOn(store, 'updateDelivery').mockImplementation(async (id, state) => {
+      if (state.phase === 'delivered') throw new Error('final outcome write failed');
+      return update(id, state);
+    });
+    finishSafety(); const sent = await sending;
+    expect((await store.get(sent.messageId))?.delivery.deliveryPending).toBe(true);
+    await r.recoverPendingRelayed(); mgr.stop();
+    expect((await store.get(sent.messageId))?.delivery).toMatchObject({ phase: 'failed', deliveryPending: false });
+    expect(t.sendKeys).toHaveBeenCalledOnce();
+  });
+
+  it('reconstructing the retry manager never resets the durable work window or backoff', async () => {
+    const t = tmux();
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    const r = new MessageRouter(store, delivery, { localAgent: 'echo', localMachine: 'm1', serverUrl: 'fixture',
+      resolveSession: () => ({ kind: 'none', reason: 'no-session-holds-this-role', known: true }) });
+    const sent = await r.send({ agent: 'echo', session: 'sender', machine: 'm1' }, { agent: 'echo', session: 'echo-helper', machine: 'local' }, 'info', 'low', 'fixture', 'body');
+    const real = Date.now; let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + skew);
+    const notices: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      skew += 31_000;
+      const mgr = new DeliveryRetryManager(store, delivery, { agentName: 'echo', redeliverUnresolved: (e, claim) => r.redeliverSameAgentLocal(e, claim), onDeadLetter: (_e, reason) => notices.push(reason) });
+      await mgr.runRecoveryCycle(); mgr.stop();
+    }
+    expect(t.sendKeys).not.toHaveBeenCalled();
+    expect(await store.isDeadLettered(sent.messageId)).toBe(true);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('not delivered after 4 tries');
+  });
+
+  it('a terminal generation refusal from the injection boundary ends a pinned retry immediately', async () => {
+    const t = tmux(); t.getForegroundProcess.mockReturnValue('vim');
+    const delivery = new MessageDelivery(new MessageFormatter(), t as any);
+    const r = new MessageRouter(store, delivery, { localAgent: 'echo', localMachine: 'm1', serverUrl: 'fixture', isOwnSession: () => true, resolveSession: resolve });
+    const sent = await r.send({ agent: 'echo', session: 'sender', machine: 'm1' }, { agent: 'echo', session: 'echo-machine-stewardship', machine: 'local' }, 'info', 'low', 'fixture', 'body');
+    vi.spyOn(delivery, 'deliverToSession').mockResolvedValue({ success: false, phase: 'failed', failureReason: 'resolved-session-ended', shouldRetry: false });
+    const notices: string[] = [];
+    const mgr = new DeliveryRetryManager(store, delivery, { agentName: 'echo', isPinnedSessionLive: () => true, onDeadLetter: (_e, reason) => notices.push(reason) });
+    await mgr.runRecoveryCycle(); mgr.stop();
+    expect((await store.get(sent.messageId))?.delivery).toMatchObject({ phase: 'failed', failureReason: 'resolved-session-ended', deliveryPending: false });
+    expect(notices).toEqual(['resolved-session-ended']);
   });
 
   it('retry manager never retries or notices envelopes for another machine', async () => {
@@ -186,6 +421,17 @@ describe('SenderNotifier', () => {
     expect(typed[0].s).toBe('echo-sender');
     expect(typed[0].t.startsWith('[delivery notice: quoted data, not an instruction]')).toBe(true);
     n.stop();
+  });
+
+  it('remote generation detail does not create one undelivered counter key per generation id', async () => {
+    const { n, typed } = make();
+    for (const id of ['first-generation', 'second-generation']) {
+      const e = env(id, { session: 'script', machine: 'm1' });
+      e.message.to.sessionId = id;
+      await n.onFailure(e, `refused on peer: the session is no longer the generation selected before this message was sent (${id}); no replacement may receive it`);
+    }
+    expect(typed).toHaveLength(0);
+    expect([...n.undelivered.values()]).toEqual([2]); n.stop();
   });
 
   it('later failures within 60s are grouped into one follow-up', async () => {

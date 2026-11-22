@@ -1,3 +1,4 @@
+import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
@@ -21828,6 +21829,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const messageFormatter = new MessageFormatter();
     const tmuxBin = config.sessions.tmuxPath;
     const tmuxOps: TmuxOperations = {
+      currentSessionGeneration: (name) => sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.id ?? null,
+      isSessionGeneration: (tmuxSession, sessionId) =>
+        sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
       getForegroundProcess(tmuxSession: string): string {
         try {
           return execFileSync(tmuxBin, ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_current_command}'], {
@@ -21934,9 +21938,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         prefix: path.basename(config.projectDir),
         asOf,
       }),
+      // relay-asof-holder-skew §3: one JSONL row per holder refusal, next to the other delivery audits.
+      refusalAuditPath: path.join(config.stateDir, '..', 'logs', 'message-delivery-refusals.jsonl'),
       // §C: a terminal failure tells the proven sender session once.
       onDeliveryFailure: (envelope, reason) => { void senderNotifier.onFailure(envelope, reason); },
       undeliveredCounts: () => Object.fromEntries(senderNotifier.undelivered),
+      // N73: a signed generation proof works on every registered rope, including
+      // LAN HTTP; it carries no bearer credential and authenticates the reply.
+      generationBindingEnabled: () => liveConfig.get<boolean>('multiMachine.messageSessionGeneration.enabled', false) === true,
+      generationEvidence: (kind, reason, messageId) => featureEvidence.record('multiMachine.messageSessionGeneration', { kind, reason, context: { messageId } }),
+      peerSessionGeneration: (targetMachine, target, timeoutMs) => crossMachineDeps
+        ? readPeerMessageGeneration({
+          peer: (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === targetMachine) ?? null,
+          target, timeoutMs, selfMachine: machineId, signingKeyPem: crossMachineDeps.signingKeyPem,
+          peerPublicKeyPem: crossMachineDeps.identityManager.getSigningPublicKeyPem(targetMachine) ?? null,
+        })
+        : Promise.resolve({ reason: 'cross-machine messaging is unavailable' }),
       // §D.3: guarded relay addresses, read at call time (the mesh block below sets them up).
       peerAddresses: (machineId: string) => {
         const peer = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
@@ -22017,6 +22034,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Start delivery retry manager for automatic retries, watchdog, and TTL expiry
     const retryManager = new DeliveryRetryManager(messageStore, messageDelivery, {
       agentName: config.projectName,
+      currentSessionGeneration: (name) => sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.id ?? null,
+      generationEvidence: (kind, reason, messageId) => featureEvidence.record('multiMachine.messageSessionGeneration', { kind, reason, context: { messageId } }),
       // messages-reach-renamed-sessions §B/§C.
       isLocalEnvelope: (envelope) => {
         const m = envelope.message.to.machine;
@@ -22025,6 +22044,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       isPinnedSessionLive: (tmuxSession, sessionId) =>
         sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession && s.id === sessionId),
       onDeadLetter: (envelope, reason) => { messageRouter.reportTerminalFailure(envelope, reason); },
+      // relay-asof-holder-skew §2: a role with no accepted holder yet is re-resolved each pass.
+      redeliverUnresolved: (envelope, claim) => messageRouter.redeliverSameAgentLocal(envelope, claim),
       // §D.6: the origin copy of a cross-machine message stays open for a late notice.
       holdForRemoteNotice: (envelope) => {
         const m = envelope.message.to.machine;
