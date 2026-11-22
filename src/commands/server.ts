@@ -4645,10 +4645,12 @@ async function wireDiskSteward(h: {
     const _dsSelf = (() => { try { return _dsIdMgr.hasIdentity() ? _dsIdMgr.loadIdentity() : null; } catch { return null; } })(); // @silent-fallback-ok — no identity ⇒ a single machine named by hostname
     const _dsMachineId = _dsSelf?.machineId ?? 'local';
     const _dsPeers = () => (_resolvePeerUrls?.() ?? []).map((p) => ({
-      machineId: p.machineId, url: p.url ?? null,
+      machineId: p.machineId, url: p.url ?? null, kind: p.kind, ropes: p.ropes,
       allowed: !!p.url && isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok,
       refusals: p.ropeRefusals,
     }));
+    // Mesh initialization may finish after disk wiring; resolve the shared recorder at dial time.
+    const _dsRecord: import('../server/poolPeerFetch.js').RopeResultRecorder = (...args) => _recordRopeResult?.(...args);
     const { steward: diskSteward, runner: diskStewardRunner, intervalMs: _dsInterval } = createDiskSteward({
       readConfig: () => {
         const live = (liveConfig?.get('monitoring.diskSteward', undefined) as Record<string, unknown> | undefined) ?? (config.monitoring as { diskSteward?: Record<string, unknown> } | undefined)?.diskSteward;
@@ -4665,7 +4667,7 @@ async function wireDiskSteward(h: {
         return diskStewardMachineName(nick, _dsSelf?.name);
       },
       isHolder: () => !state.readOnly,
-      peers: _dsPeers,
+      peers: _dsPeers, recordRopeResult: _dsRecord,
       authToken: config.authToken,
       getTopicId: () => state.get<number>(_sysKeys.diskSpace) ?? null,
       setTopicId: (id) => { if (!state.readOnly) state.set(_sysKeys.diskSpace, id); },
@@ -4705,7 +4707,7 @@ async function wireDiskSteward(h: {
     }, 60_000);
     bootTopic.unref?.();
     console.log(pc.green('  DiskSteward enabled (disk watch on this machine)'));
-    return () => ({ steward: diskSteward, runner: diskStewardRunner, machineId: _dsMachineId, peers: _dsPeers, authToken: config.authToken });
+    return () => ({ steward: diskSteward, runner: diskStewardRunner, machineId: _dsMachineId, peers: _dsPeers, recordRopeResult: _dsRecord, authToken: config.authToken });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`  DiskSteward failed to start: ${reason}`);

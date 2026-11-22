@@ -10,6 +10,8 @@
 import type { Router } from 'express';
 import type { DiskSteward } from '../monitoring/DiskSteward.js';
 import { operatorError } from '../core/storageMachineName.js';
+import type { RopeResultRecorder } from './poolPeerFetch.js';
+import { readPeerDiskStatus, type DiskStewardPeer } from '../monitoring/diskSteward/peerRead.js';
 import type { PruneRunner } from '../monitoring/diskSteward/pruneRunner.js';
 
 export interface DiskStewardRouteDeps {
@@ -17,7 +19,8 @@ export interface DiskStewardRouteDeps {
   runner: PruneRunner;
   machineId: string;
   /** Active peers with a URL the credential guard admits (allowed false ⇒ url-rejected). */
-  peers: () => Array<{ machineId: string; url: string | null; allowed: boolean; refusals?: unknown[] }>;
+  peers: () => DiskStewardPeer[];
+  recordRopeResult?: RopeResultRecorder | null;
   authToken: string | undefined;
 }
 
@@ -35,9 +38,7 @@ export function mountDiskStewardRoutes(router: Router, get: () => DiskStewardRou
         if (!p.url) return { machineId: p.machineId, error: 'no-known-url' };
         if (!p.allowed) return { machineId: p.machineId, error: 'url-rejected', refusals: p.refusals ?? [] };
         try {
-          const r = await fetch(`${p.url.replace(/\/$/, '')}/disk-steward`, {
-            headers: d.authToken ? { Authorization: `Bearer ${d.authToken}` } : {}, signal: AbortSignal.timeout(5_000),
-          });
+          const { response: r } = await readPeerDiskStatus(d.recordRopeResult ?? undefined, { ...p, url: p.url }, d.authToken);
           if (!r.ok) return { machineId: p.machineId, error: `HTTP ${r.status}` };
           return { machineId: p.machineId, status: await r.json() };
         } catch (e) {
