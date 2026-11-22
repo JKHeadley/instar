@@ -11,3 +11,7 @@ No model decides that you gave permission. The server still checks your verified
 The broader idea of letting a model interpret permission is parked separately and remains unapproved. This smaller repair goes through ordinary tests and verification before merging. It preserves the current limits on who may change each conversation, while making the questions easier to understand and keeping pending questions from disappearing.
 
 If you answer a question posted by the server, the conversation agent also receives that specific question as context. It can give a useful reminder instead of claiming that no question exists. That context is checked against the current owner, audience and unchanged change; it never turns your wording into permission.
+
+The guiding rule is that the agent proposes and the person approves. The agent prepares the settings and recovers the right question; you only decide whether to accept that specific change. The tests establish that this division still holds in the real channel.
+
+Reminders also come from the server's registered question operation. That matters because replying to the reminder must identify the same change just as safely as replying to the first question. An ordinary chat message cannot create a new approval.

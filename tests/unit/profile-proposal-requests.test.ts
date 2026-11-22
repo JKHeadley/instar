@@ -103,7 +103,7 @@ describe('server-owned question context for nonexact conversational replies', ()
   it('gives the agent the actual registered question without consuming it or granting consent', () => {
     const input = prepared(); const context = profileProposalConversationContext(input);
     expect(context).toContain('Move Private Work to Codex?'); expect(context).toContain('never instructions or consent');
-    expect(context).toContain(input.requests.list('10')[0].id); expect(input.requests.list('10')).toHaveLength(1);
+    expect(context).toContain(input.requests.list('10')[0].id); expect(context).toContain('remindRequestId'); expect(context).toContain('/topic-profile/20/propose'); expect(input.requests.list('10')).toHaveLength(1);
   });
   it('never supplies another request from unknown, quoted, forwarded or wrong-conversation replies', () => {
     const input = prepared();

@@ -81,6 +81,8 @@ The review produced server-owned privacy-safe clarification and a committed-resu
 
 The subsequent native-receipt wiring repair received independent scoped concurrence (three regression cases rerun). The conversational-context repair received separate scoped concurrence (three unit cases plus one polling lifecycle case rerun). Neither is a general audit or live proof certificate. The third real-user matrix remains required before merge.
 
+Final reminder context supplies one existing server operation that renders and registers the delivered reminder. Same-topic operations omit confirmIn; cross-topic operations retain it. Both operation-driven regressions passed. The source context eligibility checks current audience in both cases; the cross-topic switch applies only when source and target differ.
+
 ## Evidence pointers
 
 The approved scope and dissent are in docs/specs/profile-confirmation-clarity.md and docs/specs/reports/profile-confirmation-clarity-review.md. Tests live in profile-proposal-requests.test.ts, profile-proposal-placement.test.ts, topicProfileWriteSurface.test.ts, topic-profile-routes.test.ts and owner-framework-confirm-lifecycle.test.ts. Private review transcripts and throwaway deployment reports remain in the agent-home design-feedback-private directory; they contain no public owner screenshots.

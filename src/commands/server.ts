@@ -8555,7 +8555,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         _crossTopicEligibility = (tg, confirmerUid, destKey, sourceKey) => {
           // The switch is re-read LIVE at the yes, so turning it off between proposal and yes stops the write.
           const switchLive = liveConfig.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined);
-          if (!resolveDevAgentGate(switchLive, config as { developmentAgent?: boolean })) return { ok: false, reason: 'switch-off' };
+          if (destKey !== sourceKey && !resolveDevAgentGate(switchLive, config as { developmentAgent?: boolean })) return { ok: false, reason: 'switch-off' };
           const store = _agentServerRef?.getTopicOperatorStore() ?? null;
           const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
           const owner = tg?.getOwnerUserId();
