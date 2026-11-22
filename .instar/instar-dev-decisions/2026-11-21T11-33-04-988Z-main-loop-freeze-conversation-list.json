@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-21T11:33:04.988Z",
+  "slug": "main-loop-freeze-conversation-list",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 254,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/commands/setup.ts",
+      "src/core/CartographerTree.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/MessageLogger.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 101,
+    "deletedLines": 153
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a request-started history load with a time brake and no timer; not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T12:18:07.363Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "b0174da2ead9b49cc048e84b01b33abd191355afb3ccc67c95e0d5c42c6e7e9c",
+  "coveredFiles": [
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "docs/specs/main-loop-freeze-conversation-list.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/conversation-list-no-log-scan.test.ts",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Completes the old-read-path fallback on every read; no state or migration.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new loop; the first-fill retry happens on a later request, as reads already did"
+  }
+}

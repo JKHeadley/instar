@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:47:19.742Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "af9dfc5107b2d6221231a87cb9055cf008eef20a5f136864fb8f85be7fa2819e",
+  "coveredFiles": [
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/MessageLogger.ts",
+    "tests/unit/message-log-rotation-no-per-append-read.test.ts",
+    "tests/unit/telegram-log-view.test.ts",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two narrow fixes to a read-path repair; no state or migration.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "rotation retry is append-driven with a brake, no timer; not a self-triggered loop"
+  }
+}

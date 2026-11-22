@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "main-loop-freeze-conversation-list",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T12:07:22.060Z",
+  "artifactPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "artifactSha256": "4b3f394d230da0beba9de6ca2dee837097fd11eabd66be869e625a886bfc60e9",
+  "coveredFiles": [
+    "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+    "docs/specs/main-loop-freeze-conversation-list.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/conversation-list-no-log-scan.test.ts",
+    "upgrades/side-effects/main-loop-freeze-conversation-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Fallback to the old read path when the view is unavailable; no state or migration.",
+  "eli16Path": "docs/specs/main-loop-freeze-conversation-list.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-loop-freeze-conversation-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the view rebuild is request-started with a time brake (5 s doubling to 5 min) and no timer; not a self-triggered loop"
+  }
+}

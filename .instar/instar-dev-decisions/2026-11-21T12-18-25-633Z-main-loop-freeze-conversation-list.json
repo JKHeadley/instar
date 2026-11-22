@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-21T12:18:25.633Z",
+  "slug": "main-loop-freeze-conversation-list",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new loop; the first-fill retry happens on a later request, as reads already did"
+  },
+  "verdict": "pass"
+}

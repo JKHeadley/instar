@@ -213,6 +213,9 @@ const MAX_POOL_LIST_BYTES = 512 * 1024;
 const MAX_POOL_BROWSE_BYTES = 2 * 1024 * 1024;
 type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult'> & { config: InstarConfig };
 
+/** Marks a read sent by the pool fan-out from another of this agent's machines (main-loop-freeze-conversation-list). */
+export const POOL_READ_HEADER = 'x-instar-pool-read';
+
 /** GET a peer's own (non-pool) read with the agent's Bearer token. A 404 is "nothing there", not a failure. */
 async function fetchPeers<T>(
   ctx: PoolReadCtx, pathFor: string, maxBytes: number, take: (body: Record<string, unknown>, machineId: string) => T,
@@ -225,10 +228,17 @@ async function fetchPeers<T>(
     if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { failed.push({ machineId: p.machineId, reason: 'peer-url-refused' }); return; }
     try {
       const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, pathFor, {
-        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
+        // POOL_READ_HEADER: the peer answers at once from whatever read path it has, never waiting.
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, [POOL_READ_HEADER]: '1' }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
       });
       if (r.status === 404) return;
-      if (!r.ok) { failed.push({ machineId: p.machineId, reason: r.status === 503 ? 'off' : `http-${r.status}` }); return; }
+      if (!r.ok) {
+        // A peer still loading its Telegram history is warming, not off: say so (main-loop-freeze-conversation-list).
+        let loading = false;
+        if (r.status === 503) { try { loading = ((await r.json()) as { error?: unknown })?.error === 'conversations-loading'; } catch { /* @silent-fallback-ok — an unreadable 503 body reads as off, as before */ } }
+        failed.push({ machineId: p.machineId, reason: loading ? 'loading' : r.status === 503 ? 'off' : `http-${r.status}` });
+        return;
+      }
       const text = await r.text();
       if (Buffer.byteLength(text) > maxBytes) { failed.push({ machineId: p.machineId, reason: 'too-large' }); return; }
       results.push(take(JSON.parse(text) as Record<string, unknown>, p.machineId));
@@ -256,6 +266,8 @@ export interface MobileConversationRouteDeps {
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
+  /** Waits, off the event loop, for Telegram history in memory. Without it, reads take the old path. */
+  telegramHistoryReady?: (timeoutMs?: number) => Promise<boolean>;
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
    * null when Slack is configured but the operator's Slack user id is unset (rows withheld, and
@@ -601,6 +613,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    // A first-time reader's baseline is this request's arrival, not the end of the wait below.
+    { const u = unreadOn(); const r = readerOf(req); if (u && r) u.touchBaseline(r); }
+    // A request from another of this agent's machines (the pool fan-out marks it) never waits for the
+    // in-memory copy: without it, it reads the file straight away, so the caller's 5 s budget is never
+    // spent waiting. Any other read waits, bounded, then falls back to the file the same way.
+    const historyWait = req.get(POOL_READ_HEADER) === '1' ? 0 : 15_000;
+    // Without the view (still loading, or its rebuild failed) the reads below take the old path.
+    if (deps.telegramHistoryReady) await deps.telegramHistoryReady(historyWait);
     const local = localListPage(limit, cursor);
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
@@ -717,6 +737,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         };
       })
       : { results: [], failed: [] };
+    // The view can be dropped (a log rotation) while the peers answer: wait for it again before the
+    // unread and pinned passes below; without it they take the old read path.
+    if (deps.telegramHistoryReady) await deps.telegramHistoryReady(historyWait);
     // A peer's Slack rows are never listed: a Slack conversation id is local to the machine that
     // minted it, and the Slack routes on this machine look ids up here, so a peer row could name a
     // different conversation that shares the number (and would otherwise collapse onto this
@@ -754,6 +777,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const marks = ConversationUnreadService.parseMarks(req.body);
     if (!marks) { res.status(400).json({ error: 'bad-marks', detail: 'Send 1-50 marks, each with ref, id and atMs.' }); return; }
     if (reader.viaDevice) unread.touchBaseline(reader);
+    // Only a mark on a Telegram conversation needs its history.
+    // After the wait the report runs either way, one result per mark, as it always has.
+    if (marks.some((m) => m.ref.startsWith('telegram:')) && deps.telegramHistoryReady) await deps.telegramHistoryReady(p.kind === 'device' ? 15_000 : 0);
     // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
     const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
     res.json({ results });

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-21T11:59:51.689Z",
+  "slug": "main-loop-freeze-conversation-list",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 77,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/MessageLogger.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 70
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
