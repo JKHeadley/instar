@@ -38,6 +38,7 @@ import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
 const stampPromiseNotice = notificationStamper('src/server/routes.ts', 'promise-notice');
+const stampProfileConfirmation = notificationStamper('src/server/routes.ts', 'profile-confirmation');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { mountOwnerRecordRoutes, type OwnerRecordRouteDeps } from './ownerRecordRoutes.js';
@@ -14139,12 +14140,12 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       confirmIn = n as number;
-      // A cross-conversation yes may change only everyday run settings. Framework, escalation
-      // override and origin display keep today's rule (confirm in that conversation itself).
+      // The same bounded field list is enforced again by the write surface.
+      // Escalation override and origin display still require in-conversation confirmation.
       const allowedCross = new Set(CROSS_TOPIC_FIELDS);
       const outside = Object.keys(patch).filter((k) => !allowedCross.has(k));
       if (outside.length) {
-        res.status(400).json({ error: `confirmIn may change only model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
+        res.status(400).json({ error: `confirmIn may change only framework, model, modelTier, thinkingMode and effort; not: ${outside.join(', ')}` });
         return;
       }
       // Ships behind the umbrella's per-piece switch: live on a development agent, dark on the fleet.
@@ -14188,7 +14189,9 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
+      // This armed exact-change proposal needs a human answer, so it uses the
+      // existing bounded owner-decision lane rather than the quiet report feed.
+      const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
       ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
       res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
