@@ -2892,6 +2892,9 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** N73 rollout: endpoint is always available; enable send-time generation
+   * binding only after the receiving pool supports it. Absent/false is off. */
+  messageSessionGeneration?: { enabled?: boolean };
   /** Storage prerequisite only; never enables the Conversations read/UI increment. */
   conversationGraph?: {
     /** Release switches: leave absent/off until increment-A acceptance. Storage

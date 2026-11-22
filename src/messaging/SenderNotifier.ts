@@ -77,7 +77,13 @@ export class SenderNotifier {
       const target = envelope.message.to?.session ?? '(no session)';
       const sender = this.provenSender(envelope);
       if (!sender) {
-        const key = `${target}|${reason}`;
+        // Remote notices retain full prose for people; collapse the signed generation
+        // mismatch template for this observability-only counter as well.
+        const stableReason = envelope.delivery.failureReason?.startsWith('target-session-generation-')
+          ? envelope.delivery.failureReason
+          : envelope.message.to.sessionId && reason.includes('no longer the generation selected before this message was sent')
+            ? 'target-session-generation-changed' : reason;
+        const key = `${target}|${stableReason}`;
         this.undelivered.set(key, (this.undelivered.get(key) ?? 0) + 1);
         return;
       }
