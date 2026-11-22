@@ -57,3 +57,7 @@ Set `security.credentialScrub.enabled` to false (read live, within the reader's 
 ## Class-Closure Declaration
 
 - **unbounded-self-action: n/a.** The team-member notice is one fixed message per incoming message from a person, deduped by channel, conversation and message id. It is never retried, re-driven or scheduled, and nothing the agent does itself triggers it. The lifeline replay was already bounded by its existing poison and transient budgets; this change only adds a field to it.
+
+## Stage-B classification
+
+`src/messaging/inboundCredentialMask.ts` is newly reached from the Stage-B certified closure, so it is listed as excluded in `src/data/stageBCertifiedSet.ts`. The reason: it holds pure text helpers over the already-excluded outbound credential guard, with no I/O, no state and no delivery decision. It only replaces a key with a fixed marker and never holds or drops a message. The certified set and its fingerprint are unchanged.
