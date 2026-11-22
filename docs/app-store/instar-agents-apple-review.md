@@ -54,6 +54,10 @@ developer or its partners can access beyond servicing the request in real time):
   on the person's own machine. We, the developer, run no service that receives them.
 - The push token goes to the person's own agent, so their agent can notify them. The notification
   carries no message text.
+- Computer pairing can pass the pairing link through the instar.sh pair-drop box. The app seals it
+  with HPKE to a key only that computer holds, so the box sees ciphertext only, logs nothing and
+  expires the slot after 120 seconds. We cannot read it, so it is not collected. The privacy page
+  describes it (added 2026-11-22 for 0.5.1).
 - No analytics, advertising or tracking SDKs. No accounts with us.
 - TestFlight and App Store crash reports and feedback are Apple's own channel. They don't count
   toward the label.
