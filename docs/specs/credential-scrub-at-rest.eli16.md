@@ -13,3 +13,5 @@ Its progress from the development agent to every agent is tracked on the agents'
 Messages your agent sends to other agents are cleaned the same way. The one exception is a key you deliberately share with an agent you have verified and paired with: that key travels sealed to that agent only, and your agent's own records still hold the cleaned version.
 
 Follow-up after the first full test run of part 1b: the check that reads whether key removal is switched on could crash when there was no project folder to read from, which only happens in tests. It now just treats the switch as off in that case, the same as when the settings file cannot be read.
+
+Second follow-up: three of the new tests for messages to other agents failed because the pretend relay they used acted as if it were offline. The send stopped before the key-removal step was ever reached. The pretend relay now behaves like a connected one. The tests still check exactly the same things, and the real code did not change.
