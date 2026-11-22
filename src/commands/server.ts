@@ -94,7 +94,7 @@ function repairedSlackRelayReadiness(config: { stateDir: string; projectDir: str
   return repairSlackReplyRelayIfStale({ projectDir: config.projectDir, stateDir: config.stateDir, config, template, warn: (m) => console.warn(`[slack-relay] ${m}`) });
 }
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
-import { scrubOutputText, credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
+import { scrubOutputText, credentialScrubEnabledReader, credentialScrubModeReader } from '../core/outputCredentialScrub.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted, aspClassifiedText, framingLabel, reconcileSignedLabel } from '../messaging/shared/signedInbound.js';
 import { markedInboundPrefix, markedHistoryLabel } from '../messaging/shared/onBehalfMarker.js';
@@ -6617,6 +6617,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         machineId: cjOwnMachineId as string,
         // Read at each pass, so a PIN or token changed while running is the one removed.
         secrets: () => [config.authToken, config.dashboardPin, liveConfig?.get<string | undefined>('dashboardPin', undefined), liveConfig?.get<string | undefined>('authToken', undefined)],
+        // SEC-164 §3.4: live keys masked in each row before it leaves, and in each chunk before it lands.
+        credentialScrubMode: credentialScrubModeReader(config.projectDir),
         bytesPerDay: (() => { const v = (config.multiMachine?.stateSync as { sessionTranscripts?: { bytesPerDay?: unknown } } | undefined)?.sessionTranscripts?.bytesPerDay; return typeof v === 'number' && v > 0 ? v : undefined; })(),
         emit: tcMod.journalCheckpointEmit(replicatedRecordEmitter, coherenceJournal),
         onEvidence: (kind, reason, context) => { featureEvidence.record(featureId, { kind, reason, context }); },

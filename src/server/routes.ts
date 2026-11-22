@@ -845,9 +845,9 @@ import { RelayRefusedError } from '../core/TelegramRelay.js';
 import { isOperationReference } from '../messaging/telegram-origin/OriginPolicyVerdict.js';
 import { AdvisoryAnswerClosedError } from '../messaging/telegram-origin/types.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
-import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
+import { credentialGuardMessage, detectOutboundCredential, OwnCredentialMatcher } from '../messaging/outbound-credential-guard.js';
 import { InboundCredentialNotice, type MaskedInbound } from './inboundCredentialNotice.js';
-import { isTeamSender, maskInbound } from '../messaging/inboundCredentialMask.js';
+import { isTeamSender, maskInbound, teamMemberNotice } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { registerEmailRoutes } from './emailRoutes.js';
 import { detectJargon } from '../core/JargonDetector.js';
@@ -1303,6 +1303,11 @@ export interface RouteContext {
   /** Installed by createRoutes: feeds a device-authenticated app message through
    * the same inbound core the lifeline forward uses (mobile-operator-chat spec). */
   mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
+  /**
+   * SEC-164 §4.5: set by createRoutes. Posts the fixed removed-key notice, with a fresh Secret Drop
+   * link, into an app conversation as a server-written agent message. Never throws.
+   */
+  appCredentialNotice?: ((input: { conversationKey: string; messageId: string }) => void) | null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); absent/null when off. */
   appConversations?: import('../core/AppConversationService.js').AppConversationService | null;
   /** native-conversation-base §3c: Telegram file resolution on this machine (null when Telegram is off). */
@@ -31100,8 +31105,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // SEC-164 part 1 §3.5 and §4.5: a live key in a new incoming message is masked before anything keeps
   // the text, and a team member gets one fixed notice with a fresh Secret Drop link to resend it safely.
   const credentialScrubOn = credentialScrubEnabledReader(ctx.config.projectDir);
+  // The agent's own configured keys, matched by exact value (only a hash and a short prefix are kept).
+  // Rebuilt at most once a minute, so a changed token is the one matched.
+  let ownKeys: { at: number; matcher: OwnCredentialMatcher } | null = null;
+  const ownCredentials = (): OwnCredentialMatcher => {
+    const now = Date.now();
+    if (ownKeys && now - ownKeys.at < 60_000) return ownKeys.matcher;
+    const tg = ctx.config.messaging?.find(m => m.type === 'telegram')?.config as { token?: string } | undefined;
+    const sl = ctx.config.messaging?.find(m => m.type === 'slack')?.config as { botToken?: string; appToken?: string } | undefined;
+    // The live value too: after pairing, the config may hold only a placeholder for the API token.
+    const liveToken = (() => { try { return ctx.liveConfig?.get<string | undefined>('authToken', undefined); } catch { return undefined; } })(); // @silent-fallback-ok — the config value still matches
+    const matcher = new OwnCredentialMatcher([ctx.config.authToken, liveToken, tg?.token, sl?.botToken, sl?.appToken, (ctx.config.tunnel as { token?: string } | undefined)?.token]);
+    ownKeys = { at: now, matcher };
+    return matcher;
+  };
   const inboundCredentialNotice = new InboundCredentialNotice({
     enabled: credentialScrubOn,
+    ownCredentials,
     mintResendLink: ({ target, channel }) => {
       const topicId = channel === 'telegram' && Number.isSafeInteger(Number(target)) ? Number(target) : undefined;
       const { token } = secretDrop.create({
@@ -31158,6 +31178,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return r.removed ? inboundCredentialNotice.sessionText(r.text, r) : null;
     };
   }
+  // The app's own conversations: the notice is a server-written agent message in the same conversation,
+  // once per message (its event id derives from the message id, so a replay appends nothing).
+  ctx.appCredentialNotice = ({ conversationKey, messageId }) => {
+    const app = ctx.appConversations;
+    if (!app) return;
+    try {
+      const eventId = derivedEventId('ag', conversationKey, `sec164-notice:${messageId}`);
+      if (app.store.hasEvent(conversationKey, eventId)) return;
+      let link: string | null = null;
+      try {
+        const { token } = secretDrop.create({
+          mintAuth: 'master', label: 'Send the key safely',
+          description: 'I removed a key from your message so it is not kept in the conversation. Paste it here instead and it goes straight to the vault.',
+        });
+        link = secretDropUrl(token).tunnelUrl;
+      } catch { link = null; } // @silent-fallback-ok — the notice then says to try again in a minute
+      const noticeMessageId = derivedEventId('am', conversationKey, `sec164-notice:${messageId}`);
+      app.store.append({ eventId, conversationKey, messageId: noticeMessageId, role: 'agent', text: teamMemberNotice(link), at: new Date().toISOString(), machineId: app.deps.machineId(), kind: 'message' });
+      app.onAgentReplyAppended(conversationKey, noticeMessageId);
+    } catch (err) {
+      DegradationReporter.getInstance().report({
+        feature: 'credentialScrub.inbound', primary: 'Tell the person in the app that a key was removed',
+        fallback: 'No notice; the message is still stored and delivered masked', reason: err instanceof Error ? err.name : 'error',
+        impact: 'The person may not know their key was removed until they look at the message',
+      });
+    }
+  };
   // The server's own polling path (no lifeline poll owner) masks through the same object.
   if (ctx.telegram) {
     ctx.telegram.inboundCredentialMasker = ({ text: inText, topicId, messageId, fromId, notFromThePerson }) => {

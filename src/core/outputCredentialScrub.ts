@@ -56,6 +56,35 @@ export function credentialScrubEnabledReader(projectDir: string): () => boolean 
   };
 }
 
+/** The copy scrub's and the sweeper's mode (§4.4): off, count only (dry run), or mask in place. */
+export type CredentialScrubMode = 'off' | 'dry-run' | 'on';
+
+/**
+ * Reads `security.credentialScrub.enabled` and `.inPlace` live. `inPlace` resolves in code and starts
+ * at dry run: only an explicit `true` (or "on") in the settings file masks in place.
+ */
+export function credentialScrubModeReader(projectDir: string): () => CredentialScrubMode {
+  const enabled = credentialScrubEnabledReader(projectDir);
+  const configPath = path.join(projectDir, '.instar', 'config.json');
+  let cached: { at: number; value: boolean } | null = null;
+  const inPlace = (): boolean => {
+    const now = Date.now();
+    if (cached && now - cached.at < SETTING_TTL_MS) return cached.value;
+    let value = false;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { security?: { credentialScrub?: { inPlace?: unknown } } };
+      const v = cfg.security?.credentialScrub?.inPlace;
+      value = v === true || v === 'on';
+    } catch {
+      // @silent-fallback-ok — an unreadable file keeps the last known value (dry run before the first read).
+      value = cached?.value ?? false;
+    }
+    cached = { at: now, value };
+    return value;
+  };
+  return () => (enabled() ? (inPlace() ? 'on' : 'dry-run') : 'off');
+}
+
 type WriteFn = (chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => boolean;
 
 let installed = false;
