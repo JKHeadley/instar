@@ -30356,6 +30356,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   };
 
   // SEC-153: the owner reads a withheld dispatch's text here, with the dashboard PIN, to review it.
+  // @write-domain:none — read-only: POST only so the PIN travels in the body; returns the dispatch, writes nothing.
   router.post('/dispatches/:id/read', (req, res) => {
     if (!ctx.dispatches) {
       res.status(503).json({ error: 'Dispatch system not configured' });
