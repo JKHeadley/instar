@@ -191,6 +191,7 @@ import { LlmQueue } from '../monitoring/LlmQueue.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
@@ -696,11 +697,11 @@ export class AgentServer {
    * Turn one team setting on here, from the owner's tap on any machine of this agent. Only ever on.
    * Restarts this machine (a supervised, planned restart) when what is running is not yet on.
    */
-  private applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
+  private async applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
     config: InstarConfig;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     sessionManager: { memoryPrivacyStatus?(): { enabled?: boolean } | null | undefined };
-  }, by: string): LocalApply {
+  }, by: string): Promise<LocalApply> {
     const live = options.liveConfig;
     if (!live?.get) throw new Error('team-switch-no-live-config');
     let changed = false;
@@ -726,7 +727,7 @@ export class AgentServer {
     }
     console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
     if (running && !changed) return { changed: false, restarting: false };
-    if (!this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`)) throw new Error('team-switch-restart-unavailable');
+    if (!(await this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`))) throw new Error('team-switch-restart-unavailable');
     return { changed, restarting: true };
   }
 
@@ -9702,12 +9703,16 @@ export class AgentServer {
    * `503` naming the reason and leaves the state unchanged rather than
    * reporting a restart that will never happen.
    */
-  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
+  private async requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): Promise<boolean> {
+    const requestedAt = new Date().toISOString();
+    // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+    // before the request is visible. Never throws; resolves at once when there is nothing to extend.
+    await announceRestartRequested({ requestedBy, reason, requestedAt });
     try {
       const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
       fs.mkdirSync(path.dirname(flagPath), { recursive: true });
       const data = {
-        requestedAt: new Date().toISOString(),
+        requestedAt,
         requestedBy,
         reason,
         plannedRestart: true, // maintenance, not a crash — the supervisor reads this

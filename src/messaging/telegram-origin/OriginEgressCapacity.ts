@@ -20,7 +20,7 @@ export const ORIGIN_LOCAL_REFUSAL_REASONS: readonly string[] = Object.freeze([CR
 
 /** What the lease coordinator answered when the capacity read it: which of its checks decided, in its own order. */
 export type { LeaseHoldVerdict } from '../../core/LeaseCoordinator.js';
-export interface LeaseFreshness { msSinceConfirmedRenewal: number; ttlMs: number; verdict: LeaseHoldVerdict }
+export interface LeaseFreshness { msSinceConfirmedRenewal: number | null; ttlMs: number; verdict: LeaseHoldVerdict }
 
 /** Why a permit was refused, in the precedence the refusing evaluation uses. The two post-grant
  * causes are the egress's own: the permit ran out, or `consume()` re-checked liveness and said no. */

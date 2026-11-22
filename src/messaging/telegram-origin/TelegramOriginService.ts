@@ -919,7 +919,7 @@ export class TelegramOriginService {
               // One line per lease refusal: the operation id, the coordinator's verdict and two durations. No token, no chat, no text.
               const freshness = error instanceof OriginCapacityUnavailable ? error.refusal?.leaseFreshness ?? null : null;
               const measured = freshness
-                ? `lease verdict ${freshness.verdict}, ${freshness.msSinceConfirmedRenewal} ms since the last confirmed lease renewal (lease lifetime ${freshness.ttlMs} ms)`
+                ? `lease verdict ${freshness.verdict}, ${freshness.msSinceConfirmedRenewal === null ? "no confirmed lease renewal in this process" : `${freshness.msSinceConfirmedRenewal} ms since the last confirmed lease renewal`} (lease lifetime ${freshness.ttlMs} ms)`
                 : 'lease verdict unknown, renewal gap unknown';
               console.warn(`[telegram-origin] ${reason}: held ${operation.record.operationId} at the network boundary; ${measured} — retried within seconds once the lease is held again`);
             }

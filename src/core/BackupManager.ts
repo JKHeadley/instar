@@ -114,6 +114,13 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // repair through backup replication.
   'state/subscription-relogin',
   '.instar/state/subscription-relogin',
+  // planned-restart-keeps-lead: this machine's own pending-restart renewal copy and its measured
+  // boot durations (hardware-bound-resource). A restored unsigned budget would set another
+  // machine's window from foreign boots; a restored continuity file names a machine it is not.
+  'state/lease-continuity.json',
+  '.instar/state/lease-continuity.json',
+  'state/restart-budget.json',
+  '.instar/state/restart-budget.json',
 ]);
 
 /**

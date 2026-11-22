@@ -208,7 +208,7 @@ import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
 import { AgentServer } from '../server/AgentServer.js';
 import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
-import { resolveBootClaimSafety } from '../core/BootClaimHold.js';
+import { resolveBootClaimSafety, resolvePlannedRestartLeaseContinuity, UNSIGNED_WINDOW_CEILING_MS } from '../core/BootClaimHold.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
@@ -376,7 +376,10 @@ import { IdentityRecoveryBearerAuthority } from '../core/IdentityRecoveryBearer.
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
-import { describeRestartRequester } from '../core/restartRequestAttribution.js';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
+import { describeRestartRequester, findRestartRequestRecord, cleanString as cleanRestartField } from '../core/restartRequestAttribution.js';
+import { LeaseContinuityStore } from '../core/LeaseContinuity.js';
+import { resolveShutdownDeadlineMs as resolveShutdownDeadlineForLease } from '../core/shutdownDeadline.js';
 import { bootReadiness, isPeerBooting } from '../server/BootReadiness.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import { EvolutionArchiveSync } from '../core/EvolutionArchiveSync.js';
@@ -687,11 +690,23 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
     // Request a graceful server restart — write to state/ subdirectory where
     // the supervisor and ForegroundRestartWatcher poll for it.
     const restartFile = path.join(deps.config.stateDir, 'state', 'restart-requested.json');
-    fs.writeFileSync(restartFile, JSON.stringify({
-      requestedAt: new Date().toISOString(),
-      reason: 'User requested restart via Agent Attention fix command',
+    const requestedAt = new Date().toISOString();
+    const reason = 'User requested restart via Agent Attention fix command';
+    // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+    // before the request is visible; the request carries the same fields as every planned writer.
+    await announceRestartRequested({ requestedBy: 'fix-command', reason, requestedAt });
+    fs.mkdirSync(path.dirname(restartFile), { recursive: true });
+    const restartTmp = `${restartFile}.${process.pid}.tmp`;
+    fs.writeFileSync(restartTmp, JSON.stringify({
+      requestedAt,
+      reason,
       requestedBy: 'fix-command',
-    }));
+      plannedRestart: true,
+      bypassHolds: true, // the operator asked for it now
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      pid: process.pid,
+    }, null, 2));
+    fs.renameSync(restartTmp, restartFile);
     await send('Restart requested. Your agent will restart momentarily.');
     return true;
   }
@@ -6859,6 +6874,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // honesty observer that STOPS attempting goes BLIND if the registry recovers.
     const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
+    // planned-restart-keeps-lead — the role this machine booted with, known once the lease is initialised.
+    let bootRoleAwakeForLease: boolean | null = null;
     // Hoisted (skill-learning slice 2): the commit protocol's WriterFence pulls through it at write time.
     let gitSyncRef: GitSyncManager | undefined;
     // U4.3/U4.5 — hoisted rope-health seams. The resolver + prober are closure-locals
@@ -7262,6 +7279,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           // takeover-ready-pool R1 (boot claim safety, fb-2bf6ccd0-705) — read live; the
           // preferred machine named here only decides whom a deferring machine waits for.
           bootClaimSafety: () => resolveBootClaimSafety(config),
+          // planned-restart-keeps-lead (fb-135e3043-add) — read live; off keeps today's renewal exactly.
+          plannedRestartContinuity: () => resolvePlannedRestartLeaseContinuity(config),
+          continuity: new LeaseContinuityStore({
+            stateDir: config.stateDir,
+            selfMachineId,
+            sign: (canonical) => fencedLease.signContinuityMeta(canonical),
+            verify: (canonical, signature, holder) => fencedLease.verifyContinuityMeta(canonical, signature, holder),
+            verifyLease: (lease) => fencedLease.verifyLease(lease),
+            unsignedCeilingMs: UNSIGNED_WINDOW_CEILING_MS,
+            logger: (m) => console.log(pc.dim(`  [lease] ${m}`)),
+          }),
+          renewIntervalMs: () => coordinator.leaseRenewIntervalMs(),
+          broadcastDeadlineMs: () => 8_000,
+          shutdownDeadlineMs: () => resolveShutdownDeadlineForLease(process.env.INSTAR_SHUTDOWN_DEADLINE_MS),
+          readRequestFile: () => {
+            const file = path.join(config.stateDir, 'state', 'restart-requested.json');
+            if (!fs.existsSync(file)) return { present: false };
+            const row = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+            return { present: true, requestedBy: cleanRestartField(row.requestedBy), reason: cleanRestartField(row.reason), requestedAt: cleanRestartField(row.requestedAt) };
+          },
+          findConsumption: (lookup) => findRestartRequestRecord(config.stateDir, lookup),
+          bootRoleAwake: () => bootRoleAwakeForLease,
+          onEpisodeChange: (pending) => coordinator.noteLeaseEpisodeChange(pending),
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
@@ -7469,6 +7509,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           return { enabled: o.enabled === true, dryRun: o.dryRun !== false };
         };
         await coordinator.initializeLease().catch(error => { releaseOriginLeaseRenewal(); throw error; });
+        bootRoleAwakeForLease = coordinator.isAwake;
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
 
         // ── U4.3 — traffic-independent rope-health recovery probe ──────────
@@ -9432,7 +9473,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Losing authority stops jobs NOW, whatever a restart is waiting on: a throttled restart
     // must never mean jobs running in two places.
     const bootAwake = coordinator.isAwake;
+    // planned-restart-keeps-lead: the request waits (bounded) for the lease renewal; single-flight.
+    let roleRestartInFlight = false;
     const reconcileRole = (): void => {
+      if (roleRestartInFlight) return;
       try {
         const nowAwake = coordinator.isAwake;
         if (nowAwake === bootAwake) {
@@ -9451,7 +9495,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (decision === 'restart') {
           console.log(pc.yellow(`  [lease] role is now ${coordinator.role}: restarting once so boot builds what it needs`));
-          requestRoleRestart({ stateDir: config.stateDir, leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity?.machineId }, nowAwake);
+          roleRestartInFlight = true;
+          void requestRoleRestart({ stateDir: config.stateDir, leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity?.machineId, stillNeeded: () => coordinator.isAwake !== bootAwake }, nowAwake)
+            .catch((err) => console.warn(`  [lease] role restart request failed: ${err instanceof Error ? err.message : String(err)}`)) // @silent-fallback-ok: logged, and the timer below retries
+            .finally(() => { roleRestartInFlight = false; reconcileRole(); });
         }
       } catch (err) {
         console.warn(`  [lease] role restart check failed: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok: logged, and the timer below retries
@@ -15861,6 +15908,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Instead, we wire the 'restartDetected' event to the graceful shutdown
       // function (defined below) which closes all resources before exiting.
       exitOnRestart: false,
+      // planned-restart-keeps-lead §1 step 3: before consuming, let the lease holder persist a window
+      // renewal for this request (bounded inside the coordinator; null when there is nothing to extend).
+      beforeConsume: (request) => leaseCoordinatorRef?.awaitWindowRenewalForConsumer({ requestedBy: request.requestedBy, reason: request.reason, requestedAt: request.requestedAt }) ?? null,
       onRestartDetected: async (request) => {
         // Only notify if there are active sessions — silent restart otherwise.
         // Phase 1C of GRACEFUL_UPDATES: reduce noise for routine maintenance.
@@ -38356,6 +38406,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         process.exit(1);
       }
       _shuttingDown = true;
+      // planned-restart-keeps-lead §1 step 5 — the one synchronous action before anything else: stamp
+      // the exit time into this machine's continuity record so the next boot can measure itself.
+      try { leaseCoordinatorRef?.stampContinuityExit(); } catch { /* @silent-fallback-ok: a missing stamp costs only the boot measurement */ }
       // CMT-1677: open pane observations end as observer-lost (unresolved), never silently dropped.
       try { promptDetector?.disposeOutcomeObserver(); } catch { /* best effort: observation only */ }
       if (localVerifyTimer) { clearInterval(localVerifyTimer); localVerifyTimer = null; }

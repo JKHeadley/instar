@@ -327,6 +327,19 @@ describe('LeaseCoordinator', () => {
     expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: TTL + 1, ttlMs: TTL, verdict: 'renewal-lapsed' });
   });
 
+  it('reports an unconfirmed planned-restart lease as unknown freshness and not held', async () => {
+    const store = new FakeStore();
+    const tunnel: LeaseTransport = { broadcast: async () => true, observed: () => ({ lease: null, lastNonceByHolder: {} }), isReachable: () => true };
+    const deps = { store, tunnel, presumedDeadHolders: () => new Set<string>(), now: () => 1_000, monotonicNow: () => 1_000 };
+    const previous = new LeaseCoordinator({ ...deps, lease: makeFlA() });
+    expect(await previous.acquireIfEligible()).toBe(true);
+    const pendingStore: LeaseStore = Object.assign(store, { readPendingEpisodeId: () => 'planned-episode' });
+    const rebooted = new LeaseCoordinator({ ...deps, store: pendingStore, lease: makeFlA() });
+    expect(rebooted.holdsLease()).toBe(false);
+    expect(rebooted.holdVerdict()).toBe('not-current-holder');
+    expect(rebooted.renewalFreshness()).toEqual({ msSinceConfirmedRenewal: null, ttlMs: TTL, verdict: 'not-current-holder' });
+  });
+
   it('self-suspends when the tunnel is unreachable past leaseTtlMs', async () => {
     const store = new FakeStore();
     let reachable = true;

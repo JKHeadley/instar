@@ -3129,6 +3129,17 @@ export interface MultiMachineConfig {
       /** Default 45000. */
       silentSpanMs?: number;
     };
+    /**
+     * planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending, a
+     * holder's renewals carry a bounded window as their expiry and are persisted, so the lead
+     * survives its own boot; at boot a window lease is held only after a peer confirms. Rides the
+     * development-agent gate; `takeoverReadyPool.enabled: false` is the rollback.
+     */
+    plannedRestartLeaseContinuity?: {
+      enabled?: boolean;
+      /** Replaces the measured base of the window (still under the peer-enforced caps). */
+      windowMs?: number;
+    };
   };
   /**
    * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
