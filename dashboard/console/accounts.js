@@ -64,7 +64,7 @@ export async function renderAccounts(main, ctx) {
   for (const a of page.accounts) { const k = frameworkName(a.framework); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
   const list = el('div', { class: 'page-sections acct-list' }, [...groups.entries()].map(([name, accts]) => el('section', { class: 'list-section' },
     el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: name }), el('span', { class: 'list-count', text: String(accts.length) })),
-    el('div', { class: 'list-rows' }, accts.map((a) => {
+    el('div', { class: 'list-rows acct-card-grid' }, accts.map((a) => {
       const pct = a.tight ? Math.round(a.tight.pct) : null;
       // One labelled line per limit that applies (5-hour only when the account has one), each with
       // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.

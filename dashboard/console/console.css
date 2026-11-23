@@ -1771,3 +1771,28 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* Detail pages use content width after navigation. A readable card minimum in rem
+   responds to both available width and text size; a lone card fills the row. */
+.main.detail-page { max-width: none; min-width: 0; }
+.detail-page :where(.page-sections, .detail-card-grid, .machine-cards, .acct-card-grid, .mb-groups) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: var(--s-4);
+  align-items: start;
+  min-width: 0;
+}
+.detail-page :where(.page-sections, .detail-card-grid, .machine-cards, .acct-card-grid, .mb-groups) > * { min-width: 0; }
+.detail-page .page-sections > :not(.list-section):not(.card),
+.detail-page .page-sections > :where([data-operator-need], .attn, .bad) { grid-column: 1 / -1; }
+.detail-page .acct-list > * { grid-column: 1 / -1; }
+.detail-page .acct-card-grid .acct-row { height: 100%; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-4); background: var(--surface); }
+.detail-page .acct-card-grid .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.detail-page .acct-card-grid .acct-wins { grid-template-columns: 96px minmax(32px, 1fr) 3.2em; row-gap: 3px; }
+.detail-page .acct-card-grid .acct-win-reset { grid-column: 2 / -1; margin-bottom: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.detail-page p { max-width: 65ch; }
+.detail-card-grid:empty { display: none; }
+
+.detail-page .detail-card-grid > :where(h2, p, button) { grid-column: 1 / -1; }
+.detail-page :where(.mb-groups, .mb-hero, .mb-glance, .mb-tools, .mb-sources) { max-width: none; }
+.detail-page .mb-sub { max-width: 65ch; }

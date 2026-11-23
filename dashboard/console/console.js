@@ -808,6 +808,10 @@ function route() {
   const ctx = lifecycle.begin(path, query);
   const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
   if (pages[path]) {
+    // Dedicated workspaces manage their own columns. Informational detail pages
+    // share the available-width card layout, including future native detail pages.
+    const workspace = new Set(['work/chats', 'work/conversations', 'work/sessions', 'work/board', 'work/documents', 'settings/files']);
+    main.classList.toggle('detail-page', !workspace.has(path));
     pages[path](main, pageCtx(ctx));
     // Pages refresh in place every 30 s while visible, never over an open sheet or an
     // interaction in progress, and one at a time: a slow read cannot paint over a newer one.

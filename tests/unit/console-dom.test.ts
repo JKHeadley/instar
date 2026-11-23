@@ -47,6 +47,20 @@ async function boot(token: string | null) {
 afterEach(() => { dom?.window.close(); });
 
 describe('console shell (jsdom)', () => {
+  it('uses detail grids for informational pages while canonical and phone-alias workspaces keep their own layout', async () => {
+    const doc = await boot('t');
+    for (const hash of ['#/capacity/accounts', '#/accounts?phone=1', '#/work/schedule']) {
+      dom.window.location.hash = hash;
+      await flush(); await flush();
+      expect(doc.querySelector('main')?.classList.contains('detail-page'), hash).toBe(true);
+    }
+    for (const hash of ['#/work/chats', '#/chats?phone=1', '#/work/sessions', '#/sessions?phone=1', '#/settings/files', '#/files?phone=1']) {
+      dom.window.location.hash = hash;
+      await flush(); await flush();
+      expect(doc.querySelector('main')?.classList.contains('detail-page'), hash).toBe(false);
+    }
+  });
+
   it('renders the pooled topic title on Home instead of the local topic-ID placeholder', async () => {
     const oldSessions = ROUTES['/sessions?scope=pool'];
     const oldTopics = ROUTES['/telegram/topics?scope=pool'];
