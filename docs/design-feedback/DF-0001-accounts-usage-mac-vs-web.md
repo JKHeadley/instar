@@ -4,7 +4,8 @@
 |---|---|
 | Entry | DF-0001 |
 | Date of feedback | 2026-11-21, 12:12:47 PST (2026-11-21T20:12:47Z) |
-| Card | `wc_9274836e974be592` — the original agent-created project case card; not yet the server-owned feedback card |
+| Card | `wc_ee8eeb00afe51011` — the request card verified against the original owner message; not yet the server-owned design-feedback family |
+| Original case card | `wc_9274836e974be592` — the older agent-created card, retained as history; not source-bound |
 | Source message | Justin’s original Telegram message `146785` in conversation topic `141385`, recorded 2026-11-21T20:12:47Z; human-authored, not forwarded |
 | From | Justin, in the Chief of Staff conversation |
 | Screen | Accounts usage list (Claude and Codex accounts with their usage limits) |
@@ -14,9 +15,11 @@
 
 ## Source and card verification
 
-The original Telegram history was read again on 2026-11-23. It records this message as from Justin, with human authorship and no forwarding, and its words match the excerpt below. The case card above was read from the Work Board and was created on 2026-11-21T20:16:04.024Z. It currently has no verified source or requester binding and remains in its original approval state. Naming that real card here does not grant approval or make it the server-owned feedback card described in the approved design plan.
+The original Telegram history was read again on 2026-11-23. It records this message as from Justin, with human authorship and no forwarding, and its words match the excerpt below. The older project case card was created on 2026-11-21T20:16:04.024Z. Its readback had no verified source or requester binding and remained in its original approval state; it was not treated as owner-approved.
 
-The genuine server feedback binding must be established before the complete entry lint is activated. This record has no grandfathering exemption, and no fix, card completion or cross-platform acceptance is certified by adding its source metadata. The unedited message and original screenshots remain private.
+On 2026-11-23, the existing commitment-to-card workflow verified the original message through its normal server-side sender check and created request card `wc_ee8eeb00afe51011` at 2026-11-23T15:09:50.344Z, tracked by `CMT-2203`. The readback records source `telegram:141385` and message `146785`, owner-request approval, and the full original message locked as the need. It is carried by the agent and remains incomplete. Its creation date is not the date of the original feedback, which is recorded separately above. The card title is “🎨 Accounts Screen Feedback”. No phone-presence approval or waiver was inferred from the owner's request.
+
+This is a genuine source-bound request card through the existing Work Board workflow. It is not yet the server-owned `cos:design-feedback:` card family in the approved design plan. That feedback lifecycle and its evidence checks must be established before the complete entry lint is activated. This record has no grandfathering exemption, and no fix, card completion or cross-platform acceptance is certified by adding its source metadata. The unedited message and original screenshots remain private.
 
 ## The owner's words
 

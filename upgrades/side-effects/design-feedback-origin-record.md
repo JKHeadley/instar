@@ -1,3 +1,5 @@
 # Accounts Feedback Source Record
 
 Documentation-only change. It records the actual Telegram source message/date and original case card, backed by private history and Work Board readbacks. It explicitly says that the card is not source-bound, approved, complete or a server-owned feedback card. No lint is activated and no exception is granted. Independent factual review concurred. No runtime surface, mutation, notification, replication change or data migration. Rollback is a document revert; private source text and screenshots remain private.
+
+Actual server readback now also establishes the genuine source-bound request card created through the existing commitment gate, with locked original text and approval from the owner’s request. The document distinguishes its creation date from the original feedback date, retains the older case card as history, and still does not claim the server-owned design-feedback family, any phone presence approval, waiver or completed item. No new runtime code was added.
