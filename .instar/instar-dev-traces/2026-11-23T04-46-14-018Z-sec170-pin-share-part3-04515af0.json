@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "sec170-pin-share-part3",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T04:46:14.018Z",
+  "artifactPath": "upgrades/side-effects/sec170-pin-share-part3.md",
+  "artifactSha256": "bd467fccf347838e15bae85d56d9789fcf9798ab90c91a32c00fa424cb7cbd78",
+  "specPath": "docs/specs/pool-wide-pin-budget.md",
+  "coveredFiles": [
+    "docs/specs/sec170-pin-share-part3.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PinAttemptStore.ts",
+    "src/core/PinGoneForGood.ts",
+    "src/core/PinOwnerSurface.ts",
+    "src/core/PinShareTable.ts",
+    "src/core/pinBudgetPoller.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sec170-pin-share-agreement-alive.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "tests/unit/sec170-pin-owner-surface.test.ts",
+    "upgrades/next/sec170-pin-share-part3.md",
+    "upgrades/side-effects/sec170-pin-share-part3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "SEC-170 part 3 of 3, whole change: silent-computers list, the owner's retire and gone-for-good choices as one Face ID phone action, confirmations carried in signed reports, and the agent-wide alert; from the approved spec; dev-gated; reviewed twice to CONCUR.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "one unref 60-second alert check, the alert at most once per 30 minutes, adoption capped at 64 per report, one owner action per Face ID tap"
+  }
+}
