@@ -25346,9 +25346,17 @@ process.stdin.on('end', async () => {
     // only explicitly unambiguous reads bypass the API; an unknown verb must
     // reach the gate for the authoritative decision.
     const actionTokens = action.split('_').filter(Boolean);
-    const hasMutatingTail = actionTokens.slice(1).some(token =>
-      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    // The actual verb may follow connector namespaces, in either __ or _ form.
+    // Whole-token matches are engine-neutral; compound mutations and execution stay governed.
+    // Only the observed GitHub alias has a flattened namespace; unknown direct verbs stay governed.
+    const hasMutatingPart = actionTokens.some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(token)
     );
+    const toolSegments = parts.slice(2);
+    const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
+    const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+    const hasReadVerb = readVerb.test(toolTokens[0] || '')
+      || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
     let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
@@ -25356,7 +25364,7 @@ process.stdin.on('end', async () => {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
-    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+    } else if (!hasMutatingPart && hasReadVerb) {
       mutability = 'read';
     }
 
