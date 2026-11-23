@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "silent-computer-review",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T11:18:13.605Z",
+  "artifactPath": "upgrades/side-effects/silent-computer-review.md",
+  "artifactSha256": "6ab81f309badffd01a8a419f8cbc194a493a2a22c1353288824b25b59de46ab1",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/machines.js",
+    "dashboard/console/needs-model.js",
+    "dashboard/console/silent-computers-model.js",
+    "dashboard/console/silent-computers.js",
+    "docs/specs/silent-computer-review.eli16.md",
+    "src/data/awareness/silent-computer-review.md",
+    "src/server/needsRoutes.ts",
+    "tests/e2e/needs-read-alive.test.ts",
+    "tests/integration/needs-machine-retirement.test.ts",
+    "tests/unit/console-needs-first-screen.test.ts",
+    "tests/unit/console-silent-computers.test.ts",
+    "tests/unit/needs-machine-retirement.test.ts",
+    "upgrades/next/silent-computer-review.md",
+    "upgrades/side-effects/silent-computer-review.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Normal main merge preserves both independent CSS additions and original unreleased fragment; no authority or behavior change from the resolution.",
+  "eli16Path": "docs/specs/silent-computer-review.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/silent-computer-review.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "merge-integrity",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
