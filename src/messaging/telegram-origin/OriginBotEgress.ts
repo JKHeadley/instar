@@ -51,6 +51,17 @@ export function registerOriginBot(token: string, accountId: string, service: Tel
 export function originBotEgressStatus(): { active: boolean; registeredOwners: number } {
   return { active, registeredOwners: owners.size };
 }
+/** Retain an adapter's pre-format text for its protected send input. Use exactly
+ * the registered producer fallback the egress door would use; never replace a
+ * route's existing policy or claim an author from the message text. */
+export function withOriginBotAuthoredText<T>(token: string, text: unknown, send: () => T): T {
+  if (typeof text !== 'string') return send();
+  const owner = owners.get(createHash('sha256').update(token).digest('hex'));
+  if (!owner) return send();
+  const capture = () => owner.service.runWithSendPolicyFallback(text, send);
+  return owner.service.hasProducerContext() ? capture()
+    : owner.service.runAsUnboundAutomation(owner.producerId, capture);
+}
 /** Called after the original payload visibility check, before the only network boundary. */
 export async function dispatchOriginBotEgress(input: {
   method: string; url: string; init: RequestInit; params: Record<string, unknown>; noticeCapability?: object;
