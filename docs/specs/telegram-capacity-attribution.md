@@ -123,3 +123,16 @@ N82 remains the durable OPEN repair item owned by persistent Echo development id
 > **CMT-2198** — Echo owns N82 and ACT-442: after deployment, inspect the next affected attempt read-only. If none occurs, review by 2026-11-24T03:30Z and record evidence plus a renewed due date or Chief closure. Keep the cause repair open until verified. No manual resend, capacity tuning, production queue mutation or production restart.
 
 ACT-442 remains the canonical dated work record. This commitment mirrors that same obligation for offline review and has no duplicate notification or execution loop.
+
+
+## Normal-verification positive control
+
+Chief messages `fadc7c59-09aa-44d4-a483-96a61b58f095` and `0acf7276-e766-4a70-b34d-8e3104342440` authorize committing the corrected positive control into draft PR3674, with the proof executed by the new head's complete normal verification. No standalone priority mechanism or private retry is authorized. The existing root-cause and full-convergence limits remain unchanged.
+
+The repository-collected lifecycle case is `tests/e2e/telegram-capacity-positive-control.test.ts`, with tracked fixtures under `tests/fixtures/telegram-capacity-positive-control/`. It uses the current built distribution in the verifier's actual checkout and records its tree head and imported compiled-module hashes. It has no dependency on a hard-coded old candidate or an untracked private manifest. Separate front and capacity-owner processes communicate through the real local IPC socket; credentials are synthetic and the front's external transport is deny-only. The front is eligible while the owner is not. One operation must retain the precise lease refusal, real timing, unchanged generic scheduler reason and next-attempt behavior, protected HTTP readback and zero transport starts.
+
+The front must exit naturally with code0, and the owner also closes without a forced success exit. The real referenced300000ms route interval is observed with unchanged timer delegation and immediate registration restoration; only route-owned handles are cleared after assertions. Existing120-second case and bounded cleanup limits remain. The parent independently checks exact process absence, listener refusal, removed guarded home and socket. Every invocation creates its own fresh receipt path and validates its identity and front PID. Positive receipt and cleanup evidence are retained in normal verification stdout as well as the unique evidence directory.
+
+This case has an explicit Windows skip because the existing IPC implementation requires a chmod-protected POSIX filesystem socket. That is a platform limitation, not a successful result. Studio and M5 must collect and execute the case without skipping. The normal skip-added independent-review gate remains authoritative; one unified review/trace covers all changed test paths so this boundary is not waived or hidden. No Windows runtime or IPC authority is added in this test-only increment.
+
+Historical standalone evidence remains distinct: the first actual case failed its unchanged120-second deadline despite supporting internal assertions; later corrected invocations ended from ordinary capacity timeout before admission/collection. None qualifies the committed positive control as passed. Its actual full-gate result remains required.

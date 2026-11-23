@@ -6,7 +6,7 @@ Telegram attempt records can retain the actual capacity refusal cause and reserv
 
 ## Evidence
 
-The allocated targeted checks passed 86 unit, 20 HTTP and 18 lifecycle cases with no failures or skips. The supported startup-only throwaway check passed with actual exit 0 and verified process, listener and home cleanup. Complete final-head verification and a separately approved installed capacity-refusal positive control remain pending. No live deployment or historical root-cause claim is made.
+The allocated targeted checks passed 86 unit, 20 HTTP and 18 lifecycle cases with no failures or skips. The supported startup-only throwaway check passed with actual exit 0 and verified process, listener and home cleanup. The corrected real-IPC capacity-refusal positive control is now part of normal repository lifecycle collection, with tracked fixtures, a unique invocation receipt and independent cleanup assertions. Its result is pending complete verification of the new exact head; no standalone result is substituted. The explicit Windows skip reflects the existing POSIX socket dependency and is not a pass. No live deployment or historical root-cause claim is made.
 
 ## What to Tell Your User
 

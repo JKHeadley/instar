@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "slug": "telegram-capacity-positive-control-review",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-23T09:11:36.041Z",
+  "artifactPath": "upgrades/side-effects/telegram-capacity-positive-control-review.md",
+  "artifactSha256": "e6cbd727d53791fd85666dd8524f778a1b172c1c25d68091724b8aa6452c2767",
+  "specPath": "docs/specs/telegram-capacity-attribution.md",
+  "coveredFiles": [
+    "docs/specs/telegram-capacity-attribution.md",
+    "tests/e2e/telegram-capacity-positive-control.test.ts",
+    "tests/e2e/telegram-origin-late-capacity-lifecycle.test.ts",
+    "tests/e2e/telegram-origin-notice-policy.test.ts",
+    "tests/fixtures/telegram-capacity-positive-control/front.mjs",
+    "tests/fixtures/telegram-capacity-positive-control/owner.mjs",
+    "tests/integration/telegram-origin-capacity-ipc.test.ts",
+    "tests/integration/telegram-origin-late-capacity.test.ts",
+    "tests/unit/telegram-origin/capacity-evidence-store.test.ts",
+    "tests/unit/telegram-origin/capacity-evidence.test.ts",
+    "tests/unit/telegram-origin/egress-capacity.test.ts",
+    "tests/unit/telegram-origin/late-capacity.test.ts",
+    "tests/unit/telegram-origin/transport-deadlines.test.ts",
+    "upgrades/next/telegram-capacity-attribution.md",
+    "upgrades/side-effects/telegram-capacity-attribution.md",
+    "upgrades/side-effects/telegram-capacity-positive-control-review.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Normal-gate lifecycle proof for the existing capacity safety boundary; production source unchanged and actual execution deferred to complete verification as Chief directs.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  }
+}
