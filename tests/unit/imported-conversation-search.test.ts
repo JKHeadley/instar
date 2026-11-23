@@ -71,12 +71,13 @@ function fixture() {
 
 it('omits local session sources from legacy search before results and source labels are built', async () => {
   const { app, store } = fixture();
-  for (const from of ['codex', 'claude-code'] as const) {
-    store.addConversation({ from, originalId: 'local-private', title: 'Private local title', createdAt: null,
+  await store.withWriter(async () => { for (const from of ['codex', 'claude-code'] as const) {
+    const claim = store.assertOrClaimLocalSource({ ownerUserId: 'operator', source: from, originalId: 'local-private',
+      projectPath: '/synthetic', representation: from === 'codex' ? 'canonical' : 'claude-records', parserContractVersion: 1 });
+    store.addConversation({ from, originalId: claim.destinationId, title: 'Private local title', createdAt: null,
       messages: [{ key: 'local', at: '2028-01-01T00:00:00.000Z', role: 'operator', senderName: 'Me', text: 'rocket local secret' }],
       overflow: [], stats: { redactions: 0, splitMessages: 0, droppedBranches: 0 } });
-  }
-  store.flush();
+  } store.flush(); });
   const result = await request(app).get('/mobile/conversations/search?q=rocket&order=date&limit=1');
   expect(result.status).toBe(200);
   expect(JSON.stringify(result.body)).not.toContain('local-private');

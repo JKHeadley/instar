@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "local-history-durable-source-claims",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T13:29:24.239Z",
+  "artifactPath": "upgrades/side-effects/local-history-durable-source-claims.md",
+  "artifactSha256": "a4884f50c751e7546280220415b0bf56fc867aa5c490a900a9d268540ddd3291",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/core/keyMaterialPaths.ts",
+    "src/import/ImportedHistoryStore.ts",
+    "src/import/LocalSourceIdentity.ts",
+    "src/import/privateImportState.ts",
+    "tests/e2e/conversation-search-alive.test.ts",
+    "tests/integration/imported-history-routes.test.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/imported-conversation-search.test.ts",
+    "tests/unit/local-source-claims.test.ts",
+    "upgrades/next/local-history-durable-source-claims.md",
+    "upgrades/side-effects/local-history-durable-source-claims.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable owner identity and crash-safe local history provenance under the approved native-import contract.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

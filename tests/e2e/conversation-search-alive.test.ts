@@ -119,6 +119,7 @@ describe('conversation search — production wiring', () => {
     expect(tokenRead.body.results[0].messageId).toBe('e-agent-1');
 
     const history = new ImportedHistoryStore(stateDir);
+    await history.withWriter(async () => {
     history.addConversation({
       from: 'chatgpt', originalId: 'local-only', title: 'History', createdAt: null, overflow: [],
       stats: { redactions: 0, droppedBranches: 0, splitMessages: 0 },
@@ -126,11 +127,12 @@ describe('conversation search — production wiring', () => {
         at: '2026-10-01T00:00:00.000Z' }],
     });
     for (const from of ['codex', 'claude-code'] as const) {
-      history.addConversation({ from, originalId: 'sealed-local-only', title: 'Private local session', createdAt: null,
+      const claim = history.assertOrClaimLocalSource({ ownerUserId: 'operator', source: from, originalId: 'sealed-local-only',
+        projectPath: '/synthetic', representation: from === 'codex' ? 'canonical' : 'claude-records', parserContractVersion: 1 });
+      history.addConversation({ from, originalId: claim.destinationId, title: 'Private local session', createdAt: null,
         overflow: [], stats: { redactions: 0, droppedBranches: 0, splitMessages: 0 },
         messages: [{ key: 'private-local-message', role: 'operator', senderName: 'Me', text: 'historical amethyst', at: '2028-01-01T00:00:00.000Z' }] });
-    }
-    history.flush();
+    } history.flush(); });
     const imported = await send('GET', '/mobile/conversations/search?q=amethyst');
     expect(imported.body.results).toMatchObject([{ platform: 'imported', ref: 'imported:chatgpt:local-only', messageId: 'original-message' }]);
     expect(imported.body.results).toHaveLength(1);

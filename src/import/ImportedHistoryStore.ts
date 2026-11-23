@@ -17,6 +17,8 @@ import { createInterface } from 'node:readline';
 import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSource } from './exportParsers.js';
 import { isExportSource } from './exportParsers.js';
 import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
+import { CHUNK_BYTES } from '../core/appMediaTypes.js';
+import { createLocalSourceClaim, localSourceDestination, parseLocalSourceClaim, type LocalSourceClaim, type LocalSourceIdentity } from './LocalSourceIdentity.js';
 
 export interface ConversationSummary {
   ref: string;
@@ -76,6 +78,9 @@ export class ImportedHistoryStore {
   private manifest: Manifest;
   private dirty = false;
   private writing = false;
+  private writerLease: Database.Database | null = null;
+  private localDirty = false;
+  private readonly activeLocalClaims = new Map<string, Readonly<LocalSourceClaim>>();
 
   constructor(stateDir: string) {
     this.dir = path.join(stateDir, IMPORTED_HISTORY_DIRNAME);
@@ -153,6 +158,7 @@ export class ImportedHistoryStore {
 
   /** Both manual and acquired imports acquire the same OS-released lock before the first write. */
   async withWriter<T>(write: () => Promise<T>): Promise<T> {
+    if (this.writing) throw new ImportWriterBusy();
     const db = new Database(privateImportDatabasePath(this.dir, 'write-lock.sqlite'), { timeout: 0 }); /* state-registry: imported-history-local */
     const unregister = registerSqliteHandle(() => db.close());
     try {
@@ -164,11 +170,18 @@ export class ImportedHistoryStore {
       if (this.dirty) throw new Error('The imported history has unsaved changes.');
       this.manifest = this.readManifest();
       this.writing = true;
-      try { return await write(); } catch (err) {
+      this.writerLease = db;
+      this.activeLocalClaims.clear();
+      try {
+        const result = await write();
+        if (this.localDirty && this.dirty) throw new Error('local-source-flush-required');
+        return result;
+      } catch (err) {
         // A failed flush may have appended durable messages. A retry re-reads the manifest and those files.
         this.dirty = false;
+        this.localDirty = false;
         throw err;
-      } finally { this.writing = false; }
+      } finally { this.activeLocalClaims.clear(); this.writerLease = null; this.writing = false; }
     } finally { unregister(); if (db.open) db.close(); }
   }
 
@@ -180,6 +193,100 @@ export class ImportedHistoryStore {
     return path.join(this.dir, 'conversations', `${file}.jsonl`);
   }
 
+  private hasLocalWriter(): boolean {
+    const lease = this.writerLease;
+    return this.writing && !!lease?.open && lease.inTransaction;
+  }
+
+  /** Fixed, inode-protected metadata DB. Its independent FULL commit completes
+   * before conversation append while withWriter keeps the actual writer lock. */
+  private withLocalClaims<T>(write: boolean, operation: (db: Database.Database) => T): T {
+    if (process.platform === 'win32' || !process.getuid) throw new Error('local-source-private-storage-unavailable');
+    let db: Database.Database | undefined;
+    let unregister: (() => void) | undefined;
+    try {
+      // Lookup cannot create a file or repair permissions. Recovery access lets
+      // SQLite roll back a dead writer's hot journal; query_only prevents SQL
+      // mutations on this logically read-only connection. SQLite owns recovery
+      // and live-writer locking, never a PID heuristic or manual journal removal.
+      db = new Database(privateImportDatabasePath(this.dir, 'source-claims.sqlite', { readOnly: !write }), { timeout: 0, fileMustExist: !write }); /* state-registry: imported-history-local */
+      const opened = db;
+      unregister = registerSqliteHandle(() => opened.close());
+      if (!write) db.pragma('query_only = ON');
+      if (write) {
+        db.pragma('synchronous = FULL');
+        if (!this.hasLocalClaimsSchema(db)) db.exec('CREATE TABLE local_source_claims (ref TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL)');
+      }
+      return operation(db);
+    } catch (error) {
+      if (error instanceof Error && ['unknown-source-identity', 'local-source-reconciliation-required'].includes(error.message)) throw error;
+      if (['SQLITE_BUSY', 'SQLITE_LOCKED'].includes((error as { code?: string }).code ?? '')) throw new ImportWriterBusy();
+      throw new Error('local-source-identity-unavailable');
+    } finally { unregister?.(); if (db?.open) db.close(); }
+  }
+
+  private hasLocalClaimsSchema(db: Database.Database): boolean {
+    if (db.pragma('user_version', { simple: true }) !== 0) throw new Error('unknown-source-identity');
+    const objects = db.prepare("SELECT name, type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' LIMIT 2").all() as Array<{name: string; type: string}>;
+    if (objects.length === 0) {
+      if (db.prepare('SELECT 1 FROM sqlite_schema LIMIT 1').get()) throw new Error('unknown-source-identity');
+      return false;
+    }
+    if (objects.length !== 1 || objects[0]!.name !== 'local_source_claims' || objects[0]!.type !== 'table') throw new Error('unknown-source-identity');
+    const columns = db.pragma('table_info(local_source_claims)') as Array<{name: string; type: string; notnull: number; pk: number; dflt_value: unknown}>;
+    if (columns.length !== 2 || columns.some((c, index) => c.name !== (index === 0 ? 'ref' : 'payload')
+      || c.type.toUpperCase() !== 'TEXT' || c.notnull !== 1 || c.pk !== (index === 0 ? 1 : 0) || c.dflt_value !== null)) throw new Error('unknown-source-identity');
+    return true;
+  }
+
+  private readLocalClaim(db: Database.Database, ref: string): Readonly<LocalSourceClaim> | null {
+    if (!this.hasLocalClaimsSchema(db)) return null;
+    // Direct-column octet_length uses SQLite's no-payload-load byte-length path.
+    // CAST before length would allocate the entire damaged cell in native memory.
+    const row = db.prepare('SELECT CASE WHEN octet_length(payload) <= ? THEN payload ELSE NULL END AS payload FROM local_source_claims WHERE ref = ?')
+      .get(CHUNK_BYTES, ref) as { payload: string | null } | undefined;
+    if (!row) return null;
+    try { return parseLocalSourceClaim(JSON.parse(row.payload!)); }
+    catch { throw new Error('unknown-source-identity'); }
+  }
+
+  /** Read parser mode before preparation. The trusted owner namespace is part
+   * of the destination, so another profile cannot collide with this lookup. */
+  readLocalSourceClaim(identity: Pick<LocalSourceIdentity, 'ownerUserId' | 'source' | 'originalId'>): Readonly<LocalSourceClaim> | null {
+    const destination = localSourceDestination(identity);
+    const ref = importedRef(identity.source, destination);
+    this.refreshForRead();
+    let claim: Readonly<LocalSourceClaim> | null = null;
+    if (fs.existsSync(path.join(this.dir, 'source-claims.sqlite'))) claim = this.withLocalClaims(false, db => this.readLocalClaim(db, ref));
+    if (!claim && (this.manifest.conversations[ref] || fs.existsSync(this.convPath(fileFor(ref))))) throw new Error('unknown-source-identity');
+    if (claim && (claim.ownerUserId !== identity.ownerUserId || claim.source !== identity.source || claim.originalId !== identity.originalId)) {
+      throw new Error('unknown-source-identity');
+    }
+    return claim;
+  }
+
+  /** Claim the ACTUAL destination under the real writer before first append.
+   * Durable provenance is independent of an ephemeral preview/copy approval. */
+  assertOrClaimLocalSource(identity: LocalSourceIdentity): Readonly<LocalSourceClaim> {
+    if (!this.hasLocalWriter()) throw new Error('local-source-writer-required');
+    const proposed = createLocalSourceClaim(identity);
+    const ref = importedRef(proposed.source, proposed.destinationId);
+    const before = this.readLocalSourceClaim(proposed);
+    if (before && JSON.stringify(before) !== JSON.stringify(proposed)) throw new Error('local-source-reconciliation-required');
+    const claim = this.withLocalClaims(true, db => {
+      const prior = this.readLocalClaim(db, ref);
+      if (prior) {
+        if (JSON.stringify(prior) !== JSON.stringify(proposed)) throw new Error('local-source-reconciliation-required');
+        return prior;
+      }
+      if (this.manifest.conversations[ref] || fs.existsSync(this.convPath(fileFor(ref)))) throw new Error('unknown-source-identity');
+      db.prepare('INSERT INTO local_source_claims (ref, payload) VALUES (?, ?)').run(ref, JSON.stringify(proposed));
+      return proposed;
+    });
+    this.activeLocalClaims.set(ref, claim);
+    return claim;
+  }
+
   /**
    * Adds a conversation, or only its new messages when it was imported before. Returns how many were added.
    * The chat's own file is the truth for what's there (not the manifest), so a crash between the append
@@ -187,7 +294,16 @@ export class ImportedHistoryStore {
    * manifest; the importer does that every few hundred chats and at the end.
    */
   addConversation(conv: ImportedConversation): { added: number; isNew: boolean } {
+    if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
     const ref = importedRef(conv.from, conv.originalId);
+    if (!isExportSource(conv.from)) {
+      const active = this.activeLocalClaims.get(ref);
+      if (!this.hasLocalWriter() || !active || active.source !== conv.from || active.destinationId !== conv.originalId) {
+        throw new Error('local-source-active-claim-required');
+      }
+      const durable = this.withLocalClaims(false, db => this.readLocalClaim(db, ref));
+      if (!durable || JSON.stringify(durable) !== JSON.stringify(active)) throw new Error('unknown-source-identity');
+    }
     const existing = this.manifest.conversations[ref];
     const file = existing?.file ?? fileFor(ref);
     const have = new Set<string>();
@@ -217,17 +333,22 @@ export class ImportedHistoryStore {
       hash: crypto.createHash('sha256').update(`${existing?.hash ?? ''}${fresh.map((m) => m.key).join(',')}`).digest('hex').slice(0, 32),
     };
     if (fresh.length || !existing || existing.title !== conv.title) this.dirty = true;
+    if (!isExportSource(conv.from) && this.dirty) this.localDirty = true;
     return { added: fresh.length, isNew: !existing && have.size === 0 };
   }
 
   /** Saves the manifest when anything changed. */
   flush(): void {
     if (!this.dirty) return;
+    if (this.localDirty && !this.hasLocalWriter()) throw new Error('local-source-writer-required');
+    if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
     this.saveManifest();
     this.dirty = false;
+    this.localDirty = false;
   }
 
   addProject(p: ImportedProject): boolean {
+    if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
     const ref = importedRef(p.from, p.originalId);
     const isNew = !this.manifest.projects[ref];
     this.manifest.projects[ref] = { ref, from: p.from, originalId: p.originalId, name: p.name, instructions: p.instructions, fileNames: p.fileNames };
