@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "import-keyword-search",
+  "sessionId": "6cc87cce-98d7-4197-be47-c071ff3410b0",
+  "timestamp": "2026-11-18T06:27:11.254Z",
+  "artifactPath": "upgrades/side-effects/import-keyword-search.md",
+  "artifactSha256": "6889b0abbe7a75fce1fbac15bf396833d0dc4a8b965465cdbd55ace8bbc075a0",
+  "specPath": "docs/specs/import-from-claude-chatgpt.md",
+  "coveredFiles": [
+    "src/data/awareness/import-claude-chatgpt-history.md",
+    "src/import/ImportedHistoryStore.ts",
+    "src/memory/TopicMemory.ts",
+    "src/server/AgentServer.ts",
+    "src/server/importedHistoryRoutes.ts",
+    "src/server/localSearchPage.ts",
+    "src/server/mobileConversationSearchRoutes.ts",
+    "src/server/privateImportedHistoryOwner.ts",
+    "src/server/routes.ts",
+    "tests/e2e/conversation-search-alive.test.ts",
+    "tests/integration/conversation-search.test.ts",
+    "tests/unit/imported-conversation-search.test.ts",
+    "upgrades/next/import-keyword-search.md",
+    "upgrades/side-effects/import-keyword-search.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This opt-in private search source and native result contract cross existing caller and same-agent mesh boundaries.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

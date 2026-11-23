@@ -7,7 +7,7 @@ import { findEntry, listEntries, openEntry, ZipRefused, type ZipEntry } from './
 import { jsonArrayItems } from './jsonArrayStream.js';
 import {
   parseChatGptConversation, parseClaudeConversation, parseClaudeProject,
-  type ImportedConversation, type ImportSource,
+  type ImportedConversation, type ExportSource,
 } from './exportParsers.js';
 import { memoryTextFromClaudeExport, proposeFacts, type ProposedFact } from './proposedFacts.js';
 import type { ImportedHistoryStore } from './ImportedHistoryStore.js';
@@ -16,7 +16,7 @@ export const MAX_CONVERSATIONS = 50_000;
 const FLUSH_EVERY = 500;
 
 export interface ImportPreview {
-  from: ImportSource;
+  from: ExportSource;
   chats: number;
   messages: number;
   projects: number;
@@ -31,13 +31,13 @@ export interface ImportPreview {
   summary: string;
 }
 
-export interface ExpectedExport { provider: ImportSource; expectedEmail: string }
+export interface ExpectedExport { provider: ExportSource; expectedEmail: string }
 
 const chatgptMarkers = ['chat.html', 'message_feedback.json', 'shared_conversations.json', 'user.json'];
 const claudeMarkers = ['users.json', 'projects.json', 'memories.json'];
 
 /** Match one export layout. Never join conversations and identity records across export roots. */
-export function detectSource(entries: ZipEntry[]): ImportSource {
+export function detectSource(entries: ZipEntry[]): ExportSource {
   const chatgpt = chatgptMarkers.some(name => findEntry(entries, name));
   const claude = claudeMarkers.some(name => findEntry(entries, name));
   if (chatgpt && claude) throw new ZipRefused('This zip contains files from both providers. Choose one export.');
@@ -57,7 +57,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 /** Shape corroborates the marker before any history writes, including rows over the import count cap. */
-function belongsTo(raw: unknown, from: ImportSource): boolean {
+function belongsTo(raw: unknown, from: ExportSource): boolean {
   if (!record(raw)) return false;
   const claude = Array.isArray(raw.chat_messages);
   const chatgpt = record(raw.mapping);
@@ -77,7 +77,7 @@ function belongsTo(raw: unknown, from: ImportSource): boolean {
      (record(node.message) && record(node.message.author) && typeof node.message.author.role === 'string')));
 }
 
-async function corroborateAccount(zipPath: string, entries: ZipEntry[], from: ImportSource, expected?: ExpectedExport): Promise<boolean> {
+async function corroborateAccount(zipPath: string, entries: ZipEntry[], from: ExportSource, expected?: ExpectedExport): Promise<boolean> {
   if (expected && expected.provider !== from) throw new ZipRefused('This export belongs to a different provider.');
   const identity = findEntry(entries, from === 'claude' ? 'users.json' : 'user.json');
   if (!identity) return false;
@@ -94,7 +94,7 @@ async function corroborateAccount(zipPath: string, entries: ZipEntry[], from: Im
   return valid;
 }
 
-function parserFor(from: ImportSource): (raw: unknown) => ImportedConversation | null {
+function parserFor(from: ExportSource): (raw: unknown) => ImportedConversation | null {
   return from === 'claude' ? parseClaudeConversation : parseChatGptConversation;
 }
 
@@ -106,7 +106,7 @@ async function readWholeJson(zipPath: string, e: ZipEntry, maxBytes: number): Pr
 }
 
 interface Walk {
-  from: ImportSource;
+  from: ExportSource;
   accountCorroborated: boolean;
   onConversation?: (c: ImportedConversation) => void;
   onSkipped: (why: 'tooBig' | 'unreadable' | 'overLimit') => void;
@@ -141,7 +141,7 @@ async function walkConversations(zipPath: string, entries: ZipEntry[], w: Walk):
   }
 }
 
-async function readProjects(zipPath: string, entries: ZipEntry[], from: ImportSource) {
+async function readProjects(zipPath: string, entries: ZipEntry[], from: ExportSource) {
   const e = from === 'claude' ? findEntry(entries, 'projects.json') : undefined;
   if (!e || e.size === 0) return []; // an empty optional file means no projects
   const out = [];

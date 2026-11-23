@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-23T20:15:31.216Z",
+  "slug": "local-history-channel-lifecycle",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 191,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryChannelRegistry.ts"
+    ],
+    "addedLines": 191,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

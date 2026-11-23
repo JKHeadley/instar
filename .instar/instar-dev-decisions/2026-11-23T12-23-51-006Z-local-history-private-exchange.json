@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-23T12:23:51.006Z",
+  "slug": "local-history-private-exchange",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 66,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/keyMaterialPaths.ts",
+      "src/data/state-coherence-registry.json",
+      "src/import/LocalHistoryExchange.ts",
+      "src/import/privateImportState.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

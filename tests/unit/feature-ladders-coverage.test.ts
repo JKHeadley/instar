@@ -37,6 +37,18 @@ describe('the shipped ladder registry', () => {
     expect(bad).toEqual([]);
   });
 
+  it('keeps local history evidence explicitly needed and graduation in code until both native formats are reviewed', () => {
+    const local = list.find(e => e.id === 'localHistoryImport')!;
+    expect(local.risk).toBe('sensitive');
+    expect(local.tracking.state).toBe('needed');
+    for (const rung of ['dev-agent-live', 'fleet'] as const) {
+      expect(local.rungs[rung]!.advance.kind).toBe('code');
+      expect(local.rungs[rung]!.metrics.map(m => m.id)).toEqual(expect.arrayContaining([
+        'codex-native-proof', 'claude-code-native-proof', 'installed-native-review',
+      ]));
+    }
+  });
+
   it('every spec that names a ladder names a real entry', () => {
     const specs = path.resolve('docs/specs');
     const ids = new Set(list.map(e => e.id));

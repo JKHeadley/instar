@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T06:27:39.726Z",
+  "slug": "import-keyword-search",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 230,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/import-claude-chatgpt-history.md",
+      "src/import/ImportedHistoryStore.ts",
+      "src/memory/TopicMemory.ts",
+      "src/server/AgentServer.ts",
+      "src/server/importedHistoryRoutes.ts",
+      "src/server/localSearchPage.ts",
+      "src/server/mobileConversationSearchRoutes.ts",
+      "src/server/privateImportedHistoryOwner.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 211,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

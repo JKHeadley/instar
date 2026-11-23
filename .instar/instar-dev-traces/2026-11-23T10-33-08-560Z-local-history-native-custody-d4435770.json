@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "slug": "local-history-native-custody",
+  "sessionId": "759672f6-50bb-43b7-96a1-938b428aa6e0",
+  "timestamp": "2026-11-23T10:33:08.560Z",
+  "artifactPath": "upgrades/side-effects/local-history-native-custody.md",
+  "artifactSha256": "11ebaf080d6b49389c3b734bbae2997e60f30538a3352fb34fdc33cf9e62e2b6",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/specs/local-history-native-contract.eli16.md",
+    "docs/specs/local-history-native-contract.md",
+    "docs/specs/reports/local-history-native-contract-convergence.md",
+    "src/import/LocalHistoryChannel.ts",
+    "src/import/LocalHistoryHandshake.ts",
+    "src/import/LocalHistoryManifest.ts",
+    "src/import/LocalHistoryParseJob.ts",
+    "src/import/exportParsers.ts",
+    "src/import/importExport.ts",
+    "src/import/localHistoryParseWorker.ts",
+    "src/import/localSessionParsers.ts",
+    "src/import/localSessionSnapshot.ts",
+    "tests/fixtures/local-history/channel-vector.swift",
+    "tests/fixtures/local-history/handshake-vector.json",
+    "tests/fixtures/local-history/handshake-vector.swift",
+    "tests/unit/local-history-channel.test.ts",
+    "tests/unit/local-history-handshake.test.ts",
+    "tests/unit/local-history-manifest.test.ts",
+    "tests/unit/local-history-parse-job.test.ts",
+    "tests/unit/local-history-parse-worker.test.ts",
+    "tests/unit/local-session-parsers.test.ts",
+    "tests/unit/local-session-snapshot.test.ts",
+    "upgrades/next/local-history-native-custody.md",
+    "upgrades/side-effects/local-history-native-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Internal supporting modules have no enabled API, native action or production construction; privacy-sensitive boundaries received a full approved spec and independent code review, with normal full verification required before publication.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "resolved-at-cap",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "systematic-debugging",
+        "outcome": "used",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-history-native-contract-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

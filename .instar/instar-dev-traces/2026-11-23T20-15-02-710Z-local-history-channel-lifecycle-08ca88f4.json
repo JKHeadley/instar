@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "local-history-channel-lifecycle",
+  "sessionId": "2d7f3894-f027-4c8b-b015-2c9311ec6ec0",
+  "timestamp": "2026-11-23T20:15:02.710Z",
+  "artifactPath": "upgrades/side-effects/local-history-channel-lifecycle.md",
+  "artifactSha256": "25f1a43e911d1a488575bdcf8e03acb19d4d543803b6d4358b24c7a3cd83ce2a",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/local-history/server-channel-lifecycle.md",
+    "src/import/LocalHistoryChannelRegistry.ts",
+    "tests/unit/local-history-channel-registry.test.ts",
+    "upgrades/next/local-history-channel-lifecycle.md",
+    "upgrades/side-effects/local-history-channel-lifecycle.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive private-channel lifecycle within the approved selected-history contract. No endpoint is enabled and no persistent state is introduced; full integration remains gated.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

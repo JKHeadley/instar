@@ -3,19 +3,19 @@
  * A notice and its link are secret, transient values. Only DeliveryResult may leave the worker.
  * The caller's sink must discard partial bytes if the stream fails and publish only after EOF.
  */
-import type { ImportSource } from './exportParsers.js';
+import type { ExportSource } from './exportParsers.js';
 import { MAX_ZIP_BYTES } from './safeZip.js';
 
 export interface DeliveryBinding {
   jobId: string;
-  provider: ImportSource;
+  provider: ExportSource;
   account: string;
   workspace: 'personal';
   requestedAt: number;
 }
 
 export interface ExportNotice {
-  provider: ImportSource;
+  provider: ExportSource;
   recipient: string;
   workspace?: string;
   receivedAt: number;
@@ -36,7 +36,7 @@ export type DeliveryResult<T> =
   | { kind: 'interrupted'; reason: 'cancelled' | 'timeout' | 'unavailable' }
   | { kind: 'staged'; archive: T };
 
-interface VerifiedIdentity { provider: ImportSource; account: string; workspace: string }
+interface VerifiedIdentity { provider: ExportSource; account: string; workspace: string }
 export interface DeliveryDeps<T> {
   readNotice(binding: Readonly<DeliveryBinding>, signal: AbortSignal): Promise<NoticeResult>;
   /** Re-read the selected account and workspace in the provider's bound profile immediately before redemption. */
@@ -52,17 +52,17 @@ export interface DeliveryDeps<T> {
   timeoutMs?: number;
 }
 
-const ROLES: Record<ImportSource, { origins: readonly string[]; senderDomains: readonly string[] }> = {
+const ROLES: Record<ExportSource, { origins: readonly string[]; senderDomains: readonly string[] }> = {
   chatgpt: { origins: ['https://chatgpt.com', 'https://chat.openai.com'], senderDomains: ['openai.com'] },
   claude: { origins: ['https://claude.ai'], senderDomains: ['anthropic.com', 'claude.com'] },
 };
 
 function email(s: string) { return s.trim().toLowerCase(); }
-function senderMatches(provider: ImportSource, domain: string): boolean {
+function senderMatches(provider: ExportSource, domain: string): boolean {
   return ROLES[provider].senderDomains.some(d => domain === d || domain.endsWith('.' + d));
 }
 
-function exportUrl(raw: string, provider: ImportSource, paths: readonly string[], relativeTo?: URL): URL | null {
+function exportUrl(raw: string, provider: ExportSource, paths: readonly string[], relativeTo?: URL): URL | null {
   if (raw.length > 16_384 || /[\s\\\x00-\x1f\x7f]/.test(raw)) return null;
   try {
     const url = new URL(raw, relativeTo);

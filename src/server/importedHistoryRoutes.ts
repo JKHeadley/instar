@@ -29,12 +29,14 @@ import { ImportedHistoryStore, ImportWriterBusy, type SearchHit } from '../impor
 import { applyExport, previewExport, type ImportPreview } from '../import/importExport.js';
 import { ArchiveSourceChanged, ArchiveStaging, type ArchiveReceipt } from '../import/archiveStaging.js';
 import { ZipRefused } from '../import/safeZip.js';
-import { removeSecrets, type ImportedMessage } from '../import/exportParsers.js';
+import { isExportSource, removeSecrets, type ImportedMessage } from '../import/exportParsers.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { ConversationSummary, ProjectSummary } from '../import/ImportedHistoryStore.js';
 
 export interface ImportedHistoryRouteDeps {
   stateDir: string;
+  machineId?: string;
+  privateSearchOwner?: (req: Request) => boolean;
   bearerOk: (req: Request) => boolean;
   /** True when the request carries the owner's verified operator session (dashboard or desktop console). */
   ownerOk: (req: Request) => boolean;
@@ -51,10 +53,10 @@ export interface ImportedHistoryRouteDeps {
 
 class PreviewExpired extends Error {}
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
-const REF_RE = /^imported:(claude|chatgpt):[A-Za-z0-9_.:-]{1,200}$/;
+export const IMPORTED_REF_RE = /^imported:(claude|chatgpt):[A-Za-z0-9_.:-]{1,200}$/;
 
 /** A ref is built from the export's own id; the agent gets it only when it is the plain shape the routes accept. */
-function agentRef(ref: string): string | null { return REF_RE.test(ref) ? ref : null; }
+function agentRef(ref: string): string | null { return IMPORTED_REF_RE.test(ref) ? ref : null; }
 
 /**
  * The owner's own app device, as the device authenticator marks it: a `device` principal (not a
@@ -229,15 +231,22 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
   });
 
   router.get(['/imported-history/conversations', '/mobile/imported-history/conversations'], (req, res) => {
+    if (req.query.view === 'location') {
+      if (!deps.privateSearchOwner?.(req)) { res.status(403).json({ error: 'owner-device-required' }); return; }
+      const local = ImportedHistoryStore.openIfPresent(deps.stateDir);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ available: local?.hasConversations() ?? false, machineId: deps.machineId ?? null });
+      return;
+    }
     const caller = who(req, res); if (!caller) return;
-    const conversations = getStore().listConversations();
+    const conversations = getStore().listConversations('exports');
     if (caller === 'owner') { res.json({ conversations, keptOn: 'this-machine' }); return; }
     res.json({ note: QUOTED_NOTE, conversations: conversations.map(agentConversation), keptOn: 'this-machine' });
   });
 
   router.get(['/imported-history/projects', '/mobile/imported-history/projects'], (req, res) => {
     const caller = who(req, res); if (!caller) return;
-    const projects = getStore().listProjects();
+    const projects = getStore().listProjects().filter(p => isExportSource(p.from));
     if (caller === 'owner') { res.json({ projects }); return; }
     res.json({ note: QUOTED_NOTE, projects: projects.map(agentProject) });
   });
@@ -245,7 +254,7 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
   router.get(['/imported-history/conversations/:ref', '/mobile/imported-history/conversations/:ref'], (req, res) => {
     const caller = who(req, res); if (!caller) return;
     const ref = String(req.params.ref ?? ''); // Express has already decoded it
-    if (!REF_RE.test(ref)) { res.status(400).json({ error: 'bad-ref' }); return; }
+    if (!IMPORTED_REF_RE.test(ref)) { res.status(400).json({ error: 'bad-ref' }); return; }
     const s = getStore();
     const messages = s.readMessages(ref);
     if (!messages) { res.status(404).json({ error: 'not-found' }); return; }
