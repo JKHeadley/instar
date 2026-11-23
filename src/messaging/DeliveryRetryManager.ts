@@ -11,6 +11,7 @@
  * every 30s for up to 5 minutes. Layer 3 timeout varies by message type.
  */
 
+import { HOLDER_RETRY_WINDOW_MS } from './types.js';
 import type {
   MessageEnvelope,
   MessageType,
@@ -18,7 +19,7 @@ import type {
   MessagingStats,
 } from './types.js';
 import type { MessageStore } from './MessageStore.js';
-import type { MessageDelivery } from './MessageDelivery.js';
+import { beginDeliveryAttempt, type DeliveryAttemptClaim, type MessageDelivery } from './MessageDelivery.js';
 import type { RemediationContext, ExecutionResult } from '../remediation/Remediator.js';
 
 /** Layer 3 ACK timeout by message type (in minutes). null = no timeout (fire-and-forget) */
@@ -41,8 +42,30 @@ const LAYER1_MAX_INTERVAL_MS = 30 * 60_000; // 30 minutes
 const LAYER1_MAX_WINDOW_MS = 4 * 60 * 60_000; // 4 hours
 
 /** Layer 2 retry interval */
-const LAYER2_RETRY_INTERVAL_MS = 30_000; // 30 seconds
-const LAYER2_MAX_RETRIES = 10; // 5 minutes total
+export const LAYER2_RETRY_INTERVAL_MS = 30_000; // 30 seconds
+export const LAYER2_MAX_RETRIES = 10; // count ceiling
+export const LAYER2_RETRY_WINDOW_MS = HOLDER_RETRY_WINDOW_MS; // inherited five-minute work window
+
+/**
+ * relay-asof-holder-skew §2: the Layer-2 lane's one decision for a pass, as a pure
+ * function so the self-action ratchet can drive it (src/testing/selfActionRegistry.ts,
+ * `message-holder-redelivery`). `give-up` is taken once, then the envelope is a dead
+ * letter and leaves the inbox; `wait` costs nothing; `attempt` is one redelivery.
+ */
+export function layer2RetryDecision(
+  state: { attempts: number; lastAttemptAt: number; firstAttemptAt?: number } | undefined,
+  nowMs: number,
+): 'give-up' | 'wait' | 'attempt' {
+  const attempts = state?.attempts ?? 0;
+  if (attempts >= LAYER2_MAX_RETRIES) return 'give-up';
+  const durableLane = state?.firstAttemptAt !== undefined;
+  if (durableLane && nowMs - state!.firstAttemptAt! >= LAYER2_RETRY_WINDOW_MS) return 'give-up';
+  const interval = durableLane
+    ? Math.min(LAYER2_RETRY_WINDOW_MS, LAYER2_RETRY_INTERVAL_MS * 2 ** Math.max(0, attempts - 1))
+    : LAYER2_RETRY_INTERVAL_MS;
+  if (nowMs - (state?.lastAttemptAt ?? 0) < interval) return 'wait';
+  return 'attempt';
+}
 
 /** How often the manager runs its tick */
 const TICK_INTERVAL_MS = 15_000; // 15 seconds
@@ -50,6 +73,8 @@ const TICK_INTERVAL_MS = 15_000; // 15 seconds
 export interface DeliveryRetryManagerConfig {
   /** Agent name for filtering messages */
   agentName: string;
+  currentSessionGeneration?: (tmuxSession: string) => string | null;
+  generationEvidence?: (kind: 'fired' | 'held' | 'error', reason: string, messageId: string) => void;
   /** Callback for escalation (e.g., send to Telegram) */
   onEscalate?: (envelope: MessageEnvelope, reason: string) => void;
   /**
@@ -67,6 +92,13 @@ export interface DeliveryRetryManagerConfig {
    * late remote notice; the TTL sweep skips it.
    */
   holdForRemoteNotice?: (envelope: MessageEnvelope) => boolean;
+  /**
+   * relay-asof-holder-skew §2: a queued envelope marked `holderPending` is re-resolved
+   * here (MessageRouter.redeliverSameAgentLocal) instead of being typed into
+   * `to.session` by name. Returns the phase reached. Absent ⇒ no typing; the
+   * envelope ends with an explicit configuration failure notice.
+   */
+  redeliverUnresolved?: (envelope: MessageEnvelope, claim: DeliveryAttemptClaim) => Promise<DeliveryPhase>;
 }
 
 /** A message counts as typed once it reached 'delivered' (the paste succeeded). */
@@ -74,6 +106,7 @@ export function wasEverTyped(envelope: MessageEnvelope): boolean {
   return envelope.delivery.transitions.some((t) => t.to === 'delivered');
 }
 
+/* @self-action-controller: message-holder-redelivery */
 export class DeliveryRetryManager {
   private readonly store: MessageStore;
   private readonly delivery: MessageDelivery;
@@ -125,6 +158,11 @@ export class DeliveryRetryManager {
     // block anyway — this is belt-and-suspenders for the case where the
     // manager is recycled mid-test.
     this.cycleInFlight = false;
+  }
+
+  private recordGenerationEvidence(kind: 'fired' | 'held' | 'error', reason: string, messageId: string): void {
+    try { this.config.generationEvidence?.(kind, reason, messageId); }
+    catch { /* @silent-fallback-ok: telemetry does not change durable delivery */ }
   }
 
   /** Register a message for post-injection watchdog monitoring */
@@ -230,10 +268,34 @@ export class DeliveryRetryManager {
 
     const inbox = await this.store.queryInbox(this.config.agentName);
 
-    for (const envelope of inbox) {
+    for (const snapshot of inbox) {
+      // Sent has its initial synchronous router executor; a timer must not steal it.
+      if (snapshot.delivery.phase === 'sent' && !this.isExpired(snapshot)) continue;
+      const claim = beginDeliveryAttempt(snapshot.message.id);
+      if (!claim) continue;
+      try {
+      const envelope = await this.store.get(snapshot.message.id);
+      if (!envelope) continue;
       const phase = envelope.delivery.phase;
       const messageId = envelope.message.id;
       const local = this.config.isLocalEnvelope ? this.config.isLocalEnvelope(envelope) : true;
+
+
+      // A process ended between pin/typing and outcome persistence. The retry
+      // timer can start before boot recovery finishes: neither may retype it.
+      if (local && envelope.delivery.deliveryPending && envelope.delivery.typingStartedAt
+        && !['delivered', 'read', 'failed', 'expired', 'dead-lettered'].includes(phase)) {
+          const reason = 'outcome unknown: delivery began but its final state was not recorded; the message may have arrived';
+        envelope.delivery.phase = 'failed';
+        envelope.delivery.failureReason = reason;
+        envelope.delivery.deliveryPending = false;
+        envelope.delivery.transitions.push({ from: phase, to: 'failed', at: new Date().toISOString(), reason });
+        await this.store.updateDelivery(messageId, envelope.delivery);
+        this.retryState.delete(messageId);
+        if (envelope.message.to.sessionId) this.recordGenerationEvidence('error', 'delivery-outcome-unknown', messageId);
+        this.notifyDeadLetter(envelope, reason);
+        continue;
+      }
 
       // ── TTL Expiry Check ──────────────────────────────────
       if (this.isExpired(envelope)) {
@@ -255,66 +317,137 @@ export class DeliveryRetryManager {
         continue;
       }
 
+      // The timer that wins initial ownership must execute accepted unarmed work.
+      if (local && phase === 'received' && envelope.delivery.deliveryPending
+        && !envelope.delivery.typingStartedAt && !envelope.delivery.holderPending && this.config.redeliverUnresolved) {
+        await this.config.redeliverUnresolved(envelope, claim);
+        continue;
+      }
+
       // ── Layer 2 Retry: queued or undelivered messages ─────
       // 'undelivered' is entered by SpawnRequestManager.dispose() handoff.
       // It participates in Layer-2 retry identically to 'queued'.
       if (!local) continue;
 
-      if (phase === 'queued' || phase === 'undelivered') {
-        const state = this.retryState.get(messageId) ?? {
-          attempts: 0,
+      if (phase === 'queued' || phase === 'undelivered' || (phase === 'received' && envelope.delivery.holderPending)) {
+        const state = {
           firstAttemptAt: Date.now(),
-          lastAttemptAt: 0,
+          ...(envelope.delivery.holderRetryState ?? this.retryState.get(messageId) ?? { attempts: 0, lastAttemptAt: 0 }),
         };
 
-        if (state.attempts >= LAYER2_MAX_RETRIES) {
-          // Max retries exceeded — expire
-          await this.store.deadLetter(messageId, `Layer 2 max retries exceeded (${LAYER2_MAX_RETRIES})`);
+        const decision = layer2RetryDecision(envelope.delivery.holderRetryState ? state : { attempts: state.attempts, lastAttemptAt: state.lastAttemptAt }, Date.now());
+        if (decision === 'give-up') {
+          // Max retries exceeded — expire. The sender hears the last refusal in plain words.
+          const detail = envelope.delivery.refusalDetail ?? envelope.delivery.failureReason;
+          await this.store.deadLetter(messageId, `Layer 2 retry budget ended after ${state.attempts} tries`);
           expired++;
           this.retryState.delete(messageId);
-          if (!wasEverTyped(envelope)) this.notifyDeadLetter(envelope, `not delivered after ${LAYER2_MAX_RETRIES} tries`);
+          if (!wasEverTyped(envelope)) this.notifyDeadLetter(envelope, `not delivered after ${state.attempts} tries${detail ? `: ${detail}` : ''}`);
           continue;
         }
-
-        const timeSinceLastAttempt = Date.now() - state.lastAttemptAt;
-        if (timeSinceLastAttempt < LAYER2_RETRY_INTERVAL_MS) {
+        if (decision === 'wait') {
           continue; // Not yet time to retry
+        }
+
+        // relay-asof-holder-skew §2: a role with no accepted holder yet is re-resolved,
+        // never typed by name (the name may now belong to a session that started after
+        // the message). The router records the outcome on the envelope itself.
+        if (envelope.delivery.holderPending || envelope.delivery.holderRetryState) {
+          // Reserve before acting: a restart cannot reset this lane's budget or cadence.
+          state.attempts++;
+          state.lastAttemptAt = Date.now();
+          envelope.delivery.holderRetryState = state;
+          await this.store.updateDelivery(messageId, envelope.delivery);
+          this.retryState.set(messageId, state);
+        }
+        if (envelope.delivery.holderPending && !envelope.delivery.resolvedSessionId) {
+          if (!this.config.redeliverUnresolved) {
+            const reason = 'holder retry resolver is unavailable; no message was typed';
+            await this.store.deadLetter(messageId, reason);
+            this.retryState.delete(messageId);
+            this.notifyDeadLetter(envelope, reason);
+            expired++;
+            continue;
+          }
+          const reached = await this.config.redeliverUnresolved(envelope, claim);
+          if (reached === 'delivered') {
+            this.registerWatchdog(messageId);
+            retried++;
+          } else if (reached === 'failed') {
+            this.retryState.delete(messageId);
+          }
+          continue;
         }
 
         // Attempt redelivery: held to the pinned session (§B), never re-resolved.
         const targetSession = envelope.delivery.resolvedSession ?? envelope.message.to.session;
         const pinId = envelope.delivery.resolvedSessionId;
         if (pinId && this.config.isPinnedSessionLive && !this.config.isPinnedSessionLive(targetSession, pinId)) {
+          const currentId = this.config.currentSessionGeneration?.(targetSession);
+          const replacement = !!currentId && currentId !== pinId;
+          const reason = envelope.message.to.sessionId ? (replacement ? 'target-session-generation-changed' : 'target-session-generation-unavailable') : 'resolved-session-ended';
           const now = new Date().toISOString();
-          envelope.delivery.transitions.push({ from: phase, to: 'failed', at: now, reason: 'resolved-session-ended' });
+          envelope.delivery.transitions.push({ from: phase, to: 'failed', at: now, reason });
           envelope.delivery.phase = 'failed';
-          envelope.delivery.failureReason = 'resolved-session-ended';
+          envelope.delivery.failureReason = reason;
           await this.store.updateEnvelope(envelope);
           this.retryState.delete(messageId);
-          this.notifyDeadLetter(envelope, 'resolved-session-ended');
+          if (envelope.message.to.sessionId) this.recordGenerationEvidence('held', replacement ? 'generation-changed' : 'generation-unavailable', messageId);
+          this.notifyDeadLetter(envelope, reason);
           continue;
         }
-        const result = await this.delivery.deliverToSession(targetSession, envelope);
+          // Reserve the uncertain injection interval before any delivery await.
+          // Older binaries never retry a received envelope by name during this
+          // uncertain interval; their boot recovery recognizes its typing marker.
+          envelope.delivery.phase = 'received';
+          envelope.delivery.typingStartedAt = new Date().toISOString();
+          envelope.delivery.deliveryPending = true;
+          await this.store.updateDelivery(messageId, envelope.delivery);
+          const result = await this.delivery.deliverToSession(targetSession, envelope);
+          envelope.delivery.deliveryPending = false;
+          if (!result.success) {
+            if (!result.outcomeUnknown) delete envelope.delivery.typingStartedAt;
+            envelope.delivery.phase = phase;
+          }
+          if (!result.success && !result.shouldRetry) {
+            const reason = result.failureReason ?? 'resolved-session-ended';
+            envelope.delivery.transitions.push({ from: phase, to: 'failed', at: new Date().toISOString(), reason });
+            envelope.delivery.phase = 'failed';
+            envelope.delivery.failureReason = reason;
+            delete envelope.delivery.refusalDetail;
+            await this.store.updateEnvelope(envelope);
+            this.retryState.delete(messageId);
+            if (envelope.message.to.sessionId) {
+              if (result.outcomeUnknown) this.recordGenerationEvidence('error', 'delivery-outcome-unknown', messageId);
+              else if (reason === 'target-session-generation-changed') this.recordGenerationEvidence('held', 'generation-changed', messageId);
+            }
+            this.notifyDeadLetter(envelope, reason);
+            continue;
+          }
+          if (!result.success) await this.store.updateDelivery(messageId, envelope.delivery);
 
-        state.attempts++;
-        state.lastAttemptAt = Date.now();
-        this.retryState.set(messageId, state);
+          if (!envelope.delivery.holderRetryState) {
+            state.attempts++;
+            state.lastAttemptAt = Date.now();
+            this.retryState.set(messageId, state);
+          }
 
-        if (result.success) {
-          const fromPhase = phase;
-          envelope.delivery.phase = 'delivered';
-          envelope.delivery.transitions.push({
-            from: fromPhase,
-            to: 'delivered',
-            at: new Date().toISOString(),
-            reason: `Retry attempt ${state.attempts}`,
-          });
-          envelope.delivery.attempts = state.attempts;
-          await this.store.updateEnvelope(envelope);
-          // Keep retryState so interval is respected if watchdog regresses to queued
-          this.registerWatchdog(messageId);
-          retried++;
-        }
+          if (result.success) {
+            const fromPhase = phase;
+            envelope.delivery.phase = 'delivered';
+            envelope.delivery.transitions.push({
+              from: fromPhase,
+              to: 'delivered',
+              at: new Date().toISOString(),
+              reason: `Retry attempt ${state.attempts}`,
+            });
+            envelope.delivery.attempts = state.attempts;
+            await this.store.updateEnvelope(envelope);
+            if (envelope.message.to.sessionId) this.recordGenerationEvidence('fired', 'generation-delivered', messageId);
+            // Keep retryState so interval is respected if watchdog regresses to queued
+            this.registerWatchdog(messageId);
+            retried++;
+          }
       }
 
       // ── Layer 3 Timeout: unacknowledged delivered messages ─
@@ -349,6 +482,7 @@ export class DeliveryRetryManager {
           }
         }
       }
+      } finally { claim.release(); }
     }
 
     // ── Watchdog: check injected messages ──────────────────
@@ -363,6 +497,10 @@ export class DeliveryRetryManager {
         continue;
       }
 
+      // Confirmed pinned injection cannot be undone by later liveness evidence.
+      if (envelope.delivery.resolvedSessionId || envelope.message.to.sessionId) {
+        this.watchdogTargets.delete(messageId); this.retryState.delete(messageId); continue;
+      }
       const targetSession = envelope.delivery.resolvedSession ?? envelope.message.to.session;
       const safety = await this.delivery.checkInjectionSafety(targetSession);
 
@@ -392,6 +530,6 @@ export class DeliveryRetryManager {
   private isExpired(envelope: MessageEnvelope): boolean {
     const createdAt = new Date(envelope.message.createdAt).getTime();
     const ttlMs = envelope.message.ttlMinutes * 60_000;
-    return Date.now() > createdAt + ttlMs;
+    return Date.now() > (envelope.delivery.expiresAt ?? createdAt + ttlMs);
   }
 }

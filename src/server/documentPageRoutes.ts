@@ -71,6 +71,13 @@ export interface DocPageDeps extends DocumentRouteDeps {
   device: (deviceId: string) => { person: ResolvedPerson | null; client: 'phone' | 'browser'; publicKey: string | null; approvedVia: string | null; scope?: 'documents' | 'documents-read' | null } | null;
   /** Is this Host one of this machine's own names? */
   isOwnHost: (host: string) => boolean;
+  /**
+   * A device's signed page request just verified (member-browser-any-computer §3.5): its home renews a
+   * joined computer that is being used. Never throws into the route; signal only.
+   */
+  deviceUsed?: (deviceId: string) => void;
+  /** The joined computer's current end, for the page's menu line (§3.1 step 8); null for anything else. */
+  computerEndsAt?: (deviceId: string) => string | null;
   /** This machine's stable origin for document links, or null (no named tunnel). */
   stableOrigin: () => string | null;
   /** Where the page's static files live (dashboard/docs). */
@@ -227,6 +234,10 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!isUuid(req.params.id)) { next(); return; }
     if (off(res)) return;
     pageHeaders(res);
+    // no-transform: the tunnel's CDN must not rewrite the page. Cloudflare's automatic Web Analytics
+    // otherwise injects a third-party beacon script into this HTML; the CSP blocks it, but the page
+    // then logs a CSP violation on every open and is no longer the bytes instar served.
+    res.setHeader('Cache-Control', 'no-store, no-transform');
     res.type('html').send(PAGE_SHELL);
   });
 
@@ -473,7 +484,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!v.ok) { res.status(401).json({ error: 'doc-session-expired' }); return; }
     if (!sessionAllowed(v.deviceId)) { res.status(429).json({ error: 'too-many-requests' }); return; }
     mintCookie(res, v.deviceId, id, !!loopbackOrigin(req));
-    res.json({ ok: true });
+    const endsAt = deps.computerEndsAt?.(v.deviceId) ?? null;
+    res.json({ ok: true, ...(endsAt ? { computerEndsAt: endsAt } : {}) });
   });
 
   /** Verify a docpage-signed request from its headers; resolves the device's key itself. */
@@ -501,6 +513,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const ownHost = (h: string): boolean => local ? h === host : (deps.isOwnHost(h) || (loopbackOk && h === host));
     const v = verifyDocpage({ deviceId, host, docId, op, requestId, timeMs, payload, sigB64url: sig }, d.publicKey, ownHost, seen);
     if (!v.ok) return { ok: false, reason: v.reason };
+    try { deps.deviceUsed?.(deviceId); } catch { /* @silent-fallback-ok — a renew is best-effort; the request itself already verified */ }
     return {
       ok: true, deviceId, op: v.op, payload: v.payload,
       signedOrigin: { keyHash: deviceKeyHashOf(d.publicKey), deviceId, domain: 'instar-docpage-v1', payloadB64, host, timeMs, sig, requestId },

@@ -10,7 +10,8 @@ import { storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
+import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger, type ReofferRow } from '../recommended/RecommendedServicesLedger.js';
+import { PROBLEM_KINDS, isDuplicateEvent, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
@@ -97,6 +98,8 @@ export interface RecommendedServiceRouteDeps {
   now?: () => number;
   /** The kill switch for the first list (`recommendedServices.offers.enabled`). Off means no offer is ever sent. */
   offersEnabled?: () => boolean;
+  /** Rollout step 4 (`recommendedServices.reoffers.enabled`): asking again after a no when a real problem shows up. Off records and sends nothing. */
+  reoffersEnabled?: () => boolean;
   /** Rollout step 5: when true, an existing agent's owner is admitted to the first list (migration marked complete at the offer tick). */
   existingAgentsEnabled?: () => boolean;
   /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
@@ -128,10 +131,15 @@ function setupView(state: ServiceSetupState | undefined): { verified: ServiceSet
 /** What the routes hand back to the server: a way to ask for a recipe's re-check now. */
 export interface RecommendedServiceRoutesHandle {
   requestRecheck: (service: string) => void;
+  /**
+   * A real problem a service would fix (spec, Real-problem events), called only from the kind's named source.
+   * Signal only: never throws, never blocks the caller, and records nothing while re-offers are off.
+   */
+  recordProblem: (kind: string, evidenceRef: string) => void;
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): RecommendedServiceRoutesHandle {
-  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {} };
+  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {} };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
@@ -167,9 +175,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   /** After this many failed refreshes in a row the check is re-run: its fail restarts setup, which asks the person for what changed. */
   const SYNC_FAILURES_BEFORE_RECHECK = 3;
   const nowIso = (): string => new Date(deps.now?.() ?? Date.now()).toISOString();
-  const report = (primary: string, err: unknown, impact: string): void => {
+  const report = (primary: string, err: unknown, impact: string, feature = 'RecommendedServices.setup', fallback = 'The choice is saved. This step did not happen.'): void => {
     DegradationReporter.getInstance().report({
-      feature: 'RecommendedServices.setup', primary, fallback: 'The choice is saved. This step did not happen.',
+      feature, primary, fallback,
       reason: err instanceof Error ? err.message : String(err), impact,
     });
   };
@@ -626,11 +634,80 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!deps.existingAgentsEnabled?.() || owner === null || isMigrationComplete(deps.stateDir, owner)) return;
     try { markMigrationComplete(deps.stateDir, owner, () => new Date(deps.now?.() ?? Date.now())); } catch (err) { report('Admit this owner to the first offer list', err, 'The first list waits for the next tick.'); }
   };
+  // Rollout step 4, reason 1 (spec, Re-offering after a no): deterministic, from the real-problem table only.
+  // Any machine records a problem; only a machine that can reach the person (it holds the lease) reserves and sends.
+  handle.recordProblem = (kind: string, evidenceRef: string): void => {
+    try {
+      if (!deps.reoffersEnabled?.() || !isProblemKind(kind)) return;
+      const ledger = deps.ledger();
+      const owner = deps.owner();
+      if (!ledger || owner === null) return;
+      const nowMs = deps.now?.() ?? Date.now();
+      if (isDuplicateEvent(ledger.reofferRows(owner), kind, nowMs)) return;
+      ledger.recordReofferEvent({ service: PROBLEM_KINDS[kind]!.service, owner, kind, evidenceRef });
+    } catch (err) { // @silent-fallback-ok — reported through report(); a problem signal never breaks its source
+      report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    }
+  };
+  let lastReofferAttemptAt = 0;
+  let reoffering = false;
+  const maybeReoffer = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
+    if (reoffering || !deps.reoffersEnabled?.() || !deps.sendOfferList || !reach()) return;
+    const owner = deps.owner();
+    if (owner === null) return;
+    if (nowMs - lastReofferAttemptAt < OFFER_RESEND_AFTER_MS) return;
+    reoffering = true;
+    try {
+      const rows = ledger.reofferRows(owner);
+      const facts: ReofferFacts = {
+        choice: (service) => ledger.effective(service),
+        offer: (service) => ledger.offerState(service, owner, nowMs),
+        offeredAt: (service) => {
+          const ats = ledger.offerRows(owner).filter((r) => r.service === service && r.state === 'offered').map((r) => Date.parse(r.at));
+          return ats.length ? Math.max(...ats) : null;
+        },
+      };
+      const decision = nextReoffer(rows, catalog, facts, nowMs);
+      if (decision.action === 'none') return;
+      lastReofferAttemptAt = nowMs;
+      let pending: ReofferRow;
+      if (decision.action === 'resume') {
+        pending = decision.pending;
+      } else {
+        try {
+          pending = ledger.recordReofferPending(decision.event);
+        } catch (err) { // @silent-fallback-ok — reported through report(), and nothing is sent on this path
+          report('Reserve the re-offer', err, 'Nothing was sent; the next check tries again.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+          return;
+        }
+      }
+      const row = catalog.find((r) => r.id === pending.service);
+      if (!row) return;
+      const deliveredBefore = rows.filter((r) => r.state === 'offered' && r.kind === pending.kind && r.service === pending.service).length;
+      const text = renderReoffer(pending.kind, row, { linkBase: deps.linkBase?.() ?? null, choice: ledger.effective(row.id).choice, deliveredBefore });
+      let messageId: string | number | null = null;
+      try {
+        messageId = await deps.sendOfferList(text, []);
+      } catch (err) {
+        report(`Re-offer ${row.name}`, err, 'The re-offer stays reserved and is sent again later.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+        return;
+      }
+      if (messageId === null || messageId === undefined || messageId === '') return;
+      try {
+        ledger.recordReofferDelivered(pending, messageId);
+      } catch (err) {
+        report('Record the delivered re-offer', err, 'The re-offer was sent; the record is missing, so one repeat is possible.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+      }
+    } finally {
+      reoffering = false;
+    }
+  };
   const reconcileAndOffer = async (): Promise<void> => {
     await reconcile();
     admitExistingOwner();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
+    if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());
   };
   deps.onReady?.(reconcileAndOffer);
   // A sender that saw its credential refused asks for the re-check now (Self-Heal Before Notify), not tomorrow.
@@ -1078,7 +1155,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         deps.telegramSetup.write({ token, chatId });
         // Setup made this channel: the switch-off may disable it.
         updateSetupState(deps.stateDir, row.id, { signedInBySetup: true });
-        deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
+        await deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
       } catch (err) {
         report('Store the Telegram channel', err, 'The channel was not saved.');
         res.status(503).json({ error: 'key-not-saved' });

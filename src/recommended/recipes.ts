@@ -345,7 +345,7 @@ ${RULES('telegram', port)}`,
       const entry = telegramSetup.configured();
       if (!entry || !entry.enabled) return { stopped: true, changed: false, detail: 'Telegram was not switched on here, so there was nothing to switch off.' };
       telegramSetup.disable();
-      telegramSetup.requestRestart('Telegram switched off by the owner');
+      await telegramSetup.requestRestart('Telegram switched off by the owner');
       return { stopped: true, changed: true, detail: 'Telegram is switched off for this agent: it stops reading and sending there after its next restart. Your bot and group stay yours; say the word and I’ll remove them.' };
     },
   },
@@ -420,7 +420,7 @@ ${RULES('cloudflare-domain', port)}`,
         previousTunnel: prior ? prior.previousTunnel : withoutToken(previous as never),
       });
       if (unchanged) return { ok: true, copied: [hostname], detail: `${hostname} still points at this agent.` };
-      cloudflare.requestRestart('Cloudflare fixed address set up by the recommended-services recipe');
+      await cloudflare.requestRestart('Cloudflare fixed address set up by the recommended-services recipe');
       return { ok: true, copied: [hostname], detail: `${hostname} now points at this agent; the fixed address is live after the restart.` };
     },
     // Switching off undoes exactly setup's work: the DNS name and the tunnel it made, and the previous tunnel settings
@@ -446,7 +446,7 @@ ${RULES('cloudflare-domain', port)}`,
       cloudflareWork?.forget();
       // The config write and the restart come last: the restart ends this process.
       cloudflare.restoreTunnel(work?.previousTunnel ?? null);
-      cloudflare.requestRestart('Cloudflare fixed address switched off by the owner');
+      await cloudflare.requestRestart('Cloudflare fixed address switched off by the owner');
       return { stopped: true, changed: true, detail: `The fixed address is switched off: ${undone}. Your Cloudflare account and domain stay yours; the temporary address comes back after the restart.` };
     },
   },

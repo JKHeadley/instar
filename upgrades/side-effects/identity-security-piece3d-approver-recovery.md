@@ -171,3 +171,12 @@ From the Apple session's comparison of the app with the server contract:
 
 Tests: three new cases in `tests/unit/identity-piece3d-recovery-flow.test.ts`; every 3a/3d unit test and 29
 approver, pairing and team integration and e2e files pass.
+
+
+## Prerequisite maintenance — 2026-11-22
+
+Normally merge corrected approver prerequisite `1c60d736e189ca8a72841f7a859782133c5f16ca` into recovery head `d9ce37106fb37d8b648564b783f1f335e9f3067f`. The merge is automatic; no runtime edits or manual conflict resolutions. LeaseCoordinator, FencedLease, MultiMachineCoordinator, commands/server and core/types remain byte-identical to the corrected prerequisite, preserving current-main stall reconfirm, planned-restart reclaim and lease fence behavior.
+
+This maintenance passes through the existing recovery authority. It does not change Telegram publication, the72-hour wait, Stop rights, keys, app/native dependencies or any authority/admission/release hold. Existing over-block, under-block, interactions, machine posture and rollback analysis above remains applicable; no new decision point or signal authority is introduced.
+
+Focused verification:120unit checks across9files, including signed HTTP recovery-flow cases;5distinct HTTP stall-reconfirm checks;5production E2E checks across approver-alive/stall boot-path; TypeScript clean. Logs are retained under `.instar/state/build/pr3457-maintenance/`. No full suite was run by hand and no full admission requested. Independent parent review concurred before commit: actual merged TelegramAdapter, AgentServer and pairing routes retain recovery wiring, owner-only allowlist and trusted private-chat checks while preserving current credential masking. Lease/stall/boot/server/type guards remain identical to the corrected prerequisite; no material merge regression or unresolved stage was found.

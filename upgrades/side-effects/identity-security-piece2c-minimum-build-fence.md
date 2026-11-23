@@ -110,3 +110,11 @@ E2E-PAIRING: EXEMPT — the join refusal is covered by the integration test over
 - **defectClass:** `unbounded-self-action`
 - **closure:** `guard` (tests/unit/self-action-convergence.test.ts, entry owner-record-fence-notice)
 - **reason:** the only self-triggered action is the aggregated notice: once per distinct list (never repeated for an unchanged one), from the lease holder only, closed when the list empties; registered in the self-action registry.
+
+## Current-main merge repair, 2026-11-22
+
+Tier 2 security maintenance under the existing approved spec; no new authority or policy. The normal merge from main 9b61d628656b5782e39c0ad57d6fb108b8ad3ad7 retains both new server imports. Semantic review found that the earlier merge had removed the unrelated stall-reconfirmation feature. Its source, types, tests, awareness and review artifacts are restored exactly from current main, including the server wiring. No paths are deleted relative to main. The minimum-build fence additions remain intact.
+
+The independent parent reviewer inspected the actual candidate and concurred: the restored feature is byte-identical to main, and server initialization retains both the stall guard and fence wiring. No material merge concern remained, conditional on verification. Focused verification passed: 89 unit tests in five files, eight HTTP integration tests in two files, and TypeScript checking. Full verification remains assigned to the throughput coordinator. Dependency order 3445 then 3450 then 3453 and all queue holds remain unchanged.
+
+The rollback is a normal revert of this merge repair, with the known cost that the prior branch accidentally omitted a main safety feature. There is no new persistence format, cross-machine behavior, external authority, or enrollment behavior in the repair. Existing signal-versus-authority analysis above continues to apply. One independent review pass and one commit attempt planned; no new design review rounds.

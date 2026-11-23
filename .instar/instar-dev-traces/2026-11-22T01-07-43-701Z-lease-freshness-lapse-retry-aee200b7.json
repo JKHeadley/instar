@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "lease-freshness-lapse-retry",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-22T01:07:43.701Z",
+  "artifactPath": "upgrades/side-effects/lease-freshness-lapse-retry.md",
+  "artifactSha256": "a8af45e830cf57fc06680ef3fbfcca0b0443a4e93b2009351231def7fac8f7b3",
+  "coveredFiles": [
+    "tests/e2e/telegram-origin-notice-policy.test.ts",
+    "upgrades/next/lease-freshness-lapse-retry.md",
+    "upgrades/side-effects/lease-freshness-lapse-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only repair: instrument the production reserveExplained boundary instead of a bypassed compatibility wrapper, preserving every expiry and no-wire assertion; no production source change.",
+  "eli16Path": "docs/specs/lease-freshness-lapse-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lease-freshness-lapse-retry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "root-focused-review",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/lease-freshness-lapse-retry-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}
