@@ -1,0 +1,7 @@
+# Release Installation Retries
+
+A release has to download its build dependencies before it can build and publish the package. A brief registry or network failure can currently stop that download. When this happens, already merged changes wait until another release runs, even though the source code itself may be ready. The recent release measurements found this failure three times in one week, including a change that waited more than two hours to reach the registry.
+
+This change gives the dependency installation three total attempts. A successful first attempt continues immediately. A failed attempt waits fifteen seconds before the second attempt, then thirty seconds before the third. If the final attempt also fails, the release stops and reports that command's failure status. The build, version selection and package publication still run only after dependency installation succeeds. Publishing itself is never retried by this change.
+
+The tradeoff is that a genuine dependency problem takes longer to report and installation scripts may run three times. The retry applies only to the isolated GitHub release job. It does not install anything on the user's machines or change account permissions. A revert restores the former single-attempt behavior without repairing stored state. Tests execute the actual workflow's Bash block with controlled commands, covering immediate success, recovery on each later attempt, and failure after all attempts.
