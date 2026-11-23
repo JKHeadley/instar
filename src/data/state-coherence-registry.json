@@ -6,7 +6,7 @@
   "entries": [
     {
       "category": "local-history-upload-local",
-      "description": "Private local-session intake exchange coordination on the selected machine; never replicated or exposed through file routes.",
+      "description": "Private local-session intake exchange and child coordination, disk reservations and generated selected/normalized blocks on the destination machine; never replicated or exposed through file routes.",
       "scope": "machine-local",
       "freshness": "real-time",
       "conflictShape": "single-writer",
@@ -15,7 +15,7 @@
       "grandfathered": false,
       "retention": {
         "class": "resolution", "boundedByResolution": true,
-        "note": "The process-held exchange lock is released only after owned transport disposal or actual process exit. It holds no message content or authority; child and disk custody remain separate."
+        "note": "Process-held exchange and child leases end only after owned disposal or proven holder exit. Generated blocks are explicitly disposed by their owning operation; failed cleanup remains charged. Retained allocation records have bounded admission. Neither a lease nor a reservation grants access or copy authority."
       }
     },
     {

@@ -328,6 +328,28 @@ describe('§5.2 — the file routes refuse key material by path, symlink, hard l
     expect(checked.handle).toBeNull();
   });
 
+  it('refuses an innocent hard-link alias to a dynamically named private import block', async () => {
+    const directory = path.join(stateDir, 'local-history-upload', 'blocks');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, '1234567890abcdef1234567890abcdef');
+    fs.writeFileSync(file, PRIVATE_KEY_MARKER, { mode: 0o600 });
+    const alias = path.join(projectDir, 'docs', 'innocent-import-block.txt');
+    fs.linkSync(file, alias);
+    expectRefused(await request(app).get('/api/files/read').query({ path: 'docs/innocent-import-block.txt' }));
+    expectRefused(await request(app).get('/api/files/download').query({ path: 'docs/innocent-import-block.txt' }));
+  });
+  it.each(['disk-ledger.sqlite', 'jobs.sqlite', 'jobs.sqlite-journal'])('refuses an innocent hard-link alias to private upload metadata %s', async name => {
+    const directory = path.join(stateDir, 'local-history-upload');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, name);
+    fs.writeFileSync(file, PRIVATE_KEY_MARKER, { mode: 0o600 });
+    const aliasPath = 'docs/innocent-upload-' + name + '.txt';
+    const alias = path.join(projectDir, aliasPath);
+    fs.linkSync(file, alias);
+    expectRefused(await request(app).get('/api/files/read').query({ path: aliasPath }));
+    expectRefused(await request(app).get('/api/files/download').query({ path: aliasPath }));
+  });
+
   it('a hard link whose inode is NOT a key file is still served (no over-block on nlink alone)', async () => {
     fs.linkSync(path.join(projectDir, 'docs', 'readme.md'), path.join(projectDir, 'docs', 'readme-link.md'));
     expect(fs.statSync(path.join(projectDir, 'docs', 'readme-link.md')).nlink).toBeGreaterThan(1);

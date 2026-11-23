@@ -39,6 +39,8 @@ const LONG_LIVED_STORES = [
   'src/import/HistoryAcquisition.ts',
   'src/import/AcquisitionWorkerLease.ts',
   'src/import/LocalHistoryChildCustody.ts',
+  'src/import/LocalHistoryDiskLedger.ts',
+  'src/import/LocalHistoryUploadStaging.ts',
   'src/core/GraphWitnessService.ts',
   'src/core/StopGateDb.ts',
   'src/core/FeatureRegistry.ts',
