@@ -23,7 +23,7 @@ export function privateAcquisitionDatabasePath(stateDir: string, name: 'jobs.sql
   return privateImportDatabasePath(privateAcquisitionStateDir(stateDir), name);
 }
 
-export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite' | 'exchange-lock.sqlite' | 'source-claims.sqlite', options: { readOnly?: boolean } = {}): string {
+export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite' | 'exchange-lock.sqlite' | 'source-claims.sqlite' | 'child-admission.sqlite' | 'child-custody.sqlite', options: { readOnly?: boolean } = {}): string {
   verifyPrivateImportDirectory(directory);
   const file = path.join(directory, name);
   if (!options.readOnly) {

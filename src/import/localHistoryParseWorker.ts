@@ -1,6 +1,7 @@
 /** Fixed private parse child. All provenance and selected bytes arrive on stdin,
  * never argv, environment, logs or a client-supplied path. No filesystem writes.
  */
+import { holdLocalHistoryChild } from './LocalHistoryChildCustody.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
@@ -13,6 +14,14 @@ let terminal = false;
 
 async function run(): Promise<void> {
   if (!process.connected) throw new Error('no-parent');
+  const custodyBytes = process.env.INSTAR_LOCAL_HISTORY_CUSTODY;
+  delete process.env.INSTAR_LOCAL_HISTORY_CUSTODY;
+  if (!custodyBytes || custodyBytes.length > CHUNK_BYTES) throw new Error('no-custody');
+  const custody = holdLocalHistoryChild(JSON.parse(custodyBytes));
+  // This fork does not run the server shutdown handlers. Close SQLite only in
+  // its synchronous exit phase, after all parsing/stream work has stopped.
+  process.once('exit', () => custody.close());
+  if (!custody.active()) throw new Error('lost-custody');
   process.on('disconnect', () => { if (!terminal) process.exit(71); });
   await new Promise<void>((resolve, reject) => process.send!({ kind: 'ready' }, error => error ? reject(error) : resolve()));
   let prefix = Buffer.alloc(0);

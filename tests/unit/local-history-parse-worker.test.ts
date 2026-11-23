@@ -1,9 +1,17 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { acquireLocalHistoryChild } from '../../dist/import/LocalHistoryChildCustody.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+const custodyDirs: string[] = [];
+afterEach(() => { for (const dir of custodyDirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'parse worker custody fixture' }); });
+function custodyLease() { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-custody-')); custodyDirs.push(dir); return acquireLocalHistoryChild(dir)!; }
 const workerPath = fileURLToPath(new URL('../../dist/import/localHistoryParseWorker.js', import.meta.url));
 function frame(source: Buffer, overrides: Record<string, unknown> = {}): Buffer {
   const header = Buffer.from(JSON.stringify({ source: 'codex', expectedSessionId: 'session-1',
@@ -19,8 +27,9 @@ function transcript(text = 'Only synthetic conversation text.'): Buffer {
   ].map(value => JSON.stringify(value)).join('\n'));
 }
 async function run(input: Buffer) {
+  const lease = custodyLease();
   const child = fork(workerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-    execArgv: ['--max-old-space-size=128'], env: { LANG: 'C.UTF-8', TZ: 'UTC' } });
+    execArgv: ['--max-old-space-size=128'], env: { LANG: 'C.UTF-8', TZ: 'UTC', INSTAR_LOCAL_HISTORY_CUSTODY: JSON.stringify(lease.custody) } });
   const output: Buffer[] = []; const errors: Buffer[] = []; const control: unknown[] = [];
   child.stdout!.on('data', value => output.push(value));
   child.stderr!.on('data', value => errors.push(value));
@@ -29,9 +38,17 @@ async function run(input: Buffer) {
   child.stdin!.on('error', () => {});
   const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
   const done = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-  child.stdin!.end(input);
-  try { return { code: await done, output: Buffer.concat(output), errors: Buffer.concat(errors).toString(), control }; }
-  finally { clearTimeout(timeout); }
+  try {
+    await lease.registerChild(child.pid!);
+    const [ready] = await Promise.race([once(child, 'message'), done.then(() => { throw new Error('worker exited before custody'); })]);
+    expect(ready).toEqual({ kind: 'ready' });
+    child.stdin!.end(input);
+    return { code: await done, output: Buffer.concat(output), errors: Buffer.concat(errors).toString(), control };
+  } finally {
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await done; }
+    child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); lease.release();
+  }
 }
 
 describe('real local history parse child', () => {
@@ -61,19 +78,24 @@ describe('real local history parse child', () => {
     }
   });
   it('exits on parent IPC disconnect before another input frame', async () => {
+    const lease = custodyLease();
     const child = fork(workerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-      execArgv: ['--max-old-space-size=128'], env: { LANG: 'C.UTF-8', TZ: 'UTC' } });
+      execArgv: ['--max-old-space-size=128'], env: { LANG: 'C.UTF-8', TZ: 'UTC', INSTAR_LOCAL_HISTORY_CUSTODY: JSON.stringify(lease.custody) } });
     const closed = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
     child.stdout!.resume(); child.stderr!.resume();
     const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
     try {
-      await Promise.race([once(child, 'message'), closed.then(() => { throw new Error('worker exited before ready'); })]);
+      await lease.registerChild(child.pid!);
+      const [ready] = await Promise.race([once(child, 'message'), closed.then(() => { throw new Error('worker exited before ready'); })]);
+      expect(ready).toEqual({ kind: 'ready' });
       // Initialization has completed; a partial prefix cannot finish a parse.
       child.stdin!.on('error', () => {}); child.stdin!.write(Buffer.from([0]));
       child.disconnect();
       expect(await closed).toBe(71);
     } finally {
-      clearTimeout(timeout); child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy();
+      clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+      child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); lease.release();
     }
   });
 });
