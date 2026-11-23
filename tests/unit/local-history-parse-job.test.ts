@@ -4,11 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { localSessionByteChunks } from '../../src/import/localSessionSnapshot.js';
-import { describe, expect, it } from 'vitest';
+import { acquireLocalHistoryChild } from '../../dist/import/LocalHistoryChildCustody.js';
+import { afterEach, describe, expect, it } from 'vitest';
 // Exercise the exact deployed fixed-child module, not an inline substitute.
 import { runLocalHistoryParseJob, type LocalHistoryParseJobOptions } from '../../dist/import/LocalHistoryParseJob.js';
 
+const custodyDirs: string[] = [];
+afterEach(() => { for (const dir of custodyDirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'parse custody test' }); });
 function setup() {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parse-custody-')); custodyDirs.push(stateDir);
   const bytes = Buffer.from([
     { type: 'session_meta', payload: { id: 's', cwd: '/synthetic', source: 'cli' } },
     { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic only' }] } },
@@ -18,9 +22,10 @@ function setup() {
   const opts: LocalHistoryParseJobOptions = {
     input: { source: 'codex', expectedSessionId: 's', expectedProjectPath: '/synthetic', bytes: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex') },
-    async acquireChild() { return {
-      async registerChild(value) { pid = value; registered = true; },
-      release() { if (registered) expect(() => process.kill(pid, 0)).toThrow(); released++; },
+    async acquireChild() { const actual = acquireLocalHistoryChild(stateDir)!; return {
+      custody: actual.custody,
+      async registerChild(value) { await actual.registerChild(value); pid = value; registered = true; },
+      release() { if (registered) expect(() => process.kill(pid, 0)).toThrow(); actual.release(); released++; },
     }; },
     authorized() { return authorized; },
     async *chunks() { expect(registered).toBe(true); chunksRead++; yield bytes; },
@@ -108,6 +113,7 @@ describe('real bounded parse job', () => {
   it('normalizes private callback failures and preserves prior refusal on cleanup failure', async () => {
     const f = setup(); f.opts.authorized = () => { throw new Error('/private/synthetic/state'); };
     f.opts.acquireChild = async () => ({
+      custody: { stateDir: '/unused-revoked-custody', generation: '0'.repeat(64) },
       async registerChild() { throw new Error('must not spawn'); },
       release() { throw new Error('/private/synthetic/release'); },
     });
@@ -119,7 +125,7 @@ describe('real bounded parse job', () => {
     const f = setup(); const acquire = f.opts.acquireChild;
     f.opts.acquireChild = async () => {
       const lease = (await acquire())!;
-      return { async registerChild(pid) { await lease.registerChild(pid); throw new Error('/private/registration'); }, release: lease.release };
+      return { custody: lease.custody, async registerChild(pid) { await lease.registerChild(pid); throw new Error('/private/registration'); }, release: lease.release };
     };
     await expect(runLocalHistoryParseJob(f.opts)).rejects.toThrow('child-registration');
     expect(f.released()).toBe(1); expect(f.output).toHaveLength(0);
@@ -132,6 +138,16 @@ describe('real bounded parse job', () => {
     expect(JSON.parse(output.toString()).conversation.messages[0].text).toBe('synthetic only');
     expect(f.released()).toBe(1);
   });
+  it('refuses a stale custody generation in the real child before private source input', async () => {
+    const f = setup(); const acquire = f.opts.acquireChild;
+    f.opts.acquireChild = async () => {
+      const lease = (await acquire())!;
+      return { ...lease, custody: { ...lease.custody, generation: '0'.repeat(64) } };
+    };
+    await expect(runLocalHistoryParseJob(f.opts)).rejects.toThrow('parser-refused');
+    expect(f.chunksRead()).toBe(0); expect(f.output).toHaveLength(0); expect(f.released()).toBe(1);
+  });
+
   it('refuses busy admission before reading private bytes', async () => {
     const f = setup(); f.opts.acquireChild = async () => null;
     await expect(runLocalHistoryParseJob(f.opts)).rejects.toThrow('worker-busy');

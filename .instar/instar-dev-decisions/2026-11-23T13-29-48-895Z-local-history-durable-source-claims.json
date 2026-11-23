@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-23T13:29:48.895Z",
+  "slug": "local-history-durable-source-claims",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 197,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/keyMaterialPaths.ts",
+      "src/import/ImportedHistoryStore.ts",
+      "src/import/LocalSourceIdentity.ts",
+      "src/import/privateImportState.ts"
+    ],
+    "addedLines": 191,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

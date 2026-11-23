@@ -23,11 +23,13 @@ export function privateAcquisitionDatabasePath(stateDir: string, name: 'jobs.sql
   return privateImportDatabasePath(privateAcquisitionStateDir(stateDir), name);
 }
 
-export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite' | 'exchange-lock.sqlite'): string {
+export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite' | 'exchange-lock.sqlite' | 'source-claims.sqlite' | 'child-admission.sqlite' | 'child-custody.sqlite', options: { readOnly?: boolean } = {}): string {
   verifyPrivateImportDirectory(directory);
   const file = path.join(directory, name);
-  try { fs.closeSync(fs.openSync(file, 'wx', 0o600)); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  if (!options.readOnly) {
+    try { fs.closeSync(fs.openSync(file, 'wx', 0o600)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  }
   for (const suffix of ['', '-wal', '-shm', '-journal']) {
     const candidate = file + suffix;
     let stat: fs.Stats;
@@ -41,6 +43,7 @@ export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite'
     }
     // Older versions created the database under a private directory using SQLite's default file mode.
     if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+      if (options.readOnly) throw new Error('The import database is not private.');
       try { fs.chmodSync(candidate, 0o600); }
       catch (error) {
         if (!suffix || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;

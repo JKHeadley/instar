@@ -10,11 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { MAX_LOCAL_SESSION_BYTES } from './localSessionSnapshot.js';
+import type { LocalHistoryCustodyToken } from './LocalHistoryChildCustody.js';
 import type { LocalSessionCounts, LocalSessionRepresentation, LocalSessionSource } from './localSessionParsers.js';
 
 export interface LocalHistoryChildLease {
-  /** Persist this child AND its OS process-start identity before private input.
-   * The already-held lease must retain a crashed/ambiguous spawn as charged. */
+  /** Shared process-held custody, checked by the fixed child before readiness. */
+  readonly custody: LocalHistoryCustodyToken;
+  /** Validate parent-held admission after spawn. The child must then acknowledge
+   * its actual shared custody lock before any private input is sent. Its PID is
+   * not a recovery authority; a surviving shared holder keeps the lane busy. */
   registerChild(pid: number): Promise<void>;
   /** Called only after actual exit (or proven spawn failure), never on a timer. */
   release(): void | Promise<void>;
@@ -117,12 +121,15 @@ export async function runLocalHistoryParseJob(value: LocalHistoryParseJobOptions
     if (!initiallyAuthorized) throw new LocalHistoryParseJobRefused('local-history-not-authorized');
     const child = fork(fileURLToPath(new URL('./localHistoryParseWorker.js', import.meta.url)), [], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'], execArgv: [`--max-old-space-size=${opts.heapMiB}`],
-      env: { LANG: 'C.UTF-8', TZ: 'UTC' },
+      env: { LANG: 'C.UTF-8', TZ: 'UTC', INSTAR_LOCAL_HISTORY_CUSTODY: JSON.stringify(lease.custody) },
     });
     const abort = new AbortController();
+    let signalReady!: () => void;
+    let childReady = false;
+    const readiness = new Promise<void>(resolve => { signalReady = resolve; });
     let signalControl!: () => void;
     const controlReady = new Promise<void>(resolve => { signalControl = resolve; });
-    abort.signal.addEventListener('abort', () => signalControl(), { once: true });
+    abort.signal.addEventListener('abort', () => { signalControl(); signalReady(); }, { once: true });
     const deadline = performance.now() + opts.deadlineMs;
     let failure: string | undefined;
     let exited = false;
@@ -156,8 +163,8 @@ export async function runLocalHistoryParseJob(value: LocalHistoryParseJobOptions
     child.stdin!.on('error', () => fail('local-history-parser-input'));
     child.on('message', message => {
       if (message && typeof message === 'object' && (message as {kind?: string}).kind === 'ready'
-        && Object.keys(message).length === 1) return;
-      if (validReceipt(message) && !receipt) {
+        && Object.keys(message).length === 1 && !childReady) { childReady = true; signalReady(); return; }
+      if (childReady && validReceipt(message) && !receipt) {
         receipt = { bytes: message.bytes, sha256: message.sha256, representation: message.representation, counts: { ...message.counts } };
         signalControl();
       }
@@ -221,7 +228,9 @@ export async function runLocalHistoryParseJob(value: LocalHistoryParseJobOptions
       if (!child.pid) throw new LocalHistoryParseJobRefused('local-history-parser-spawn');
       try { await lease.registerChild(child.pid); }
       catch { throw new LocalHistoryParseJobRefused('local-history-child-registration'); }
+      await readiness;
       guard();
+      if (!childReady) throw new LocalHistoryParseJobRefused('local-history-child-custody');
       const sending = send(); const receiving = receive();
       const result = await exit;
       await Promise.all([sending, receiving]);
