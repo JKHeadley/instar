@@ -4,7 +4,7 @@
  * reaches the owner's private chat; the owner's `approve <code>` to that card admits the identical
  * call exactly once; a second call or a changed payload asks again.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -23,6 +23,8 @@ const AUTH = 'tj-governed-token';
 const VERSION = '1.3.500';
 const OWNER = 555001;
 let tmp: string; let stateDir: string; let app: express.Express; let runtime: TrustAccountPathRuntime;
+let trust: AdaptiveTrust;
+let routeContext: RouteContext;
 let sent: Array<{ text: string; replyTo?: number; messageId: number }>; let nextId = 700; let updateId = 1;
 
 beforeEach(async () => {
@@ -32,7 +34,7 @@ beforeEach(async () => {
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   sent = [];
   ProcessIntegrity.reset(); ProcessIntegrity.initialize(VERSION, null);
-  const trust = new AdaptiveTrust({ stateDir });
+  trust = new AdaptiveTrust({ stateDir });
   const gate = new ExternalOperationGate({ stateDir, autonomyDefaults: AUTONOMY_PROFILES.collaborative, services: {}, readOnlyServices: [] });
   let imported = false;
   runtime = createTrustJourneyRuntime({
@@ -49,9 +51,10 @@ beforeEach(async () => {
     telegram: { isPolling: false, onTopicMessage: () => {}, logInboundMessage: () => {}, dispatchAgentMessageHook: async () => false, isAuthorizedSender: () => true, sendToTopic: async () => ({}), getOwnerUserId: () => OWNER, getChatId: () => '-100', getLifelineTopicId: () => 3 },
     adaptiveTrust: trust, operationGate: gate, trustAccountPath: runtime, startTime: new Date(),
   } as unknown as RouteContext;
+  routeContext = ctx;
   app = express(); app.use(express.json()); app.use('/', createRoutes(ctx));
 });
-afterEach(() => { ProcessIntegrity.reset(); SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/integration/trust-governed-effects-routes.test.ts' }); });
+afterEach(() => { vi.restoreAllMocks(); ProcessIntegrity.reset(); SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/integration/trust-governed-effects-routes.test.ts' }); });
 
 const evaluate = (tool_name: string, tool_input: Record<string, unknown>) => request(app).post('/operations/evaluate').set('Authorization', `Bearer ${AUTH}`)
   .send({ service: tool_name.split('__')[1], mutability: 'write', reversibility: 'irreversible', description: 'x', itemCount: 1, tool_name, tool_input });
@@ -62,6 +65,7 @@ describe('governed effects over HTTP', () => {
   it('the legacy import recorded today\'s kinds and wrote the hook fallback file', () => {
     const file = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'trust-legacy-kinds.json'), 'utf8'));
     expect(file.legacyKinds).toEqual(['legacysvc.delete', 'legacysvc.modify', 'legacysvc.write']);
+    expect(file.readToolNames).toContain('mcp__codex_apps__github__fetch_pr');
   });
 
   it('a legacy kind keeps today\'s gate decision', async () => {
@@ -71,6 +75,30 @@ describe('governed effects over HTTP', () => {
     expect(['proceed', 'show-plan']).toContain(r.body.action);
   });
 
+  it('nested fetch_pr is a read despite old caller mutability, while collisions stay governed', async () => {
+    expect((await evaluate('mcp__codex_apps__github__fetch_pr', { url: 'https://github.com/public/repo/pull/1' })).body.action).toBe('proceed');
+    expect(runtime.store.openRequests()).toHaveLength(0);
+    const write = await evaluate('mcp__codex_apps__github_fetch_pr', {});
+    expect(write.body.action).toBe('ask'); expect(write.body.approval.status).toBe('awaiting-acceptance'); expect(write.body.requestId).toBeUndefined();
+    const rows = fs.readFileSync(path.join(stateDir, 'logs/approval-refusals.jsonl'), 'utf8'); expect(rows).not.toContain(runtime.store.openRequests()[0].code);
+  });
+
+  it('status-only revival uses the real effect: stale modify cannot block a read and a read label cannot free a write', async () => {
+    Object.assign(routeContext.telegram!, { getTopicForSession: () => 41 });
+    routeContext.commitmentTracker = { getActive: () => [{ id: 'revived', topicId: 41, revivalMode: 'status-only-until-revalidated' }] } as never;
+    const call = (tool_name: string, mutability: string) => request(app).post('/operations/evaluate').set('Authorization', `Bearer ${AUTH}`).send({ service: 'codex_apps', mutability, reversibility: 'reversible', description: 'revival effect boundary', sessionName: 'revived-session', tool_name, tool_input: { id: 1 } });
+    expect((await call('mcp__codex_apps__github__fetch_pr', 'modify')).body.action).toBe('proceed');
+    const write = await call('mcp__codex_apps__github__create_pr', 'read');
+    expect(write.body.action).toBe('block'); expect(write.body.revivalModeBlocked).toBe(true); expect(runtime.store.openRequests()).toHaveLength(0);
+  });
+
+  it('uncardable calls explain that no request was opened and retain a local refusal trace', async () => {
+    const result = await evaluate('mcp__newsvc__send_note', { text: 'x'.repeat(2600) });
+    expect(result.body.action).toBe('block'); expect(result.body.reason).toContain('cannot be shown exactly'); expect(runtime.store.openRequests()).toHaveLength(0);
+    const trace = JSON.parse(fs.readFileSync(path.join(stateDir, 'logs/approval-refusals.jsonl'), 'utf8'));
+    expect(trace.status).toBe('not-opened'); expect(trace.reason).toBe('too-large');
+  });
+
   it('a read is not gated', async () => {
     expect((await evaluate('mcp__newsvc__list_notes', {})).body.action).toBe('proceed');
   });
@@ -78,7 +106,8 @@ describe('governed effects over HTTP', () => {
   it('a new kind asks; the owner approves that exact call once; a second or changed call asks again', async () => {
     const first = await evaluate('mcp__newsvc__send_note', { to: 'a', body: 'hi' });
     expect(first.body.action).toBe('ask');
-    expect(first.body.reason).toMatch(/Waiting for the person/);
+    expect(first.body.approval).toEqual({ version: 1, status: 'awaiting-acceptance', surface: 'direct-chat' });
+    expect(first.body.reason).toContain('current owner received the acceptance message');
     const stmt = acceptanceStatement({ adapter: 'telegram', accountId: String(OWNER), installationId: 'tj' });
     expect((await forward(stmt)).body.trustAccountPath).toBe('acceptance-recorded');
     const card = sent.find((m) => m.text.includes('Do this once'))!;
@@ -92,6 +121,14 @@ describe('governed effects over HTTP', () => {
     expect(retry.body.trust.verdict).toBe('proceed-once');
     expect((await evaluate('mcp__newsvc__send_note', { to: 'a', body: 'hi' })).body.action).toBe('ask');
     expect((await evaluate('mcp__newsvc__send_note', { to: 'a', body: 'changed' })).body.action).toBe('ask');
+  });
+
+  it('an owner-blocked operation remains refused and explains unavailable local trace storage', async () => {
+    trust.grantTrust('newsvc', 'write', 'blocked', 'owner restriction');
+    vi.spyOn(fs, 'appendFileSync').mockImplementation(() => { throw new Error('trace disk unavailable'); });
+    const result = await evaluate('mcp__newsvc__send_note', {});
+    expect(result.body.action).toBe('block'); expect(result.body.reason).toContain('Only the person can change'); expect(result.body.reason).toContain('refusal trace could not be saved');
+    expect(runtime.store.openRequests()).toHaveLength(0);
   });
 
   it('signing in through the browser asks, even on an imported service', async () => {

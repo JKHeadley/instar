@@ -117,7 +117,7 @@ export type ProposeResult =
   | { status: 'not-a-raise' }
   | { status: 'no-approver'; message: string }
   | { status: 'awaiting-acceptance' | 'sent'; requestId: string; code: string; expiresAt: string; deduped?: boolean; via?: 'chat' | 'device' }
-  | { status: 'undelivered'; message: string }
+  | { status: 'undelivered' | 'delivery-unconfirmed'; message: string; requestId?: string }
   | { status: 'not-recorded'; message: string }
   | { status: 'too-large' | 'too-many-open' | 'too-many-undelivered' | 'withdrawn-recently'; message: string };
 
@@ -146,6 +146,34 @@ export class AccountPathService {
   }
 
   async propose(change: TrustChange, principal = 'owner'): Promise<ProposeResult> {
+    const result = await this.proposeLocal(change, principal);
+    return this.presentLocal(result);
+  }
+
+  /** Presentation is evidence, never permission. Recheck every actual current surface. */
+  private async presentLocal(result: ProposeResult): Promise<ProposeResult> {
+    if (!('requestId' in result) || !result.requestId) return result;
+    const before = this.d.store.request(result.requestId);
+    const devices = before ? await this.approvingDevices(before.principal) : [];
+    const req = this.d.store.request(result.requestId);
+    if (!req || req.status !== 'open' || this.d.store.requestConsumedOrPending(req.requestId) || new Date(req.expiresAt) <= this.now()) {
+      return { status: 'delivery-unconfirmed', message: 'This request is no longer waiting for approval. Nothing new was approved.' };
+    }
+    const base = { requestId: req.requestId, code: req.code, expiresAt: req.expiresAt, ...('deduped' in result && result.deduped ? { deduped: true } : {}) };
+    if (devices.length > 0) return { status: 'sent', via: 'device', ...base };
+    if (req.adapter !== 'device' && this.d.adapters[req.adapter] && this.d.ownerPlatformId(req.adapter) === req.approverPlatformId) {
+      const acceptance = this.d.store.acceptance(req.principal, req.adapter);
+      const accepted = acceptance?.accountId === req.approverPlatformId;
+      if (accepted && req.cardMessageId && req.cardChatId) return { status: 'sent', via: 'chat', ...base };
+      const marker = this.d.store.acceptanceStatementSent(req.principal, req.adapter);
+      if (!accepted && marker?.accountId === req.approverPlatformId && this.now().getTime() - new Date(marker.at).getTime() < 86_400_000) {
+        return { status: 'awaiting-acceptance', ...base };
+      }
+    }
+    return { status: result.status === 'undelivered' ? 'undelivered' : 'delivery-unconfirmed', requestId: req.requestId, message: 'The request is saved, but delivery of an actionable approval request to the current owner could not be confirmed. It is not waiting on their answer. No replacement was sent.' };
+  }
+
+  private async proposeLocal(change: TrustChange, principal = 'owner'): Promise<ProposeResult> {
     if (this.d.raisesOf(change).length === 0) return { status: 'not-a-raise' };
     const adapter = this.ownerAdapter();
     const approvingDevices = await this.approvingDevices(principal);
@@ -173,10 +201,10 @@ export class AccountPathService {
     // undelivered chat requests have their own cap of the same size, and the acceptance flush sends what fits.
     const live = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now());
     if (live.filter((r) => this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
-      return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting for the person; no new card is sent until one is answered or expires.` };
+      return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} open requests occupying approval slots. The owner was not asked about this new change; no new card is sent until one is answered or expires.` };
     }
     if (live.filter((r) => !this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
-      return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting to be delivered to the person (their chat has not accepted approvals yet); no new one is recorded until one is sent, answered or expires.` };
+      return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} saved requests whose delivery is unconfirmed. The owner was not asked about this new change; no new request is recorded until one is delivered, answered or expires.` };
     }
     if (!adapter) {
       // No chat: the request goes to the accepted devices (app-trust-approval §B, When there's no chat).
@@ -190,21 +218,23 @@ export class AccountPathService {
     // An accepted device can approve a chat request too; the first approval to arrive consumes it.
     if (approvingDevices.length > 0) this.notifyDevices('trust-request', `trust-request:${requestId}`);
 
-    if (!this.d.store.acceptance(principal, adapter)) {
+    if (this.d.store.acceptance(principal, adapter)?.accountId !== ownerId) {
       const w = await this.d.store.write('request', { ...base, cardMessageId: '', cardChatId: '' });
       if (!w.ok) return { status: 'not-recorded', message: 'The request could not be recorded durably, so nothing was sent.' };
       if (!(await this.sendAcceptanceStatement(principal, adapter, ownerId))) {
-        return { status: 'undelivered', message: 'The acceptance message could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet), so no card can follow. Nothing was approved.' };
+        return { status: 'undelivered', requestId, message: 'The acceptance message could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet), so no card can follow. Nothing was approved.' };
       }
       return { status: 'awaiting-acceptance', requestId, code, expiresAt };
     }
+    const saved = await this.d.store.write('request', { ...base, cardMessageId: '', cardChatId: '' });
+    if (!saved.ok) return { status: 'not-recorded', message: 'The request could not be recorded durably, so the owner was not asked.' };
     return this.sendCard(base as unknown as RequestRecord & { summary: string[] });
   }
 
   /** True when the statement is in the person's chat (sent now, or within the last day). */
   private async sendAcceptanceStatement(principal: string, adapter: AdapterKind, ownerId: string): Promise<boolean> {
     const sent = this.d.store.acceptanceStatementSent(principal, adapter);
-    if (sent && this.now().getTime() - new Date(sent.at).getTime() < 86_400_000) return true;
+    if (sent?.accountId === ownerId && this.now().getTime() - new Date(sent.at).getTime() < 86_400_000) return true;
     const statement = acceptanceStatement({ adapter, accountId: ownerId, installationId: this.d.installationId });
     const text = [
       'Before I can ask you to approve changes to what I may do on my own, I need your acceptance once.',
@@ -212,8 +242,9 @@ export class AccountPathService {
       '',
       statement,
     ].join('\n');
-    const r = await this.d.adapters[adapter]!.sendDirect(ownerId, text);
-    if (r) { await this.d.store.write('acceptance-sent', { principal, adapter, statementMessageId: r.messageId }); return true; }
+    let r: { chatId: string; messageId: string } | null;
+    try { r = await this.d.adapters[adapter]!.sendDirect(ownerId, text); } catch { return false; } // @silent-fallback-ok: caller reports uncertain delivery, never approval
+    if (r) { const recorded = await this.d.store.write('acceptance-sent', { principal, adapter, accountId: ownerId, statementMessageId: r.messageId }); return recorded.ok; }
     this.d.log?.('trust-acceptance-undelivered', { adapter });
     return false;
   }
@@ -222,12 +253,13 @@ export class AccountPathService {
     if (req.adapter === 'device') return { status: 'sent', via: 'device', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt };
     const port = this.d.adapters[req.adapter]!;
     const text = renderRequestCard({ summary: { lines: req.summary }, code: req.code, expiresAt: req.expiresAt });
-    const sent = await port.sendDirect(req.approverPlatformId, text);
+    let sent: { chatId: string; messageId: string } | null;
+    try { sent = await port.sendDirect(req.approverPlatformId, text); } catch { sent = null; } // @silent-fallback-ok: ambiguous send is reported unconfirmed, not retried
     if (!sent) {
-      return { status: 'undelivered', message: 'The request card could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet). Nothing was approved.' };
+      return { status: 'undelivered', requestId: req.requestId, message: 'The request card could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet). Nothing was approved.' };
     }
     const w = await this.d.store.write('request', { ...req, cardMessageId: sent.messageId, cardChatId: sent.chatId, status: 'open' }, `tj:request:${req.requestId}:card`);
-    if (!w.ok) return { status: 'not-recorded', message: 'The card was sent but could not be recorded, so a reply to it will not approve anything.' };
+    if (!w.ok) return { status: 'delivery-unconfirmed', requestId: req.requestId, message: 'The card was sent but could not be recorded, so a reply to it will not approve anything.' };
     return { status: 'sent', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt };
   }
 
@@ -286,15 +318,16 @@ export class AccountPathService {
     const statement = acceptanceStatement({ adapter, accountId: ownerId, installationId: this.d.installationId });
     if (isAcceptanceReply(r.text, statement)) {
       const principal = 'owner';
-      if (!this.d.store.acceptance(principal, adapter)) {
-        await this.d.store.write('acceptance', { acceptanceId: `acc-${r.uniqueKey}`, principal, adapter, accountId: ownerId, acceptedAt: this.now().toISOString(), messageId: r.messageId });
+      if (this.d.store.acceptance(principal, adapter)?.accountId !== ownerId) {
+        const recorded = await this.d.store.write('acceptance', { acceptanceId: `acc-${r.uniqueKey}`, principal, adapter, accountId: ownerId, acceptedAt: this.now().toISOString(), messageId: r.messageId });
+        if (!recorded.ok) return this.instruct(r, 'Your acceptance could not be saved, so it has not taken effect. Nothing was approved.');
       }
       await this.d.adapters[adapter]?.replyTo(r.chatId, r.messageId, 'Recorded. Your replies from this account now count as your approval. You can withdraw this at any time by saying so.');
       // The flush is bounded (agent-work-cards-default §5): min(cap − delivered open, undelivered), newest first; the
       // rest stay undelivered and expire at `cardTtlDays`.
       const open = this.d.store.openRequests().filter((x) => x.principal === principal && new Date(x.expiresAt) > this.now());
       const room = Math.max(0, MAX_OPEN_REQUESTS - open.filter((x) => this.delivered(x)).length);
-      const undelivered = open.filter((x) => x.adapter === adapter && !x.cardMessageId).sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : a.expiresAt > b.expiresAt ? -1 : 0));
+      const undelivered = open.filter((x) => x.adapter === adapter && x.approverPlatformId === ownerId && !x.cardMessageId).sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : a.expiresAt > b.expiresAt ? -1 : 0));
       for (const q of undelivered.slice(0, room)) {
         await this.sendCard(q);
       }

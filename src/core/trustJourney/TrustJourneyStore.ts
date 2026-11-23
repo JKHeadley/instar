@@ -199,7 +199,7 @@ export class TrustJourneyStore {
   private closedRequests = new Map<string, RequestRecord['status']>();
   private withdrawnAcceptanceIds = new Set<string>();
   private acceptances = new Map<string, AcceptanceRecord>();
-  private acceptanceSent = new Map<string, { statementMessageId: string; at: string }>();
+  private acceptanceSent = new Map<string, { statementMessageId: string; at: string; accountId?: string }>();
   private consumptions = new Map<string, ConsumptionRecord>();
   private changes: ChangeLogRecord[] = [];
   /** Legacy grants by kind key: the machines whose gate config defines today's behaviour. */
@@ -270,7 +270,7 @@ export class TrustJourneyStore {
         break;
       }
       case 'receipt': this.receiptsByKey.set(r.uniqueKey as string, r as unknown as Receipt); break;
-      case 'acceptance-sent': this.acceptanceSent.set(`${r.principal}|${r.adapter}`, { statementMessageId: r.statementMessageId as string, at: r.at }); break;
+      case 'acceptance-sent': this.acceptanceSent.set(`${r.principal}|${r.adapter}`, { statementMessageId: r.statementMessageId as string, at: r.at, ...(typeof r.accountId === 'string' ? { accountId: r.accountId } : {}) }); break;
       case 'acceptance': this.acceptances.set(`${r.principal}|${r.adapter}`, r as unknown as AcceptanceRecord); break;
       case 'acceptance-withdrawn': this.withdrawnAcceptanceIds.add(r.acceptanceId as string); break;
       case 'consumption': {

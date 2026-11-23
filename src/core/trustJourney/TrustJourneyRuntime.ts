@@ -22,7 +22,7 @@ import { checkTrustProfileAgainstLog, TrustChangeLogWriter, type Narrowed } from
 import { decideAdmission, type AdmissionDecision } from './admission.js';
 import { TrustOutcomeLog } from './TrustOutcomeLog.js';
 import { planLegacyImport, writeLegacyKindsFile } from './legacyImport.js';
-import { deriveEffect, type DerivedEffect } from '../../data/effect-kinds.js';
+import { deriveEffect, exactReadToolNames, type DerivedEffect } from '../../data/effect-kinds.js';
 import type { AdapterKind, Receipt } from './accountPath.js';
 
 /** The journal-backed sink: every record goes through the replicated emitter and is awaited durable. */
@@ -354,7 +354,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       if (decision.verdict === 'proceed-once' && effect) {
         // One use: the dispatch is recorded before the call is admitted; a second identical call asks again.
         const w = await store.write('dispatch', { approvalId: decision.approvalId, actionIdentity: effect.actionIdentity }, `tj:dispatch:${decision.approvalId}`);
-        if (!w.ok) return { decision: { verdict: 'ask', why: 'no-grant' }, effect };
+        if (!w.ok) return { decision: { verdict: 'ask', why: 'no-grant' }, effect, ask: { status: 'not-recorded', message: 'The one-time dispatch could not be saved. The action remains refused; no new approval request was opened.' } };
       }
       if ((decision.verdict === 'proceed' || decision.verdict === 'proceed-once') && effect) {
         // Section 4: every governed effect the holder admits gets an outcome row, "not yet checked".
@@ -394,7 +394,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       const fileWritten = writeLegacyKindsFile(d.stateDir, {
         generatedAt: new Date().toISOString(),
         legacyKinds: legacyKinds.sort(),
-        readToolNames: [],
+        readToolNames: exactReadToolNames(),
       });
       return { imported, fileWritten };
     },
@@ -439,4 +439,13 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
   };
   refreshFallback = () => { void runtime.importLegacyAndWriteFallback().catch(() => {}); };
   return runtime;
+}
+
+/** Shared production initialization: no lifecycle test may substitute an unwired runtime. */
+export async function initializeTrustJourneyRuntime(deps: TrustJourneyRuntimeDeps, bindIngress: (runtime: TrustAccountPathRuntime) => void) {
+  const runtime = createTrustJourneyRuntime(deps);
+  bindIngress(runtime);
+  const narrowed = await runtime.checkAtLoad();
+  const legacy = await runtime.importLegacyAndWriteFallback();
+  return { runtime, narrowed, legacy };
 }

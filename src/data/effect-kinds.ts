@@ -19,6 +19,8 @@ export type Reversibility = 'reversible' | 'partially-reversible' | 'irreversibl
 export type FloorItem = 'speaks-publicly' | 'widens-role' | 'irreversible-outside-role';
 
 export interface EffectEntry {
+  /** Match the original raw name; flattened connector actions are not identities. */
+  toolName?: string;
   /** The MCP service segment (`mcp__<service>__...`). */
   service: string;
   /** Exact action names (after the service segment) this entry covers. */
@@ -39,7 +41,9 @@ export interface EffectEntry {
  * test, and each later entry ships with a migration recording a legacy grant at its current
  * behaviour (spec 6a), except sign-in, which is always governed (decision 15).
  */
-export const EFFECT_ENTRIES: readonly EffectEntry[] = [];
+export const EFFECT_ENTRIES: readonly EffectEntry[] = [
+  { toolName: 'mcp__codex_apps__github__fetch_pr', service: 'codex_apps', actions: ['github_fetch_pr'], operation: 'read', selfOnly: true },
+];
 
 /**
  * Decision 15, sign-in: on the Playwright MCP server (the browser tools today's gate intercepts),
@@ -128,7 +132,7 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
   const input = (toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput) ? toolInput : {}) as Record<string, unknown>;
   let itemCount = 1;
   for (const v of Object.values(input)) if (Array.isArray(v)) itemCount = Math.max(itemCount, v.length);
-  const entry = EFFECT_ENTRIES.find((e) => e.service === service && e.actions.includes(action));
+  const entry = EFFECT_ENTRIES.find((e) => (e.toolName ? e.toolName === toolName : e.service === service && e.actions.includes(action)));
   const rules = verbRules(action);
   const signIn = isSignIn(service, action, input);
   const operation: EffectOperation = signIn ? 'sign-in' : (entry?.operation ?? rules.operation);
@@ -148,5 +152,10 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
 
 /** Exact tool names the table marks as reads, per service (written into the hook's fallback file). */
 export function readToolNames(service: string): string[] {
-  return EFFECT_ENTRIES.filter((e) => e.service === service && e.operation === 'read').flatMap((e) => e.actions.map((a) => `mcp__${service}__${a}`));
+  return EFFECT_ENTRIES.filter((e) => e.service === service && e.operation === 'read').flatMap((e) => e.toolName ? [e.toolName] : e.actions.map((a) => `mcp__${service}__${a}`));
+}
+
+/** Canonical source-defined read fast paths for generated hooks. */
+export function exactReadToolNames(): string[] {
+  return [...new Set(EFFECT_ENTRIES.filter(e => e.operation === 'read').flatMap(e => readToolNames(e.service)))].sort();
 }

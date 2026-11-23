@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-22T12:13:46.961Z",
+  "slug": "approval-request-delivery",
+  "carriers": {
+    "CMT-2193": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Design separate distributed approval recovery alongside the trust source-head gap before implementing it: pending-start capacity; shared-acceptance uncertainty versus expiry; originating deadlines across machines; visible originating-chat failure notice; local/distributed refusal traces. Chief827882b3 excluded this work from the current local repair; await separate prioritization."
+    }
+  }
+}

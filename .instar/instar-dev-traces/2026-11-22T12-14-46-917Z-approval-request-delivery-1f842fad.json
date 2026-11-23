@@ -1,0 +1,67 @@
+{
+  "version": 3,
+  "slug": "approval-request-delivery",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-22T12:14:46.917Z",
+  "artifactPath": "upgrades/side-effects/approval-request-delivery.md",
+  "artifactSha256": "793ac709b6c0d3e35011393996eae23ad87a0a010b4c29f1394e0e23e1601783",
+  "specPath": "docs/specs/approval-request-delivery.md",
+  "coveredFiles": [
+    "docs/specs/approval-request-delivery.eli16.md",
+    "docs/specs/approval-request-delivery.md",
+    "docs/specs/carriers/approval-request-delivery.json",
+    "docs/specs/reports/approval-request-delivery-convergence.md",
+    "docs/specs/reports/approval-request-delivery-distributed-failed-convergence.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/core/trustJourney/TrustJourneyStore.ts",
+    "src/core/trustJourney/approvalPresentation.ts",
+    "src/data/awareness/approval-request-delivery.md",
+    "src/data/effect-kinds.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "tests/e2e/approval-request-delivery-lifecycle.test.ts",
+    "tests/integration/trust-governed-effects-routes.test.ts",
+    "tests/unit/approval-request-delivery.test.ts",
+    "tests/unit/trust-journey-device-approval.test.ts",
+    "upgrades/next/approval-request-delivery.md",
+    "upgrades/side-effects/approval-request-delivery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive local approval delivery/status repair; existing execution authority unchanged; Chief explicitly narrowed distributed scope.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 1
+      },
+      {
+        "name": "systematic-debugging",
+        "outcome": "root-cause-verified",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/approval-request-delivery-convergence.md",
+      "iterations": 1,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One request-driven local approval delivery/status action, not a monitor, autonomous retry or recurring self-action controller."
+  }
+}
