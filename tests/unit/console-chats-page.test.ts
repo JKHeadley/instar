@@ -71,6 +71,13 @@ const flush = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 const bootContext = new AsyncLocalStorage<number>();
 let bootGeneration = 0;
 const pageChannels = new Set<BroadcastChannel>();
+const pageLifecycles = new Set<{ dispose: () => void }>();
+
+function disposePage() {
+  // Run the router's real registered page cleanup before removing its browser window.
+  for (const lifecycle of pageLifecycles) lifecycle.dispose();
+  pageLifecycles.clear();
+}
 const RealBroadcastChannel = globalThis.BroadcastChannel;
 if (RealBroadcastChannel) {
   // Node's BroadcastChannel outlives the window too: an earlier page would keep hearing this one.
@@ -83,6 +90,8 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
 }
 
 async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>) {
+  disposePage();
+  dom?.window.close();
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
@@ -101,12 +110,20 @@ async function bootPage(handler: (c: Call) => { status: number; body?: unknown }
     return { ok: out.status >= 200 && out.status < 300, status: out.status, json: async () => JSON.parse(JSON.stringify(out.body ?? {})), headers: new dom.window.Headers() } as unknown as Response;
   };
   vi.resetModules();
+  const lifecycleModule = await import('../../dashboard/console/page-lifecycle.js');
+  const createLifecycle = lifecycleModule.createLifecycle;
+  vi.spyOn(lifecycleModule, 'createLifecycle').mockImplementation((options) => {
+    const lifecycle = createLifecycle(options);
+    pageLifecycles.add(lifecycle);
+    return lifecycle;
+  });
   await import('../../dashboard/console/console.js');
   for (let i = 0; i < 10; i++) await flush();
   return { doc: dom.window.document, idb };
 }
 
 afterEach(() => {
+  disposePage();
   for (const c of pageChannels) { try { c.close(); } catch { /* already closed */ } }
   pageChannels.clear();
   dom?.window.close();

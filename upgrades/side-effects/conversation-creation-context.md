@@ -44,7 +44,7 @@ Focused checks passed for creation/storage and mixed-version observations, Work 
 
 ## Second-pass review
 
-**Reviewer:** context_spec_security (independent source reviewer; personally confirmed the prior review and rechecked the exact-head verification corrections).
+**Reviewer:** context_spec_security (independent source reviewer; personally confirmed the prior review, exact-head corrections and identical shared Node24 lifecycle-fixture adoption).
 
 ## Independent Review
 
@@ -57,3 +57,7 @@ The owner sees readable placement states and preview reasons. No raw token, JSON
 ## Self-Action Scope
 
 The unbounded-self-action class is not introduced: background refresh is coalesced and triggered by source changes, the existing Chief tick or an explicit external read, and never schedules itself after success/failure. Unknown source versions do not repeatedly self-retry. Existing full verification admission is respected.
+
+## Shared Fixture Correction Provenance
+
+The native Node24 diagnostic proved a disconnected test page retained its real polling lock. The shared N79 owner corrected fixture lifecycle disposal and obtained one newly allocated whole-file run:29passed on actualNode24.14.1 with real SQLite. This branch adopts exact tested blob473d0d1ed9c91a249c01cea530f84130927426f5; independent review confirmed unchanged assertions/deadlines and identical dashboard source. No duplicate focused/full suite is claimed. The earlier wait-only correction was insufficient for this native lock lifetime. Production behavior is unchanged.

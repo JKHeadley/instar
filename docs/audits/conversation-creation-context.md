@@ -8,7 +8,7 @@ standard-response-article-id: iterative-audit-to-convergence
 standard-response-article: Iterative Audit to Convergence
 standard-response-rationale: Existing evidence, access and repeated-review standards already require these boundaries; concrete implementation defects need fixes and regression tests rather than another constitutional rule.
 converged: "2026-11-22T23:10:24.130Z"
-rounds: "4"
+rounds: "6"
 standard-response-digest: "5505039f748ca3861ec2d399966503a57b5080138e073a3d87b7f31683b37c47"
 meta-artifact-at: "2026-11-22T23:10:24.130Z"
 meta-artifact-digest: "fa82477bfd986eb441429b3737b1f4c895e32920c7db80f473c08348a0f89145"
@@ -83,3 +83,28 @@ Surface delta: source catch explanations, lowered scanner ratchet, fixture synch
 New findings this round: 0
 
 Independent reviewer context_spec_security reported zero material findings in the final correction pass. Focused verification and a fresh trace are supporting evidence only; the previous complete candidate remains failed and a normal complete rerun is required for the corrected exact head.
+
+## Round 5
+
+Search angles: retained native Node24 diagnostic from the shared N79 fixture owner, real Web Locks ownership, browser lifecycle cleanup and exact fixture/source comparison.
+Surface delta: the earlier observable wait correction passed on Node22 but did not release native Web Locks retained by a disconnected earlier fixture page on Node24. A longer wait cannot release that lock.
+
+| location | behavior | bucket | disposition |
+|----------|----------|--------|-------------|
+| tests/unit/console-chats-page.test.ts:bootPage | Closing a JSDOM window without real page lifecycle disposal left an old disconnected polling leader holding instar-chat-poll | fixture-resource-lifetime-mismatch | fixed:tests/unit/console-chats-page.test.ts |
+
+New findings this round: 1
+
+The N79 owner implemented and independently reviewed one shared correction: delegate the real createLifecycle factory unchanged, retain its lifecycles, and dispose registered page cleanup before replacement/window close and afterEach. Native locks, assertions and deadlines remain unchanged. The single newly allocated Node24.14.1 ABI137/SQLite run passed all29 tests, exit0 at2026-11-23T00:58:40.555871Z; allocation7b5bd4d8-b47b-47c8-b0b6-50ccbd3347b6, admission41470/cap6, manifestcc61e84d74938a36cadb47fb395e9084c1afadcad48e4a3d2c6220e6853337d4. This branch adopts exact tested console blob473d0d1ed9c91a249c01cea530f84130927426f5. The dashboard/console source diff between this branch's prior9a2baf9b and donorbaseca87bb326 is empty. No competing implementation or duplicate targeted/full run was executed. Retained provenance is .instar/recovery/retention1961/pr3655-shared-console-disposal-result.json on the agent home.
+
+## Round 6
+
+Search angles: independent source/provenance recheck of the identical fixture blob, real lifecycle cleanup, unchanged assertions/deadlines, dashboard source equivalence and actual retained Node24 result/log.
+Surface delta: exact reviewed/tested shared fixture adoption, without production changes or a larger deadline.
+
+| location | behavior | bucket | disposition |
+|----------|----------|--------|-------------|
+
+New findings this round: 0
+
+Reviewer context_spec_security independently confirmed exact hash, source equivalence, real disposal and29passing donor tests. This is targeted donor evidence, not a complete parent-candidate pass. Main-health controls and normal complete exact-head verification remain required.
