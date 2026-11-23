@@ -174,6 +174,11 @@ function mayAddSecondaryTarget(frames: { origin: string; topLevel: boolean }[], 
   return frames.every((f) => f.origin === policy.holderOrigin || !isRpFamilyOrigin(f.origin, policy));
 }
 
+/** Explicit pre-dispatch absence signal, distinct from transport error text. */
+export class BrowserElementNotFoundError extends Error {
+  constructor() { super('browser-element-not-found'); }
+}
+
 /**
  * Narrow Chrome DevTools implementation of ReloginBrowserPort.
  * It returns only a closed page classification; raw DOM, URLs-with-query,
@@ -989,20 +994,62 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
    * evaluate to an HTMLElement or null), scroll it into view, read its centre,
    * and dispatch mouse pressed/released through the Input domain.
    */
-  protected async clickReal(finderExpression: string): Promise<void> {
-    const point = await this.evaluate<{ x: number; y: number } | null>(`(() => {
+  protected async clickReal(finderExpression: string, missingElementFallback = 'false'): Promise<void> {
+    // Bind coordinates, dispatch and any closure observation to the same page.
+    const transport = this.transport;
+    const tcpMode = this.tcpPort !== null;
+    const sid = this.activeSessionId() ?? undefined;
+    const targetId = this.tcpPort !== null ? this.tcpActiveTargetId : (sid ? this.sessions.get(sid)?.targetId : null);
+    const point = await this.evaluate<{ x: number; y: number } | { formSubmitted: true } | null>(`(() => {
+      // Lookup and any missing-button form submission share this exact document.
+      const fallback = () => (${missingElementFallback}) === true ? { formSubmitted: true } : null;
       const el = (${finderExpression});
-      if (!(el instanceof HTMLElement)) return null;
+      if (!(el instanceof HTMLElement)) return fallback();
       el.scrollIntoView({ block: 'center', inline: 'center' });
       const r = el.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) return null;
+      if (r.width === 0 || r.height === 0) return fallback();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    })()`);
-    if (!point) throw new Error('browser-element-not-found');
-    const sid = this.activeSessionId() ?? undefined;
+    })()`, false, sid ?? null);
+    if (!point) throw new BrowserElementNotFoundError();
+    if ('formSubmitted' in point) return;
+    const assertScope = () => {
+      if (this.transport !== transport || !transport?.open
+        || (tcpMode ? this.tcpActiveTargetId !== targetId : !sid || this.sessions.get(sid)?.targetId !== targetId)) {
+        throw new Error('cdp-target-changed');
+      }
+    };
+    assertScope();
     await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y }, sid);
+    assertScope();
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sid);
-    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sid);
+    assertScope();
+    let released = false;
+    try {
+      await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sid, () => { released = true; });
+    } catch (error) {
+      // A closing popup may consume the click before its CDP acknowledgment can
+      // arrive. Observe a proven surviving page; never replay input or a form.
+      if (!released || !targetId || !await this.observeClosedClickTarget(targetId, sid)) throw error;
+    }
+  }
+
+  private async observeClosedClickTarget(targetId: string, sessionId: string | undefined): Promise<boolean> {
+    try {
+      if (this.tcpPort !== null) {
+        const targets = await this.listTcpTargets();
+        if (targets.some(target => target.id === targetId)) return false;
+        await this.followNewestPage();
+        return this.transport?.open === true && this.tcpActiveTargetId !== null && this.tcpActiveTargetId !== targetId;
+      }
+      const result = await this.send('Target.getTargets');
+      if (!Array.isArray(result.targetInfos)) return false;
+      const pages = result.targetInfos as Array<{ targetId?: string; type?: string }>;
+      const live = new Set(pages.filter(target => target.type === 'page').map(target => target.targetId));
+      const current = this.activeSessionId();
+      const replacement = current ? this.sessions.get(current) : undefined;
+      return !live.has(targetId) && current !== sessionId && replacement?.type === 'page'
+        && live.has(replacement.targetId) && this.transport?.open === true;
+    } catch { return false; /* @silent-fallback-ok — failed closure proof preserves the original action error; no input is retried */ }
   }
 
   private async fillAndSubmit(selector: string, value: string): Promise<void> {
@@ -1016,23 +1063,18 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       // Read back: never submit a field whose value did not stick (measured 2026-09-21).
       return node.value.length === ${JSON.stringify(value)}.length;
     })()`, true);
-    if (!filled) throw new Error('browser-element-not-found');
-    try {
-      await this.clickReal(`(() => {
-        const buttons = Array.from(document.querySelectorAll('button,[role="button"],a,[role="link"],input[type="submit"]'));
-        const submit = buttons.find((entry) => /^(next|continue|sign in|verify|submit)$/i
-          .test(((entry.textContent || entry.getAttribute('value') || '')).trim()));
-        return submit instanceof HTMLElement ? submit : null;
-      })()`);
-    } catch {
-      // No submit button: fall back to the form's own submit.
-      await this.evaluate<boolean>(`(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
-        const form = node instanceof HTMLElement ? node.closest('form') : null;
-        if (form instanceof HTMLFormElement) { form.requestSubmit(); return true; }
-        return true;
-      })()`);
-    }
+    if (!filled) throw new BrowserElementNotFoundError();
+    await this.clickReal(`(() => {
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"],a,[role="link"],input[type="submit"]'));
+      const submit = buttons.find((entry) => /^(next|continue|sign in|verify|submit)$/i
+        .test(((entry.textContent || entry.getAttribute('value') || '')).trim()));
+      return submit instanceof HTMLElement ? submit : null;
+    })()`, `(() => {
+      const node = document.querySelector(${JSON.stringify(selector)});
+      const form = node instanceof HTMLElement ? node.closest('form') : null;
+      if (form instanceof HTMLFormElement) { form.requestSubmit(); return true; }
+      return false;
+    })()`);
     await this.wait(500);
   }
 
@@ -1040,7 +1082,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     const result = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId ?? undefined);
     const remote = result.result as { value?: T; exceptionDetails?: unknown } | undefined;
     if (!remote || result.exceptionDetails) throw new Error('browser-evaluation-failed');
-    if (requireTruthy && !remote.value) throw new Error('browser-element-not-found');
+    if (requireTruthy && !remote.value) throw new BrowserElementNotFoundError();
     return remote.value as T;
   }
 
@@ -1155,7 +1197,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     this.eventHandlers.set(method, list);
   }
 
-  private send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, unknown>> {
+  private send(method: string, params: Record<string, unknown> = {}, sessionId?: string, onDispatched?: () => void): Promise<Record<string, unknown>> {
     const transport = this.transport;
     if (!transport || !transport.open) return Promise.reject(new Error('cdp-not-connected'));
     const id = ++this.requestId;
@@ -1164,6 +1206,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       this.pending.set(id, { resolve, reject, timer });
       try {
         transport.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
+        onDispatched?.();
       } catch (error) {
         this.pending.delete(id); clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error)));
       }

@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "chrome-popup-click-boundary",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T16:40:21.081Z",
+  "artifactPath": "upgrades/side-effects/chrome-popup-click-boundary.md",
+  "artifactSha256": "89e354e8764f487e23f5455829d39e876de99047269a7bde89a34156418b5d77",
+  "specPath": "docs/specs/assisted-subscription-relogin.md",
+  "coveredFiles": [
+    "src/core/ChromeCdpReloginBrowser.ts",
+    "src/core/PlainChromeReloginBrowser.ts",
+    "tests/integration/chrome-cdp-relogin-browser.test.ts",
+    "tests/unit/chrome-cdp-popup-click-boundary.test.ts",
+    "tests/unit/plain-chrome-relogin-browser.test.ts",
+    "upgrades/next/chrome-popup-click-boundary.md",
+    "upgrades/side-effects/chrome-popup-click-boundary.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Browser input during authentication is security-sensitive; keep each click and fallback in the original page and require independent closure evidence after a dispatched release.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
