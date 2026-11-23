@@ -7,7 +7,7 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
-/** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
+/** cos-owner-decision-delivery: trusted owner offers; profile proposals use their own registered producer. */
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
@@ -70,6 +70,7 @@ import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFil
 import { topicRef } from './shared/topicRef.js';
 import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
 import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
+import { learningOwnerId } from '../core/ownerWords.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -2587,6 +2588,14 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.getCallbackApprover();
   }
 
+  /**
+   * Whose words may teach the agent preferences (SEC-105): the verified owner, else the one allowed
+   * sender of a single-person agent. Undefined means nobody's words teach.
+   */
+  getLearningOwner(): number | undefined {
+    return learningOwnerId(this.getVerifiedOwner(), this.config.authorizedUserIds);
+  }
+
   /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
   ownerSourcesReady(): boolean {
     return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
@@ -2667,13 +2676,15 @@ export class TelegramAdapter implements MessagingAdapter {
   static readonly OWNER_DM_HELD = -1;
   /**
    * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
-   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
-   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
-   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   * (a unit test keeps this list a superset of it) plus the request-bound local refusals
+   * (ORIGIN_LOCAL_REFUSAL_REASONS: credential-capacity-unavailable, which the capacity owner releases and the
+   * recovery path re-sends (2026-11-14: such holds on Echo landed late), and the two lease refusals, retried
+   * within seconds once the lease is held again). Any other "held" error is a refusal with no retry behind it
+   * (held is the error's default outcome).
    */
   static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
     'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
-    'credential-capacity-unavailable',
+    'credential-capacity-unavailable', 'lease-freshness-lapsed', 'lease-not-held-at-send',
   ]);
 
   /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */
@@ -2727,6 +2738,14 @@ export class TelegramAdapter implements MessagingAdapter {
   public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in a message read here (no lifeline poll owner) before the
+   * trust-account receipt, the unknown-user path, the log or the session see it. Returns the text to
+   * use; null or a throw leaves the message unchanged (the operator channel fails toward delivery).
+   */
+  public inboundCredentialMasker: ((input: {
+    text: string; topicId: number; messageId: number; fromId: number | undefined; notFromThePerson: boolean;
+  }) => string | null) | null = null;
   /**
    * Pinned messages (docs/specs/conversation-pinned-messages.md): an authorized person pinned a
    * message in a topic. Telegram sends no update for an unpin, so only pins are handed over.
@@ -3665,6 +3684,25 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * A message sent into a forum topic comes back replying to that topic's creation message, which
+   * carries the topic's name. Learning it here (only when no name is known; a rename still wins)
+   * lets a machine that lost its names, as after a rebuild, name its conversations again the next
+   * time it speaks in them, instead of showing "Conversation name unavailable". No extra request.
+   */
+  private learnTopicNameFromSent(result: unknown): void {
+    try {
+      const m = result as { chat?: { id?: number | string }; message_thread_id?: number; is_topic_message?: boolean; reply_to_message?: { forum_topic_created?: { name?: unknown } } } | null;
+      const name = m?.reply_to_message?.forum_topic_created?.name;
+      if (!m || m.is_topic_message !== true || typeof name !== 'string' || typeof m.message_thread_id !== 'number') return;
+      const topicId = inboundTopicId(m.chat?.id ?? this.config.chatId, m.message_thread_id, this.topicSpace());
+      if (typeof topicId === 'number' && !this.getTopicName(topicId)) this.captureTopicName(topicId, name, false);
+    } catch (err) {
+      // @silent-fallback-ok: a display name is optional; the send itself already succeeded
+      console.warn('[telegram] could not read the topic name from a sent message:', err instanceof Error ? err.message : err);
+    }
+  }
+
   /** Return a captured topic name. Sending a temporary message to discover a
    * missing name can leave a visible dot when deletion or routing is delayed. */
   async resolveTopicName(topicId: number): Promise<string | null> {
@@ -4332,6 +4370,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
+      channel: 'telegram',
       mediaType: 'audio/ogg',
       timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
@@ -6658,6 +6697,23 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+    // SEC-164 §3.5: mask live keys in the text and the caption before anything below keeps them.
+    if (this.inboundCredentialMasker) {
+      const raw = msg as unknown as Record<string, unknown>;
+      const notFromThePerson = !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot)
+        || (msg.from as { is_bot?: boolean } | undefined)?.is_bot === true;
+      for (const field of ['text', 'caption'] as const) {
+        const value = raw[field];
+        if (typeof value !== 'string' || !value) continue;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: value, topicId: msg.message_thread_id ?? GENERAL_TOPIC_ID, messageId: msg.message_id,
+            fromId: msg.from?.id, notFromThePerson,
+          });
+          if (typeof masked === 'string') raw[field] = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
+    }
 
     // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
     // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
@@ -7011,6 +7067,17 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     try {
       if (transcript === null) throw transcribeError ?? new Error('no transcript');
+      // SEC-164 §3.5: a voice transcript is masked at the same point as its channel's text.
+      if (this.inboundCredentialMasker) {
+        const raw = msg as unknown as Record<string, unknown>;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: transcript, topicId, messageId: msg.message_id, fromId: msg.from?.id,
+            notFromThePerson: !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot),
+          });
+          if (typeof masked === 'string') transcript = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
@@ -7978,6 +8045,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     if (data.result && typeof data.result === 'object' && (data.result as QuietReceipt).recorded === true) throw new QuietRecordedError(data.result as QuietReceipt);
+    if (method === 'sendMessage') this.learnTopicNameFromSent(data.result);
     return data.result;
   }
 }

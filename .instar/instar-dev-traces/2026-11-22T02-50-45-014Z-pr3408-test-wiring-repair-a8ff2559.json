@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "pr3408-test-wiring-repair",
+  "sessionId": "da999158-c831-478d-be06-9a4da92854f8",
+  "timestamp": "2026-11-22T02:50:45.014Z",
+  "artifactPath": "upgrades/side-effects/pr3408-test-wiring-repair.md",
+  "artifactSha256": "4ea4ac4d9024bb60ba4b281fe4616431958904bb5c6a19c6ee8515a679e98d80",
+  "specPath": "docs/specs/codex-device-limit-tripwire.md",
+  "coveredFiles": [
+    "scripts/framework-name-ratchet-baseline.json",
+    "tests/e2e/codex-device-limit-lifecycle.test.ts",
+    "upgrades/side-effects/pr3408-test-wiring-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

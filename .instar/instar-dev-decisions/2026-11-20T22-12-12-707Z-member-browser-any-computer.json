@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-20T22:12:12.707Z",
+  "slug": "member-browser-any-computer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1102,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TeamAccessEvents.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/core/TeamComputers.ts",
+      "src/core/types.ts",
+      "src/data/awareness/member-computers.md",
+      "src/documents/originCheck.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/documentJoinRoutes.ts",
+      "src/server/documentLinkRoutes.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 1034,
+    "deletedLines": 68
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

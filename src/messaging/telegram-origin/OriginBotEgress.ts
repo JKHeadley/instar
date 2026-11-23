@@ -98,11 +98,19 @@ export async function dispatchOriginBotEgress(input: {
       // Retain dispatch intent and the capacity debit, but prove a local refusal
       // so it need not spend the separate transport-attempt budget.
       try {
-        const grant = await authority.reserve(request.accountId);
-        if (!grant || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
-        if (!await authority.consume(grant) || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
-      } catch {
-        const refusal = new OriginCapacityUnavailable();
+        // lease-freshness-lapse-retry — the cause travels with the refusal of the very evaluation that
+        // refused; an authority that cannot explain (the IPC client) keeps the unexplained refusal.
+        const decision = authority.reserveExplained
+          ? await authority.reserveExplained(request.accountId)
+          : { grant: await authority.reserve(request.accountId), refusal: null };
+        if (!decision.grant) throw new OriginCapacityUnavailable(decision.refusal);
+        const grant = decision.grant;
+        if (Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null });
+        if (!await authority.consume(grant)) throw new OriginCapacityUnavailable({ cause: 'consume-refused', leaseFreshness: null });
+        if (Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null });
+      } catch (error) {
+        // The thrown refusal IS the request-bound proof, so its cause reaches the send site.
+        const refusal = error instanceof OriginCapacityUnavailable ? error : new OriginCapacityUnavailable();
         localRefusals.set(refusal, request);
         throw refusal;
       }

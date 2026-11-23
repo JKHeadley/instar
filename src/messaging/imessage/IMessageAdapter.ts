@@ -723,6 +723,17 @@ export class IMessageAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in an incoming message before it is logged, emitted or
+   * routed. Returns the text to use; null or a throw leaves it unchanged (fails toward delivery).
+   */
+  public inboundCredentialMasker: ((text: string) => string | null) | null = null;
+
+  private maskIncomingCredential(text: string): string {
+    if (!this.inboundCredentialMasker || typeof text !== 'string' || !text) return text;
+    try { return this.inboundCredentialMasker(text) ?? text; } catch { return text; } // @silent-fallback-ok — the masker reports its own failures
+  }
+
   private async _handleIncomingMessage(msg: IMessageIncoming): Promise<void> {
     // Skip own outbound messages
     if (msg.isFromMe) return;
@@ -749,6 +760,9 @@ export class IMessageAdapter implements MessagingAdapter {
       else this._scheduleUnprovenRefresh();
       return;
     }
+
+    // SEC-164 §3.5: mask live keys before the log, the event bus or the session see the text.
+    if (typeof msg.text === 'string' && msg.text) msg = { ...msg, text: this.maskIncomingCredential(msg.text) };
 
     // Track last inbound time for reactive window
     this.lastInboundFrom.set(senderNormalized, Date.now());

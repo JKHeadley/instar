@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { isOwnersOwnWords } from '../../src/core/ownerWords.js';
+import { isOwnersOwnWords, learningOwnerId } from '../../src/core/ownerWords.js';
 
 // SEC-069: a team member's words, and forwarded text, never become the owner's learned preferences.
 describe('isOwnersOwnWords', () => {
@@ -13,7 +13,28 @@ describe('isOwnersOwnWords', () => {
     expect(isOwnersOwnWords({ fromUser: true, telegramUserId: OWNER, forwarded: false }, OWNER)).toBe(true);
     expect(isOwnersOwnWords({ fromUser: true, senderRole: 'owner', via: 'mobile-device' }, OWNER)).toBe(true);
     expect(isOwnersOwnWords({ fromUser: true, via: 'mobile-device' }, OWNER)).toBe(true); // owner phone paired before roles
-    expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 5 })).toBe(true); // no owner configured: a verified sender is enough
+  });
+  it('SEC-105: with no owner known, nobody\'s Telegram words count', () => {
+    expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 5 })).toBe(false);
+    expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 222 }, undefined)).toBe(false);
+  });
+  it('SEC-105: learningOwnerId is the verified owner, else the one allowed sender, else nobody', () => {
+    expect(learningOwnerId(111, [111, 222])).toBe(111);
+    expect(learningOwnerId(undefined, [5])).toBe(5);
+    expect(learningOwnerId(undefined, ['5'])).toBe(5);
+    expect(learningOwnerId(undefined, [5, 6])).toBeUndefined();
+    expect(learningOwnerId(undefined, [])).toBeUndefined();
+    expect(learningOwnerId(undefined, undefined)).toBeUndefined();
+    expect(learningOwnerId(undefined, ['abc'])).toBeUndefined();
+    expect(learningOwnerId(undefined, [0])).toBeUndefined();
+    expect(learningOwnerId(undefined, [-1001234])).toBeUndefined();
+    expect(learningOwnerId(undefined, [' 5 '])).toBeUndefined(); // isAuthorized would not accept user 5 either
+    expect(learningOwnerId(undefined, ['05'])).toBeUndefined();
+    expect(learningOwnerId(undefined, [5, 5])).toBe(5);
+    expect(learningOwnerId(undefined, [5, '5'])).toBe(5);
+    // the single-person agent keeps learning from its one sender
+    expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 5 }, learningOwnerId(undefined, [5]))).toBe(true);
+    expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 222 }, learningOwnerId(undefined, [5, 222]))).toBe(false);
   });
   it('a team member, another person\'s phone, forwarded text and the agent\'s own messages do not', () => {
     expect(isOwnersOwnWords({ fromUser: true, teamPhone: true, telegramUserId: OWNER }, OWNER)).toBe(false);
@@ -27,6 +48,28 @@ describe('isOwnersOwnWords', () => {
     expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 222 }, OWNER)).toBe(false);
     expect(isOwnersOwnWords({ fromUser: true }, OWNER)).toBe(false); // sender id cleared: unverified
     expect(isOwnersOwnWords({ fromUser: true })).toBe(false);
+  });
+});
+
+describe('TelegramAdapter.getLearningOwner (SEC-105)', () => {
+  const dirs: string[] = [];
+  const make = (cfg: Record<string, unknown>) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-learning-owner-')); dirs.push(d);
+    return new TelegramAdapter({ token: 'test-token', chatId: '-100123', pollIntervalMs: 100, ...cfg } as never, d);
+  };
+  afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'test-cleanup' }); });
+  it('the configured owner, else the one allowed sender, else nobody', () => {
+    expect(make({ ownerUserId: 111, authorizedUserIds: [111, 222] }).getLearningOwner()).toBe(111);
+    expect(make({ authorizedUserIds: [5] }).getLearningOwner()).toBe(5);
+    expect(make({ authorizedUserIds: [5, 6] }).getLearningOwner()).toBeUndefined();
+    expect(make({}).getLearningOwner()).toBeUndefined();
+  });
+  it('a second allowed sender added at runtime ends the single-sender fallback', () => {
+    const ids = [5];
+    const adapter = make({ authorizedUserIds: ids });
+    expect(adapter.getLearningOwner()).toBe(5);
+    ids.push(6);
+    expect(adapter.getLearningOwner()).toBeUndefined();
   });
 });
 
@@ -66,8 +109,8 @@ describe('TelegramAdapter.logInboundMessage keeps the team mark', () => {
 
   it('wiring: the correction capture uses the shared rule', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/commands/server.ts'), 'utf-8');
-    expect(src).toContain('const ownersWords = isOwnersOwnWords(entry, telegram?.getVerifiedOwner());');
+    expect(src).toContain('const ownersWords = isOwnersOwnWords(entry, telegram?.getLearningOwner());');
     expect(src).toContain('fromUser: ownersWords,');
-    expect(src).toContain('correctionShadow.observe(entry, telegram.getVerifiedOwner());');
+    expect(src).toContain('correctionShadow.observe(entry, telegram.getLearningOwner());');
   });
 });
