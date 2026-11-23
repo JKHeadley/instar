@@ -1,0 +1,264 @@
+{
+  "artifact": {
+    "build": {
+      "candidate": "ded7a23e7797d89d47b7038bf500be6ff82be2ea",
+      "files": {
+        "dist/commands/server.js": "45c69c82d5e9be0df943d9267f4da2e955876b30212a7b092825a3c52b8cd8c4",
+        "dist/core/ProfileProposalRequests.js": "483ecedcabb8bd09243f2194b652df99ca9e62e741f034be248b476a2b7080b2",
+        "dist/core/ProfileRuntimeGuard.js": "131b47a765f1a6f8d5c9a5ebfea4a6bc89421a910df0b0231f667b0b9d296309",
+        "dist/core/SessionManager.js": "582bf4ca1060a7f3c06780781ca238c6939183400beae5ff3f469a07b5412094",
+        "dist/core/TopicProfileOrchestrator.js": "a8fc0a2943607bdefeb4b8dcea6803e6bee7f3650542f770436ed0b30e3b9a7c",
+        "dist/core/TopicProfileStore.js": "ce99f333dc495a888f0c6c5e7ab13aec4dbf1c1e926b6eb830d0c52eb672a99f",
+        "dist/core/handleProfileProposalReply.js": "c2c71a1ae8f8d18330972a6a006e26d9d1daf88b3e4e596699e426decf67e387",
+        "dist/core/topicProfileAudit.js": "79bad03a545c9895770d59dc8e30dd44b48b73c1a1a5b4e7be5c4bb4f85e12c6",
+        "dist/core/topicProfileIngress.js": "c3037088d42b56856e3f08286620e51aa3b56d6375a5e6b6cff45a34d2ebfd63",
+        "dist/core/topicProfileWriteSurface.js": "9df036e4f5236a3b4bae5666692094cee2868e2cf2a95cba81748d0bbaf816ef",
+        "dist/core/types.js": "34841aad9008c1212772caeb3457502e99861020073b8ee28505d158fe192b87",
+        "dist/messaging/NotificationSelectivityGate.js": "bd941040c2d073df290bd7c4d2a4719150747121b7f1bb105e117efcb875feef",
+        "dist/messaging/TelegramAdapter.js": "2ad56f6768e248efc519e86e4d1b6da4c1153edd4dd63d8ad82f9be3ae83820c",
+        "dist/monitoring/guardManifest.js": "329b99ee4972b6829d28b2791968ec168f3eaff727cefaf2c2e1ec79d3e1a745",
+        "dist/server/routes.js": "8d7a8b856582fa8d430a981b313d4ec167bd7b390fe96cbcda4dcd2a0a5739f7"
+      },
+      "nativeDependency": {
+        "sha256": "1d27de2620b0b502ea7e0b882a379ffac9ac332131760333fd8cfcaea2887923",
+        "version": "better-sqlite3@12.8.0"
+      },
+      "runtimeUnchanged": true,
+      "sourceTree": "e7ceb0fd93504b14f6671fbab8d85cb573cca3e6"
+    },
+    "cleanup": {
+      "browserClosed": true,
+      "closedSessionCount": 4,
+      "method": "normal authenticated session closes, own-process SIGTERM and own-browser normal Quit",
+      "proxyStopped": true,
+      "serverStopped": true
+    },
+    "createdAt": "2026-11-23T02:10:54.167Z",
+    "environment": {
+      "excludedTrials": [
+        {
+          "kind": "global proxy on Node22",
+          "reason": "dedicated Telegram dispatcher bypassed it; the question was delivered normally",
+          "verdict": "NOT_EXERCISED"
+        },
+        {
+          "kind": "first Node26 phase",
+          "reason": "native SQLite ABI mismatch; rebuilt an isolated runtime and repeated affected cases",
+          "verdict": "EXCLUDED"
+        }
+      ],
+      "observedHealth": {
+        "knownDegradations": [
+          "tone-model-fallback",
+          "SessionManager.verifyInjection recovery attempt"
+        ],
+        "reason": "The health snapshot reported normal tone-model fallback; the later log also records an injection-submission warning and recovery attempt after target C restart. Boot subsystems were ready; overall health and destination runtime success are not certified.",
+        "status": "degraded"
+      },
+      "qualifiedPhases": [
+        {
+          "node": "v22.23.5",
+          "scope": "long-window, reminders, independent requests, compaction",
+          "telegramTransport": "normal dedicated dispatcher"
+        },
+        {
+          "nativeAbi": "147",
+          "node": "v26.13.1",
+          "relayStoreStartupFailure": false,
+          "scope": "clean restart and actual transport-failure recovery",
+          "stageB": "active",
+          "telegramTransport": "existing native HTTP1 dispatcher compatibility fallback with local CONNECT proxy"
+        }
+      ],
+      "transportHarness": {
+        "/tmp/profile-lifetime-connect-proxy.mjs": "ba8cdb53209ca5b72da338a79f3286728b46e64d40df78a2e6847b5e620190dd",
+        "/tmp/profile-lifetime-proxy-preload.mjs": "fc80a81a7a71b81d21edf134ddd9b627f822a3d7f179e6e7fd85154a7a66764f"
+      },
+      "watchdog": {
+        "remainingCasesObservedAfterVerification": true,
+        "serverSurvived": true,
+        "wrapperStopped": true
+      }
+    },
+    "featureId": "profile-confirmation-lifetime",
+    "limits": {
+      "app": "No App consent feature introduced or claimed",
+      "followup": "Batch requests and restart continuity remain a separate assigned slice",
+      "notClaimed": [
+        "full Local Verify",
+        "production deployment",
+        "automatic server-restart repost",
+        "single visible acknowledgment",
+        "healthy destination runtime from saved settings"
+      ],
+      "slack": {
+        "authority": "Chief1ab4c33e",
+        "fixtureCard": "wc_eeaa5fe5cfe7c94f",
+        "reason": "no-fixture",
+        "status": "unproven"
+      }
+    },
+    "riskCategories": [
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "runId": "final-seven-telegram-scenarios-qualified-20261122",
+    "runnerFingerprint": "real-signed-in-user-and-real-bot:9617df40e58dd35ab058a8decf20bb1dc6653c7fb5ddbb0f06f821de740c8e6f",
+    "scenarios": [
+      {
+        "description": "Exact native owner yes after more than eight minutes applies only its displayed target",
+        "evidence": {
+          "channelId": "278",
+          "deadline": "2026-11-24 01:26:37 UTC",
+          "elapsedSeconds": 506.87099599838257,
+          "messageIds": [
+            "294",
+            "301"
+          ]
+        },
+        "id": "long-visible-deadline",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Numbered yes applies nothing and gets one registered reminder with the original deadline; extra acknowledgment posts are retained",
+        "evidence": {
+          "additionalVisiblePosts": 2,
+          "channelId": "278",
+          "messageIds": [
+            "295",
+            "296",
+            "297",
+            "298",
+            "299"
+          ],
+          "noSettingChanged": true,
+          "registeredReminderCount": 1
+        },
+        "id": "numbered-reminder",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "An actual intervening agent acknowledgment does not cancel the pending question",
+        "evidence": {
+          "channelId": "278",
+          "messageIds": [
+            "294",
+            "299",
+            "301"
+          ]
+        },
+        "id": "agent-message-survival",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "A verified native Claude compaction between question and answer does not cancel it",
+        "evidence": {
+          "boundaryTimestamp": "2026-11-23T01:31:33.665Z",
+          "channelId": "278",
+          "control": "authenticated console input; no forged Telegram consent",
+          "messageIds": [
+            "294",
+            "301"
+          ]
+        },
+        "id": "compaction-survival",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Two pending questions resolve separately through their own native receipts; C and source remain unchanged",
+        "evidence": {
+          "channelId": "278",
+          "messageIds": [
+            "294",
+            "295",
+            "298",
+            "301",
+            "303"
+          ]
+        },
+        "id": "independent-requests",
+        "riskCategory": "concurrency",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "An old receipt applies nothing after restart; an actual agent-produced fresh registered question requires a new native yes",
+        "evidence": {
+          "CUnchangedBeforeFreshYes": true,
+          "channelId": "278",
+          "freshRequestId": "R-942b79d96d6a8010",
+          "messageIds": [
+            "300",
+            "315",
+            "318",
+            "320",
+            "321",
+            "322"
+          ],
+          "oldReceiptApplied": false
+        },
+        "id": "restart-fresh-question",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "A real connection interruption yields no registered receipt; unbound forum yes applies nothing and reaches non-authorizing recovery context",
+        "evidence": {
+          "channelId": "278",
+          "diagnosticInputTimestamp": "2026-11-23T01:50:40.423Z",
+          "failedAttemptHasNoReceipt": true,
+          "failedRequestId": "R-f59b9fc3f207fb10",
+          "failedTargetOrPatchDisclosed": false,
+          "httpStatus": 502,
+          "messageFileSha256": "0b0c70f80d5ed6f0a9c3428f163b1bf6d21d0980bef19408d3ba58cb8ed33caf",
+          "messageIds": [
+            "318",
+            "319",
+            "320",
+            "321",
+            "322"
+          ],
+          "plainRecoveryText": "Target C is still on Claude. The question I sent earlier was no longer available, so I've sent a new one for switching Target C to Codex. Reply yes directly to that new message and the switch will go through.",
+          "readerToolResultTimestamp": "2026-11-23T01:50:44.102Z",
+          "transportAcceptance": "unconfirmed"
+        },
+        "id": "unconfirmed-delivery-no-grant",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      }
+    ],
+    "surfaces": [
+      "telegram"
+    ],
+    "telegramVerdict": "PASS"
+  },
+  "entry": {
+    "featureId": "profile-confirmation-lifetime",
+    "runId": "final-seven-telegram-scenarios-qualified-20261122",
+    "contentHash": "b465ad1a24339520d726d493e98defa114730a79ef4f0e751a839f0d2eb4bcbe",
+    "signature": "AZmlsr7YHqfCM+dDez5zGBodVuL3Tk8uCtz+NkZ3rJmH8XYvaJtg12esOkjyAvR30yIuhJj2bPyZGCfVrX4KBw==",
+    "signerFingerprint": "9617df40e58dd35ab058a8decf20bb1dc6653c7fb5ddbb0f06f821de740c8e6f",
+    "surfaces": [
+      "telegram"
+    ],
+    "riskCategories": [
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "createdAt": "2026-11-23T02:10:54.167Z",
+    "prevEntryHash": "7e0b234102f88273de8b88ee4c9f6369971591260ce15c9e1900588b224b36db"
+  },
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEANnFd8J8PfroOHqCaT5ySjNABTiqjQKr36Mge4PP22qs=\n-----END PUBLIC KEY-----\n"
+}

@@ -18,5 +18,10 @@
   "tier": 2,
   "tierReasoning": "A live-found forum thread anchor suppressed diagnostic context; the narrow correction leaves consent and receipt matching unchanged and has independent security concurrence.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot owner reply diagnostic; this amendment adds no automatic action loop or consent authority."
+  }
 }
