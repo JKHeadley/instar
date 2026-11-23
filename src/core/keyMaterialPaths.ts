@@ -29,7 +29,7 @@
 // Raw exports can contain credentials. The local importer, its state and even the
 // scrubbed history are private to the originating machine and their owner-only APIs.
 export const PRIVATE_IMPORT_DIRECTORIES = Object.freeze([
-  'history-acquisition/', 'history-acquisition-archives/', 'import-preview-staging/', 'imported-history/',
+  'history-acquisition/', 'history-acquisition-archives/', 'import-preview-staging/', 'imported-history/', 'local-history-upload/',
 ]);
 
 export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
@@ -134,7 +134,7 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
  */
 export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   // Fixed import metadata and SQLite sidecars. Dynamically named chat and archive files are protected by path.
-  ...['history-acquisition/jobs.sqlite', 'history-acquisition/worker-lock.sqlite', 'imported-history/write-lock.sqlite']
+  ...['history-acquisition/jobs.sqlite', 'history-acquisition/worker-lock.sqlite', 'imported-history/write-lock.sqlite', 'imported-history/source-claims.sqlite', 'local-history-upload/exchange-lock.sqlite']
     .flatMap(file => ['', '-wal', '-shm', '-journal'].map(suffix => file + suffix)),
   'imported-history/manifest.json',
   'identity.json',

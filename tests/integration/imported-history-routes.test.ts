@@ -15,7 +15,7 @@ import path from 'node:path';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { mountImportedHistoryRoutes, QUOTED_NOTE } from '../../src/server/importedHistoryRoutes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
+import { ImportedHistoryStore, importedRef } from '../../src/import/ImportedHistoryStore.js';
 import { makeZip } from '../helpers/exportZip.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 
@@ -64,12 +64,17 @@ const owner = (r: request.Test) => agent(r).set('x-instar-operator-session', OWN
 it('keeps local session rows out of legacy lists and searches for both owner and agent callers', async () => {
   const { app, stateDir } = boot();
   const store = new ImportedHistoryStore(stateDir);
-  for (const from of ['codex', 'claude-code'] as const) {
-    store.addConversation({ from, originalId: 'local-private', title: 'Private local title', createdAt: null,
+  const localRefs: string[] = [];
+  await store.withWriter(async () => { for (const from of ['codex', 'claude-code'] as const) {
+    const claim = store.assertOrClaimLocalSource({ ownerUserId: 'operator', source: from, originalId: 'local-private',
+      projectPath: '/synthetic', representation: from === 'codex' ? 'canonical' : 'claude-records', parserContractVersion: 1 });
+    localRefs.push(importedRef(from, claim.destinationId));
+    store.addConversation({ from, originalId: claim.destinationId, title: 'Private local title', createdAt: null,
       messages: [{ key: 'local', at: null, role: 'operator', senderName: 'Me', text: 'private sapphire' }],
       overflow: [], stats: { redactions: 0, splitMessages: 0, droppedBranches: 0 } });
-  }
-  store.flush();
+  } store.flush(); });
+  expect(localRefs).toHaveLength(2);
+  for (const ref of localRefs) expect(store.readMessages(ref)).toHaveLength(1);
   expect(store.hasConversations()).toBe(false);
   for (const authenticate of [owner, agent]) {
     const listed = await authenticate(request(app).get('/imported-history/conversations'));
@@ -79,7 +84,9 @@ it('keeps local session rows out of legacy lists and searches for both owner and
     expect(searched.status).toBe(200);
     expect(searched.body.complete).toBe(true);
     expect(searched.body.hits ?? searched.body.results).toEqual([]);
-    expect((await authenticate(request(app).get('/imported-history/conversations/imported:codex:local-private'))).status).toBe(400);
+    for (const ref of localRefs) {
+      expect((await authenticate(request(app).get('/imported-history/conversations/' + encodeURIComponent(ref)))).status).toBe(400);
+    }
   }
 });
 

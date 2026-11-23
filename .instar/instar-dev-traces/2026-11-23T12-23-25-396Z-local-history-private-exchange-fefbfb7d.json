@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "slug": "local-history-private-exchange",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T12:23:25.396Z",
+  "artifactPath": "upgrades/side-effects/local-history-private-exchange.md",
+  "artifactSha256": "bee2d17a046577e11fb3f34f561eddfea4aadb5924cd0ff7d07834aa750977d5",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/core/keyMaterialPaths.ts",
+    "src/data/state-coherence-registry.json",
+    "src/import/LocalHistoryExchange.ts",
+    "src/import/privateImportState.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/local-history-exchange.test.ts",
+    "upgrades/next/local-history-private-exchange.md",
+    "upgrades/side-effects/local-history-private-exchange.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Private intake resource admission and private-namespace protection follow the approved sensitive native contract; the supporting module enables no endpoint.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
