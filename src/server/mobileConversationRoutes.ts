@@ -599,7 +599,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       for (const x of svc!.store.listConversations({ limit: 500, cursor: c ? cursor : null }).conversations) {
         out.push({ id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: null, ...(x.ownerPerson ? { ownerPerson: x.ownerPerson } : {}) });
       }
-    } catch { /* @silent-fallback-ok — the flag is a hint; a failed read leaves it false */ }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'work-card-visibility-unavailable') throw error;
+      // @silent-fallback-ok: an ordinary history read failure leaves this optional hint false.
+    }
     try {
       for (const t of deps.telegramTopics?.() ?? []) {
         const r: ConversationListRow = { id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: null };
@@ -675,6 +678,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
+    try {
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
@@ -693,7 +697,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
       if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
-      return deviceMayUse(deps.pairing, req, String(r.id));
+      return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
     }).map(shownPreview);
     // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
     // anything after the page is unread. A Bearer read without a forwarded reader gets none.
@@ -758,14 +762,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (!pinReader) return {};
       let refs: PinnedRef[] = [];
       try { refs = store.pinnedFor(pinReader.key); } catch { return {}; } // @silent-fallback-ok — no pin fields rather than a failed list
-      const shown = refs.filter((p) => pinReaderMay(req, pinReader, pinAccessRef(p.ref)));
+      const shown = refs.filter((p) => !(p.ref.startsWith('app:') && svc!.store.isHiddenConversation?.(p.ref)) && pinReaderMay(req, pinReader, pinAccessRef(p.ref)));
       const byRef = new Map<string, ConversationListRow>();
       const offer = (r: ConversationListRow) => { const k = canonicalRefOfRow(r); if (k && !byRef.has(k)) byRef.set(k, r); };
       for (const r of rows) offer(r);
       const missing = () => shown.some((p) => !byRef.has(p.ref));
       if (missing()) for (const r of withTree(withFields(visible(peerRows), true))) offer(r);
       if (missing()) {
-        try { for (const r of withTree(withFields(visible(localConversationListPage(deps, 200, null).rows.map((x) => ({ ...x, machine: self }))), false))) offer(r); } catch { /* @silent-fallback-ok — a pinned row not found stays in pinnedRefs only */ }
+        try { for (const r of withTree(withFields(visible(localConversationListPage(deps, 200, null).rows.map((x) => ({ ...x, machine: self }))), false))) offer(r); } catch (error) {
+          if (error instanceof Error && error.message === 'work-card-visibility-unavailable') throw error;
+          // @silent-fallback-ok: a pinned row not found stays in pinnedRefs only.
+        }
       }
       // An app conversation older than every page is read straight from the store (every machine holds it).
       for (const p of shown) {
@@ -775,7 +782,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
           if (!c || c.tombstoned) continue;
           const raw: ConversationListRow = { id: c.conversationKey, platform: 'app', title: c.title, lastActivity: c.lastActivity ?? c.createdAt, lastPreview: c.lastPreview, machine: self, ...(c.ownerPerson ? { ownerPerson: c.ownerPerson } : {}) };
           for (const r of withTree(withFields(visible([raw]), false))) offer(r);
-        } catch { /* @silent-fallback-ok — a pinned row not found stays in pinnedRefs only */ }
+        } catch (error) {
+          if (error instanceof Error && error.message === 'work-card-visibility-unavailable') throw error;
+          // @silent-fallback-ok: a pinned row not found stays in pinnedRefs only.
+        }
       }
       const pinnedRows = shown.map((p) => byRef.get(p.ref)).filter((r): r is ConversationListRow => !!r);
       return { pinnedRefs: shown, pinnedRows };
@@ -783,7 +793,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       const rows = withTree(withFields(visible(m.rows), false));
-      res.json({ conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      res.json({ ownerProjectionVersion: 1, conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -791,9 +801,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const readerQ = reader ? `&reader=${encodeURIComponent(reader.key)}` : '';
     const q = `/mobile/conversations?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}${readerQ}`;
     let peerBeyond = false;
+    let unreadProjectionIncomplete = false;
     const peers = deps.pool
       ? await fetchPeers(deps.pool, q, MAX_POOL_LIST_BYTES, (body, machineId) => {
-        if (body.unreadBeyondPage === true) peerBeyond = true;
+        if (body.ownerProjectionVersion === 1) {
+          if (body.unreadBeyondPage === true) peerBeyond = true;
+        } else if (body.unreadBeyondPage === true) unreadProjectionIncomplete = true;
         return {
           rows: (Array.isArray(body.conversations) ? body.conversations.slice(0, limit) : [])
             .map((r) => sanitizePeerConversation(r, machineId))
@@ -820,7 +833,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
     const treeRows = withTree(rows);
-    res.json({ conversations: treeRows, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
+    res.json({ ownerProjectionVersion: 1, conversations: treeRows, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...(unreadProjectionIncomplete ? { unreadProjectionIncomplete: true } : {}), ...totals(rows, beyond) });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'work-card-visibility-unavailable') {
+        res.status(503).json({ error: 'work-card-visibility-unavailable', detail: 'Work card visibility is not ready. Try this read again.' });
+        return;
+      }
+      throw error;
+    }
   });
 
   // ── Read reports (mobile-unread-messages §3.5) ──

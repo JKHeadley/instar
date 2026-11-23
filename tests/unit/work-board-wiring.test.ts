@@ -194,7 +194,7 @@ describe('Work Board wiring — 2. FUNCTIONAL', () => {
     expect(validateAppEvent({ ...base, role: 'agent' })).not.toBeNull();
   });
 
-  it('archived-card conversations leave the list before paging, and everything shows when the card store cannot be read', () => {
+  it('archived-card conversations leave the list before paging, and an unreadable classification is an honest failed read', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-list-'));
     try {
       const store = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' } as never);
@@ -208,7 +208,7 @@ describe('Work Board wiring — 2. FUNCTIONAL', () => {
       expect(page2.conversations.map((c) => c.canonicalKey)).toEqual([`app:${keys[0]}`]);
       expect(page2.nextCursor).toBeNull();
       store.hiddenConversationKeys = () => { throw new Error('card store unreadable'); };
-      expect(store.listConversations({ limit: 10 }).conversations).toHaveLength(5);
+      expect(() => store.listConversations({ limit: 10 })).toThrow('work-card-visibility-unavailable');
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/work-board-wiring.test.ts' }); }
   });
 
