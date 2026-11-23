@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-23T05:52:26.102Z",
+  "slug": "profile-reply-context-followup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/handleProfileProposalReply.ts",
+      "src/data/awareness/profile-reply-context-followup.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This repair exposes existing verified reply and delivery facts. It creates no autonomous approval, send, retry, timer, mutation or suppression loop. Existing one-shot question delivery remains behind its current owner, receipt and budget controls."
+  },
+  "verdict": "pass"
+}

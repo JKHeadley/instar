@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "profile-reply-context-followup",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-23T05:51:58.502Z",
+  "artifactPath": "upgrades/side-effects/profile-reply-context-followup.md",
+  "artifactSha256": "06afd730c8cef5e48eca2644d3c2570e36b410fa57d98562d1a56d101a98d642",
+  "coveredFiles": [
+    "docs/specs/profile-reply-context-followup.eli16.md",
+    "docs/specs/profile-reply-context-followup.md",
+    "src/commands/server.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "src/data/awareness/profile-reply-context-followup.md",
+    "src/server/routes.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/integration/topic-profile-routes.test.ts",
+    "tests/unit/profile-proposal-requests.test.ts",
+    "upgrades/next/profile-reply-context-followup.md",
+    "upgrades/side-effects/profile-reply-context-followup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible communication-data repair: verified diagnostic facts and additive actual-receipt output only. No consent, permission, apply decision, persistent state, timer, retry or message-filter authority changes. Independent scoped security review concurred with this tier.",
+  "eli16Path": "docs/specs/profile-reply-context-followup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/profile-reply-context-followup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "build",
+        "outcome": "focused-regressions",
+        "verified": false
+      },
+      {
+        "name": "implementation-security",
+        "outcome": "scoped",
+        "verified": false
+      }
+    ]
+  }
+}

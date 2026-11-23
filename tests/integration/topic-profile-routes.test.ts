@@ -399,7 +399,7 @@ describe('effort pin (POST→store→GET data-flow)', () => {
 describe('identity-security-creation-provenance v5: propose with confirmIn', () => {
   const OWNER = 7812716706;
   function fakes(o: { sourceOperator?: number | null; destBinding?: number | null; destVerified?: boolean; fleet?: boolean } = {}) {
-    const sends: Array<{ topic: number; text: string; category?: string }> = [];
+    const sends: Array<{ topic: number; text: string; category?: string; messageId: number }> = [];
     let mid = 900;
     return {
       sends,
@@ -407,7 +407,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
         // The switch is live on a development agent (umbrella §10 per-piece switch).
         config: { projectName: 'test-project', projectDir: path.dirname(stateDir), stateDir, port: 0, sessions: {}, scheduler: {}, ...(o.fleet ? {} : { developmentAgent: true }) },
         telegram: {
-          sendToTopic: async (topic: number, text: string) => { sends.push({ topic, text, category: notificationContext.getStore()?.category }); return { messageId: ++mid }; },
+          sendToTopic: async (topic: number, text: string) => { const messageId = ++mid; sends.push({ topic, text, category: notificationContext.getStore()?.category, messageId }); return { messageId }; },
           getOwnerUserId: () => OWNER,
           getChatId: () => '-1001',
           getNativeTopicDestination: (topicId: number) => ({ chatId: '-1001', threadId: topicId }),
@@ -425,6 +425,27 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
       },
     };
   }
+
+  it('returns authoritative registered delivery facts for a single question and its reminder', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false }); const f = fakes(); const app = buildApp(bundle, f.extra);
+    const question = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(question.status).toBe(200);
+    expect(question.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 130715, messageId: f.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    const reminder = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ remindRequestId: question.body.requestId, confirmIn: 130715 });
+    expect(reminder.status).toBe(200);
+    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 130715, messageId: f.sends[1].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    expect(bundle.confirmSlots.proposals.get('130715', question.body.requestId)?.receipts.map(receipt => receipt.messageId)).toEqual([901, 902]);
+    expect(bundle.store.resolve('23')).toBeNull(); expect(f.sends).toHaveLength(2);
+  });
+  it('cannot forge single-reminder delivery facts through the existing request whitelist', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false }); const f = fakes(); const app = buildApp(bundle, f.extra);
+    const question = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli', confirmIn: 130715 });
+    for (const forged of [{ replyAlreadyDelivered: true }, { settingsApplied: true }, { questionDelivery: { kind: 'registered', topicId: 23, messageId: 1 } }]) {
+      const response = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ remindRequestId: question.body.requestId, confirmIn: 130715, ...forged });
+      expect(response.status).toBe(400); expect(response.body.replyAlreadyDelivered).not.toBe(true); expect(response.body.questionDelivery?.kind).not.toBe('registered');
+    }
+    expect(f.sends).toHaveLength(1); expect(bundle.store.resolve('23')).toBeNull();
+  });
 
   it('shows an immutable hours-long deadline through HTTP and still applies after eight minutes', async () => {
     let now = Math.floor(Date.now() / 1000) * 1000;
@@ -448,6 +469,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     f.extra.telegram.sendToTopic = async (...args: Parameters<typeof send>) => { const receipt = await send(...args); now = 1000; return receipt; };
     const result = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli', confirmIn: 130715 });
     expect(result.status).toBe(409); expect(result.body).toMatchObject({ ok: false, delivered: true, reason: 'question-no-longer-active' });
+    expect(result.body.replyAlreadyDelivered).not.toBe(true); expect(result.body.questionDelivery?.kind).not.toBe('registered');
     expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]); expect(bundle.store.resolve(23)).toBeNull();
   });
 
@@ -613,6 +635,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     const res = await request(buildApp(bundle, extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
       .send({ framework: 'codex-cli', confirmIn: 130715 });
     expect(res.status).toBe(502);
+    expect(res.body.replyAlreadyDelivered).not.toBe(true); expect(res.body.questionDelivery?.kind).not.toBe('registered');
     expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]);
     expect(bundle.store.resolve(23)).toBeNull();
   });
@@ -625,15 +648,16 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     expect(f.sends[0].topic).toBe(23);
     expect(f.sends[0].category).toBe('owner-decision');
     expect(bundle.confirmSlots.proposals.list('23')[0]?.target).toBe('23');
+    expect(res.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 23, messageId: f.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
   });
 });
 
 
 describe('one owner-confirmed HTTP batch', () => {
   const owner = 777, source = 1001;
-  function batchFixture(options: { owner?: number; sameNames?: boolean; failDelivery?: boolean } = {}) {
-    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
-    const sends: Array<{ topic: number; text: string; options: unknown }> = [];
+  function batchFixture(options: { owner?: number; sameNames?: boolean; failDelivery?: boolean; now?: () => number; afterSend?: () => void; proposalTtlMs?: () => number } = {}) {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false, now: options.now, proposalTtlMs: options.proposalTtlMs });
+    const sends: Array<{ topic: number; text: string; options: unknown; messageId: number }> = [];
     const names = new Map<number, string>([[source, 'Planning'], [23, 'Work'], [24, options.sameNames ? 'Work' : 'Other Work']]);
     let mid = 900;
     const app = buildApp(bundle, {
@@ -644,7 +668,7 @@ describe('one owner-confirmed HTTP batch', () => {
         getTopicName: (id: number) => names.get(id) ?? null,
         sendToTopic: async (topic: number, text: string, sendOptions: unknown) => {
           if (options.failDelivery) throw new Error('verified transport failure');
-          sends.push({ topic, text, options: sendOptions }); return { messageId: ++mid };
+          const messageId = ++mid; sends.push({ topic, text, options: sendOptions, messageId }); options.afterSend?.(); return { messageId };
         },
       },
       topicOperatorStore: { getOperator: (id: string | number) => String(id) === String(source) ? { platform: 'telegram', uid: String(options.owner ?? owner) } : null,
@@ -657,6 +681,7 @@ describe('one owner-confirmed HTTP batch', () => {
   it('delivers one question and atomically saves only its two named targets on an exact native reply', async () => {
     const h = batchFixture(); await h.bundle.store.mutate('99', { framework: 'claude-code', updatedBy: 'fixture' });
     const response = await h.post(); expect(response.status).toBe(200); expect(h.sends).toHaveLength(1);
+    expect(response.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: source, messageId: h.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
     expect(h.sends[0]).toMatchObject({ topic: source, options: { formatMode: 'html' } });
     expect(h.bundle.store.resolve('23')).toBeNull(); expect(h.bundle.store.resolve('24')).toBeNull();
     const question = h.bundle.confirmSlots.proposals.get(String(source), response.body.requestId)!;
@@ -719,6 +744,7 @@ describe('one owner-confirmed HTTP batch', () => {
     const oldReceipt = original.receipts[0].messageId;
     const reminder = await h.post({ targets: undefined, remindRequestIds: [first.body.requestId] });
     expect(reminder.status).toBe(200);
+    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: source, messageId: h.sends[1].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
     expect(reminder.body.requestId).toBe(first.body.requestId);
     expect(reminder.body.expiresAt).toBe(first.body.expiresAt);
     expect(reminder.body.reminder).toBe(true);
@@ -731,6 +757,24 @@ describe('one owner-confirmed HTTP batch', () => {
     expect(result.result?.settingsSaved).toBe(true);
     expect(h.bundle.store.resolve('23')?.framework).toBe('codex-cli');
     expect(h.bundle.store.resolve('24')?.framework).toBe('claude-code');
+  });
+
+  it('never claims a completed registered batch response after unknown delivery or lost registration', async () => {
+    const failed = batchFixture({ failDelivery: true }); const unknown = await failed.post();
+    expect(unknown.status).toBe(502); expect(unknown.body.replyAlreadyDelivered).not.toBe(true); expect(unknown.body.questionDelivery?.kind).not.toBe('registered');
+    let now = 0;
+    const expired = batchFixture({ now: () => now, proposalTtlMs: () => 1000, afterSend: () => { now = 1000; } });
+    const inactive = await expired.post(); expect(inactive.status).toBe(409); expect(inactive.body.delivered).toBe(true);
+    expect(inactive.body.replyAlreadyDelivered).not.toBe(true); expect(inactive.body.questionDelivery?.kind).not.toBe('registered');
+    expect(expired.bundle.store.all()).toEqual({});
+  });
+  it('cannot forge batch question delivery facts in input fields', async () => {
+    const h = batchFixture();
+    for (const forged of [{ replyAlreadyDelivered: true }, { settingsApplied: true }, { questionDelivery: { kind: 'registered', topicId: source, messageId: 1 } }]) {
+      const response = await h.post(forged); expect(response.status).toBe(400);
+      expect(response.body.replyAlreadyDelivered).not.toBe(true); expect(response.body.questionDelivery?.kind).not.toBe('registered');
+    }
+    expect(h.sends).toEqual([]); expect(h.bundle.store.all()).toEqual({});
   });
 
 });

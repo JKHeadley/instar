@@ -3187,7 +3187,7 @@ export function wireTelegramRouting(
         + JSON.stringify({ confirmIn: Number(source), ownerTurnHandle: ownerTurn.handle, ownerTurnInboundId: ownerTurn.inboundId,
           batchPath: '/topic-profile/propose-batch' })
         + '\nUse this handle only when a new or corrected question helps with this actual owner turn. It bypasses question-creation cooldown, not permission, delivery verification or exact yes. List all requested conversations in one fully disclosed batch when possible. Never apply settings from this handle.' : '';
-      const context = profileProposalConversationContext({ requests, source, ownerTurn,
+      const context = profileProposalConversationContext({ requests, source, text, ownerTurn,
         replyTo: msg.metadata?.replyToMessageId, messageId: platformMessageIdFrom(msg.id),
         forwarded: msg.metadata?.forwarded === true,
         authenticatedOwner,

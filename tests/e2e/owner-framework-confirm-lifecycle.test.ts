@@ -174,7 +174,7 @@ describe('Owner framework confirmation is alive through production composition',
     let context = ''; let words = '';
     h.telegram.onTopicMessage = async message => {
       words = message.content;
-      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE),
+      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE), text: message.content,
         replyTo: message.metadata?.replyToMessageId, messageId: Number(message.id.slice(3)), forwarded: message.metadata?.forwarded === true,
         authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId,
         eligible: dest => crossTopicEligible({ ownerUid: String(OWNER), confirmerUid: message.userId,
@@ -188,6 +188,7 @@ describe('Owner framework confirmation is alive through production composition',
       from: { id: OWNER, first_name: 'Fixture' }, chat: { id: -1001, type: 'supergroup' }, text: '1) yes', reply_to_message: { message_id: 902 } };
     await polling.processUpdate({ update_id: 1, message });
     expect(words).toBe('1) yes'); expect(context).toContain(b.body.requestId); expect(context).not.toContain(a.body.requestId);
+    expect(JSON.parse(context.split('\n')[1]).replyFacts).toEqual({ nativeReplyVerified: true, replyToMessageId: 902, inboundMessageId: 990, textIsExactYes: false });
     expect(context).toContain('Use Claude'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.slots.proposals.list(String(SOURCE))).toHaveLength(2);
     const operation = JSON.parse(context.split('\n')[1]).reminder;
     const reminder = await request(h.app).post(operation.path).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send(operation.body);
@@ -203,13 +204,16 @@ describe('Owner framework confirmation is alive through production composition',
 
   it('executes the supplied same-topic reminder operation without an invalid cross-topic field', async () => {
     const h = harness(); h.bind(TARGET, OWNER); const proposed = await h.propose(); expect(proposed.status).toBe(200);
-    const context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(TARGET),
-      replyTo: 901, messageId: 990, forwarded: false,
+    const incoming = { text: '1) yes', replyTo: 901, messageId: 990 };
+    const context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(TARGET), text: incoming.text,
+      replyTo: incoming.replyTo, messageId: incoming.messageId, forwarded: false,
       authenticatedOwner: () => h.operators.getOperator(TARGET)?.uid === String(OWNER),
       eligible: () => !new TeamConfinement(h.stateDir).isConfined(`telegram:${TARGET}`), placement: () => 'standalone',
       currentEcho: p => { const fresh = h.surface.renderProposalEcho(p.target, p.patch, h.telegram.getTopicName(Number(p.target))!); return fresh.ok ? fresh.echo : null; },
     });
-    const operation = JSON.parse(context.split('\n')[1]).reminder;
+    const verifiedContext = JSON.parse(context.split('\n')[1]);
+    expect(verifiedContext.replyFacts).toEqual({ nativeReplyVerified: true, replyToMessageId: incoming.replyTo, inboundMessageId: incoming.messageId, textIsExactYes: false });
+    const operation = verifiedContext.reminder;
     expect(operation.body).not.toHaveProperty('confirmIn');
     const reminder = await request(h.app).post(operation.path).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send(operation.body);
     expect(reminder.status).toBe(200); expect(reminder.body.requestId).toBe(proposed.body.requestId); expect(h.store.resolve(TARGET)).toBeNull();
@@ -300,7 +304,7 @@ describe('batch confirmation through native Telegram polling and production comp
     let context = '', words = '';
     h.telegram.onTopicMessage = async message => {
       words = message.content;
-      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE), replyTo: message.metadata?.replyToMessageId,
+      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE), text: message.content, replyTo: message.metadata?.replyToMessageId,
         messageId: Number(message.id.slice(3)), forwarded: message.metadata?.forwarded === true,
         authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId,
         eligible: target => h.telegram.getTopicName(Number(target)) !== null, placement: () => 'standalone',
@@ -314,6 +318,7 @@ describe('batch confirmation through native Telegram polling and production comp
     await polling.processUpdate({ update_id: 1, message: { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000),
       from: { id: OWNER, first_name: 'Fixture owner' }, chat: { id: -1001, type: 'supergroup' }, text: '1) yes', reply_to_message: { message_id: receipt } } });
     expect(words).toBe('1) yes'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
+    expect(JSON.parse(context.split('\n')[1]).replyFacts).toEqual({ nativeReplyVerified: true, replyToMessageId: receipt, inboundMessageId: 990, textIsExactYes: false });
     const operation = JSON.parse(context.split('\n')[1]).reminder;
     expect(operation.path).toBe('/topic-profile/propose-batch'); expect(operation.body.remindRequestIds).toEqual([proposed.body.requestId]);
     await withNotificationEnvelope(verifiedReplyEnvelope('agent-progress-fixture'), () => h.telegram.sendToTopic(SOURCE, 'I am still working on the other task.'));
@@ -321,8 +326,11 @@ describe('batch confirmation through native Telegram polling and production comp
     const reminder = await h.proposeBatch(operation.body); expect(reminder.status).toBe(200);
     expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
     const current = h.slots.proposals.get(String(SOURCE), reminder.body.requestId)!;
-    expect(current.receipts).toHaveLength(1); expect(current.receipts[0].messageId).not.toBe(receipt);
-    expect((await h.confirm(OWNER, reminder.body.requestId, 'yes', 1000, current.receipts[0].messageId)).written).toBe(true);
+    expect(reminder.body.requestId).toBe(proposed.body.requestId); expect(reminder.body.expiresAt).toBe(proposed.body.expiresAt);
+    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: SOURCE }, settingsApplied: false, replyAlreadyDelivered: true });
+    const remindedReceipt = reminder.body.questionDelivery.messageId;
+    expect(current.receipts.map(item => item.messageId)).toEqual([receipt, remindedReceipt]); expect(remindedReceipt).not.toBe(receipt);
+    expect((await h.confirm(OWNER, reminder.body.requestId, 'yes', 1000, remindedReceipt)).written).toBe(true);
     expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.store.resolve(SECOND_TARGET)?.framework).toBe('claude-code');
   });
 
@@ -350,5 +358,35 @@ describe('batch confirmation through native Telegram polling and production comp
     const result = await handleAndAcknowledgeProfileProposalReply({ requests: h.slots.proposals, surface: h.surface, source: String(SOURCE), text: 'yes', messageId: 990,
       replyTo: 901, forwarded: false, principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, verifiedOwner: () => true, eligible: () => true, placement: () => 'standalone', name: () => 'Project Work' }, async () => { throw new Error('No acknowledgment expected'); });
     expect(result.result?.settingsSaved).not.toBe(true); expect(h.store.all()).toEqual({});
+  });
+});
+
+
+describe('verified native reply facts remain diagnostics in the actual polling data flow', () => {
+  it('preserves exact-yes text and native IDs without applying from context, and keeps guarded contexts empty', async () => {
+    const h = harness(); const proposed = await h.propose(SOURCE); expect(proposed.status).toBe(200);
+    const receipt = h.slots.proposals.get(String(SOURCE), proposed.body.requestId)!.receipts[0].messageId;
+    let context = '', incomingText = '';
+    h.telegram.onTopicMessage = async message => {
+      incomingText = message.content;
+      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE), text: message.content,
+        replyTo: message.metadata?.replyToMessageId, messageId: Number(message.id.slice(3)), forwarded: message.metadata?.forwarded === true,
+        authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId,
+        eligible: target => h.telegram.getTopicName(Number(target)) !== null, placement: () => 'standalone',
+        currentEcho: proposal => { const rendered = h.surface.renderProposalEcho(proposal.target, proposal.patch, h.telegram.getTopicName(Number(proposal.target))!); return rendered.ok ? rendered.echo : null; },
+      });
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    const incoming = { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000), from: { id: OWNER, first_name: 'Fixture owner' },
+      chat: { id: -1001, type: 'supergroup' }, text: 'yes', reply_to_message: { message_id: receipt } };
+    await polling.processUpdate({ update_id: 1, message: incoming });
+    expect(incomingText).toBe('yes');
+    expect(JSON.parse(context.split('\n')[1]).replyFacts).toEqual({ nativeReplyVerified: true, replyToMessageId: receipt, inboundMessageId: 990, textIsExactYes: true });
+    expect(h.store.resolve(TARGET)).toBeNull(); expect(h.respawns).toEqual([]); expect(h.sent).toHaveLength(1);
+    context = '';
+    await polling.processUpdate({ update_id: 2, message: { ...incoming, message_id: 991, forward_origin: { type: 'user' } } });
+    expect(context).toBe(''); expect(h.store.resolve(TARGET)).toBeNull();
+    await polling.processUpdate({ update_id: 3, message: { ...incoming, message_id: 992, reply_to_message: { message_id: receipt - 1 } } });
+    expect(context).toBe(''); expect(h.store.resolve(TARGET)).toBeNull();
   });
 });
