@@ -27,9 +27,9 @@ Resolve the primary chat only from the existing canonical pinned/hierarchy refer
 Tests cover canonical and impostor titles, missing/off-page refs, grouped/flat/search states, no duplicate role row, scrolling and refresh stability. Real native captures cover default, minimum width, maximum text and light mode. A new app-wide regression check verifies primary-before-Projects geometry and the role’s unique accessible identity.
 
 ## Status
-Diagnosis recorded; design and implementation in progress. Mac and iPhone evidence and release receipts are required before closure. No existing conversation changed or deleted.
+Diagnosis recorded. The later sections record client releases; complete Mac/iPhone evidence review and closure remain open. No existing conversation changed or deleted.
 
-## Mac Verification In Progress
+## Earlier Mac Verification Record
 The native fixture passed standard and minimum windows, maximum text at both widths, light, grouped, search, scrolling, ordinary selection across refresh, Space, Return and authoritative absence. The independent Codex review found sub-11-point purpose/count text at 85% scale; both fonts now clamp to 11 points. The final candidate's native matrix passed after that correction. Tour key isolation, full shared tests and numbered unread fit remain gates before release. iPhone proof remains open.
 
 
@@ -38,3 +38,9 @@ The native fixture passed standard and minimum windows, maximum text at both wid
 Earned rule: DS-LAYOUT-12. This record remains open. Adding a rule does not certify its implementation or release. The independent app and server owners retain the execution and proof requirements above.
 
 The Apple app owner reports Mac version 0.5.1, build 132, released with a normal installed update at 22:38:28 UTC on 22 November. Its private release record is commit c32a00f, based on source b04220f. The report records 13 native navigation cases, seven tour keyboard cases and the shared suite with 1,152 executed, one skipped and zero failures. This register read the release record, but did not independently rerun those native checks. Matching iPhone size and maximum-text proof, TestFlight delivery and release verification remain pending; this record is not closed.
+
+## Later Release Receipts
+
+The Apple owner reports matching primary-conversation placement in iPhone 0.5.2 build 132, available in internal TestFlight at source b0621e6e0de8c9fa3eee5810ea93002760da94e3. Normal/minimum text checks and final maximum-accessibility checks are separately recorded in its private release evidence. App Store submission was reported as waiting for review; this register has no physical-device install or Store-approval proof.
+
+The later Mac 0.5.2 build 137 installed normally from build 136 on the Laptop, with signature, Gatekeeper and eight-second reopen proof at 2026-11-23 09:53:33 UTC, according to the Apple owner. Its runtime source is bee1f46dd6e3c1c5cd7e849510967b6e6f74f5da. This updates the earlier pending-release snapshot above; the register did not independently replay the native runs or installed update. The entry stays open for its complete evidence and closure process. No existing conversation was moved or deleted.

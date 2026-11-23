@@ -30,7 +30,7 @@ Regression checks cover Work Board and session creation, explicit person-created
 ## Status
 Root cause and private live-reference evidence recorded. Server card wc_26e234784f116ae6 owns implementation. Client contract adoption, reconciliation proof and releases remain required. Nothing moved or deleted.
 
-## Server Owner Readiness Check
+## Earlier Server Owner Readiness Snapshot
 At 14:13 PST on 2026-11-22 the parity owner confirmed that provenance, hierarchy state and reconciliation remain audit/draft work only. The three backend cards have no implementation pickup, exact tested head or deployment proof. Existing generated Work Board conversations are preserved. The app must continue handling absent metadata and may not claim the generated-root problem is fixed by the distinct Chief control. The owner was asked to progress the already authorized server work, without prompting Justin again for a default board approval label.
 
 
@@ -39,3 +39,7 @@ At 14:13 PST on 2026-11-22 the parity owner confirmed that provenance, hierarchy
 Earned rule: DS-LAYOUT-13. This record remains open. Adding a rule does not certify its implementation or release. The independent app and server owners retain the execution and proof requirements above.
 
 Creation provenance and validated hierarchy remain owned by the server work card. The navigation release does not establish parentage or close this feedback item. No existing conversation has been moved or deleted by this register update.
+
+## Later Client Release Receipt
+
+The Apple owner reports Mac 0.5.2 build 137 at source bee1f46dd6e3c1c5cd7e849510967b6e6f74f5da, with verified child nesting and a recoverable unplaced group in that client. Its normal installed update completed at 2026-11-23 09:53:33 UTC. This supersedes a claim that all client implementation is still absent; it does not establish actual production-owner graph activation, complete server provenance adoption or reconciliation of existing chats. Deferred title readability polish remains separately tracked by the app owner. The earlier startup failures and private evidence remain retained. This register has not moved or deleted a conversation, and this entry remains open.

@@ -32,4 +32,4 @@ Diagnosis recorded. Existing server routes are documented by the parity owner; m
 
 Earned rule: DS-ACTION-8. This record remains open. Adding a rule does not certify its implementation or release. The independent app and server owners retain the execution and proof requirements above.
 
-Native menu operations and their server contracts remain unfinished. The navigation release does not close this feedback item.
+The Apple owner reports that Mac build 133 shipped the bounded native menu/window/pin increment, with six native cases and normal installed update proof. This is not proof that every requested server-backed chat/message action exists. Remaining contracts and actual action evidence stay open; subsequent navigation releases do not close this item. The register did not independently repeat that native execution.
