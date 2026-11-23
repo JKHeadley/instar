@@ -4202,6 +4202,24 @@ async function whatsappMemoryCheck(
 }
 
 /**
+ * SEC-149: a typed `[image:/path]` (or document, video, voice, file) from a WhatsApp sender must
+ * not reach the session as a live media tag, as on Telegram, Slack and iMessage. WhatsApp never
+ * delivers real media as a path tag here (its placeholders are `[Image]`, `[Video]` and
+ * `[Document: <sender's file name>]`), so escaping the whole text loses nothing; the document
+ * placeholder, whose file name the sender chooses, is itself made inert. The sender's profile name
+ * is also the sender's choice and goes into the session's tag, so brackets are removed (as
+ * SessionManager.injectWhatsAppMessage already does for live sessions) and a name like
+ * `[image:/path]` cannot become a live tag in a new session's first prompt either.
+ */
+function whatsAppInboundText(msg: { content: string; metadata?: Record<string, unknown> }): { text: string; senderName: string | undefined } {
+  const rawSenderName = (msg.metadata?.senderName as string) ?? undefined;
+  return {
+    text: escapeTypedPathTags(msg.content),
+    senderName: rawSenderName ? rawSenderName.replace(/[\[\]]/g, '') || undefined : undefined,
+  };
+}
+
+/**
  * Wire WhatsApp message routing: incoming messages → Claude sessions.
  *
  * Similar to wireTelegramRouting but for WhatsApp JIDs instead of Telegram topics.
@@ -4216,17 +4234,7 @@ function wireWhatsAppRouting(
     const jid = msg.channel?.identifier;
     if (!jid) return;
 
-    // SEC-149: a typed `[image:/path]` (or document, video, voice, file) from a WhatsApp sender must
-    // not reach the session as a live media tag, as on Telegram, Slack and iMessage. WhatsApp never
-    // delivers real media as a path tag here (its placeholders are `[Image]`, `[Video]` and
-    // `[Document: <sender's file name>]`), so escaping the whole text loses nothing; the document
-    // placeholder, whose file name the sender chooses, is itself made inert.
-    const text = escapeTypedPathTags(msg.content);
-    // The sender's profile name is chosen by the sender and goes into the session's tag; brackets are
-    // removed here (as SessionManager.injectWhatsAppMessage already does for live sessions), so a name
-    // like `[image:/path]` cannot become a live tag in a new session's first prompt either.
-    const rawSenderName = (msg.metadata?.senderName as string) ?? undefined;
-    const senderName = rawSenderName ? rawSenderName.replace(/[\[\]]/g, '') || undefined : undefined;
+    const { text, senderName } = whatsAppInboundText(msg); // SEC-149
 
     const memoryPlaceKey = `whatsapp:${jid}`;
     if (!(await whatsappMemoryCheck(whatsapp, jid, msg.metadata))) return;

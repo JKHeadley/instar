@@ -24,3 +24,6 @@ Revert the commit.
 
 **Reviewer:** independent Claude reviewer subagent. Round 1 was blocking on one gap in the same function: the new-spawn bootstrap put the sender's profile name in raw. Fixed by cleaning the name once at entry, with a test. The text escaping itself was confirmed to reach live inject, respawn and new spawn, and nothing legitimate breaks.
 
+
+## Repair after Local Verify (2026-11-23)
+The full run failed three cases in `tests/e2e/whatsapp-message-routing-e2e.test.ts`. Those cases read only the first 2000 characters of `wireWhatsAppRouting`, and this change's comment block pushed the calls they look for past that window. The cleanup now lives in a small helper, `whatsAppInboundText`, just above the function, and the function calls it in one line. Behaviour is unchanged, and the unit test checks the helper and the call order. The branch was also brought up to date with main.
