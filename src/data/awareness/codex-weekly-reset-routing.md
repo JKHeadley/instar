@@ -8,3 +8,5 @@ When someone asks which account is being used, read `GET /sessions` for its reco
 Explicit account choices and local-model launches keep their meaning. This repair adds no automatic restart of active conversations: existing work and refresh gates still apply, and placement is reconsidered on the next normal launch. An automatically moved resume whose saved conversation cannot be opened reports failure while preserving its rollout and pending message; it does not silently start a fresh conversation.
 
 Internal Codex checks use this same weekly-reset ordering among their existing eligible local accounts. Equal or unknown deadlines retain their available-room tie-break. This does not change model choice or grant permission to enable scheduled jobs.
+
+Missing or stale weekly reset observations stay unknown; they do not establish an urgent spending deadline.
