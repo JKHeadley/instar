@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { privateImportDatabasePath, verifyPrivateImportDirectory } from './privateImportState.js';
 import { createInterface } from 'node:readline';
@@ -54,6 +55,23 @@ interface Manifest {
   projects: Record<string, ProjectSummary>;
 }
 
+/** Content-growth ceiling only. It is not copy consent, a disk reservation or filesystem metadata accounting. */
+export interface ImportedHistoryWritePlan {
+  readonly kind: 'conversation' | 'manifest';
+  readonly contentBytes: number;
+}
+interface PreparedConversation {
+  ref: string;
+  file: string;
+  append: string;
+  attachments: Array<{ file: string; text: string }>;
+  summary: Manifest['conversations'][string];
+  dirty: boolean;
+  local: boolean;
+  result: { added: number; isNew: boolean };
+}
+type PreparedWrite = { kind: 'conversation'; conversation: PreparedConversation } | { kind: 'manifest'; text: string | null };
+
 /** The reference imported results carry in search and links: imported:<from>:<originalId>. */
 export function importedRef(from: ImportSource, originalId: string): string {
   return `imported:${from}:${originalId}`;
@@ -63,11 +81,65 @@ function fileFor(ref: string): string {
   return crypto.createHash('sha256').update(ref).digest('hex').slice(0, 32);
 }
 
-function writeAtomic(file: string, data: string): void {
-  const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  fs.writeFileSync(tmp, data, { mode: 0o600 });
-  fs.renameSync(tmp, file);
+const ownedTemporaryCleanup = new WeakMap<ImportWriteCleanupPending, () => void>();
+
+/** Internal disposal evidence, not permission to remove an arbitrary caller pathname. */
+export class ImportWriteCleanupPending extends Error {
+  constructor(readonly temporaryArtifact: string, readonly retainedContentBytes: number,
+    readonly ownership: 'verified-inode' | 'unresolved-creation' = 'verified-inode') { super('import-write-cleanup-pending'); }
+  disposeOwnedTemporary(): void {
+    const cleanup = ownedTemporaryCleanup.get(this);
+    if (!cleanup) throw new Error('import-write-cleanup-unowned');
+    cleanup();
+  }
 }
+
+function writeOwnedTemporary(file: string, data: string, publication: 'replace' | 'first'): void {
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  let fd: number | undefined = fs.openSync(tmp, 'wx', 0o600);
+  let identity: fs.BigIntStats | undefined;
+  let owned = true;
+  const cleanup = () => {
+    if (!owned) return;
+    if (!identity) throw new Error('import-write-cleanup-identity-unavailable');
+    let stat: fs.BigIntStats;
+    try { stat = fs.lstatSync(tmp, { bigint: true }); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') { owned = false; return; } throw err; }
+    if (!stat.isFile() || stat.dev !== identity.dev || stat.ino !== identity.ino || stat.uid !== identity.uid) {
+      throw new Error('import-write-cleanup-identity');
+    }
+    try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'owned imported content temporary disposal' }); }
+    catch (err) {
+      try { fs.lstatSync(tmp); } catch (check) {
+        if ((check as NodeJS.ErrnoException).code === 'ENOENT') { owned = false; return; }
+      }
+      throw err;
+    }
+    owned = false;
+  };
+  try {
+    identity = fs.fstatSync(fd, { bigint: true });
+    fs.writeFileSync(fd, data); fs.closeSync(fd); fd = undefined;
+    if (publication === 'replace') { fs.renameSync(tmp, file); owned = false; }
+    else fs.linkSync(tmp, file);
+  } finally {
+    try { if (fd !== undefined) fs.closeSync(fd); }
+    finally {
+      try { cleanup(); }
+      catch {
+        // Publish an exact owned disposal handle instead of forgetting a failed temporary file.
+        let bytes = Buffer.byteLength(data);
+        try { const stat = fs.lstatSync(tmp, { bigint: true }); if (identity && stat.dev === identity.dev && stat.ino === identity.ino) bytes = Number(stat.size); } catch { /* @silent-fallback-ok: retain conservative planned bytes when residue cannot be inspected */ }
+        const pending = new ImportWriteCleanupPending(path.basename(tmp), bytes, identity ? 'verified-inode' : 'unresolved-creation');
+        ownedTemporaryCleanup.set(pending, cleanup);
+        throw pending;
+      }
+    }
+  }
+}
+
+function writeAtomic(file: string, data: string): void { writeOwnedTemporary(file, data, 'replace'); }
+function writeNewAttachment(file: string, text: string): void { writeOwnedTemporary(file, text, 'first'); }
 
 export class ImportWriterBusy extends Error {
   constructor() { super('An import is already running.'); }
@@ -80,6 +152,9 @@ export class ImportedHistoryStore {
   private writing = false;
   private writerLease: Database.Database | null = null;
   private localDirty = false;
+  private writeRevision = 0;
+  private pendingWrite: { token: ImportedHistoryWritePlan; lease: Database.Database; revision: number;
+    prepared: PreparedWrite; snapshots: Map<string, string> } | null = null;
   private readonly activeLocalClaims = new Map<string, Readonly<LocalSourceClaim>>();
 
   constructor(stateDir: string, options: { existingOnly?: boolean } = {}) {
@@ -169,6 +244,7 @@ export class ImportedHistoryStore {
       }
       if (this.dirty) throw new Error('The imported history has unsaved changes.');
       this.manifest = this.readManifest();
+      this.invalidateWritePlan();
       this.writing = true;
       this.writerLease = db;
       this.activeLocalClaims.clear();
@@ -181,7 +257,7 @@ export class ImportedHistoryStore {
         this.dirty = false;
         this.localDirty = false;
         throw err;
-      } finally { this.activeLocalClaims.clear(); this.writerLease = null; this.writing = false; }
+      } finally { this.invalidateWritePlan(); this.activeLocalClaims.clear(); this.writerLease = null; this.writing = false; }
     } finally { unregister(); if (db.open) db.close(); }
   }
 
@@ -269,6 +345,7 @@ export class ImportedHistoryStore {
    * Durable provenance is independent of an ephemeral preview/copy approval. */
   assertOrClaimLocalSource(identity: LocalSourceIdentity): Readonly<LocalSourceClaim> {
     if (!this.hasLocalWriter()) throw new Error('local-source-writer-required');
+    this.invalidateWritePlan();
     const proposed = createLocalSourceClaim(identity);
     const ref = importedRef(proposed.source, proposed.destinationId);
     const before = this.readLocalSourceClaim(proposed);
@@ -293,52 +370,174 @@ export class ImportedHistoryStore {
    * and the manifest save, or a lost manifest, never duplicates messages. Call flush() to save the
    * manifest; the importer does that every few hundred chats and at the end.
    */
-  addConversation(conv: ImportedConversation): { added: number; isNew: boolean } {
+  private assertConversationWriter(from: ImportSource, originalId: string): void {
     if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
-    const ref = importedRef(conv.from, conv.originalId);
-    if (!isExportSource(conv.from)) {
+    const ref = importedRef(from, originalId);
+    if (!isExportSource(from)) {
       const active = this.activeLocalClaims.get(ref);
-      if (!this.hasLocalWriter() || !active || active.source !== conv.from || active.destinationId !== conv.originalId) {
+      if (!this.hasLocalWriter() || !active || active.source !== from || active.destinationId !== originalId) {
         throw new Error('local-source-active-claim-required');
       }
       const durable = this.withLocalClaims(false, db => this.readLocalClaim(db, ref));
       if (!durable || JSON.stringify(durable) !== JSON.stringify(active)) throw new Error('unknown-source-identity');
     }
+  }
+
+  private prepareConversation(conv: ImportedConversation): PreparedConversation {
+    this.assertConversationWriter(conv.from, conv.originalId);
+    const ref = importedRef(conv.from, conv.originalId);
     const existing = this.manifest.conversations[ref];
     const file = existing?.file ?? fileFor(ref);
     const have = new Set<string>();
     for (const m of this.readMessagesByFile(file)) have.add(m.key);
     const fresh = conv.messages.filter((m) => !have.has(m.key));
+    let append = '';
     if (fresh.length) {
-      const fd = fs.openSync(this.convPath(file), 'a+', 0o600);
+      let separator = '';
+      let fd: number | undefined;
       try {
-        // A killed append may leave an incomplete final record. Keep the next JSON record on its own line.
-        const size = fs.fstatSync(fd).size;
-        const lastByte = Buffer.alloc(1);
-        if (size) fs.readSync(fd, lastByte, 0, 1, size - 1);
-        const separator = size && lastByte[0] !== 0x0a ? '\n' : '';
-        fs.appendFileSync(fd, separator + fresh.map(m => JSON.stringify(m)).join('\n') + '\n');
-      } finally { fs.closeSync(fd); }
+        fd = fs.openSync(this.convPath(file), 'r');
+        const size = fs.fstatSync(fd).size, last = Buffer.alloc(1);
+        if (size) fs.readSync(fd, last, 0, 1, size - 1);
+        separator = size && last[0] !== 0x0a ? '\n' : '';
+      } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; }
+      finally { if (fd !== undefined) fs.closeSync(fd); }
+      append = separator + fresh.map(m => JSON.stringify(m)).join('\n') + '\n';
     }
+    const attachments: PreparedConversation['attachments'] = [];
+    const plannedAttachments = new Set<string>();
     for (const o of conv.overflow) {
       const a = path.join(this.dir, 'attachments', `${fileFor(`${ref}#${o.key}`)}.txt`);
-      if (!fs.existsSync(a)) writeAtomic(a, o.text);
+      if (!fs.existsSync(a) && !plannedAttachments.has(a)) {
+        attachments.push({ file: a, text: o.text }); plannedAttachments.add(a);
+      }
     }
     const all = have.size + fresh.length;
     const times = conv.messages.map((m) => m.at).filter((t): t is string => !!t).sort();
     const lastAt = [existing?.lastAt ?? null, times[times.length - 1] ?? null].filter((t): t is string => !!t).sort().pop() ?? null;
-    this.manifest.conversations[ref] = {
+    const summary: PreparedConversation['summary'] = {
       ref, from: conv.from, originalId: conv.originalId, title: conv.title,
       createdAt: existing?.createdAt ?? conv.createdAt, lastAt, messageCount: all, file,
       hash: crypto.createHash('sha256').update(`${existing?.hash ?? ''}${fresh.map((m) => m.key).join(',')}`).digest('hex').slice(0, 32),
     };
-    if (fresh.length || !existing || existing.title !== conv.title) this.dirty = true;
-    if (!isExportSource(conv.from) && this.dirty) this.localDirty = true;
-    return { added: fresh.length, isNew: !existing && have.size === 0 };
+    return { ref, file, append, attachments, summary,
+      dirty: !!(fresh.length || !existing || existing.title !== conv.title), local: !isExportSource(conv.from),
+      result: { added: fresh.length, isNew: !existing && have.size === 0 } };
+  }
+
+  private executeConversation(prepared: PreparedConversation, snapshots?: Map<string, string>): { added: number; isNew: boolean } {
+    this.assertConversationWriter(prepared.summary.from, prepared.summary.originalId);
+    if (prepared.append) {
+      const file = this.convPath(prepared.file), expected = snapshots?.get(file);
+      const flags = expected === undefined ? 'a+' : fs.constants.O_RDWR | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW
+        | fs.constants.O_NONBLOCK | (expected === 'missing' ? fs.constants.O_CREAT | fs.constants.O_EXCL : 0);
+      const fd = fs.openSync(file, flags, 0o600);
+      try {
+        if (expected !== undefined) {
+          const actual = this.writeFileState(fd);
+          if (expected === 'missing' ? fs.fstatSync(fd).size !== 0 : expected !== actual) throw new Error('import-write-plan-stale');
+        }
+        fs.appendFileSync(fd, prepared.append);
+      } finally { fs.closeSync(fd); }
+    }
+    for (const attachment of prepared.attachments) writeNewAttachment(attachment.file, attachment.text);
+    this.manifest.conversations[prepared.ref] = prepared.summary;
+    if (prepared.dirty) this.dirty = true;
+    if (prepared.local && this.dirty) this.localDirty = true;
+    return prepared.result;
+  }
+
+  addConversation(conv: ImportedConversation): { added: number; isNew: boolean } {
+    this.invalidateWritePlan();
+    return this.executeConversation(this.prepareConversation(conv));
+  }
+
+  private invalidateWritePlan(): void { this.pendingWrite = null; this.writeRevision++; }
+
+  private writeFileState(fd: number): string {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (stat.size > BigInt(Number.MAX_SAFE_INTEGER) || !stat.isFile() || stat.nlink !== 1n
+      || (process.getuid && stat.uid !== BigInt(process.getuid()))) throw new Error('import-write-file-untrusted');
+    const tail = Buffer.alloc(1);
+    if (stat.size) fs.readSync(fd, tail, 0, 1, Number(stat.size - 1n));
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, tail[0]].join(':');
+  }
+
+  private snapshotWriteFiles(files: readonly string[]): Map<string, string> {
+    const snapshots = new Map<string, string>();
+    for (const file of files) {
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        snapshots.set(file, this.writeFileState(fd));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        snapshots.set(file, 'missing');
+      } finally { if (fd !== undefined) fs.closeSync(fd); }
+    }
+    return snapshots;
+  }
+
+  private sameWriteFiles(expected: Map<string, string>): void {
+    const current = this.snapshotWriteFiles([...expected.keys()]);
+    for (const [file, value] of expected) if (current.get(file) !== value) throw new Error('import-write-plan-stale');
+  }
+
+  private publishWritePlan(prepared: PreparedWrite, contentBytes: number, snapshots: Map<string, string>): ImportedHistoryWritePlan {
+    if (!this.hasLocalWriter()) throw new Error('import-write-plan-writer-required');
+    if (!Number.isSafeInteger(contentBytes) || contentBytes < 0) throw new Error('import-write-plan-capacity');
+    this.invalidateWritePlan();
+    const token = Object.freeze({ kind: prepared.kind, contentBytes });
+    this.pendingWrite = { token, lease: this.writerLease!, revision: this.writeRevision, prepared, snapshots };
+    return token;
+  }
+
+  /** Called inside the isolated writer, after a separately reserved durable source claim. */
+  planConversationWrite(conv: ImportedConversation): ImportedHistoryWritePlan {
+    if (!this.hasLocalWriter()) throw new Error('import-write-plan-writer-required');
+    const revision = this.writeRevision, lease = this.writerLease;
+    const ref = importedRef(conv.from, conv.originalId), file = fileFor(ref);
+    if (this.manifest.conversations[ref] && this.manifest.conversations[ref].file !== file) throw new Error('import-write-file-untrusted');
+    const files = [this.convPath(file), ...conv.overflow.map(o => path.join(this.dir, 'attachments', `${fileFor(`${ref}#${o.key}`)}.txt`))];
+    const snapshots = this.snapshotWriteFiles(files);
+    const conversation = this.prepareConversation(conv);
+    this.sameWriteFiles(snapshots);
+    if (this.writeRevision !== revision || this.writerLease !== lease) throw new Error('import-write-plan-stale');
+    const contentBytes = Buffer.byteLength(conversation.append) + conversation.attachments.reduce((n, a) => n + Buffer.byteLength(a.text), 0);
+    return this.publishWritePlan({ kind: 'conversation', conversation }, contentBytes, snapshots);
+  }
+
+  /** The full replacement temporarily coexists with the old manifest. */
+  planManifestWrite(): ImportedHistoryWritePlan {
+    if (!this.hasLocalWriter()) throw new Error('import-write-plan-writer-required');
+    const revision = this.writeRevision, lease = this.writerLease;
+    const snapshots = this.snapshotWriteFiles([path.join(this.dir, 'manifest.json')]);
+    const text = this.dirty ? JSON.stringify(this.manifest) : null;
+    if (this.writeRevision !== revision || this.writerLease !== lease) throw new Error('import-write-plan-stale');
+    return this.publishWritePlan({ kind: 'manifest', text }, text === null ? 0 : Buffer.byteLength(text), snapshots);
+  }
+
+  /** A trusted fixed worker supplies its parent's already-reserved content ceiling.
+   * This numeric check grants no owner authority, copy consent or disk reservation. */
+  executeWritePlan(plan: ImportedHistoryWritePlan, reservedContentBytes: number): { added: number; isNew: boolean } | void {
+    const pending = this.pendingWrite;
+    if (!pending || pending.token !== plan || !this.hasLocalWriter() || pending.lease !== this.writerLease
+      || pending.revision !== this.writeRevision) throw new Error('import-write-plan-stale');
+    this.invalidateWritePlan(); // An issued attempt is consumed even if validation or a partial write fails.
+    if (!Number.isSafeInteger(reservedContentBytes) || reservedContentBytes < plan.contentBytes || reservedContentBytes < 0) {
+      throw new Error('import-write-plan-budget');
+    }
+    this.sameWriteFiles(pending.snapshots);
+    if (pending.prepared.kind === 'conversation') return this.executeConversation(pending.prepared.conversation, pending.snapshots);
+    if (pending.prepared.text !== null) {
+      writeAtomic(path.join(this.dir, 'manifest.json'), pending.prepared.text);
+      this.dirty = false; this.localDirty = false;
+    }
   }
 
   /** Saves the manifest when anything changed. */
   flush(): void {
+    this.invalidateWritePlan();
     if (!this.dirty) return;
     if (this.localDirty && !this.hasLocalWriter()) throw new Error('local-source-writer-required');
     if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
@@ -348,6 +547,7 @@ export class ImportedHistoryStore {
   }
 
   addProject(p: ImportedProject): boolean {
+    this.invalidateWritePlan();
     if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
     const ref = importedRef(p.from, p.originalId);
     const isNew = !this.manifest.projects[ref];

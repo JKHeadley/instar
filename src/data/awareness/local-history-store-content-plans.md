@@ -1,0 +1,5 @@
+# Local History Store Content Plans
+
+`ImportedHistoryStore.planConversationWrite`, `planManifestWrite` and `executeWritePlan` are internal fixed-writer building blocks. Inside the real writer lease, they freeze exact serialized content and enforce a numeric content ceiling before growth. Plans are one-use and bound to that store/writer/revision. This is not a disk reservation, source-claim budget, owner admission or copy consent.
+
+A caller must preserve `ImportWriteCleanupPending` residue evidence and retain its charge. Exact verified temporary handles can dispose only their owned inode; unresolved creation refuses deletion without proof. A failed write can have committed bytes. Future apply must reserve content plus filesystem/SQLite costs, bind every parent permit, recheck current owner/target/boot/preview and drain actual workers before releasing resources. This component enables no import endpoint or app action. Full local import remains unavailable and tracked in Easy Setup topic143810. <!-- tracked: topic-143810 -->
