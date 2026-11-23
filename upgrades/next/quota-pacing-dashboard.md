@@ -1,0 +1,15 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The Accounts page now includes an independently loaded Allowance forecast section, using the existing owner-only forecast API. Provider outlooks and expandable named-account estimates sit alongside a count of forecasts checked against actual resets. Stale, conflicting and missing readings remain uncertain. Unavailable telemetry leaves account controls usable.
+
+## What to Tell Your User
+
+You can now see whether recent spending is likely to use an account's weekly allowance before it resets. Open Accounts and look for Allowance forecast. The section also says how many forecasts have been compared with real resets, so a small sample does not look like a proven prediction. It measures only; it does not move work or spend anything.
+
+## Summary of New Capabilities
+
+A read-only presentation of the existing forecast and calibration. No new setting, endpoint, model call or spending control.
