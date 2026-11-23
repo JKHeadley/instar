@@ -445,11 +445,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!resolved && isAppConversationKey(appKey) && svc?.liveConversation(appKey)) resolved = `app:${appKey}`;
     if (!resolved && /^telegram:[1-9][0-9]*$/.test(raw) && deps.telegramTopics?.().some((t) => `telegram:${t.topicId}` === raw)) resolved = raw;
     return !!resolved && deviceMayUse(deps.pairing, req, resolved);
-    } catch { return false; } // A failed identity read cannot prove a parent is readable.
+    } catch { return false; /* @silent-fallback-ok: identity failure suppresses parent metadata and exposes unplaced/unknown; it cannot grant access. */ }
   };
   const creationScope = (req: Request): CreationHierarchyScope => {
     let source: CreationHierarchySource | null = null;
-    try { source = deps.creationHierarchySource?.() ?? null; } catch { /* unavailable remains unknown */ }
+    try { source = deps.creationHierarchySource?.() ?? null; } catch { /* @silent-fallback-ok: unavailable hierarchy is explicitly unknown in the response, never empty authority. */ }
     const principal = principalOf(req);
     const person = devicePersonOf(req);
     const device = principal.kind === 'device' ? deps.pairing.devices.get(principal.deviceId) : null;

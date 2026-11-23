@@ -42,6 +42,10 @@ A source revert stops recording/enrichment/preview. Optional JSONL and derived n
 
 Focused checks passed for creation/storage and mixed-version observations, Work Board immutable provenance, service restart/recovery, complete snapshot pending/read behavior, awareness and production wiring. Session-create HTTP (11), neighboring list-pin HTTP (6), and a real AgentServer session-create/preview lifecycle (1) passed. Scoped hierarchy unit tests passed12/12; new owner/create/preview HTTP passed8/8 and existing native-conversation HTTP passed12/12. Source TypeScript and whitespace checks passed. The throwaway test-as-self --no-roundtrip deployment passed startup/verification and tore down its processes. Full exact-head suites go through the normal throughput verification queue; no manual full suite pass is claimed.
 
+## Second-pass review
+
+**Reviewer:** context_spec_security (independent source reviewer; personally confirmed the prior review and rechecked the exact-head verification corrections).
+
 ## Independent Review
 
 Independent security/correctness review concurred after verifying source validation, current authorization, cache identity and DTO redaction. Performance review concurred after a second pass verified pending-write completeness, unfiltered graph inventory and one source per response. Adversarial/gaps review concurred after verifying optional invalid Work Board source handling through a real store and current-child checks on completed create retries. The runtime audit records both the corrected findings and the clean second pass; these reviews do not replace full queue verification.

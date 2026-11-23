@@ -1088,7 +1088,7 @@ export class AppConversationStore {
               const event = raw.v === 1 ? validateAppEvent(raw.event) : null;
               if (!event || event.kind !== 'created') throw new Error('invalid creation observation');
               this.observeCreated(event, false);
-            } catch { this.creationEvidenceUnreadable = true; }
+            } catch { this.creationEvidenceUnreadable = true; /* @silent-fallback-ok: reported once below and all placement evidence becomes unavailable. */ }
           }
           start = i + 1;
         }
@@ -1096,7 +1096,7 @@ export class AppConversationStore {
         if (carry.length > MAX_LINE_BYTES) { this.creationEvidenceUnreadable = true; break; }
       }
       if (carry.length) this.creationEvidenceUnreadable = true;
-    } catch { this.creationEvidenceUnreadable = true; }
+    } catch { this.creationEvidenceUnreadable = true; /* @silent-fallback-ok: reported once below and all placement evidence becomes unavailable. */ }
     finally { fs.closeSync(fd); }
     if (this.creationEvidenceUnreadable) this.reportOnce('creation-evidence-read', 'creation evidence has an unreadable observation; placement evidence is unavailable');
   }
@@ -1104,7 +1104,7 @@ export class AppConversationStore {
   private parseCreationRecord(raw: unknown): CreatedEvent | null {
     if (typeof raw !== 'string') return null;
     try { const ev = validateAppEvent(JSON.parse(raw)); return ev?.kind === 'created' ? ev : null; }
-    catch { return null; }
+    catch { return null; /* @silent-fallback-ok: malformed historical evidence is explicitly unknown, never authoritative placement. */ }
   }
 
   private completeCreated(event: CreatedEvent): CreatedEvent {
@@ -1134,7 +1134,7 @@ export class AppConversationStore {
   private snapshotHasCreationConflict(raw: unknown): boolean {
     if (typeof raw !== 'string') return false;
     try { return (JSON.parse(raw) as { creationEvidenceConflict?: unknown }).creationEvidenceConflict === true; }
-    catch { return true; }
+    catch { return true; /* @silent-fallback-ok: unreadable evidence is conservatively conflicting, suppressing placement without losing the chat. */ }
   }
 
   private observedCreationConflict(key: string): boolean {

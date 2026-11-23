@@ -130,7 +130,7 @@ export class AppCreationHierarchyProjection {
   constructor(private readonly store: AppConversationStore, private readonly source: () => CreationHierarchySource | null | undefined) {}
 
   private readSource(): CreationHierarchySource | null | undefined {
-    try { return this.source(); } catch { return null; } // Unknown, never an asserted empty view.
+    try { return this.source(); } catch { return null; /* @silent-fallback-ok: the response exposes unknown hierarchy, never an asserted empty tree. */ }
   }
   private signature(source: CreationHierarchySource | null | undefined, scope: CreationHierarchyScope): string {
     return JSON.stringify([source?.complete === true, source?.version ?? null, this.store.getCreationGeneration(), scope.authorizationVersion]);
@@ -147,7 +147,7 @@ export class AppCreationHierarchyProjection {
     if (this.pending.has(scope.key)) return;
     const task = nextTurn().then(() => this.refresh(scope)).finally(() => this.pending.delete(scope.key));
     // A failed source stays uncertain; no request receives an asserted empty tree.
-    this.pending.set(scope.key, task.catch(() => { this.cache.delete(scope.key); }));
+    this.pending.set(scope.key, task.catch(() => { this.cache.delete(scope.key); /* @silent-fallback-ok: invalidation exposes unknown placement; no fabricated fallback or self-retry. */ }));
   }
   async settled(scope: CreationHierarchyScope): Promise<void> {
     this.schedule(scope); await this.pending.get(scope.key);

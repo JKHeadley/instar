@@ -115,7 +115,7 @@ Add awareness file via existing awareness refresh. Existing index opens add null
 - **fleet:** After observed development-agent preview/list behavior and two independent readings of that evidence, follow the existing native-conversation release/update path; no extra feature switch or silent default graduation.
 - **graduation criterion:** Focused three-tier checks plus exact-head throughput gate and Apple's exact native build showing verified nesting and recoverable unplaced rows.
 - **dark-window:** No additional dark interval; remain unshipped until the checks above, preserving current native feature readiness.
-- **ladder:** mobilePairing.native.enabled
+- **ladder:** mobilePairing.native
 
 ## Open questions
 

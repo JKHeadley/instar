@@ -365,14 +365,12 @@ describe('Conversations page', () => {
       }
       return undefined;
     }, `#/work/chats?c=${encodeURIComponent('telegram:145738')}`, idb);
-    for (let i = 0; i < 20; i++) await flush();
-    // A focus brings the open conversation into the leader's plan and reads it now (the quick read).
-    for (let n = 0; n < 4 && quick.length < 2; n++) {
-      // Under this page's boot number, so the poll loop it re-arms can never answer a later test.
+    // Signing and IndexedDB completion share the worker pool with other test files. Wait
+    // for observed quick reads rather than assuming boot completed within fixed short sleeps.
+    await vi.waitFor(() => {
       bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
-      for (let i = 0; i < 20; i++) await flush();
-    }
-    expect(quick.length).toBeGreaterThanOrEqual(2);
+      expect(quick.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 10_000, interval: 200 });
     expect(new URL(quick[0], 'http://localhost').searchParams.get('knownRows')).toBe('');
     expect(new URL(quick[1], 'http://localhost').searchParams.get('knownRows')).toBe(hashes.join(','));
     expect(quick.every((u) => !u.includes('after='))).toBe(true);
@@ -394,13 +392,13 @@ describe('Conversations page', () => {
     dom.window.location.hash = `#/work/chats?c=${encodeURIComponent('telegram:145738')}`;
     for (let i = 0; i < 10; i++) await flush();
     const beforeReopen = quick.length;
-    for (let n = 0; n < 4 && quick.length === beforeReopen; n++) {
+    await vi.waitFor(() => {
       bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
-      for (let i = 0; i < 15; i++) await flush();
-    }
-    expect(quick.length).toBeGreaterThan(beforeReopen);
+      expect(quick.length).toBeGreaterThan(beforeReopen);
+      expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+    }, { timeout: 10_000, interval: 200 });
     expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
-  });
+  }, 25_000);
 
   it('a Slack conversation names its machine on the history read and the send (live proof finding)', async () => {
     const idb = fakeIndexedDB();
