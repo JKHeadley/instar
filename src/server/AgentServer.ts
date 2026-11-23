@@ -8117,6 +8117,34 @@ export class AgentServer {
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
+        creationHierarchySource: () => {
+          const snapshot = options.chiefOfStaffLoop?.creationPlacementSnapshot();
+          const evidence = options.workBoard?.()?.creationEvidenceSnapshot();
+          const registry = options.conversationRegistry;
+          const telegramTopicIds = new Set(options.telegram?.getAllTopicMappings().map(m => m.topicId) ?? []);
+          const slackVisibleIds = new Set(slackBridge && slackOwnerUserId(options.config) ? slackListRows(slackBridge).map(row => row.id) : []);
+          return {
+            version: JSON.stringify([[...telegramTopicIds].sort((a, b) => a - b), [...slackVisibleIds].sort((a, b) => a - b), snapshot?.version ?? 'unavailable', evidence?.version ?? 'unavailable', evidence?.complete === true, registry?.creationIdentityVersion() ?? 'unavailable']),
+            complete: snapshot?.complete === true,
+            parents: snapshot?.parents ?? new Map<string, string | null>(),
+            confirmedProjects: snapshot?.confirmedProjects ?? new Set<string>(),
+            cardEvidence: evidence?.complete ? evidence.items : [],
+            resolveRef: (raw: string, originMachineId?: string): string | null => {
+              const app = /^(?:app:)?([0-9a-f]{8}-[0-9a-f-]{27})$/i.exec(raw);
+              if (app) return this.appConversations?.liveConversation(app[1].toLowerCase()) ? `app:${app[1].toLowerCase()}` : null;
+              const topic = /^telegram:([1-9]\d*)$/.exec(raw);
+              if (topic) return telegramTopicIds.has(Number(topic[1])) ? raw : null;
+              const alias = /^slack:([^:]+):(-\d+)$/.exec(raw);
+              if (alias) {
+                if (!originMachineId || alias[1] !== originMachineId || alias[1] !== this.appConversations?.deps.machineId()) return null;
+                const resolved = registry?.resolve(Number(alias[2]));
+                return resolved?.platform === 'slack' && slackVisibleIds.has(resolved.id) ? resolved.key : null;
+              }
+              const resolved = registry?.resolveByKey(raw);
+              return resolved?.platform === 'slack' && slackVisibleIds.has(resolved.id) ? resolved.key : null;
+            },
+          };
+        },
         // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
         chiefOfStaffCheckIn: options.chiefOfStaffLoop ? (principal: string) => options.chiefOfStaffLoop!.checkIn({ renewedVia: 'app', principal }) : undefined,
         chiefOfStaff: options.chiefOfStaffLoop ? () => {

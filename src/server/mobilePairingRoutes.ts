@@ -2637,6 +2637,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  ['GET', /^\/mobile\/conversations\/parent-preview$/.source],
   // Keyword search over conversations (conversation-search): the same visibility as the list.
   ['GET', /^\/mobile\/conversations\/search$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
@@ -2854,6 +2855,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision\/delivered$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'doc-open' },
     // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
     { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
+    // Parent preview is read-only owner evidence, independent of graph release readiness.
+    { method: 'GET', re: /^\/mobile\/conversations\/parent-preview$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.

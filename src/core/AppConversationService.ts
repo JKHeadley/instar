@@ -1,3 +1,4 @@
+import { validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 /**
  * AppConversationService — the native app conversation core
  * (docs/specs/mobile-native-conversations.md, increment 1).
@@ -1037,7 +1038,12 @@ export class AppConversationService {
       if (x.op === 'create') {
         const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
         if (x.ownerUser) this.deps.confineStranded?.(key, x.ownerUser, rec.deviceId);
-        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
+        let creationContext: AppCreationContext | null = null;
+        try { creationContext = x.creationContext ? validateAppCreationContext(JSON.parse(x.creationContext)) : null; }
+        catch (err) { this.deps.reportDegradation?.('AppConversations.creation-recovery', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok: invalid reservation becomes outcome-unknown below, never a guessed parent.
+
+        if (x.creationContext && !creationContext) { this.deps.requests.markUnknown(rec.deviceId, rec.requestId); continue; }
+        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner, creationContext ?? undefined);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {
         this.applyRename(rec.deviceId, rec.requestId, key, x.title);
@@ -1051,7 +1057,7 @@ export class AppConversationService {
 
   /** Create: alias first (a refusal leaves no store event), then the `created` event, then bind. */
   /** `ownerPerson`: the MSP phone's person that creates it (people and roles §3.4); null ⇒ the owner's. */
-  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null): { status: number; body: Record<string, unknown> } {
+  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null, creationContext?: AppCreationContext): { status: number; body: Record<string, unknown> } {
     const mint = this.deps.registry.mintAppAlias(conversationKey);
     if (!mint.ok) {
       if (mint.error === 'conversation-recording-disabled') {
@@ -1059,10 +1065,14 @@ export class AppConversationService {
       }
       return { status: 503, body: { error: 'conversation-unavailable', detail: 'The conversation could not be created on this machine. Try again.' } };
     }
-    this.store.append({
-      eventId: derivedEventId('cr', deviceId, requestId), kind: 'created', conversationKey, title,
+    const createEventId = derivedEventId('cr', deviceId, requestId);
+    // A crash after the durable created event but before request completion must not mint a new
+    // timestamp/base under that same event id and manufacture a metadata conflict on recovery.
+    if (!this.store.hasEvent(conversationKey, createEventId)) this.store.append({
+      eventId: createEventId, kind: 'created', conversationKey, title,
       at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
       ...(ownerPerson ? { ownerPerson } : {}),
+      ...(creationContext ? { creationContext } : {}),
     });
     if (this.deps.holdsLease()) {
       this.createdHere.add(conversationKey);
