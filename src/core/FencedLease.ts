@@ -143,6 +143,11 @@ export class FencedLease {
     return this.crypto.selfMachineId;
   }
 
+  /** The presumed-dead threshold this lease was built with (planned-restart-keeps-lead window cap). */
+  get failoverThreshold(): number {
+    return this.failoverThresholdMs;
+  }
+
   // ── Canonical serialization + signing ─────────────────────────────
 
   /**
@@ -195,6 +200,19 @@ export class FencedLease {
     };
     const signature = this.crypto.sign(FencedLease.canonicalize(base));
     return { ...base, signature };
+  }
+
+  // ── Continuity file meta (planned-restart-keeps-lead §1 step 4) ──────
+
+  /** Sign the continuity file's domain-tagged meta canonical with this machine's lease key. */
+  signContinuityMeta(canonical: string): string {
+    return this.crypto.sign(canonical);
+  }
+
+  /** Verify a continuity meta signature against a holder's registered key. */
+  verifyContinuityMeta(canonical: string, signature: string, holderMachineId: string): boolean {
+    if (typeof signature !== 'string' || !signature) return false;
+    return this.crypto.verify(canonical, signature, holderMachineId);
   }
 
   // ── Keyed lease (context-budget-layered-summaries §9.3, §14 "Fold lock") ──

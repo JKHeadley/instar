@@ -86,6 +86,17 @@ export type SubscriptionAccountStatus = SubscriptionStatusValue;
  * Live per-account quota reading (decision C: hybrid read). Populated by the
  * QuotaPoller in P1.2 — in P1.1 it is just carried metadata (optional).
  */
+/** The three quota windows a snapshot can carry. */
+export type QuotaWindowKey = 'fiveHour' | 'sevenDay' | 'fable';
+
+/**
+ * quota-pacing step 2: how the poller got a window whose `resetsAt` is empty.
+ * `idle-live` = a fresh authenticated read (Claude usage endpoint, or
+ * `codex-app-server`) reported no window running; `rolled-history` = the empty
+ * reset came from rollout history or a degraded fallback.
+ */
+export type QuotaWindowBasis = 'idle-live' | 'rolled-history';
+
 export interface AccountQuotaSnapshot {
   fiveHour?: { utilizationPct: number; resetsAt: string };
   sevenDay?: { utilizationPct: number; resetsAt: string };
@@ -124,6 +135,18 @@ export interface AccountQuotaSnapshot {
    * Stripped from the replicated account projection.
    */
   fableUnknown?: boolean;
+  /**
+   * quota-pacing step 2 (additive, local only — stripped from the replicated projection):
+   * how each window with an empty `resetsAt` was obtained (docs/specs/quota-pacing-account-choice.md §1).
+   */
+  windowBasis?: Partial<Record<QuotaWindowKey, QuotaWindowBasis>>;
+  /** quota-pacing step 2 (local only): the original reset time the poller blanked to `''`. */
+  resetsAtBeforeRewrite?: Partial<Record<QuotaWindowKey, string>>;
+  /**
+   * quota-pacing step 2 (local only): the windows the provider's own response listed, written
+   * only when the poller parsed that list. A window missing from it is not offered.
+   */
+  windowsListed?: QuotaWindowKey[];
 }
 
 export interface SubscriptionAccount {

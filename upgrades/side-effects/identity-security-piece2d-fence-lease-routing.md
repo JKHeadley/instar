@@ -119,3 +119,19 @@ compiler-exhaustive, so each needs a class before the branch builds:
 Side effects: none before enrolment (the fence applies nothing until the owner enrols above Basic). After
 enrolment, a below machine cannot start a metered call and cannot be the one asked to spend; it can still stop
 spending and read results. Tests: MeshRpc, piece 2c and 2d unit tests and 20 lease and mesh test files pass.
+
+## Current-main Merge Repair (2026-11-22)
+
+Normally merge corrected prerequisite3445 at b62d9418a361e6d2b387e6b1a010e259782c4911, including main9b61d628, into the existing2d branch. No rebase or force. The two conflict hunks in LeaseCoordinator preserve both sets of approved behavior: main's lapsed/superseded planned-restart verdicts and stall-confirmed-claim evidence, plus2d's separate belowFenceHolders eligibility input and successful-takeover budget record. The presumed-dead set remains separate. Main's stall reconfirmation feature, restored in3445 after an earlier merge accidentally deleted it, remains intact in source, wiring and tests. No deleted paths versus current main.
+
+No new authority, routing class, timing threshold, proof, record schema or default is introduced by this repair. Existing guard decisions and owner build-floor enrollment remain the approved spec's decisions. The existing mesh and lease hooks retain their production owners. This is unrelated to the three stopped native-handoff designs.
+
+## 6b. Operator-surface Quality
+
+No screen, user-facing copy, primary action, URL or approval journey changes in this merge repair. Existing minimum-build refusals still name the version needed; existing stall and planned-restart status remain main's implementation. There is no new raw internal content or destructive action for a person to interpret. Existing native/Telegram notice carriers are unchanged by this source merge, with no delivery or live-approval claim.
+
+## 8. Merge Interactions, Multi-machine Evidence and Rollback
+
+The lease remains one shared cross-machine authority. Preserve main's peer pulls, boot hold and post-stall reconfirmation before acquisition CAS; preserve separate below-build budget eligibility and count only successful takeovers. No machine-local fallback or fabricated human proof is added. Rollback should be a forward correction preserving both guards: reverting to the stale branch would restore its accidental removal of main behavior. No live state or installed files are changed here.
+
+Independent read-only source reviewer concurred after comparing against corrected3445/current main: all boot-reclaim/stall guards precede CAS, both success records remain, and belowFenceHolders does not contaminate presumedDead. Focused112unit tests in six fence/lease/reclaim files passed;3HTTP join-fence tests and5production owner-record lifecycle tests passed; TypeScript checked clean. These are supporting checks, not a shared full pass. Full verification and all dependency/order holds remain with echo-increasing-throughput.

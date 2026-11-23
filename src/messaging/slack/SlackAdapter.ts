@@ -866,6 +866,15 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   /** Check if a user is authorized. */
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in an incoming message before anything keeps it. Returns the
+   * text to use; null or a throw leaves the message unchanged (the operator channel fails toward delivery).
+   */
+  public inboundCredentialMasker: ((input: {
+    text: string; channelId: string; ts: string; userId: string;
+    authorized: boolean; notFromThePerson: boolean; externalOrGuest: boolean;
+  }) => string | null) | null = null;
+
   isAuthorized(userId: string): boolean {
     return this.authorizedUsers.has(userId);
   }
@@ -1657,7 +1666,7 @@ export class SlackAdapter implements MessagingAdapter {
 
   private async _handleMessage(event: Record<string, unknown>): Promise<void> {
     const userId = event.user as string;
-    const text = event.text as string ?? '';
+    let text = event.text as string ?? '';
     const channelId = event.channel as string;
     const ts = event.ts as string;
     const threadTs = event.thread_ts as string | undefined;
@@ -1668,6 +1677,22 @@ export class SlackAdapter implements MessagingAdapter {
     const subtype = event.subtype as string | undefined;
     if (subtype && subtype !== 'file_share') return;
     if (!userId || !channelId) return;
+
+    // SEC-164 §3.5: mask live keys before the trust-account receipt, the ring buffer, the log or the
+    // session. History-recovery replays come through here too, and mask to the same text.
+    if (this.inboundCredentialMasker && text) {
+      try {
+        const userTeam = event.user_team as string | undefined;
+        const team = event.team as string | undefined;
+        const masked = this.inboundCredentialMasker({
+          text, channelId, ts, userId,
+          authorized: this.isAuthorized(userId),
+          notFromThePerson: !!event.bot_id,
+          externalOrGuest: !!(userTeam && team && userTeam !== team),
+        });
+        if (typeof masked === 'string') { text = masked; event.text = masked; }
+      } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+    }
 
     // Trust-journey decision 5: a direct-message reply that arrived from Slack itself (Socket Mode
     // or the history recovery, which never returns threaded replies) is offered to the account path

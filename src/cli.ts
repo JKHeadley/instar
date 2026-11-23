@@ -1852,6 +1852,12 @@ lifelineCmd
   .option('-d, --dir <path>', 'Project directory')
   .action(async (opts) => {
     const { TelegramLifeline } = await import('./lifeline/TelegramLifeline.js');
+    // SEC-164: mask live credentials in the lifeline's own output before any log captures it.
+    {
+      const { installOutputScrub, credentialScrubEnabledReader } = await import('./core/outputCredentialScrub.js');
+      const { detectProjectDir } = await import('./core/Config.js');
+      installOutputScrub(credentialScrubEnabledReader(opts.dir ?? detectProjectDir()));
+    }
     try {
       const lifeline = new TelegramLifeline(opts.dir);
       await lifeline.start();

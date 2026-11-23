@@ -27,6 +27,8 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { deviceIcon, mirrorPrefix, openItHint, requestDeviceClient, type DeviceClient } from '../core/deviceClientWording.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -57,6 +59,7 @@ import { slackDeviceText, slackPlatformMediaFor } from '../core/appPlatformMedia
 import type { OriginVerdict } from '../core/AppRecordSignatures.js';
 import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
 import type { HolderRead } from './mobileSlackHolderProxy.js';
+import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { MEDIA_OFF_ACTION } from './mobileMediaOff.js';
 
 /** A Slack conversation as this machine knows it (a local registry entry). */
@@ -240,6 +243,10 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const id = parseSlackConversationId(String(req.params.conversationId));
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
+    // Fingerprint only the finished page: a late row or changed verdict must remain visible.
+    const known = parseKnownRows(req.query.knownRows);
+    if (known === 'invalid') { res.status(400).json({ error: 'bad-known-rows' }); return; }
+    if (known !== null && req.query.before !== undefined) { res.status(400).json({ error: 'known-rows-with-before' }); return; }
     // Another machine's row: only the owner's phone is read through, by the trusted holder. A token
     // read is never forwarded, so the holder's own hop cannot go on to a third machine.
     const named = req.query.machine;
@@ -247,7 +254,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const admission = mobileOwnerDeviceAdmission(deps.pairing, req);
     const stillOwner = () => admission?.isCurrent() === true;
     if (deps.holderRead && typeof named === 'string' && named && named !== deps.machineId() && stillOwner()) {
-      const answer = await deps.holderRead({ id, machine: named, limit, before: typeof req.query.before === 'string' ? req.query.before : null, stillOwner });
+      const answer = await deps.holderRead({ id, machine: named, limit, before: typeof req.query.before === 'string' ? req.query.before : null, ...(known !== null ? { knownRows: String(req.query.knownRows) } : {}), stillOwner });
       // The helper has parsed/formatted the body; reread at the actual emission boundary.
       if (answer.status === 200 && !stillOwner()) { ownerOnly(res); return; }
       res.status(answer.status).json(answer.body);
@@ -305,6 +312,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       byId.set(eventId, { eventId, messageId: r.ts, role: r.fromUser ? 'participant' : 'agent', fromUser: r.fromUser, senderName: r.senderName, text, at: r.at, originVerified: 'none', ...(attachments ? { attachments } : {}), ...(origin ? { origin } : {}) });
     }
     const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    // Construct the same page as a plain read before comparing final, privacy-shaped rows.
     const desc = [...byId.values()].sort((x, y) => cmp(String(y.at), String(x.at)) || cmp(String(y.eventId), String(x.eventId)));
     const page = desc.slice(0, limit);
     const oldest = page[page.length - 1];
@@ -317,7 +325,8 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     res.json({
       // `conversationKey` is the `ref` a download of this conversation's files names (§4.9).
       ...(deviceViewAsked ? { deviceView: true } : {}),
-      conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key, messages: page.reverse(),
+      conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key,
+      ...(known === null ? { messages: page.reverse() } : filterKnownRows(page.reverse(), known)),
       nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, ...readUpTo,
       // Pinned messages (conversation-pinned-messages) ride on every history answer.
       // Slack text is never stored in a pin; the preview comes from the rows read here.
@@ -401,15 +410,19 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     // Slack is dispatched on the serving machine. Refused BEFORE anything is saved, so the app
     // keeps the text and nothing is stored twice (the Telegram chat route's rule).
     if (!bridge.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly.' }); return; }
-    const removed = removeAuthorityTokens(text);
+    // SEC-164 §3.5: live keys are masked after the device signature check and before the authority
+    // tokens are removed; their kinds join the signed redaction attestation.
+    const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+    const removed = removeAuthorityTokens(credMasked.text);
     const delivered = removed.text;
     const removedKinds: string[] = [...removed.kinds];
+    if (credMasked.outcome === 'masked' || credMasked.outcome === 'fallback') for (const k of credMasked.kinds) if (!removedKinds.includes(k)) removedKinds.push(k);
     // Media preflight (chat-media §4.3): each upload is this device's finished upload for THIS
     // conversation (its canonical key), with exactly the signed fields.
     let uploadIds: string[] = [];
     let stored: AppAttachment[] = [];
     if (signedFiles) {
-      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: conv.key, messageId, files: signedFiles, scanInbound: (x) => deps.pairing.scanInbound(x) });
+      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: conv.key, messageId, files: signedFiles, scanInbound: (x) => deps.pairing.scanInbound(x), maskCredentials: appCredentialScrubOn(deps.config) });
       if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
       uploadIds = pre.uploadIds;
       stored = pre.stored;
@@ -790,4 +803,14 @@ export async function mirrorMediaToSlack(
   }
   if (!commented) await bridge.post(conv, line);
   for (const m of missing) await bridge.post(conv, m);
+}
+
+/** SEC-164: `security.credentialScrub.enabled`, read live from the settings file; unreadable is off. */
+const appCredentialScrubReaders = new Map<string, () => boolean>();
+function appCredentialScrubOn(config: { projectDir?: string } | null | undefined): boolean {
+  const dir = config?.projectDir;
+  if (!dir) return false;
+  let reader = appCredentialScrubReaders.get(dir);
+  if (!reader) { reader = credentialScrubEnabledReader(dir); appCredentialScrubReaders.set(dir, reader); }
+  try { return reader(); } catch { return false; } // @silent-fallback-ok — an unreadable switch is off, as before
 }

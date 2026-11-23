@@ -184,8 +184,8 @@ const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
 /** `person-phone`: a member's own phone linked this browser to them (instar-document-viewer §3.6a). */
-/** `at-computer`: the owner typed the phone's number at the agent's own computer (identity A4). */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'local-install' | 'at-computer';
+/** `team-invite`: a member's computer joined from the owner's team invite with the code shown on the owner's phone (member-browser-any-computer §3.3). `at-computer`: the owner typed the phone's number at the agent's own computer (identity A4). */
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'team-invite' | 'local-install' | 'at-computer';
 
 export interface DeviceRecord {
   id: string;
@@ -264,6 +264,14 @@ export interface DeviceRecord {
   /** The key hash of the phone key that signed the link (stays the signer across a phone key rotation). */
   linkedByKeyHash?: string;
   linkExpiresAt?: string;
+  /**
+   * A member's computer that joined from the owner's team invite (member-browser-any-computer §3.3).
+   * The intended binding is fixed at redeem from the limits then in force, so recovery never re-reads
+   * changed limits: `joinIdleDays`, `joinEndsBy` (with `scope` and `host`).
+   */
+  joinedVia?: 'team-invite';
+  joinIdleDays?: number;
+  joinEndsBy?: string;
   /** The pairing-outcome watch this phone's link carried (docs/specs/mobile-pairing-outcome-notice.md §3.2). */
   outcomeWatchId?: string;
   /** The original pending deadline; `expiresAt` is overwritten by boot and lease-loss expiry (§3.3). */
@@ -714,6 +722,72 @@ export class DeviceRegistry {
     this.write(f);
     this.activated(device);
     return { ok: true, device };
+  }
+
+  /**
+   * A member's computer waiting for the owner's code (member-browser-any-computer §3.3.1): a pending
+   * browser record for that person, documents-scoped, its intended binding fixed now. One synchronous
+   * read-modify-write; refuses a key already held. It never counts toward the phones' pending limit.
+   */
+  createPendingComputer(row: { browserPublicKey: string; host: string; userId: string; scope: 'documents' | 'documents-read'; deviceName: string; idleDays: number; endsBy: string }):
+    { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'pairing-paused' } {
+    const f = this.normalize(this.read());
+    if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
+    if (f.devices.some((d) => keysOf(d).includes(row.browserPublicKey))) return { ok: false, reason: 'duplicate-key' };
+    const t = this.now();
+    const device: DeviceRecord = {
+      id: crypto.randomUUID(), deviceName: row.deviceName, label: null, pairedAt: new Date(t).toISOString(),
+      status: 'pending', client: 'browser', browserPublicKey: row.browserPublicKey, deviceKind: 'computer',
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host,
+      expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
+      userId: row.userId, role: 'team', scope: row.scope, joinedVia: 'team-invite', joinIdleDays: row.idleDays, joinEndsBy: row.endsBy,
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    return { ok: true, device };
+  }
+
+  /** Activate a waiting joined computer (§3.3.2 step 4). Only a pending `team-invite` record; idempotent once active. */
+  activateJoinedComputer(id: string, linkExpiresAt: string, approvedAt: string): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.joinedVia !== 'team-invite') return null;
+    if (d.status === 'active') return d;
+    if (d.status !== 'pending') return null;
+    d.status = 'active'; d.approvedAt = approvedAt; d.approvedVia = 'team-invite'; d.linkExpiresAt = linkExpiresAt;
+    delete d.expiresAt; delete d.wrongCodes;
+    this.write(f);
+    this.activated(d);
+    return d;
+  }
+
+  /**
+   * Rebuild a joined computer's local record from its replicated binding (§3.5 adoption): this machine
+   * serves the computer's address and holds no record for it. Refuses a key already held.
+   */
+  adoptJoinedComputer(row: { deviceId: string; browserPublicKey: string; host: string; userId: string; scope: 'documents' | 'documents-read'; linkedAt: string; linkExpiresAt: string; idleDays: number; endsBy: string }): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    if (f.devices.some((d) => d.id === row.deviceId || keysOf(d).includes(row.browserPublicKey))) return null;
+    const device: DeviceRecord = {
+      id: row.deviceId, deviceName: 'Computer', label: null, pairedAt: row.linkedAt,
+      status: 'active', client: 'browser', browserPublicKey: row.browserPublicKey, deviceKind: 'computer',
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host,
+      approvedAt: row.linkedAt, approvedVia: 'team-invite', userId: row.userId, role: 'team', scope: row.scope,
+      joinedVia: 'team-invite', joinIdleDays: row.idleDays, joinEndsBy: row.endsBy, linkExpiresAt: row.linkExpiresAt,
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    this.activated(device);
+    return device;
+  }
+
+  /** Move a joined computer's local end to match its replicated renewals (§3.5). */
+  setLinkExpiry(id: string, linkExpiresAt: string): void {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.joinedVia !== 'team-invite' || d.linkExpiresAt === linkExpiresAt) return;
+    d.linkExpiresAt = linkExpiresAt;
+    this.write(f);
   }
 
   /** Move a browser's setup state; `onlyIf` is the state it must be in now. */
