@@ -61,3 +61,10 @@ Revert the test commit. No data migration, credential restoration or account cha
 - Corrected fixture and identical delayed diagnostic: `.instar/recovery/token-reset-routing/usage-pool-roots-delay-green.log` on the Studio. The diagnostic file is temporary and is not part of this pull request.
 - Independent small-change review concurred: no material findings; all assertions and production logic remain intact.
 - Full verification remains the normal shared Local Verify gate; targeted evidence is not claimed as a complete suite pass or a deployment.
+
+
+## Current-main verification repair (2026-11-22)
+
+The original exact7fb451e6d7fb63ad216d827d93c5acbab658f510 complete gate failed in console-chats-page.test.ts, not in this ledger file. The coordinator retained the failed filename/count but its original assertion artifact is absent; neither this artifact nor source comparison reconstructs that historical assertion or proves its cause.
+
+This merge brings the unchanged ledger fixture repair onto mainbc7d28135a7d298b68526d70a49a19856e9cc73e. The index retains main's console fixture byte-for-byte at blob473d0d1ed9c91a249c01cea530f84130927426f5 (the shared3655 lifecycle correction). No console assertions, native Web Locks or timeouts are edited by this repair. Independent base-alignment review concurred with no material findings. One new Node22 focused run of ledger8 plus console29 checks passed37/37; this is new supporting evidence, not a recovered historical assertion or full-gate clearance. A new normal complete gate on the corrected exact head is required before merge. Retained proof: .instar/recovery/token-reset-routing/usage-repair-current-main-focused.log.
