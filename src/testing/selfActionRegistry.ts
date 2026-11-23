@@ -1,3 +1,4 @@
+import { DELIVERY_WINDOW_MS, MAX_NOTICE_ATTEMPTS, nextDeliveryObservation, nextNoticeAttempt, type NoticeAttempts } from '../import/acquisitionPolling.js';
 import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 /**
  * selfActionRegistry.ts — the self-action controller registry (Part D1 of
@@ -30,6 +31,7 @@ import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/Session
 import { HUB_REPOST_MAX_ATTEMPTS, hubRepostDecision, noteAccountChangedTopic, heldExpiryReportDue, type HubRepostState } from '../messaging/telegram-origin/TokenlessNoticeBrakes.js';
 import { closeGoneEntries, type HeldDebtEntry } from '../messaging/telegram-origin/TokenlessHeldDebt.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
+import { PeerBuildLedger } from '../core/identityBuildFence.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
 import { catchUpAttemptDue, CATCH_UP_MAX_FAILURES, CATCH_UP_RETRY_MS } from '../core/ConversationUnreadService.js';
@@ -56,7 +58,9 @@ import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../core/StageAdvancer.js';
+import { nextSiblingAttemptAtMs, SIBLING_DEFAULT_INTERVAL_MS, SIBLING_DEFAULT_MAX_AGE_MS, SIBLING_FIRST_RETRY_MS } from '../core/sibling-holdings.js';
 import { SessionPoolRolloutDriver } from '../core/SessionPoolRolloutDriver.js';
+import { layer2RetryDecision, LAYER2_MAX_RETRIES, LAYER2_RETRY_INTERVAL_MS } from '../messaging/DeliveryRetryManager.js';
 import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionPoolE2EResultStore.js';
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
@@ -77,6 +81,9 @@ import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
+import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktreeReaper.js';
+import { EPISODE_CAP_MS, PENDING_RENEW_CADENCE_MS, REQUEST_POLL_MAX_MS, nextRequestPollMs, pendingRenewalDue } from '../core/LeaseContinuity.js';
+import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
@@ -325,6 +332,55 @@ const codexArmSessionSweep: SelfActionController = {
   },
 };
 
+/**
+ * planned-restart-lease-continuity (docs/specs/planned-restart-keeps-lead.md §1): while a restart request
+ * is pending the holder renews its lease with a window as the expiry once per pending cadence (10 s on a
+ * tunnel) and polls the request file every 2 s (doubling to 60 s on a read error). The pinned pressure
+ * is a request that is never consumed: the renewals keep their cadence (never faster) and stop at the
+ * episode's four-hour cap, which the episode rule ends; the poll's read always fails, so it backs off to
+ * its 60 s ceiling and stays there. Both are rate-floored sentinels, not count-bounded loops.
+ */
+const plannedRestartLeaseContinuity: SelfActionController = {
+  id: 'planned-restart-lease-continuity',
+  actionVerb: 'retry',
+  models: 'src/core/LeaseCoordinator.ts (pending window renewals, pendingRenewalDue) + src/core/MultiMachineCoordinator.ts (request-file poll, nextRequestPollMs)',
+  modelsPath: 'src/core/LeaseCoordinator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The episode is process memory; a restart is the event the renewal exists for, and the next process starts no episode until a request is seen again, so a restart cannot speed the cadence up.' },
+  boundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1 + Math.ceil((4 * 60 * 60_000) / REQUEST_POLL_MAX_MS) + 6,
+  perTargetBoundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1,
+  ticks: 2 * 60 * 60, // four hours at 2 s: the cap is reached inside the horizon
+  tickMs: 2_000,
+  eternalSentinel: { reason: 'While the request is pending the renewal must keep running at its cadence or the lead lapses during the boot it protects; it stops at the four-hour cap.', rateFloorMs: 2_000 },
+  delegatedGiveUp: 'The episode end rule (planned-restart-keeps-lead §1 step 3): withdrawn, absent 60 s with no ledger row, consumed but alive past the shutdown bound, or the four-hour cap',
+  makeUnderPressure(f, sink) {
+    const openedAt = f.clock.nowMs();
+    let lastRenewal: number | null = null;
+    let pollEvery = 2_000;
+    let nextPollAt = openedAt;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        // One action per tick: the renewal first (it protects the lead); the poll takes the next tick,
+        // so two emits never share a timestamp and the 2 s floor is the tick itself.
+        if (pendingRenewalDue({ nowMs: now, lastRenewalMs: lastRenewal, cadenceMs: PENDING_RENEW_CADENCE_MS, episodeOpenedAtMs: openedAt, capMs: EPISODE_CAP_MS })) {
+          lastRenewal = now;
+          sink.emit({ verb: 'retry', target: 'pending-window-renewal' });
+          sink.emitTimesMs.push(now);
+          return;
+        }
+        if (now >= nextPollAt) {
+          // The read fails for ever under pressure: the poll backs off and stays at its ceiling.
+          sink.emit({ verb: 'retry', target: 'restart-request-poll' });
+          sink.emitTimesMs.push(now);
+          pollEvery = nextRequestPollMs(false, pollEvery);
+          nextPollAt = now + pollEvery;
+        }
+      },
+    };
+  },
+};
+
 /** desktop-relock-guard-replacement: the sweep replaces a dead relock guard for
  * one duty, then fails that duty loudly. The count lives on the durable marker. */
 const desktopRelockGuardReplacement: SelfActionController = {
@@ -403,6 +459,31 @@ const reachSecondPersonNotice: SelfActionController = {
         if (!reachNoticeDue(steadyCount, heldAt)) return;
         sink.emit({ verb: 'notify', target: 'team:second-person' });
         heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** owner-record-fence-notice (identity-security piece 2c §4): a machine stays below the minimum build, so every
+ * 15-minute pass finds the same list. One notice per distinct list, saved in the ledger: under sustained pressure
+ * it is raised once and never repeated. */
+const ownerRecordFenceNotice: SelfActionController = {
+  id: 'owner-record-fence-notice',
+  actionVerb: 'notify',
+  models: 'src/core/ownerRecordSync.ts (maybeNotifyFence — PeerBuildLedger.noticeDue, one notice per distinct list)',
+  modelsPath: 'src/core/ownerRecordSync.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The last notified list is saved in state/owner-record/peer-builds.json, so a restart or lease move cannot reset it.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 4 * 24 * 30,
+  tickMs: 15 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const ledger = new PeerBuildLedger(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fence-notice-')), 'peer-builds.json'));
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!ledger.noticeDue(['below:m_old'])) return;
+        sink.emit({ verb: 'notify', target: 'owner:fence' });
       },
     };
   },
@@ -3025,6 +3106,109 @@ const diskStewardNotice: SelfActionController = {
   },
 };
 
+// ── agent worktree reclaim (docs/specs/reaper-removal-out-of-process.md §2-4) ──
+// The worst case: removal is live and every removal and every trash delete fails,
+// forever. Bounded by the reaper's shipped constants, read from the real defaults
+// (DEFAULT_AGENT_WORKTREE_REAPER_CONFIG, RECLAIM_DEFAULTS), not copied:
+//   - per path: the breaker (AgentWorktreeReaper.recordReclaimFailure /
+//     breakerTripped) leaves a path out of the list sent to the child after
+//     maxReclaimFailuresPerPath failures;
+//   - per run: the child attempts at most maxReapsPerPass paths;
+//   - per trash folder: the child counts each delete before it runs and skips the
+//     folder after trashMaxFailures, with the back-off
+//     trashRetryBackoffMs × 2^(failures-1) (agentWorktreeReclaimMain.ts:318).
+const RECLAIM_PATHS = 30;
+const RECLAIM_TRASH = 5;
+const RECLAIM_PASS_MS = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs;
+const worktreeReclaimAttempt: SelfActionController = {
+  id: 'worktree-reclaim-attempt',
+  actionVerb: 'retry-worktree-removal', // 'retry' detector token: one removal or trash-delete attempt by the reclaim child
+  models: 'src/monitoring/AgentWorktreeReaper.ts (reapOutOfProcess: breaker-excluded paths left out of each run) + src/monitoring/agentWorktreeReclaimMain.ts (runReclaimChild: per-run cap; trash retries counted before each delete, back-off, skipped after 3)',
+  modelsPath: 'src/monitoring/agentWorktreeReclaimMain.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The per-path breaker counts are in memory and reset when the server restarts, so a restart allows up to maxReclaimFailuresPerPath more attempts per still-failing path (each run still capped at maxReapsPerPass, one run per hourly pass). Trash retry counts are persisted in trash-retries.json (written before each delete), so a restart does not reset those, and the attempt ids already read are persisted, so no attempt is counted twice.' },
+  boundK: RECLAIM_PATHS * DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.maxReclaimFailuresPerPath + RECLAIM_TRASH * RECLAIM_DEFAULTS.trashMaxFailures,
+  perTargetBoundK: 3,
+  ticks: 100, // 100 h of hourly passes
+  tickMs: RECLAIM_PASS_MS,
+  makeUnderPressure(f, sink) {
+    const cap = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.maxReapsPerPass;
+    const breakerAt = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.maxReclaimFailuresPerPath;
+    const pathFailures = new Map<string, number>();
+    const trash = new Map<string, { failures: number; lastAt: number }>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        // 1. Leftover trash first (the child's order).
+        for (let i = 0; i < RECLAIM_TRASH; i++) {
+          const name = `trash-${i}`;
+          const prior = trash.get(name);
+          if (prior && prior.failures >= RECLAIM_DEFAULTS.trashMaxFailures) continue; // trash-stuck
+          if (prior && now < prior.lastAt + RECLAIM_DEFAULTS.trashRetryBackoffMs * 2 ** Math.max(0, prior.failures - 1)) continue;
+          trash.set(name, { failures: (prior?.failures ?? 0) + 1, lastAt: now }); // counted before the delete
+          sink.emit({ verb: 'retry-worktree-removal', target: name });
+          if (!f.targetAlwaysRejects()) trash.delete(name);
+        }
+        // 2. Removals: breaker-tripped paths are excluded; at most `cap` attempts per run.
+        let attempts = 0;
+        for (let i = 0; i < RECLAIM_PATHS && attempts < cap; i++) {
+          const p = `/wt/path-${i}`;
+          if ((pathFailures.get(p) ?? 0) >= breakerAt) continue;
+          attempts += 1;
+          sink.emit({ verb: 'retry-worktree-removal', target: p });
+          if (f.targetAlwaysRejects()) pathFailures.set(p, (pathFailures.get(p) ?? 0) + 1);
+        }
+      },
+    };
+  },
+};
+
+// The hourly run start itself. While removal is live, every pass starts one
+// reclaim child (unless one is still running or its ownership is unresolved),
+// EVEN WHEN every eligible path is breaker-excluded: the child then evaluates,
+// finds nothing to act on, and exits. It never stops on its own, so it is a
+// declared Eternal Sentinel with a rate floor: the server's own timers are a
+// one-time pass initialPassDelayMs after boot, then setInterval(reapIntervalMs)
+// from boot, so the closest two starts can be is reapIntervalMs - initialPassDelayMs
+// (45 min, right after a boot); every later gap is reapIntervalMs (1 h).
+const RECLAIM_RUN_FLOOR_MS = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs - DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.initialPassDelayMs;
+const worktreeReclaimRunSpawn: SelfActionController = {
+  id: 'worktree-reclaim-run-spawn',
+  actionVerb: 'spawn-worktree-reclaim-run', // 'spawn' detector token: AgentWorktreeReclaimRunner.startRun → spawnChild
+  models: 'src/monitoring/AgentWorktreeReaper.ts (start(): initial pass + setInterval(reapIntervalMs); reapOutOfProcess → runner.startRun once per pass, refused while busy/unresolved)',
+  modelsPath: 'src/monitoring/AgentWorktreeReaper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart re-arms the timers from scratch: the first start is initialPassDelayMs after boot and is refused while the previous run\'s process group is alive or unresolved (adoption by run id), so a restart never starts a second concurrent child. Breaker counts reset on restart; trash retry counts persist in trash-retries.json.' },
+  delegatedGiveUp: 'The per-path breaker leaves tripped paths out of each run; the child removes nothing when nothing is eligible; dryRun:true never spawns a child (the dry-run pass runs in the evaluation worker).',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 400, // 100 h at 15 min
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'while removal is live, each hourly pass starts one reclaim child; a run that finds nothing to do exits after its evaluation', rateFloorMs: RECLAIM_RUN_FLOOR_MS },
+  makeUnderPressure(f, sink) {
+    const bootAt = f.clock.nowMs();
+    const interval = DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.reapIntervalMs;
+    const initialAt = bootAt + DEFAULT_AGENT_WORKTREE_REAPER_CONFIG.initialPassDelayMs;
+    let initialDone = false;
+    let nextIntervalAt = bootAt + interval;
+    let runEndsAt = Number.NEGATIVE_INFINITY;
+    const deadlineMs = 900_000; // RECLAIM_RUN_DEADLINE_MS: the runner kills a run past it
+    const start = (now: number): void => {
+      if (now < runEndsAt) return; // busy: refused
+      sink.emit({ verb: 'spawn-worktree-reclaim-run', target: 'agent-home' });
+      sink.emitTimesMs.push(now);
+      runEndsAt = now + deadlineMs; // worst case: every run lasts to its deadline
+    };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!initialDone && now >= initialAt) { initialDone = true; start(initialAt); }
+        while (now >= nextIntervalAt) { start(nextIntervalAt); nextIntervalAt += interval; }
+      },
+    };
+  },
+};
+
 // ── local-verify (spec docs/specs/local-verify-merge-authority.md; ACT-147) ──
 // Every model below drives the SAME exported pure decision functions the real
 // LocalVerifyService / StatusReconciler call (decideVerifyRetry, decideStarved,
@@ -3357,21 +3541,25 @@ const localVerifyStatusPassBackoff: SelfActionController = {
 
 /**
  * local-verify-flake-rerun — the isolation re-run inside one verify: a lane whose only
- * problem is 1..3 failed files re-runs exactly those files once each, and the cap (3)
- * covers the whole verify. Pinned worst case (targetAlwaysRejects): every lane of every
- * verify has 2 failing files and every re-run fails again. Per verify: lane 1 re-runs 2,
- * lane 2 re-runs none (only 1 left of the cap), lane 3 none ⇒ ≤ 3 re-runs, each file
- * once. The model drives ONE verify (verifies themselves are bounded by the queue's own
- * controllers), so the bound is horizon-independent.
+ * problem is 1..3 failed files re-runs exactly those files, and the cap (3) covers the whole
+ * verify and counts FILES. A plain file is re-run once. A file that imports a changed file and
+ * whose failed tests `main` has all shown flaky is re-run up to three times in a row (spec
+ * local-verify-import-related-rerun.md); its first run that does not pass ends its sequence.
+ * Pinned worst case (targetAlwaysRejects): every lane of every verify has 3 failing files, all
+ * of them import-related with main evidence, and every solo run passes, so each file gets all
+ * three runs. Per verify: lane 1 re-runs its 3 files three times each, lanes 2 and 3 none (the
+ * cap is spent) ⇒ ≤ 3 × 3 = 9 solo runs, each file at most 3. The model drives ONE verify
+ * (verifies themselves are bounded by the queue's own controllers), so the bound is
+ * horizon-independent.
  */
 const localVerifyFlakeRerun: SelfActionController = {
   id: 'local-verify-flake-rerun',
   actionVerb: 'retry-failed-test-file',
-  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles per verify)',
+  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles files per verify, LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses runs per import-related file)',
   modelsPath: 'src/localVerify/orchestrator.ts',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'The re-run budget lives inside one verify run (the child process); a restart ends that run, and the next run is a new verify bounded by the queue controllers.' },
-  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles,
-  perTargetBoundK: 1,
+  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles * LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
+  perTargetBoundK: LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses,
   ticks: 3, // one tick per lane of a single verify
   tickMs: 10 * 60_000,
   makeUnderPressure(f, sink) {
@@ -3380,12 +3568,16 @@ const localVerifyFlakeRerun: SelfActionController = {
     return {
       tick() {
         sink.considered += 1;
-        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`];
+        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`, `tests/l${lane}/c.test.ts`];
         const report: ParsedLaneReport = { files: new Map(files.map((x) => [x, { passed: 1, failed: f.targetAlwaysRejects() ? 1 : 0, skipped: 0, todo: 0 }])) };
         lane += 1;
-        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget });
+        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget, importRelated: new Set(files) });
         budget -= d.rerun.length;
-        for (const file of d.rerun) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        if (d.reason !== 'eligible') return;
+        for (const file of d.rerun) {
+          const runs = d.threePass.includes(file) ? LOCAL_VERIFY_LIMITS.isolationRerunImportRelatedPasses : 1;
+          for (let n = 0; n < runs; n++) sink.emit({ verb: 'retry-failed-test-file', target: file });
+        }
       },
     };
   },
@@ -5956,7 +6148,139 @@ const pairingOutcomeNoticeRetry: SelfActionController = {
   },
 };
 
+
+/**
+ * sibling-holdings-refresh: the background cache of what the agent's OTHER machines
+ * hold (docs/specs/sibling-machine-reach.md §3.1) polling a peer that stays dead. It
+ * is an Eternal Sentinel: it keeps trying so the peer is seen again when it comes
+ * back, but never faster than its backoff — one quick 60 s retry for a never-read
+ * peer, then 10 → 20 → 40 → 60 minutes, capped at the age limit.
+ */
+const siblingHoldingsRefresh: SelfActionController = {
+  id: 'sibling-holdings-refresh',
+  actionVerb: 'refresh',
+  models: 'src/core/sibling-holdings.ts (SiblingHoldingsCache.refreshPeer — nextSiblingAttemptAtMs per-peer backoff, 12-peer per-tick bound, live switch)',
+  modelsPath: 'src/core/sibling-holdings.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The cache is memory-only; after a restart the peer is never-read again and gets one 60 s retry, then the same doubling backoff — a restart can add at most one extra attempt.' },
+  boundK: 0,
+  perTargetBoundK: 0,
+  ticks: 24 * 6,
+  tickMs: SIBLING_DEFAULT_INTERVAL_MS,
+  eternalSentinel: { reason: 'A dead peer is retried so its holdings reappear by themselves when it comes back; the backoff holds the rate at one attempt per hour.', rateFloorMs: SIBLING_FIRST_RETRY_MS },
+  delegatedGiveUp: 'The 60-minute age cap on the backoff (SIBLING_DEFAULT_MAX_AGE_MS) and the live toneGate.siblingReach.enabled switch read every tick',
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextAttemptAtMs = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextAttemptAtMs) return;
+        sink.emit({ verb: 'refresh', target: 'dead-peer' });
+        sink.emitTimesMs.push(now);
+        failures += 1;
+        nextAttemptAtMs = nextSiblingAttemptAtMs({ nowMs: now, failures, neverRead: true, intervalMs: SIBLING_DEFAULT_INTERVAL_MS, maxAgeMs: SIBLING_DEFAULT_MAX_AGE_MS });
+      },
+    };
+  },
+};
+
+
+/** message-holder-redelivery (relay-asof-holder-skew §2): a message whose role is known but
+ * has no accepted holder is re-resolved by the Layer-2 lane every 30 s. Under pressure the
+ * holder never appears: ten redeliveries, one dead letter with the plain reason, then quiet. */
+const messageHolderRedelivery: SelfActionController = {
+  id: 'message-holder-redelivery',
+  actionVerb: 'retry',
+  models: 'src/messaging/DeliveryRetryManager.ts (doCycle — layer2RetryDecision over a holderPending envelope; dead letter + sender notice at LAYER2_MAX_RETRIES)',
+  modelsPath: 'src/messaging/DeliveryRetryManager.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+  },
+  boundK: LAYER2_MAX_RETRIES + 1,
+  perTargetBoundK: LAYER2_MAX_RETRIES + 1,
+  ticks: 4 * 60 * 4, // one hour of 15 s ticks
+  tickMs: 15_000,
+  makeUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+};
+
+function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'message-holder-redelivery:episode';
+  return {
+    tick() {
+      sink.considered += 1;
+      const persisted = f.durableState.get(key) as { attempts: number; lastAttemptAt: number; firstAttemptAt?: number; deadLettered?: boolean } | undefined;
+      if (persisted?.deadLettered) return;
+      const now = f.clock.nowMs();
+      const decision = layer2RetryDecision(persisted ?? { attempts: 0, lastAttemptAt: 0, firstAttemptAt: now }, now);
+      if (decision === 'wait') return;
+      if (decision === 'give-up') {
+        f.durableState.set(key, { ...persisted, deadLettered: true });
+        sink.emit({ verb: 'notify', target: 'sender:echo-lead' });
+        return;
+      }
+      f.durableState.set(key, { attempts: (persisted?.attempts ?? 0) + 1, lastAttemptAt: now, firstAttemptAt: persisted?.firstAttemptAt ?? now });
+      void f.targetAlwaysRejects();
+      sink.emit({ verb: 'retry', target: 'echo-topic-144319' });
+      void LAYER2_RETRY_INTERVAL_MS;
+    },
+  };
+}
+
+
+function historyNoticeUnderPressure(f: PressureFixture, sink: ActionSink) {
+  // One unchanged, eligible notice; every publication fails, including attempts before a restart.
+  const key = 'history-acquisition-notice:job-1:sequence-1';
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const state = f.durableState.get(key) as NoticeAttempts | undefined;
+    const reserved = nextNoticeAttempt(state ?? {attempts:0,nextAt:0},f.clock.nowMs());
+    if (!reserved) return;
+    f.durableState.set(key,reserved);
+    sink.emit({verb:'retry-history-notice',target:key});
+  }};
+}
+
+const historyAcquisitionNotice: SelfActionController = {
+  id:'history-acquisition-notice-retry',actionVerb:'retry-history-notice',
+  models:'src/import/HistoryAcquisitionWorker.ts (startPolling, durable reserveNotice before publishing the stable job/sequence notice)',
+  modelsPath:'src/import/HistoryAcquisitionWorker.ts',
+  ticks:60,tickMs:60_000,boundK:MAX_NOTICE_ATTEMPTS,perTargetBoundK:MAX_NOTICE_ATTEMPTS,
+  makeUnderPressure:historyNoticeUnderPressure,
+  restartPosture:{pressureSurvives:true,restartUnderPressure:historyNoticeUnderPressure},
+};
+
+function historyPollUnderPressure(f: PressureFixture,sink: ActionSink) {
+  // The submitted export never arrives. Both the original deadline and next observation survive.
+  const key = 'history-acquisition-delivery:job-1';
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const state = f.durableState.get(key) as {requestedAt:number;deadline:number;nextCheck:number} | undefined
+      ?? {requestedAt:0,deadline:DELIVERY_WINDOW_MS,nextCheck:0};
+    const next = nextDeliveryObservation(state.requestedAt,state.nextCheck,state.deadline,f.clock.nowMs());
+    if (next === null) return;
+    f.durableState.set(key,{...state,nextCheck:next});
+    sink.emit({verb:'retry-history-delivery-check',target:key});
+  }};
+}
+
+const historyAcquisitionPoll: SelfActionController = {
+  id:'history-acquisition-delivery-poll',actionVerb:'retry-history-delivery-check',
+  models:'src/import/HistoryAcquisition.ts (claimObservation before provider/mail I/O; absolute eight-day submission deadline)',
+  modelsPath:'src/import/HistoryAcquisition.ts',
+  // 8 quarter-hour checks in the first two hours, 44 half-hour checks until day one, then 168 hourly checks.
+  ticks:12_000,tickMs:60_000,boundK:220,perTargetBoundK:220,
+  makeUnderPressure:historyPollUnderPressure,
+  restartPosture:{pressureSurvives:true,restartUnderPressure:historyPollUnderPressure},
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  siblingHoldingsRefresh,
+  historyAcquisitionNotice,
+  historyAcquisitionPoll,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
   localVerifyLeftoverReaper,
@@ -5980,7 +6304,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   learnedSkillReconciler,
   failureCalloutInvestigation,
   attributionAuditRetry,
+  messageHolderRedelivery,
   reachSecondPersonNotice,
+  ownerRecordFenceNotice,
   presenceUsageNotice,
 
   jobPortableTransferPoll,
@@ -6013,6 +6339,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyStatusPassBackoff,
   systemTopicAdoption,
   diskStewardNotice,
+  worktreeReclaimAttempt,
+  worktreeReclaimRunSpawn,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,
@@ -6100,4 +6428,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   heldForwardExpiryReport,
   heldDebtLossNotice,
   workBoardPickup,
+  plannedRestartLeaseContinuity,
 ];

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T06:32:58.543Z",
+  "slug": "sentinel-one-verdict-per-message",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 110,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MessageSentinel.ts",
+      "src/core/appConversationPool.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 95,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

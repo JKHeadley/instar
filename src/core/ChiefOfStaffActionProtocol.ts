@@ -168,6 +168,8 @@ export interface CosJournalSeam {
   flush(): void;
   /** The union of every machine's chiefOfStaff records (own + peers). Throws ⇒ unreadable. */
   loadUnion(): UnionEntry[];
+  /** The union from a COMPLETE read of this machine's journal (all files, in full); null when it could not be read completely. See ChiefOfStaffLoop.boundProjectContents. */
+  loadUnionComplete?(): UnionEntry[] | null;
 }
 
 export interface CosProtocolDeps {

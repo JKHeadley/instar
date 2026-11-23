@@ -20,7 +20,7 @@ async function harness() {
 describe('ordinary capacity acquired at the network boundary', () => {
   it('binds local-refusal proof to one request and consumes it only once', async () => {
     const h = await harness();
-    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockResolvedValue(null);
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserveExplained').mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } });
     let proof: unknown, originalRequest: Parameters<typeof consumeOriginLocalRefusal>[1] | undefined;
     const execute = h.runtime.service.executePreparedBot.bind(h.runtime.service);
     vi.spyOn(h.runtime.service, 'executePreparedBot').mockImplementation((operation, transport) => {
@@ -46,7 +46,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('keeps dispatch uncertain if local-refusal persistence fails before recovery', async () => {
     const h = await harness();
-    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockResolvedValue(null);
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserveExplained').mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } });
     vi.spyOn(h.runtime.store, 'recordOutcome').mockRejectedValue(new Error('outcome storage unavailable'));
     await expect(h.send()).rejects.toMatchObject({ reason: 'origin-execution-state-unavailable' });
     expect(h.network).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
   });
   it.each(['claim', 'markDispatched'] as const)('excludes delayed durable %s response from the short grant lifetime', async method => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserve'), consume = vi.spyOn(capacity, 'consume');
+    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consume');
     if (method === 'claim') {
       const original = h.runtime.store.claim.bind(h.runtime.store);
       vi.spyOn(h.runtime.store, 'claim').mockImplementation(async input => {
@@ -81,7 +81,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('does not acquire capacity when durable dispatch marking refuses', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserve'), consume = vi.spyOn(capacity, 'consume');
+    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consume');
     vi.spyOn(h.runtime.store, 'markDispatched').mockResolvedValue(false);
     await expect(h.send()).rejects.toMatchObject({ reason: 'stale-dispatch-fence' });
     expect(reserve).not.toHaveBeenCalled(); expect(consume).not.toHaveBeenCalled();
@@ -90,7 +90,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('retains local refusal audit without charging a transport attempt', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserve').mockResolvedValue(null);
+    const reserve = vi.spyOn(capacity, 'reserveExplained').mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } });
     const consume = vi.spyOn(capacity, 'consume');
     await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
     expect(reserve).toHaveBeenCalledTimes(1); expect(consume).not.toHaveBeenCalled();
@@ -107,8 +107,8 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('reserves only after the real store confirms dispatch intent', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const original = capacity.reserve.bind(capacity);
-    vi.spyOn(capacity, 'reserve').mockImplementation(async account => {
+    const original = capacity.reserveExplained!.bind(capacity);
+    vi.spyOn(capacity, 'reserveExplained').mockImplementation(async account => {
       const row = (await h.runtime.store.listOrigins()).records[0];
       expect(row.attempts).toHaveLength(1);
       expect(row.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: null });
@@ -127,7 +127,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it.each(['refused', 'expired-response'] as const)('keeps %s consumption uncharged without renewing the capacity grant', async mode => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserve');
+    const reserve = vi.spyOn(capacity, 'reserveExplained');
     const original = capacity.consume.bind(capacity);
     const consume = vi.spyOn(capacity, 'consume').mockImplementation(async grant => {
       if (mode === 'refused') return false;
@@ -156,7 +156,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('returns the transport attempt on a capacity IPC exception before network', async () => {
     const h = await harness();
-    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockRejectedValue(new Error('IPC unavailable'));
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserveExplained').mockRejectedValue(new Error('IPC unavailable'));
     await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
     expect(h.network).not.toHaveBeenCalled();
     const row = (await h.runtime.store.listOrigins()).records[0];
@@ -165,7 +165,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('latches before reserve so concurrent and repeated closure calls cannot acquire another grant', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserve'), consume = vi.spyOn(capacity, 'consume');
+    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consume');
     type Prepared = Awaited<ReturnType<NonNullable<OriginBotTransport['prepare']>>>;
     let prepared: Prepared | undefined;
     const execute = h.runtime.service.executePreparedBot.bind(h.runtime.service);

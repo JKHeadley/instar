@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "history-import-verification-repairs",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T11:42:59.197Z",
+  "artifactPath": "upgrades/side-effects/history-import-verification-repairs.md",
+  "artifactSha256": "73687a73ddec173cb977912b494e637076357e28a5c6117b29c741135f641c77",
+  "coveredFiles": [
+    "docs/specs/history-import-verification-repairs.eli16.md",
+    "src/core/MachineIdentity.ts",
+    "src/server/importedHistoryRoutes.ts",
+    "tests/integration/imported-history-routes.test.ts",
+    "upgrades/next/history-import-verification-repairs.md",
+    "upgrades/side-effects/history-import-verification-repairs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible cleanup observability and duplicate ignore-entry repairs; no new permission or feature.",
+  "eli16Path": "docs/specs/history-import-verification-repairs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/history-import-verification-repairs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "pass",
+        "verified": false
+      }
+    ]
+  }
+}

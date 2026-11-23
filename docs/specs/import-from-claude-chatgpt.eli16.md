@@ -6,7 +6,7 @@ People who switch to Instar leave years of chats, projects and saved memories be
 
 ## What this builds
 
-You download your data from the old app (both apps have an export button) and drop the file into Instar. Before anything is saved, Instar shows a plain summary, something like "1,240 chats, 6 projects, 12 things that looked like passwords were removed", and you confirm it.
+Choose “Bring over my history” and the Claude or ChatGPT account you want. Your agent requests your export, watches for it and downloads it for you. If the provider needs you to sign in or open a message on your phone, Instar shows you that step. You can leave and come back while the provider prepares the export. Before copying anything into your history, Instar shows which account it found, how many chats and projects it can bring over, and what it will leave out. You choose whether to continue.
 
 Your old chats appear under "Imported", with their original dates, and the agent's search can find them. Your old projects show up with their instructions and file names. The agent suggests facts it learned about you, each one next to where it came from, and stores only the ones you tick.
 

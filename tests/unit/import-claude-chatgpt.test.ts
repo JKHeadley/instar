@@ -5,6 +5,7 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -12,8 +13,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { makeZip, type ZipFile } from '../helpers/exportZip.js';
 import { listEntries, ZipRefused } from '../../src/import/safeZip.js';
 import { jsonArrayItems } from '../../src/import/jsonArrayStream.js';
-import { MAX_PARTS, PART_CHARS, REMOVED_MARKER, parseChatGptConversation, parseClaudeConversation, parseClaudeProject } from '../../src/import/exportParsers.js';
-import { ImportedHistoryStore, importedRef } from '../../src/import/ImportedHistoryStore.js';
+import { MAX_PARTS, PART_CHARS, REMOVED_MARKER, removeSecrets, parseChatGptConversation, parseClaudeConversation, parseClaudeProject } from '../../src/import/exportParsers.js';
+import { ImportedHistoryStore, ImportWriterBusy, importedRef } from '../../src/import/ImportedHistoryStore.js';
 import { memoryTextFromClaudeExport, proposeFacts } from '../../src/import/proposedFacts.js';
 import { applyExport, previewExport } from '../../src/import/importExport.js';
 
@@ -117,6 +118,11 @@ describe('streaming array reader', () => {
   it('skips an element over the cap without holding it', async () => {
     const items = await collect(JSON.stringify([{ big: 'y'.repeat(500) }, { ok: 1 }]), 50, 100);
     expect(items).toEqual([{ kind: 'skipped', reason: 'too-big' }, { kind: 'value', value: { ok: 1 } }]);
+  });
+  it('reads to EOF and rejects a second array after any amount of whitespace', async () => {
+    await expect(collect('[{"id":1}]   []', 1)).rejects.toThrow('trailing-data');
+    await expect(collect('[{"id":1}]   []', 100)).rejects.toThrow('trailing-data');
+    await expect(collect('[{"id":1}]  \n', 1)).resolves.toEqual([{ kind: 'value', value: { id: 1 } }]);
   });
   it('rejects a file that is not an array', async () => {
     await expect(collect('{"a":1}')).rejects.toThrow('not-an-array');
@@ -229,6 +235,69 @@ describe('imported store', () => {
     expect(c.overflow[0]!.text).not.toContain(SECRET);
   });
 
+  describe('a secret at a scrub window edge is removed whole', () => {
+    // 40 characters with no known prefix: only its "Bearer" or "password:" label marks it as a secret.
+    const BARE = 'Zq9Wm2Xr7Kp4Ln8Vt3Hc6Jd1Fs5Gb0Ny2Qe7Ua4';
+    const EDGE = 1_000_000;
+
+    it('a Bearer pair whose last space before the edge sits between the label and the token', () => {
+      const text = 'y'.repeat(EDGE - 10) + ' Bearer ' + BARE + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(BARE);
+      expect(r.text).not.toContain(BARE.slice(0, 12));
+      expect(r.removed).toBe(1);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+
+    it('a labelled password pair split across the edge the same way', () => {
+      const text = 'y'.repeat(EDGE - 12) + ' password: ' + BARE + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(BARE);
+      expect(r.removed).toBe(1);
+    });
+
+    it('a known-prefix key inside a long run with no whitespace near the edge', () => {
+      const text = 'y'.repeat(EDGE - 10) + SECRET + 'y'.repeat(50) + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(SECRET.slice(10));
+      expect(r.text).not.toContain('A1b2C3d4A1b2C3d4');
+      expect(r.removed).toBe(1);
+    });
+
+    it('a secret inside the overlap of two windows counts once and the rest of the text survives', () => {
+      const text = 'word '.repeat(199_990) + SECRET + ' ' + 'more '.repeat(1000);
+      const r = removeSecrets(text);
+      expect(r.removed).toBe(1);
+      expect(r.text).toBe('word '.repeat(199_990) + REMOVED_MARKER + ' ' + 'more '.repeat(1000));
+    });
+
+    it('a token that starts well before the edge and runs across it is removed whole', () => {
+      const long = BARE.repeat(5); // 200 characters, 100 before the edge
+      const text = 'y'.repeat(EDGE - 108) + ' Bearer ' + long + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(BARE);
+      expect(r.removed).toBe(1);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+
+    it('a labelled value longer than the window overlap that crosses the edge is removed to its end', () => {
+      const value = 'Q'.repeat(100_000);
+      const text = 'y'.repeat(EDGE - 80_000 - 11) + ' password: ' + value + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toMatch(/Q{12}/);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+
+    it('a key run longer than a whole window is removed to its end', () => {
+      const text = 'start ' + 'sk-ant-' + 'k'.repeat(1_200_000) + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toMatch(/k{20}/);
+      expect(r.text).toContain(`${REMOVED_MARKER} (${7 + 1_200_000} characters)`); // a long removal says how much
+      expect(r.text.startsWith('start ')).toBe(true);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+  });
+
   it('lists chats by their own last message time, and keeps the full text of an overflowed message', () => {
     const dir = tmp();
     const store = new ImportedHistoryStore(dir);
@@ -301,5 +370,100 @@ describe('preview, then apply', () => {
   it('a zip that is neither export is refused in plain words', async () => {
     const z = writeZip([{ name: 'photos/cat.jpg', data: 'x' }]);
     await expect(previewExport(z)).rejects.toThrow(/doesn't look like a Claude or ChatGPT export/);
+  });
+});
+
+describe('export provenance and shared destination writer', () => {
+  const selected = { provider: 'claude' as const, expectedEmail: 'owner@example.test' };
+  const claude = claudeConv('first', []);
+  const account = JSON.stringify([{ email_address: selected.expectedEmail }]);
+  const archive = (rows: unknown[], users = account) => writeZip([
+    { name: 'users.json', data: users }, { name: 'conversations.json', data: JSON.stringify(rows) },
+  ]);
+
+  it('refuses conflicting markers, two roots and provider-shaped rows in the wrong export', async () => {
+    const mixed = writeZip([{ name: 'chat.html', data: '' }, { name: 'users.json', data: '[]' },
+      { name: 'conversations.json', data: JSON.stringify([gptConv]) }]);
+    await expect(previewExport(mixed)).rejects.toThrow(/both providers/);
+    const parallel = writeZip([{ name: 'first/users.json', data: account }, { name: 'second/conversations.json', data: '[]' }]);
+    await expect(previewExport(parallel)).rejects.toThrow(/export folder/);
+    await expect(previewExport(archive([gptConv]), selected)).rejects.toThrow(/provider/);
+    await expect(previewExport(archive([{ ...gptConv, ...claude }]), selected)).rejects.toThrow(/provider/);
+    await expect(previewExport(archive([{}]), selected)).rejects.toThrow(/no recognizable/);
+    await expect(previewExport(archive([{ uuid: 'junk', chat_messages: [{ title: 'unrelated' }] }]), selected)).rejects.toThrow(/no recognizable/);
+    const junkTree = writeZip([{ name: 'chat.html', data: '' }, { name: 'conversations.json',
+      data: JSON.stringify([{ id: 'item', mapping: { arbitrary: true } }]) }]);
+    await expect(previewExport(junkTree)).rejects.toThrow(/no recognizable/);
+  });
+
+  it('detects a late wrong-provider row before acquiring permission or writing a single chat', async () => {
+    const store = new ImportedHistoryStore(tmp());
+    let confirmed = false;
+    await expect(applyExport(archive([claude, gptConv]), store, () => { confirmed = true; }, selected)).rejects.toThrow(/provider/);
+    expect(confirmed).toBe(false);
+    expect(fs.readdirSync(path.join(store.dir, 'conversations'))).toEqual([]);
+  });
+
+  it('accepts only genuine empty arrays with corroborating provider account metadata', async () => {
+    await expect(previewExport(archive([], '[]'), selected)).rejects.toThrow(/empty account history/);
+    await expect(previewExport(archive([], account), selected)).resolves.toMatchObject({ chats: 0 });
+    await expect(previewExport(writeZip([{ name: 'users.json', data: account },
+      { name: 'conversations.json', data: '[false]' }]), selected)).rejects.toThrow(/empty account history/);
+    await expect(previewExport(archive([claude], '[{"email_address":"other@example.test"}]'), selected)).rejects.toThrow(/account/);
+    await expect(previewExport(archive([claude], '[{"email_address":"owner@example.test"},{"email_address":"other@example.test"}]'), selected)).rejects.toThrow(/account/);
+    await expect(previewExport(archive([claude], 'not JSON'), selected)).rejects.toThrow(/account/);
+    const chatgpt = writeZip([{ name: 'user.json', data: '{"email":"Owner@Example.test"}' }, { name: 'conversations.json', data: '[]' }]);
+    await expect(previewExport(chatgpt, { ...selected, provider: 'chatgpt' })).resolves.toMatchObject({ from: 'chatgpt', chats: 0 });
+    await expect(previewExport(chatgpt, selected)).rejects.toThrow(/different provider/);
+    await expect(previewExport(archive([claude], '[]'), selected)).resolves.toMatchObject({ chats: 1 });
+  });
+
+  it('serializes independent processes and instances, refreshes stale readers, and permits retry', async () => {
+    const dir = tmp();
+    const earlier = new ImportedHistoryStore(dir);
+    const later = new ImportedHistoryStore(dir);
+    const first = archive([claude]);
+    const second = archive([claudeConv('second', [])]);
+    const otherProcess = () => spawnSync(process.execPath, ['-e', `
+      const db = new (require('better-sqlite3'))(process.argv[1], {timeout: 0});
+      try { db.exec('BEGIN IMMEDIATE'); process.stdout.write('acquired'); }
+      catch (err) { process.stdout.write(err.code); }
+      finally { db.close(); }
+    `, path.join(earlier.dir, 'write-lock.sqlite')], { encoding: 'utf8', timeout: 5000 });
+    let applied = false;
+    await earlier.withWriter(async () => {
+      const result = otherProcess();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('SQLITE_BUSY');
+      await expect(applyExport(second, later, () => { applied = true; })).rejects.toBeInstanceOf(ImportWriterBusy);
+    });
+    expect(applied).toBe(false);
+    expect(otherProcess().stdout).toBe('acquired');
+    await applyExport(first, earlier);
+    await applyExport(second, later, () => { applied = true; });
+    expect(applied).toBe(true);
+    expect(earlier.listConversations().map(c => c.originalId).sort()).toEqual(['first', 'second']);
+  });
+
+  it('recovers the first message after a killed writer left a torn final line', async () => {
+    const store = new ImportedHistoryStore(tmp());
+    const first: [string, 'human', string, string] = ['m1', 'human', 'first', '2025-01-01T00:00:00Z'];
+    const second: [string, 'human', string, string] = ['m2', 'human', 'second', '2025-01-02T00:00:00Z'];
+    await applyExport(archive([claudeConv('torn', [first])]), store);
+    const dir = path.join(store.dir, 'conversations');
+    fs.appendFileSync(path.join(dir, fs.readdirSync(dir)[0]!), '{"key":"m');
+    const updated = archive([claudeConv('torn', [first, second])]);
+    expect((await applyExport(updated, store)).messagesAdded).toBe(1);
+    expect(store.readMessages(importedRef('claude', 'torn'))!.map(m => m.key)).toEqual(['m1', 'm2']);
+    expect((await applyExport(updated, store)).messagesAdded).toBe(0);
+  });
+
+  it('preserves a manifest that becomes unreadable after the store was opened', async () => {
+    const store = new ImportedHistoryStore(tmp());
+    const manifest = path.join(store.dir, 'manifest.json');
+    fs.writeFileSync(manifest, 'damaged');
+    await expect(applyExport(archive([claude]), store)).rejects.toThrow();
+    expect(fs.readFileSync(manifest, 'utf8')).toBe('damaged');
+    expect(fs.readdirSync(path.join(store.dir, 'conversations'))).toEqual([]);
   });
 });

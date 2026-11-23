@@ -195,6 +195,14 @@ export interface ExecuteLiveConfig {
    * (docs/specs/feedback-executor-review-failed-recovery.md). 0 = never close (the old behaviour).
    */
   reviewFailedGraceHours: number;
+  /**
+   * What happens after a spec DRAFT (written from untrusted feedback) merges (SEC-096). The next step
+   * is a TRUSTED session (no confinement, auth kept) that converges the draft, so it never starts on
+   * the independent reviewers' word alone. `owner-approved` (the default): it starts only once the
+   * approver's own GitHub approval is on the merged head. `off`: it never starts; merged drafts wait
+   * for the owner by hand. There is deliberately no setting that starts it without the owner.
+   */
+  specFollowUp: 'owner-approved' | 'off';
   actionTopicId?: number;
 }
 
@@ -230,6 +238,8 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
     publishRepo: publish,
     reviewGate: raw?.reviewGate === 'operator' ? 'operator' : 'independent',
     reviewFailedGraceHours: int(raw?.reviewFailedGraceHours, EXECUTE_CONFIG_DEFAULTS.reviewFailedGraceHours, 0, 168),
+    // SEC-096: anything but the exact word `off` keeps the owner-approval requirement (fail closed).
+    specFollowUp: raw?.specFollowUp === 'off' ? 'off' : 'owner-approved',
     ...(Number.isSafeInteger(topic) && topic !== 0 ? { actionTopicId: topic } : {}),
   };
 }

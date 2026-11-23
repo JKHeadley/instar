@@ -40,6 +40,6 @@ export function parseDateCursor(raw: unknown): DateCursor | null {
     if (typeof at !== 'string' || (at !== '' && (!Number.isFinite(Date.parse(at)) || new Date(at).toISOString() !== at))) return null;
     return typeof key === 'string' && /^(?:h[0-9a-f]{64}|t[0-9a-f]{16})$/.test(key) ? { at, key } : null;
   } catch {
-    return null;
+    return null; // @silent-fallback-ok: malformed cursor is invalid input; the route rejects it with invalid-search-page, never restarts pagination.
   }
 }

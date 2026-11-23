@@ -5,7 +5,7 @@
 // this round, confirms in a sheet that says what really happens.
 
 import {
-  buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES,
+  buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES, roundNameSuffix,
 } from './plans-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -192,7 +192,7 @@ function openProject(r, { post, topicHref, refresh }) {
   const body = [summary];
   if (acts.ack !== null) {
     body.push(el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: `Waiting for your OK on round ${acts.ack + 1}` }),
+      el('span', { class: 'need-title', text: `Waiting for your OK on round ${acts.ack + 1}${roundNameSuffix(p, acts.ack)}` }),
       el('span', { class: 'need-sub', text: 'Your OK records permission for this round. It does not start work by itself.' }),
       actionBox({ label: `OK, continue round ${acts.ack + 1}`, kind: 'primary', run: () => write('ack', 'ack', { forRoundIndex: acts.ack }), done })));
   }

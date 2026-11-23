@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-21T23:51:16.038Z",
+  "slug": "lifeline-standby-never-boot-polls",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 27,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/lifeline-standby-never-boot-polls.md",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/pollDecision.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

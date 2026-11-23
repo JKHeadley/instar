@@ -1,0 +1,55 @@
+{
+  "ts": "2026-11-18T06:06:51.805Z",
+  "slug": "history-acquisition",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 23,
+  "loc": 2249,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/BackupManager.ts",
+      "src/core/GitStateManager.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/data/awareness/import-claude-chatgpt-history.md",
+      "src/data/state-coherence-registry.json",
+      "src/import/AcquisitionWorkerLease.ts",
+      "src/import/HistoryAcquisition.ts",
+      "src/import/HistoryAcquisitionWorker.ts",
+      "src/import/ImportedHistoryStore.ts",
+      "src/import/acquisitionPolling.ts",
+      "src/import/archiveStaging.ts",
+      "src/import/exportDelivery.ts",
+      "src/import/gmailExportNotice.ts",
+      "src/import/importExport.ts",
+      "src/import/jsonArrayStream.ts",
+      "src/import/personalExportDriver.ts",
+      "src/import/privateImportState.ts",
+      "src/server/AgentServer.ts",
+      "src/server/historyAcquisitionRoutes.ts",
+      "src/server/importedHistoryRoutes.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2173,
+    "deletedLines": 76
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Publication stops after five durable attempts per notice. Restart and continued rejection do not increase the budget. Delivery observations stop at the original eight-day deadline across restarts. A failing chat leaves the other jobs eligible."
+    }
+  },
+  "verdict": "pass"
+}

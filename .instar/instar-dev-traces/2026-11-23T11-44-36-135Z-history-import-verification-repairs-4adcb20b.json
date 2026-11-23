@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "history-import-verification-repairs",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T11:44:36.135Z",
+  "artifactPath": "upgrades/side-effects/history-import-verification-repairs.md",
+  "artifactSha256": "00c10f3e0a0de45b190b8b66e53aa31e22369c4d1340acc39fa34650f6a56e08",
+  "coveredFiles": [
+    "docs/specs/history-import-verification-repairs.eli16.md",
+    "src/core/MachineIdentity.ts",
+    "src/server/importedHistoryRoutes.ts",
+    "tests/e2e/history-acquisition-chat-alive.test.ts",
+    "tests/integration/imported-history-routes.test.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/next/history-import-verification-repairs.md",
+    "upgrades/side-effects/history-import-verification-repairs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible diagnostic and deduplication repairs with SQLite wiring allowlist reconciliation; no new capability or authority.",
+  "eli16Path": "docs/specs/history-import-verification-repairs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/history-import-verification-repairs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "pass",
+        "verified": false
+      }
+    ]
+  }
+}

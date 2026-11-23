@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "planned-restart-keeps-lead",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T15:03:32.271Z",
+  "artifactPath": "upgrades/side-effects/planned-restart-keeps-lead.md",
+  "artifactSha256": "ac7c3f75234652a5e349bade612f215e182963e3837bbe068aa6345b5db69618",
+  "specPath": "docs/specs/planned-restart-keeps-lead.md",
+  "coveredFiles": [
+    "docs/specs/planned-restart-keeps-lead.eli16.md",
+    "docs/specs/planned-restart-keeps-lead.md",
+    "src/core/BootClaimHold.ts",
+    "src/core/HttpLeaseTransport.ts",
+    "src/core/LeaseContinuity.ts",
+    "src/core/LeaseCoordinator.ts",
+    "tests/e2e/planned-restart-keeps-lead-boot-path.test.ts",
+    "tests/unit/HttpLeaseTransport-bootProbe.test.ts",
+    "tests/unit/LeaseContinuity.test.ts",
+    "tests/unit/LeaseCoordinator-plannedRestartContinuity.test.ts",
+    "upgrades/next/planned-restart-keeps-lead.md",
+    "upgrades/side-effects/planned-restart-keeps-lead.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on PR #3604 asked by the Chief of Staff: a dial refused on this machine's side (Local Network permission) must read as unknown, never dead, in the boot reclaim's survivor hold. Same lease-protocol risk class as the PR (Tier 2); no constitution or protected path.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/planned-restart-keeps-lead-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

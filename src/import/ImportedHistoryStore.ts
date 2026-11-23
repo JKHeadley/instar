@@ -11,6 +11,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
+import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
+import { privateImportDatabasePath, verifyPrivateImportDirectory } from './privateImportState.js';
 import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSource } from './exportParsers.js';
 import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 
@@ -63,15 +66,22 @@ function writeAtomic(file: string, data: string): void {
   fs.renameSync(tmp, file);
 }
 
+export class ImportWriterBusy extends Error {
+  constructor() { super('An import is already running.'); }
+}
+
 export class ImportedHistoryStore {
   readonly dir: string;
   private manifest: Manifest;
   private dirty = false;
+  private writing = false;
 
   constructor(stateDir: string) {
     this.dir = path.join(stateDir, IMPORTED_HISTORY_DIRNAME);
-    fs.mkdirSync(path.join(this.dir, 'conversations'), { recursive: true, mode: 0o700 });
-    fs.mkdirSync(path.join(this.dir, 'attachments'), { recursive: true, mode: 0o700 });
+    for (const directory of [this.dir, path.join(this.dir, 'conversations'), path.join(this.dir, 'attachments')]) {
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      verifyPrivateImportDirectory(directory);
+    }
     this.manifest = this.readManifest();
   }
 
@@ -121,11 +131,43 @@ export class ImportedHistoryStore {
   }
 
   private readManifest(): Manifest {
+    let raw: string;
+    try { raw = fs.readFileSync(path.join(this.dir, 'manifest.json'), 'utf-8'); }
+    catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      return { version: 1, conversations: {}, projects: {} };
+    }
+    const m: Manifest = JSON.parse(raw);
+    if (m?.version !== 1 || !m.conversations || typeof m.conversations !== 'object' || Array.isArray(m.conversations) ||
+        !m.projects || typeof m.projects !== 'object' || Array.isArray(m.projects)) {
+      throw new Error('The imported history manifest could not be read.');
+    }
+    return m;
+  }
+
+  private refreshForRead(): void {
+    if (!this.writing && !this.dirty) this.manifest = this.readManifest();
+  }
+
+  /** Both manual and acquired imports acquire the same OS-released lock before the first write. */
+  async withWriter<T>(write: () => Promise<T>): Promise<T> {
+    const db = new Database(privateImportDatabasePath(this.dir, 'write-lock.sqlite'), { timeout: 0 }); /* state-registry: imported-history-local */
+    const unregister = registerSqliteHandle(() => db.close());
     try {
-      const m = JSON.parse(fs.readFileSync(path.join(this.dir, 'manifest.json'), 'utf-8')) as Manifest;
-      if (m && m.version === 1 && m.conversations && m.projects) return m;
-    } catch { /* @silent-fallback-ok: no manifest yet means nothing imported */ }
-    return { version: 1, conversations: {}, projects: {} };
+      try { db.exec('BEGIN IMMEDIATE'); }
+      catch (err) {
+        if (['SQLITE_BUSY', 'SQLITE_LOCKED'].includes((err as {code?: string}).code ?? '')) throw new ImportWriterBusy();
+        throw err;
+      }
+      if (this.dirty) throw new Error('The imported history has unsaved changes.');
+      this.manifest = this.readManifest();
+      this.writing = true;
+      try { return await write(); } catch (err) {
+        // A failed flush may have appended durable messages. A retry re-reads the manifest and those files.
+        this.dirty = false;
+        throw err;
+      } finally { this.writing = false; }
+    } finally { unregister(); if (db.open) db.close(); }
   }
 
   private saveManifest(): void {
@@ -150,7 +192,15 @@ export class ImportedHistoryStore {
     for (const m of this.readMessagesByFile(file)) have.add(m.key);
     const fresh = conv.messages.filter((m) => !have.has(m.key));
     if (fresh.length) {
-      fs.appendFileSync(this.convPath(file), fresh.map((m) => JSON.stringify(m)).join('\n') + '\n', { mode: 0o600 });
+      const fd = fs.openSync(this.convPath(file), 'a+', 0o600);
+      try {
+        // A killed append may leave an incomplete final record. Keep the next JSON record on its own line.
+        const size = fs.fstatSync(fd).size;
+        const lastByte = Buffer.alloc(1);
+        if (size) fs.readSync(fd, lastByte, 0, 1, size - 1);
+        const separator = size && lastByte[0] !== 0x0a ? '\n' : '';
+        fs.appendFileSync(fd, separator + fresh.map(m => JSON.stringify(m)).join('\n') + '\n');
+      } finally { fs.closeSync(fd); }
     }
     for (const o of conv.overflow) {
       const a = path.join(this.dir, 'attachments', `${fileFor(`${ref}#${o.key}`)}.txt`);
@@ -185,18 +235,24 @@ export class ImportedHistoryStore {
 
   /** Imported chats, newest last message first (their own times, not when they were imported). */
   listConversations(): ConversationSummary[] {
+    this.refreshForRead();
     return Object.values(this.manifest.conversations)
       .map(({ file: _f, hash: _h, ...s }) => s)
       .sort((a, b) => (b.lastAt ?? '').localeCompare(a.lastAt ?? ''));
   }
 
   listProjects(): ProjectSummary[] {
+    this.refreshForRead();
     return Object.values(this.manifest.projects).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   private readMessagesByFile(file: string): ImportedMessage[] {
     let raw = '';
-    try { raw = fs.readFileSync(this.convPath(file), 'utf-8'); } catch { return []; } // @silent-fallback-ok: a conversation with no messages yet
+    try { raw = fs.readFileSync(this.convPath(file), 'utf-8'); }
+    catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
     const out: ImportedMessage[] = [];
     for (const line of raw.split('\n')) {
       if (!line) continue;
@@ -207,6 +263,7 @@ export class ImportedHistoryStore {
 
   /** One imported chat's messages in time order (ties keep their import order). */
   readMessages(ref: string): ImportedMessage[] | null {
+    this.refreshForRead();
     const c = this.manifest.conversations[ref];
     if (!c) return null;
     return this.readMessagesByFile(c.file)

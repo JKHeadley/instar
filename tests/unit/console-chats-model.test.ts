@@ -541,4 +541,100 @@ describe('messagePieces: inline markdown in a message (console-chat-markdown)', 
     expect(m.safeMessageUrl('http://a.b')).toBe('http://a.b');
     expect(m.safeMessageUrl('JavaScript:alert(1)')).toBeNull();
   });
+
+  it('grouped sections (iPhone parity, Justin 2026-11-18): Projects apart from Groups, no empty groups, project names without "Project:"', () => {
+    // The prefix rule: only "Project" + a separator; "Projector…" stays whole; nothing left → unchanged.
+    expect(m.stripProjectPrefix('Project: Instar topic management')).toBe('Instar topic management');
+    expect(m.stripProjectPrefix('Project \u2013 Windows app')).toBe('Windows app');
+    expect(m.stripProjectPrefix('Project - Mac app')).toBe('Mac app');
+    expect(m.stripProjectPrefix('project:lowercase')).toBe('lowercase');
+    expect(m.stripProjectPrefix('Project \u2014 Em dash')).toBe('Em dash');
+    expect(m.stripProjectPrefix('Projector setup')).toBe('Projector setup');
+    expect(m.stripProjectPrefix('Projects: plural')).toBe('Projects: plural');
+    expect(m.stripProjectPrefix('Project:')).toBe('Project:');
+    expect(m.stripProjectPrefix('My Project: x')).toBe('My Project: x');
+    // Display title: the tracked project's own title first; else the group title stripped; plain groups untouched.
+    expect(m.groupDisplayTitle({ title: 'Project: Old name' }, { key: 'telegram:9', title: 'Real project' })).toBe('Real project');
+    expect(m.groupDisplayTitle({ title: 'Project: Old name' }, { key: 'telegram:9', title: 'Project: Real' })).toBe('Real');
+    expect(m.groupDisplayTitle({ title: 'Project: Old name' }, { key: 'telegram:9', title: '' })).toBe('Old name');
+    expect(m.groupDisplayTitle({ title: 'Project \u2013 Old' }, { key: 'telegram:9', title: 'telegram:9' })).toBe('Old');
+    expect(m.groupDisplayTitle({ title: 'Projector setup' }, { key: 'k', title: '' })).toBe('Projector setup');
+    expect(m.groupDisplayTitle({ title: 'Project: Plain group' }, null)).toBe('Project: Plain group');
+    // Sections: order kept within each, empty groups dropped.
+    const projects = new Map([['e1', { key: 'telegram:9', title: 'Tracked', status: { label: 'Moving', tone: 'ok' }, href: '#x' }]]);
+    const groups = [
+      { key: 'e0', title: 'Plain A', rows: [{}], count: 1, unread: 0 },
+      { key: 'e1', title: 'Project: Tracked group', rows: [{}, {}], count: 2, unread: 0 },
+      { key: 'e2', title: 'Untitled group', rows: [], count: 0, unread: 0 },
+      { key: 'e3', title: 'Plain B', rows: [{}], count: 1, unread: 0 },
+    ];
+    const s = m.groupSections(groups, projects);
+    expect(s.projects.map((g: any) => [g.key, g.displayTitle, g.project.status.label])).toEqual([['e1', 'Tracked', 'Moving']]);
+    expect(s.groups.map((g: any) => [g.key, g.displayTitle, g.project])).toEqual([['e0', 'Plain A', null], ['e3', 'Plain B', null]]);
+    // An empty project group is hidden too; no projects map → every group is plain.
+    expect(m.groupSections([{ ...groups[1], rows: [], count: 0 }], projects)).toEqual({ projects: [], groups: [] });
+    expect(m.groupSections(groups, null).projects).toEqual([]);
+    expect(m.groupSections(null, projects)).toEqual({ projects: [], groups: [] });
+  });
+});
+
+describe('quick-page payload diff (telegram-slack-change-feed)', () => {
+  const h = (n: number) => n.toString(16).padStart(64, '0');
+  const page = (hashes: string[], messages: unknown[]) => ({ messages, changeFeed: { rowHashes: hashes } });
+
+  it('keeps late and future timestamps, and replaces the full row when delivery or origin changes', () => {
+    const future = { messageId: 1, timestamp: '2099-01-01T00:00:00Z', text: 'future clock' };
+    const pending = { messageId: 'app-2', timestamp: '2026-11-22T00:00:00Z', text: 'hello', deliveryState: 'pending' };
+    const first = m.rebuildQuickPage(null, page([h(1), h(2)], [future, pending]));
+    const late = { messageId: 3, timestamp: '2020-01-01T00:00:00Z', text: 'arrived late' };
+    const delivered = { ...pending, deliveryState: 'delivered', originVerified: 'verified' };
+    const next = m.rebuildQuickPage(first.cache, page([h(1), h(4), h(3)], [delivered, late]));
+    expect(next.data.messages).toEqual([future, delivered, late]);
+    expect([...next.cache.rows.values()]).toEqual(next.data.messages);
+    expect(next.cache.hashes).toEqual([h(1), h(4), h(3)]);
+  });
+
+  it('an empty network delta becomes a full broadcast page for a new tab, reopened chat and new leader', () => {
+    const rows = [{ messageId: 1, text: 'one' }, { messageId: 2, text: 'two' }];
+    const original = m.rebuildQuickPage(null, page([h(1), h(2)], rows));
+    const broadcast = m.rebuildQuickPage(original.cache, page([h(1), h(2)], []));
+    expect(broadcast.data.messages).toEqual(rows);
+    const newTab = m.rebuildQuickPage(null, structuredClone(broadcast.data));
+    expect(newTab.data.messages).toEqual(rows);
+    expect(newTab.cache.hashes).toEqual([h(1), h(2)]);
+    const newLeader = m.rebuildQuickPage(newTab.cache, page([h(1), h(2)], []));
+    expect(newLeader.data.messages).toEqual(rows);
+    expect(m.rebuildQuickPage(null, newLeader.data).data.messages).toEqual(rows);
+  });
+
+  it('drops departed hashes and learns each new hash only alongside its actual row', () => {
+    const old = m.rebuildQuickPage(null, page([h(1), h(2)], [{ messageId: 1 }, { messageId: 2 }]));
+    const next = m.rebuildQuickPage(old.cache, page([h(2), h(3)], [{ messageId: 3 }]));
+    expect(next.cache.hashes).toEqual([h(2), h(3)]);
+    expect(next.cache.rows.has(h(1))).toBe(false);
+    expect(next.data.messages).toEqual([{ messageId: 2 }, { messageId: 3 }]);
+  });
+
+  it('rejects missing/extra delta rows and malformed hash metadata instead of inheriting unseen hashes', () => {
+    for (const data of [page([h(1)], []), page([], [{ messageId: 1 }]), page(['bad'], [{}]), page(Array.from({ length: 101 }, (_, i) => h(i)), Array.from({ length: 101 }, () => ({}))), { messages: [], changeFeed: {} }]) {
+      expect(m.rebuildQuickPage(null, data)).toEqual({ data: null, cache: null });
+    }
+    expect(m.rebuildQuickPage(null, page([h(1)], [null]))).toEqual({ data: null, cache: null });
+  });
+
+  it('retains repeated identical rows and their positions when the next delta is empty', () => {
+    const row = { messageId: 1, text: 'retried log row' };
+    const initial = m.rebuildQuickPage(null, page([h(1), h(1)], [row, { ...row }]));
+    expect(initial.data.messages).toEqual([row, row]);
+    expect(initial.cache.hashes).toEqual([h(1), h(1)]);
+    const unchanged = m.rebuildQuickPage(initial.cache, page([h(1), h(1)], []));
+    expect(unchanged.data.messages).toEqual([row, row]);
+    expect(m.rebuildQuickPage(null, unchanged.data).data.messages).toEqual([row, row]);
+  });
+
+  it('older agents return plain full pages and never create a hash baseline', () => {
+    const data = { messages: [{ messageId: 1, text: 'legacy' }] };
+    const previous = m.rebuildQuickPage(null, page([h(1)], [{}])).cache;
+    expect(m.rebuildQuickPage(previous, data)).toEqual({ data, cache: null });
+  });
 });

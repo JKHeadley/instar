@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-20T23:58:56.093Z",
+  "slug": "preauth-page-headers",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/middleware.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

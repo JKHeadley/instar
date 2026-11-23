@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "worktree-monitor-cache-by-head",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T09:10:43.914Z",
+  "artifactPath": "upgrades/side-effects/worktree-monitor-cache-by-head.md",
+  "artifactSha256": "bc2f56cde8ffaa7915ee3b1a77c7ee36d4d214507338ef8e78a443de79d049e3",
+  "coveredFiles": [
+    "src/monitoring/WorktreeMonitor.ts",
+    "tests/unit/worktree-monitor.test.ts",
+    "upgrades/next/worktree-monitor-cache-by-head.md",
+    "upgrades/side-effects/worktree-monitor-cache-by-head.eli16.md",
+    "upgrades/side-effects/worktree-monitor-cache-by-head.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "read-only in-memory cache keyed by exact commits; no state, no authority; revert restores per-scan git calls",
+  "eli16Path": "upgrades/side-effects/worktree-monitor-cache-by-head.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-monitor-cache-by-head.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

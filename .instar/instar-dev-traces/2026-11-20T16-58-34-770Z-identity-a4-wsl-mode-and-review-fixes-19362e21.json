@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "slug": "identity-a4-wsl-mode-and-review-fixes",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-20T16:58:34.770Z",
+  "artifactPath": "upgrades/side-effects/identity-a4-wsl-mode-and-review-fixes.md",
+  "artifactSha256": "0da64a9b3012f608b64baca97db140579580374c09497ebcf28077c52d18f38f",
+  "specPath": "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+  "coveredFiles": [
+    "src/core/SameNetworkNetwork.ts",
+    "src/core/ceremonyCredential.ts",
+    "src/server/AgentServer.ts",
+    "src/server/documentPageRoutes.ts",
+    "tests/integration/documents-page.test.ts",
+    "tests/unit/same-network-review-2-fixes.test.ts",
+    "tests/unit/same-network-wsl-mode.test.ts",
+    "upgrades/side-effects/identity-a4-wsl-mode-and-review-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive: the home listener's WSL bind reading, an identity credential file and document decision eligibility. Full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "fixed",
+        "verified": false,
+        "iterations": 1
+      },
+      {
+        "name": "cross-model-gpt",
+        "outcome": "fixed",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/identity-security-piece3e-same-network-first-phone-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  }
+}

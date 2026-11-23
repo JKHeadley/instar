@@ -26,7 +26,14 @@
  * `conversations.json`, `trust-profiles.json` and thread history are the
  * operator's own audit surfaces and stay servable.
  */
+// Raw exports can contain credentials. The local importer, its state and even the
+// scrubbed history are private to the originating machine and their owner-only APIs.
+export const PRIVATE_IMPORT_DIRECTORIES = Object.freeze([
+  'history-acquisition/', 'history-acquisition-archives/', 'import-preview-staging/', 'imported-history/',
+]);
+
 export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
+  ...PRIVATE_IMPORT_DIRECTORIES,
   // The agent identity (routing private key). Covers `.superseded-*` /
   // `.invalid-*` siblings and the owner-only writer's temp names.
   'identity.json',
@@ -62,6 +69,10 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // single-machine fold signing key (`.local-key.pem`) and the lock and
   // monotonic floor files a bearer edit could lower or forge.
   'state/fold-leases/',
+  // The owner record (identity-security piece 2b): signed entries whose files a bearer edit could swap or
+  // trim. Never served, backed up, committed or git-synced: machines exchange it only over signed mesh
+  // commands, and each judges every entry itself (owner-authentication §6).
+  'state/owner-record/',
   // Manifest-integrity signing secret (`.instar/state/.manifest-key`,
   // generated at init, 0600). Found by the §5.4 walk: a key the parent lists
   // never named.
@@ -101,6 +112,16 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // temp names (`local-mcp-secret.<pid>.<rand>.tmp`) too.
   // docs/specs/threadline-mcp-local-http.md D2
   'state/local-mcp-secret',
+  // The same-network listener's TLS private key (identity A4, 0600): the key a phone at home pins.
+  // Covers the writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md
+  'state/same-network-tls.key',
+  // Whether the same-network listener is open and on which networks. Not a key, but only the owner at
+  // the computer may open the listener; a file-editor write would be a way round that from outside.
+  'state/same-network.json',
+  // The app's one-time ceremony credential (identity A5, 0600, its hash only). Never written over HTTP:
+  // a file-editor write would mint a credential from outside the agent's own system. Covers the
+  // writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md §4.6
+  'state/ceremony-credential.json',
 ]);
 
 /**
@@ -112,6 +133,10 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
  * hard link to them escapes every prefix check just the same.
  */
 export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
+  // Fixed import metadata and SQLite sidecars. Dynamically named chat and archive files are protected by path.
+  ...['history-acquisition/jobs.sqlite', 'history-acquisition/worker-lock.sqlite', 'imported-history/write-lock.sqlite']
+    .flatMap(file => ['', '-wal', '-shm', '-journal'].map(suffix => file + suffix)),
+  'imported-history/manifest.json',
   'identity.json',
   'threadline/identity.json',
   'threadline/inbox-hmac.key',
@@ -130,6 +155,8 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
   'state/local-mcp-secret',
+  'state/same-network-tls.key',
+  'state/ceremony-credential.json',
   'state/always-available-token.json',
   'config.json',
 ]);

@@ -22,6 +22,6 @@ export function privateImportedHistoryOwner(pairing: MobilePairingService | null
     }
     return true;
   } catch {
-    return false; // Unavailable identity or grant records cannot authorize this private source.
+    return false; // @silent-fallback-ok: identity/grant lookup errors deny private-source admission; no fallback identity or history is returned.
   }
 }

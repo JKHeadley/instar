@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "held-and-startup-parked-send-release",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T14:31:51.246Z",
+  "artifactPath": "upgrades/side-effects/held-and-startup-parked-send-release.md",
+  "artifactSha256": "9467c1e1a52734dd98a0e60e4255c2c4ee76acfe616eeca2e250e43d4431102f",
+  "specPath": "docs/specs/held-and-startup-parked-send-release.md",
+  "coveredFiles": [
+    "docs/specs/held-and-startup-parked-send-release.md",
+    "upgrades/side-effects/held-and-startup-parked-send-release.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec wording only: the ladder line takes the ratchet's accepted 'not applicable: <reason>' form; no runtime change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
