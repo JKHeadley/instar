@@ -54,6 +54,7 @@ describe('interactive session pinning (B1) — unit', () => {
   let dir: string;
   let state: StateManager;
   let manager: SessionManager;
+  let heldAdmissions: Set<string>;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pin-interactive-'));
@@ -65,6 +66,11 @@ describe('interactive session pinning (B1) — unit', () => {
       completionPatterns: ['done'], framework: 'claude-code',
     };
     manager = new SessionManager(config, state);
+    heldAdmissions = new Set();
+    manager.setAdmissionGate((_kind, name) => {
+      heldAdmissions.add(name);
+      return { allowed: true, recoverySlot: true };
+    }, (name) => { heldAdmissions.delete(name); });
     mockTmuxSessions.clear();
     vi.mocked(execFileSync).mockClear();
   });
@@ -122,6 +128,108 @@ describe('interactive session pinning (B1) — unit', () => {
 
     expect(recordFor(tmux)?.subscriptionAccountId).toBeUndefined();
     expect(hasConfigDir()).toBe(false);
+  });
+
+  it('pins an interactive cloud Codex session with the Codex resolver and records the same account', async () => {
+    const home = path.join(dir, 'codex-soonest');
+    manager.setCodexSpawnAccountResolver(() => ({ configHome: home, accountId: 'codex-soonest' }));
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-reset-first', { framework: 'codex-cli' });
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('codex-soonest');
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${home}`);
+    expect(hasConfigDir()).toBe(false);
+  });
+
+  it('preserves an explicit Codex home/account without consulting the automatic resolver', async () => {
+    const resolver = vi.fn(() => ({ configHome: path.join(dir, 'automatic'), accountId: 'automatic' }));
+    manager.setCodexSpawnAccountResolver(resolver);
+    const home = path.join(dir, 'explicit');
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-explicit', {
+      framework: 'codex-cli', configHome: home, subscriptionAccountId: 'explicit',
+    });
+    expect(resolver).not.toHaveBeenCalled();
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('explicit');
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${home}`);
+  });
+
+  it('does not choose a subscription account for a local Codex model', async () => {
+    const resolver = vi.fn(() => ({ configHome: path.join(dir, 'paid'), accountId: 'paid' }));
+    manager.setCodexSpawnAccountResolver(resolver);
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-local', {
+      framework: 'codex-cli', codexLocalProvider: 'ollama', defaultModel: 'qwen3',
+    });
+    expect(resolver).not.toHaveBeenCalled();
+    expect(recordFor(tmux)?.subscriptionAccountId).toBeUndefined();
+    expect(newSessionArgs().some((a) => a.startsWith('CODEX_HOME='))).toBe(false);
+    expect(newSessionArgs().join(' ')).toContain('--oss');
+  });
+
+  it('refuses a walled Codex pool before creating a tmux session', async () => {
+    manager.setCodexSpawnAccountResolver(() => ({ refused: 'codex-accounts-walled: no account has room' }));
+    await expect(manager.spawnInteractiveSession(undefined, 'codex-walled', { framework: 'codex-cli' }))
+      .rejects.toThrow('codex-accounts-walled');
+    expect(newSessionArgs()).toEqual([]);
+    expect(heldAdmissions.size).toBe(0);
+  });
+
+  it('does not accept an account label without its matching Codex home', async () => {
+    await expect(manager.spawnInteractiveSession(undefined, 'codex-orphan-tag', {
+      framework: 'codex-cli', subscriptionAccountId: 'unbound-account',
+    })).rejects.toThrow('requires its config home');
+    expect(newSessionArgs()).toEqual([]);
+    expect(heldAdmissions.size).toBe(0);
+  });
+
+  it('moves a saved conversation to the automatically selected home before resuming it', async () => {
+    const thread = '01a1ec19-77d5-7870-8e3c-e20adced3374';
+    const source = path.join(dir, 'codex-old');
+    const target = path.join(dir, 'codex-soon');
+    const rel = path.join('sessions', '2026', '11', '17', `rollout-example-${thread}.jsonl`);
+    fs.mkdirSync(path.dirname(path.join(source, rel)), { recursive: true });
+    fs.writeFileSync(path.join(source, rel), JSON.stringify({ type: 'session_meta', payload: { id: thread } }) + '\n');
+    manager.setCodexAccountHomesResolver(() => [source, target]);
+    manager.setCodexSpawnAccountResolver(() => ({ configHome: target, accountId: 'soon' }));
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-auto-resume', { framework: 'codex-cli', resumeSessionId: thread });
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('soon');
+    expect(fs.readFileSync(path.join(target, rel), 'utf8')).toBe(fs.readFileSync(path.join(source, rel), 'utf8'));
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${target}`);
+    expect(newSessionArgs().join(' ')).toContain(thread);
+  });
+
+  it('does not start a fresh conversation when automatic account placement cannot find its rollout', async () => {
+    const target = path.join(dir, 'codex-missing');
+    manager.setCodexAccountHomesResolver(() => [target]);
+    manager.setCodexSpawnAccountResolver(() => ({ configHome: target, accountId: 'soon' }));
+    await expect(manager.spawnInteractiveSession(undefined, 'codex-missing-resume', {
+      framework: 'codex-cli', resumeSessionId: 'missing-thread',
+    })).rejects.toThrow('codex-account-resume-unavailable');
+    expect(newSessionArgs()).toEqual([]);
+    expect(heldAdmissions.size).toBe(0);
+  });
+
+  it('marks a dead automatically moved resume failed, releases admission, and retains the saved conversation', async () => {
+    const thread = '01a1ec19-77d5-7870-8e3c-e20adced3374';
+    const source = path.join(dir, 'codex-dead-source');
+    const target = path.join(dir, 'codex-dead-target');
+    const rel = path.join('sessions', '2026', '11', '17', `rollout-example-${thread}.jsonl`);
+    fs.mkdirSync(path.dirname(path.join(source, rel)), { recursive: true });
+    fs.writeFileSync(path.join(source, rel), JSON.stringify({ type: 'session_meta', payload: { id: thread } }) + '\n');
+    manager.setCodexAccountHomesResolver(() => [source, target]);
+    manager.setCodexSpawnAccountResolver(() => ({ configHome: target, accountId: 'soon' }));
+    const resumeFailed = vi.fn();
+    manager.on('resumeFailed', resumeFailed);
+    const internal = manager as any;
+    vi.spyOn(internal, 'waitForClaudeReadyWithRetry').mockResolvedValue(false);
+    vi.spyOn(internal, 'tmuxSessionExists').mockReturnValue(false);
+    await expect(manager.spawnInteractiveSession('Preserve the existing work and pause constraints.', 'codex-dead-resume', {
+      framework: 'codex-cli', resumeSessionId: thread, awaitInitialInjection: true,
+    })).rejects.toThrow('codex-account-resume-failed');
+    expect(heldAdmissions.size).toBe(0);
+    expect(state.listSessions({ status: 'running' })).toHaveLength(0);
+    expect(state.listSessions({ status: 'failed' })).toHaveLength(1);
+    expect(resumeFailed).not.toHaveBeenCalled();
+    expect(vi.mocked(execFileSync).mock.calls.filter((c) => (c[1] as string[])?.[0] === 'new-session')).toHaveLength(1);
+    expect(internal.pendingInjects.list().records).toHaveLength(1);
+    expect(fs.readFileSync(path.join(target, rel), 'utf8')).toBe(fs.readFileSync(path.join(source, rel), 'utf8'));
   });
 
   // 2026-11-18: the account-swap path passes an explicit Codex account home. The

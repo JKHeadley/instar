@@ -6,6 +6,7 @@
  *   GET /usage/series    usage over time split by model / framework / machine
  *   GET /usage/top       top topics / jobs / sessions / features by equivalent cost
  *   GET /usage/coverage  what is and is not measured
+ *   GET /usage/accounts, /usage/accounts/size, /usage/account-mismatches  spend by served account (usageAccountRoutes.ts)
  *   GET /usage/events    one session's raw rows, read on the machine that holds them (≤500)
  *   GET /usage/rollup    this machine's replication page (machine-to-machine; never on the phone allowlist)
  *   GET /mobile/usage    owner phone only: trimmed totals, series and top lists by name
@@ -24,6 +25,7 @@ import {
   UsageQueryError, type ReadContext,
 } from '../monitoring/usageReadModel.js';
 import { ownerOrBearer } from './mobileCapacityRoutes.js';
+import { mountUsageAccountRoutes, type ServedAccountRouteDeps } from './usageAccountRoutes.js';
 
 export interface UsageRouteDeps {
   ledger: UsageLedger;
@@ -37,6 +39,8 @@ export interface UsageRouteDeps {
   fromPeer: (machineId: string, pathWithQuery: string) => Promise<{ status: number; body: unknown } | null>;
   bearerOk: (req: Request) => boolean;
   now?: () => number;
+  /** quota-pacing step 3: spend by served account (null when the switch is off on this machine). */
+  servedAccount?: ServedAccountRouteDeps | null;
 }
 
 const PROXY_HEADER = 'x-usage-proxied';
@@ -74,6 +78,7 @@ export function mountUsageRoutes(router: Router, get: () => UsageRouteDeps | nul
   router.get('/usage/top', read('top', usageTop));
   router.get('/usage/tree', read('tree', usageTree));
   router.get('/usage/coverage', read('coverage', (ctx) => usageCoverage(ctx)));
+  mountUsageAccountRoutes(router, get);
 
   router.get('/usage/events', async (req, res) => {
     const d = get();

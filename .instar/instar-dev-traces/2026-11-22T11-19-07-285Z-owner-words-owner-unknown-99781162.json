@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "owner-words-owner-unknown",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T11:19:07.285Z",
+  "artifactPath": "upgrades/side-effects/owner-words-owner-unknown.md",
+  "artifactSha256": "8372d8b9214750bdb948568a76e1a0f8c7f1e5de6522e0bf9c3d9f9df50c80b0",
+  "coveredFiles": [
+    "docs/specs/owner-words-owner-unknown.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ownerWords.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/e2e/jev-correction-shadow-lifecycle.test.ts",
+    "tests/integration/jev-correction-shadow-routes.test.ts",
+    "tests/unit/jev-correction-shadow.test.ts",
+    "tests/unit/team-guards.test.ts",
+    "tests/unit/team-words-not-learned.test.ts",
+    "upgrades/next/owner-words-owner-unknown.md",
+    "upgrades/side-effects/owner-words-owner-unknown.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Closes the owner-unknown fail-open in the shared owner-words rule (SEC-069 follow-on) and points both learners at a stricter owner id; signal-only learners, reversible by revert, no stored data; independently reviewed. Follow-up: lifecycle and integration fixtures wire the owner as server.ts does; no-owner cases added.",
+  "eli16Path": "docs/specs/owner-words-owner-unknown.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-words-owner-unknown.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered action: narrows whose inbound words feed signal-only learners; nothing is retried, scheduled or looped"
+  }
+}

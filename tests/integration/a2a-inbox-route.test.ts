@@ -22,11 +22,19 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { registerAgent } from '../../src/core/AgentRegistry.js';
 
 const PROJECT_NAME = 'a2a-inbox-test-' + Math.random().toString(36).slice(2, 8);
 // The bearer token is whatever generateAgentToken returns for this agent;
 // captured in beforeEach so each describe-block gets a fresh token store.
 let AUTH = '';
+
+// SEC-154: the route accepts only a sender that is another agent registered on this machine, whose
+// marker names that sender and this agent, in the strict marker shape (blank line before the body).
+const SENDER = 'echo';
+const SENDER_BOT_ID = '8781020500';
+const marker = (from = SENDER) => `[a2a:from=${from} to=${PROJECT_NAME} role=mentor id=a corr=a ts=1 v=1]\n\nhi`;
+const fromSender = { senderAgent: SENDER, senderIsBot: true, senderBotId: SENDER_BOT_ID };
 
 function buildCtx(telegram: unknown, tmpDir: string): RouteContext {
   return {
@@ -56,8 +64,15 @@ function mount(telegram: unknown, tmpDir: string): express.Express {
 
 describe('/a2a/inbox route (integration — same-machine transport)', () => {
   let tmpDir: string;
+  let registryDir: string;
+  let previousRegistryDir: string | undefined;
 
   beforeEach(() => {
+    // A throwaway registry, never the machine's own.
+    registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbox-registry-'));
+    previousRegistryDir = process.env.INSTAR_TEST_REGISTRY_DIR;
+    process.env.INSTAR_TEST_REGISTRY_DIR = registryDir;
+    registerAgent(path.join(registryDir, 'echo-agent'), SENDER, 49011, 'project-bound', process.pid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbox-'));
     fs.mkdirSync(path.join(tmpDir, '.instar'), { recursive: true });
     AUTH = generateAgentToken(PROJECT_NAME);
@@ -65,6 +80,9 @@ describe('/a2a/inbox route (integration — same-machine transport)', () => {
   afterEach(() => {
     try { deleteAgentToken(PROJECT_NAME); } catch { /* best-effort */ }
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/a2a-inbox-route.test.ts:cleanup' });
+    if (previousRegistryDir === undefined) delete process.env.INSTAR_TEST_REGISTRY_DIR;
+    else process.env.INSTAR_TEST_REGISTRY_DIR = previousRegistryDir;
+    SafeFsExecutor.safeRmSync(registryDir, { recursive: true, force: true, operation: 'tests/integration/a2a-inbox-route.test.ts:registry' });
   });
 
   it('401 when Authorization is missing', async () => {
@@ -108,7 +126,7 @@ describe('/a2a/inbox route (integration — same-machine transport)', () => {
     const res = await request(app)
       .post('/a2a/inbox')
       .set('Authorization', `Bearer ${AUTH}`)
-      .send({ text: 'hi', topicId: 'not-a-number' });
+      .send({ text: marker(), topicId: 'not-a-number', ...fromSender });
     expect(res.status).toBe(400);
   });
 
@@ -125,11 +143,9 @@ describe('/a2a/inbox route (integration — same-machine transport)', () => {
       .post('/a2a/inbox')
       .set('Authorization', `Bearer ${AUTH}`)
       .send({
-        text: '[a2a:from=echo to=instar-codey role=mentor id=a corr=a ts=1 v=1]\nhi',
+        text: marker(),
         topicId: 458,
-        senderAgent: 'echo',
-        senderIsBot: true,
-        senderBotId: '8781020500',
+        ...fromSender,
       });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, agentMessage: true });
@@ -142,9 +158,33 @@ describe('/a2a/inbox route (integration — same-machine transport)', () => {
     const res = await request(app)
       .post('/a2a/inbox')
       .set('Authorization', `Bearer ${AUTH}`)
-      .send({ text: 'plain text, no marker', topicId: 458, senderAgent: 'echo' });
+      .send({ text: marker(), topicId: 458, ...fromSender });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, agentMessage: false, reason: 'not-routed' });
+  });
+
+  it('403 for text with no marker: the route is for agent messages only, and the hook is never called (SEC-154)', async () => {
+    let hookCalls = 0;
+    const app = mount({ dispatchAgentMessageHook: async () => { hookCalls++; return true; } }, tmpDir);
+    const res = await request(app)
+      .post('/a2a/inbox')
+      .set('Authorization', `Bearer ${AUTH}`)
+      .send({ text: 'plain text, no marker', topicId: 458, ...fromSender });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ reason: 'marker-principal-mismatch' });
+    expect(hookCalls).toBe(0);
+  });
+
+  it('403 for a sender that is not an agent registered on this machine, and the hook is never called (SEC-154)', async () => {
+    let hookCalls = 0;
+    const app = mount({ dispatchAgentMessageHook: async () => { hookCalls++; return true; } }, tmpDir);
+    const res = await request(app)
+      .post('/a2a/inbox')
+      .set('Authorization', `Bearer ${AUTH}`)
+      .send({ text: marker('stranger'), topicId: 458, ...fromSender, senderAgent: 'stranger' });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ reason: 'sender-not-a-local-agent' });
+    expect(hookCalls).toBe(0);
   });
 
   it('defaults senderIsBot=true when the caller omits it (peers are bots by construction)', async () => {
@@ -160,9 +200,10 @@ describe('/a2a/inbox route (integration — same-machine transport)', () => {
       .post('/a2a/inbox')
       .set('Authorization', `Bearer ${AUTH}`)
       .send({
-        text: '[a2a:from=echo to=p role=mentor id=x corr=x ts=1 v=1]\nhi',
+        text: marker(),
         topicId: 458,
-        senderAgent: 'echo',
+        senderAgent: SENDER,
+        senderBotId: SENDER_BOT_ID,
         // senderIsBot omitted on purpose
       });
     expect(receivedCtx?.senderIsBot).toBe(true);
