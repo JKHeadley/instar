@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "relay-challenge-shape",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T02:23:43.019Z",
+  "artifactPath": "upgrades/side-effects/relay-challenge-shape.md",
+  "artifactSha256": "cbc0c0489872043652214993496d0f1bb0b9d0cc241b13b180c7950a98c58db4",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T02-23-34-656Z-relay-challenge-shape.json",
+    ".instar/instar-dev-traces/2026-11-21T02-23-10-550Z-relay-challenge-shape-63e56566.json",
+    "docs/specs/relay-challenge-shape.eli16.md",
+    "src/threadline/client/RegistryRestClient.ts",
+    "src/threadline/client/RelayClient.ts",
+    "src/threadline/client/relayChallenge.ts",
+    "tests/unit/relay-challenge-shape.test.ts",
+    "upgrades/next/relay-challenge-shape.md",
+    "upgrades/side-effects/relay-challenge-shape.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-133 step 1; whole-PR trace.",
+  "eli16Path": "docs/specs/relay-challenge-shape.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relay-challenge-shape.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-22T05:56:32.024Z",
+  "slug": "sec153-dispatch-signed-only",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Not a new loop: the change only removes actions. park() replaces the existing per-dispatch approval notices, sends at most one notice per dispatch per process (a parked-id set), and runs inside the existing 30-minute poll tick; no restart, respawn or retry is added."
+  },
+  "verdict": "pass"
+}

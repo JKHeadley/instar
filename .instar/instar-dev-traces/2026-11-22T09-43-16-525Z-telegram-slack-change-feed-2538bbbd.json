@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "telegram-slack-change-feed",
+  "sessionId": "f0b47883-4726-4441-84f5-2b8e78d38ce9",
+  "timestamp": "2026-11-22T09:43:16.525Z",
+  "artifactPath": "upgrades/side-effects/telegram-slack-change-feed.md",
+  "artifactSha256": "1ac6a50f3ef5ddb7a3c7f032059faae32d8ffe9ec8e18922d94b1a515608bf4a",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/telegram-slack-change-feed.eli16.md",
+    "docs/specs/telegram-slack-change-feed.md",
+    "src/data/awareness/chat-change-feed.md",
+    "src/server/changeFeed.ts",
+    "src/server/mobileSlackHolderProxy.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-slack-from-app-alive.test.ts",
+    "tests/e2e/mobile-slack-holder-proxy-alive.test.ts",
+    "tests/e2e/mobile-telegram-free-alive.test.ts",
+    "tests/integration/mobile-slack-from-app.test.ts",
+    "tests/integration/telegram-change-feed.test.ts",
+    "tests/unit/change-feed.test.ts",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/mobile-slack-holder-proxy.test.ts",
+    "upgrades/next/telegram-slack-change-feed.md",
+    "upgrades/side-effects/telegram-slack-change-feed.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible opt-in exact-row payload diff on existing authorized history routes; replaces unshipped time window to preserve prior polling semantics; no durable state, migration, auth change or new authority",
+  "eli16Path": "docs/specs/telegram-slack-change-feed.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-slack-change-feed.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "build",
+        "outcome": "passed",
+        "verified": false
+      }
+    ]
+  }
+}
