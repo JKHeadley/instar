@@ -17,6 +17,8 @@ import { generationProofId } from '../messaging/peerMessageTarget.js';
  */
 
 import { operatorError } from '../core/storageMachineName.js';
+import { belowFence } from '../core/identityBuildFence.js';
+import { ownerRecordFence } from '../core/ownerRecordWiring.js';
 import type { TelegramHandoverPeople } from '../core/telegramPairHandover.js';
 import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
 import { Router, type Request, type Response } from 'express';
@@ -719,6 +721,18 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       });
       res.status(403).json({ error: result.reason ?? 'Invalid pairing code' });
       return;
+    }
+
+    // identity-security piece 2c §4: after enrolment, a joiner below the minimum build is refused, naming the
+    // build it needs. An older joiner sends no build at all, so it is refused too. Nothing applies before enrolment.
+    if (ctx.stateDir) {
+      const fence = ownerRecordFence(ctx.stateDir);
+      const below = belowFence((req.body as { instarVersion?: unknown } | undefined)?.instarVersion, fence);
+      if (below.refused) {
+        ctx.securityLog.append({ event: 'pairing_rejected', machineId: machineIdentity.machineId, machineName: machineIdentity.name, reason: 'below-minimum-build', ip });
+        res.status(409).json({ error: 'below-minimum-build', needed: below.needed, message: `This machine runs an older version of Instar. Update it to ${below.needed} or newer, then join again.` });
+        return;
+      }
     }
 
     // Code valid → register the joiner as standby, persist its public keys (so

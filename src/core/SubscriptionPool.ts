@@ -49,7 +49,8 @@ import path from 'node:path';
 import type { ComponentHealth } from './types.js';
 import type { SubscriptionAccountMetaReplicationEmitter } from './SubscriptionAccountMetaReplicatedStore.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
-import { frameworkHasNoUsageSurface } from './frameworkFacts.js';
+import { CODEX_CLI_FRAMEWORK, frameworkHasNoUsageSurface } from './frameworkFacts.js';
+import { compareCodexWeeklyReset } from './windowAwareChoice.js';
 import {
   SubscriptionPoolAuthorityReadError,
   SubscriptionPoolAuthorityStore,
@@ -369,7 +370,8 @@ function orderByRoom(accounts: SubscriptionAccount[], nowMs: number): Subscripti
  * Internal calls used to run only on the machine's ambient login, so when that one login
  * hit its weekly wall every background check failed until it reset, while other enrolled
  * accounts of the same framework sat with room (Mama PC, 2026-11-06 20:49 PST). This picks
- * the account with the MOST room among those with a fresh reading that says it has some.
+ * an eligible account with room. Codex uses the soonest fresh weekly reset first,
+ * preserving room order for tied or unknown deadlines. Other frameworks use most room.
  *
  * Deliberately conservative: only `active` accounts with a local login and no identity
  * drift, only a live reading below 100% on every window. No such account ⇒ null ⇒ the
@@ -388,7 +390,12 @@ export function pickInternalCallAccount(
     const room = accountRoom(a, nowMs);
     return !room.walled && room.usedPct !== null;
   });
-  const best = orderByRoom(candidates, nowMs)[0];
+  // Apply deadline preference only after eligibility; it cannot revive a full account.
+  const ordered = orderByRoom(candidates, nowMs);
+  if (framework === CODEX_CLI_FRAMEWORK) {
+    ordered.sort((a, b) => compareCodexWeeklyReset(a, b, nowMs));
+  }
+  const best = ordered[0];
   return best ? { accountId: best.id, configHome: best.configHome } : null;
 }
 

@@ -55,12 +55,21 @@ describe('accountChoiceStep', () => {
     expect(() => newAccountFolder('../evil', 'claude-code', os.tmpdir())).toThrow();
   });
 
-  it('an older app that resumes without an answer gets today\'s behaviour', () => {
-    expect(accountChoiceStep({ door: 'claude-code' }, { state: ACCOUNT_CHOICE_STATE }, [personal, work], mkFolder))
-      .toMatchObject({ kind: 'done', updates: { accountConfigHome: personal.configHome, accountNew: false } });
-    const none = accountChoiceStep({ door: 'claude-code' }, { state: ACCOUNT_CHOICE_STATE }, [work], mkFolder);
-    expect(none).toMatchObject({ kind: 'done' });
-    expect((none as { updates?: unknown }).updates).toBeUndefined();
+  it('a resume without an answer never picks an account: it asks again', () => {
+    for (const door of ['claude-code', 'codex-cli'] as const) {
+      const again = accountChoiceStep({ door }, { state: ACCOUNT_CHOICE_STATE }, [personal, work], mkFolder);
+      expect(again).toMatchObject({ kind: 'awaiting-person' });
+      expect((again as { updates?: unknown }).updates).toBeUndefined();
+      expect((again as { accounts?: unknown[] }).accounts).toHaveLength(2);
+      expect((again as { instruction: string }).instruction).toContain('update the Instar app');
+      // Even with only a non-default account there is no silent fallthrough to sign-in.
+      expect(accountChoiceStep({ door }, { state: ACCOUNT_CHOICE_STATE }, [work], mkFolder)).toMatchObject({ kind: 'awaiting-person' });
+    }
+  });
+
+  it('a resume with an answer still completes after the re-ask', () => {
+    expect(accountChoiceStep({ door: 'codex-cli', accountChoice: { use: work.id } }, { state: ACCOUNT_CHOICE_STATE }, [personal, work], mkFolder))
+      .toMatchObject({ kind: 'done', updates: { accountConfigHome: work.configHome, accountNew: false } });
   });
 
   it('the answers file accepts only a known shape', () => {

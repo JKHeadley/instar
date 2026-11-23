@@ -31648,6 +31648,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             send: async (machineId, cmd) => { const url = peerUrl(machineId); if (!url) return { ok: false }; const r = await meshClient.send({ machineId, url }, cmd, 0); return { ok: r.ok, result: r.result }; },
             leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
             splitBrain: () => coordinator.getSyncStatus().splitBrainState !== 'clear',
+            // An attention item that needs the owner, so the hub admits it (a plain mesh-alert notice is filtered out).
+            degradeFence: (summary) => DegradationReporter.getInstance().report({ feature: 'OwnerRecord.fence', primary: 'The minimum build the owner set is in force', fallback: 'The last verified minimum build, or risky actions held', reason: summary, impact: 'The owner should set a valid minimum build.' }),
+            clearNotice: () => { if (telegram) void telegram.updateAttentionStatus('agent:identity-build-fence', 'DONE', { silent: true, resolution: 'Every computer is confirmed on a new enough version.', closedBy: 'cause-cleared' }).catch(() => undefined); },
+            notify: (summary) => { if (telegram) void telegram.upsertAttentionItem({ id: 'agent:identity-build-fence', title: "A computer needs checking before it gets the owner record", summary, description: summary, category: 'mesh-alert', priority: 'NORMAL', needsUser: true }).catch(() => notify('SUMMARY', 'mesh-alert', summary)); else notify('SUMMARY', 'mesh-alert', summary); },
+            machineName: (machineId) => meshIdMgr.loadRegistry().machines?.[machineId]?.nickname ?? meshIdMgr.loadRegistry().machines?.[machineId]?.name ?? machineId,
             degrade: (summary) => DegradationReporter.getInstance().report({ feature: 'OwnerRecord.bootstrap', primary: 'The owner record starts once every machine has answered', fallback: 'Basic (today\'s behaviour) until then', reason: summary, impact: 'Nothing changes for the owner at Basic; the record starts when the named machine is heard from again.' }),
           });
           // docs/specs/backup-email-sending.md: a standby's email travels to the lease holder by the signed

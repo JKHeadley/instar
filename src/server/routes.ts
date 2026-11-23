@@ -835,6 +835,7 @@ import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { boundCommandReporterPayload } from '../monitoring/NativeHookEvents.js';
 import { dispatchHookEvent, type HookEventDispatchDeps } from './hookEventDispatch.js';
 import type { WorktreeMonitor } from '../monitoring/WorktreeMonitor.js';
 import type { SubagentTracker } from '../monitoring/SubagentTracker.js';
@@ -8090,7 +8091,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '');
     // Consumers read these as paths on the unsandboxed server. A scoped session supplies none of them.
     if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd']) delete (payload as Record<string, unknown>)[field];
-    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
+    // Native-path bounds + the payload's instar session id (2026-11-21).
+    const sid = boundCommandReporterPayload(payload as Record<string, unknown>, instarSid);
+    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, sid);
     if (!stored) {
       res.status(500).json(storageErrorResponse({ error: 'Failed to store event' }, ctx.config.stateDir));
       return;
@@ -32015,9 +32018,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // FIRST; if that fails, nothing is consumed and the caller can retry. (A path that does
     // not exist deletes cleanly.) Synchronous from peek to consume, so nothing interleaves.
     const durableDeleted = (): boolean => {
-      if (!persistDrops) return true;
+      // Persistence controls new writes and fallback reads, never cleanup of a prior stored copy.
       try {
-        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).deleteIfStoreExists(`secretDrops.${token}`);
         return true;
       } catch (err) {
         // @silent-fallback-ok — not silent: reported below, and the route refuses the consume (503) so nothing is lost
@@ -38776,7 +38779,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!change) return res.status(400).json({ error: 'invalid-change', message: 'change must be one of: {kind:"trust-grant",service,operation,level} | {kind:"autonomy-profile",from,to} | {kind:"config-patch",patch} | {kind:"slack-role",slackUserId,displayName,role,mode} | {kind:"board-policy",policy} | {kind:"trust-recovery",incidentId}' });
     const r = await ctx.trustAccountPath.propose(change);
     const status = r.status === 'sent' || r.status === 'awaiting-acceptance' ? 202
-      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'too-large' ? 409
+      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'not-holder' || r.status === 'too-large' ? 409
       : r.status === 'too-many-open' ? 429 : 503;
     // The approval code is for the person's card only; the agent never needs it.
     const { code: _code, ...body } = r as typeof r & { code?: string };
@@ -38800,21 +38803,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ requestId: id, status: 'withdrawn', cardTold: r.cardTold, message: 'Withdrawn. A reply with its code approves nothing now, and the same change cannot be asked again until the card would have expired.' });
   });
 
-  router.get('/trust/requests', (_req, res) => {
+  router.get('/trust/requests', async (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
     // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
     const results = new Map(ctx.trustAccountPath.service.deviceListing().map((d) => [d.requestId, d]));
-    const rows = ctx.trustAccountPath.store.allRequests().map((r) => {
+    // SEC-141: only requests whose change matches their hash, with text rebuilt from the change (the listing's).
+    const svc = ctx.trustAccountPath.service;
+    const rows = ctx.trustAccountPath.store.allRequests().flatMap((r) => {
+      const summary = svc.derivedSummary(r);
+      return summary ? [{ r, summary }] : [];
+    }).map(({ r, summary }) => {
       const d = results.get(r.requestId);
       return {
-        requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
+        requestId: r.requestId, status: r.status, adapter: r.adapter, changeKind: r.change?.kind ?? null, summary, expiresAt: r.expiresAt,
         delivered: r.adapter === 'device' ? true : !!r.cardMessageId,
         ...(d && d.status !== 'open' ? { result: d.status } : {}),
         ...(d?.disclosure ? { disclosure: d.disclosure } : {}),
         ...(d?.message ? { message: d.message } : {}),
       };
     });
-    res.json({ requests: rows, store: ctx.trustAccountPath.store.sinkDescription });
+    res.json({ requests: rows, approvalDelivery: await ctx.trustAccountPath.service.approvalDelivery(), store: ctx.trustAccountPath.store.sinkDescription });
   });
 
   // Withdrawing an acceptance is a narrowing: it stops new approvals and keeps committed grants.
