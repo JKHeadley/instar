@@ -835,6 +835,7 @@ import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { boundCommandReporterPayload } from '../monitoring/NativeHookEvents.js';
 import { dispatchHookEvent, type HookEventDispatchDeps } from './hookEventDispatch.js';
 import type { WorktreeMonitor } from '../monitoring/WorktreeMonitor.js';
 import type { SubagentTracker } from '../monitoring/SubagentTracker.js';
@@ -8090,7 +8091,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '');
     // Consumers read these as paths on the unsandboxed server. A scoped session supplies none of them.
     if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd']) delete (payload as Record<string, unknown>)[field];
-    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
+    // Native-path bounds + the payload's instar session id (2026-11-21).
+    const sid = boundCommandReporterPayload(payload as Record<string, unknown>, instarSid);
+    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, sid);
     if (!stored) {
       res.status(500).json(storageErrorResponse({ error: 'Failed to store event' }, ctx.config.stateDir));
       return;
