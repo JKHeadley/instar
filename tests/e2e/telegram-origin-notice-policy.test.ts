@@ -126,13 +126,13 @@ describe('production bootstrap outage authority separation', () => {
     const capacity = h.runtime.service.options.capacity!;
     // Local boot supplies the explained authority; instrument the same request-bound
     // reservation OriginBotEgress invokes, not its compatibility reserve wrapper.
-    const reserve = capacity.reserveExplained!.bind(capacity), consume = capacity.consume.bind(capacity);
+    const reserve = capacity.reserveExplained!.bind(capacity), consume = capacity.consumeExplained!.bind(capacity);
     const reserveSpy = vi.spyOn(capacity, 'reserveExplained').mockImplementation(async accountId => {
       const decision = await reserve(accountId);
       if (phase === 'before-consume') offset = 500;
       return decision;
     });
-    const consumeSpy = vi.spyOn(capacity, 'consume').mockImplementation(async grant => {
+    const consumeSpy = vi.spyOn(capacity, 'consumeExplained').mockImplementation(async grant => {
       const result = await consume(grant);
       if (phase === 'after-consume') offset = 500;
       return result;

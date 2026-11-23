@@ -1,3 +1,5 @@
+import { sanitizeCapacityEvidence } from './OriginCapacityEvidence.js';
+import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 /** Worker-owned SQLite implementation. The entries table is the ONE executable
  * authority; origin tables retain evidence independently of queue cleanup.
  * Spec: docs/specs/telegram-message-origin.md (binding 5, 10–13; N1–N10).
@@ -71,7 +73,9 @@ type DbEntry = { state: string; claimed_by: string | null; attempts: number; nex
  * their author: never recovered, never on the due ladder, never counted as "will be delivered". */
 const NOT_ADVISORY = "(o.policy_verdict_json IS NULL OR json_extract(o.policy_verdict_json,'$.class')!='advisory')";
 /** Counters kept as sums (seconds), not event counts. */
-const SUM_METRICS = new Set(['advisory-answer-delay-s']);
+// Unavailable markers are retained with attempts, then deleted by their cleanup trigger.
+// Their cumulative counter must use the counts table rather than the remaining marker rows.
+const SUM_METRICS = new Set(['advisory-answer-delay-s', 'capacity-evidence-unavailable']);
 function verdictClass(value: string | null | undefined): string | null {
   if (!value) return null;
   try { const parsed = JSON.parse(value) as { class?: unknown }; return typeof parsed.class === 'string' ? parsed.class : null; } catch { return null; }
@@ -212,7 +216,17 @@ export class OriginStoreBackend {
         claim_token TEXT NOT NULL UNIQUE, owner_boot_id TEXT NOT NULL,
         phase TEXT NOT NULL, outcome TEXT, receipt_json TEXT, created_at INTEGER NOT NULL, resolved_at INTEGER);
       CREATE INDEX IF NOT EXISTS telegram_origin_attempt_child ON telegram_origin_attempts(child_id,created_at);
+      CREATE TABLE IF NOT EXISTS telegram_origin_capacity_evidence (attempt_id TEXT PRIMARY KEY, evidence_json TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS telegram_origin_capacity_evidence_cleanup AFTER DELETE ON telegram_origin_attempts
+        BEGIN
+          DELETE FROM telegram_origin_capacity_evidence WHERE attempt_id=OLD.attempt_id;
+          DELETE FROM telegram_origin_metric_events WHERE event_id=OLD.attempt_id AND metric='capacity-evidence-unavailable';
+        END;
       CREATE TABLE IF NOT EXISTS telegram_origin_metric_events (event_id TEXT NOT NULL, metric TEXT NOT NULL, PRIMARY KEY(event_id,metric));
+      CREATE TRIGGER IF NOT EXISTS telegram_origin_capacity_unavailable_cleanup_v1 AFTER DELETE ON telegram_origin_attempts
+        BEGIN
+          DELETE FROM telegram_origin_metric_events WHERE event_id=OLD.attempt_id AND metric='capacity-evidence-unavailable';
+        END;
       CREATE TABLE IF NOT EXISTS telegram_origin_metrics (metric TEXT PRIMARY KEY, count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS telegram_origin_health (id INTEGER PRIMARY KEY CHECK(id=1), ticked_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS telegram_origin_recovery_cursor (id INTEGER PRIMARY KEY CHECK(id=1), after_rowid INTEGER NOT NULL);
@@ -362,6 +376,16 @@ export class OriginStoreBackend {
       this.db.prepare('UPDATE telegram_origin_operations SET hold_detail_json=? WHERE operation_id=?').run(detailJson, op.operation_id);
       return true;
     }).immediate();
+  }
+
+  private capacityEvidenceForAttempt(attemptId: string): Pick<OriginAuditRecord['attempts'][number], 'capacityEvidence' | 'capacityEvidenceStatus'> {
+    const row = this.db.prepare('SELECT evidence_json FROM telegram_origin_capacity_evidence WHERE attempt_id=?').get(attemptId) as { evidence_json: string } | undefined;
+    if (row) {
+      let value: unknown; try { value = JSON.parse(row.evidence_json); } catch { value = null; }
+      return { capacityEvidence: sanitizeCapacityEvidence(value), capacityEvidenceStatus: 'collected' };
+    }
+    const failed = this.db.prepare("SELECT 1 FROM telegram_origin_metric_events WHERE event_id=? AND metric='capacity-evidence-unavailable'").get(attemptId);
+    return { capacityEvidenceStatus: failed ? 'unavailable' : 'legacy-or-not-reached' };
   }
 
   private event(eventId: string, metric: string): void {
@@ -938,6 +962,22 @@ export class OriginStoreBackend {
       const state = retry ? 'queued' : input.outcome;
       this.db.prepare('UPDATE telegram_origin_attempts SET outcome=?,receipt_json=?,resolved_at=? WHERE attempt_id=? AND outcome IS NULL').run(input.outcome, input.receiptJson ?? null, now, attempt.attempt_id);
       this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attempt.attempt_id, input.reason ?? null, retry ? input.nextAttemptAt : null);
+      if (input.capacityEvidence !== undefined) {
+        try {
+          // better-sqlite3 uses a SAVEPOINT for this transaction nested inside the fenced outcome.
+          this.db.transaction(() => {
+            this.db.prepare('INSERT INTO telegram_origin_capacity_evidence(attempt_id,evidence_json) VALUES (?,?)')
+              .run(attempt.attempt_id, JSON.stringify(sanitizeCapacityEvidence(input.capacityEvidence)));
+          })();
+        } catch {
+          // An optional diagnostic failure must not erase accepted delivery or become resend authority.
+          this.event(attempt.attempt_id, 'capacity-evidence-unavailable');
+          try { DegradationReporter.getInstance().report({ feature: 'TelegramOrigin.capacityEvidence',
+            primary: 'per-attempt capacity evidence', fallback: 'fixed unavailable attempt status',
+            reason: 'capacity-evidence-unavailable', impact: 'Capacity timing attribution unavailable for an attempt' }); }
+          catch { /* Fixed attempt status remains authoritative; reporting cannot affect delivery. */ }
+        }
+      }
       if (input.receiptJson && (['accepted', 'scheduled'].includes(input.outcome) ||
         (input.outcome === 'outcome-unknown' && input.reason === 'partial-platform-receipt' && JSON.parse(input.receiptJson).partial === true))) this.indexReceipt(child, input.receiptJson);
       this.db.prepare('UPDATE telegram_origin_children SET state=? WHERE child_id=?').run(state, child.child_id);
@@ -1545,6 +1585,7 @@ export class OriginStoreBackend {
       children: children.map(child => ({ childId: child.child_id, deliveryId: child.delivery_id, destinationJson: child.destination_json, generation: child.generation, state: child.state, attempts: this.entry(child.delivery_id)?.attempts ?? 0 })),
       attempts: attempts.map(a => ({ attemptId: a.attempt_id, childId: a.child_id, materializationId: a.materialization_id, ownerBootId: a.owner_boot_id,
         ...(this.db.prepare('SELECT reason,next_attempt_at nextAttemptAt FROM telegram_origin_outcome_details WHERE attempt_id=?').get(a.attempt_id) ?? {}),
+        ...this.capacityEvidenceForAttempt(a.attempt_id),
         deliveryMachineId: (this.db.prepare('SELECT machine_id FROM telegram_origin_owners WHERE owner_boot_id=?').get(a.owner_boot_id) as { machine_id: string } | undefined)?.machine_id ?? null,
         phase: a.phase, outcome: a.outcome, receiptJson: a.receipt_json, createdAt: a.created_at, resolvedAt: a.resolved_at })) };
   }
@@ -1854,17 +1895,17 @@ export class OriginStoreBackend {
       const mark = newer ? this.db.prepare(`SELECT e.rowid FROM telegram_origins o JOIN telegram_origin_metric_events e ON e.event_id=o.origin_id AND e.metric='operation:prepared'
         WHERE o.created_at>=? ORDER BY o.created_at LIMIT 1`).get(input.before) as { rowid: number } | undefined : { rowid: Number.MAX_SAFE_INTEGER };
       if (!mark) return { folded: 0, more: false };
-      const { top, folded } = this.db.prepare('SELECT max(rowid) top,count(*) folded FROM (SELECT rowid FROM telegram_origin_metric_events WHERE rowid<? ORDER BY rowid LIMIT ?)').get(mark.rowid, limit) as { top: number | null; folded: number };
+      const { top, folded } = this.db.prepare('SELECT max(rowid) top,count(*) folded FROM (SELECT rowid FROM telegram_origin_metric_events WHERE rowid<? AND metric!=\'capacity-evidence-unavailable\' ORDER BY rowid LIMIT ?)').get(mark.rowid, limit) as { top: number | null; folded: number };
       if (top === null) return { folded: 0, more: false };
       this.db.prepare(`INSERT INTO telegram_origin_metric_rollups(metric,machine_id,count)
         SELECT metric,scope,count(*) FROM (SELECT e.metric,CASE
             WHEN e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%' THEN ''
             WHEN o.machine_id='legacy-unattributed' THEN CASE WHEN EXISTS (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id) THEN '' END
             ELSE o.machine_id END scope
-          FROM telegram_origin_metric_events e LEFT JOIN telegram_origins o ON o.origin_id=e.event_id WHERE e.rowid<=?)
+          FROM telegram_origin_metric_events e LEFT JOIN telegram_origins o ON o.origin_id=e.event_id WHERE e.rowid<=? AND e.metric!='capacity-evidence-unavailable')
         WHERE scope IS NOT NULL GROUP BY metric,scope
         ON CONFLICT(metric,machine_id) DO UPDATE SET count=count+excluded.count`).run(top);
-      this.db.prepare('DELETE FROM telegram_origin_metric_events WHERE rowid<=?').run(top);
+      this.db.prepare('DELETE FROM telegram_origin_metric_events WHERE rowid<=? AND metric!=\'capacity-evidence-unavailable\'').run(top);
       return { folded, more: folded === limit };
     }).immediate();
   }

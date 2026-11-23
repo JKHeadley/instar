@@ -1,3 +1,4 @@
+import type { StoredCapacityEvidence } from './OriginCapacityEvidence.js';
 import { resolveOriginStageDeadline, type OriginStageDeadlines } from './OriginStageDeadlines.js';
 import { categoryForProducer } from '../notificationCategories.js';
 import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope, isVerifiedReplyEnvelope, verifiedJobEnvelope, isVerifiedJobEnvelope } from '../NotificationSelectivityGate.js';
@@ -120,7 +121,7 @@ export interface OriginAdvisoryAnswer { originalId: string; firstPreparedAt: num
   preparedId?: string; settled?: 'superseded' | 'closed' }
 export interface OriginPreparedBotOperation { record: TelegramOriginRecord; admission: OriginAdmission; }
 export type OriginBotTransport = ((request: Readonly<SealedBotRequest>) => Promise<Response>) & {
-  prepare?: (request: Readonly<SealedBotRequest>) => Promise<{ send: () => Promise<Response>; valid: () => boolean; cancel: () => void }>;
+  prepare?: (request: Readonly<SealedBotRequest>) => Promise<{ send: () => Promise<Response>; valid: () => boolean; cancel: () => void; capacityEvidence?: () => StoredCapacityEvidence }>;
 };
 function normalizedModel(value: { value: string | null; status: 'observed' | 'configured' | 'unknown' | 'not-applicable'; sourceEventRef?: string | null; observedAt?: string | number | null; reason?: string | null }) {
   return { value: value.value, status: value.status, sourceEventRef: value.sourceEventRef ?? null,
@@ -931,7 +932,7 @@ export class TelegramOriginService {
               ? nextOriginLocalRefusal(this.#now(), operation.admission.deadlineAt)
               : nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
               maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now() });
-            await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason,
+            await this.options.store.recordOutcome({ ...claim.child, capacityEvidence: prepared?.capacityEvidence?.(), outcome: 'known-failed', reason,
               ...(localRefusal ? { localRefusal: true } : {}),
               ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
             return this.#hold(operation, reason);
@@ -939,7 +940,7 @@ export class TelegramOriginService {
           // The reason stays the stable class name; the network error itself is
           // written to the log so the cause of an unknown outcome is never invisible.
           console.warn(`[telegram-origin] send outcome unknown for ${operation.record.operationId}: ${describeTransportFailure(error)}`);
-          await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
+          await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown', undefined, prepared?.capacityEvidence?.());
           throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
         }
         type BotResponse = { ok?: boolean; result?: unknown; error_code?: unknown; description?: unknown; parameters?: { retry_after?: unknown } };
@@ -950,7 +951,7 @@ export class TelegramOriginService {
         if (response.ok && parsed?.ok === true && receipt) {
           acceptedAll = child === operation.admission.children.at(-1);
           let saved: OutcomeWriteResult;
-          try { saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'accepted', receiptJson: canonicalOrigin(receipt) }); }
+          try { saved = await this.options.store.recordOutcome({ ...claim.child, capacityEvidence: prepared?.capacityEvidence?.(), outcome: 'accepted', receiptJson: canonicalOrigin(receipt) }); }
           catch { throw this.#acceptedUnrecorded(operation, claim.child, receipt); }
           if (!saved.recorded) throw this.#acceptedUnrecorded(operation, claim.child, receipt);
           if (!request.companionOf) last = response;
@@ -959,7 +960,7 @@ export class TelegramOriginService {
           const nextAttemptAt = response.status === 429 ? nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
             maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now(),
             minimumDelayMs: Number.isSafeInteger(retryAfter) && Number(retryAfter) > 0 ? Number(retryAfter) * 1000 : 0 }) : undefined;
-          const saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: `telegram-${response.status}`,
+          const saved = await this.options.store.recordOutcome({ ...claim.child, capacityEvidence: prepared?.capacityEvidence?.(), outcome: 'known-failed', reason: `telegram-${response.status}`,
             ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
           const error = new TelegramOriginHoldError(`telegram-${response.status}`, operation.record.operationId, 'known-failed');
           if (saved.recorded) recordTelegramEditRejection(error, response.status, parsed, {
@@ -969,7 +970,7 @@ export class TelegramOriginService {
         } else {
           const partial = response.ok && parsed?.ok === true ? correlatePartialBotReceipt(request, parsed.result, this.#now()) : null;
           const reason = partial ? 'partial-platform-receipt' : 'response-without-correlated-receipt';
-          await this.#outcomeUnknown(operation, claim.child, reason, partial ?? undefined);
+          await this.#outcomeUnknown(operation, claim.child, reason, partial ?? undefined, prepared?.capacityEvidence?.());
           throw new TelegramOriginHoldError(reason, operation.record.operationId, 'outcome-unknown');
         }
       }
@@ -1018,8 +1019,8 @@ export class TelegramOriginService {
     return new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'accepted-unrecorded',
       { messageId: receipt.messageId, topicId: receipt.topicId, fallbackRecorded });
   }
-  async #outcomeUnknown(operation: OriginPreparedBotOperation, fence: ClaimFence, reason: string, receipt?: OriginBotReceipt): Promise<void> {
-    try { await this.options.store.recordOutcome({ ...fence, outcome: 'outcome-unknown', reason,
+  async #outcomeUnknown(operation: OriginPreparedBotOperation, fence: ClaimFence, reason: string, receipt?: OriginBotReceipt, capacityEvidence?: StoredCapacityEvidence): Promise<void> {
+    try { await this.options.store.recordOutcome({ ...fence, capacityEvidence, outcome: 'outcome-unknown', reason,
       ...(receipt ? { receiptJson: canonicalOrigin(receipt) } : {}) }); }
     catch {
       const previous = this.#held.get(operation.record.operationId);

@@ -202,10 +202,7 @@ export class TelegramOriginRuntime {
     requirePreparedOriginEgress();
     if (options.noticeProcess?.role === 'client') {
       const client = originCapacityClient(options.noticeProcess.socketPath);
-      this.capacity = {
-        reserve: async accountId => this.closed ? null : client.reserve(accountId),
-        consume: async grant => !this.closed && await client.consume(grant) && !this.closed,
-      };
+      this.capacity = wrapOriginCapacityClient(client, () => this.closed);
     }
     else {
       this.capacity = this.capacityOwner = new OriginEgressCapacity({ ownerBootId: this.ownerBootId,
@@ -1372,4 +1369,22 @@ export class TelegramOriginRuntime {
     if (failures.length === 1) throw failures[0].reason;
     if (failures.length) throw new AggregateError(failures.map(r => r.reason), 'Origin cleanup incomplete');
   }
+}
+
+/** The production client fence, shared by runtime construction and isolated compatibility proofs. */
+export function wrapOriginCapacityClient(client: OriginCapacityAuthority, closed: () => boolean): OriginCapacityAuthority {
+  return {
+        diagnosticTransport: 'ipc',
+        reserve: async accountId => closed() ? null : client.reserve(accountId),
+        consume: async grant => !closed() && await client.consume(grant) && !closed(),
+        reserveExplained: async accountId => closed()
+          ? { grant: null, refusal: { cause: 'owner-closed', leaseFreshness: null } }
+          : client.reserveExplained!(accountId),
+        consumeExplained: async grant => {
+          if (closed()) return { consumed: false, refusal: { cause: 'owner-closed', leaseFreshness: null } };
+          const result = await client.consumeExplained!(grant);
+          if (!result.consumed) return result; // Preserve the first received refusal and the old short-circuit order.
+          return closed() ? { consumed: false, refusal: null, explanation: 'invalid', observedOwnerVerdict: 'consumed' } : result;
+        },
+  };
 }

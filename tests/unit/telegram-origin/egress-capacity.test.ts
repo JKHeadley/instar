@@ -85,3 +85,21 @@ describe('shared credential egress capacity', () => {
     next.advance(1); expect(await next.owner.reserve('123')).not.toBeNull();
   });
 });
+
+describe('consume attribution preserves the old one-use decision boundary', () => {
+  it('names actual owner, lookup, expiry and consumed predicates in their original order', async () => {
+    const h = harness(); h.advance(ORIGIN_CAPACITY_WINDOW_MS);
+    const grant = (await h.owner.reserve('123'))!;
+    expect(await h.owner.consumeExplained({ ...grant, ownerBootId: 'wrong' })).toMatchObject({ consumed: false, refusal: { cause: 'wrong-owner' } });
+    expect(await h.owner.consumeExplained({ ...grant, nonce: 'absent' })).toMatchObject({ consumed: false, refusal: { cause: 'unknown-grant' } });
+    expect(await h.owner.consumeExplained({ ...grant, expiresAt: grant.expiresAt + 1 })).toMatchObject({ consumed: false, refusal: { cause: 'grant-mismatch' } });
+    expect(await h.owner.consumeExplained(grant)).toEqual({ consumed: true, refusal: null });
+    expect(await h.owner.consumeExplained(grant)).toMatchObject({ consumed: false, refusal: { cause: 'already-consumed' } });
+    h.advance(ORIGIN_CAPACITY_WINDOW_MS); await h.owner.reserve('123'); // prune the expired record
+    expect(await h.owner.consumeExplained(grant)).toMatchObject({ consumed: false, refusal: { cause: 'grant-expired' } });
+    const current = (await h.owner.reserve('123'))!; h.revoke();
+    expect(await h.owner.consumeExplained(current)).toMatchObject({ consumed: false, refusal: { cause: 'lease-not-held', leaseFreshness: null } });
+    h.owner.close();
+    expect(await h.owner.consumeExplained(current)).toMatchObject({ consumed: false, refusal: { cause: 'owner-closed' } });
+  });
+});

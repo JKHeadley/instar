@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-23T05:41:18.629Z",
+  "slug": "telegram-capacity-attribution",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 309,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/telegram-capacity-attribution.md",
+      "src/messaging/telegram-origin/OriginBotEgress.ts",
+      "src/messaging/telegram-origin/OriginCapacityEvidence.ts",
+      "src/messaging/telegram-origin/OriginEgressCapacity.ts",
+      "src/messaging/telegram-origin/OriginNoticeIpc.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 257,
+    "deletedLines": 52
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Per-attempt diagnostics run only inside the existing bounded send and recovery lifecycle. No new self-triggered controller, retry schedule or sender is introduced."
+  },
+  "verdict": "blocked"
+}
