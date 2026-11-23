@@ -1,1 +1,3 @@
+## What Changed
+
 Chats gain per-person mute and reversible archive preferences. Archiving hides a chat from the ordinary list while preserving its history and active session. Muting suppresses eligible reply notifications while account and document notices keep their independent rules. Local save receipts distinguish pending synchronization and unknown delivery support. Typed pending notifications retain their intended reader across device reassignment; unattributable legacy summaries are held safely. Rolling back to an older sender requires disabling push until the guarded sender returns.
