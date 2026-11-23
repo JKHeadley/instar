@@ -6,6 +6,7 @@
 import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
 import { buildAccountsPage } from './accounts-model.js';
 import { pairingModel, waitingCards } from './agents-model.js';
+import { buildTrustRequests } from './allowed-model.js';
 import { buildApprovals } from './mandates-model.js';
 import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
@@ -26,6 +27,13 @@ export function documentDecisionNeedRows(res) {
   if (!docs) return UNREADABLE;
   return docs.filter((d) => d && typeof d.id === 'string').map((d) => row(`doc-decision:${d.id}`, `Decide: ${d.title || 'a document'}`,
     d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
+}
+
+/** Current approval requests share the Allowed page's exact pending-request model. */
+export function trustRequestNeedRows(trust, now) {
+  if (sourceState(trust) === 'off') return [];
+  const requests = buildTrustRequests(trust, now);
+  return requests.ok ? requests.rows.map((r) => row(r.key, r.main, r.sub, '#/settings/allowed?s=approvals', [r.requestId])) : UNREADABLE;
 }
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
@@ -120,6 +128,8 @@ export const NEED_SOURCES = [
   { id: 'agents', page: 'people/agents', reads: { pairing: '/threadline/pairing', invites: '/threadline/pairing/invites' },
     rows: ({ pairing, invites }, now) => waitingCards(pairingModel(pairing, invites, undefined, now), now)
       .map((c, i) => row(`agent:${c.kind}:${c.iid || c.id || i}`, c.title, '', '#/people/agents')) },
+  { id: 'trust-requests', page: 'settings/allowed', reads: { trust: '/trust/requests' },
+    rows: ({ trust }, now) => trustRequestNeedRows(trust, now) },
   { id: 'approvals', page: 'people/mandates', reads: { approvals: '/authorization-requests?status=pending' },
     rows: ({ approvals }) => { const a = buildApprovals(approvals); return a.ok ? a.rows.map((r) => row(r.key, r.headline, r.reason, '#/people/mandates?s=waiting')) : UNREADABLE; } },
   { id: 'plans', page: 'work/plans', reads: { initiatives: '/initiatives', blockers: '/blockers' },

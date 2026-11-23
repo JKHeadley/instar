@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-23T03:40:13.026Z",
+  "slug": "sec173-file-editor-fence",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/fileRoutes.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  },
+  "verdict": "pass"
+}
