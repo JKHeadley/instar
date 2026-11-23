@@ -58,6 +58,7 @@ export const NEED_SOURCE_LABELS: Record<string, string> = {
   health: 'the agent’s health',
   merging: 'pull request merging',
   'shipping-approvals': 'pull requests waiting for approval',
+  'machine-retirement': 'computers that have been silent',
   feedback: 'the feedback queue',
   accounts: 'accounts and sign-ins',
   agents: 'other agents',
@@ -81,6 +82,7 @@ export const NEED_SOURCE_LABELS: Record<string, string> = {
 export const NEED_SOURCE_POSTURE: Record<string, { posture: 'replicated' | 'pool-merged' | 'lease-holder' | 'machine-local'; why: string }> = {
   attention: { posture: 'pool-merged', why: 'read with scope=pool: every online machine answers, and one that did not is named.' },
   promises: { posture: 'replicated', why: 'CommitmentsSync replicas merged on read (scope=mesh), each with its age.' },
+  'machine-retirement': { posture: 'pool-merged', why: 'built from every machine\'s signed contact records, merged by the pool-wide PIN budget (SEC-170).' },
   health: { posture: 'machine-local', why: 'by design: the health of the machine answering (mobile-health-issues.md); the phone asks every machine it can reach.' },
   merging: { posture: 'machine-local', why: 'the merge watcher works on the lease holder; a non-holder shows its own snapshot (green-pr-automerge-enforcement.md).' },
   'shipping-approvals': { posture: 'machine-local', why: 'as merging.' },

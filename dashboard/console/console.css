@@ -1771,3 +1771,12 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* The review lists names only; both owner choices are completed on the phone. */
+.silent-computer-list { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--s-3); }
+.silent-computer-list li { min-width: 0; overflow-wrap: anywhere; }
+.silent-computer-list p { margin: 3px 0 0; }
+
+.silent-computer-review .need-sub { margin: 0; }
+.silent-computer-review .card-note:empty { display: none; }
+.silent-computer-list .mchip { display: inline-block; max-width: 100%; }

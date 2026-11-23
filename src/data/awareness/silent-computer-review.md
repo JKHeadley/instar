@@ -1,0 +1,4 @@
+---
+title: Reviewing computers that have been silent
+---
+When Needs you asks the owner to review silent computers, open `#/capacity/machines?review=silent`. The dashboard lists the computers and can dismiss the current reminder; retiring or confirming a computer gone requires the owner's direct Face ID action in Needs you on the Instar phone app. Never treat silence, dashboard PIN access or reminder dismissal as approval. Read `GET /pin-budget/silent-machines` with the normal bearer header to inspect the server's list, fingerprint and evidenceComplete. Missing evidence is unknown, not proof of silence. A confirmed-gone computer remains listed until it is retired or heard again. `POST /pin-budget/silent-machines/dismiss` accepts only the current fingerprint and changes reminder visibility; a409 list-changed requires a fresh read. Never call phone owner-action routes on the owner's behalf.
