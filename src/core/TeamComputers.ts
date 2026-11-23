@@ -115,6 +115,42 @@ export function computerStandingIn(state: TeamAccessState, keyHash: string, atMs
 }
 
 /**
+ * The addresses where a computer of either kind is set up and still counts (SEC-169): each standing
+ * joined computer's `host`, and each live phone-linked computer's own `host` (from its signed body). Lowercase host names,
+ * port kept. The public way-back list (§3.6) names only these, never every machine in the pool: a
+ * computer's key lives only on the address it was set up on, so no other address is ever a way back.
+ */
+export function computerHomeHosts(state: TeamAccessState, nowMs: number): Set<string> {
+  const out = new Set<string>();
+  for (const l of state.computerLinks?.values() ?? []) {
+    const s = computerStandingIn(state, l.keyHash, nowMs);
+    if (s && typeof s.host === 'string' && s.host) out.add(s.host.toLowerCase());
+  }
+  for (const l of state.browserLinks.values()) {
+    if (l.unbound || !state.people.has(l.boundTo) || !(Date.parse(l.expiresAt) > nowMs)) continue;
+    const h = linkedBrowserHost(l.signed?.bodyB64);
+    if (h) out.add(h);
+  }
+  return out;
+}
+
+/**
+ * The computer's own address from a phone link's signed body (`host`, which the linking machine checked
+ * equals the address it issued the computer's nonce on). `signed.host` is the address the PHONE used,
+ * which can differ. Undefined for anything unreadable: the list is display only, so it is just shorter.
+ */
+function linkedBrowserHost(bodyB64: unknown): string | undefined {
+  if (typeof bodyB64 !== 'string' || bodyB64.length > 2048) return undefined;
+  try {
+    const host = (JSON.parse(Buffer.from(bodyB64, 'base64url').toString('utf8')) as { host?: unknown }).host;
+    return typeof host === 'string' && /^[a-z0-9.-]{1,253}(?::\d{1,5})?$/i.test(host) ? host.toLowerCase() : undefined;
+  } catch {
+    // @silent-fallback-ok — display only: an unreadable row just leaves its address off the list.
+    return undefined;
+  }
+}
+
+/**
  * A person's computers of both kinds, for the allowance (§3.5): the live ones, and every one bound in
  * the last hour (forgotten ones included, so forgetting and re-adding can't beat the hourly count).
  */

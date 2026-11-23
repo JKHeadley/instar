@@ -120,3 +120,15 @@ Concur with the review.
 
 ## After Local Verify (2026-11-23)
 The full run on head e485208cc failed one unit test, and the run record does not name the file. On a head brought up to date with main, the fifteen unit tests nearest this change pass: the SEC-135 suites, the ladder, dev-gated, awareness and bounded-accumulation registries, the PIN store and verifier, and the middleware and security scans. The change is resubmitted unchanged for a fresh run.
+
+## Release 1.3.1989 conflict repair
+
+Tier 2 maintenance under the existing approved specification. A fresh remote readback identified published PR 3586 head 467c8eafd4b767cbea5761aeaa58fd0fbcc4a72d. The existing isolated checkout was fast-forwarded to that published head before merging current main ec9401e5bdf28ed5ab1ff13f88e0032cc7895fc6. The single conflict is Git suggesting that the still-unreleased note move from upgrades/next to the released-note directory. The resolution keeps the original fragment byte-for-byte in upgrades/next so the normal release assembler still includes it. The routes source auto-merges; no runtime behavior is manually changed.
+
+The existing over-block, under-block, layer fit, signal versus authority, interactions, external-surface, multi-machine and rollback analysis remains applicable. Per-request counters and their store-outage fallback, public and owner/local budget separation, constant-time comparison, source identity derivation, owner-open proof, bounded records and insecure-connection refusal order remain the existing approved behavior. No new authority, limit, credential, data migration or production activation is introduced. Rollback is an ordinary merge correction; installed state is untouched.
+
+Verification uses one sequential runner under normal admission for focused service/verifier/store checks, the real HTTP flood suite, the production lifecycle suite and TypeScript. Full exact-head verification remains with throughput after publication, main repairs and the retained order. All native, owner-phone, recovery and PIN prerequisite holds remain. One scoped maintenance review and one planned normal commit; no new design rounds. Final results and independent review are recorded below after completion.
+
+Final focused results: 45 unit checks, one full HTTP flood check and three production lifecycle checks passed (49 total), followed by TypeScript with exit zero. The flood check still bounds strangers while the remembered browser and this computer retain access. The sequential runner stopped between steps only to record actual results and used normal admission throughout.
+
+Independent reviewer /root/review_3586_release_note concurred after reading the staged merge and artifact. The fragment is byte-identical in upgrades/next; the verifier, counters, fallback, budgets, trusted source identity, owner-open proof and refusal ordering retain their published-parent behavior, and the routes merge retains main additions. Full exact-successor verification remains required after publication and main repairs. Existing order, dependency and safety holds remain intact.

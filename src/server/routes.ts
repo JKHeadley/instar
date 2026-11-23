@@ -38804,7 +38804,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!change) return res.status(400).json({ error: 'invalid-change', message: 'change must be one of: {kind:"trust-grant",service,operation,level} | {kind:"autonomy-profile",from,to} | {kind:"config-patch",patch} | {kind:"slack-role",slackUserId,displayName,role,mode} | {kind:"board-policy",policy} | {kind:"trust-recovery",incidentId}' });
     const r = await ctx.trustAccountPath.propose(change);
     const status = r.status === 'sent' || r.status === 'awaiting-acceptance' ? 202
-      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'too-large' ? 409
+      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'not-holder' || r.status === 'too-large' ? 409
       : r.status === 'too-many-open' ? 429 : 503;
     // The approval code is for the person's card only; the agent never needs it.
     const { code: _code, ...body } = r as typeof r & { code?: string };
@@ -38828,7 +38828,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ requestId: id, status: 'withdrawn', cardTold: r.cardTold, message: 'Withdrawn. A reply with its code approves nothing now, and the same change cannot be asked again until the card would have expired.' });
   });
 
-  router.get('/trust/requests', (_req, res) => {
+  router.get('/trust/requests', async (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
     // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
     const results = new Map(ctx.trustAccountPath.service.deviceListing().map((d) => [d.requestId, d]));
@@ -38840,14 +38840,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }).map(({ r, summary }) => {
       const d = results.get(r.requestId);
       return {
-        requestId: r.requestId, status: r.status, adapter: r.adapter, summary, expiresAt: r.expiresAt,
+        requestId: r.requestId, status: r.status, adapter: r.adapter, changeKind: r.change?.kind ?? null, summary, expiresAt: r.expiresAt,
         delivered: r.adapter === 'device' ? true : !!r.cardMessageId,
         ...(d && d.status !== 'open' ? { result: d.status } : {}),
         ...(d?.disclosure ? { disclosure: d.disclosure } : {}),
         ...(d?.message ? { message: d.message } : {}),
       };
     });
-    res.json({ requests: rows, store: ctx.trustAccountPath.store.sinkDescription });
+    res.json({ requests: rows, approvalDelivery: await ctx.trustAccountPath.service.approvalDelivery(), store: ctx.trustAccountPath.store.sinkDescription });
   });
 
   // Withdrawing an acceptance is a narrowing: it stops new approvals and keeps committed grants.
