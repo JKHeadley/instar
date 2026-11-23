@@ -3013,6 +3013,25 @@
         "keepSegments": 1,
         "note": "action-checks.jsonl rotates at 5 MB into one kept segment (.1); message-notes.jsonl rotates at 1 MB into one kept segment and is emptied at each session start; pending checks expire after 30 minutes; the cache drops entries older than ten minutes."
       }
+    },
+    {
+      "category": "commitment-consumed-frontier",
+      "description": "Default-off commitment source/batch consumption evidence; canonical coverage receipt and private bounded session batch/ack artifacts. Local file identity and exact machine guard make foreign copies non-authoritative. Unknown history never skips.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/commitment-frontier/*",
+        "state/commitment-frontier/batches/*"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "B",
+        "access": "bounded",
+        "maxBytes": 1048576,
+        "note": "One bounded current coverage receipt; at most100 source rows/128KiB per batch and bounded acknowledgements. Exact owned batch artifacts are removed only after authoritative terminal session state; unknown or active orphans remain held without blocking new current capture. Metadata limits refuse optimization, never prune proof into apparent completeness."
+      }
     }
   ]
 }

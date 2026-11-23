@@ -1,3 +1,4 @@
+import { wireCommitmentReceiptConsumption } from '../scheduler/CommitmentReceiptWiring.js';
 import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapshot.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
@@ -16122,6 +16123,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       archiveOrigin: cjOwnMachineId ?? undefined,
       autoExpiry: config.evolutionActions?.autoExpiry,
     });
+    // Exact receipt proofs use an archive-inclusive identity view, not replication projection.
+    wireCommitmentReceiptConsumption(scheduler, evolution);
     const evolutionArchiveSync = new EvolutionArchiveSync(evolution.archive, {
       fetchPage: async (_peerId, url, offset, signal) => {
         const extra = (config.multiMachine as {peerUrlAllowlist?: string[]} | undefined)?.peerUrlAllowlist;

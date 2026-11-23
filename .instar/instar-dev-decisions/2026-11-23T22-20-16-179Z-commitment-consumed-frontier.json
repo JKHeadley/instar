@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-23T22:20:16.179Z",
+  "slug": "commitment-consumed-frontier",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 731,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CommitmentReceiptAction.ts",
+      "src/core/EvolutionManager.ts",
+      "src/data/awareness/commitment-consumed-frontier.md",
+      "src/data/state-coherence-registry.json",
+      "src/scheduler/CommitmentConsumedFrontier.ts",
+      "src/scheduler/CommitmentReceiptWiring.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 718,
+    "deletedLines": 13
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "New default-off source/batch coverage capability; existing scalar bookmark is deliberately not treated as consumption evidence."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The commitment-receipt-reconciliation model binds one terminal run. The control edge re-enters ordinary trigger admission at most once via frontierReconciledTriggers. Completion removes the binding; replayed unbound reserved callbacks are inert; frontierCompleting and the per-slug fence prevent overlap. No timer or additional model call is added. Four convergence assertions and live scheduler replay/removal/standby regressions verify the settling brake."
+    }
+  },
+  "verdict": "pass"
+}
