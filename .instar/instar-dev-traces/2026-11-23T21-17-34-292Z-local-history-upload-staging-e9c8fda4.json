@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "slug": "local-history-upload-staging",
+  "sessionId": "2d7f3894-f027-4c8b-b015-2c9311ec6ec0",
+  "timestamp": "2026-11-23T21:17:34.292Z",
+  "artifactPath": "upgrades/side-effects/local-history-upload-staging.md",
+  "artifactSha256": "009100116a198acb6f8d56e69b96d27da3aa551824195896c87a1655dcef0310",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/local-history/server-upload-staging.md",
+    "src/core/keyMaterialPaths.ts",
+    "src/data/state-coherence-registry.json",
+    "src/import/LocalHistoryDiskLedger.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "src/import/privateImportState.ts",
+    "tests/fixtures/local-history/staging-holder.mjs",
+    "tests/fixtures/local-history/staging-parent.mjs",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/file-routes-never-served-key-material.test.ts",
+    "tests/unit/local-history-disk-ledger.test.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-upload-staging.md",
+    "upgrades/side-effects/local-history-upload-staging.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Private raw upload storage, owner binding, replay barriers and crash custody change security-sensitive resource lifecycle.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-history-native-contract-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}
