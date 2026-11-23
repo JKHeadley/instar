@@ -1,3 +1,4 @@
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 /**
  * QuotaAwareScheduler — P1.3 of the Subscription & Auth Standard.
  *
@@ -29,7 +30,7 @@ import type {
   SubscriptionFramework,
 } from './SubscriptionPool.js';
 import { isLocallyExecutable, requiresOwnerRelogin } from './SubscriptionPool.js';
-import { rankAccounts, windowAwareBindingPct, windowNow, isValidState } from './windowAwareChoice.js';
+import { rankAccounts, windowAwareBindingPct, windowNow, isValidState, compareCodexWeeklyReset } from './windowAwareChoice.js';
 
 /** The binding window for swap decisions: the 7-day window is the scarce one. */
 export interface SelectionOptions {
@@ -156,9 +157,10 @@ export function selectAccount(
       bindingUtilization(a.lastQuota) < soft,
   );
   if (eligible.length === 0) return null;
+  const codexOnly = eligible.every((a) => a.framework === CODEX_CLI_FRAMEWORK);
   return eligible
     .map((a) => ({ a, s: scoreAccount(a, nowMs) }))
-    .sort((x, y) => y.s - x.s)[0].a;
+    .sort((x, y) => (codexOnly ? compareCodexWeeklyReset(x.a, y.a, nowMs) : 0) || y.s - x.s)[0].a;
 }
 
 /**
