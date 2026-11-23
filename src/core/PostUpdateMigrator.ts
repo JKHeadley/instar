@@ -1,3 +1,4 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from './sqlCommandContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
@@ -22162,6 +22163,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -22175,6 +22177,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
