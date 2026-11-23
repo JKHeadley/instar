@@ -64,6 +64,19 @@ describe('Approving a trust raise from the app (real AgentServer)', () => {
     // Withdrawing (the agent's route, at the person's request) turns device approvals off again.
     const w = await s.bearer(request(s.app).post('/trust/acceptance/withdraw')).send({ adapter: 'device' });
     expect(w.body).toMatchObject({ withdrawn: true, count: 1 });
-    expect((await s.bearer(request(s.app).post('/trust/requests')).send({ change: { ...change, service: 'calendar' } })).body.status).toBe('no-approver');
+    const waiting = await s.bearer(request(s.app).post('/trust/requests')).send({ change: { ...change, service: 'calendar' } });
+    expect(waiting.status).toBe(202);
+    expect(waiting.body).toMatchObject({ status: 'awaiting-acceptance', via: 'device' });
+    expect(waiting.body.code).toBeUndefined();
+    const afterWithdrawal = await mac.signed('GET', '/mobile/trust/requests');
+    const pending = afterWithdrawal.body.requests.find((x: { requestId: string }) => x.requestId === waiting.body.requestId);
+    expect(pending).toMatchObject({ status: 'open', via: 'device' });
+    const blockedLine = `approve-widening ${pending.requestId} ${pending.proposalHash}`;
+    const blocked = await mac.act({ action: 'approve-widening', target: pending.requestId, proposalHash: pending.proposalHash }, `/mobile/trust/requests/${pending.requestId}/approve`, { proposalHash: pending.proposalHash }, blockedLine);
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.error).toBe('acceptance-withdrawn');
+    expect(s.trust.getTrustLevel('calendar', 'write').level).not.toBe('autonomous');
+    const stillWaiting = await s.bearer(request(s.app).get('/trust/requests'));
+    expect(stillWaiting.body.requests.find((x: { requestId: string }) => x.requestId === pending.requestId)).toMatchObject({ status: 'open' });
   });
 });
