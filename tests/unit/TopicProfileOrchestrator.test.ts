@@ -533,6 +533,9 @@ describe('kill-path precision', () => {
     h.killResult.value = false;
     await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
     await waitUntil(() => h.audits.some((a) => a.type === 'respawn-kill-failed'));
+    // The kill audit precedes the detached breaker's durable write. Wait for
+    // its commit audit before assertions/teardown can remove the fixture.
+    await waitUntil(() => h.audits.some((a) => a.type === 'breaker-increment' && a.topic === '7' && a.count === 1));
     expect(h.kills.length).toBe(1); // the kill was attempted...
     expect(h.spawns.length).toBe(0); // ...and its failure stopped the respawn
     expect(h.audits.some((a) => a.type === 'respawn-applied')).toBe(false);
@@ -547,6 +550,9 @@ describe('kill-path precision', () => {
     h.killResult.value = false;
     await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
     await waitUntil(() => h.audits.some((a) => a.type === 'respawn-kill-failed'));
+    // The kill audit precedes the detached breaker's durable write. Wait for
+    // its commit audit before assertions/teardown can remove the fixture.
+    await waitUntil(() => h.audits.some((a) => a.type === 'breaker-increment' && a.topic === '7' && a.count === 1));
     // The pre-kill park must be reversed for the framework still running,
     // or the surviving session loses its resume id for nothing.
     expect(h.claude.parks).toContain('7:mid-framework-switch');
