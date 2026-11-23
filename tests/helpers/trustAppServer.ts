@@ -35,7 +35,7 @@ export async function cleanupTrustAppServers(operation: string): Promise<void> {
   for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation });
 }
 
-export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeof createTrustJourneyRuntime>[0]['sink']) {
+export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeof createTrustJourneyRuntime>[0]['sink'], telegram: Parameters<typeof createTrustJourneyRuntime>[0]['telegram'] = null) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -54,7 +54,7 @@ export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeo
   // No Telegram, no Slack: the app is the only way to reach the person.
   const runtime = createTrustJourneyRuntime({
     stateDir, configPath: path.join(stateDir, 'config.json'), runtimeConfig: config as never, installationId: 'trust-app', sink,
-    adaptiveTrust: trust, autonomyManager: null, trustRecovery: null, telegram: null, slack: null, slackOwnerUserId: () => null, holdsLease: () => true,
+    adaptiveTrust: trust, autonomyManager: null, trustRecovery: null, telegram, slack: null, slackOwnerUserId: () => null, holdsLease: () => true,
   });
   const sessionManager = createMockSessionManager() as never as { on: () => void };
   sessionManager.on = () => undefined;
@@ -112,7 +112,7 @@ export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeo
     };
     return { id, fp: deviceFingerprint(dev.publicKey), signed, act };
   };
-  return { server, app, stateDir, trust, runtime, bearer, pair };
+  return { server, app, stateDir, config, trust, runtime, bearer, pair };
 }
 
 export const DISCLOSURE = 'Let this Mac approve changes to what your agent may do? Approved with Touch ID. The list of paired devices is kept on the agent\'s own computer, so this is not independently verified.';
