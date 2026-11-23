@@ -25935,7 +25935,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never launch on a Codex account the pool reads at its wall; tag the
       // session with one that has room, or refuse when none does. Same switch
       // and walled predicate as the rescue; no Codex accounts → unchanged.
-      sessionManager.setCodexSpawnAccountResolver(() => wallRescue.codexSpawnAccount());
+      sessionManager.setCodexSpawnAccountResolver((context) => wallRescue.codexSpawnAccount(context));
       // A Codex conversation moved onto an account's home is looked for in every
       // Codex account home, so its resume finds the conversation there.
       sessionManager.setCodexAccountHomesResolver(() => subscriptionPool.list()

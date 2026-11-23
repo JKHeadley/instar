@@ -42190,6 +42190,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
   }
 
+  // Read-only account lease for standalone Sol source reviewers. No model is started here.
+  router.get('/subscription-pool/routine-codex-placement', (req, res) => {
+    if (!ctx.usageWallRescue) {
+      if (ctx.config.subscriptionPool?.routineCodexPlacement?.enabled === true) {
+        res.status(503).json({ error: 'routine-codex-placement-unavailable' });
+      } else res.json({ mode: 'inactive' });
+      return;
+    }
+    const model = typeof req.query.model === 'string' ? req.query.model : null;
+    const pick = ctx.usageWallRescue.routineCodexPlacement({ routine: true, model });
+    if (pick.kind === 'refused') { res.status(409).json({ error: pick.reason }); return; }
+    if (pick.kind === 'inactive') { res.json({ mode: 'inactive' }); return; }
+    const configHome = ctx.sessionManager.resolvePinnedSpawnHome(pick);
+    try {
+      if (!path.isAbsolute(configHome) || !fs.statSync(configHome).isDirectory()) throw new Error('home-unavailable');
+    } catch {
+      res.status(409).json({ error: 'routine-codex-placement-home-unavailable' }); return;
+    }
+    res.json({ mode: 'selected', accountOverride: { accountId: pick.accountId, configHome }, validUntil: pick.validUntil });
+  });
+
   router.get('/subscription-pool', async (req, res) => {
     // sibling-machine-reach §3.1: every plain response names the machine that answered, so a
     // reader can tell a stale URL that now reaches a different machine (identity check).

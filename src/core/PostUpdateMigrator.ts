@@ -3695,7 +3695,7 @@ export class PostUpdateMigrator {
         prior: new Set<string>(),
         alwaysOverwrite: true,
       },
-      {
+      ...templateRoots.map((skillRoot) => ({
         // grok-build reviewer-door plumbing (grok-build spec §8/§11): the
         // wrapper must plumb enabledFrameworks into detection on EXISTING
         // agents too — installBuiltinSkills never overwrites, so this sync
@@ -3704,12 +3704,12 @@ export class PostUpdateMigrator {
         // shipped-content entries: a prior-hash gate over a shipped script
         // classifies ordinary drift as customization and stops refreshing
         // forever (the constitution-mirror lesson).
-        label: 'spec-converge cross-model-review enabledFrameworks plumbing',
+        label: `spec-converge cross-model-review enabledFrameworks plumbing${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      },
+      })),
       // spec-converge REVIEWER TEMPLATES (round-10, integration+lessons).
       // `installBuiltinSkills` writes a skill's files only when the skill is
       // MISSING, so an existing agent's templates freeze at whatever version
