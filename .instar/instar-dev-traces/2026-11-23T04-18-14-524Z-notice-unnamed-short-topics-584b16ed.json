@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "notice-unnamed-short-topics",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T04:18:14.524Z",
+  "artifactPath": "upgrades/side-effects/notice-unnamed-short-topics.md",
+  "artifactSha256": "94e42dcf80ea1c4086d6438a4ba8d86b3131a22cb392869837b1f9d40d48ea52",
+  "coveredFiles": [
+    "dashboard/console/display-identity.js",
+    "docs/specs/notice-unnamed-short-topics.eli16.md",
+    "tests/unit/console-live-check-fixes.test.ts",
+    "upgrades/next/notice-unnamed-short-topics.md",
+    "upgrades/side-effects/notice-unnamed-short-topics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible notice wording fix with explicit marker boundary; no authority or state changes",
+  "eli16Path": "docs/specs/notice-unnamed-short-topics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notice-unnamed-short-topics.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}
