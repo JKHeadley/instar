@@ -10,6 +10,7 @@ import path from 'node:path';
 import express from 'express';
 import request from 'supertest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { isUnderTempRoot } from '../../src/core/ThrowawayAgentGuard.js';
 import {
   ThrowawayOwnerChat, evaluateStandIn, standInEverUsed, STAND_IN_STATE, STAND_IN_LOG, LOG_BUDGET_BYTES, MAX_TEXT_UNITS,
   type ThrowawayOwnerChatDeps,
@@ -23,6 +24,15 @@ afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive:
 
 const NONCE = 'a'.repeat(24);
 const NONCE2 = 'b'.repeat(24);
+
+// These rejection cases need a real non-temp location. Keep their fixtures out
+// of the checkout so normal guarded cleanup never targets the source tree.
+function makeOutsideTempHome() {
+  const outside = fs.mkdtempSync(path.join(os.homedir(), '.toc-outside-'));
+  dirs.push(outside);
+  expect(isUnderTempRoot(outside, ACCOUNT_HOME)).toBe(false);
+  return outside;
+}
 
 function makeHome(opts: { config?: Record<string, unknown>; base?: string } = {}) {
   const dir = fs.mkdtempSync(path.join(opts.base ?? os.tmpdir(), 'toc-'));
@@ -102,15 +112,13 @@ describe('switch-on conditions: each refusal names its condition', () => {
   });
 
   it('refuses a project outside the temporary folders, even with a sandboxed HOME and a forged record', () => {
-    const outside = fs.mkdtempSync(path.join(process.cwd(), '.toc-outside-'));
-    dirs.push(outside);
+    const outside = makeOutsideTempHome();
     const h = makeHome({ base: outside });
     expect(evaluateStandIn({ ...deps(h), projectDir: h.dir })).toMatchObject({ ok: false, condition: 'not-throwaway' });
   });
 
   it('refuses a temp-folder symlink pointing at a home outside the temporary folders', () => {
-    const outside = fs.mkdtempSync(path.join(process.cwd(), '.toc-outside-'));
-    dirs.push(outside);
+    const outside = makeOutsideTempHome();
     const real = makeHome({ base: outside });
     const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'toc-link-')), 'agent');
     dirs.push(path.dirname(link));
