@@ -151,6 +151,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ContextLayerChunk: { pending: 'wave-3' },
   // context-budget-layered-summaries §6 row H3 (Phase 1 S9): the long-term view from a bounded chunk/C2 selection; graded by the Phase 2 fold probes until a bench task lands. <!-- tracked: CMT-1536 -->
   ContextLayerH3: { pending: 'wave-3' },
+  FoldAudit: { pending: 'wave-3' },
+  FoldProbe: { pending: 'wave-3' },
   TreeSynthesis: { pending: 'wave-3' },
   LLMConflictResolver: { pending: 'wave-3' },
   openConversationBrief: { pending: 'wave-3' },
@@ -265,6 +267,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   PreCompactionFlush: true,
   ContextLayerChunk: true,
   ContextLayerH3: true,
+  FoldAudit: true, // a session's handoff note, built from its transcript
+  FoldProbe: true, // folded transcript spans and a throwaway session's answers
   TreeSynthesis: true,
   LLMConflictResolver: true, // divergent multi-machine state = untrusted peer data
   openConversationBrief: true,
@@ -466,6 +470,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   PreCompactionFlush: false, // extracts durable facts before compaction
   ContextLayerChunk: false, // summarizes an archived span of agent work; judges no claim
   ContextLayerH3: false, // rebuilds the long-term view from chunk/range summaries; judges no claim
+  FoldAudit: { claimKind: 'completionClaim' }, // judges a handoff's claim that a stretch of work is finished (practice folds only)
+  FoldProbe: false, // writes a recall quiz and grades answers against reference text; credits no completion or health claim
   TreeSynthesis: false, // synthesizes knowledge fragments → answer
   LLMConflictResolver: false, // resolves divergent multi-machine state
   openConversationBrief: false, // generates an A2A conversation brief
@@ -578,6 +584,8 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
   AttributionJudge: { pending: 'contract-wave-2' }, // closed own|relayed|unclear + faithful verdicts
+  FoldAudit: { contractTest: 'tests/unit/fold-audit.test.ts' }, // closed accept|send-back verdict, strict parse
+  FoldProbe: { contractTest: 'tests/unit/fold-grade.test.ts' }, // closed grade vocabulary, strict parse (its question types: tests/unit/fold-probe.test.ts)
   WorkBoardSpecApprovalJudge: { contractTest: 'tests/unit/spec-approval-constitution-check.test.ts' }, // closed {fire, issue, suggestion} verdict; the test feeds back the exact reply shape the prompt teaches
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
@@ -954,6 +962,8 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   PreCompactionFlush: exposed(EXPOSED_MODEL_TOOL), // durable facts from a transcript
   ContextLayerChunk: exposed(EXPOSED_ALL), // a transcript span: operator turns, agent prose and tool output
   ContextLayerH3: exposed(EXPOSED_ALL), // chunk/range summaries derived from transcript spans (operator turns, agent prose, tool output)
+  FoldAudit: exposed(EXPOSED_ALL), // a handoff note quoting operator turns, agent prose and tool output
+  FoldProbe: exposed(EXPOSED_ALL), // folded transcript spans and a throwaway session's answers
   TreeSynthesis: exposed(EXPOSED_TOOL),
   LLMConflictResolver: exposed(EXPOSED_TOOL), // divergent peer state = untrusted peer data
   openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content
@@ -1078,32 +1088,34 @@ export type NatureRoutingChains = Readonly<Record<RoutingChain, ReadonlyArray<Ch
  * Echo's real doors (no `openai-api`). Metered positions are present but resolve
  * unavailable until Increment B. An operator MAY override a chain wholesale
  * (subject to the FD4 resolve-time validation — a tracked A2.2 remainder).
+ *
+ * gemini-payg FD-G4: every METERED position (gemini-api, openrouter-api,
+ * groq-api) is REMOVED, so the default chains hold only subscription doors.
+ * Those positions had no effect while no metered door could dispatch; once a
+ * pay-per-use lane is armed they would become real-money defaults. A metered
+ * door is reached only through an explicit per-component opt-in (the door
+ * policy's E3 list), never a default chain. A unit test pins this.
  */
 export const NATURE_ROUTING_DEFAULT_CHAINS: NatureRoutingChains = {
   // Latency-sensitive quick-sort.
   FAST: [
-    { door: 'gemini-api', model: 'flash-lite', keyRef: 'metered_gemini_bench', moneyGated: true },
     { door: 'pi-cli', model: 'gpt-5.5' },
   ],
   // Background quick-sort.
   SORT: [
     { door: 'codex-cli', model: 'gpt-5.4-mini' },
     { door: 'pi-cli', model: 'gpt-5.5' },
-    { door: 'gemini-api', model: 'flash-lite', keyRef: 'metered_gemini_bench', moneyGated: true },
     { door: 'claude-code', model: 'balanced' }, // Sonnet-4.6 reserve
   ],
   // Careful judgment.
   JUDGE: [
     { door: 'pi-cli', model: 'gpt-5.5' },
     { door: 'codex-cli', model: 'gpt-5.5' },
-    { door: 'openrouter-api', model: 'gpt-5.5', keyRef: 'metered_openrouter_bench', moneyGated: true },
-    { door: 'openrouter-api', model: 'opus-4.8', keyRef: 'metered_openrouter_bench', moneyGated: true }, // clean API, NEVER CLI
     { door: 'claude-code', model: 'balanced' }, // Sonnet-4.6 reserve
   ],
   // Open-ended writing (WRITE is the sole Opus-via-CLI-exempt lane — FD4).
   WRITE: [
     { door: 'codex-cli', model: 'gpt-5.4-mini' },
-    { door: 'groq-api', model: 'gpt-oss-120B', keyRef: 'metered_groq_bench', moneyGated: true, injectionSafe: false },
     { door: 'claude-code', model: 'fast' }, // Haiku-4.5
     { door: 'claude-code', model: 'capable' }, // Opus-4.8 quality lane — allowed on WRITE (FD4)
   ],

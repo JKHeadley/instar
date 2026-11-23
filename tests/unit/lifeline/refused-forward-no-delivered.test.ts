@@ -36,7 +36,8 @@ describe('every lifeline "✓ Delivered" asks whether the server refused the mes
   });
   it('a refused replay is handled (never re-queued) but not counted as delivered', () => {
     const loop = src.slice(src.indexOf('private async replayQueue('), src.indexOf('private async replayQueue(') + 8000);
-    expect(loop).toContain('}, replayAck);');
+    // SEC-164 part 1b passes the replayed message's removed-key kinds after the ack (its notice survives a replay).
+    expect(loop).toContain('}, replayAck, undefined, msg.credentialRemovedKinds);');
     const mark = loop.indexOf("this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it");
     const guard = loop.indexOf('if (!replayAck.refused) {');
     const count = loop.indexOf('replayed++;');

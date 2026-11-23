@@ -125,6 +125,7 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
   INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET_V1,
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
@@ -1464,7 +1465,9 @@ export const MOBILE_CHAT_CONTENT_LINE = '- With native app conversations on, not
 /** Pool reads and the approval method on app history rows; inserted after the history bullet on update. */
 /** The pool line before linked computers (instar-document-viewer §3.6a); replaced on update. */
 export const APP_CONVERSATIONS_POOL_STALE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
-export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
+/** The line before member-browser-any-computer added `team-invite`; replaced in place on update. */
+export const APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
+export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, `person-phone` for a member\'s computer their own phone linked, or `team-invite` for a member\'s computer that joined from the owner\'s team invite): how that device was approved.';
 
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
@@ -2324,6 +2327,27 @@ export function rewriteUsageWallRescueAwareness(content: string): { content: str
  * Existence-checked per field and idempotent: an operator value is never
  * overwritten, and re-running adds nothing.
  */
+/** SEC-153: the dispatch address every agent was given at init, an unsigned channel. */
+export const LEGACY_DISPATCH_URLS: ReadonlyArray<string> = ['https://dawn.bot-me.ai/api/instar/dispatches'];
+
+/**
+ * SEC-153: turn off polling of the old, unsigned dispatch address. Exactly that address is removed and
+ * polling is switched off; an operator's own dispatch server is never touched. Loss-free: the local
+ * dispatch record (dispatchFile) is kept, and the old address is noted so it can be put back by hand.
+ * Idempotent: once the address is gone, nothing matches.
+ */
+export function migrateConfigLegacyDispatchUrl(config: Record<string, unknown>): string | null {
+  const d = config.dispatches;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const disp = d as Record<string, unknown>;
+  if (typeof disp.dispatchUrl !== 'string' || !LEGACY_DISPATCH_URLS.includes(disp.dispatchUrl)) return null;
+  const was = disp.dispatchUrl;
+  disp.legacyDispatchUrlRemoved = { url: was, wasEnabled: disp.enabled === true, at: new Date().toISOString(), reason: 'SEC-153' };
+  disp.dispatchUrl = '';
+  disp.enabled = false;
+  return was;
+}
+
 export function migrateConfigBoundedNotificationSurface(config: Record<string, unknown>): boolean {
   let changed = false;
 
@@ -2953,6 +2977,31 @@ const STATE_SYNC_DEV_GATED_STORES = [
 ] as const;
 
 /**
+ * Pure half of migrateReaperHourlyCadence: moves exactly the old 24 h default
+ * `monitoring.agentWorktreeReaper.reapIntervalMs: 86400000` to 1 h, once.
+ * Returns 'already' when the run-once marker is present (nothing changed),
+ * 'moved' when the old default was replaced, 'none' otherwise (marker added). The marker is written even when nothing moved, so
+ * a later run never overrides an operator who sets 24 h on purpose.
+ */
+export function migrateConfigReaperHourlyCadence(config: Record<string, unknown>): 'already' | 'moved' | 'none' {
+  const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+  const marker = 'reaper-hourly-cadence';
+  if (migrations.some((m) => typeof m === 'string' && m.startsWith(marker))) return 'already';
+  let moved = false;
+  const mon = config.monitoring;
+  if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+    const r = (mon as Record<string, unknown>).agentWorktreeReaper;
+    if (r && typeof r === 'object' && !Array.isArray(r) && (r as Record<string, unknown>).reapIntervalMs === 86_400_000) {
+      (r as Record<string, unknown>).reapIntervalMs = 3_600_000;
+      moved = true;
+    }
+  }
+  migrations.push(`${marker}-${new Date().toISOString()}`);
+  config._instar_migrations = migrations;
+  return moved ? 'moved' : 'none';
+}
+
+/**
  * The 7 multiMachine.stateSync.* memory stores (preferences, relationships, learnings,
  * knowledge, evolutionActions, userRegistry, topicOperator) were re-gated from
  * DARK_GATE_EXCLUSIONS (off for everyone) to the developmentAgent gate (live-on-dev,
@@ -3340,6 +3389,7 @@ export class PostUpdateMigrator {
     this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
+    this.migrateFeedbackSkillSource(result);
     this.migrateSchedulerSkillReportChoice(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
@@ -3389,6 +3439,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateBootBeaconFleetGraduation(result);
+    this.migrateReaperHourlyCadence(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
@@ -5143,6 +5194,43 @@ export class PostUpdateMigrator {
       result.upgraded.push('boot-beacon-graduation: stripped the stale dark-default `monitoring.bootHealthBeacon.enabled: false` so the boot beacon runs (it is on for every agent now; re-add `enabled: false` to keep it off — it will not be re-stripped)');
     } else {
       result.skipped.push('boot-beacon-graduation: nothing to strip (marker set)');
+    }
+  }
+
+  // ── REAPER HOURLY CADENCE (docs/specs/reaper-removal-out-of-process.md §4) ──
+  // The worktree reaper's pass interval became 1 h. applyDefaults is add-missing-
+  // only, and existing agents persisted the old default `reapIntervalMs: 86400000`,
+  // so they would keep the 24 h cadence forever. Exactly the old default value is
+  // moved, once (run-once marker): any other value is an operator choice and kept,
+  // and a later operator-set 24 h is never touched. dryRun is left alone.
+  private migrateReaperHourlyCadence(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('reaper-hourly-cadence: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const changed = migrateConfigReaperHourlyCadence(config);
+    if (changed === 'already') {
+      result.skipped.push('reaper-hourly-cadence: already migrated');
+      return;
+    }
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (changed === 'moved') {
+      result.upgraded.push('reaper-hourly-cadence: moved monitoring.agentWorktreeReaper.reapIntervalMs from the old 24 h default to 1 h (the pass is off the main thread; removal stays dry-run unless turned on)');
+    } else {
+      result.skipped.push('reaper-hourly-cadence: no old default to move (marker set)');
     }
   }
 
@@ -7034,6 +7122,30 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/instar-scheduler/SKILL.md (per-job report choice)');
     } catch (err) {
       result.errors.push(`skills/instar-scheduler/SKILL.md report choice migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * agent-work-cards-default §3 "Feedback is not a trigger": `POST /feedback` requires a `source` from Bearer callers when
+   * the board is on. The built-in /feedback skill is existing content (installBuiltinSkills never overwrites), so this
+   * dedicated idempotent step adds `"source": {"kind": "agent"}` to its Quick Submit body once. A customized skill whose
+   * body no longer has the stock description line is left untouched.
+   */
+  private migrateFeedbackSkillSource(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'feedback', 'SKILL.md');
+    if (!fs.existsSync(skillFile)) return;
+    try {
+      const original = fs.readFileSync(skillFile, 'utf8');
+      if (original.includes('"source"')) return;
+      const stock = '"description": "Full context: what happened, what you expected, error messages, steps to reproduce"\n  }\'';
+      if (!original.includes(stock)) return;
+      const updated = original.replace(stock, '"description": "Full context: what happened, what you expected, error messages, steps to reproduce",\n    "source": {"kind": "agent"}\n  }\'');
+      if (updated !== original) {
+        fs.writeFileSync(skillFile, updated);
+        result.upgraded.push('skills/feedback/SKILL.md (POST /feedback body carries source: {kind: agent})');
+      }
+    } catch (err) {
+      result.errors.push(`skills/feedback/SKILL.md source migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -9635,7 +9747,9 @@ if [[ "$ACTIVE" != "true" ]]; then`;
 
 const serverUrl = process.env.INSTAR_SERVER_URL || 'http://localhost:4042';
 const authToken = process.env.INSTAR_AUTH_TOKEN || '';
-const instarSid = process.env.INSTAR_SESSION_ID || '';
+// Validated once: an id that fails the pattern is sent in neither the query nor the body (the hook exits).
+const rawSid = process.env.INSTAR_SESSION_ID || '';
+const instarSid = /^[A-Za-z0-9._:-]{1,128}$/.test(rawSid) ? rawSid : '';
 
 if (!authToken || !instarSid) {
   process.exit(0);
@@ -9647,8 +9761,32 @@ process.stdin.on('end', async () => {
   try {
     const { request } = await import('node:http');
     const input = JSON.parse(data);
+    // Bound the forwarded identifying fields here too: an older server stores a payload as received.
+    const str = (v, max) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
+    const id = (v) => (typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v) ? v : undefined);
+    const absPath = (v) => (typeof v === 'string' && v.startsWith('/') && v.length <= 1024 ? v : undefined);
     const payload = JSON.stringify({
-      event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // Claude Code names the event in hook_event_name (hook_event is the old
+      // spelling, kept as a fallback). Without it every Stop, SubagentStart,
+      // SubagentStop, TaskCompleted, SessionEnd and PreCompact event arrived as
+      // \"Unknown\" and no consumer of those events ever ran (2026-11-21).
+      event: input.hook_event_name || input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // The instar session this hook ran in, so consumers keyed on it (the
+      // practice-fold runner, the subagent tracker) can find the session.
+      instar_session_id: id(instarSid),
+      // The tmux session name, which Compaction Trigger 1 checks against the session id.
+      instar_session: str(process.env.INSTAR_SESSION_NAME, 128),
+      // Short identifying fields the native reporter also forwards (docs/specs/native-hook-events.md
+      // D1); the server bounds them the same way. Message text (last_assistant_message,
+      // task_subject) is deliberately NOT sent from here: an older server stores payloads as
+      // received, so raw text could reach storage during a version mismatch.
+      agent_id: id(input.agent_id),
+      agent_type: str(input.agent_type, 128),
+      agent_transcript_path: absPath(input.agent_transcript_path),
+      task_id: id(input.task_id),
+      reason: str(input.reason, 64),
+      trigger: str(input.trigger, 64),
+
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
       // green-pr-automerge Layer 2: forward the session cwd so the server can
@@ -10166,6 +10304,14 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n\n- **Memory privacy recovery**: when \`sandboxReady\` is false, \`GET /memory-privacy\` gives \`blocker\` and \`fix\`, the real cause in plain words, and the owner also gets a private link to the solution, with a one-time repair link when one click can fix it. Owner reports "I can't reply here yet: private memory isn't set up" → read \`fix\` and tell them exactly that. Never set \`memoryPrivacy.enabled\` false to get past it unless the owner asks: that reopens the leak.`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
+    }
+
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
     }
 
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
@@ -11550,6 +11696,11 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(APP_CONVERSATIONS_POOL_STALE_LINE, APP_CONVERSATIONS_POOL_LINE);
       patched = true;
       result.upgraded.push('CLAUDE.md: app conversations pool line names person-phone');
+    }
+    if (content.includes(APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE, APP_CONVERSATIONS_POOL_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: app conversations pool line names team-invite');
     }
     if (content.includes('Native app conversations') && !content.includes(APP_CONVERSATIONS_POOL_LINE)) {
       const lines = content.split('\n');
@@ -15530,6 +15681,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
     }
+    // Spec stale-process-login-expired: the interactive bullet now describes the stored-login check.
+    // Replaced in place (before the key-health block anchors on it); a hand-edited copy is left alone.
+    if (content.includes(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1)) {
+      content = content.replace(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1, INTERACTIVE_LOGIN_EXPIRED_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: interactive expired-login bullet describes the stored-login check');
+    }
     // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
     // rerouted-job bullet when present, else appended. Idempotent via its marker.
     if (!content.includes(INTERACTIVE_LOGIN_EXPIRED_MARKER)) {
@@ -18407,6 +18565,23 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Machine-load assessment helper — always overwrite (CMT-1703, spec
     // robust-load-assessment-fleet). The go-to method for evaluating machine load
     // (real CPU idle% + time-windowed ResourceLedger + a verdict), so an agent
@@ -19313,10 +19488,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // dev-agent gate (live on a development agent, dark on the fleet).
     {
       const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      // agent-work-cards-default §Migration: the request-to-card and notes defaults join the block, each added only when
+      // missing. `requestCards.enabled` is deliberately NOT written (omitted ⇒ on where the board is on).
       const defaults: Record<string, unknown> = {
         softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
-        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200, noteText: 4000 },
         pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+        requestCards: { duplicateHintHours: 24, backfillMaxAgeDays: 14, sweepPerTick: 25, unrecordedWorkMinutes: 10, floorRecentHours: 72 },
+        maxNotesPerCardPerDay: 50, noteCoalesceMinutes: 60, noteDrainPerTick: 25, softOpenBlockers: 10, maxOpenAsksPerCard: 5,
       };
       let added = false;
       for (const [k, v] of Object.entries(defaults)) {
@@ -19475,6 +19654,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // SEC-153: the old dispatch address was an unsigned channel that could run actions and change
+    // configuration. Polling it stops; an operator's own dispatch server is left alone.
+    const legacyDispatch = migrateConfigLegacyDispatchUrl(config as Record<string, unknown>);
+    if (legacyDispatch) {
+      patched = true;
+      result.upgraded.push(`config.json: dispatch polling of the old unsigned address turned off (was ${legacyDispatch}); the dispatch record is kept`);
     }
 
     // Disk Steward cleanup (docs/specs/disk-steward.md): on for development agents
@@ -24644,6 +24831,9 @@ var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var TERMINAL = ['committed', 'rolled-back', 'aborted'];
 // Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
 var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// Exact lookup paths (§7.6, §10): a topic's chunk list and one chunk. A pattern,
+// not a prefix, so the topic's other routes (user-corpus, anchor…) stay denied.
+var LOOKUP_PATHS = [/^\/topic\/-?\d{1,15}\/chunks$/, /^\/topic\/-?\d{1,15}\/chunks\/[A-Za-z0-9_.-]{1,128}$/];
 // The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
 // literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
 // backslash or quote (the character classes below exclude them).
@@ -24662,6 +24852,7 @@ function isLookupCommand(cmd, port) {
     var pre = LOOKUP_PREFIXES[i];
     if (p === pre || p.indexOf(pre + '/') === 0) return true;
   }
+  for (var j = 0; j < LOOKUP_PATHS.length; j++) if (LOOKUP_PATHS[j].test(p)) return true;
   return false;
 }
 
@@ -24677,7 +24868,7 @@ function deny(reason) {
 }
 
 if (typeof module !== 'undefined' && module.exports && require.main !== module) {
-  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES, LOOKUP_PATHS: LOOKUP_PATHS };
 } else {
   var iid = process.env.INSTAR_SESSION_ID || '';
   // No Instar session id: outside this hook's reach. Exit before reading stdin.
@@ -26855,13 +27046,22 @@ if (!reviewEnabled) {
     // green-pr-automerge Layer 2 (MODE-INDEPENDENT — the UnjustifiedStopGate mode
     // ships 'off', so this must act on the hot-path field BEFORE the mode gate,
     // exactly like the stated-continuation guard above). One-shot per session+PR
-    // via a tmp marker so the agent is never trapped. NO runnable merge command.
+    // via a marker under .instar/state/stop-gate-markers so the agent is never trapped. NO runnable merge command.
     if (hot && hot.greenPrBlock && hot.greenPrBlock.pr && !hot.killSwitch && !hot.compactionInFlight) {
       try {
-        const os = await import('node:os');
-        const marker = path.join(os.tmpdir(), 'instar-greenpr-block-' + encodeURIComponent(sessionId) + '-' + hot.greenPrBlock.pr);
-        if (!fs.existsSync(marker)) {
-          try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+        // SEC-131: the one-shot marker lives in the agent's own state dir (never the shared
+        // temp dir, where another local user could pre-plant the name or a symlink), and is
+        // created exclusively ('wx', 0600): an existing file or link counts as already fired
+        // and is never written through.
+        const markerDir = path.join(projectDir, '.instar', 'state', 'stop-gate-markers');
+        const marker = path.join(markerDir, 'greenpr-block-' + encodeURIComponent(sessionId) + '-' + encodeURIComponent(String(hot.greenPrBlock.pr)));
+        let firstTime = false;
+        try {
+          fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 });
+          fs.closeSync(fs.openSync(marker, 'wx', 0o600));
+          firstTime = true;
+        } catch {}
+        if (firstTime) {
           process.stdout.write(JSON.stringify({ decision: 'block', reason: 'STOP-GATE (green-pr): ' + String(hot.greenPrBlock.message) }));
           process.exit(2);
           return;

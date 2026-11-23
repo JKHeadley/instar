@@ -103,6 +103,23 @@ export function registerLocalTranscriptionEnabled(reader: (() => boolean) | null
   cachedDescription = null;
 }
 
+/**
+ * The `voice-unreadable` source (docs/specs/recommended-services.md, Real-problem events): told each time a voice
+ * note meets nothing that can transcribe it. Registered once by the server. The listener gets a fixed channel token,
+ * never error text, and a listener that throws never changes what the channel sees.
+ */
+let voiceUnreadableListener: ((evidenceRef: string) => void) | null = null;
+export function registerVoiceUnreadableListener(listener: ((evidenceRef: string) => void) | null): void {
+  voiceUnreadableListener = listener;
+}
+
+/** Every channel calls this when a voice note can't be read because nothing here can transcribe it. */
+export function reportVoiceUnreadable(evidenceRef: string): void {
+  try {
+    voiceUnreadableListener?.(evidenceRef);
+  } catch { /* @silent-fallback-ok — a signal only; the listener reports its own failures */ }
+}
+
 /** The config value as the server reads it: on unless explicitly `false`. */
 export function localTranscriptionEnabledFromConfig(config: { voiceTranscription?: { local?: unknown } } | undefined): boolean {
   return config?.voiceTranscription?.local !== false;
@@ -167,6 +184,8 @@ export interface TranscribeOptions extends ResolveOptions {
   mediaType?: string;
   /** The whole budget for this call: paid attempt, fallback, queue wait and the local run. Default 60 s. */
   timeoutMs?: number;
+  /** A fixed token naming the channel (`telegram`, `app`), passed to the voice-unreadable signal. Default `voice-note`. */
+  channel?: string;
   fetchImpl?: typeof fetch;
   /** Overrides the registered `voiceTranscription.local` setting (tests). */
   localEnabled?: boolean;
@@ -212,6 +231,15 @@ export async function transcribeAudioFile(filePath: string, opts: TranscribeOpti
 
 /** As `transcribeAudioFile`, with the provider that actually produced the text (`groq`, `openai`, `local`). */
 export async function transcribeAudioFileDetailed(filePath: string, opts: TranscribeOptions = {}): Promise<TranscriptResult> {
+  try {
+    return await transcribeDetailedInner(filePath, opts);
+  } catch (err) {
+    if (err instanceof TranscriptionUnavailableError) reportVoiceUnreadable(opts.channel ?? 'voice-note');
+    throw err;
+  }
+}
+
+async function transcribeDetailedInner(filePath: string, opts: TranscribeOptions): Promise<TranscriptResult> {
   const now = opts.now ?? Date.now;
   const deadline = now() + (opts.timeoutMs ?? DEFAULT_BUDGET_MS);
   const explicit = opts.explicit?.toLowerCase();

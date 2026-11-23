@@ -119,6 +119,17 @@ describe('reaper generated files (reaper-generated-files-regenerable)', () => {
       expect(mkDeps().isClean(wt)).toBe(true);
     });
 
+    it('proof holds inside a source-tree checkout (every real agent worktree), where git hash-object is refused', () => {
+      // Production worktrees are checkouts of the instar source; SafeGitExecutor refuses
+      // `hash-object` there. The marker makes this fixture look the same to the guard.
+      write('.instar-source-tree', '');
+      fs.copyFileSync(path.join(wt, 'docs', 'STANDARDS-REGISTRY.md'), path.join(wt, 'src', 'data', 'standards-registry.md'));
+      expect(() => readGit(['-C', wt, 'hash-object', '--no-filters', '--', path.join(wt, 'src', 'data', 'standards-registry.md')], wt)).toThrow(/instar source tree/);
+      expect(classifyIgnoredEntry('src/data/standards-registry.md', wt, readGit)).toBe('regenerable');
+      write('src/data/standards-registry.md', REGISTRY.replace('one', 'onE'));
+      expect(classifyIgnoredEntry('src/data/standards-registry.md', wt, readGit)).toBe('work');
+    });
+
     it('one byte different → work; checkout kept', () => {
       write('src/data/standards-registry.md', REGISTRY.replace('one', 'onE'));
       expect(classifyIgnoredEntry('src/data/standards-registry.md', wt, readGit)).toBe('work');

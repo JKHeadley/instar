@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "doc-reanchor-whole-words-141469",
+  "sessionId": "b749abd3-5fd1-4c75-bc50-0d4da6ed788d",
+  "timestamp": "2026-11-20T20:58:25.158Z",
+  "artifactPath": "upgrades/side-effects/doc-reanchor-whole-words-141469.md",
+  "artifactSha256": "50db74ccee1d2883de9b158e27d67a219bc485b93dbd552ad35515d74d5ffaae",
+  "coveredFiles": [
+    "scripts/documents-live-proof.ts",
+    "upgrades/next/doc-reanchor-whole-words-141469.md",
+    "upgrades/side-effects/doc-reanchor-whole-words-141469.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-runner scenario only (proof script), no runtime change",
+  "eli16Path": "upgrades/side-effects/doc-reanchor-whole-words-141469.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/doc-reanchor-whole-words-141469.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

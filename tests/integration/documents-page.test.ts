@@ -70,7 +70,9 @@ function setup() {
     device: (id) => id === 'owner-phone' ? { person: { ok: true, role: 'owner', userId: null, name: 'Justin', telegramUserId: null } as never, client: 'phone', publicKey: owner.raw, approvedVia: 'phone' }
       : id === 'stranger' ? { person: null, client: 'phone', publicKey: stranger.raw, approvedVia: null } : null,
     isOwnHost: (h) => h === HOST, stableOrigin: () => origin, assetsDir: assets,
-    ownerPresence: (_req, id) => id === 'owner-phone' ? { presenceKey: presence.raw, host: HOST } : null,
+    // 'home-phone': an owner phone with a presence key that the production lookup answers null for
+    // (identity A4: paired on the home address, or let in at the computer).
+    ownerPresence: (_req, id) => id === 'owner-phone' || id === 'home-phone' ? { presenceKey: presence.raw, host: HOST } : null,
   };
   const a = express();
   a.use(express.json({ limit: '2mb', verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = Buffer.from(buf); } }));
@@ -119,6 +121,8 @@ describe('document page', () => {
     const r = await request(s.a).get(`/docs/${s.id}`);
     expect(r.status).toBe(200);
     expect(r.headers['content-security-policy']).toBe(DOC_PAGE_CSP);
+    // The tunnel's CDN may not rewrite the page (it injected an analytics script, 2026-11-20).
+    expect(r.headers['cache-control']).toBe('no-store, no-transform');
     expect(r.text).not.toContain('Friday');
     expect((await request(s.a).get('/docs/_assets/doc-page.js')).status).toBe(200);
     expect((await request(s.a).get('/docs/_assets/..%2Fsecret.js')).status).toBe(404);
@@ -287,5 +291,18 @@ describe('document page', () => {
     expect((await move(OWN, after.heads)).body.error).toBe('once-shared-stays-shared');
     // Another phone gets nothing.
     expect((await request(s.a).post(`/mobile/docs/${s.id}/primary/challenge`).set('x-test-device', 'stranger').send({ primary: OWN, docDeps: {} })).status).toBe(403);
+  });
+
+  it('identity A4: a phone the document lookup refuses gets no page code and no move challenge (none is spent on a write that would fail)', async () => {
+    const s = setup();
+    const open = await request(s.a).post(`/mobile/docs/${s.id}/open`).set('x-test-device', 'home-phone').send({});
+    expect(open.status).toBe(404);
+    expect(open.body.code).toBeUndefined();
+    const ch = await request(s.a).post(`/mobile/docs/${s.id}/primary/challenge`).set('x-test-device', 'home-phone').send({ primary: OWN, docDeps: {} });
+    expect(ch.status).toBe(403);
+    expect(ch.body.challenge).toBeUndefined();
+    // Positive control: the owner's phone still gets both.
+    expect((await request(s.a).post(`/mobile/docs/${s.id}/open`).set('x-test-device', 'owner-phone').send({})).body.code).toBeTruthy();
+    expect((await request(s.a).post(`/mobile/docs/${s.id}/primary/challenge`).set('x-test-device', 'owner-phone').send({ primary: OWN, docDeps: {} })).body.challenge).toBeTruthy();
   });
 });

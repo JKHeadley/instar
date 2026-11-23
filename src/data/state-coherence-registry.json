@@ -778,7 +778,8 @@
       "transport": "none",
       "paths": [
         "state/lease-local.json",
-        "state/registry-liveness.json"
+        "state/registry-liveness.json",
+        "state/lease-continuity.json"
       ],
       "grandfathered": false
     },
@@ -936,7 +937,8 @@
         "state/boot-id",
         "state/auto-updater.json",
         "state/slept-marker.json",
-        "state/lifeline-restart-requested.json"
+        "state/lifeline-restart-requested.json",
+        "state/restart-budget.json"
       ],
       "grandfathered": false
     },
@@ -2415,6 +2417,24 @@
         "class": "fixed-cardinality",
         "access": "in-memory",
         "note": "One current row per person x conversation ever pinned (an unpin row stays as the tombstone that stops an older pin from returning); at most 50 pinned per person."
+      }
+    },
+    {
+      "category": "telegram-topic-names",
+      "description": "Telegram topic names shared between the agent's machines (docs/specs/topic-name-replication.md): the winning immutable name row per topic (a rename beats a creation or older name, then the later time, then the event id), whether this machine's own journal holds it, and which names a gap-filling row put in this machine's topic registry. Written atomically on each change, mode 0600. Replicated through the telegram-topic-name-record kind wherever the coherence journal runs; a row the journal refused is retried by a drain with backoff.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "conflictNote": "winner per topic by (rename over fill, atMs, eventId); order-independent union of immutable rows",
+      "transport": "peer-http",
+      "paths": [
+        "state/telegram-topic-names.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "One current row per Telegram topic the agent has a name for, the same bound as the topic registry's name map."
       }
     },
     {

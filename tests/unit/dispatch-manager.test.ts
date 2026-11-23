@@ -70,6 +70,8 @@ describe('DispatchManager local storage', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
   });
 
   afterEach(() => {
@@ -185,6 +187,8 @@ describe('DispatchManager context generation', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-ctx-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
   });
 
   afterEach(() => {
@@ -310,6 +314,8 @@ describe('DispatchManager polling', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-poll-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
     originalFetch = global.fetch;
   });
 
@@ -497,7 +503,8 @@ describe('DispatchManager polling', () => {
       version: '0.1.12',
     });
 
-    // First check — no since parameter
+    // First check (a fresh install: no earlier poll) — no since parameter
+    SafeFsExecutor.safeUnlinkSync(dispatchFile.replace('.json', '-last-check.json'), { operation: 'tests/unit/dispatch-manager.test.ts: fresh install' });
     await manager.check();
     expect(capturedUrl).not.toContain('since=');
 
@@ -516,6 +523,8 @@ describe('DispatchManager evaluation', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-eval-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
   });
 
   afterEach(() => {
@@ -605,6 +614,8 @@ describe('DispatchManager context file', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-ctx2-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
   });
 
   afterEach(() => {
@@ -735,6 +746,8 @@ describe('DispatchManager auto-apply', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-auto-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
     originalFetch = global.fetch;
   });
 
@@ -771,7 +784,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.newCount).toBe(1);
     expect(result.autoApplied).toBe(1);
 
@@ -798,7 +811,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.autoApplied).toBe(1);
   });
 
@@ -819,7 +832,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.autoApplied).toBe(0);
     expect(manager.get('dsp-security')?.applied).toBe(false);
   });
@@ -841,7 +854,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.autoApplied).toBe(0);
   });
 
@@ -862,7 +875,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.autoApplied).toBe(0);
   });
 
@@ -883,7 +896,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.autoApplied).toBe(0);
   });
 
@@ -904,7 +917,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: false,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.autoApplied).toBeUndefined();
     expect(manager.get('dsp-skip')?.applied).toBe(false);
   });
@@ -926,7 +939,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    await manager.checkAndAutoApply();
+    await manager.checkAndAutoApply(() => true);
 
     const contextContent = manager.readContextFile();
     expect(contextContent).toContain('Auto Context');
@@ -993,7 +1006,7 @@ describe('DispatchManager auto-apply', () => {
       autoApply: true,
     });
 
-    const result = await manager.checkAndAutoApply();
+    const result = await manager.checkAndAutoApply(() => true);
     expect(result.newCount).toBe(2);
     expect(result.autoApplied).toBe(1);
 
@@ -1012,6 +1025,8 @@ describe('DispatchManager feedback', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-fb-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
   });
 
   afterEach(() => {
@@ -1131,6 +1146,8 @@ describe('DispatchManager stats', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dispatch-stats-'));
     dispatchFile = path.join(tmpDir, 'dispatches.json');
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
   });
 
   afterEach(() => {
@@ -1286,5 +1303,31 @@ describe('DispatchManager stats', () => {
 
     expect(stats.byType['strategy']).toEqual({ total: 2, applied: 1, helpful: 1 });
     expect(stats.byType['lesson']).toEqual({ total: 1, applied: 1, helpful: 0 });
+  });
+});
+
+describe('DispatchManager auto-apply needs a trust check (SEC-153)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-sec153-')); fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
+    for (const f of ['dispatches-last-check.json', 'dispatches2-last-check.json']) fs.writeFileSync(path.join(dir, 'state', f), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
+  });
+  afterEach(() => { vi.restoreAllMocks(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/dispatch-manager.test.ts' }); });
+  it('applies nothing without a check, and only what the check trusts', async () => {
+    const rows = [
+      { dispatchId: 't1', type: 'lesson', title: 'a', content: 'a', priority: 'normal', createdAt: '2026-11-21T00:00:00Z' },
+      { dispatchId: 't2', type: 'lesson', title: 'b', content: 'b', priority: 'normal', createdAt: '2026-11-21T00:00:00Z' },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ dispatches: rows, count: 2 }), { status: 200 }));
+    const m = new DispatchManager({ enabled: true, dispatchUrl: 'https://example.com/d', dispatchFile: path.join(dir, 'state', 'dispatches.json'), autoApply: true });
+    const none = await m.checkAndAutoApply();
+    expect(none.autoApplied).toBeUndefined();
+    expect(m.get('t1')!.applied).toBe(false);
+    const m2 = new DispatchManager({ enabled: true, dispatchUrl: 'https://example.com/d', dispatchFile: path.join(dir, 'state', 'dispatches2.json'), autoApply: true });
+    const some = await m2.checkAndAutoApply((d) => d.dispatchId === 't2');
+    expect(some.autoApplied).toBe(1);
+    expect(m2.get('t1')!.applied).toBe(false);
+    expect(m2.get('t2')!.applied).toBe(true);
+    expect(m2.get('t2')!.signatureVerified).toBe(true);
   });
 });

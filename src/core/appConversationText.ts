@@ -7,6 +7,7 @@
  * - Exact-format authority tokens (a pairing invite, a remote-desktop code) are REMOVED from an
  *   app message before it reaches a session; nothing else is altered (4.2 step 3).
  */
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
 import crypto from 'node:crypto';
 import { scrubForStore } from './durableSecretScrub.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
@@ -74,6 +75,18 @@ export function removeAuthorityTokens(text: string): { text: string; kinds: Remo
   let out = text.replace(INVITE_RE, () => { kinds.add('pairing-invite'); return '[pairing invite removed]'; });
   out = out.replace(DESKTOP_LINE_RE, () => { kinds.add('desktop-code'); return '[desktop code removed]'; });
   return { text: out, kinds: [...kinds] };
+}
+
+/**
+ * SEC-164 part 1 §3.5: the exact-token removal plus the credential wall's kinds, each key masked to
+ * `[credential removed]`. Ingress callers pass the live switch; the read path always masks, because it
+ * only shows text and keeps nothing.
+ */
+export function removeAuthorityTokensAndKeys(text: string, maskKeys: boolean): { text: string; kinds: string[] } {
+  const keyed = maskKeys ? maskInbound(text, { enabled: true }) : null;
+  const keyKinds = keyed && (keyed.outcome === 'masked' || keyed.outcome === 'fallback') ? keyed.kinds : [];
+  const removed = removeAuthorityTokens(keyed ? keyed.text : text);
+  return { text: removed.text, kinds: [...removed.kinds, ...keyKinds] };
 }
 
 /** Deterministic event id from parts (sha256, hex, 32 chars, prefixed). */

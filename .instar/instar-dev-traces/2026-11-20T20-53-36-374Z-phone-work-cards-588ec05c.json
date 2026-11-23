@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "phone-work-cards",
+  "sessionId": "c6131bc4-4657-4993-9b44-5501d0b0d8f7",
+  "timestamp": "2026-11-20T20:53:36.374Z",
+  "artifactPath": "upgrades/side-effects/phone-work-cards.md",
+  "artifactSha256": "034da9aaa99ddbc0fdb4e45936d4a27b4cd78f51a361083da9b4a0a19b26c11c",
+  "coveredFiles": [
+    "tests/e2e/phone-work-cards-alive.test.ts",
+    "upgrades/side-effects/phone-work-cards.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-fixture-only fix after merging main: the agent card in one e2e test now carries the recommendation and whyYou main requires. Fully reverted by a revert.",
+  "eli16Path": "docs/specs/phone-work-cards.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/phone-work-cards.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

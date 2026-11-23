@@ -10,6 +10,8 @@ import path from 'node:path';
 import type { QueueReason } from './queueDeliveryNotice.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { isEphemeralCredentialCommand } from './ephemeralCredentialCommand.js';
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 
 export interface QueuedMessage {
   id: string;
@@ -33,6 +35,11 @@ export interface QueuedMessage {
   replayFailures?: number;
   /** Strikes from transient capacity/availability failures (timeout/5xx/down). */
   transientReplayFailures?: number;
+  /**
+   * SEC-164 §3.5: the kinds of key removed before this entry was written, never the values. Set only
+   * when a key was removed, so the server can send the team-member notice when it delivers it.
+   */
+  credentialRemovedKinds?: string[];
 }
 
 /** Max delivered-ids remembered (bounded so the guard can't grow without limit). */
@@ -50,8 +57,12 @@ export class MessageQueue {
    */
   private deliveredIds = new Set<string>();
 
-  constructor(stateDir: string) {
+  /** Read fresh for every queued message: the lifeline loads its settings only once at start. */
+  private readonly credentialScrubOn: () => boolean;
+
+  constructor(stateDir: string, opts?: { credentialScrubEnabled?: () => boolean }) {
     this.queuePath = path.join(stateDir, 'lifeline-queue.json');
+    this.credentialScrubOn = opts?.credentialScrubEnabled ?? credentialScrubEnabledReader(path.join(stateDir, '..'));
     this.load();
   }
 
@@ -69,6 +80,16 @@ export class MessageQueue {
       || isEphemeralCredentialCommand(msg.text))) return false;
     if (this.deliveredIds.has(msg.id)) return false;       // already handled — never re-queue
     if (this.queue.some(m => m.id === msg.id)) return false; // already queued — no duplicate copy
+    // SEC-164 §3.5 (the lifeline rule): the raw text never reaches the queue file. The entry holds
+    // exactly the text the server would have written, plus the kinds removed so the notice can follow.
+    let enabled = false;
+    try { enabled = this.credentialScrubOn(); } catch { enabled = false; } // @silent-fallback-ok — unreadable switch is off, as before
+    if (enabled && typeof msg.text === 'string' && msg.text) {
+      const r = maskInbound(msg.text, { enabled });
+      if (r.outcome === 'masked' || r.outcome === 'fallback') {
+        msg = { ...msg, text: r.text, credentialRemovedKinds: [...new Set([...(msg.credentialRemovedKinds ?? []), ...r.kinds])] };
+      }
+    }
     this.queue.push(msg);
     this.save();
     return true;

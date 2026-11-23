@@ -391,7 +391,7 @@ describe('the enable surface', () => {
       expect(err).toBeInstanceOf(MoneyLayerRefusal);
       expect((err as MoneyLayerRefusal).status).toBe(400);
     }
-    expect([...MONEY_LAYER_PREGATE_ACTIONS]).toHaveLength(4);
+    expect([...MONEY_LAYER_PREGATE_ACTIONS]).toHaveLength(5);
   });
 
   it('T38 — a plan cannot be rendered without the single-instance lock', () => {

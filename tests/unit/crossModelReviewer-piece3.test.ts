@@ -342,7 +342,9 @@ describe('TRUSTED_REVIEWER_FRAMEWORKS (no spec egress to untrusted endpoints)', 
     // grok-build is first-party OAuth (subscription device-auth, no custom
     // endpoint), so it joins the allowlist — see the pi-cli exclusion below for
     // the line this list actually draws.
-    expect(TRUSTED_REVIEWER_FRAMEWORKS).toEqual(['codex-cli', 'gemini-cli', 'claude-code', 'grok-build']);
+    // gemini-api (gemini-payg-metered-lane §2) is the metered DOOR, trusted because its
+    // host is a code constant and reviews travel only through the local server route.
+    expect(TRUSTED_REVIEWER_FRAMEWORKS).toEqual(['codex-cli', 'gemini-cli', 'claude-code', 'grok-build', 'gemini-api']);
     expect(isTrustedReviewerFramework('codex-cli')).toBe(true);
     expect(isTrustedReviewerFramework('gemini-cli')).toBe(true);
     expect(isTrustedReviewerFramework('claude-code')).toBe(true);
@@ -367,7 +369,9 @@ describe('geminiReviewer registry entry', () => {
   it('is the second registry entry (codex stays the preference leader)', () => {
     // claude-code is the third entry (REVIEWER-DOOR-REWIRING §1), config-gated
     // out of the ACTIVE set on the fleet.
-    expect(SUPPORTED_REVIEWER_FRAMEWORKS.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build', 'claude-code']);
+    // gemini-api (gemini-payg §2) is last and active only where the agent's door is
+    // configured, so the fleet's active set is unchanged.
+    expect(SUPPORTED_REVIEWER_FRAMEWORKS.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build', 'claude-code', 'gemini-api']);
   });
 
   it('ok: stub provider returns a structured review → status ok, gemini flag', async () => {

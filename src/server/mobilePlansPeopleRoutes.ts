@@ -125,7 +125,10 @@ export function needsWords(r: Rec): string | null {
   if (FINISHED_STATUSES.has(String(r.status))) return null;
   if ((str(r.kind) ?? 'task') === 'project' && projectNeedsOk(r)) {
     const cur = currentRound(r);
-    return cur === -1 ? 'Waiting for your OK' : `Waiting for your OK on round ${cur + 1}`;
+    if (cur === -1) return 'Waiting for your OK';
+    // The round's name, when it has one, says what the OK is for (same words as the console's needsYouWords).
+    const name = cleanText(arr(r.rounds)[cur]?.name, 80);
+    return `Waiting for your OK on round ${cur + 1}${name ? `: ${name}` : ''}`;
   }
   if (r.needsUser) {
     const why = cleanText(r.needsUserReason, 200);
