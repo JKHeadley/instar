@@ -14,6 +14,15 @@ describe('quota forecast presentation', () => {
     expect(page.calibration).toContain('1 reset had no usable forecast');
     expect(page.calibration).not.toContain('reliable');
   });
+  it('keeps the separate Fable allowance and provider outlook distinct from weekly usage', () => {
+    const r = response({ fable: { used: 30, central: 90, low: 80, high: 100, resetsAt: new Date(NOW + 86400000).toISOString() } });
+    Object.assign(r.data.providers[0], { fableRunway: { plain: 'Fable room is tight.' } });
+    const provider = buildQuotaForecast(r, [], NOW).providers[0];
+    expect(provider.fableOutlook).toBe('Fable room is tight.');
+    expect(provider.accounts[0].lines.join(' ')).toContain('60% of the weekly allowance');
+    expect(provider.accounts[0].lines.join(' ')).toContain('90% of the Fable allowance');
+    expect(provider.accounts[0].lines.join(' ')).toContain('30% of the Fable allowance is used');
+  });
   it.each([{ fresh: false }, { disagree: true }, { identityUnknown: true }])('does not present an uncertain account as forecast capacity: %j', (uncertain) => {
     const lines = buildQuotaForecast(response(uncertain), [], NOW).providers[0].accounts[0].lines.join(' ');
     expect(lines).toContain('Cannot estimate');

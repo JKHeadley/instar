@@ -21,6 +21,7 @@ export function quotaForecastCard(get, accounts = []) {
       !view.providers.length ? el('p', { class: 'card-line', text: 'No account forecasts are available yet.' }) : null,
       view.providers.map((p) => el('details', { class: 'sheet-block' },
         el('summary', { text: `${p.name}: ${p.outlook}` }),
+        p.fableOutlook ? el('p', { class: 'card-line', text: `Fable allowance: ${p.fableOutlook}` }) : null,
         p.accounts.map((a) => el('div', { class: 'sheet-block' },
           el('h3', { class: 'row-title', text: a.name }),
           a.lines.map((text) => el('p', { class: 'card-line', text })))),

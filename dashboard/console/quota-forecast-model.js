@@ -17,21 +17,25 @@ function calibrationLine(c) {
   return line;
 }
 
-function accountView(a, names, now) {
-  const lines = [];
-  const w = a.weekly;
+function windowLines(w, label, now) {
   const reset = Date.parse(w?.resetsAt);
-  if (a.disagree) lines.push('Cannot estimate: the machines disagree about this account.');
-  else if (!a.fresh) lines.push('Cannot estimate: this account needs a fresh reading.');
-  else if (a.identityUnknown) lines.push('Cannot estimate confidently until the account identity is confirmed.');
-  else if (!w || !finite(w.central) || !finite(w.low) || !finite(w.high)) lines.push('Not enough history to estimate weekly usage at reset.');
-  else if (!Number.isFinite(reset) || reset <= now) lines.push('Cannot estimate: the weekly reset needs a fresh reading.');
-  else {
-    lines.push(`At the current pace, about ${percent(w.central)} of the weekly allowance will be used by reset.${w.central >= 100 ? ' The account is expected to reach its limit.' : ''}`);
-    lines.push(`Recent spending rates suggest ${percent(w.low)} to ${percent(w.high)} used by reset. This is a pace range, not a confidence interval.`);
-    lines.push(`Weekly reset: ${new Date(reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.`);
-    if (w.usesHourlyRows) lines.push('Some older readings are hourly summaries.');
-  }
+  if (!w || !finite(w.central) || !finite(w.low) || !finite(w.high)) return [`Not enough history to estimate ${label} usage at reset.`];
+  if (!Number.isFinite(reset) || reset <= now) return [`Cannot estimate: the ${label} reset needs a fresh reading.`];
+  return [
+    ...(finite(w.used) ? [`Currently ${percent(w.used)} of the ${label} allowance is used.`] : []),
+    `At the current pace, about ${percent(w.central)} of the ${label} allowance will be used by reset.${w.central >= 100 ? ' The account is expected to reach this limit.' : ''}`,
+    `Recent spending rates suggest ${percent(w.low)} to ${percent(w.high)} used by reset. This is a pace range, not a confidence interval.`,
+    `${label === 'weekly' ? 'Weekly' : label} reset: ${new Date(reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.`,
+    ...(w.usesHourlyRows ? ['Some older readings are hourly summaries.'] : []),
+  ];
+}
+
+function accountView(a, names, now) {
+  let lines;
+  if (a.disagree) lines = ['Cannot estimate: the machines disagree about this account.'];
+  else if (!a.fresh) lines = ['Cannot estimate: this account needs a fresh reading.'];
+  else if (a.identityUnknown) lines = ['Cannot estimate confidently until the account identity is confirmed.'];
+  else lines = [...windowLines(a.weekly, 'weekly', now), ...(a.fable ? windowLines(a.fable, 'Fable', now) : [])];
   return { name: names.get(a.accountId) || 'Unnamed account', lines };
 }
 
@@ -48,6 +52,7 @@ export function buildQuotaForecast(response, accounts = [], now = Date.now()) {
   const names = new Map(accounts.map((a) => [a.id, a.name]));
   const providers = data.providers.filter((p) => p && Array.isArray(p.accounts)).map((p) => ({
     name: typeof p.label === 'string' ? p.label : 'Provider',
+    fableOutlook: typeof p.fableRunway?.plain === 'string' ? p.fableRunway.plain : null,
     outlook: typeof p.plain === 'string' ? p.plain : 'There is not enough history for an outlook.',
     accounts: p.accounts.filter((a) => a && typeof a.accountId === 'string').map((a) => accountView(a, names, now)),
     assumptions: Array.isArray(p.assumptions) ? p.assumptions.filter((s) => typeof s === 'string') : [],

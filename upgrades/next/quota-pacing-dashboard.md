@@ -13,3 +13,5 @@ You can now see whether recent spending is likely to use an account's weekly all
 ## Summary of New Capabilities
 
 A read-only presentation of the existing forecast and calibration. No new setting, endpoint, model call or spending control.
+
+The separate Fable allowance is shown separately wherever the existing API provides it, both in provider outlook and account projections; it is never combined with the weekly budget. The original brainstorm’s plan explicitly requires this distinction.

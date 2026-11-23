@@ -57,4 +57,8 @@ Revert this presentation change. No migration, state cleanup, credential change 
 
 Unit checks cover numeric/missing/stale/identity/conflict boundaries and DOM failure/escaping. Existing real HTTP replay and initialized-server lifecycle tests now feed their actual responses through the view model. Targeted results, type checking and normal lint/commit/push logs are retained under .instar/recovery/token-reset-routing/dashboard-*.log. Full normal verification remains required before merge; no full-suite, publication or installed success is claimed here.
 
-Final targeted evidence:90 unit checks passed across forecast, existing Accounts and awareness registry;10 real-HTTP integration checks and2 initialized-server lifecycle checks passed. Type checking passed. Independent review identified the real dashboard wrapper’s disabled-response shape; the view now accepts it and an actual Accounts renderer test proves the card mounts hidden while the page stays available. The reviewer concurred after that correction.
+Final targeted evidence:91 unit checks passed across forecast, existing Accounts and awareness registry;10 real-HTTP integration checks and2 initialized-server lifecycle checks passed. Type checking passed. Independent review identified the real dashboard wrapper’s disabled-response shape; the view now accepts it and an actual Accounts renderer test proves the card mounts hidden while the page stays available. The reviewer concurred after that correction.
+
+The separate Fable allowance is shown separately wherever the existing API provides it, both in provider outlook and account projections; it is never combined with the weekly budget. The original brainstorm’s plan explicitly requires this distinction.
+
+The focused completeness delta for the separate Fable window received reviewer concurrence with no material finding. Its current usage, projection and reset remain independent of the weekly window.
