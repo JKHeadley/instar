@@ -14,9 +14,28 @@ import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 import { contextNeeds } from './context-model.js';
 import { workBoardNeedRows } from './work-model.js';
+import { silentComputerReviewModel } from './silent-computers-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
+
+/**
+ * SEC-170 part 3: the one agent-wide row for computers silent for 7 days or more (GET /pin-budget/silent-machines).
+ * Names only in the words, never ids. The machines page reviews the list; both choices (retire, gone for good) happen only
+ * on the owner's phone with Face ID.
+ */
+export function silentComputersNeedRows(res) {
+  if (!res) return UNREADABLE;
+  if (!res.ok) return sourceState(res) === 'off' ? [] : UNREADABLE;
+  const m = silentComputerReviewModel(res);
+  if (m.state === 'off' || m.state === 'hidden') return [];
+  if (m.state !== 'review') return UNREADABLE;
+  const names = m.rows.map(r => r.name);
+  const list = names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`;
+  const count = names.length === 1 ? '1 computer has' : `${names.length} computers have`;
+  const sub = `${count} not been heard from in 7 days or more: ${list}. ${names.length === 1 ? 'It is' : 'They are'} holding the PIN guess limit lower.${m.heldBack ? ` A change to how the limit is split is waiting on ${names.length === 1 ? 'it' : 'them'}.` : ''}${m.incomplete ? ' Some computers could not be checked.' : ''}`;
+  return [row('machine-retirement', 'Review computers that have been silent', sub, '#/capacity/machines?review=silent')];
+}
 
 /** Needs-you rows for documents that ask the owner to decide (document-decisions.md §3.7). */
 export function documentDecisionNeedRows(res) {
@@ -146,6 +165,10 @@ export const NEED_SOURCES = [
       if (!reqs.ok) return UNREADABLE;
       return reqs.waiting.map((c, i) => row(`secret:${i}`, `Waiting for you to supply: ${c.label}`, c.leftWords, '#/people/secrets?s=waiting'));
     } },
+  // SEC-170 part 3: one row for the whole agent; off (503 or enabled:false) shows nothing.
+  { id: 'machine-retirement', page: 'capacity/machines', reads: { silent: '/pin-budget/silent-machines' },
+    rows: ({ silent }) => silentComputersNeedRows(silent),
+    incomplete: ({ silent }) => silentComputerReviewModel(silent).incomplete === true },
   { id: 'spending', page: 'capacity/costs', reads: { status: '/routing-spend/enable-status' },
     rows: ({ status }) => { const n = spendingNeed(status); return n ? [row('spending', n.title, n.why, '#/capacity/costs')] : []; } },
   // Skill-learning proposals without a verdict (docs/specs/skill-learning-sentinel.md §3.10); 503 = the sentinel is off here.
@@ -181,6 +204,7 @@ export const NEED_SOURCES = [
  * fails the floor. `file` + `phrase` must both match the line.
  */
 export const NEED_EXEMPT = [
+  { file: 'silent-computers.js', phrase: 'Open Needs you in the Instar app', why: 'The registered machine-retirement source leads the Machines page through this component; its phone instruction is not a separate need.' },
   { file: 'home-model.js', phrase: '', why: 'Home itself: the card the sources feed, which the Needs-you list draws.' },
   { file: 'console.js', phrase: 'What needs you', why: 'Home itself: the card title.' },
   { file: 'needs-strip.js', phrase: '', why: 'The Needs-you strip itself: it draws GET /needs, which these sources feed.' },
@@ -283,6 +307,8 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
     }
     const rows = s.rows(k.results, now);
     if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows); continue; }
+    // A readable partial source can retain known rows without claiming a complete check.
+    if (s.incomplete && s.incomplete(k.results)) out.failed.push(s.id);
     k.rows = rows;
     k.rowsAt = now;
     out.rows.push(...rows);

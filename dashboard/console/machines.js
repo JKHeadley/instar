@@ -3,15 +3,29 @@
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
 import { buildMachinesPage, ropesFor, healthOf, poolUsageOf, machineCarePool, desktopPermissionFixes } from './machines-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint, askLink } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint, askLink, arrivalScroll } from './ui.js';
+import { silentComputerReview } from './silent-computers.js';
 import { legacyHref } from './nav-model.js';
 
 const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'dot unknown', unknown: 'dot unknown' };
 
-export async function renderMachines(main, ctx) {
+export async function renderMachines(main, ctx, reviewStatus = null) {
   const { get } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
-  const [pool, health, guards, sessions, care, resources, attention] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000), get('/mobile/resources', 8000), get('/attention?scope=pool&status=OPEN', 8000)]);
+  const [pool, health, guards, sessions, care, resources, attention, silent] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000), get('/mobile/resources', 8000), get('/attention?scope=pool&status=OPEN', 8000),
+    Promise.resolve().then(() => get('/pin-budget/silent-machines')).catch(() => ({ ok: false, reason: 'The server could not be reached.' }))]);
+  if (ctx.isCurrent && !ctx.isCurrent()) return;
+  const review = silentComputerReview(silent, { post: ctx.post, refresh: (message) => renderMachines(main, ctx, message), isCurrent: ctx.isCurrent });
+  const resultNote = reviewStatus ? el('p', { class: 'card-note', role: 'status', 'aria-live': 'polite', text: reviewStatus }) : null;
+  const finishReview = () => {
+    if (reviewStatus) {
+      const target = review?.id === 'silent-computer-review' ? review : main.querySelector('h1');
+      if (target) { target.setAttribute('tabindex', '-1'); target.focus(); }
+    }
+    if (review?.id === 'silent-computer-review' && new URLSearchParams(location.hash.split('?')[1] || '').get('review') === 'silent') {
+      arrivalScroll(review, { key: 'machine-retirement', block: 'start' });
+    }
+  };
   const usage = poolUsageOf(resources);
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};
@@ -20,7 +34,7 @@ export async function renderMachines(main, ctx) {
   const gs = guards.ok && guards.data && guards.data.summary;
   const needsLook = gs ? (Number(gs.offDeviant) || 0) + (Array.isArray(gs.loadBearingGapKeys) ? gs.loadBearingGapKeys.length : 0) : 0;
   const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, needsLook });
-  if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Machines', headline: 'Machines', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
+  if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Machines', headline: 'Machines', tone: 'muted' }), review, resultNote, cantTell(page.reason), legacyLink()); finishReview(); return; }
 
   const carePool = machineCarePool(care, { pool });
   const careFor = (m) => (carePool ? (carePool.byMachine[m.id] || (m.isSelf ? carePool.selfLine : null)) : null);
@@ -56,6 +70,8 @@ export async function renderMachines(main, ctx) {
   const wantedGone = wantFix && !fixes.some((f) => f.machineId === wantFix) && attention && attention.ok;
   setKids(main, 
     pageHead({ eyebrow: 'Capacity · Machines', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
+    review,
+    resultNote,
     ...fixCards,
     wantedGone ? note('Remote desktop on that Mac no longer reports a permission problem.') : null,
     wantFix && attention && !attention.ok ? note(`Couldn't check the remote desktop permission: ${attention.reason || 'no answer'}.`) : null,
@@ -67,6 +83,7 @@ export async function renderMachines(main, ctx) {
     cards,
     legacyLink(),
   );
+  finishReview();
 }
 
 function legacyLink() {

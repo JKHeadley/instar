@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "slug": "silent-computer-review",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T05:10:06.676Z",
+  "artifactPath": "upgrades/side-effects/silent-computer-review.md",
+  "artifactSha256": "bbc029a432cf4c3df20ce851175a7f540cf369f9fd942e442adba187bcbedb5c",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/machines.js",
+    "dashboard/console/needs-model.js",
+    "dashboard/console/silent-computers-model.js",
+    "dashboard/console/silent-computers.js",
+    "docs/specs/silent-computer-review.eli16.md",
+    "src/data/awareness/silent-computer-review.md",
+    "src/server/needsRoutes.ts",
+    "tests/integration/needs-machine-retirement.test.ts",
+    "tests/unit/console-needs-first-screen.test.ts",
+    "tests/unit/console-silent-computers.test.ts",
+    "tests/unit/needs-machine-retirement.test.ts",
+    "upgrades/next/silent-computer-review.md",
+    "upgrades/side-effects/silent-computer-review.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible UI and reminder visibility only; separate server dependency owns phone authority and eligibility.",
+  "eli16Path": "docs/specs/silent-computer-review.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/silent-computer-review.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "correctness",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      },
+      {
+        "name": "gaps",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      },
+      {
+        "name": "tests",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

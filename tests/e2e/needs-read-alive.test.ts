@@ -89,6 +89,13 @@ describe('Needs-you read — production wiring', () => {
     // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
     // "could not check", even when its 503 also says "not initialized".
     expect(first.body.couldNotCheck).not.toContain('plans');
+    // The silent-computer review is registered in production composition, including when
+    // its separate security dependency is absent or switched off. Neither case is a need.
+    const silentSource = first.body.sources.find((s: {id:string}) => s.id === 'machine-retirement');
+    expect(silentSource).toMatchObject({ label: 'computers that have been silent', posture: 'pool-merged' });
+    expect(['off', 'failed']).toContain(silentSource.state);
+    expect(first.body.items.some((i: {source:string}) => i.source === 'machine-retirement')).toBe(false);
+    expect(first.body.couldNotCheck.includes(silentSource.label)).toBe(silentSource.state === 'failed');
     const health = await auth(request(app).get('/mobile/health-issues'));
     expect(health.status).toBe(200);
     expect(health.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false}));
@@ -132,6 +139,9 @@ describe('Needs-you read — production wiring', () => {
     const phone = await send('GET', '/mobile/needs');
     expect(phone.status, JSON.stringify(phone.body)).toBe(200);
     expect(phone.body.viewer.role).toBe('owner');
+    expect(phone.body.sources.find((s: {id:string}) => s.id === 'machine-retirement')).toEqual(silentSource);
+    // The phone reads this source through Needs, not through its raw bearer route.
+    expect((await send('GET', '/pin-budget/silent-machines')).status).toBe(403);
     expect(phone.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
     expect(phone.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
     expect(phone.body.sources.map((s: { id: string }) => s.id)).toEqual(first.body.sources.map((s: { id: string }) => s.id));
