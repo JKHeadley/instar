@@ -23,6 +23,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SecretStore } from '../../src/core/SecretStore.js';
 
 function createMockSessionManager() {
   return { listRunningSessions: () => [], getSession: () => null };
@@ -123,6 +124,22 @@ describe('Secret Drop store-first E2E lifecycle (survives a real server restart)
       await second.server.stop();
     }
   }, 60_000); // two real AgentServer boots + stops
+
+  it('SEC-157: a real server start removes a stored copy past its age limit, and it is never retrievable', async () => {
+    const store = new SecretStore({ stateDir, forceFileKey: true });
+    store.set('secretDrops.stale-e2e-token-1', { label: 'Old', receivedAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(), fields: ['k'], values: { k: 'stale-e2e' } });
+    store.set('secretDrops.fresh-e2e-token-1', { label: 'New', receivedAt: new Date().toISOString(), fields: ['k'], values: { k: 'fresh-e2e' } });
+    const { server, app } = await bootServer();
+    try {
+      expect(store.get('secretDrops.stale-e2e-token-1')).toBeUndefined();
+      expect((await request(app).post('/secrets/retrieve/stale-e2e-token-1').set(auth())).status).toBe(404);
+      const fresh = await request(app).post('/secrets/retrieve/fresh-e2e-token-1').set(auth());
+      expect(fresh.status).toBe(200);
+      expect(fresh.body.values).toEqual({ k: 'fresh-e2e' });
+    } finally {
+      await server.stop();
+    }
+  }, 60_000);
 
   it('the retrieve route requires Bearer auth', async () => {
     const { server, app } = await bootServer();

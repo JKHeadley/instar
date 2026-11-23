@@ -9,7 +9,9 @@
  * Security properties:
  * - One-time use: token destroyed after successful submission
  * - Time-limited: expires after configurable TTL (default 15 minutes)
- * - In-memory only: pending requests and secrets never touch disk
+ * - Pending requests live in memory only. A submitted secret is also kept in the encrypted secret store
+ *   until it is used, for at most 24 hours (SEC-157), unless secrets.persistDrops is false; a browser-only
+ *   password never touches disk
  * - CSRF protection: form includes a hidden CSRF token
  * - Rate-limited: max submissions per IP
  * - XSS-safe: all rendered content is escaped
@@ -831,7 +833,7 @@ export class SecretDrop {
       </form>
       <div class="security-note">
         <strong>End-to-end delivery.</strong> Your secret goes directly to ${escapeHtml(request.agentName)}'s server.
-        It is not stored on disk and this link will stop working after submission.
+        ${request.browserHost ? 'It is never saved to disk.' : 'It stays only on this computer until the agent uses it, and never longer than 24 hours.'} This link will stop working after submission.
       </div>
     </div>
     <div id="success-view" style="display:none">

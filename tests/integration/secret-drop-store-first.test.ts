@@ -175,6 +175,43 @@ describe('Secret Drop — store-first durable persistence', () => {
     expect(store.get(`secretDrops.${token}`)).toBeDefined();
   });
 
+  it('SEC-157: a stored copy past its 24-hour age limit is never returned, and is deleted', async () => {
+    const app = mount(tmpDir);
+    const store = new SecretStore({ stateDir: path.join(tmpDir, '.instar'), forceFileKey: true });
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    store.set('secretDrops.stale-token-0001', { label: 'Old', topicId: 13481, receivedAt: old, fields: ['k'], values: { k: 'stale-value' } });
+    store.set('secretDrops.undated-token-01', { label: 'Undated', topicId: 13481, fields: ['k'], values: { k: 'undated-value' } });
+    for (const t of ['stale-token-0001', 'undated-token-01']) {
+      const res = await request(app).post(`/secrets/retrieve/${t}`).set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(res.body)).not.toContain('value');
+      expect(store.get(`secretDrops.${t}`)).toBeUndefined();
+    }
+  });
+
+  it('SEC-157: starting the routes sweeps expired stored copies and keeps fresh ones', async () => {
+    const store = new SecretStore({ stateDir: path.join(tmpDir, '.instar'), forceFileKey: true });
+    store.set('secretDrops.stale-token-0002', { label: 'Old', receivedAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), fields: ['k'], values: { k: 'x' } });
+    store.set('secretDrops.fresh-token-0002', { label: 'New', receivedAt: new Date().toISOString(), fields: ['k'], values: { k: 'y' } });
+    mount(tmpDir); // route setup runs the startup sweep
+    expect(store.get('secretDrops.stale-token-0002')).toBeUndefined();
+    expect(store.get('secretDrops.fresh-token-0002')).toBeDefined();
+  });
+
+  it('SEC-157: a new submission also sweeps expired stored copies', async () => {
+    const app = mount(tmpDir);
+    const store = new SecretStore({ stateDir: path.join(tmpDir, '.instar'), forceFileKey: true });
+    store.set('secretDrops.stale-token-0003', { label: 'Old', receivedAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(), fields: ['k'], values: { k: 'x' } });
+    const token = await dropSecret(app, { apiKey: 'sk-new' });
+    expect(store.get('secretDrops.stale-token-0003')).toBeUndefined();
+    expect(store.get(`secretDrops.${token}`)).toBeDefined();
+  });
+
+  it('SEC-157: building the routes with no secret store creates none', () => {
+    mount(tmpDir);
+    expect(fs.existsSync(path.join(tmpDir, '.instar', 'secrets', 'config.secrets.enc'))).toBe(false);
+  });
+
   it('a consuming retrieve against the durable copy deletes it', async () => {
     const app = mount(tmpDir);
     const token = 'consume-token-cafef00d';

@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-22T16:20:44.641Z",
+  "slug": "sec157-drop-copy-age-limit",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/SecretDrop.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/server/secretDropDurable.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/SecretDrop.ts",
+      "src/server/routes.ts",
+      "src/server/secretDropDurable.ts"
+    ],
+    "addedLines": 82,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "two bounded one-pass sweeps, at route setup and on a person submission; no timer, retry or loop"
+  },
+  "verdict": "pass"
+}
