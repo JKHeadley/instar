@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "status": "prospective-source-bound-candidates-no-qualification",
+  "createdAt": "2026-11-23T21:35:37.555959+00:00",
+  "caseCount": 8,
+  "sourceMessageCount": 9,
+  "clusterCount": 1,
+  "privateManifestSha256": "64207a953443931dcfad273e3e93502bf8c4f9afb8c7c2437bff78eb4010276a",
+  "privateFiles": {
+    "sources.json": {
+      "sha256": "8eeed15a40ec520a4c671d803476c4dd7d33003eb2ffe7017f26f1e970e39f4b",
+      "bytes": 14668
+    },
+    "questions.json": {
+      "sha256": "e362ebcf4b53cf7a361bf94ba5e811f6513091c49de782da2a99e517337a1f35",
+      "bytes": 2286
+    },
+    "labels.json": {
+      "sha256": "6c52163bd89b70c2d5093ea4ef528f5c890d2ef0ade1ffb9711e829ea785d2da",
+      "bytes": 26837
+    }
+  },
+  "localCustodian": "echo-context-budget-layered-summaries",
+  "localDirectory": ".instar/state/context-budget-next/source-bound-holdout-v1",
+  "exposure": "Author has seen sources, questions and answers; no answering-model trials or reduction tuning. Future exposure must be appended to private custody record.",
+  "integrityChecksPassed": 6,
+  "semanticReview": "pending-independent-source-review",
+  "recordedModelInputReplays": 0,
+  "modelTrials": 0,
+  "qualificationEligible": false,
+  "existingReductionUse": "exploratory-only-checks-postdate-current-job-mode-and-folding",
+  "runnerCompatibility": "Not supported by relationship-only decision schema; no claim of executable scoring support."
+}
