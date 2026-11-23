@@ -326,10 +326,14 @@ describe('batch confirmation through native Telegram polling and production comp
     const reminder = await h.proposeBatch(operation.body); expect(reminder.status).toBe(200);
     expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
     const current = h.slots.proposals.get(String(SOURCE), reminder.body.requestId)!;
-    expect(reminder.body.requestId).toBe(proposed.body.requestId); expect(reminder.body.expiresAt).toBe(proposed.body.expiresAt);
+    expect(reminder.body.requestId).toBe(proposed.body.requestId);
+    expect(reminder.body.expiresAt).toBe(proposed.body.expiresAt);
     expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: SOURCE }, settingsApplied: false, replyAlreadyDelivered: true });
     const remindedReceipt = reminder.body.questionDelivery.messageId;
-    expect(current.receipts.map(item => item.messageId)).toEqual([receipt, remindedReceipt]); expect(remindedReceipt).not.toBe(receipt);
+    expect(current.receipts).toHaveLength(2);
+    expect(current.receipts[0].messageId).toBe(receipt);
+    expect(current.receipts.map(item => item.messageId)).toEqual([receipt, remindedReceipt]);
+    expect(remindedReceipt).not.toBe(receipt);
     expect((await h.confirm(OWNER, reminder.body.requestId, 'yes', 1000, remindedReceipt)).written).toBe(true);
     expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.store.resolve(SECOND_TARGET)?.framework).toBe('claude-code');
   });
