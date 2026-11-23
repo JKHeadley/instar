@@ -5,6 +5,7 @@ import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { localSessionByteChunks } from '../../src/import/localSessionSnapshot.js';
 import { acquireLocalHistoryChild } from '../../dist/import/LocalHistoryChildCustody.js';
+import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
 import { afterEach, describe, expect, it } from 'vitest';
 // Exercise the exact deployed fixed-child module, not an inline substitute.
 import { runLocalHistoryParseJob, type LocalHistoryParseJobOptions } from '../../dist/import/LocalHistoryParseJob.js';
@@ -32,10 +33,35 @@ function setup() {
     async writeOutput(block) { output.push(Buffer.from(block)); },
     heapMiB: 128, deadlineMs: 10_000, rssBytes: 768 * 1024 * 1024,
   };
-  return { opts, output, setAuthorized(value: boolean) { authorized = value; }, released: () => released,
+  return { opts, output, stateDir, setAuthorized(value: boolean) { authorized = value; }, released: () => released,
     chunksRead: () => chunksRead, childPid: () => pid };
 }
 describe('real bounded parse job', () => {
+  it('enforces the actual owners durable source mode inside the admitted child', async () => {
+    const f = setup(), store = new ImportedHistoryStore(f.stateDir);
+    await store.withWriter(async () => { store.assertOrClaimLocalSource({ ownerUserId: 'synthetic-owner', source: 'codex',
+      originalId: 's', projectPath: '/synthetic', representation: 'event-fallback', parserContractVersion: 1 }); });
+    f.opts.input.ownerUserId = 'synthetic-owner';
+    await expect(runLocalHistoryParseJob(f.opts)).rejects.toThrow('parser-refused');
+    expect(f.output).toHaveLength(0); expect(f.released()).toBe(1);
+    f.opts.input.expectedRepresentation = 'canonical';
+    await expect(runLocalHistoryParseJob(f.opts)).rejects.toThrow('parser-refused');
+    expect(f.output).toHaveLength(0); expect(f.released()).toBe(2);
+    expect(store.readLocalSourceClaim({ ownerUserId: 'synthetic-owner', source: 'codex', originalId: 's' })?.representation).toBe('event-fallback');
+    f.opts.input.ownerUserId = 'other-synthetic-owner';
+    expect((await runLocalHistoryParseJob(f.opts)).representation).toBe('canonical');
+    expect(f.released()).toBe(3);
+    expect(store.readLocalSourceClaim({ ownerUserId: 'other-synthetic-owner', source: 'codex', originalId: 's' })).toBeNull();
+  });
+  it('refuses a matching mode with conflicting durable project provenance without writing history', async () => {
+    const f = setup(), store = new ImportedHistoryStore(f.stateDir);
+    await store.withWriter(async () => { store.assertOrClaimLocalSource({ ownerUserId: 'synthetic-owner', source: 'codex',
+      originalId: 's', projectPath: '/other-synthetic-project', representation: 'canonical', parserContractVersion: 1 }); });
+    f.opts.input.ownerUserId = 'synthetic-owner';
+    await expect(runLocalHistoryParseJob(f.opts)).rejects.toThrow('parser-refused');
+    expect(f.output).toHaveLength(0);
+    expect(fs.readdirSync(path.join(f.stateDir, 'imported-history', 'conversations'))).toEqual([]);
+  });
   it('streams an owned descriptor through the real child into a private disk artifact', async () => {
     const f = setup(); const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-history-pipeline-'));
     const sourcePath = path.join(directory, 'owned-source.jsonl');

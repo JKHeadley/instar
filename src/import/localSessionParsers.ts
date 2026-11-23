@@ -62,6 +62,13 @@ function safeId(value: string): string {
   return value.startsWith('h-') || value.startsWith('r:') ? `r:${value}` : value;
 }
 
+/** The same normalization used in the parser result. This identifies a source
+ * claim for read-only preparation; it never establishes owner authority. */
+export function localSessionOriginalId(sessionId: string): string {
+  if (typeof sessionId !== 'string' || !sessionId) throw new Error('local-source-session-invalid');
+  return safeId(sessionId);
+}
+
 export interface LocalSessionParser {
   push(line: string): void;
   finish(): LocalSessionProposal;
@@ -267,7 +274,7 @@ export function createLocalSessionParser(source: LocalSessionSource, options: Lo
       const representation: LocalSessionRepresentation = source === CLAUDE_CODE_FRAMEWORK ? 'claude-records' : canonicalMessages ? 'canonical' : 'event-fallback';
       if (options.expectedRepresentation && options.expectedRepresentation !== representation) refuse('representation-mismatch');
       flush();
-      conversation.originalId = safeId(sessionId);
+      conversation.originalId = localSessionOriginalId(sessionId);
       conversation.createdAt = createdAt;
       const cleanProject = removeSecrets(project);
       conversation.stats.redactions += cleanProject.removed;

@@ -7,12 +7,14 @@ import net from 'node:net';
 import { fork, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { performance as monotonicClock } from 'node:perf_hooks';
 import Database from 'better-sqlite3';
-import { LocalHistoryUploadStaging, type LocalHistoryStagingIssuer } from '../../src/import/LocalHistoryUploadStaging.js';
-import { LocalHistoryDiskLedger } from '../../src/import/LocalHistoryDiskLedger.js';
+import { LocalHistoryUploadStaging, type LocalHistoryStagingIssuer } from '../../dist/import/LocalHistoryUploadStaging.js';
+import { LocalHistoryDiskLedger } from '../../dist/import/LocalHistoryDiskLedger.js';
 import { LOCAL_HISTORY_PLAINTEXT_BYTES } from '../../src/import/LocalHistoryChannel.js';
-import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../dist/core/SafeFsExecutor.js';
+import { DegradationReporter } from '../../dist/monitoring/DegradationReporter.js';
+import { ImportedHistoryStore } from '../../dist/import/ImportedHistoryStore.js';
 
 const roots: string[] = [], stages: LocalHistoryUploadStaging[] = [];
 const parents: ChildProcess[] = [], sockets: string[] = [];
@@ -86,6 +88,134 @@ it('allocates canonical operation identity at grant time and verifies exact raw 
   expect(f.stage.complete(device, granted.operationId).operationId).toBe(granted.operationId);
   await until(() => f.stage.status(device, granted.operationId).phase === 'verified');
   expect(f.stage.status(device, granted.operationId).files[0].plaintextOffset).toBe(bytes.length);
+});
+it('prepares both source kinds through real children and retires raw files without copying history', async () => {
+  const f = setup();
+  const codex = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic codex text' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const claude = Buffer.from(JSON.stringify({ type: 'user', sessionId: 'synthetic-session-1', cwd: '/synthetic/project', uuid: 'synthetic-message',
+    message: { role: 'user', content: 'synthetic claude text' } }));
+  const grant = f.stage.admit(device, f.manifest([codex, claude]));
+  upload(f.stage, grant.operationId, 'file-0', codex); upload(f.stage, grant.operationId, 'file-1', claude);
+  f.stage.complete(device, grant.operationId);
+  await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    const record = db.prepare('SELECT plan FROM upload_operations WHERE id = ?').get(grant.operationId) as {plan: string};
+    const plan = JSON.parse(ledger.read(record.plan, 0, 1024 * 1024).toString());
+    expect(f.stage.prepare(device, grant.operationId).phase).toBe('preparing');
+    expect(f.stage.prepare(device, grant.operationId).operationId).toBe(grant.operationId);
+    await until(() => {
+      const phase = f.stage.status(device, grant.operationId).phase;
+      expect(phase).not.toBe('interrupted'); return phase === 'prepared';
+    });
+    const status = f.stage.status(device, grant.operationId);
+    expect(status.preparation?.map(file => file.representation)).toEqual(['canonical', 'claude-records']);
+    expect(status.files.map(file => file.plaintextOffset)).toEqual([codex.length, claude.length]);
+    expect(JSON.stringify(status)).not.toContain('allocation');
+    for (const file of plan.files) expect(ledger.inspect(file.allocation).state).toBe('disposed');
+    const prepared = db.prepare('SELECT allocation FROM upload_preparations WHERE id = ?').get(grant.operationId) as {allocation: string};
+    const artifacts = JSON.parse(ledger.read(prepared.allocation, 0, 1024 * 1024).toString());
+    for (const [index, file] of artifacts.files.entries()) {
+      const bytes = ledger.read(file.allocation, 0, file.bytes);
+      try {
+        expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(file.sha256);
+        expect(JSON.parse(bytes.toString()).conversation.messages[0].text).toBe(index === 0 ? 'synthetic codex text' : 'synthetic claude text');
+      } finally { bytes.fill(0); }
+    }
+    expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+    expect(f.stage.complete(device, grant.operationId).phase).toBe('prepared');
+  } finally { db.close(); ledger.close(); }
+});
+it.each(['cancel', 'revoke'] as const)('keeps parser-owned files charged until actual child exit after %s during streaming', async action => {
+  const f = setup(), bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'A'.repeat(2 * 1024 * 1024) }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const grant = f.stage.admit(device, f.manifest([bytes])); upload(f.stage, grant.operationId, 'file-0', bytes);
+  f.stage.complete(device, grant.operationId); await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  let pid = 0, acted = false;
+  const custody = f.stage['custody'], register = custody.registerChild.bind(custody);
+  const registration = vi.spyOn(custody, 'registerChild').mockImplementation(async value => { await register(value); pid = value; });
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  const { tag } = db.prepare('SELECT tag FROM upload_operations WHERE id = ?').get(grant.operationId) as {tag: string};
+  const readSync = fs.readSync;
+  const reads = vi.spyOn(fs, 'readSync').mockImplementation(((fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+    const count = readSync(fd, buffer, offset, length, position);
+    if (!acted && pid > 0 && length === 1024 * 1024) {
+      acted = true;
+      setImmediate(() => {
+        expect(() => process.kill(pid, 0)).not.toThrow();
+        if (action === 'cancel') f.stage.cancel(device, grant.operationId); else f.owner(null);
+        expect(ledger.list(tag).some(row => row.state === 'sealed' && row.written === bytes.length)).toBe(true);
+      });
+    }
+    return count;
+  }) as typeof fs.readSync);
+  try {
+    f.stage.prepare(device, grant.operationId);
+    await until(() => acted && ledger.list(tag).every(row => row.state === 'disposed'));
+    expect(() => process.kill(pid, 0)).toThrow();
+    f.owner('synthetic-owner');
+    expect(f.stage.status(device, grant.operationId).phase).toBe(action === 'cancel' ? 'cancelled' : 'interrupted');
+    expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+  } finally { reads.mockRestore(); registration.mockRestore(); db.close(); ledger.close(); }
+});
+it('rejects source-mode conflicts from the actual store without changing its durable claim', async () => {
+  const f = setup(), store = new ImportedHistoryStore(f.stateDir);
+  await store.withWriter(async () => { store.assertOrClaimLocalSource({ ownerUserId: 'synthetic-owner', source: 'codex', originalId: 'synthetic-session-0',
+    projectPath: '/synthetic/project', representation: 'event-fallback', parserContractVersion: 1 }); });
+  const bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic canonical message' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const grant = f.stage.admit(device, f.manifest([bytes])); upload(f.stage, grant.operationId, 'file-0', bytes);
+  f.stage.complete(device, grant.operationId); await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  f.stage.prepare(device, grant.operationId); await until(() => f.stage.status(device, grant.operationId).phase === 'interrupted');
+  expect(f.stage.status(device, grant.operationId).preparation).toBeUndefined();
+  expect(store.readLocalSourceClaim({ ownerUserId: 'synthetic-owner', source: 'codex', originalId: 'synthetic-session-0' })?.representation).toBe('event-fallback');
+  expect(fs.readdirSync(path.join(f.stateDir, 'imported-history', 'conversations'))).toEqual([]);
+});
+it('refuses normalized output growth before its first write under newly exhausted disk capacity', async () => {
+  const f = setup(), bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const grant = f.stage.admit(device, f.manifest([bytes])); upload(f.stage, grant.operationId, 'file-0', bytes);
+  f.stage.complete(device, grant.operationId); await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  const actualGrow = LocalHistoryDiskLedger.prototype.grow; let attemptedOutput = false;
+  const growth = vi.spyOn(LocalHistoryDiskLedger.prototype, 'grow').mockImplementation(function (this: LocalHistoryDiskLedger, id: string, amount: number) {
+    if (amount > 0) { attemptedOutput = true; f.pressure(0); }
+    return actualGrow.call(this, id, amount);
+  });
+  const writes = vi.spyOn(LocalHistoryDiskLedger.prototype, 'write');
+  try {
+    f.stage.prepare(device, grant.operationId);
+    await until(() => f.stage.status(device, grant.operationId).phase === 'interrupted');
+    expect(attemptedOutput).toBe(true); expect(writes).not.toHaveBeenCalled();
+    expect(f.stage.status(device, grant.operationId).preparation).toBeUndefined();
+    expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+  } finally { growth.mockRestore(); writes.mockRestore(); }
+});
+it('offers no prepared result when retiring raw bytes fails after normalization', async () => {
+  const f = setup(), bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const grant = f.stage.admit(device, f.manifest([bytes])); upload(f.stage, grant.operationId, 'file-0', bytes);
+  f.stage.complete(device, grant.operationId); await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  const unlink = vi.spyOn(SafeFsExecutor, 'safeUnlinkSync').mockImplementation(() => { throw new Error('synthetic raw retirement refusal'); });
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    f.stage.prepare(device, grant.operationId);
+    await until(() => f.stage.status(device, grant.operationId).phase === 'interrupted');
+    expect(f.stage.status(device, grant.operationId).preparation).toBeUndefined();
+    expect(ledger.inventory().some(row => row.state === 'cleanup-pending' && row.written > 0)).toBe(true);
+  } finally { unlink.mockRestore(); ledger.close(); }
 });
 it('recovers the same live request after a lost grant reply without consuming another challenge', () => {
   const f = setup(), bytes = Buffer.from('synthetic'), manifest = f.manifest([bytes]);
@@ -285,10 +415,15 @@ it('finishes a valid incomplete upload after a retry supplies the remaining byte
   await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
 });
 it('does not extend absolute expiry when the injected wall clock stops advancing', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  let ticks = 0;
+  const monotonic = vi.spyOn(monotonicClock, 'now').mockImplementation(() => ticks);
   const f = setup({ ttl: 100, clock: () => 1_000_000 }), grant = f.stage.admit(device, f.manifest([Buffer.from('synthetic')]));
   const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
-  try { await until(() => (db.prepare('SELECT phase FROM upload_operations WHERE id = ?').get(grant.operationId) as {phase: string}).phase === 'expired'); }
-  finally { db.close(); }
+  try {
+    ticks = 100; await vi.advanceTimersByTimeAsync(100);
+    expect((db.prepare('SELECT phase FROM upload_operations WHERE id = ?').get(grant.operationId) as {phase: string}).phase).toBe('expired');
+  } finally { await f.stage.stop(); db.close(); monotonic.mockRestore(); vi.useRealTimers(); }
 });
 it('retains failed-admission residue and retries the known tag without an operation row', async () => {
   const f = setup(), bytes = Buffer.alloc(80, 65), manifest = f.manifest([bytes, bytes]);
@@ -303,13 +438,17 @@ it('retains failed-admission residue and retries the known tag without an operat
   } finally { ledger.close(); }
 });
 it('keeps timer inventory failures finite and releases custody after a failed cleanup', async () => {
-  const f = setup({ ttl: 100 }), grant = f.stage.admit(device, f.manifest([Buffer.from('synthetic')]));
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  let ticks = 0;
+  const monotonic = vi.spyOn(monotonicClock, 'now').mockImplementation(() => ticks);
+  const f = setup({ ttl: 100, clock: () => 1_000_000 }), grant = f.stage.admit(device, f.manifest([Buffer.from('synthetic')]));
   const list = vi.spyOn(LocalHistoryDiskLedger.prototype, 'list').mockImplementation(() => { throw new Error('synthetic busy inventory'); });
   const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
   try {
-    await until(() => (db.prepare('SELECT phase FROM upload_operations WHERE id = ?').get(grant.operationId) as {phase: string}).phase === 'expired');
+    ticks = 100; await vi.advanceTimersByTimeAsync(100);
+    expect((db.prepare('SELECT phase FROM upload_operations WHERE id = ?').get(grant.operationId) as {phase: string}).phase).toBe('expired');
     const first = f.stage.stop(), second = f.stage.stop(); expect(first).toBe(second); await first;
-  } finally { list.mockRestore(); db.close(); }
+  } finally { list.mockRestore(); await f.stage.stop(); db.close(); monotonic.mockRestore(); vi.useRealTimers(); }
   const next = setup({ stateDir: f.stateDir, boot: 'after-failed-cleanup' });
   expect(next.stage.status(device, grant.operationId).phase).toBe('expired');
 });

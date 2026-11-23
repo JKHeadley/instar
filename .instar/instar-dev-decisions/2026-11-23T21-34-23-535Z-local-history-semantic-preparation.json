@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-23T21:34:23.535Z",
+  "slug": "local-history-semantic-preparation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 223,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/ImportedHistoryStore.ts",
+      "src/import/LocalHistoryParseJob.ts",
+      "src/import/LocalHistoryUploadStaging.ts",
+      "src/import/localHistoryParseWorker.ts",
+      "src/import/localSessionParsers.ts"
+    ],
+    "addedLines": 207,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
