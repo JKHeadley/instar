@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-23T11:45:03.354Z",
+  "slug": "history-import-verification-repairs",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MachineIdentity.ts",
+      "src/server/importedHistoryRoutes.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

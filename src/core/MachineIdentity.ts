@@ -1039,7 +1039,7 @@ export function ensureGitignore(projectDir: string): void {
     content = fs.readFileSync(gitignorePath, 'utf-8');
   }
 
-  const linesToAdd = GITIGNORE_ENTRIES.filter(line => {
+  const linesToAdd = [...new Set(GITIGNORE_ENTRIES)].filter(line => {
     // Don't add comments if the actual entry already exists
     if (line.startsWith('#')) return !content.includes(line);
     return !content.includes(line);

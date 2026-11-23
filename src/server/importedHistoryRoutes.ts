@@ -30,6 +30,7 @@ import { applyExport, previewExport, type ImportPreview } from '../import/import
 import { ArchiveSourceChanged, ArchiveStaging, type ArchiveReceipt } from '../import/archiveStaging.js';
 import { ZipRefused } from '../import/safeZip.js';
 import { removeSecrets, type ImportedMessage } from '../import/exportParsers.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { ConversationSummary, ProjectSummary } from '../import/ImportedHistoryStore.js';
 
 export interface ImportedHistoryRouteDeps {
@@ -110,7 +111,15 @@ export function mountImportedHistoryRoutes(router: Router, deps: ImportedHistory
   const now = deps.now ?? Date.now;
   const staging = new ArchiveStaging(deps.stateDir);
   try { staging.recover(); }
-  catch (err) { deps.log?.({ event: 'imported-history-staging-cleanup-failed', code: (err as NodeJS.ErrnoException).code ?? 'unsafe-staging-directory' }); }
+  catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unsafe-staging-directory';
+    DegradationReporter.getInstance().report({
+      feature: 'ImportedHistory.stagingCleanup', primary: 'Remove abandoned private export snapshots',
+      fallback: 'Keep snapshots in place and retain normal private-directory checks',
+      reason: code, impact: 'Temporary export cleanup needs attention.', internalOnly: true,
+    });
+    deps.log?.({ event: 'imported-history-staging-cleanup-failed', code });
+  }
   const previews = new Map<string, PendingPreview>();
   let store: ImportedHistoryStore | null = null;
   const getStore = () => (store ??= new ImportedHistoryStore(deps.stateDir));

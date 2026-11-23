@@ -6,7 +6,7 @@
  *   - the agent only reads imported text quoted as history, which can't close its own wrapper;
  *   - the owner's session reads raw messages; no caller at all is refused.
  */
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -17,6 +17,18 @@ import { mountImportedHistoryRoutes, QUOTED_NOTE } from '../../src/server/import
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
 import { makeZip } from '../helpers/exportZip.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+
+it('reports failed startup archive cleanup without exposing private paths, even without a route logger', () => {
+  const stateDir = tmp();
+  fs.writeFileSync(path.join(stateDir, 'import-preview-staging'), 'not a private directory');
+  const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+  try {
+    mountImportedHistoryRoutes(express.Router(), { stateDir, bearerOk: () => false, ownerOk: () => false });
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ feature: 'ImportedHistory.stagingCleanup', internalOnly: true }));
+    expect(JSON.stringify(report.mock.calls)).not.toContain(stateDir);
+  } finally { report.mockRestore(); }
+});
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/imported-history-routes.test.ts' }); });
