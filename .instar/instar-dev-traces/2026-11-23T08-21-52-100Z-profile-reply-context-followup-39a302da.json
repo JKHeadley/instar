@@ -1,0 +1,73 @@
+{
+  "version": 3,
+  "slug": "profile-reply-context-followup",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-23T08:21:52.100Z",
+  "artifactPath": "upgrades/side-effects/profile-reply-context-followup.md",
+  "artifactSha256": "0eabcd11cc9c88438e428cd33476d6e1d9fcbb782073b684721374ea4c00da02",
+  "specPath": "docs/specs/profile-reply-context-followup.md",
+  "coveredFiles": [
+    "docs/specs/carriers/profile-reply-context-followup.json",
+    "docs/specs/profile-reply-context-followup.eli16.md",
+    "docs/specs/profile-reply-context-followup.md",
+    "docs/specs/profile-reply-context-settlement-bounded-delta.md",
+    "docs/specs/reports/profile-reply-context-followup-convergence.md",
+    "docs/specs/reports/profile-reply-context-live/first-failed.json",
+    "docs/specs/reports/profile-reply-context-settlement-review.md",
+    "src/commands/server.ts",
+    "src/core/ProfileProposalOwnerTurns.ts",
+    "src/core/ProfileProposalRequests.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "src/core/profileProposalResponseSettlement.ts",
+    "src/data/awareness/profile-reply-context-followup.md",
+    "src/monitoring/neverSilent/NeverSilentStore.ts",
+    "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+    "src/monitoring/neverSilent/neverSilentWiring.ts",
+    "src/server/routes.ts",
+    "tests/e2e/profile-response-settlement-lifecycle.test.ts",
+    "tests/fixtures/profile-settlement/composition.ts",
+    "tests/integration/profile-response-settlement.test.ts",
+    "tests/integration/topic-profile-routes.test.ts",
+    "tests/unit/neverSilent-registered-reply.test.ts",
+    "tests/unit/profile-proposal-response-settlement.test.ts",
+    "tests/unit/profile-reply-context-relay-contract.test.ts",
+    "upgrades/next/profile-reply-context-followup.md",
+    "upgrades/side-effects/profile-reply-context-followup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Exact delivered-response bookkeeping changes monitor state; actual bounded closure and independent source concurrence are recorded.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "operator-delegated-bounded-closure",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/profile-reply-context-followup-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/monitoring/neverSilent/NeverSilentWatcher.ts#reconcileRegisteredReplies",
+      "howCaught": "A reconciliation batch needs newly observed successful ordinary-store progress. It cannot mint its own progress, resend, claim handles or start a timer; permanent-failure and self-credit negatives verify this."
+    },
+    "prNumber": 3675,
+    "component": "RegisteredReminderSettlement"
+  }
+}

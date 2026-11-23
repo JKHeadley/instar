@@ -1,3 +1,4 @@
+import type { ProfileRegisteredReplyProof, ProfileReplySettlementStatus } from '../../core/profileProposalResponseSettlement.js';
 /**
  * Server wiring for Never-Silent Conversation (docs/specs/never-silent-conversation.md).
  * Turns the server's live objects into the watcher's injected deps, so server.ts only
@@ -31,6 +32,7 @@ export interface PoolAccountLike {
 }
 
 export interface NeverSilentWiringInput {
+  verifyRegisteredReplyProof?: (proof: unknown) => boolean;
   stateDir: string;
   logsDir: string;
   config: () => NeverSilentConfig;
@@ -69,6 +71,7 @@ export interface NeverSilentWiringInput {
 export interface NeverSilentWiring {
   store: NeverSilentStore;
   watcher: NeverSilentWatcher;
+  observeRegisteredReply: (proof: ProfileRegisteredReplyProof) => ProfileReplySettlementStatus;
   /** Feed one logged conversation row. */
   observeLogged: (platform: ConversationPlatform, key: string, row: { messageId: string; text: string; fromUser: boolean; provenance?: string; senderName?: string }) => void;
   handleTelegramTap: (tap: { data: string; fromIsOwner: boolean }) => Promise<string>;
@@ -118,6 +121,7 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
 
   const watcher = new NeverSilentWatcher({
     store,
+    verifyRegisteredReplyProof: input.verifyRegisteredReplyProof,
     config: input.config,
     judge,
     resolveSession: resolve,
@@ -228,6 +232,7 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
   return {
     store,
     watcher,
+    observeRegisteredReply: proof => watcher.onRegisteredReply(proof),
     observeLogged: (platform, key, row) => {
       if (row.fromUser) {
         watcher.onInbound(platform, key, row.messageId, row.text, row.senderName);

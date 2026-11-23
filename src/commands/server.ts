@@ -20895,6 +20895,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       };
       const nsTelegram = telegram;
       const neverSilent = buildNeverSilent({
+        verifyRegisteredReplyProof: proof => _topicProfileConfirmSlots?.proposals.ownsRegisteredReplyProof(proof) === true,
         stateDir: config.stateDir,
         logsDir: path.join(config.stateDir, '..', 'logs'),
         config: nsCfg,
@@ -20982,6 +20983,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           featureEvidence.record('monitoring.neverSilent', { kind, reason, context: flat });
         },
       });
+      _topicProfileConfirmSlots?.proposals.setRegisteredReplyHandler(proof => neverSilent.observeRegisteredReply(proof));
       setNeverSilentInstance({ store: neverSilent.store, enabled: () => nsCfg().enabled });
       // lease-freshness-lapse-retry — count this machine's replies held at the send boundary for the lease. The
       // origin runtime boots before never-silent exists, so the recorder is assigned late (as readDetectorHealth is).

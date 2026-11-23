@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-23T08:23:49.629Z",
+  "slug": "profile-reply-context-followup",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 320,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ProfileProposalOwnerTurns.ts",
+      "src/core/ProfileProposalRequests.ts",
+      "src/core/handleProfileProposalReply.ts",
+      "src/core/profileProposalResponseSettlement.ts",
+      "src/data/awareness/profile-reply-context-followup.md",
+      "src/monitoring/neverSilent/NeverSilentStore.ts",
+      "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+      "src/monitoring/neverSilent/neverSilentWiring.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 270,
+    "deletedLines": 50
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/monitoring/neverSilent/NeverSilentWatcher.ts#reconcileRegisteredReplies",
+      "howCaught": "A reconciliation batch needs newly observed successful ordinary-store progress. It cannot mint its own progress, resend, claim handles or start a timer; permanent-failure and self-credit negatives verify this."
+    },
+    "prNumber": 3675,
+    "component": "RegisteredReminderSettlement"
+  },
+  "verdict": "pass"
+}

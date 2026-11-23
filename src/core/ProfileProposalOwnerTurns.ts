@@ -41,6 +41,13 @@ export class ProfileProposalOwnerTurns {
     this.handles.get(handle)!.reservation = reservation; this.reservations.set(reservation, handle);
     return reservation;
   }
+  /** Internal claim lookup. Copy now so later expiry cannot erase an actual dispatched response binding. */
+  bindingForClaim(reservation: string): Readonly<ProfileProposalOwnerTurnBinding> | null {
+    const handle = this.reservations.get(reservation);
+    const entry = handle ? this.handles.get(handle) : undefined;
+    if (!entry || entry.reservation !== reservation) return null;
+    return Object.freeze({ ...entry.binding });
+  }
   /** Actual acceptance or uncertainty makes the delivery reservation irreversible. */
   seal(reservation: string): void {
     const handle = this.reservations.get(reservation);

@@ -13,6 +13,9 @@
  * All I/O is injected. Never throws out of tick().
  */
 import crypto from 'node:crypto';
+import type { ProfileRegisteredReplyProof, ProfileReplySettlementStatus } from '../../core/profileProposalResponseSettlement.js';
+interface AdmissionFence { check: () => void; write: (fn: () => void) => void; record: (fn: () => void) => void }
+class StaleMonitorAdmission extends Error {}
 import type { NeverSilentStore, Incident, Obligation, ConversationPlatform, SilenceClass } from './NeverSilentStore.js';
 import type { ConversationSilenceJudge, SilenceVerdict } from './ConversationSilenceJudge.js';
 import { decideNeverSilentAction, renderNotice, ASK_BUTTON_TEXT, engineName, STALE_LOGIN_HOLD_MS, STALE_LOGIN_WAIT_REASON, type NeverSilentAction } from './NeverSilentPolicy.js';
@@ -40,6 +43,7 @@ export interface SessionFacts {
 
 export interface NeverSilentDeps {
   store: NeverSilentStore;
+  verifyRegisteredReplyProof?: (proof: unknown) => boolean;
   config: () => NeverSilentConfig;
   judge: ConversationSilenceJudge | null;
   resolveSession: (platform: ConversationPlatform, key: string) => SessionFacts | null;
@@ -95,6 +99,63 @@ export const JUDGE_BACKOFF_MAX_MS = 10 * 60_000;
 export const RESTORE_FLAP_WINDOW_MS = 6 * 60 * 60_000;
 
 export class NeverSilentWatcher {
+  private readonly pendingReplies = new Map<string, ProfileRegisteredReplyProof>();
+  private proofRevision = 0;
+  private lastReconciliationCredit = -1;
+  private proofKey(p: ProfileRegisteredReplyProof): string { return JSON.stringify([p.generation, p.source, p.inboundId, p.attemptId]); }
+  private hasReplyProof(platform: ConversationPlatform, key: string, id: string): boolean {
+    return platform === 'telegram' && [...this.pendingReplies.values()].some(p => p.source === key && p.inboundId === id);
+  }
+  private subjects(platform: ConversationPlatform, key: string): Obligation[] {
+    return this.d.store.openFor(platform, key).filter(o => !this.hasReplyProof(platform, key, o.inboundMessageId));
+  }
+  onRegisteredReply(proof: ProfileRegisteredReplyProof): ProfileReplySettlementStatus {
+    try {
+      if (this.d.verifyRegisteredReplyProof?.(proof) !== true) return 'unavailable';
+      if (!this.d.config().enabled) return 'not-required';
+      if (!proof || !/^telegram:[1-9]\d*$/.test(proof.principal) || !/^[1-9]\d*$/.test(proof.source)
+        || !/^[1-9]\d*$/.test(proof.inboundId) || !Number.isSafeInteger(Number(proof.source))
+        || !Number.isSafeInteger(Number(proof.inboundId)) || !Number.isSafeInteger(proof.deliveredMessageId)
+        || proof.deliveredMessageId <= Number(proof.inboundId) || !proof.generation || !proof.attemptId || !proof.requestId) return 'unavailable';
+      const key = this.proofKey(proof);
+      if (this.pendingReplies.has(key)) return 'pending';
+      const captured = Object.freeze({ ...proof });
+      this.pendingReplies.set(key, captured); this.proofRevision++;
+      try {
+        const [status] = this.d.store.recordRegisteredReplies([captured]);
+        if (status !== 'pending') { this.pendingReplies.delete(key); this.proofRevision++; }
+        else this.lastReconciliationCredit = this.d.store.getOrdinaryCommitRevision();
+        return status;
+      } catch (error) { this.lastReconciliationCredit = this.d.store.getOrdinaryCommitRevision(); this.log({ event: 'registered-reply-persist-failed', source: proof.source, inboundId: proof.inboundId, error: String(error) }); return 'pending'; }
+    } catch { return 'unavailable'; }
+  }
+  private reconcileRegisteredReplies(): void {
+    if (!this.pendingReplies.size) return;
+    const credit = this.d.store.getOrdinaryCommitRevision();
+    if (credit <= this.lastReconciliationCredit) return;
+    this.lastReconciliationCredit = credit;
+    const entries = [...this.pendingReplies.entries()];
+    try {
+      const statuses = this.d.store.recordRegisteredReplies(entries.map(([, proof]) => proof));
+      statuses.forEach((status, i) => { if (status !== 'pending') { this.pendingReplies.delete(entries[i][0]); this.proofRevision++; } });
+    } catch (error) { this.log({ event: 'registered-reply-reconcile-failed', error: String(error) }); }
+  }
+  private admission(platform: ConversationPlatform, key: string, incident: Incident): AdmissionFence {
+    const snapshot = () => JSON.stringify([this.subjects(platform, key), this.proofRevision, this.d.store.getIncident(incident.id)]);
+    let expected = snapshot();
+    let stale = false;
+    const check = () => {
+      if (stale || snapshot() !== expected) { stale = true; throw new StaleMonitorAdmission('Monitor evidence changed before effect admission'); }
+    };
+    return { check, write: fn => { check(); fn(); expected = snapshot(); }, record: fn => {
+      // An admitted external result is a fact even if its original permission is now stale.
+      // Never refresh stale permission while committing that fact.
+      if (snapshot() !== expected) stale = true;
+      fn();
+      if (!stale) expected = snapshot();
+    } };
+
+  }
   private readonly inflight = new Set<string>();
   /** One recovery at a time per conversation: the sweep and a tap queue behind each other. */
   private readonly locks = new Map<string, Promise<unknown>>();
@@ -140,6 +201,7 @@ export class NeverSilentWatcher {
   async tick(): Promise<void> {
     const cfg = this.d.config();
     if (!cfg.enabled) return;
+    this.reconcileRegisteredReplies();
     let groups: ReturnType<NeverSilentStore['overdueConversations']> = [];
     try { groups = this.d.store.overdueConversations(this.now()); } catch (err) { this.log({ event: 'sweep-failed', error: String(err) }); }
     for (const g of groups) {
@@ -155,23 +217,27 @@ export class NeverSilentWatcher {
 
   private async handleConversation(platform: ConversationPlatform, key: string, cfg: NeverSilentConfig): Promise<void> {
     const session = this.safe(() => this.d.resolveSession(platform, key), null);
-    const open = this.d.store.openFor(platform, key);
+    const open = this.subjects(platform, key);
     if (!open.length) return;
     const incident = this.d.store.ensureIncident(platform, key, {
       sessionName: session?.tmuxSession ?? null, framework: session?.framework ?? null, accountId: session?.accountId ?? null,
     });
 
-    const { verdict, revision } = await this.judgeSafely(incident, session, open, cfg);
+    const fence = this.admission(platform, key, incident);
+    const { verdict, revision } = await this.judgeSafely(incident, session, open, cfg, fence);
+    fence.check();
     let decision: { action: NeverSilentAction; reason: string; target?: string } = { action: 'tell', reason: 'no verdict' };
     let loginProbe: 'ok' | 'refused' | 'pending' | 'inconclusive' | undefined;
     {
       if (verdict.silenceClass === 'engine-login' && verdict.confidence >= cfg.confidenceFloor && !verdict.truncated && session?.configHome) {
         try {
           const r = await this.d.observeLoginExpired(session.configHome, session.tmuxSession);
+          fence.check();
           if (r && typeof r === 'object') loginProbe = r.probe;
           this.log({ event: 'pool-observed', incident: incident.id, result: typeof r === 'string' ? r : r && typeof r === 'object' ? r.reason : 'ok' });
         } catch { this.log({ event: 'pool-observed', incident: incident.id, result: 'error' }); }
       }
+      fence.check();
       decision = decideNeverSilentAction({
         silenceClass: verdict.silenceClass,
         confidence: verdict.confidence,
@@ -195,27 +261,32 @@ export class NeverSilentWatcher {
 
     if (decision.action === 'wait' && decision.reason === STALE_LOGIN_WAIT_REASON) {
       // A stale-login restart is under way: the persisted clock starts at the first hold-off.
-      if (incident.staleLoginWaitStartedAt === undefined) this.d.store.updateIncident(incident.id, { staleLoginWaitStartedAt: this.now() });
-      await this.sendWaitingIfUncovered(platform, key, incident, open, 'engine-login', 'restarting-sign-in');
+      if (incident.staleLoginWaitStartedAt === undefined) fence.write(() => { this.d.store.updateIncident(incident.id, { staleLoginWaitStartedAt: this.now() }); });
+      await this.sendWaitingIfUncovered(platform, key, incident, open, 'engine-login', 'restarting-sign-in', fence);
       return;
     }
     if (decision.action === 'wait') {
       // Still working: only the waiting notice, and only when no standby line already covered it.
-      await this.sendWaitingIfUncovered(platform, key, incident, open, 'working-slow');
+      await this.sendWaitingIfUncovered(platform, key, incident, open, 'working-slow', undefined, fence);
       return;
     }
 
     let outcome: 'started' | 'succeeded' | 'refused' | 'exhausted' | null = null;
     let askReason: 'pinned' | 'replay' | undefined;
+    let runtimeEffectAdmitted = false;
     const current = this.d.store.getIncident(incident.id) ?? incident;
     const alreadyActed = current.action === decision.action && current.outcome !== null && current.actedRevision === revision;
     if (!alreadyActed && session) {
       if (decision.action === 'swap') {
+        fence.check();
+        runtimeEffectAdmitted = true;
         const r = await this.safeAsync(() => this.d.swap(session), { swapped: false, reason: 'swap threw' });
         outcome = r.swapped ? 'succeeded' : 'refused';
-        this.d.store.updateIncident(incident.id, { attempts: incident.attempts + 1 });
+        fence.record(() => { this.d.store.updateIncident(incident.id, { attempts: (this.d.store.getIncident(incident.id)?.attempts ?? incident.attempts) + 1 }); });
       } else if (decision.action === 'fallback' && decision.target) {
-        outcome = await this.moveConversation(platform, key, incident, decision.target, 'automatic');
+        fence.check();
+        runtimeEffectAdmitted = true;
+        outcome = await this.moveConversation(platform, key, incident, decision.target, 'automatic', fence);
       } else if (decision.action === 'ask-fallback' && decision.target) {
         askReason = this.safe(() => this.d.isPinned(platform, key), true) ? 'pinned' : 'replay';
         outcome = 'started';
@@ -224,25 +295,27 @@ export class NeverSilentWatcher {
       outcome = current.outcome as typeof outcome;
       if (decision.action === 'ask-fallback') askReason = this.safe(() => this.d.isPinned(platform, key), true) ? 'pinned' : 'replay';
     }
-    this.d.store.updateIncident(incident.id, { action: decision.action, outcome, actedRevision: revision });
+    const recordOutcome = () => { this.d.store.updateIncident(incident.id, { action: decision.action, outcome, actedRevision: revision }); };
+    if (runtimeEffectAdmitted) fence.record(recordOutcome); else fence.write(recordOutcome);
 
     if (cls === 'undetermined' || cls === 'other') {
-      await this.sendWaitingIfUncovered(platform, key, incident, open, cls);
+      await this.sendWaitingIfUncovered(platform, key, incident, open, cls, undefined, fence);
       return;
     }
     await this.sendStatus(platform, key, incident, open, {
       silenceClass: cls, action: decision.action, outcome, target: decision.target ?? null, askReason,
-    });
+    }, fence);
   }
 
-  private async judgeSafely(incident: Incident, session: SessionFacts | null, open: Obligation[], cfg: NeverSilentConfig): Promise<{ verdict: SilenceVerdict; revision: string }> {
-    const verdict = await this.judgeOnce(incident, session, open, cfg);
+  private async judgeSafely(incident: Incident, session: SessionFacts | null, open: Obligation[], cfg: NeverSilentConfig, fence: AdmissionFence): Promise<{ verdict: SilenceVerdict; revision: string }> {
+    const verdict = await this.judgeOnce(incident, session, open, cfg, fence);
     return { verdict: verdict.v, revision: verdict.revision };
   }
 
-  private async judgeOnce(incident: Incident, session: SessionFacts | null, open: Obligation[], cfg: NeverSilentConfig): Promise<{ v: SilenceVerdict; revision: string }> {
+  private async judgeOnce(incident: Incident, session: SessionFacts | null, open: Obligation[], cfg: NeverSilentConfig, fence: AdmissionFence): Promise<{ v: SilenceVerdict; revision: string }> {
     const pane = session ? (this.safe(() => this.d.capturePane(session.tmuxSession), null) ?? '') : '';
     const auth = session ? await this.safeAsync(() => this.d.authStatus(session.framework, session.configHome), null) : null;
+    fence.check();
     const account = this.safe(() => this.d.accountFacts(session?.accountId ?? null), null);
     // No session here can mean the message is held for the machine that runs the conversation,
     // not that a session stopped (fb-faa9d074-e09: "the session stopped running" for one that never began).
@@ -264,21 +337,21 @@ export class NeverSilentWatcher {
     }
     if (!session && awaiting) {
       const v: SilenceVerdict = { silenceClass: 'waiting-for-machine', confidence: 1, route: 'structural', evidence: `message held for machine ${awaiting}`, truncated: false, actionsSinceMessage: 'none', calls: 0 };
-      this.recordVerdict(incident, v, revision);
+      this.recordVerdict(incident, v, revision, fence);
       return { v, revision };
     }
     if (!session) {
       const v: SilenceVerdict = { silenceClass: 'crashed', confidence: 1, route: 'structural', evidence: 'no session for this conversation', truncated: false, actionsSinceMessage: 'unknown', calls: 0 };
-      this.recordVerdict(incident, v, revision);
+      this.recordVerdict(incident, v, revision, fence);
       return { v, revision };
     }
     if (!cfg.judge || !this.d.judge) {
       const v: SilenceVerdict = { silenceClass: 'undetermined', confidence: 0, route: 'judge-off', evidence: 'judge switched off', truncated: false, actionsSinceMessage: 'unknown', calls: 0 };
-      this.recordVerdict(incident, v, revision);
+      this.recordVerdict(incident, v, revision, fence);
       return { v, revision };
     }
     const oldest = open.reduce((m, o) => Math.min(m, o.acceptedAt), Number.POSITIVE_INFINITY);
-    this.d.store.updateIncident(incident.id, { lastJudgedAt: this.now(), judgeCount: n + 1 });
+    fence.write(() => { this.d.store.updateIncident(incident.id, { lastJudgedAt: this.now(), judgeCount: n + 1 }); });
     let v: SilenceVerdict;
     try {
       v = await this.d.judge.judge({
@@ -293,15 +366,15 @@ export class NeverSilentWatcher {
     } catch (err) {
       v = { silenceClass: 'undetermined', confidence: 0, route: 'error', evidence: `judge threw: ${String(err).slice(0, 120)}`, truncated: false, actionsSinceMessage: 'unknown', calls: 0 };
     }
-    this.recordVerdict(incident, v, revision);
+    this.recordVerdict(incident, v, revision, fence);
     return { v, revision };
   }
 
-  private recordVerdict(incident: Incident, v: SilenceVerdict, revision: string): void {
-    this.d.store.updateIncident(incident.id, {
+  private recordVerdict(incident: Incident, v: SilenceVerdict, revision: string, fence: AdmissionFence): void {
+    fence.write(() => { this.d.store.updateIncident(incident.id, {
       silenceClass: v.silenceClass, confidence: v.confidence, judgeRoute: v.route, evidence: v.evidence, evidenceRevision: revision,
       cachedVerdict: { truncated: v.truncated, actionsSinceMessage: v.actionsSinceMessage },
-    });
+    }); });
     this.log({ event: 'verdict', incident: incident.id, class: v.silenceClass, confidence: v.confidence, route: v.route, truncated: v.truncated, actions: v.actionsSinceMessage, calls: v.calls });
   }
 
@@ -319,38 +392,46 @@ export class NeverSilentWatcher {
     return [header, '', ...bodies].join('\n');
   }
 
-  private async moveConversation(platform: ConversationPlatform, key: string, incident: Incident, target: string, by: 'automatic' | 'tap'): Promise<'succeeded' | 'refused'> {
-    const open = this.d.store.openFor(platform, key);
+  private async moveConversation(platform: ConversationPlatform, key: string, incident: Incident, target: string, by: 'automatic' | 'tap', fence?: AdmissionFence): Promise<'succeeded' | 'refused'> {
+    const open = this.subjects(platform, key);
+    fence?.check();
     const text = this.buildRedriveText(incident, target, open);
     const r = await this.safeAsync(() => this.d.applyFallback(platform, key, target, by, text), { ok: false, from: null, fromUpdatedBy: null, reason: 'move threw' });
     if (!r.ok) {
       this.log({ event: 'fallback-refused', incident: incident.id, target, reason: r.reason });
       return 'refused';
     }
-    const tried = [...new Set([...incident.triedFrameworks, ...(incident.framework ? [incident.framework] : [])])];
+    const write = (fn: () => void) => fence ? fence.record(fn) : fn();
+    write(() => {
+    const tried = [...new Set([...(this.d.store.getIncident(incident.id)?.triedFrameworks ?? incident.triedFrameworks), ...(incident.framework ? [incident.framework] : [])])];
     this.d.store.updateIncident(incident.id, {
       fallback: { from: r.from, fromUpdatedBy: r.fromUpdatedBy, to: target, appliedAt: this.now(), by },
       triedFrameworks: tried,
     });
     // The waiting messages went into the new session: each gets a fresh notice deadline there.
     for (const o of open) this.d.store.markRedriven(o.id, this.now(), this.d.config().noticeAfterMs);
+    });
     this.log({ event: 'fallback-applied', incident: incident.id, from: r.from, to: target, by, redriven: open.length });
     return 'succeeded';
   }
 
-  private async sendWaitingIfUncovered(platform: ConversationPlatform, key: string, incident: Incident, open: Obligation[], cls: SilenceClass, waitingReason?: 'restarting-sign-in'): Promise<void> {
+  private async sendWaitingIfUncovered(platform: ConversationPlatform, key: string, incident: Incident, open: Obligation[], cls: SilenceClass, waitingReason?: 'restarting-sign-in', fence?: AdmissionFence): Promise<void> {
     const uncovered = open.filter((o) => !o.coveredBy.includes('waiting') && !o.standbySeenAt);
     if (!uncovered.length) return;
     const text = renderNotice({ kind: 'waiting', count: uncovered.length, silenceClass: cls, framework: incident.framework, action: null, outcome: null, ...(waitingReason ? { waitingReason } : {}) });
+    fence?.check();
     const id = await this.safeAsync(() => this.d.sendNotice(platform, key, text), null);
     if (id === null) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting' }); return; }
+    const record = () => {
     this.d.store.markCovered(uncovered.map((o) => o.id), 'waiting');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'waiting', class: cls, covered: uncovered.length });
     this.d.store.appendNotice(incident.id, { kind: 'waiting', revision: `waiting|${cls}`, messageId: id, at: this.now(), covered: uncovered.map((o) => o.id) });
+    };
+    if (fence) fence.record(record); else record();
   }
 
   private async sendStatus(platform: ConversationPlatform, key: string, incident: Incident, open: Obligation[],
-    s: { silenceClass: SilenceClass; action: NeverSilentAction; outcome: 'started' | 'succeeded' | 'refused' | 'exhausted' | null; target: string | null; askReason?: 'pinned' | 'replay' }): Promise<void> {
+    s: { silenceClass: SilenceClass; action: NeverSilentAction; outcome: 'started' | 'succeeded' | 'refused' | 'exhausted' | null; target: string | null; askReason?: 'pinned' | 'replay' }, fence?: AdmissionFence): Promise<void> {
     const revision = `${s.silenceClass}|${s.action}|${s.outcome ?? ''}`;
     const fresh = this.d.store.getIncident(incident.id) ?? incident;
     const alreadySent = fresh.notices.some((n) => n.kind === 'status' && n.revision === revision);
@@ -367,17 +448,22 @@ export class NeverSilentWatcher {
       }
       const nonce = fresh.ask?.state === 'open' ? fresh.ask.nonce : crypto.randomBytes(12).toString('hex');
       button = { text: ASK_BUTTON_TEXT(s.target), data: askCallbackData(nonce) };
-      this.d.store.updateIncident(incident.id, { ask: { nonce, state: 'open', sentAt: this.now(), target: s.target } });
+      const write = () => { this.d.store.updateIncident(incident.id, { ask: { nonce, state: 'open', sentAt: this.now(), target: s.target } }); };
+      if (fence) fence.write(write); else write();
     }
     const text = renderNotice({
       kind: 'status', count, silenceClass: s.silenceClass, framework: fresh.framework, action: s.action, outcome: s.outcome,
       target: s.target, repairStarted: this.safe(() => this.d.repairStarted(fresh.accountId), false), askReason: s.askReason,
     });
+    fence?.check();
     const id = await this.safeAsync(() => this.d.sendNotice(platform, key, text, button), null);
     if (id === null) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'status', revision }); return; }
+    const record = () => {
     this.d.store.markCovered(open.map((o) => o.id), 'status');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'status', revision, covered: open.length, ask: !!button });
     this.d.store.appendNotice(incident.id, { kind: 'status', revision, messageId: id, at: this.now(), covered: open.map((o) => o.id) });
+    };
+    if (fence) fence.record(record); else record();
   }
 
   // ── The one-tap ask (Frontloaded Decision 2) ────────────────────────────────
@@ -401,18 +487,22 @@ export class NeverSilentWatcher {
     this.pendingTaps.add(this.withLock(k, async () => {
       const fresh = this.d.store.getIncident(inc.id) ?? inc;
       // The conversation may have answered while the tap waited for the lock: never move it then.
-      if (fresh.closedAt || this.d.store.openFor(fresh.platform, fresh.conversationKey).length === 0) {
+      if (fresh.closedAt || this.subjects(fresh.platform, fresh.conversationKey).length === 0) {
         this.d.store.updateIncident(inc.id, { ask: { ...(fresh.ask ?? inc.ask!), state: 'closed' } });
         return;
       }
-      const outcome = await this.moveConversation(fresh.platform, fresh.conversationKey, fresh, target, 'tap');
+      const fence = this.admission(fresh.platform, fresh.conversationKey, fresh);
+      const outcome = await this.moveConversation(fresh.platform, fresh.conversationKey, fresh, target, 'tap', fence);
       if (outcome !== 'succeeded') {
-        this.d.store.updateIncident(inc.id, { ask: { ...(fresh.ask ?? inc.ask!), state: 'open' } });
+        fence.record(() => { this.d.store.updateIncident(inc.id, { action: 'fallback', outcome: 'refused' }); });
+        // Reopening a button is prospective permission, not result accounting.
+        fence.write(() => { this.d.store.updateIncident(inc.id, { ask: { ...(fresh.ask ?? inc.ask!), state: 'open' } }); });
         const text = `I couldn't move this conversation to ${engineName(target)} just now. It stays where it is and I'll tell you here when it's fixed.`;
+        fence.check();
         await this.safeAsync(() => this.d.sendNotice(fresh.platform, fresh.conversationKey, text), null);
         return;
       }
-      this.d.store.updateIncident(inc.id, { action: 'fallback', outcome: 'succeeded' });
+      fence.record(() => { this.d.store.updateIncident(inc.id, { action: 'fallback', outcome: 'succeeded' }); });
     }).catch(() => undefined));
     return `Moving this conversation to ${engineName(target)}. It will answer here shortly.`;
   }

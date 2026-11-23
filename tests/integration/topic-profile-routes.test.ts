@@ -430,10 +430,10 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     const bundle = buildBundle(FLEET_REGIME, { boundOperator: false }); const f = fakes(); const app = buildApp(bundle, f.extra);
     const question = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli', confirmIn: 130715 });
     expect(question.status).toBe(200);
-    expect(question.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 130715, messageId: f.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    expect(question.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 130715, messageId: f.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: false, replySettlement: { status: 'unbound' } });
     const reminder = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ remindRequestId: question.body.requestId, confirmIn: 130715 });
     expect(reminder.status).toBe(200);
-    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 130715, messageId: f.sends[1].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 130715, messageId: f.sends[1].messageId }, settingsApplied: false, replyAlreadyDelivered: false, replySettlement: { status: 'unbound' } });
     expect(bundle.confirmSlots.proposals.get('130715', question.body.requestId)?.receipts.map(receipt => receipt.messageId)).toEqual([901, 902]);
     expect(bundle.store.resolve('23')).toBeNull(); expect(f.sends).toHaveLength(2);
   });
@@ -648,7 +648,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     expect(f.sends[0].topic).toBe(23);
     expect(f.sends[0].category).toBe('owner-decision');
     expect(bundle.confirmSlots.proposals.list('23')[0]?.target).toBe('23');
-    expect(res.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 23, messageId: f.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    expect(res.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: 23, messageId: f.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: false, replySettlement: { status: 'unbound' } });
   });
 });
 
@@ -681,7 +681,7 @@ describe('one owner-confirmed HTTP batch', () => {
   it('delivers one question and atomically saves only its two named targets on an exact native reply', async () => {
     const h = batchFixture(); await h.bundle.store.mutate('99', { framework: 'claude-code', updatedBy: 'fixture' });
     const response = await h.post(); expect(response.status).toBe(200); expect(h.sends).toHaveLength(1);
-    expect(response.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: source, messageId: h.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    expect(response.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: source, messageId: h.sends[0].messageId }, settingsApplied: false, replyAlreadyDelivered: false, replySettlement: { status: 'unbound' } });
     expect(h.sends[0]).toMatchObject({ topic: source, options: { formatMode: 'html' } });
     expect(h.bundle.store.resolve('23')).toBeNull(); expect(h.bundle.store.resolve('24')).toBeNull();
     const question = h.bundle.confirmSlots.proposals.get(String(source), response.body.requestId)!;
@@ -744,7 +744,7 @@ describe('one owner-confirmed HTTP batch', () => {
     const oldReceipt = original.receipts[0].messageId;
     const reminder = await h.post({ targets: undefined, remindRequestIds: [first.body.requestId] });
     expect(reminder.status).toBe(200);
-    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: source, messageId: h.sends[1].messageId }, settingsApplied: false, replyAlreadyDelivered: true });
+    expect(reminder.body).toMatchObject({ questionDelivery: { kind: 'registered', topicId: source, messageId: h.sends[1].messageId }, settingsApplied: false, replyAlreadyDelivered: false, replySettlement: { status: 'unbound' } });
     expect(reminder.body.requestId).toBe(first.body.requestId);
     expect(reminder.body.expiresAt).toBe(first.body.expiresAt);
     expect(reminder.body.reminder).toBe(true);

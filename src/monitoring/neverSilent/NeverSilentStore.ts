@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import type { ProfileRegisteredReplyProof, ProfileReplySettlementStatus } from '../../core/profileProposalResponseSettlement.js';
 
 export type ConversationPlatform = 'telegram' | 'slack';
 export type ObligationState = 'pending' | 'told-pending' | 'answered' | 'released';
@@ -35,6 +36,7 @@ export interface Obligation {
   redrivenAt?: number;
   closedAt?: number;
   closedReason?: string;
+  registeredReply?: { generation: string; attemptId: string; requestId: string; messageId: number };
 }
 
 export type SilenceClass =
@@ -132,10 +134,15 @@ const MAX_CLOSED_SEND_HOLDS = 200;
 export class NeverSilentStore {
   private data: FileShape = { schema: 'never-silent/1', obligations: [], incidents: [] };
   private readonly file: string;
+  private committed: FileShape = { schema: 'never-silent/1', obligations: [], incidents: [] };
+  private ordinaryCommitRevision = 0;
+  getOrdinaryCommitRevision(): number { return this.ordinaryCommitRevision; }
+  private clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 
   constructor(stateDir: string, private readonly now: () => number = () => Date.now()) {
     this.file = path.join(stateDir, 'state', 'never-silent.json');
     this.load();
+    this.committed = this.clone(this.data);
   }
 
   private load(): void {
@@ -152,12 +159,49 @@ export class NeverSilentStore {
     }
   }
 
-  private flush(): void {
-    this.prune();
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data), { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+  private flush(ordinary = true): void {
+    try {
+      this.prune();
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(this.data), { mode: 0o600 });
+      fs.renameSync(tmp, this.file);
+      this.committed = this.clone(this.data);
+      if (ordinary) this.ordinaryCommitRevision++;
+    } catch (error) {
+      this.data = this.clone(this.committed);
+      throw error;
+    }
+  }
+
+  /** Caller verifies private proof ownership; only existing exact rows may change. */
+  recordRegisteredReplies(proofs: readonly ProfileRegisteredReplyProof[]): ProfileReplySettlementStatus[] {
+    let changed = false;
+    const statuses = proofs.map((proof): ProfileReplySettlementStatus => {
+      const id = NeverSilentStore.obligationId('telegram', proof.source, proof.inboundId);
+      const row = this.data.obligations.find(o => o.id === id && o.platform === 'telegram'
+        && o.conversationKey === proof.source && o.inboundMessageId === proof.inboundId);
+      if (!row) return 'pending';
+      if (row.state !== 'pending' && row.state !== 'told-pending') {
+        return row.registeredReply?.messageId === proof.deliveredMessageId
+          && row.registeredReply.generation === proof.generation
+          && row.registeredReply.attemptId === proof.attemptId
+          && row.registeredReply.requestId === proof.requestId ? 'recorded' : 'not-required';
+      }
+      row.state = 'answered'; row.text = null; row.closedAt = this.now(); row.closedReason = 'registered-reply-delivered';
+      row.registeredReply = { generation: proof.generation, attemptId: proof.attemptId, requestId: proof.requestId, messageId: proof.deliveredMessageId };
+      changed = true;
+      return 'recorded';
+    });
+    for (const incident of this.data.incidents) {
+      if (incident.closedAt || !changed || this.openFor(incident.platform, incident.conversationKey).length) continue;
+      // Close only conversations whose exact input this batch answered.
+      if (!proofs.some(p => incident.platform === 'telegram' && p.source === incident.conversationKey)) continue;
+      incident.closedAt = this.now(); incident.closedReason = 'answered';
+      if (incident.ask?.state === 'open') incident.ask.state = 'closed';
+    }
+    if (changed) this.flush(false);
+    return statuses;
   }
 
   private prune(): void {

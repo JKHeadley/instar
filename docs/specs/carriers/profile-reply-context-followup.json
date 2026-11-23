@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-11-23T08:23:20.792Z",
+  "slug": "profile-reply-context-followup",
+  "carriers": {
+    "CMT-2201": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "I will reconcile actual delivered confirmation receipts after server restart or conversation ownership transfer, including persistence failure before settlement, without accepting a previous generation's private owner-turn handle. I will prove same-message recovery, preserve unrelated unanswered work, and record the result under ACT-457."
+    },
+    "CMT-2202": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "I will finish the exact delivered-reminder bookkeeping repair in PR 3675, preserve the failed proof, run the complete small Telegram communication matrix, and hand the reviewed candidate to normal verification without claiming a clean experience before the evidence supports it."
+    }
+  }
+}

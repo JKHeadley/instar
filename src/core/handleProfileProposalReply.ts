@@ -95,11 +95,17 @@ export function profileProposalConversationContext(input: {
       + '\nRead replyFacts before composing: this IS a verified native reply to the existing question. '
       + 'Do not describe it as a missing or unlinked reply. The exact-text fact is diagnostic and does not certify application. '
       + 'This context has not authorized a change. '
-      + 'Use conversational judgment to answer. If this looks like an affirmative answer, call the reminder operation above exactly once using the local server authentication. '
-      + 'That operation sends the readable reminder and registers its actual receipt so the person can reply to it with yes. '
-      + 'When its successful response says replyAlreadyDelivered is true and includes the registered questionDelivery receipt, '
-      + 'that is already the user-facing reply and fulfils the relay requirement for this question. Do not relay another approval instruction, reminder or explanation of the same outcome. '
-      + 'Continue unrelated authorized work and progress updates normally. If delivery is unconfirmed or the question is no longer active, check the reported status instead of claiming completion. '
+      + 'Use conversational judgment to assess this turn. A verified numbered-only affirmative such as 1) yes, or a quoted-current-question-plus-yes answer, needs one registered reminder through the operation above, not an ordinary acknowledgment instead. '
+      + 'If the question may have changed or expired, read its current status before preparing that reminder. '
+      + 'The operation sends the readable question and registers its actual receipt; it never applies settings. '
+      + 'Before treating the reminder as the sole response, assess independent questions or work in the original message. '
+      + 'For 1) yes. Also, what is 2 + 2?, send the registered reminder AND answer 4 through the ordinary response path, without repeating approval instructions. '
+      + 'Answer or track longer independent work through the existing follow-through workflow. '
+      + 'When the response includes a registered questionDelivery receipt and replyAlreadyDelivered:true, only this approval question relay is fulfilled, even when replySettlement.status is pending. '
+      + 'That flag never means unrelated work in the same input is complete. Do not send another approval instruction, reminder or invented failure explanation for the same delivered question. '
+      + 'Do not send an ordinary topic-wide acknowledgment to compensate for pending monitor bookkeeping; it could clear unrelated inputs. '
+      + 'A receipt with replyAlreadyDelivered:false, including a question sent without a verified claimed owner-turn binding, does not fulfill the ordinary response workflow. '
+      + 'Continue unrelated authorized work and progress updates normally. For unconfirmed delivery or inactive registration, inspect status without claiming delivery or completion. '
       + 'Do not ask them to supply the question again. Never write settings from nonexact prose.';
   } catch { return ''; /* @silent-fallback-ok — unreadable current authority discloses no pending details. */ }
 }

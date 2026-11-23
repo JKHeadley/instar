@@ -1,0 +1,164 @@
+{
+  "artifact": {
+    "build": {
+      "candidate": "e8cd098ce92031093c454226b15c221669875993",
+      "files": {
+        "dist/commands/server.js": "74be942f174d4fe8ab373f90fac8a93ee57af192e4306ed512ec88fbc680fc4b",
+        "dist/core/ProfileProposalOwnerTurns.js": "eeb82ff9a8ffc452d30c1fae74918246e3cc1a1769e45f8c42fcab5131f8305c",
+        "dist/core/ProfileProposalRequests.js": "752d21a2afdd2239f74218b44189c329f49e1d82bec26e6ccab6b8ac7d15f6d9",
+        "dist/core/ProfileRuntimeGuard.js": "fef680f3e7b7c765173589037d0a32cfb6ce3fced3ee092308efcde1962212e5",
+        "dist/core/TopicProfileOrchestrator.js": "c800717b1a8f1d94e83b97c7e9851f32ebee7aad9df75ae6fcefb09a93f749f3",
+        "dist/core/TopicProfileStore.js": "6c8f4287073eb34fbefdb9cc9b51428b2a8cfe1196b7e38aaaa8dbbdc9a90680",
+        "dist/core/TopicProfileTransferCarrier.js": "f707eb6b88d55199e5252c6616245f5ff9b56f67400fdc5a1253a6b4abfddc22",
+        "dist/core/handleProfileProposalReply.js": "cc4f2653c5a1acbbe432ac329aa1311a4eb5a3878f11c238d7a6758bf533eecc",
+        "dist/core/profileInboundDisposition.js": "ea3edb24ffd94a7454b20c33295979db7b22a211cbd6d9d8d584519ae3ccb7c7",
+        "dist/core/profileProposalBatch.js": "dfa461d68125e7a9b97d6e74a5feddf71c78dc7780bde292973e02458311997c",
+        "dist/core/topicProfileIngress.js": "632f04249907568696bf90b35b62bdd19dd1ff3d1a4040b5a0338b617ffda6c4",
+        "dist/core/topicProfileWriteSurface.js": "feb46a948c5298a566f454feb057c9b0ece3d60b86c342e1492bdc3c9b265861",
+        "dist/lifeline/TelegramLifeline.js": "44a3ba74f4ed7270ab37f962b320cc1d2c1735ccfbea44d997f3f83d51003fc1",
+        "dist/messaging/TelegramAdapter.js": "e4f41b6cba257c7f4fd4fd10252145579b3b0cb9f5b9c27ee6b9ee56a543100e",
+        "dist/server/routes.js": "f5c28a08f774f524a0595156790d64e8a2eb8da6fb6886b75b6edb1d07fc985d"
+      },
+      "sourceTree": "7c8608382645ec587d682173fb86130c9c8e3698"
+    },
+    "cleanup": {
+      "complete": true,
+      "ownBrowserClosed": true,
+      "ownPollerStopped": true,
+      "ownServerPortClosed": true
+    },
+    "createdAt": "2026-11-23T06:41:10.330Z",
+    "environment": {
+      "abi": "127",
+      "automaticUpdates": false,
+      "browser": "authorized dedicated Laptop profile; demo group API only; no chat UI opened",
+      "health": "degraded; not whole-service healthy",
+      "node": "v22.23.5",
+      "singlePoller": true
+    },
+    "featureId": "profile-reply-context-followup",
+    "limits": {
+      "app": "unproven",
+      "destinationRuntime": "unproven",
+      "fullLocalVerify": "not run here",
+      "priorFailure": "Parent3671 communication failure364/367 preserved; not overwritten",
+      "slack": "unproven; no-fixture"
+    },
+    "riskCategories": [
+      "regression"
+    ],
+    "runId": "first-telegram-communication-failure-20261123",
+    "runnerFingerprint": "authorized-demo-user-driver-and-bot:baf3c33aa6af14f32ffe6b8a6501c4c5574c86683b2f6f124d5bfea857fcfe4a",
+    "scenarios": [
+      {
+        "description": "Numbered native reply changes nothing and the agent sends one registered reminder without an extra explanation",
+        "evidence": {
+          "channelId": "380",
+          "messageIds": [
+            "401",
+            "403",
+            "406"
+          ],
+          "scope": "Agent turn only; separate monitor failure below"
+        },
+        "id": "numbered-reply-agent-followup",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Quoted native reply changes nothing and the agent sends one registered reminder without an extra explanation",
+        "evidence": {
+          "channelId": "380",
+          "messageIds": [
+            "402",
+            "407",
+            "409"
+          ],
+          "scope": "Agent turn only; separate monitor failure below"
+        },
+        "id": "quoted-reply-agent-followup",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "The delivered reminders must settle their bound owner inputs; both remained open and false unanswered notices appeared",
+        "evidence": {
+          "channelId": "380",
+          "finding": "DF-0010",
+          "messageIds": [
+            "403",
+            "406",
+            "407",
+            "409",
+            "410",
+            "415"
+          ],
+          "openInboundIds": [
+            "403",
+            "407"
+          ]
+        },
+        "id": "delivered-reminder-settles-owner-obligation",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      },
+      {
+        "description": "Exact yes changes only the single target and preserves the separate batch",
+        "evidence": {
+          "channelId": "380",
+          "messageIds": [
+            "401",
+            "411",
+            "412"
+          ],
+          "scope": "Stored settings and delivered completion observed; existing legacy completion wording is not certified as plain"
+        },
+        "id": "exact-single-control",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Exact yes changes the two batch targets and leaves the source unchanged",
+        "evidence": {
+          "channelId": "380",
+          "destinationRuntime": "unproven",
+          "initialAcknowledgement": "unconfirmed audit record retained; later actual platform completion416 observed",
+          "messageIds": [
+            "402",
+            "414",
+            "416"
+          ]
+        },
+        "id": "exact-batch-control",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      }
+    ],
+    "scope": "Agent duplicate explanation improved in this exercise, but owner-facing communication is not clean because delivered reminders leave answer obligations open",
+    "surfaces": [
+      "telegram"
+    ],
+    "telegramVerdict": "FAIL"
+  },
+  "entry": {
+    "featureId": "profile-reply-context-followup",
+    "runId": "first-telegram-communication-failure-20261123",
+    "contentHash": "91a534d638b42db11dbd2247f884fe683da89805e7ccb58ec8ea141a10f4bd37",
+    "signature": "xH3iYlpUGpLCXsL3JYLcPfZk8mKMhUk2kINEpIiOMeq1Ew3jTasTv9NptTT1odHxpW6PuxM6yOAR0rzO4fg1Aw==",
+    "signerFingerprint": "baf3c33aa6af14f32ffe6b8a6501c4c5574c86683b2f6f124d5bfea857fcfe4a",
+    "surfaces": [
+      "telegram"
+    ],
+    "riskCategories": [
+      "regression"
+    ],
+    "createdAt": "2026-11-23T06:41:10.330Z",
+    "prevEntryHash": null
+  },
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA1T2YJ6sb5UuWk5GuefbtA2DaCpLfrHU0t38Won/gWV4=\n-----END PUBLIC KEY-----\n"
+}

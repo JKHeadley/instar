@@ -14173,10 +14173,14 @@ export function createRoutes(ctx: RouteContext): Router {
       if (!proposals.get(source, attempt.request.id)?.receipts.some(r => r.messageId === delivered)) {
         res.status(409).json({ ok: false, delivered: true, reason: 'question-no-longer-active', requestId: attempt.request.id }); return;
       }
+      const responseSettlement = attempt.settleRegisteredReply();
+      if (!responseSettlement) {
+        res.status(409).json({ ok: false, delivered: true, reason: 'question-no-longer-active', requestId: attempt.request.id }); return;
+      }
       res.json({ ok: true, requestId: attempt.request.id, confirmIn: Number(source), targetTopicIds: targets.map(t => t.target),
         expiresAt: attempt.request.expiresAt, echo: attempt.text, reminder: !attempt.created,
         questionDelivery: { kind: 'registered', topicId: Number(source), messageId: delivered },
-        settingsApplied: false, replyAlreadyDelivered: true });
+        settingsApplied: false, ...responseSettlement });
     } catch {
       attempt.onDelivery(null);
       res.status(502).json({ ok: false, reason: 'delivery-unconfirmed', requestId: attempt.request.id,
@@ -14376,10 +14380,14 @@ export function createRoutes(ctx: RouteContext): Router {
           message: 'The question arrived after it stopped being available. I need to check the current settings before asking again.' });
         return;
       }
+      const responseSettlement = attempt.settleRegisteredReply();
+      if (!responseSettlement) {
+        res.status(409).json({ ok: false, delivered: true, reason: 'question-no-longer-active', requestId: attempt.request.id }); return;
+      }
       res.json({ ok: true, expiresAt: attempt.request.expiresAt, requestId: attempt.request.id, targetTopicId: gate.key, echo: attempt.text,
         reminder: !attempt.created, superseded: false, ...(confirmIn !== null ? { confirmIn } : {}),
         questionDelivery: { kind: 'registered', topicId: echoTopic, messageId: delivered },
-        settingsApplied: false, replyAlreadyDelivered: true });
+        settingsApplied: false, ...responseSettlement });
     } catch (err) {
       attempt.onDelivery(null);
       res.status(502).json({ ok: false, reason: 'delivery-unconfirmed', requestId: attempt.request.id, error: 'I could not confirm that the question is ready to answer.' });

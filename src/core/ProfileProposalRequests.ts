@@ -2,7 +2,8 @@
  * Governed by profile-confirmation-clarity: only exact yes + a delivered reply id.
  */
 import { randomBytes } from 'node:crypto';
-import type { ProfileProposalOwnerTurns } from './ProfileProposalOwnerTurns.js';
+import type { ProfileProposalOwnerTurns, ProfileProposalOwnerTurnBinding } from './ProfileProposalOwnerTurns.js';
+import type { ProfileRegisteredReplyProof, ProfileResponseSettlement, ProfileReplySettlementStatus } from './profileProposalResponseSettlement.js';
 import type { ProfilePatchInput } from './topicProfileValidation.js';
 import type { ProfileWriteResult } from './topicProfileWriteSurface.js';
 
@@ -33,7 +34,7 @@ export interface ProfileProposal {
 }
 interface Attempt { id: string; text: string; done: Promise<void>; finish: () => void; onDelivery: (messageId: number | null) => void }
 interface Stored extends ProfileProposal { replyReservation?: string; constituents?: Stored[]; attempts: Map<string, Attempt>; ordinal: number; lastDeliveredSequence: number }
-export type ProposalSend = { ok: true; request: ProfileProposal; attemptId: string; text: string; created: boolean; ownerTurnReservation?: string; onDelivery: (messageId: number | null) => void }
+export type ProposalSend = { ok: true; request: ProfileProposal; attemptId: string; text: string; created: boolean; ownerTurnReservation?: string; onDelivery: (messageId: number | null) => void; settleRegisteredReply: () => ProfileResponseSettlement | null }
   | { ok: false; reason: 'send-budget' | 'fresh-proposal-needed' | 'invalid-format' | 'invalid-items' | 'invalid-owner-turn' };
 export interface ProposalReply { matched: boolean; result?: ProfileWriteResult; reason?: string }
 export interface ProposalFailureSummary {
@@ -50,6 +51,16 @@ const canonical = (v: unknown): string => {
 export const DEFAULT_PROFILE_PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
 
 export class ProfileProposalRequests {
+  private readonly registeredReplyProofs = new WeakSet<object>();
+  private registeredReplyHandler: ((proof: ProfileRegisteredReplyProof) => ProfileReplySettlementStatus) | null = null;
+  /** Server boot supplies the real monitor. No HTTP field can install a handler or proof. */
+  setRegisteredReplyHandler(handler: ((proof: ProfileRegisteredReplyProof) => ProfileReplySettlementStatus) | null): void {
+    this.registeredReplyHandler = handler;
+  }
+  ownsRegisteredReplyProof(proof: unknown): proof is ProfileRegisteredReplyProof {
+    return !!proof && typeof proof === 'object' && this.registeredReplyProofs.has(proof);
+  }
+
   private acknowledgmentClaims = new Set<string>();
   private acknowledgmentEligible = new Map<string, number>();
   private requests = new Map<string, Stored>();
@@ -171,10 +182,13 @@ export class ProfileProposalRequests {
     try { if (this.options.validateFormat && !this.options.validateFormat(text)) return { ok: false, reason: 'invalid-format' }; }
     catch { return { ok: false, reason: 'invalid-format' }; }
     let ownerTurnReservation: string | undefined;
+    let ownerTurnBinding: Readonly<ProfileProposalOwnerTurnBinding> | null = null;
     if (options.ownerTurn) {
       const o = options.ownerTurn;
       ownerTurnReservation = o.registry.claim(o.handle, { source: r.source, principal: o.principal, inboundId: o.inboundId }) ?? undefined;
       if (!ownerTurnReservation) return { ok: false, reason: 'invalid-owner-turn' };
+      ownerTurnBinding = o.registry.bindingForClaim(ownerTurnReservation);
+      if (!ownerTurnBinding) return { ok: false, reason: 'invalid-owner-turn' };
     } else if (!this.reserveNotice(r.source)) return { ok: false, reason: 'send-budget' };
     r.ordinal = ordinal;
     const sequence = (this.sequences.get(r.source) ?? 0) + 1;
@@ -183,6 +197,8 @@ export class ProfileProposalRequests {
     const done = new Promise<void>(resolve => { finish = resolve; });
     const id = randomBytes(12).toString('hex');
     let completed = false;
+    let registeredMessageId: number | null = null;
+    let settlement: ProfileResponseSettlement | null = null;
     const onDelivery = (messageId: number | null): void => {
       if (completed) return;
       completed = true;
@@ -203,6 +219,7 @@ export class ProfileProposalRequests {
         ...(delivered ? { messageId } : {}), ...(this.now() >= r.expiresAt ? { reason: 'expired' } : r.consumed ? { reason: 'already-consumed' } : !active ? { reason: 'request-unavailable' } : {}) });
       if (active && delivered) {
         r.receipts.push({ messageId: messageId!, text });
+        registeredMessageId = messageId!;
         r.lastDeliveredSequence = Math.max(r.lastDeliveredSequence, sequence);
         const failure = this.failures.get(r.source);
         if (failure?.requestId === r.id && failure.generation === this.generation && sequence > failure.sequence) this.failures.delete(r.source);
@@ -218,7 +235,26 @@ export class ProfileProposalRequests {
     };
     r.attempts.set(id, { id, text, done, finish, onDelivery });
     this.emit({ type: 'proposal-prepared', topic: r.source, targetTopic: r.target, requestId: r.id, attemptId: id, sequence, expiresAt: r.expiresAt });
-    return { ok: true, request: this.snapshot(r), attemptId: id, text, created, ...(ownerTurnReservation ? { ownerTurnReservation } : {}), onDelivery };
+    const settleRegisteredReply = (): ProfileResponseSettlement | null => {
+      // Do not turn a delivered-but-inactive receipt into a current response claim.
+      if (registeredMessageId === null || this.requests.get(r.id) !== r || r.consumed || this.now() >= r.expiresAt
+        || !r.receipts.some(receipt => receipt.messageId === registeredMessageId)) return null;
+      if (settlement) return copy(settlement);
+      if (!ownerTurnBinding) {
+        settlement = { replyAlreadyDelivered: false, replySettlement: { status: 'unbound' } };
+        return copy(settlement);
+      }
+      const proof: ProfileRegisteredReplyProof = Object.freeze({ generation: this.generation, attemptId: id,
+        requestId: r.id, ...ownerTurnBinding, deliveredMessageId: registeredMessageId });
+      this.registeredReplyProofs.add(proof);
+      let status: ProfileReplySettlementStatus = 'unavailable';
+      try { status = this.registeredReplyHandler?.(proof) ?? 'unavailable'; }
+      catch { this.emit({ type: 'proposal-response-bookkeeping-unavailable', topic: r.source, requestId: r.id, attemptId: id }); }
+      settlement = { replyAlreadyDelivered: true, replySettlement: { status } };
+      return copy(settlement);
+    };
+    return { ok: true, request: this.snapshot(r), attemptId: id, text, created,
+      ...(ownerTurnReservation ? { ownerTurnReservation } : {}), onDelivery, settleRegisteredReply };
   }
   private emit(event: Record<string, unknown>): void {
     try { this.options.audit?.(event); }
