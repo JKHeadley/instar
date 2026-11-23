@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "usage-pool-roots-fixture",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T01:06:48.449Z",
+  "artifactPath": "upgrades/side-effects/usage-pool-roots-fixture.md",
+  "artifactSha256": "857138bdcfb9e306da43f4d53e84976279a233d4ab8884de6fdd33198f09f32b",
+  "coveredFiles": [
+    "docs/specs/usage-pool-roots-fixture.eli16.md",
+    "tests/unit/UsageLedger.poolRoots.test.ts",
+    "upgrades/side-effects/usage-pool-roots-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only fixture ordering repair; no production behavior or assertions change; fully undone by revert.",
+  "eli16Path": "docs/specs/usage-pool-roots-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-pool-roots-fixture.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
