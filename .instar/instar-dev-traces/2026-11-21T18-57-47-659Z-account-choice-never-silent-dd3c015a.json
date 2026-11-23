@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "account-choice-never-silent",
+  "sessionId": "c83303f2-d7cf-4bef-ae48-6429c8611c56",
+  "timestamp": "2026-11-21T18:57:47.659Z",
+  "artifactPath": "upgrades/side-effects/account-choice-never-silent.md",
+  "artifactSha256": "5e7898fe864d0111429a36077e1e54b2ec4dd35403680d37878e092e1792b0cf",
+  "coveredFiles": [
+    "docs/specs/create-agent-accounts-and-always-on.md",
+    "src/install/accountChoice.ts",
+    "tests/unit/install-account-choice.test.ts",
+    "upgrades/next/account-choice-never-silent.md",
+    "upgrades/side-effects/account-choice-never-silent.eli16.md",
+    "upgrades/side-effects/account-choice-never-silent.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One pure install-step branch, 3 files, fully reverted by a revert; no gate, migration or credential handling",
+  "eli16Path": "upgrades/side-effects/account-choice-never-silent.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/account-choice-never-silent.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

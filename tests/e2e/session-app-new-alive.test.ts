@@ -180,6 +180,15 @@ describe('a New session with its own app conversation — production wiring', ()
     const row = (convs.body.conversations as Array<{ id: string; platform: string; title: string }>).find((c) => c.platform === 'app' && c.title === 'Plans');
     expect(row, JSON.stringify(convs.body)).toBeTruthy();
 
+    // The production session-create path records historical provenance even with Chief placement unavailable.
+    const recorded = server.appConversations!.store.getCreationRecord(row!.id);
+    expect(recorded?.creationContext?.source.kind).toBe('session');
+    expect(recorded?.creationContext?.source.requestId).toBeTruthy();
+    expect(Object.hasOwn(recorded!.creationContext!, 'parentConversationKey')).toBe(false);
+    const preview = await signed('GET', '/mobile/conversations/parent-preview');
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body).toMatchObject({ dryRun: true, canApply: false });
+
     // The session is real and registered on it: the session list names this conversation as its own.
     const list = await bearer(request(app).get('/sessions'));
     const s = (list.body as Array<{ tmuxSession: string; conversationRef?: string; triggeredBy?: string }>).find((x) => x.conversationRef === `app:${row!.id}`);
