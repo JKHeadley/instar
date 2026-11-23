@@ -1,0 +1,22 @@
+# The public "other addresses" list on the document page names only addresses where a computer is set up
+
+<!-- bump: patch -->
+
+## What Changed
+
+SEC-169. A document page opened on an address where the browser has no key offers a way back to the computer's own address (member-browser-any-computer §3.6). It gets that list from the public route `GET /docs/_join/addresses`, which used to return every pool machine's document address to anyone. Each machine counts wrong dashboard PIN guesses on its own, so that list let a stranger find every machine and multiply their PIN guessing rate by the number of machines (SEC-150). The route now returns only the addresses where a computer of either kind is set up and still counts. That means each standing joined computer's `host` and each live phone-linked computer's own host, read from the replicated team log by the new pure helper `computerHomeHosts`. With no computers set up, or no readable team log, it returns an empty list. A computer's key lives only on its own address, so the way back is unchanged for every member's computer. The documents feature is dev-gated, so the fleet is unaffected until it is turned on.
+
+## What to Tell Your User
+
+- **Machine addresses kept private**: "The document page no longer shows strangers the addresses of all my computers. It only offers the way back to an address where one of your team's computers is actually set up."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| The public way-back list names only addresses where a computer is set up | Automatic |
+
+## Evidence
+
+- `tests/unit/sec169-join-addresses-homes.test.ts` (new): no computers gives no address. A standing joined computer names only its own host. An ended computer, or one whose person left, names nothing. A phone-linked computer names its own host from the signed body, not the phone's. Expired, unbound or unreadable phone links name nothing.
+- `tests/integration/documents-join.test.ts`: the route returns `[]` with no computer. After a real join it returns only that address, not the other machine's. A phone-linked computer adds its own address, and both drop off when the person leaves the team.
