@@ -390,6 +390,7 @@ export function pickInternalCallAccount(
     const room = accountRoom(a, nowMs);
     return !room.walled && room.usedPct !== null;
   });
+  // Apply deadline preference only after eligibility; it cannot revive a full account.
   const ordered = orderByRoom(candidates, nowMs);
   if (framework === CODEX_CLI_FRAMEWORK) {
     ordered.sort((a, b) => compareCodexWeeklyReset(a, b, nowMs));
