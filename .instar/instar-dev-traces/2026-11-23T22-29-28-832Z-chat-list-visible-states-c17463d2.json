@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "chat-list-visible-states",
+  "sessionId": "2298638c-0f8f-48bb-8203-4470cf1831bf",
+  "timestamp": "2026-11-23T22:29:28.832Z",
+  "artifactPath": "upgrades/side-effects/chat-list-visible-states.md",
+  "artifactSha256": "71c42110c14c56b5493f736b4853d12d7fab325ad0d9262c18a0271864b11a29",
+  "coveredFiles": [
+    "dashboard/console/browser-device.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/audits/chat-list-read-states.md",
+    "tests/unit/console-chat-list-states.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/chat-list-visible-states.md",
+    "upgrades/side-effects/chat-list-visible-states.eli16.md",
+    "upgrades/side-effects/chat-list-visible-states.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible repair of existing read UI and obsolete read cancellation; no server permission, proof, enrollment, send, durable schema or policy change. Live revocation still deletes its key; cancelled obsolete reads cannot mutate a new record or page.",
+  "eli16Path": "upgrades/side-effects/chat-list-visible-states.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chat-list-visible-states.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build:STANDARD",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "complete",
+        "verified": false
+      },
+      {
+        "name": "iterative-converging-audit",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 4
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/audits/chat-list-read-states.md",
+      "iterations": 4,
+      "verified": true
+    }
+  }
+}

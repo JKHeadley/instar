@@ -89,6 +89,11 @@ class ChatsPage {
     this.status = null;
     this.rows = [];
     this.meta = { nextCursor: null, failed: [] };
+    this.listRequest = null;
+    this.listHasLoaded = false;
+    this.listError = null;
+    this.listRevision = 0;
+    this.listFeatureOff = false;
     this.view = null;           // the open conversation
     this.tabId = (globalThis.crypto && globalThis.crypto.randomUUID) ? globalThis.crypto.randomUUID() : String(Math.random());
     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
@@ -340,13 +345,16 @@ class ChatsPage {
   }
 
   // ── a refused signed call (§4.6) ──
-  async handle401() {
-    const d = await this.device.checkAfter401();
-    if (!this.live) return 'gone';
+  async handle401(signal) {
+    const owner = this.pageEl;
+    const current = () => this.live && !signal?.aborted && this.pageEl === owner;
+    const d = await this.device.checkAfter401({ signal });
+    if (!current() || d.show === 'cancelled') return 'gone';
     if (d.deleted) { this.clearUnfinished(); this.teardownApp(); this.paintSetup(DELETED_REASON[d.show] || DELETED_REASON.removed); return 'gone'; }
     if (d.show === 'elsewhere') {
-      this.teardownApp();
       const old = d.machineId ? await readRecord(d.machineId).catch(() => null) : null;
+      if (!current()) return 'gone';
+      this.teardownApp();
       const replace = old && old.status === 'active' && old.keyPair ? { record: old } : null;
       const nick = this.status && this.status.nickname ? this.status.nickname : 'this machine';
       this.paintSetup(`This browser was set up on ${d.nickname || 'another machine'}; this address is now served by ${nick}.`, { replace });
@@ -367,9 +375,11 @@ class ChatsPage {
   /** A signed JSON call with the 401 rule and the 5-retry backoff for a transient refusal. */
   async call(method, path, opts = {}) {
     for (;;) {
+      if (!this.live || method === 'GET' && opts.signal?.aborted) return { ok: false, gone: true };
       const r = await this.device.call(method, path, opts);
+      if (method === 'GET' && opts.signal?.aborted) return { ...r, gone: true };
       if (r.status !== 401) { if (r.ok) this.retries401 = 0; return r; }
-      const what = await this.handle401();
+      const what = await this.handle401(method === 'GET' ? opts.signal : undefined);
       if (what !== 'retry') return { ...r, gone: true };
       await new Promise((res) => this.later(res, 500 * 2 ** this.retries401));
       if (!this.live) return { ...r, gone: true };
@@ -382,9 +392,12 @@ class ChatsPage {
     const record = this.device.record;
     this.ownIds = loadOwn(record && record.deviceId);
     const skew = this.device.clock.skewMinutes();
-    this.listEl = el('div', { class: 'chat-rows', role: 'list' });
+    this.listEl = el('div', { class: 'chat-rows', role: 'list', tabindex: '-1' });
     this.moreBtn = el('button', { class: 'btn-quiet chat-more', type: 'button', text: 'Show more', hidden: true });
     this.moreBtn.addEventListener('click', () => this.loadList(true));
+    this.listStatusEl = el('p', { class: 'card-line chat-muted chat-list-status', role: 'status', hidden: true });
+    this.listRetryEl = el('button', { class: 'btn-quiet chat-list-retry', type: 'button', text: 'Try again', hidden: true });
+    this.listRetryEl.addEventListener('click', () => { if (this.listError) void this.loadList(this.listError.more); });
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
     // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
@@ -392,7 +405,8 @@ class ChatsPage {
     for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
     this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
-    newBtn.addEventListener('click', () => this.newConversation());
+    this.newBtn = newBtn;
+    newBtn.addEventListener('click', () => { if (!this.listFeatureOff) this.newConversation(); });
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
     forget.addEventListener('click', () => this.forgetBrowser());
     this.viewEl = el('div', { class: 'chat-view' }, el('p', { class: 'chat-pick', text: 'Pick a conversation.' }));
@@ -402,7 +416,7 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
+        this.viewToggleEl, this.listPinNoteEl, this.listStatusEl, this.listRetryEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
@@ -410,21 +424,96 @@ class ChatsPage {
     this.onQuery(this.ctxQuery());
   }
   teardownApp() {
+    this.listRequest?.controller?.abort();
     this.releaseLeadership();
     if (this.view) this.closeView();
     this.pageEl = null;
+    this.listRequest = null;
+    this.listError = null;
+    this.listHasLoaded = false;
+    this.listFeatureOff = false;
   }
   ctxQuery() { const h = location.hash; const i = h.indexOf('?'); return i < 0 ? '' : h.slice(i + 1); }
 
-  async loadList(more) {
-    const cursor = more && this.meta.nextCursor ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : '';
-    this.spent();
-    const r = await this.call('GET', `/mobile/conversations?scope=pool&limit=50${cursor}`);
-    if (!this.live || r.gone) return;
-    if (r.ok) this.applyList(r.data, more);
-    else if (!more && !this.rows.length) setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: r.status === 503 ? OFF_TEXT : 'Couldn\'t load the conversations right now.' }));
+  listReadable(data) {
+    return Array.isArray(data?.conversations) && listRows(data).length === data.conversations.length
+      && (data.nextCursor == null || typeof data.nextCursor === 'string' && data.nextCursor.length > 0);
+  }
+  paintListReadState() {
+    if (!this.listStatusEl) return;
+    const request = this.listRequest;
+    const error = this.listError;
+    const hasRows = this.rows.length > 0 || (this.listPins?.length || 0) > 0;
+    let text = '';
+    if (error) text = error.off ? OFF_TEXT + (hasRows ? ' The last loaded list is still shown.' : '') : error.unreadable ? 'The conversation list could not be read. Try again.'
+      : error.more ? 'More conversations could not be loaded. Try again.'
+        : hasRows ? 'The list could not be refreshed. Your conversations are still shown.' : 'Conversations could not be loaded. Try again.';
+    else if (request) text = this.listFeatureOff ? 'Checking whether conversations are available…' : request.waiting ? 'Taking longer than usual to load conversations. The agent may be busy.'
+      : request.more ? 'Loading more conversations…' : this.listHasLoaded ? 'Refreshing conversations…' : 'Loading conversations…';
+    this.listStatusEl.textContent = text;
+    this.listStatusEl.hidden = !text;
+    this.listRetryEl.hidden = !error && !request?.retry;
+    this.listRetryEl.textContent = request?.retry ? 'Trying again…' : 'Try again';
+    this.listRetryEl.disabled = Boolean(request);
+    this.moreBtn.disabled = Boolean(request) || this.listFeatureOff;
+    this.newBtn.disabled = this.listFeatureOff;
+    if (error && !hasRows) setKids(this.listEl);
+    this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
+    this.listEl.setAttribute('aria-busy', String(Boolean(request)));
+  }
+  loadList(more, background = false) {
+    if (!this.live || !this.listEl?.isConnected) return Promise.resolve({ gone: true });
+    more = Boolean(more && this.meta.nextCursor);
+    const owner = this.listEl;
+    const path = `/mobile/conversations?scope=pool&limit=50${more ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : ''}`;
+    // Initial open, retry and scheduled refresh share one signed read. Different pages wait their turn.
+    if (this.listRequest) return this.listRequest.path === path ? this.listRequest.promise
+      : this.listRequest.promise.then(() => this.listEl === owner && owner.isConnected ? this.loadList(more, background) : { gone: true });
+    const request = { path, more, owner: this.listEl, revision: this.listRevision, waiting: false, retry: Boolean(this.listError), retryFocused: document.activeElement === this.listRetryEl, promise: null };
+    this.listRequest = request;
+    this.listError = null;
+    this.paintListReadState();
+    const slow = this.later(() => {
+      if (this.listRequest === request && request.owner.isConnected) { request.waiting = true; this.paintListReadState(); }
+    }, 10000);
+    const controller = this.abortable();
+    request.controller = controller;
+    let deadline;
+    const timeout = new Promise(resolve => {
+      deadline = this.later(() => { controller.abort(); resolve({ ok: false, status: 0, timedOut: true }); }, 20000);
+    });
+    request.promise = (async () => {
+      let result;
+      try {
+        if (!background) this.spent();
+        try { result = await Promise.race([this.call('GET', path, { signal: controller.signal }), timeout]); } catch { result = { ok: false, status: 0 }; }
+        if (!this.live || result.gone || this.listEl !== request.owner || !request.owner.isConnected) return { ...result, gone: true };
+        if (this.listRevision !== request.revision) { result = { ...result, stale: true }; return result; }
+        if (result.ok && !this.listReadable(result.data)) result = { ...result, ok: false, status: 0, unreadable: true };
+        if (result.ok) this.applyList(result.data, more);
+        else if (this.listRevision === request.revision) {
+          this.listError = { more, unreadable: result.unreadable, off: result.status === 503 && result.data?.error === 'native-conversations-off' };
+          if (this.listError.off) { this.listFeatureOff = true; this.paintList(); }
+        }
+        return result;
+      } finally {
+        clearTimeout(slow); this.timers.delete(slow);
+        clearTimeout(deadline); this.timers.delete(deadline); this.aborts.delete(controller);
+        if (this.listRequest === request) {
+          this.listRequest = null;
+          if (this.live && request.owner.isConnected) {
+            const restoreFocus = request.retryFocused && (document.activeElement === this.listRetryEl || document.activeElement === document.body);
+            this.paintListReadState();
+            if (restoreFocus && result?.ok && !result.stale) (this.listEl.querySelector('.chat-row') || this.listEl).focus();
+          }
+        }
+      }
+    })();
+    return request.promise;
   }
   applyList(data, more) {
+    if (!this.listReadable(data)) { this.listError = { more, unreadable: true }; this.paintListReadState(); return; }
+    this.listHasLoaded = true; this.listError = null; this.listFeatureOff = false; this.listRevision++;
     const rows = listRows(data);
     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
     // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
@@ -435,6 +524,7 @@ class ChatsPage {
     const meta = listMeta(data);
     this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
     this.paintList();
+    this.paintListReadState();
     if (!more) void this.loadHierarchy();
   }
 
@@ -488,6 +578,8 @@ class ChatsPage {
   }
   paintList() {
     if (!this.listEl) return;
+    const active = document.activeElement;
+    const focusedHref = this.listEl.contains(active) && active.matches?.('.chat-row') ? active.getAttribute('href') : null;
     const open = this.view ? refString(this.view.ref) : '';
     if (this.view && this.view.titleEl) {
       const row = this.rows.find((r) => r.key === open);
@@ -499,12 +591,16 @@ class ChatsPage {
       this.viewToggleEl.hidden = !this.hierarchy;
       for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
     }
-    if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
+    if (!this.rows.length && !(this.listPins?.length)) {
+      const text = !this.listHasLoaded || this.listFeatureOff ? '' : this.meta.nextCursor ? 'No conversations on this page. More pages are available.'
+        : this.meta.failed.length ? 'No conversations found on the machines that answered.' : 'No conversations yet. Use New conversation to start one.';
+      setKids(this.listEl, text ? el('p', { class: 'card-line chat-muted', text }) : null);
+    }
     else {
       const pinsOn = Array.isArray(this.listPins);
       const { pinned, rest } = splitPinned(this.rows, pinsOn ? this.listPins : []);
       const rowEl = (r, isPinned) => {
-        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem' },
+        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem', ...(this.listFeatureOff ? { 'aria-disabled': 'true', tabindex: '-1' } : {}), onclick: event => { if (this.listFeatureOff) event.preventDefault(); } },
           el('span', { class: 'chat-row-main' },
             el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: r.title }), el('span', { class: `chat-kind chat-kind-${r.kind}`, text: r.kindLabel })),
             el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
@@ -513,7 +609,7 @@ class ChatsPage {
             // The conversation on screen is being read (and reported read, which clears the count on the phone too): no badge for it.
             r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null));
         if (!pinsOn || !listPinRefOf(r)) return link;
-        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
+        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', disabled: this.listFeatureOff, text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
         btn.addEventListener('click', () => this.setListPin(r, !isPinned, btn));
         return el('div', { class: 'chat-row-wrap' }, link, btn);
       };
@@ -566,10 +662,14 @@ class ChatsPage {
       } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
       setKids(this.listEl, kids);
     }
-    this.moreBtn.hidden = !this.meta.nextCursor;
+    this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
     const failed = this.meta.failed || [];
     this.failedEl.hidden = failed.length === 0;
     this.failedEl.textContent = failed.length ? `Not shown: conversations on ${failed.map((f) => f.machineId).join(', ')} (that machine did not answer).` : '';
+    if (focusedHref) {
+      const target = [...this.listEl.querySelectorAll('.chat-row')].find(row => row.getAttribute('href') === focusedHref && row.getAttribute('aria-disabled') !== 'true');
+      (target || this.listEl).focus({ preventScroll: true });
+    }
   }
 
   /** Pin or unpin a whole conversation for this person (conversation-list-pins), then refresh the first page. */
@@ -1446,15 +1546,18 @@ class ChatsPage {
   }
 
   async runTask(task) {
+    const listOwner = task.mode === 'list' ? this.listEl : null;
     const t0 = now();
-    this.scheduler.start(task, t0);
+    const sharedListRead = task.mode === 'list' && this.listRequest?.path === this.taskPath(task);
+    this.scheduler.start(task, t0, { spend: !sharedListRead });
     // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
     const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
-    if (!this.live) return;
+    try { r = task.mode === 'list' ? await this.loadList(false, true) : await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
+    if (!this.live || task.mode === 'list' && this.listEl !== listOwner) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     if (r.gone) return;
+    if (r.stale) { this.post({ type: 'result', backoff: this.scheduler.snapshot(), union: this.union }); this.loop(); return; }
     if (task.mode === 'events' && r.status === 404) {
       (this.fallbacks || (this.fallbacks = new Set())).add(task.ref);
       this.scheduler.fallBack(task.ref, now());
@@ -1479,7 +1582,7 @@ class ChatsPage {
         if (Array.isArray(r.data.events) && r.data.events.length >= 100) this.scheduler.bump(task.ref, now());
       }
       this.post(msg);
-      this.applyResult(msg);
+      if (task.mode !== 'list') this.applyResult(msg);
     } else this.post({ type: 'result', backoff: this.scheduler.snapshot(), union: this.union });
     this.loop();
   }
