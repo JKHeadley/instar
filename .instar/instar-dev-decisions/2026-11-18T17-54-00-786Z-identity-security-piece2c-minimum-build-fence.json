@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-18T17:54:00.786Z",
+  "slug": "identity-security-piece2c-minimum-build-fence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 476,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/machine.ts",
+      "src/commands/server.ts",
+      "src/core/UpdateChecker.ts",
+      "src/core/identityBuildFence.ts",
+      "src/core/ownerRecordStore.ts",
+      "src/core/ownerRecordSync.ts",
+      "src/core/ownerRecordWiring.ts",
+      "src/data/awareness/owner-record.md",
+      "src/server/machineRoutes.ts",
+      "src/server/ownerRecordRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 465,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "owner-record-fence-notice: one notice per distinct below/unconfirmed list, saved in the ledger; under sustained pressure it is raised once and never repeated (boundK 1)"
+    }
+  },
+  "verdict": "blocked"
+}

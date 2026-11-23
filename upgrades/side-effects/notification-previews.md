@@ -64,3 +64,10 @@ Not required for Tier1. One independent SMALL review concurred after the refresh
 ## Class-Closure Declaration
 
 No agent-authored-artifact defect — not applicable. No self-triggered controller was added or modified.
+
+
+## Main Merge Conflict Repair — 2026-11-23
+
+Merged current main aa1f50b67876c8f66621c85df1bdbf145c0d66af normally after the coordinator confirmed a supported hold with no active run or reservation. The CSS conflict contained only independent additions after an identical base. Both complete additions are retained: this candidate's styles and main's Needs you grouping styles. Any Git directory-rename suggestion for this candidate's release fragment was corrected by preserving its original bytes under upgrades/next. No action, eligibility, permission or source model was changed by the resolution. Independent review concurred. Focused checks and browser evidence are recorded separately before the new exact-head handoff; earlier full results do not clear this new candidate.
+
+Current repaired-candidate evidence: 179 focused checks and 4 browser width/theme cases passed; independent SMALL review concurred. These are supporting checks; the new exact head still requires normal complete verification.

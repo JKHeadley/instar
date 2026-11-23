@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "notification-previews",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T11:16:56.862Z",
+  "artifactPath": "upgrades/side-effects/notification-previews.md",
+  "artifactSha256": "c66b1c4178b9e07e79ca4c1418c011193a20a270998f237fedded4f0689663af",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/notifications.js",
+    "docs/specs/notification-previews.eli16.md",
+    "tests/unit/console-notifications.test.ts",
+    "upgrades/next/notification-previews.md",
+    "upgrades/side-effects/notification-previews.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Normal main merge preserves both independent CSS additions and original unreleased fragment; no authority or behavior change from the resolution.",
+  "eli16Path": "docs/specs/notification-previews.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notification-previews.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "merge-integrity",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
