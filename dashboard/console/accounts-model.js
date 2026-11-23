@@ -82,6 +82,12 @@ export function usageWindows(q, now = Date.now()) {
   return out;
 }
 
+/** Future weekly reset only; short-window and specialist limits do not reorder the account list. */
+export function nextWeeklyReset(q, now = Date.now()) {
+  const times = usageWindows(q, now).filter((w) => w.key === 'weekly').map((w) => Date.parse(w.resetsAt)).filter((t) => Number.isFinite(t) && t > now);
+  return times.length ? Math.min(...times) : null;
+}
+
 /** The tightest usage window on a reading: { pct, label, resetsAt, second }. */
 export function tightest(q, now = Date.now()) {
   const wins = usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, label, resetsAt }) => ({ pct, label, resetsAt }));
@@ -277,7 +283,7 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
     const windows = usageWindows(g.reading, now).map((w) => windowRow(w, now));
     const stale = g.readingAt && now - g.readingAt > READING_STALE_MS;
     return {
-      ...g, tight: t, stale, windows,
+      ...g, tight: t, stale, windows, weeklyResetAt: nextWeeklyReset(g.reading, now),
       inUse: Boolean(inUse && inUse.activeAccountId === g.id),
       readingAge: g.readingAt ? ago(g.readingAt, now) : null,
       line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
@@ -288,9 +294,9 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       // warning-path: row
       tone: t ? usageTone(t.pct) : null,
     };
-  }).sort((a, b) => (frameworkName(a.framework)).localeCompare(frameworkName(b.framework)) || (b.tight ? b.tight.pct : -1) - (a.tight ? a.tight.pct : -1)
-    // Same name tie-break as the server (DF-0001), so equal accounts never swap places between refreshes.
-    || String(a.name || '').localeCompare(String(b.name || '')));
+  }).sort((a, b) => (a.weeklyResetAt ?? Infinity) - (b.weeklyResetAt ?? Infinity)
+    // Stable ties keep equally timed or unknown accounts from moving between refreshes.
+    || String(a.name || '').localeCompare(String(b.name || '')) || String(a.id).localeCompare(String(b.id)));
 
   const accountKeys = accounts.map((a) => verifiedDisplayName(a.name, a.id)
     ? `${a.name.toLocaleLowerCase()}\u0000${(a.email || '').toLocaleLowerCase()}` : null);
