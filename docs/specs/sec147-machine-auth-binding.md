@@ -126,7 +126,7 @@ simplestRobustRoute: advance the three stages by release defaults, so the pool n
 - **fleet:** stage 1 ships default-on in its release; stages 2 and 3 are each a later reviewed release that raises the default, and each needs the Chief of Staff's yes before it starts.
 - **graduation criterion:** stage 1 graduates when Echo's pool has run it for 7 days with no refused request from any pool machine and every peer channel healthy; stage 3 is not proposed until every machine sends v2 and the counters show no v1-only request from a pool machine for a stretch of real traffic, with the lead reachable throughout.
 - **dark-window:** none for stage 1, which only adds acceptance; stages 2 and 3 do not exist in this release.
-- **ladder:** not applicable (a default-on security fix staged across releases, not a feature)
+- **ladder:** not applicable: a default-on security fix staged across releases, not a feature.
 
 ## Rollback
 

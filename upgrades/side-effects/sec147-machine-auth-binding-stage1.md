@@ -24,3 +24,6 @@ Revert the commit. Nothing persists: the counters are in memory.
 ## Second-pass review
 
 **Reviewer:** independent Claude reviewer subagent. Verdict: concur after two rounds. Round 1 found that a rejection could be signed for a request already run or outside its window; fixed with a read-only replay check before signing and a rejection bound to one delivery (nonce, body hash, v2 signature hash). Round 2 concurred and set two stage-2 completion items, now in the spec: the sender compares all three fields of a rejection, and a test drives a bound and a mis-bound request through the real WebSocket upgrade.
+
+## Repair after Local Verify (2026-11-23)
+The full run failed one unit test, `tests/unit/feature-ladders-coverage.test.ts`: the spec's ladder line said "not applicable (reason)", and the check accepts only "not applicable: reason". The line now uses that form. No code changed, and the branch was brought up to date with main.
