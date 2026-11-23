@@ -15,13 +15,14 @@ import {
 } from './WorkBoardService.js';
 import { WorkBoardPickupController, type DeliverOutcome } from './WorkBoardPickupController.js';
 import { WorkBoardRequestGate, type RequestGateDeps } from './WorkBoardRequestGate.js';
-import { WORK_CARD_RECORD_KIND, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
+import { WORK_CARD_RECORD_KIND, cardConversationKey, workCardRecordStoreSchema, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
+import type { AppCreationContext } from './AppCreationContext.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { createHash } from 'node:crypto';
 
 export interface WorkBoardConversationSeam {
   /** Create the card's conversation with a derived key (idempotent). */
-  create: (cardId: string, conversationKey: string, title: string) => void;
+  create: (cardId: string, conversationKey: string, title: string, creationContext?: AppCreationContext) => void;
   exists: (conversationKey: string) => boolean;
   /** Append one agent-role message carrying `systemSource: 'work-board'`; a repeat of the same id is a no-op. Throws on a credential hit. */
   appendSystemLine: (conversationKey: string, lineId: string, text: string) => void;
@@ -47,6 +48,20 @@ export interface WorkBoardConversationSeam {
   noteEventIds?: (conversationKey: string) => Array<{ eventId: string; at: string }>;
   /** Is the RECORDING conversation's session live (app, Telegram topic or Slack thread)? null = this wiring cannot tell (treated as live: no second worker is ever started on a guess). */
   recordingSessionLive?: (conversationKey: string) => boolean | null;
+}
+
+/** Locally held immutable card evidence; a proposal source, never placement authority. */
+export interface WorkBoardCreationEvidence {
+  conversationKey: string;
+  cardId: string;
+  creationContext: AppCreationContext;
+  conflict: boolean;
+}
+
+export interface WorkBoardCreationEvidenceSnapshot {
+  version: number;
+  complete: boolean;
+  items: ReadonlyArray<WorkBoardCreationEvidence>;
 }
 
 export interface WorkBoardRuntimeSeams {
@@ -94,6 +109,10 @@ export class WorkBoardRuntime {
   private readonly pendingNotes = new Map<string, Map<string, string>>();
   private notesSeeded = false;
   private readonly bootMs: number;
+  private readonly creationEvidence = new Map<string, WorkBoardCreationEvidence>();
+  private creationEvidenceVersion = 0;
+  private creationEvidenceReady = false;
+  private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
   constructor(private readonly seams: WorkBoardRuntimeSeams) {
@@ -359,7 +378,12 @@ export class WorkBoardRuntime {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.creationEvidenceReady = false;
     this.svc.rebuild();
+    this.creationEvidence.clear();
+    this.bumpCreationEvidence();
+    for (const cardId of this.svc.cardIds()) this.refreshCreationEvidence(cardId);
+    this.creationEvidenceReady = true;
     // Boot is not an ownership change: start from the holder as it is now, so a plain restart never
     // spends a failure park's one automatic re-try.
     const holder = this.seams.leaseHolder();
@@ -377,7 +401,11 @@ export class WorkBoardRuntime {
     if (!this.started) return;
     // Switched off live: the records still land in the index (they are data, and re-enabling must
     // show them), but nothing is created, noted or handed over.
-    if (!this.seams.enabled()) { this.svc.apply(entries.map((e) => { const d = e.data as Record<string, unknown>; return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) }; })); return; }
+    if (!this.seams.enabled()) {
+      const changed = this.svc.apply(entries.map((e) => { const d = e.data as Record<string, unknown>; return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) }; }));
+      for (const id of changed) this.refreshCreationEvidence(id);
+      return;
+    }
     const union: UnionEntry[] = entries.map((e) => {
       const d = e.data as Record<string, unknown>;
       return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) };
@@ -385,6 +413,7 @@ export class WorkBoardRuntime {
     const before = new Set(this.svc.cardIds());
     const changed = this.svc.apply(union);
     if (!changed.length) return;
+    for (const id of changed) this.refreshCreationEvidence(id);
     for (const u of union) {
       const d = u.data;
       if (fromPeer && typeof d.cardId === 'string' && typeof d.recordType === 'string') this.afterWrite(d.cardId, d.recordType as WorkRecordType, d, false);
@@ -397,6 +426,7 @@ export class WorkBoardRuntime {
 
   /** After any record lands (local write, or a peer's record applied live). */
   private afterWrite(cardId: string, type: WorkRecordType, data: Record<string, unknown>, local: boolean): void {
+    if (type === 'created' || type === 'tap') this.refreshCreationEvidence(cardId);
     if (type === 'dispatched' && (data.outcome === 'injected' || data.outcome === 'spawned')) {
       // Every machine writes its own note from the same replicated record (§6 "Other sessions can see it").
       if (!local) { try { this.seams.ledgerNote(cardId, String(data.for)); } catch { /* @silent-fallback-ok: best-effort note; the pickup is unaffected */ } }
@@ -424,9 +454,70 @@ export class WorkBoardRuntime {
   ensureConversation(cardId: string): void {
     const v = this.svc.view(cardId);
     if (!v || !v.card.created || v.card.redacted) return;
+    this.refreshCreationEvidence(cardId);
     if (this.seams.conversation.exists(v.card.conversationKey)) return;
-    try { this.seams.conversation.create(cardId, v.card.conversationKey, v.card.title); }
+    const evidence = this.creationEvidence.get(v.card.conversationKey);
+    try { this.seams.conversation.create(cardId, v.card.conversationKey, v.card.title, evidence?.creationContext); }
     catch (err) { /* @silent-fallback-ok: logged; the card shows "waiting for the chat" and the next write or boot creates it (the key is derived) */ this.seams.log?.('work-board-conversation-create-failed', { cardId, error: (err as Error)?.message }); }
+  }
+
+  /** Exact card-derived identity lookup. Reads do not create chats, scan journals or repair state. */
+  creationEvidenceForConversation(conversationKey: string): WorkBoardCreationEvidence | null {
+    const key = conversationKey.startsWith('app:') ? conversationKey.slice(4) : conversationKey;
+    return this.creationEvidence.get(key) ?? null;
+  }
+
+  creationEvidenceGeneration(): number { return this.creationEvidenceVersion; }
+
+  creationEvidenceSnapshot(): WorkBoardCreationEvidenceSnapshot {
+    return { version: this.creationEvidenceVersion, complete: this.started && this.seams.enabled() && this.creationEvidenceReady, items: this.creationEvidenceItems };
+  }
+
+  /** Called only by existing boot/write paths; the immutable created record, not the edited fold. */
+  private refreshCreationEvidence(cardId: string): void {
+    const key = cardConversationKey(cardId);
+    const view = this.svc.view(cardId);
+    const prior = this.creationEvidence.get(key);
+    if (!view?.card.created || view.card.redacted || view.card.conversationKey !== key) {
+      if (this.creationEvidence.delete(key)) this.bumpCreationEvidence();
+      return;
+    }
+    const contexts: AppCreationContext[] = [];
+    for (const record of this.svc.recordsOf(cardId)) {
+      if (record.d.recordType !== 'created' || record.d.cardId !== cardId) continue;
+      const valid = workCardRecordStoreSchema.validate(record.d, { countDroppedField: () => {} } as never);
+      if (!valid) continue;
+      const source = valid.source as { conversationKey?: unknown } | undefined;
+      const context: AppCreationContext = {
+        v: 1,
+        source: {
+          kind: 'work-board-card', cardId,
+          ...(record.origin && record.origin.length <= 256 ? { originMachineId: record.origin } : {}),
+          ...(typeof source?.conversationKey === 'string' && source.conversationKey.length > 0 && source.conversationKey.length <= 256 && !/[\u0000-\u001f\u007f]/.test(source.conversationKey) ? { sourceConversationKey: source.conversationKey } : {}),
+          ...(typeof valid.projectKey === 'string' ? { projectKey: valid.projectKey } : {}),
+        },
+      };
+      Object.freeze(context.source);
+      contexts.push(Object.freeze(context));
+    }
+    if (!contexts.length) {
+      if (this.creationEvidence.delete(key)) this.bumpCreationEvidence();
+      return;
+    }
+    const first = contexts[0]!;
+    const signature = JSON.stringify(first);
+    // This conservative local observation does not repair the underlying card-key replacement substrate.
+    const conflict = prior?.conflict === true || contexts.some((context) => JSON.stringify(context) !== signature)
+      || (prior !== undefined && JSON.stringify(prior.creationContext) !== signature);
+    const next = Object.freeze({ conversationKey: key, cardId, creationContext: first, conflict });
+    if (prior && JSON.stringify(prior) === JSON.stringify(next)) return;
+    this.creationEvidence.set(key, next);
+    this.bumpCreationEvidence();
+  }
+
+  private bumpCreationEvidence(): void {
+    this.creationEvidenceVersion++;
+    this.creationEvidenceItems = Object.freeze([...this.creationEvidence.values()]);
   }
 
   private ensureConversations(): void { for (const id of this.svc.cardIds()) this.ensureConversation(id); }

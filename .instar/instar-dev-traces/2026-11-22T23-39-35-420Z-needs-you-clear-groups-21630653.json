@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "needs-you-clear-groups",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-22T23:39:35.420Z",
+  "artifactPath": "upgrades/side-effects/needs-you-clear-groups.md",
+  "artifactSha256": "721209f7768ea117d62605c594a4b5c951450d0e4aac9c658d3e03b6fe7d8f6a",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/needs-strip.js",
+    "dashboard/console/plans-model.js",
+    "docs/specs/needs-you-clear-groups.eli16.md",
+    "tests/unit/console-needs-pages.test.ts",
+    "tests/unit/console-plans.test.ts",
+    "tests/unit/needs-read.test.ts",
+    "upgrades/next/needs-you-clear-groups.md",
+    "upgrades/side-effects/needs-you-clear-groups.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible read-only display repair; approval authority and stored state unchanged; source and scheduled-state semantics explicit",
+  "eli16Path": "docs/specs/needs-you-clear-groups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/needs-you-clear-groups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

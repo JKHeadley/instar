@@ -10,6 +10,7 @@
 import { ownerRecordEntryId, ownerRecordSignedText, type OwnerRecordEntry } from './ownerRecord.js';
 import crypto from 'node:crypto';
 import type { OwnerRecordStore, PeerView } from './ownerRecordStore.js';
+import { fenceInForce, fenceStatus, type FenceInForce, type FenceStatus, type PeerBuildLedger } from './identityBuildFence.js';
 
 export const OWNER_RECORD_PUSH_MAX_ENTRIES = 500;
 export const OWNER_RECORD_PUSH_MAX_BYTES = 2 * 1024 * 1024;
@@ -31,7 +32,8 @@ const BOOTSTRAP_MAX_RETRY_MS = 6 * 60 * 60 * 1000;
 const BOOTSTRAP_BREAKER_MS = 24 * 60 * 60 * 1000;
 
 export type OwnerRecordPushCmd = { type: 'owner-record-push'; entries: unknown[] };
-export type OwnerRecordPullCmd = { type: 'owner-record-pull'; have: string[]; after: string | null };
+/** `build` and `guards` are the puller's own signed statement (piece 2c §2); an older build sends neither. */
+export type OwnerRecordPullCmd = { type: 'owner-record-pull'; have: string[]; after: string | null; build?: string; guards?: string[] };
 export interface OwnerRecordPullReply {
   entries: OwnerRecordEntry[];
   next: string | null;
@@ -44,6 +46,11 @@ export interface OwnerRecordPullReply {
   everEnrolled: boolean;
   /** The replier's enrolled marker, if any: names the agent and the genesis (§4). */
   marker: { agentId: string; genesis: string } | null;
+  /** The replier's build and live guards (piece 2c §2). */
+  build?: string | null;
+  guards?: string[];
+  /** Piece 2c §4: while enrolled, a peer not confirmed at the fence gets no entries. */
+  refused?: 'build-not-confirmed';
 }
 
 export interface OwnerRecordSyncDeps {
@@ -58,9 +65,26 @@ export interface OwnerRecordSyncDeps {
   splitBrain: () => boolean;
   degrade: (summary: string) => void;
   now?: () => number;
+  /** Piece 2c: this machine's build and live identity guards, the peers' key fingerprints, the ledger, and
+   *  the owner notice. All optional: without a ledger the fence reports nothing and refuses nothing. */
+  selfBuild?: () => string;
+  selfGuards?: () => string[];
+  peerKey?: (machineId: string) => string;
+  ledger?: PeerBuildLedger;
+  notify?: (summary: string) => void;
+  /** A machine's plain name (its nickname), for the owner notice. */
+  machineName?: (machineId: string) => string;
+  /** When a machine was paired (ms), so a just-joined machine isn't reported as long-silent. */
+  peerSince?: (machineId: string) => number | null;
+  /** Close the owner notice once nothing is below or long-unconfirmed. */
+  clearNotice?: () => void;
+  /** Degradation reports about the fence itself (feature label OwnerRecord.fence). */
+  degradeFence?: (summary: string) => void;
 }
 
 interface PeerInfo {
+  /** The build a peer's pull reply showed: display only, never evidence. */
+  replyBuild?: string | null;
   answered: boolean;
   hasRecord: boolean;
   head: string[];
@@ -88,6 +112,8 @@ export class OwnerRecordSync {
   private bootstrapWaitingSince: number | null = null;
   private breakerOpen = false;
   private registryFingerprint: string | null = null;
+  private reportedBadFence: string | null = null;
+  private noticeClosedThisBoot = false;
   private readonly counters = { pushRefusedTooLarge: 0, pushBusy: 0, queueDropped: 0, refusedEvaluations: 0, pendingDropped: 0, laneAdmitted: 0, evaluations: 0 };
 
   constructor(private readonly d: OwnerRecordSyncDeps) {}
@@ -116,15 +142,19 @@ export class OwnerRecordSync {
 
   // ── serving ──────────────────────────────────────────────────────
 
-  handlePull(from: string, cmd: OwnerRecordPullCmd): OwnerRecordPullReply {
+  handlePull(from: string, cmd: OwnerRecordPullCmd, at?: number): OwnerRecordPullReply {
     this.heardFrom(from);
+    this.recordStatement(from, cmd.build ?? null, cmd.guards, at ?? this.now()); // recorded before judged (2c §2)
     const have = new Set(Array.isArray(cmd.have) ? cmd.have.filter((x) => typeof x === 'string').slice(0, 4 * OWNER_RECORD_PUSH_MAX_ENTRIES) : []);
     const page = this.d.store.page(have, typeof cmd.after === 'string' ? cmd.after : null, OWNER_RECORD_PUSH_MAX_ENTRIES);
     const st = this.d.store.state();
     const m = this.d.store.enrolledMarker();
+    const refuse = !this.peerMayHaveRecord(from);
     return {
-      ...page, hasRecord: this.d.store.hasRecord(), head: st?.head ?? [], status: st?.status ?? 'none', genesis: st?.genesis ?? null, everEnrolled: !!st?.everEnrolled,
+      ...(refuse ? { entries: [], next: null, refused: 'build-not-confirmed' as const } : page),
+      hasRecord: this.d.store.hasRecord(), head: st?.head ?? [], status: st?.status ?? 'none', genesis: st?.genesis ?? null, everEnrolled: !!st?.everEnrolled,
       marker: m.kind === 'ok' ? { agentId: m.marker.agentId, genesis: m.marker.genesis } : null,
+      build: this.d.selfBuild?.() ?? null, guards: this.d.selfGuards?.() ?? [],
     };
   }
 
@@ -136,6 +166,7 @@ export class OwnerRecordSync {
       this.counters.pushRefusedTooLarge++;
       return { ok: false, reason: 'too-large' };
     }
+    if (!this.peerMayGiveRecord(from)) return { ok: false, reason: 'build-not-confirmed' };
     const held = new Set(this.d.store.ids());
     const fresh = entries.filter((e) => { const id = safeId(e); return id !== null && !held.has(id); });
     if (fresh.length === 0) return { ok: true, queued: 0 };
@@ -245,7 +276,7 @@ export class OwnerRecordSync {
     const entries = this.d.store.page(new Set(this.d.store.ids().filter((id) => !ids.includes(id))), null, OWNER_RECORD_PUSH_MAX_ENTRIES).entries;
     if (entries.length === 0) return;
     // @silent-fallback-ok: a failed push is only a speed-up; the peer's own 15-minute pull fetches the same entries.
-    await Promise.all(this.d.peers().map((peer) => this.d.send(peer, { type: 'owner-record-push', entries }).catch(() => ({ ok: false })))); // @silent-fallback-ok: the peer's own pull fetches it
+    await Promise.all(this.d.peers().filter((peer) => this.peerMayHaveRecord(peer)).map((peer) => this.d.send(peer, { type: 'owner-record-push', entries }).catch(() => ({ ok: false })))); // @silent-fallback-ok: the peer's own pull fetches it
   }
 
   /** Pull from every peer (≤4 pages each), then consider bootstrap. Called at boot and every 15 minutes. */
@@ -261,7 +292,8 @@ export class OwnerRecordSync {
       if (!info.answered && (this.breakerOpen || this.now() < info.nextTryAt)) continue;
       let after: string | null = null;
       for (let i = 0; i < OWNER_RECORD_PAGES_PER_CYCLE; i++) {
-        const res: { ok: boolean; result?: unknown } = await this.d.send(peer, { type: 'owner-record-pull', have: this.d.store.ids(), after }).catch(() => ({ ok: false }));
+        const pull: OwnerRecordPullCmd = { type: 'owner-record-pull', have: this.d.store.ids(), after, ...(this.d.selfBuild ? { build: this.d.selfBuild(), guards: this.d.selfGuards?.() ?? [] } : {}) };
+        const res: { ok: boolean; result?: unknown } = await this.d.send(peer, pull).catch(() => ({ ok: false }));
         const reply: OwnerRecordPullReply | null = res.ok ? parseReply(res.result) : null;
         if (!reply) { // unreachable, refused, or an older build: not an answer
           if (i === 0) {
@@ -271,13 +303,93 @@ export class OwnerRecordSync {
           break;
         }
         this.heardFrom(peer);
+        // A reply's build is shown, never recorded: replies are unsigned HTTP bodies stamped with no sender clock.
+        // Evidence comes only from the peer's own signed pulls (piece 2c §2).
+        info.replyBuild = reply.build ?? null;
         Object.assign(info, { answered: true, hasRecord: reply.hasRecord, head: reply.head, status: reply.status, genesis: reply.genesis, everEnrolled: reply.everEnrolled, marker: reply.marker, ids: info.ids + reply.entries.length });
-        if (reply.entries.length > 0) { this.queue.push(...reply.entries); await this.flush(true); }
+        if (reply.entries.length > 0 && this.peerMayGiveRecord(peer)) { this.queue.push(...reply.entries); await this.flush(true); }
         if (!reply.next) break;
         after = reply.next;
       }
     }
     this.maybeBootstrap();
+    this.maybeNotifyFence();
+  }
+
+  // ── piece 2c: the minimum-build fence ───────────────────────────
+
+  private recordStatement(peer: string, build: unknown, guards: unknown, at: number): void {
+    if (!this.d.ledger || !this.d.peerKey) return;
+    this.d.ledger.record(peer, this.d.peerKey(peer), build, guards, at);
+  }
+
+  /** The fence in force on this machine (2c §1); none before enrolment or at Basic. */
+  fence(): FenceInForce {
+    if (!this.d.ledger) return { value: null, source: 'none', unusable: false, raiseDue: null, badValue: null };
+    const f = fenceInForce(this.d.store.state(), this.d.ledger);
+    if (f.badValue && f.badValue !== this.reportedBadFence) {
+      this.reportedBadFence = f.badValue;
+      (this.d.degradeFence ?? this.d.degrade)(`The owner record's minimum build "${f.badValue}" can't be used, so ${f.value ? `the last verified fence (${f.value}) stays in force` : 'risky actions are held'}. The owner should set a valid one.`);
+    }
+    return f;
+  }
+
+  /** 2c §4: while enrolled with a fence, only peers confirmed at it get owner-record data. With an unusable
+   *  fence nothing is sent: confirmation can't be judged. */
+  peerMayHaveRecord(peer: string): boolean {
+    if (!this.d.ledger || !this.d.peerKey) return true;
+    const f = this.fence();
+    if (f.unusable) return false;
+    if (!f.value) return true;
+    return this.d.ledger.stateOf(peer, this.d.peerKey(peer), f.value) === 'confirmed';
+  }
+
+  /** 2c §4: entries are accepted from confirmed peers. With an unusable fence they are accepted from any peer,
+   *  so the owner's corrected minimum build can still arrive (each entry is owner-signed and judged anyway). */
+  peerMayGiveRecord(peer: string): boolean {
+    if (this.fence().unusable) return true;
+    return this.peerMayHaveRecord(peer);
+  }
+
+  /** 2c §3: readiness against a target build, from this machine's own first-hand observations. */
+  fenceStatus(target: string): FenceStatus | null {
+    if (!this.d.ledger || !this.d.peerKey) return null;
+    const selfId = this.d.selfMachineId();
+    const selfBuild = this.d.selfBuild?.();
+    return fenceStatus(target, this.d.peers().map((machineId) => ({ machineId, key: this.d.peerKey!(machineId) })), this.d.ledger, selfId && selfBuild ? { machineId: selfId, build: selfBuild } : undefined);
+  }
+
+  /** 2c §4: one aggregated notice, from the lease holder, at most daily while the list is unchanged. */
+  private maybeNotifyFence(): void {
+    const f = this.fence();
+    if (!this.d.ledger || !this.d.peerKey || !this.d.notify || !this.d.isLeaseHolder()) return;
+    if (!f.value) { this.closeNotice(); return; } // the owner lowered the level, or no fence applies
+
+    const st = this.fenceStatus(f.value);
+    if (!st) return;
+    const day = 24 * 60 * 60 * 1000;
+    const stale = st.unconfirmed.filter((m) => {
+      const o = this.d.ledger!.observation(m, this.d.peerKey!(m));
+      // Never heard from: judged from the later of when this ledger began watching and when the peer paired.
+      const since = Math.max(this.d.ledger!.watchingSince(), this.d.peerSince?.(m) ?? 0);
+      return o ? this.now() - o.at > day : this.now() - since > day;
+    });
+    const list = [...st.below.map((m) => `below:${m}`), ...stale.map((m) => `unconfirmed:${m}`)];
+    if (list.length === 0) { this.closeNotice(); return; }
+    if (!this.d.ledger.noticeDue(list)) return;
+    const parts: string[] = [];
+    const name = (m: string): string => this.d.machineName?.(m) ?? m;
+    const list2 = (ms: string[]): string => ms.map(name).join(', ');
+    if (st.below.length > 0) parts.push(`${list2(st.below)} ${st.below.length === 1 ? 'runs' : 'run'} a version of Instar older than ${f.value}. Update ${st.below.length === 1 ? 'it' : 'them'}, or remove ${st.below.length === 1 ? 'it' : 'them'} from the agent.`);
+    if (stale.length > 0) parts.push(`${list2(stale)} hasn't confirmed which version ${stale.length === 1 ? 'it runs' : 'they run'} for a day. Check ${stale.length === 1 ? "it's" : "they're"} on and connected.`);
+    this.d.notify(`${parts.join(' ')} Until then, ${st.below.length + stale.length === 1 ? 'that computer' : 'those computers'} won't get your ownership record.`);
+  }
+
+  /** Close the owner notice: once per process even with nothing recorded here, so a new lease holder closes an
+   *  item an earlier holder raised. */
+  private closeNotice(): void {
+    const wasOpen = this.d.ledger?.clearNoticeIfOpen() ?? false;
+    if (wasOpen || !this.noticeClosedThisBoot) { this.d.clearNotice?.(); this.noticeClosedThisBoot = true; }
   }
 
   /** The gate's view of the peers (§4): every peer answered; any honoured peer marker. */
@@ -289,7 +401,7 @@ export class OwnerRecordSync {
       const m = this.peerInfo.get(peer)?.marker;
       return !!m && m.agentId === this.d.agentId && (m.genesis === st?.genesis || enrolledGeneses.has(m.genesis));
     });
-    return { allAnswered: peers.every((p) => this.peerInfo.get(p)?.answered), honouredPeerMarker: honoured };
+    return { allAnswered: peers.every((p) => this.peerInfo.get(p)?.answered), honouredPeerMarker: honoured, fenceUnusable: this.fence().unusable };
   }
 
   /** §3: bootstrap only on the lease holder, no split-brain, every peer answered with nothing that blocks it. */
@@ -340,7 +452,11 @@ export class OwnerRecordSync {
         lastHeardAt: p?.lastHeardAt ? new Date(p.lastHeardAt).toISOString() : null,
       };
     });
+    const f = this.fence();
+    const self = this.d.selfBuild?.() ?? null;
     return {
+      fence: { inForce: f.value, source: f.source, unusable: f.unusable, raiseDue: f.raiseDue, selfBuild: self, status: self ? this.fenceStatus(f.value ?? self) : null,
+        peers: this.d.ledger && this.d.peerKey ? this.d.peers().map((m) => ({ machineId: m, state: this.d.ledger!.stateOf(m, this.d.peerKey!(m), f.value), build: this.d.ledger!.observation(m, this.d.peerKey!(m))?.build ?? null })) : [] },
       peers, pending: this.pending.size, queued: this.queue.length, breakerOpen: this.breakerOpen,
       bootstrapWaitingSince: this.bootstrapWaitingSince ? new Date(this.bootstrapWaitingSince).toISOString() : null,
       counters: { ...this.counters },
@@ -370,5 +486,8 @@ function parseReply(r: unknown): OwnerRecordPullReply | null {
     genesis: typeof o.genesis === 'string' ? o.genesis : null,
     everEnrolled: o.everEnrolled === true,
     marker: m && typeof m.agentId === 'string' && typeof m.genesis === 'string' ? { agentId: m.agentId, genesis: m.genesis } : null,
+    build: typeof o.build === 'string' ? o.build : null,
+    guards: Array.isArray(o.guards) ? o.guards.filter((x): x is string => typeof x === 'string').slice(0, 32) : [],
+    ...(o.refused === 'build-not-confirmed' ? { refused: 'build-not-confirmed' as const } : {}),
   };
 }
