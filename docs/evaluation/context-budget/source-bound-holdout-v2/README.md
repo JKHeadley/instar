@@ -1,0 +1,11 @@
+# Versioned Source-Case Correction
+
+Version 2 preserves the nine original source snapshots byte for byte and retains eight case identifiers. Version 1 remains frozen. Questions and reference answers stay private; the committed receipt records hashes and review custody without publishing them.
+
+The correction narrows attribution and authority. It separates a direct human choice from agent-described implementation details, requested reviewers from independently verified model families, conversational approval from unseen artifact content, bounded delegation from exact option selection, and requested work from completed work. Historical cost and availability statements remain historical. Missing antecedents and artifacts are explicit limits, not reconstructed evidence.
+
+Two questions changed to remove unsupported premises. Rubrics now retain missing-evidence caveats and accept qualified answers. Critical flags remain author designations without empirical severity calibration. The change log maps all eight cases to the earlier review, so caveats and disagreements survive the correction.
+
+The author proposed these changes after seeing sources, questions, labels and review. A separate reviewer adjudicated them against the original findings, with its new exposure recorded in the private receipt. All eight substantive findings were resolved or explicitly bounded. The reviewer then caught two stale descriptions of prior wording; a final check confirmed those corrections and found no remaining case-correction blockers. Both reviews are preserved with their exact input hashes. Both sessions share a model family; this is not the eventual independent human or two-family judging arrangement. Neither exposed session can become a blinded answer producer or reduction designer for this pack.
+
+Passing an authority review does not establish source-export authenticity, context dependence, runtime isolation or qualification. The sources remain one correlated conversation cluster. These authored checks postdate the existing reductions and cannot qualify them. No model trials, savings, deployment or activation are claimed. Future use still requires the general answer route, reviewed judging and confinement, prospective timing and exposure eligibility, exact per-arm input manifests, repeated three-arm comparisons and full cost accounting.
