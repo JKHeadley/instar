@@ -78,7 +78,12 @@ export function profileProposalFailureContext(input: {
   requests: ProfileProposalRequests; source: string; text: string;
   replyTo?: unknown; forwarded: boolean; authenticatedOwner: () => boolean;
 }): string {
-  if (input.forwarded || input.text.trim() !== 'yes' || (typeof input.replyTo === 'number' && Number.isSafeInteger(input.replyTo) && input.replyTo > 0)) return '';
+  const nativeReply = typeof input.replyTo === 'number' && Number.isSafeInteger(input.replyTo) && input.replyTo > 0;
+  // Telegram forum messages carry their topic-creation service message as the
+  // thread anchor even when the person did not reply to a proposal question.
+  // This distinction supplies diagnostic context only; it never grants consent.
+  const topicServiceAnchor = nativeReply && String(input.replyTo) === input.source;
+  if (input.forwarded || input.text.trim() !== 'yes' || (nativeReply && !topicServiceAnchor)) return '';
   try {
     if (!input.authenticatedOwner()) return '';
     const failure = input.requests.failure(input.source);

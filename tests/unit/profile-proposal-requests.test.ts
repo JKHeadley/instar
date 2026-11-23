@@ -228,3 +228,15 @@ it('retains a delivered native receipt when the source registry cannot establish
   expect((await p.reply('A', reply(432, 431), apply)).result).toEqual(saved);
   expect(apply).toHaveBeenCalledTimes(1);
 });
+
+it('explains failed delivery when a plain forum reply carries only its topic service anchor', () => {
+  const p = new ProfileProposalRequests();
+  const a = p.begin('241', '242', { framework: 'codex-cli' }, 'Use Codex.', 'epoch');
+  if (!a.ok) throw new Error(a.reason);
+  a.onDelivery(null);
+  const input = { requests: p, source: '241', text: 'yes', replyTo: 241, forwarded: false, authenticatedOwner: () => true };
+  expect(profileProposalFailureContext(input)).toContain('delivery diagnostic');
+  expect(profileProposalFailureContext({ ...input, replyTo: 250 })).toBe('');
+  expect(profileProposalFailureContext({ ...input, forwarded: true })).toBe('');
+  expect(profileProposalFailureContext({ ...input, authenticatedOwner: () => false })).toBe('');
+});

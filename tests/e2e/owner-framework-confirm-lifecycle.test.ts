@@ -108,7 +108,8 @@ describe('Owner framework confirmation is alive through production composition',
     const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
     await polling.processUpdate({ update_id: 1, message: { message_id: 990, message_thread_id: SOURCE,
       date: Math.floor(Date.now() / 1000), from: { id: OWNER, first_name: 'Fixture' },
-      chat: { id: -1001, type: 'supergroup' }, text: 'yes' } });
+      chat: { id: -1001, type: 'supergroup' }, text: 'yes',
+      reply_to_message: { message_id: SOURCE, forum_topic_created: { name: 'Planning' } } } });
     expect(words).toBe('yes'); expect(context).toContain('did not start another change');
     expect(context).not.toContain('Project Work'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.respawns).toEqual([]);
   });
