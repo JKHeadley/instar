@@ -648,6 +648,16 @@ removeAdapterCmd
 
 // ── Worktree (parallel-dev isolation) ────────────────────────────
 
+program.command('design:inspect')
+  .description('Read manual design policy signals from two committed Git trees (no merge authority)')
+  .requiredOption('--base <ref>', 'Explicit trusted base commit or ref')
+  .option('--head <ref>', 'Candidate commit or ref', 'HEAD')
+  .option('--repo <path>', 'Git repository to read', '.')
+  .action(async (options) => {
+    const { runDesignPolicyInspection } = await import('./commands/designPolicy.js');
+    process.exitCode = await runDesignPolicyInspection(options);
+  });
+
 const worktreeCmd = program
   .command('worktree')
   .description(

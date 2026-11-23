@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-23T14:56:31.593Z",
+  "slug": "manual-design-policy-inspection",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 535,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/designPolicy.ts",
+      "src/core/SafeGitExecutor.ts",
+      "src/data/awareness/manual-design-policy-inspection.md",
+      "src/designGate/coverage.ts",
+      "src/designGate/earnedRuleChanges.ts",
+      "src/designGate/gitInspection.ts",
+      "src/designGate/modes.ts",
+      "src/designGate/policyInspection.ts",
+      "src/designGate/ruleIds.ts",
+      "src/designGate/standardParser.ts",
+      "src/designGate/surfaceClassifier.ts",
+      "src/localVerify/harnessClassifier.ts"
+    ],
+    "addedLines": 535,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The explicit manual design:inspect invocation owns a finite set of read-only Git children; timeout or capacity kills only that exact child. No periodic trigger, retry, restart or self-redrive loop is installed."
+  },
+  "verdict": "blocked"
+}

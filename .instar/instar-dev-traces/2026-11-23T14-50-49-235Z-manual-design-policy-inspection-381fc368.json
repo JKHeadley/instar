@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "slug": "manual-design-policy-inspection",
+  "sessionId": "081d8824-59d3-4d61-bb9b-a2a100a5f881",
+  "timestamp": "2026-11-23T14:50:49.235Z",
+  "artifactPath": "upgrades/side-effects/manual-design-policy-inspection.md",
+  "artifactSha256": "018bb0dae9cc53ea5e529387837ed9a36c98d8aae84f3d85c7f94163fcd1a058",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "docs/design/manual-inspection.md",
+    "docs/design/rule-ids.lock.json",
+    "docs/design/screens.json",
+    "src/cli.ts",
+    "src/commands/designPolicy.ts",
+    "src/data/awareness/manual-design-policy-inspection.md",
+    "src/designGate/coverage.ts",
+    "src/designGate/earnedRuleChanges.ts",
+    "src/designGate/gitInspection.ts",
+    "src/designGate/modes.ts",
+    "src/designGate/policyInspection.ts",
+    "src/designGate/ruleIds.ts",
+    "src/designGate/standardParser.ts",
+    "src/designGate/surfaceClassifier.ts",
+    "src/localVerify/harnessClassifier.ts",
+    "tests/e2e/design-policy-cli-lifecycle.test.ts",
+    "tests/fixtures/designPolicyGitRepo.ts",
+    "tests/integration/design-policy-git-inspection.test.ts",
+    "tests/unit/design-earned-rule-changes.test.ts",
+    "tests/unit/design-gate-coverage.test.ts",
+    "tests/unit/design-gate-modes.test.ts",
+    "tests/unit/design-policy-inspection.test.ts",
+    "tests/unit/design-rule-ids.test.ts",
+    "tests/unit/design-screen-registry.test.ts",
+    "tests/unit/design-standard-parser.test.ts",
+    "tests/unit/design-surface-classifier.test.ts",
+    "tests/unit/localVerify/harnessClassifier.test.ts",
+    "upgrades/next/manual-design-policy-inspection.md",
+    "upgrades/side-effects/manual-design-policy-inspection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Approved stage-2 foundation; read-only signal surface with no merge or waiver authority, independently reviewed Git provenance and resource bounds.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

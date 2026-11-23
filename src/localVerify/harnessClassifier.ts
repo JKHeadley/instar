@@ -12,6 +12,10 @@ import { matchesAny, normalizePath } from './glob.js';
 
 /** Globs whose change routes a PR to the operator. */
 export const HARNESS_GLOBS: readonly string[] = Object.freeze([
+  'src/designGate/**',
+  'src/commands/designPolicy.ts',
+  'docs/design/**',
+  'docs/DESIGN-STANDARD.md',
   'scripts/local-verify.mjs',
   'scripts/safe-merge.mjs',
   // The merge authority's own server side: floor selection, verify queue and
