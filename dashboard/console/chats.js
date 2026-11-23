@@ -40,7 +40,7 @@ export function messageTextNode(text) {
     return n;
   }));
 }
-import { chiefOfStaffNeedRows } from './needs-model.js';
+import { chiefOfStaffNeedRows, chiefOfStaffCardRows } from './needs-model.js';
 import { appStripFor, appPath, appNavigation } from './projects-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
@@ -201,9 +201,12 @@ class ChatsPage {
   }
   refreshNeedCard() {
     if (!this.needSlot) return;
-    if (!this.cosNeeds || !this.cosNeeds.length) { setKids(this.needSlot); return; }
-    const lead = this.cosNeeds[0];
-    const more = this.cosNeeds.length - 1;
+    // The Needs-you list above this page already shows each project's wait; then only the check-in stays here.
+    const stripShown = typeof document !== 'undefined' && !!document.querySelector('#needsStrip:not([hidden])');
+    const rows = chiefOfStaffCardRows(this.cosNeeds, { stripShown });
+    if (!rows.length) { setKids(this.needSlot); return; }
+    const lead = rows[0];
+    const more = rows.length - 1;
     const open = el('a', { class: 'btn-primary', href: this.cosRef ? hashFor(this.cosRef) : '#/work/chats', text: `Open ${this.cosName || 'Chief of Staff'}` });
     const checkIn = el('button', { class: 'btn-quiet', type: 'button', text: 'Check in' });
     checkIn.addEventListener('click', () => this.checkInWithChiefOfStaff(checkIn));

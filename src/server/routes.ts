@@ -1,3 +1,4 @@
+import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
@@ -3377,7 +3378,11 @@ export function createRoutes(ctx: RouteContext): Router {
     appendLine: async (conversationKey, lineId, text) => { ctx.workBoard?.()?.appendLine(conversationKey, lineId, text); },
     ensureConversation: async (cardId) => { ctx.workBoard?.()?.ensureConversation(cardId); },
     removeConversation: async (conversationKey) => { ctx.workBoard?.()?.removeConversation(conversationKey); },
-    behind: () => ctx.workBoard?.()?.behind() ?? null,
+    // The behind machine's nickname rides along so the page names it instead of printing its id.
+    behind: () => {
+      const b = ctx.workBoard?.()?.behind() ?? null;
+      return b ? { ...b, machineName: ctx.machinePoolRegistry?.getCapacity(b.machineId)?.nickname ?? null } : null;
+    },
     lastWrittenOn: (v) => ctx.workBoard?.()?.lastWrittenOn(v) ?? null,
     repliedAfterQuestion: (v) => ctx.workBoard?.()?.repliedAfterQuestion(v) ?? false,
     brokenAttachments: (v) => ctx.workBoard?.()?.brokenAttachments(v) ?? [],
@@ -15031,8 +15036,18 @@ export function createRoutes(ctx: RouteContext): Router {
   /** session-conversation-for-every-session §2.1: a create in flight, so a concurrent repeat waits for it. */
   const appCreateInFlight = new Map<string, { hash: string; answer: Promise<{ status: number; body: Record<string, unknown> }> }>();
   /** One create request's identity: its name and its engine pick. */
-  const appCreateHash = (a: { title: string; framework?: unknown; model?: unknown }): string =>
-    createHash('sha256').update(`dashboard-create\u0000${a.title}\u0000${typeof a.framework === 'string' ? a.framework : ''}\u0000${typeof a.model === 'string' ? a.model : ''}`).digest('hex');
+  const appCreateHash = (a: { title: string; framework?: unknown; model?: unknown; hasParent?: boolean; parentConversationKey?: string | null }): string =>
+    createHash('sha256').update(`dashboard-create\u0000${a.title}\u0000${typeof a.framework === 'string' ? a.framework : ''}\u0000${typeof a.model === 'string' ? a.model : ''}${a.hasParent ? `\u0000parent:${JSON.stringify(a.parentConversationKey)}` : ''}`).digest('hex');
+
+  // /sessions/create keeps its existing agent/dashboard admission. Resolve a real readable parent
+  // using existing recorded conversations; a namespaced string alone is not existence evidence.
+  const appSessionParentExists = (svc: NonNullable<RouteContext['appConversations']>, ref: string): boolean => {
+    if (ref.startsWith('app:')) return !!svc.liveConversation(ref.slice(4));
+    const resolved = ctx.conversationRegistry?.resolveByKey(ref);
+    if (resolved) return true;
+    const topic = /^telegram:(\d+)$/.exec(ref);
+    return !!topic && !!ctx.telegram?.getAllTopicMappings().some((m) => m.topicId === Number(topic[1]));
+  };
 
   /**
    * session-conversation-for-every-session §2.1 steps 3–6: the conversation (durably keyed by the
@@ -15042,7 +15057,7 @@ export function createRoutes(ctx: RouteContext): Router {
   async function createAppSession(
     svc: NonNullable<RouteContext['appConversations']>,
     tp: NonNullable<RouteContext['topicProfile']>,
-    a: { rid: string; title: string; served: boolean; hasPreference: boolean; framework: unknown; model: unknown },
+    a: { rid: string; title: string; served: boolean; hasPreference: boolean; framework: unknown; model: unknown; hasParent: boolean; parentConversationKey?: string | null },
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const DEVICE = 'dashboard';
     // The request is its name and engine pick: the same id with either changed is a different request.
@@ -15057,6 +15072,9 @@ export function createRoutes(ctx: RouteContext): Router {
         const b = prior.body as { error?: string; detail?: string };
         return { status: prior.status, body: { ok: false, code: b.error ?? 'conversation-unavailable', error: b.detail ?? 'The conversation could not be created on this machine. Try again.' } };
       }
+      if (!svc.liveConversation(key)) {
+        return { status: 409, body: { ok: false, code: 'conversation-unavailable', error: 'The original conversation is no longer available. Create a new session instead.' } };
+      }
       conversationKey = key; resumed = true;
     } else if (prior.kind === 'in-progress') {
       return { status: 202, body: { ok: true, state: 'in-progress', message: `"${a.title}" is still being created. Check the sessions list in a moment.` } };
@@ -15065,13 +15083,18 @@ export function createRoutes(ctx: RouteContext): Router {
     } else if (prior.kind === 'request-id-reused') {
       return { status: 409, body: { ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' } };
     } else {
+      // Parent authorization applies only to the first reservation. Retried historical intent is not a new grant.
+      if (a.parentConversationKey && !appSessionParentExists(svc, a.parentConversationKey)) {
+        return { status: 400, body: { ok: false, code: 'parent-unavailable', error: 'The parent conversation is not available to this session.' } };
+      }
+      const creationContext: AppCreationContext = { v: 1, source: { kind: 'session', requestId: a.rid }, ...(a.hasParent ? { parentConversationKey: a.parentConversationKey ?? null, parentBasis: 'explicit' as const } : {}) };
       // Step 3 — the conversation, as the phone's create route makes one (the key is in the reservation first).
       conversationKey = newAppConversationKey();
-      const r = requests.reserve(DEVICE, a.rid, hash, 0, { op: 'create', conversationKey, title: a.title });
+      const r = requests.reserve(DEVICE, a.rid, hash, 0, { op: 'create', conversationKey, title: a.title, creationContext: JSON.stringify(creationContext) });
       if (r.kind === 'full') return { status: 429, body: { ok: false, code: 'too-many-requests', error: 'Too many sessions are being created right now. Try again in a moment.' } };
       if (r.kind !== 'reserved') return createAppSession(svc, tp, a);
       let created: { status: number; body: Record<string, unknown> };
-      try { created = svc.applyCreate(DEVICE, a.rid, conversationKey, a.title, null); } catch (err) {
+      try { created = svc.applyCreate(DEVICE, a.rid, conversationKey, a.title, null, creationContext); } catch (err) {
         requests.markUnknown(DEVICE, a.rid);
         svc.deps.reportDegradation?.('AppConversations.mutation', err instanceof Error ? err.message : String(err));
         return { status: 409, body: { ok: false, code: 'outcome-unknown', error: `"${a.title}" may or may not have been created. Check your app conversations before trying again.` } };
@@ -15333,7 +15356,12 @@ export function createRoutes(ctx: RouteContext): Router {
       // 'dashboard'): a retry, even after a restart, finds the first create and resumes it; a create cut off
       // mid-way is finished at boot by `recoverStranded`. A concurrent repeat waits for the one in flight.
       const rid = typeof body.requestId === 'string' && requestIdAgeOk(body.requestId, Date.now()) ? body.requestId : `${Date.now()}-${randomUUID()}`;
-      const want = { title, framework: body.framework, model: body.model };
+      const hasParent = Object.hasOwn(body, 'parentConversationKey');
+      const parentConversationKey = body.parentConversationKey === null ? null : normalizeCreationParentRef(body.parentConversationKey);
+      if (hasParent && body.parentConversationKey !== null && !parentConversationKey) {
+        res.status(400).json({ ok: false, code: 'invalid-parent', error: 'Choose a valid parent conversation.' }); return;
+      }
+      const want = { title, framework: body.framework, model: body.model, hasParent, parentConversationKey };
       const inFlight = appCreateInFlight.get(rid);
       if (inFlight) {
         if (inFlight.hash !== appCreateHash(want)) { res.status(409).json({ ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' }); return; }
@@ -15343,7 +15371,7 @@ export function createRoutes(ctx: RouteContext): Router {
       appCreateInFlight.set(rid, { hash: appCreateHash(want), answer: new Promise((r) => { settle = r; }) });
       let outcome: { status: number; body: Record<string, unknown> } = { status: 500, body: { ok: false, error: 'The session could not be created. Try again.' } };
       try {
-        outcome = await createAppSession(svc, tp, { rid, title, served, hasPreference, framework: body.framework, model: body.model });
+        outcome = await createAppSession(svc, tp, { rid, served, hasPreference, ...want });
       } catch (err) { // @silent-fallback-ok — answered in words; the request record says what landed
         outcome = { status: 500, body: { ok: false, error: `The session could not be created: ${operatorError(err, res.app?.locals?.stateDir)}. Try again.` } };
       } finally {

@@ -71,6 +71,13 @@ const flush = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 const bootContext = new AsyncLocalStorage<number>();
 let bootGeneration = 0;
 const pageChannels = new Set<BroadcastChannel>();
+const pageLifecycles = new Set<{ dispose: () => void }>();
+
+function disposePage() {
+  // Run the router's real registered page cleanup before removing its browser window.
+  for (const lifecycle of pageLifecycles) lifecycle.dispose();
+  pageLifecycles.clear();
+}
 const RealBroadcastChannel = globalThis.BroadcastChannel;
 if (RealBroadcastChannel) {
   // Node's BroadcastChannel outlives the window too: an earlier page would keep hearing this one.
@@ -83,6 +90,8 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
 }
 
 async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>) {
+  disposePage();
+  dom?.window.close();
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
@@ -101,12 +110,20 @@ async function bootPage(handler: (c: Call) => { status: number; body?: unknown }
     return { ok: out.status >= 200 && out.status < 300, status: out.status, json: async () => JSON.parse(JSON.stringify(out.body ?? {})), headers: new dom.window.Headers() } as unknown as Response;
   };
   vi.resetModules();
+  const lifecycleModule = await import('../../dashboard/console/page-lifecycle.js');
+  const createLifecycle = lifecycleModule.createLifecycle;
+  vi.spyOn(lifecycleModule, 'createLifecycle').mockImplementation((options) => {
+    const lifecycle = createLifecycle(options);
+    pageLifecycles.add(lifecycle);
+    return lifecycle;
+  });
   await import('../../dashboard/console/console.js');
   for (let i = 0; i < 10; i++) await flush();
   return { doc: dom.window.document, idb };
 }
 
 afterEach(() => {
+  disposePage();
   for (const c of pageChannels) { try { c.close(); } catch { /* already closed */ } }
   pageChannels.clear();
   dom?.window.close();
@@ -365,14 +382,12 @@ describe('Conversations page', () => {
       }
       return undefined;
     }, `#/work/chats?c=${encodeURIComponent('telegram:145738')}`, idb);
-    for (let i = 0; i < 20; i++) await flush();
-    // A focus brings the open conversation into the leader's plan and reads it now (the quick read).
-    for (let n = 0; n < 4 && quick.length < 2; n++) {
-      // Under this page's boot number, so the poll loop it re-arms can never answer a later test.
+    // Signing and IndexedDB completion share the worker pool with other test files. Wait
+    // for observed quick reads rather than assuming boot completed within fixed short sleeps.
+    await vi.waitFor(() => {
       bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
-      for (let i = 0; i < 20; i++) await flush();
-    }
-    expect(quick.length).toBeGreaterThanOrEqual(2);
+      expect(quick.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 10_000, interval: 200 });
     expect(new URL(quick[0], 'http://localhost').searchParams.get('knownRows')).toBe('');
     expect(new URL(quick[1], 'http://localhost').searchParams.get('knownRows')).toBe(hashes.join(','));
     expect(quick.every((u) => !u.includes('after='))).toBe(true);
@@ -394,13 +409,13 @@ describe('Conversations page', () => {
     dom.window.location.hash = `#/work/chats?c=${encodeURIComponent('telegram:145738')}`;
     for (let i = 0; i < 10; i++) await flush();
     const beforeReopen = quick.length;
-    for (let n = 0; n < 4 && quick.length === beforeReopen; n++) {
+    await vi.waitFor(() => {
       bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
-      for (let i = 0; i < 15; i++) await flush();
-    }
-    expect(quick.length).toBeGreaterThan(beforeReopen);
+      expect(quick.length).toBeGreaterThan(beforeReopen);
+      expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+    }, { timeout: 10_000, interval: 200 });
     expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
-  });
+  }, 25_000);
 
   it('a Slack conversation names its machine on the history read and the send (live proof finding)', async () => {
     const idb = fakeIndexedDB();
