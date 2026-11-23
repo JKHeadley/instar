@@ -2,7 +2,7 @@
 
 In plain words: a Codex call that reads outside text now also turns off web search, image viewing, image generation, sub-agents and plugins. Nothing else changes.
 
-Tier 1 by size, security-sensitive: an independent second-pass review is recorded below. Size: one new module `src/core/codexToolFreeProfile.ts`, a one-line change plus an import in `src/core/CodexCliIntelligenceProvider.ts`, one new unit test file.
+Tier 1 by size, security-sensitive: an independent second-pass review is recorded below. Size: one new module `src/core/codexToolFreeProfile.ts`, a one-line change plus an import in `src/core/CodexCliIntelligenceProvider.ts`, one new unit test file, and one excluded entry (with its reason) for the new module in `src/data/stageBCertifiedSet.ts`, beside its excluded caller.
 
 ## What changes for running agents
 - **Who is affected.** Only calls with `noLocalTools: true`. Today that is the ecosystem idea review's Codex caller (`src/ecosystem/buildEcosystemIdeas.ts`). Every other Codex call produces the same argv as before (pinned by a test).
