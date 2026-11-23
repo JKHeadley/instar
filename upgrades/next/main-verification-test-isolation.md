@@ -10,6 +10,10 @@ Real search tests prepare their checksum-pinned model before test workers start 
 
 The checks used to validate updates are less dependent on download timing and machine load. Search checks still use the real model and database extension.
 
+## Summary of New Capabilities
+
+No new product capability or setting. This change repairs test preparation and completion checks.
+
 ## Evidence
 
 The unchanged search tests passed with a completed cache. Deliberately delayed version and terminal fixtures reproduced their old timing failures. The saved full-run reports were incomplete, so no precise historical cause or complete-verification success is claimed from those comparisons. Raw-report retention is tracked separately as ACT-517.

@@ -63,3 +63,8 @@ Reviewer /root/main_search_failure_review independently read the implementation 
 ## Class-Closure Declaration
 
 No agent-authored prompt, installed hook, skill or production controller defect is changed. This is test infrastructure and fixture code. The preparation is a bounded one-shot child explicitly invoked by a test command, with no self-triggered restart, retry-spawn or recovery controller. unbounded-self-action: n/a.
+
+
+## Release-note format correction
+
+The publication attempt refused the fragment because it omitted the required Summary of New Capabilities section. The follow-up adds that section explicitly, stating that there is no new product capability or setting. It does not rely on the internal-only opt-out, which only fills missing sections when every assembled fragment uses that lane. The fragment and its assembled guide are checked with the same pure assembler and validator used by the pre-push gate. No runtime, test, configuration, model asset or previous focused-test hash changes. No new tests or complete-suite claim.
