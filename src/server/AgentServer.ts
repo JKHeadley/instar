@@ -1,3 +1,6 @@
+import { conversationPreferenceIdentity } from './conversationPreferenceIdentity.js';
+import { ConversationPreferencesStore } from '../core/ConversationPreferences.js';
+import { readerKeyFor } from '../core/ConversationReadMarkers.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
@@ -570,6 +573,7 @@ export class AgentServer {
   readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  conversationPreferences: ConversationPreferencesStore | null = null;
   /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
   platformMedia: PlatformMediaForSession | null = null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
@@ -1414,6 +1418,9 @@ export class AgentServer {
      * never used and the loop is not started unless a test injects these.
      */
     mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
+    /** Inject only the provider boundary and clock; all reader, ACL and preference wiring remains real. */
+    mobilePushTransport?: import('../core/MobilePush.js').ApnsTransport;
+    mobilePushNow?: () => number;
     /** Same-network listener overrides for tests (identity A4): network observer, port, bind address, WSL. */
     sameNetwork?: Pick<import('./sameNetworkListener.js').SameNetworkListenerDeps, 'observe' | 'port' | 'bindHost' | 'wsl' | 'announce' | 'machineName'>;
     evolution?: EvolutionManager;
@@ -1619,6 +1626,7 @@ export class AgentServer {
     readMarkersHlcNowMs?: () => number;
     /** Conversation-list pins (docs/specs/conversation-list-pins.md), built by server.ts on the replication path. Absent ⇒ a local store is built here. */
     conversationListPins?: ConversationListPinStore | null;
+    conversationPreferences?: ConversationPreferencesStore | null;
     /** The owner's Conversations suggestion decisions on every machine (docs/specs/conversation-graph-suggestions-replicated-decisions.md), built by server.ts on the replication path. Absent ⇒ decisions stay on this machine. */
     conversationGraphSuggestionDecisions?: import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore | null;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
@@ -2504,6 +2512,7 @@ export class AgentServer {
 
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
+    this.conversationPreferences = options.conversationPreferences !== undefined ? options.conversationPreferences : (isMobileNativeEnabled(options.config) ? new ConversationPreferencesStore({ stateDir: options.config.stateDir }) : null);
     this.mobilePairing = new MobilePairingService({
       // Team phones need the sandbox on (§3.6).
       teamGate: () => {
@@ -2626,14 +2635,25 @@ export class AgentServer {
       // Runs on every agent now, so a config with no project name must not stop the server starting.
       const agentId = options.config.projectName ?? 'agent';
       mp.push = new MobilePushService({
+        transport: options.mobilePushTransport, now: options.mobilePushNow,
         stateDir: options.config.stateDir,
         registry: mp.devices,
         agentId,
         agentName: agentId.charAt(0).toUpperCase() + agentId.slice(1),
         machineId: options.coordinator?.identity?.machineId ?? 'local',
         enabled: () => isMobilePushEnabled(this.config),
+        notificationReader: (deviceId) => {
+          const d = mp.devices.get(deviceId);
+          const person = d ? mp.personOfDevice(d) : null;
+          return person?.ok ? readerKeyFor(person, mp.machineId()) : null;
+        },
+        canonicalReplyRef: (key) => {
+          const bare = key.startsWith('app:') ? key.slice(4) : key;
+          return isAppConversationKey(bare) ? `app:${bare}` : null;
+        },
+        mutedFor: (reader, ref) => this.conversationPreferences?.get(reader, ref)?.muted ?? null,
         // People and roles: a reply push goes only to phones that may use that conversation.
-        mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
+        mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayNotifyMessage(deviceId, conversationKey, messageId),
         mayNotifyDocument: (deviceId, docId, commentKey) => this.documentPushAllowed(deviceId, docId, commentKey),
         mayDecideDocument: (deviceId, docId) => this.documentDecidePushAllowed(deviceId, docId),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
@@ -2649,7 +2669,9 @@ export class AgentServer {
         },
         phoneStillCounts: (deviceId) => {
           const d = mp.devices.get(deviceId);
-          return !!d && mp.personOfDevice(d).ok;
+          if (!d || d.status !== 'active') return false;
+          if (!mp.personOfDevice(d).ok) throw new Error('push-person-standing-unavailable');
+          return true;
         },
         credentials: () => {
           const keyPem = pushKeys.get('apns_key_p8');
@@ -8055,6 +8077,33 @@ export class AgentServer {
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
+        preferences: this.conversationPreferences,
+        preferenceIdentity: () => {
+          const cfg = options.config.messaging?.find(e => e.type === 'telegram' && e.enabled)?.config as { chatId?: string; issuesChatId?: string } | undefined;
+          return conversationPreferenceIdentity({
+            machineId: this.appConversations?.deps.machineId() ?? 'local',
+            registry: options.conversationRegistry,
+            registryVersion: options.conversationRegistry?.preferenceIdentityVersion() ?? 'unavailable',
+            telegram: { mainChatId: cfg?.chatId, issuesChatId: cfg?.issuesChatId },
+            topicIds: new Set(options.telegram?.getAllTopicMappings().map(m => m.topicId) ?? []),
+            slackIds: new Set(slackBridge && slackOwnerUserId(options.config) ? slackListRows(slackBridge).map(r => r.id) : []),
+            appExists: (key) => !!this.appConversations?.liveConversation(key),
+          });
+        },
+        preferenceDeliveryStatus: (reader) => {
+          const push = this.mobilePairing?.push;
+          const local = push?.preferenceDeliveryStatus(reader) ?? { legacySummaryState: 'unknown' as const };
+          const members = options.listPoolMachines?.();
+          const self = this.appConversations?.deps.machineId() ?? 'local';
+          const remote = members?.filter(m => m.machineId !== self);
+          const capacities = options.machinePoolRegistry?.getCapacities();
+          const knownSupport = remote?.map(m => { const c = capacities?.find(c => c.machineId === m.machineId); return c?.online ? c.seamlessnessFlags?.conversationMutePush : undefined; });
+          const deliverySupport = !push?.supportsTypedPreferences || !this.conversationPreferences?.isReadable() ? 'unknown' as const
+            : remote === undefined ? 'unknown' as const
+            : knownSupport!.some(v => v === false) ? 'partial' as const
+            : knownSupport!.some(v => v !== true) ? 'unknown' as const : 'supported' as const;
+          return { legacySummaryState: local.legacySummaryState === 'pending' ? 'pending' as const : remote === undefined || remote.length > 0 ? 'unknown' as const : local.legacySummaryState, deliverySupport };
+        },
         // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
         chiefOfStaffCheckIn: options.chiefOfStaffLoop ? (principal: string) => options.chiefOfStaffLoop!.checkIn({ renewedVia: 'app', principal }) : undefined,
         chiefOfStaff: options.chiefOfStaffLoop ? () => {

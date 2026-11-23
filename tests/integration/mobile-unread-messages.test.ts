@@ -22,6 +22,7 @@ import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, personOfReaderKey, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
+import { ConversationPreferencesStore, canonicalPreferenceRef } from '../../src/core/ConversationPreferences.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
@@ -92,7 +93,14 @@ function setup(opts: Opts = {}) {
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
+  const preferences = new ConversationPreferencesStore({ stateDir: dir });
   app.use(createMobileConversationRouter({
+    preferences, preferenceIdentity: () => ({ version: 'fixture-namespace', resolve: (raw, row) => {
+      if (row?.platform === 'telegram' && row.machine && row.machine !== machine) return null;
+      const localTopic = /^telegram:([1-9][0-9]*)$/.exec(raw);
+      const ref = localTopic && topics.includes(Number(localTopic[1])) ? `telegram:-100:${localTopic[1]}` : canonicalPreferenceRef(raw);
+      return ref ? { ref, accessRef: ref.startsWith('app:') ? ref.slice(4) : localTopic ? raw : 'slack:' } : null;
+    } }),
     config: config as never, pairing, service: svc, machineId: () => machine, unread, pool: opts.peers ? (ctx as unknown as { resolvePeerUrls: () => PoolPeerTarget[]; config: typeof config; recordRopeResult: undefined }) as never : undefined,
     telegramTopics: topics.length ? () => topics.map((topicId) => { const last = tgRows[tgRows.length - 1]; return { topicId, topicName: `Topic ${topicId}`, lastActivity: last?.timestamp ?? null, lastPreview: null }; }) : undefined,
   }));
@@ -276,7 +284,7 @@ describe('unread messages — the read route (§3.5)', () => {
     expect(tgRow).toMatchObject({ id: 7, machine: 'm2', hasUnread: true, unreadCount: 2 });
     const appRow = list.body.conversations.find((r: { platform: string }) => r.platform === 'app');
     expect(appRow).toMatchObject({ id: key, unreadCount: 1 });
-    expect(list.body).toMatchObject({ unreadTotal: 3, unreadTotalMore: false, pool: { failed: [] } });
+    expect(list.body).toMatchObject({ unreadTotal: 3, unreadTotalMore: true, unreadTotalScope: 'returned-rows', unreadTotalsState: 'partial', archiveSelectionComplete: false, preferencesState: 'partial', pool: { failed: [] } });
   });
 });
 

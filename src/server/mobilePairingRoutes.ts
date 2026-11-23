@@ -851,6 +851,12 @@ export class MobilePairingService {
     return this.mayReadMessageId(p, ref, messageId);
   }
 
+  /** Push admission requires the actual represented witness, including after peer fan-out arrives early. */
+  deviceMayNotifyMessage(deviceId: string, ref: string, messageId: string | undefined): boolean {
+    if (typeof messageId !== 'string' || messageId.length === 0 || messageId.length > 512 || !this.storedMessage(ref, messageId)) return false;
+    return this.deviceMayUseConversation(deviceId, ref) && this.deviceMayReadMessage(deviceId, ref, messageId);
+  }
+
   /** Validate a requested person for a pairing link or a reassignment (spec §3.2). */
   choosePerson(userId: unknown, role: unknown): ReturnType<typeof choosePerson> {
     const needsRegistry = (userId !== undefined && userId !== null);
@@ -2616,6 +2622,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/conversations\/read$/.source],
   // Pinning a conversation to the top of the list (conversation-list-pins): the same per-person pins as the phone.
   ['POST', /^\/mobile\/conversations\/pins$/.source],
+  ['POST', /^\/mobile\/conversations\/preferences$/.source],
   ['POST', /^\/mobile\/conversations$/.source],
   ['PATCH', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['DELETE', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
@@ -2833,6 +2840,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/conversations\/read$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 60, bucket: 'read-marks' },
     // Conversation-list pins (conversation-list-pins): a person's own list order, its own bucket.
     { method: 'POST', re: /^\/mobile\/conversations\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'list-pins' },
+    // The handler applies stable identity/reader ACL checks, including clearing one's own
+    // prior true preference after access loss; generic conversationRef would block that exception.
+    { method: 'POST', re: /^\/mobile\/conversations\/preferences$/, statuses: active, body: 'json' },
     { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },

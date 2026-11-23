@@ -1272,6 +1272,9 @@ export class ConversationRegistry {
     };
   }
 
+  /** Read-only logical mapping version for stable personal preference identities. */
+  preferenceIdentityVersion(): string { this.load(); return `${this.seqCounter}:${this.snapshotHighWaterSeq}:${this.unappliedUnknownOps.length}:${this.workspacePin?.value ?? ''}`; }
+
   /** Forward lookup by canonical key OR transport sessionKey — mints NOTHING (§8). */
   resolveByKey(keyOrSessionKey: string): ConversationDescriptor | null {
     this.load();

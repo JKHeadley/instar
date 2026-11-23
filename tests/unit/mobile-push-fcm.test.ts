@@ -99,7 +99,7 @@ function setup(opts: Opts = {}) {
   const fcmKey = opts.fcmKey ?? { v: JSON.stringify(SA()) };
   const reports: Array<{ what: string; msg: string }> = [];
   const mk = () => new MobilePushService({
-    stateDir: dir, registry: reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+    notificationReader: () => 'owner', canonicalReplyRef: key => `app:${key}`, mutedFor: () => false, mayNotify: () => true, stateDir: dir, registry: reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
     enabled: () => true,
     credentials: () => (opts.apnsCred === false ? null : { keyPem: APNS_KEY, keyId: 'K', teamId: 'T' }),
     transport: apns, fcmKey: () => fcmKey.v, fcmTransport, fcmOAuth, fcmDeadlineMs: opts.deadlineMs,
@@ -193,7 +193,7 @@ describe('FCM credential and auth', () => {
     await Promise.all([p, q]);
     c.clock.t += 40 * MIN;
     await c.svc.tick(); // the held folds go with the cached token
-    expect(c.fcmSent.length).toBeGreaterThanOrEqual(3);
+    expect(c.fcmSent.length).toBeGreaterThanOrEqual(2); // fresh OAuth admission included both queued notices
     expect(c.assertions).toHaveLength(1);
     c.clock.t += 11 * MIN;
     await c.svc.receive(trig(4), false);
@@ -246,7 +246,7 @@ describe('FCM send path and answers', () => {
     c.clock.t += 10_000; await c.svc.receive(trig(2), false);
     c.clock.t += 2 * MIN; await c.svc.tick();
     expect(c.fcmSent).toHaveLength(2);
-    expect(JSON.parse(c.fcmSent[1]!.body.message.data.instar)).toMatchObject({ kind: 'aggregate', count: 1 });
+    expect(JSON.parse(c.fcmSent[1]!.body.message.data.instar)).toMatchObject({ kind: 'item', count: 1, itemId: 'ATT-2' });
   });
 
   it('UNREGISTERED and a message.token violation clear only with a matching pushVersion', async () => {
@@ -405,13 +405,13 @@ describe('FCM pause, hold, trials and recheck', () => {
     expect(k.fcmSent).toHaveLength(1);
   });
 
-  it('an APNs trigger while APNs is paused is unchanged (dropped, not folded)', async () => {
+  it('an APNs trigger while APNs is paused remains durably bound for recovery', async () => {
     const c = setup({ apnsDevice: true, fcmDevices: 0 });
     fs.mkdirSync(path.join(c.dir, 'state'), { recursive: true });
     fs.writeFileSync(path.join(c.dir, 'state', 'mobile-push-state.json'), JSON.stringify({ devices: {}, dedupe: {}, paused: { reason: 'Forbidden', credHash: 'h', at: 1, checkedAt: c.clock.t }, fanout: { sent: 0, received: 0, deduped: 0, refused: 0 } }));
     const svc = c.mk();
     await svc.receive(trig(1), false);
-    expect((svc.status() as any).devices[0].pending).toBe(0);
+    expect((svc.status() as any).devices[0].pending).toBe(1);
   });
 
   it('under a cause that stays, trials back off (30 m, 1, 2, 4, 8, 16 h) and stop after 6; network errors count; count survives a restart', async () => {
@@ -497,7 +497,7 @@ describe('FCM pause, hold, trials and recheck', () => {
     const t2 = d.svc.tick();
     await tick(10);
     await d.svc.receive(trig(9, { priority: 'URGENT' }), false);
-    expect(row(d, d.fcmId).pending).toBe(1);
+    expect(row(d, d.fcmId).pending).toBe(2); // both the in-flight witness and the newly queued notice remain durable
     d.release.shift()!();
     await t2;
     expect(row(d, d.fcmId).pending).toBeGreaterThanOrEqual(1);
@@ -571,7 +571,7 @@ describe('FCM and APNs side by side', () => {
     c.release.shift()!();
     await p;
     expect(c.fcmSent).toHaveLength(1);
-    expect(row(c, c.fcmId).pending).toBe(1);
+    expect(row(c, c.fcmId).pending).toBe(0); // both notices were admitted after the OAuth wait
     const d = setup({ fcmDevices: 2, fcmAnswers: ['stall'] });
     const q = d.svc.receive(trig(1), false);
     await tick(5);
@@ -595,7 +595,7 @@ describe('ready', () => {
     await p.svc.receive(trig(1), false);
     expect(p.svc.readyFor('fcm')).toBe(false);
     expect(p.svc.readyFor('apns')).toBe(true);
-    const off = new MobilePushService({ stateDir: c.dir, registry: c.reg, agentId: 'e', agentName: 'E', machineId: 'm', enabled: () => false, credentials: () => null, fcmKey: () => JSON.stringify(SA()) });
+    const off = new MobilePushService({ notificationReader: () => 'owner', canonicalReplyRef: key => `app:${key}`, mutedFor: () => false, mayNotify: () => true, stateDir: c.dir, registry: c.reg, agentId: 'e', agentName: 'E', machineId: 'm', enabled: () => false, credentials: () => null, fcmKey: () => JSON.stringify(SA()) });
     expect(off.readyFor('fcm')).toBe(false);
   });
 });

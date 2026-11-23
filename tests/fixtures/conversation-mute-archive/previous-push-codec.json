@@ -1,0 +1,42 @@
+{
+  "previousSourceCommit": "9a0c3e2c9b6c30cf461a4e44df7edcb446928ead",
+  "previousModuleUnmodified": true,
+  "proposedPending": {
+    "count": 2,
+    "hasUrgent": true,
+    "noticeCount": 1,
+    "replyContributions": {
+      "app:22222222-2222-4222-8222-222222222222": {
+        "messageId": "reply-1",
+        "hasUrgent": false
+      }
+    }
+  },
+  "oldLoadPending": {
+    "count": 2,
+    "hasUrgent": true,
+    "noticeCount": 1,
+    "replyContributions": {
+      "app:22222222-2222-4222-8222-222222222222": {
+        "messageId": "reply-1",
+        "hasUrgent": false
+      }
+    }
+  },
+  "oldSavedPending": {
+    "count": 2,
+    "hasUrgent": true,
+    "noticeCount": 1,
+    "replyContributions": {
+      "app:22222222-2222-4222-8222-222222222222": {
+        "messageId": "reply-1",
+        "hasUrgent": false
+      }
+    }
+  },
+  "oldFoldReplacement": {
+    "count": 3,
+    "hasUrgent": true
+  },
+  "observation": "Previous load/save retains unknown nested pending fields and count. Its old fold replacement keeps aggregate count/urgency but loses typed provenance; an upgraded reader must treat such a replacement as anonymous legacy state. This probe establishes compatibility behavior only, not a new writer implementation."
+}

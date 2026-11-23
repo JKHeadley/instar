@@ -1,0 +1,64 @@
+{
+  "rounds": [
+    {
+      "round": 1,
+      "externalStatus": "ok",
+      "externalVerdict": "SERIOUS ISSUES",
+      "standardsChecked": 102,
+      "flags": 4,
+      "degraded": false
+    },
+    {
+      "round": 2,
+      "externalStatus": "ok",
+      "externalVerdict": "SERIOUS ISSUES",
+      "standardsChecked": 102,
+      "flags": 5,
+      "degraded": false
+    },
+    {
+      "round": 3,
+      "externalStatus": "ok",
+      "externalVerdict": "SERIOUS ISSUES",
+      "standardsChecked": 102,
+      "flags": 4,
+      "degraded": false
+    },
+    {
+      "round": 4,
+      "externalStatus": "ok",
+      "externalVerdict": "SERIOUS ISSUES",
+      "standardsChecked": 102,
+      "flags": 5,
+      "degraded": false
+    },
+    {
+      "round": 5,
+      "externalStatus": "ok",
+      "externalVerdict": "SERIOUS ISSUES",
+      "standardsChecked": 102,
+      "flags": 2,
+      "degraded": false
+    },
+    {
+      "round": 6,
+      "externalStatus": "ok",
+      "externalVerdict": "SERIOUS ISSUES",
+      "standardsChecked": 102,
+      "flags": 3,
+      "degraded": false
+    }
+  ],
+  "internalPerspectivesEveryRound": [
+    "security",
+    "scalability",
+    "adversarial",
+    "integration",
+    "decision-completeness",
+    "lessons-experience-fit"
+  ],
+  "closure": "At cap6 all final external corrections incorporated and independently closed by security/integration/decision reviewers; no external quiet verdict claimed.",
+  "frontloadedDecisions": 17,
+  "cheapTags": 0,
+  "contestedCleared": 0
+}

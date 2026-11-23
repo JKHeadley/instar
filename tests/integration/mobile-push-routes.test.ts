@@ -44,6 +44,9 @@ function setup(opts: { pushOff?: boolean; fcmKey?: string | null; machine?: stri
   const fcmSent: Array<Record<string, any>> = [];
   const fcmTransport: FcmTransport = async (_p, _a, body) => { fcmSent.push(JSON.parse(body)); return { status: 200, tokenFieldViolation: false }; };
   svc.push = new MobilePushService({
+    notificationReader: id => { const device = svc.devices.get(id); const person = device ? svc.personOfDevice(device) : null; return person?.ok && person.role === 'owner' ? 'owner' : null; },
+    canonicalReplyRef: key => `app:${key}`, mutedFor: () => false,
+    mayNotify: (id, key, messageId) => svc.deviceMayUseConversation(id, key) && svc.deviceMayReadMessage(id, key, messageId),
     stateDir: dir, registry: svc.devices, agentId: 'echo', agentName: 'Echo', machineId: 'm_self',
     enabled: () => !opts.pushOff, credentials: () => ({ keyPem: KEY, keyId: 'K', teamId: 'T' }), transport,
     fcmKey: () => (opts.fcmKey === undefined ? SA : opts.fcmKey), fcmTransport, fcmOAuth: async () => ({ status: 200, accessToken: 'at' }),
@@ -224,12 +227,14 @@ describe('mobile push recheck across two machines', () => {
     const credHash = crypto.createHash('sha256').update(SA).digest('hex');
     fs.mkdirSync(path.join(b.dir, 'state'), { recursive: true });
     fs.writeFileSync(path.join(b.dir, 'state', 'mobile-push-state.json'), JSON.stringify({
-      devices: { [b.id]: { sendLog: [], urgentLog: [], lastSendAt: null, pending: { count: 1, hasUrgent: false }, dueAt: Date.now() - 1000, backoffUntil: null, lastSend: null } },
+      devices: { [b.id]: { sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null } },
       dedupe: {}, paused: null, pausedFcm: { reason: 'permission-denied', credHash, at: Date.now() - 40 * 3_600_000, checkedAt: Date.now(), refusedTrials: 6, nextTrialAt: null }, fcmKeyHash: credHash,
       fanout: { sent: 0, received: 0, deduped: 0, refused: 0 },
     }));
     const pushB = b.svc.push!;
     (pushB as unknown as { state: null }).state = null; // reload from disk
+    // Queue a real reader-bound notice; anonymous previous-binary slots are quarantined, never drained.
+    await pushB.receive({ kind: 'item', itemId: 'ATT-1', dedupeKey: 'recheck-held', sourceMachine: 'm_b' }, false);
     const calls = { a: 0, b: 0 };
     const wrap = (svc: MobilePushService, k: 'a' | 'b') => { const f = svc.recheckFcm.bind(svc); svc.recheckFcm = () => { calls[k]++; return f(); }; };
     wrap(a.svc.push!, 'a'); wrap(pushB, 'b');

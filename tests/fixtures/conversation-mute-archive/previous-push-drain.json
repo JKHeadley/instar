@@ -1,0 +1,22 @@
+{
+  "previousSourceCommit": "9a0c3e2c9b6c30cf461a4e44df7edcb446928ead",
+  "oldDrainAfterReassignmentTransportCalls": 1,
+  "rollbackEnqueueReassignDrain": {
+    "queuedBeforeReassignment": {
+      "count": 1,
+      "hasUrgent": false
+    },
+    "transportCallsAfterReassignment": 1,
+    "quiescedBeforeDrain": false
+  },
+  "rollbackEnqueueQuiesceReassignDrain": {
+    "queuedBeforeReassignment": {
+      "count": 1,
+      "hasUrgent": false
+    },
+    "transportCallsAfterReassignment": 0,
+    "quiescedBeforeDrain": true
+  },
+  "oldDrainWithTypedSidecarAndEmptyLegacyPendingTransportCalls": 0,
+  "observation": "Actual old MobilePush.tick sends the anonymous aggregate after reassignment despite mayNotify=false, because aggregate drain has lost reply/reader admission. The old sender does not discover a separate typed-pending sidecar when its own pending slot is empty. New typed pending state must be isolated before writers are enabled; this is observed code behavior using generated test-only keys and a stub transport, not a live push."
+}
