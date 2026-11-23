@@ -96,13 +96,19 @@ export class DocumentService {
     return { id: docId, title: this.textOf(docId, s.titleHash), version: v, markdown, heads: versionHeads(s), state: s };
   }
 
-  /** Comments with quotes, re-anchored onto the latest version, for the agent and the page. */
-  comments(docId: string, caller: Caller, status: 'open' | 'resolved' | 'all' = 'open'): Array<{
-    key: string; author: string; quote: string | null; body: string | null; anchorState: 'ok' | 'edited' | 'orphaned'; start?: number; end?: number;
-    resolved: boolean; replies: Array<{ author: string; body: string | null; at: string | null; originClient: OriginClient }>; onVersion: string; at: string | null; edited: boolean;
+  /**
+   * Comments with their ORIGINAL quotes, placed on one version (the latest unless `versionId` names
+   * another) for the agent and the page. A comment sits at its own position on the version it was
+   * made on; on any other version it is placed only where the same passage clearly still is.
+   * `nowReads` is that version's wording when the passage was edited; the quote never changes.
+   */
+  comments(docId: string, caller: Caller, status: 'open' | 'resolved' | 'all' = 'open', versionId?: string): Array<{
+    key: string; author: string; quote: string | null; nowReads?: string; body: string | null; anchorState: 'ok' | 'edited' | 'orphaned'; start?: number; end?: number;
+    resolved: boolean; replies: Array<{ author: string; body: string | null; at: string | null; originClient: OriginClient }>; onVersion: string; onVersionLabel: number | null; at: string | null; edited: boolean;
     originClient: OriginClient;
   }> {
-    const r = this.read(docId, caller);
+    let r = this.read(docId, caller, versionId);
+    if (versionId && !r.version) r = this.read(docId, caller);
     const latest = r.version;
     const latestText = latest && r.markdown !== null ? projectText(r.markdown, latest.projectionVersion).text : null;
     const times = new Map<string, string>();
@@ -117,12 +123,12 @@ export class DocumentService {
     for (const c of r.state.comments.values()) {
       if (status === 'open' && c.resolved) continue;
       if (status === 'resolved' && !c.resolved) continue;
-      out.push({ ...this.placeComment(docId, r.state, c, latest, latestText), key: c.key, author: c.author, body: this.textOf(docId, c.revisions[c.revisions.length - 1].bodyHash), resolved: c.resolved, replies: c.replies.map((x) => ({ author: x.author, body: this.textOf(docId, x.bodyHash), at: times.get(x.rowKey) ?? null, originClient: clients.get(x.rowKey) ?? null })), onVersion: c.onVersion, at: times.get(c.revisions[0].rowKey) ?? null, edited: c.revisions.length > 1, originClient: clients.get(c.revisions[0].rowKey) ?? null });
+      out.push({ ...this.placeComment(docId, r.state, c, latest, latestText), key: c.key, author: c.author, body: this.textOf(docId, c.revisions[c.revisions.length - 1].bodyHash), resolved: c.resolved, replies: c.replies.map((x) => ({ author: x.author, body: this.textOf(docId, x.bodyHash), at: times.get(x.rowKey) ?? null, originClient: clients.get(x.rowKey) ?? null })), onVersion: c.onVersion, onVersionLabel: r.state.versions.get(c.onVersion)?.label ?? null, at: times.get(c.revisions[0].rowKey) ?? null, edited: c.revisions.length > 1, originClient: clients.get(c.revisions[0].rowKey) ?? null });
     }
     return out;
   }
 
-  private placeComment(docId: string, s: DocState, c: CommentState, latest: VersionState | null, latestText: string | null): { quote: string | null; anchorState: 'ok' | 'edited' | 'orphaned'; start?: number; end?: number } {
+  private placeComment(docId: string, s: DocState, c: CommentState, latest: VersionState | null, latestText: string | null): { quote: string | null; nowReads?: string; anchorState: 'ok' | 'edited' | 'orphaned'; start?: number; end?: number } {
     const anchorBlob = this.store.getBlob(docId, c.anchor.anchorHash);
     const quote = anchorBlob ? (JSON.parse(anchorBlob.text) as Quote) : null;
     if (!quote) return { quote: null, anchorState: 'orphaned' };
@@ -133,7 +139,8 @@ export class DocumentService {
     const oldText = projectText(oldMd, onV.projectionVersion).text;
     const anchor: Anchor = { quote, start: c.anchor.start, end: c.anchor.end };
     const res = reanchor(oldText, latestText, anchor);
-    return { quote: res.exact ?? quote.exact, anchorState: res.state, start: res.start, end: res.end };
+    // The quote is always what the person highlighted; an edited passage's new wording is separate.
+    return { quote: quote.exact, ...(res.state === 'edited' && res.exact !== undefined ? { nowReads: res.exact } : {}), anchorState: res.state, start: res.start, end: res.end };
   }
 
   /** Word-level compare of two versions (§3.5). */

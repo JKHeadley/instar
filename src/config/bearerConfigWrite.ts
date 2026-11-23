@@ -11,6 +11,9 @@
 import { configPatchRaises } from '../core/TrustRaiseGuard.js';
 import type { AutonomyProfileLevel } from '../core/types.js';
 
+/** SEC-153: `dispatches` keys that choose where remote instructions come from and who may sign them. Config file only. */
+export const DISPATCH_ORIGIN_KEYS: ReadonlyArray<string> = ['dispatchUrl', 'dispatchFile', 'trustedKeys'];
+
 export const RESERVED_CONFIG_PATH_SEGMENTS: ReadonlySet<string> = new Set(['__proto__', 'prototype', 'constructor']);
 
 /** Turn `a.b.c` = v into `{ a: { b: { c: v } } }` (the patch PATCH /config would receive). */
@@ -56,7 +59,13 @@ export function bearerConfigWriteRefusal(
   if (top === 'sessions') {
     const keys = second !== undefined ? [second] : (value && typeof value === 'object' ? Object.keys(value as object) : []);
     if (keys.some((k) => opts.operatorOnlySessionKeys.includes(k))) {
-      return 'the settings that choose which program a session runs can only be set on the machine';
+      return 'the settings that choose which program a session runs, where Claude sessions connect and which account pays can only be set on the machine';
+    }
+  }
+  if (top === 'dispatches') {
+    const keys = second !== undefined ? [second] : (value && typeof value === 'object' ? Object.keys(value as object) : []);
+    if (keys.some((k) => DISPATCH_ORIGIN_KEYS.includes(k))) {
+      return 'where dispatches come from and which keys may sign them can only be set on the machine';
     }
   }
   if (top === 'notifications' && (second === 'selectivity' || (second === undefined && value && typeof value === 'object' && 'selectivity' in (value as object)))) {

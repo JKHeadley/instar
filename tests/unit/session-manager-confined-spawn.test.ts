@@ -220,3 +220,53 @@ describe('confined spawn (feedback executor)', () => {
     // launches confined on the interactive lane (tests/unit/session-manager-confined-reroute.test.ts).
   });
 });
+
+describe('shadow-answerer spawn options (context budget §10: chosen session id, memory-session token)', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-probe-spawn-'));
+    mockTmuxSessions.clear();
+    newSessionArgvs.length = 0;
+  });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/session-manager-confined-spawn.test.ts' }); });
+
+  const TOKEN = `mps_${'a'.repeat(43)}`;
+  const envOf = (argv: string[]) => argv.filter((_a, i) => argv[i - 1] === '-e');
+
+  it('launches under the chosen INSTAR_SESSION_ID with the token as its only credential, set after the blanking', async () => {
+    const { manager } = makeManager({}, tmpDir);
+    const s = await manager.spawnSession({ name: 'fold-probe-1', prompt: 'answer', omitAuthEnv: true, framework: 'claude-code', confinedTools: ['Bash'], requireToolConfinement: true, instarSessionId: 'inst_probe_0001', memorySessionToken: TOKEN });
+    expect(s.id).toBe('inst_probe_0001');
+    const env = envOf(lastNewSessionArgv());
+    expect(env).toContain('INSTAR_SESSION_ID=inst_probe_0001');
+    const auth = env.filter((kv) => kv.startsWith('INSTAR_AUTH_TOKEN='));
+    expect(auth[auth.length - 1]).toBe(`INSTAR_AUTH_TOKEN=${TOKEN}`); // the last write wins in tmux -e
+    expect(env).not.toContain('INSTAR_AUTH_TOKEN=instar-real-token');
+  });
+
+  it('the rerouted interactive lane carries the same token after its blanking', async () => {
+    const { manager } = makeManager({ mode: 'force' }, tmpDir);
+    await manager.spawnSession({ name: 'fold-probe-2', prompt: 'answer', omitAuthEnv: true, framework: 'claude-code', confinedTools: ['Bash'], instarSessionId: 'inst_probe_0002', memorySessionToken: TOKEN });
+    const env = envOf(lastNewSessionArgv());
+    const auth = env.filter((kv) => kv.startsWith('INSTAR_AUTH_TOKEN='));
+    expect(auth[auth.length - 1]).toBe(`INSTAR_AUTH_TOKEN=${TOKEN}`);
+    expect(env).toContain('INSTAR_SESSION_ID=inst_probe_0002');
+  });
+
+  it('refuses a token without omitAuthEnv, a malformed token, a bad id and an id already in use', async () => {
+    const { manager } = makeManager({}, tmpDir);
+    await expect(manager.spawnSession({ name: 'a', prompt: 'p', memorySessionToken: TOKEN })).rejects.toThrow(/memory-session-token-requires-omit-auth-env/);
+    await expect(manager.spawnSession({ name: 'b', prompt: 'p', omitAuthEnv: true, memorySessionToken: 'instar-real-token' })).rejects.toThrow(/memory-session-token-invalid/);
+    await expect(manager.spawnSession({ name: 'c', prompt: 'p', instarSessionId: '../x' })).rejects.toThrow(/instar-session-id-invalid/);
+    expect(newSessionArgvs).toHaveLength(0);
+    await manager.spawnSession({ name: 'd', prompt: 'p', instarSessionId: 'inst_probe_0003' });
+    await expect(manager.spawnSession({ name: 'e', prompt: 'p', instarSessionId: 'inst_probe_0003' })).rejects.toThrow(/instar-session-id-in-use/);
+  });
+
+  it('an ordinary spawn still generates its own id and carries the agent token', async () => {
+    const { manager } = makeManager({}, tmpDir);
+    const s = await manager.spawnSession({ name: 'job2', prompt: 'p' });
+    expect(s.id).not.toBe('inst_probe_0001');
+    expect(envOf(lastNewSessionArgv())).toContain('INSTAR_AUTH_TOKEN=instar-real-token');
+  });
+});

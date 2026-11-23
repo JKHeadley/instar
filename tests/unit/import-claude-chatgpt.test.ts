@@ -13,7 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { makeZip, type ZipFile } from '../helpers/exportZip.js';
 import { listEntries, ZipRefused } from '../../src/import/safeZip.js';
 import { jsonArrayItems } from '../../src/import/jsonArrayStream.js';
-import { MAX_PARTS, PART_CHARS, REMOVED_MARKER, parseChatGptConversation, parseClaudeConversation, parseClaudeProject } from '../../src/import/exportParsers.js';
+import { MAX_PARTS, PART_CHARS, REMOVED_MARKER, removeSecrets, parseChatGptConversation, parseClaudeConversation, parseClaudeProject } from '../../src/import/exportParsers.js';
 import { ImportedHistoryStore, ImportWriterBusy, importedRef } from '../../src/import/ImportedHistoryStore.js';
 import { memoryTextFromClaudeExport, proposeFacts } from '../../src/import/proposedFacts.js';
 import { applyExport, previewExport } from '../../src/import/importExport.js';
@@ -233,6 +233,69 @@ describe('imported store', () => {
     const c = parseClaudeConversation(claudeConv('long', [['m1', 'human', text, '2025-03-01T10:00:00Z']]))!;
     expect(c.stats.redactions).toBe(1);
     expect(c.overflow[0]!.text).not.toContain(SECRET);
+  });
+
+  describe('a secret at a scrub window edge is removed whole', () => {
+    // 40 characters with no known prefix: only its "Bearer" or "password:" label marks it as a secret.
+    const BARE = 'Zq9Wm2Xr7Kp4Ln8Vt3Hc6Jd1Fs5Gb0Ny2Qe7Ua4';
+    const EDGE = 1_000_000;
+
+    it('a Bearer pair whose last space before the edge sits between the label and the token', () => {
+      const text = 'y'.repeat(EDGE - 10) + ' Bearer ' + BARE + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(BARE);
+      expect(r.text).not.toContain(BARE.slice(0, 12));
+      expect(r.removed).toBe(1);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+
+    it('a labelled password pair split across the edge the same way', () => {
+      const text = 'y'.repeat(EDGE - 12) + ' password: ' + BARE + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(BARE);
+      expect(r.removed).toBe(1);
+    });
+
+    it('a known-prefix key inside a long run with no whitespace near the edge', () => {
+      const text = 'y'.repeat(EDGE - 10) + SECRET + 'y'.repeat(50) + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(SECRET.slice(10));
+      expect(r.text).not.toContain('A1b2C3d4A1b2C3d4');
+      expect(r.removed).toBe(1);
+    });
+
+    it('a secret inside the overlap of two windows counts once and the rest of the text survives', () => {
+      const text = 'word '.repeat(199_990) + SECRET + ' ' + 'more '.repeat(1000);
+      const r = removeSecrets(text);
+      expect(r.removed).toBe(1);
+      expect(r.text).toBe('word '.repeat(199_990) + REMOVED_MARKER + ' ' + 'more '.repeat(1000));
+    });
+
+    it('a token that starts well before the edge and runs across it is removed whole', () => {
+      const long = BARE.repeat(5); // 200 characters, 100 before the edge
+      const text = 'y'.repeat(EDGE - 108) + ' Bearer ' + long + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toContain(BARE);
+      expect(r.removed).toBe(1);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+
+    it('a labelled value longer than the window overlap that crosses the edge is removed to its end', () => {
+      const value = 'Q'.repeat(100_000);
+      const text = 'y'.repeat(EDGE - 80_000 - 11) + ' password: ' + value + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toMatch(/Q{12}/);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
+
+    it('a key run longer than a whole window is removed to its end', () => {
+      const text = 'start ' + 'sk-ant-' + 'k'.repeat(1_200_000) + ' tail';
+      const r = removeSecrets(text);
+      expect(r.text).not.toMatch(/k{20}/);
+      expect(r.text).toContain(`${REMOVED_MARKER} (${7 + 1_200_000} characters)`); // a long removal says how much
+      expect(r.text.startsWith('start ')).toBe(true);
+      expect(r.text.endsWith(' tail')).toBe(true);
+    });
   });
 
   it('lists chats by their own last message time, and keeps the full text of an overflowed message', () => {

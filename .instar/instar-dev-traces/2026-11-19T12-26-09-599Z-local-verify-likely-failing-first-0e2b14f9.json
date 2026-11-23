@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "slug": "local-verify-likely-failing-first",
+  "sessionId": "557df37c-91a0-4ec9-a265-bebbdf05b55e",
+  "timestamp": "2026-11-19T12:26:09.599Z",
+  "artifactPath": "upgrades/side-effects/local-verify-likely-failing-first.md",
+  "artifactSha256": "e8b1eff696752c7a6abcf09dfeb5837f13cd702154a19f5aea80911b3a46e998",
+  "specPath": "docs/specs/local-verify-likely-failing-first.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-likely-failing-first.eli16.md",
+    "docs/specs/local-verify-likely-failing-first.md",
+    "docs/specs/reports/local-verify-likely-failing-first-convergence.md",
+    "src/data/awareness/local-verify-likely-failing-first.md",
+    "src/data/feature-ladders.json",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/firstPart.ts",
+    "src/localVerify/firstPartTrial.ts",
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/likelyFailingList.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/record.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-likely-failing-first-lifecycle.test.ts",
+    "tests/integration/local-verify-likely-failing-first-routes.test.ts",
+    "tests/unit/localVerify/firstPart.test.ts",
+    "tests/unit/localVerify/firstPartFlow.test.ts",
+    "tests/unit/localVerify/firstPartQueueControls.test.ts",
+    "tests/unit/localVerify/firstPartService.test.ts",
+    "tests/unit/localVerify/firstPartTrial.test.ts",
+    "tests/unit/localVerify/likelyFailingList.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/local-verify-likely-failing-first.md",
+    "upgrades/side-effects/local-verify-likely-failing-first.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "changes the order and early-end behaviour of the merge gate's test run; off by default per machine; converged and approved spec; independent second pass concurred on the build and on the merge with main",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the comparison run is registered as local-verify-first-part-compare in src/testing/selfActionRegistry.ts: one at a time, its start counted durably before the spawn, at most 5 finished and 10 started per kind per machine, dropped after 30 minutes pending, killed at the total deadline; the automatic switch to off is latched once in the trial file; the list is updated once per recorded verify; the group assignment is written once per pull request"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-19T08:58:47.750Z",
+  "slug": "local-verify-queue-controls",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 1782,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/local-verify-queue-controls.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/operatorQueue.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/waitingList.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1747,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

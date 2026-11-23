@@ -76,9 +76,12 @@ export function resolveModelForFramework(
     // full rationale + the live-probe record).
     // 2026-09-23: light → gpt-6-luna, medium → gpt-6-sol (live-probed on codex
     // CLI 0.156.1; older CLIs refuse both — see models.ts header).
+    // 2026-11-17: medium → gpt-6.2-sol, heavy → gpt-6.2-astra (CLI >= 0.166.0;
+    // SessionManager.resolveCodexLaunchModel swaps in gpt-6-sol / gpt-6-astra on
+    // an older CLI). No gpt-6.2-luna exists, so light stays gpt-6-luna.
     if (key === 'fast' || key === 'haiku') return 'gpt-6-luna';      // light tier
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-6-sol';  // medium
-    if (key === 'capable' || key === 'opus') return 'gpt-6-astra';  // heavy — frontier; gpt-5.5 retired 2026-09-09
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-6.2-sol';  // medium
+    if (key === 'capable' || key === 'opus') return 'gpt-6.2-astra';  // heavy — frontier
     return modelOrTier;
   }
   if (framework === 'gemini-cli') {
@@ -141,7 +144,7 @@ export function resolveInteractiveLaunchModel(
     if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
     // No configured model → the `balanced` tier, looked up rather than
     // hardcoded so the default can never drift from the tier map.
-    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6-sol';
+    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6.2-sol';
   }
   if (framework === 'gemini-cli') {
     return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
@@ -286,13 +289,17 @@ export interface InteractiveLaunchOptions {
    */
   grokInteractiveOptIn?: boolean;
   /**
-   * Subscription & Auth Standard P1.3 (claude-code only): the per-account config
-   * home for this session. When set, the builder injects
-   * `CLAUDE_CONFIG_DIR=<configHome>` into envOverrides so the launched Claude
-   * session authenticates under THAT account's login instead of inheriting the
-   * parent agent's. This is the swap mechanism — selecting/swapping an account =
-   * launching (or `--resume`-ing) with that account's configHome. No effect on
-   * non-claude frameworks. NEVER a token — just the login location.
+   * Subscription & Auth Standard P1.3: the per-account config home for this
+   * session. When set, the builder injects the framework's home variable —
+   * `CLAUDE_CONFIG_DIR` for claude-code, `CODEX_HOME` for codex-cli — so the
+   * launched session authenticates under THAT account's login instead of
+   * inheriting the parent agent's. This is the swap mechanism — selecting/swapping
+   * an account = launching (or resuming) with that account's home. No effect on
+   * other frameworks. NEVER a token — just the login location.
+   *
+   * codex-cli was missing until 2026-11-18: a swap or pin onto a Codex account
+   * tagged the session with that account while Codex ran on the server's default
+   * login, so the wrong account's quota was spent under the right account's name.
    */
   configHome?: string;
   /**
@@ -581,6 +588,9 @@ const codexCliBuilder: Builder = (options) => {
       // defense-in-depth so a Codex session can't be mis-detected as
       // a Claude one by downstream tooling that grep's env vars.
       CLAUDECODE: '',
+      // The account the session is tagged with is the account it runs on: the
+      // login location only, never a token. Unset = the inherited default login.
+      ...(options.configHome ? { CODEX_HOME: options.configHome } : {}),
     },
     ...(thinking ? { applied: thinking.applied, dropped: thinking.dropped } : {}),
   };
@@ -1141,7 +1151,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6-sol');
+    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6.2-sol');
   const argv: string[] = [
     options.binaryPath,
     'exec',

@@ -1,6 +1,7 @@
 /**
  * Tells the operator, once, that a Mac's desktop helper needs its macOS
- * permission again. Without this the machine only reads "not ready", and only
+ * permission again, but only when Remote Desktop has been used on this Mac
+ * recently (operator direction 2026-11-20: no cards about unused features). Without this the machine only reads "not ready", and only
  * to someone who looks. Signal only: it never grants, blocks or restarts.
  */
 import type { DesktopProbe } from './DesktopHost.js';
@@ -14,6 +15,13 @@ export interface DesktopHelperPermissionNoticeDeps {
   machineId: string;
   probe(): Promise<DesktopProbe & { ready: boolean }>;
   sourceHash(): string | null;
+  /**
+   * True when someone has used Remote Desktop on this machine recently. A
+   * permission problem on a Mac nobody remotes into is not worth a card: the
+   * Machines page still reads "not ready" and the desktop page explains the
+   * fix the moment someone opens it.
+   */
+  recentlyUsed(): boolean;
   /** True for the first agent on this Mac to raise this notice. */
   claim(): boolean;
   /** Gives the notice back so a later check, or a sibling agent, can raise it. */
@@ -51,7 +59,10 @@ export class DesktopHelperPermissionNotice {
       this.raisedKey = null;
       return;
     }
-    if (!probe.helperChange || this.raisedKey === conditionKey || !this.deps.claim()) return;
+    if (!probe.helperChange || this.raisedKey === conditionKey) return;
+    // Checked before claim(): an agent nobody uses for Remote Desktop must leave
+    // the notice for a sibling agent on this Mac that is used.
+    if (!this.deps.recentlyUsed() || !this.deps.claim()) return;
     try {
       await this.deps.raise({
         id: conditionKey, conditionKey,

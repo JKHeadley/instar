@@ -96,11 +96,11 @@ export function machineWords(issue) {
   return name ? `On ${name}` : '';
 }
 
-/** Home's rows: only what affects the person. Internal items never raise the count. */
+/** Needs-you rows: exclude only explicitly declared waits. Older servers stay conservative. */
 export function healthNeedRows(res) {
   const d = readableIssues(res);
   if (!d) return null;
-  return d.issues.filter((i) => i && i.impact === 'user-affecting').map((i) => ({ key: i.id, title: i.title, detail: [machineWords(i), i.detail].filter(Boolean).join(' · '), href: issueHref(i) }));
+  return d.issues.filter((i) => i && i.impact === 'user-affecting' && i.requiresUserAction !== false).map((i) => ({ key: i.id, title: i.title, detail: [machineWords(i), i.detail].filter(Boolean).join(' · '), href: issueHref(i) }));
 }
 
 /** "3 times", or nothing for one. */

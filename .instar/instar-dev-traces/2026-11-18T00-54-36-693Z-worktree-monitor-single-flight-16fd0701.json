@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "worktree-monitor-single-flight",
+  "sessionId": "700d79a1-8d87-4459-bd0a-115993fa6b7d",
+  "timestamp": "2026-11-18T00:54:36.693Z",
+  "artifactPath": "upgrades/side-effects/worktree-monitor-single-flight.md",
+  "artifactSha256": "7e85355f38b732d683facac842c89fc38df856874203afe967e9271d7b848e94",
+  "coveredFiles": [
+    "docs/specs/worktree-monitor-single-flight.eli16.md",
+    "src/monitoring/WorktreeMonitor.ts",
+    "tests/unit/worktree-monitor.test.ts",
+    "upgrades/side-effects/worktree-monitor-single-flight.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-file concurrency fix to a report-only monitor: no block/allow surface, no deletion, no config; a revert fully undoes it.",
+  "eli16Path": "docs/specs/worktree-monitor-single-flight.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-monitor-single-flight.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

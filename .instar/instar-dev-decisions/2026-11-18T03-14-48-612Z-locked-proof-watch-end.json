@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T03:14:48.612Z",
+  "slug": "locked-proof-watch-end",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 685,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs",
+      "scripts/locked-proof/watch-end-supervisor.py"
+    ],
+    "addedLines": 672,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

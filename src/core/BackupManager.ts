@@ -114,6 +114,13 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // repair through backup replication.
   'state/subscription-relogin',
   '.instar/state/subscription-relogin',
+  // planned-restart-keeps-lead: this machine's own pending-restart renewal copy and its measured
+  // boot durations (hardware-bound-resource). A restored unsigned budget would set another
+  // machine's window from foreign boots; a restored continuity file names a machine it is not.
+  'state/lease-continuity.json',
+  '.instar/state/lease-continuity.json',
+  'state/restart-budget.json',
+  '.instar/state/restart-budget.json',
 ]);
 
 /**
@@ -297,6 +304,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/conversation-read-markers.json',
     // Conversation-list pins (conversation-list-pins): what each person pinned to the top of the list, replicated; small.
     'state/conversation-list-pins.json',
+    // Telegram topic names (topic-name-replication): the replicated name rows and outbox; small.
+    'state/telegram-topic-names.json',
     // Context budget layer store (context-budget-layered-summaries §9.7). A
     // directory entry: a glob with a wildcard in a middle segment is skipped.
     // Fold records, holds and markers inside it are never-backup segments

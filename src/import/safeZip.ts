@@ -17,7 +17,14 @@ export const MAX_TOTAL_UNPACKED = 4 * 1024 ** 3;
 export const MAX_RATIO = 100;
 
 export class ZipRefused extends Error {
-  constructor(message: string) { super(message); this.name = 'ZipRefused'; }
+  /** The reason without any file name from the zip: a name is text the export chose, so the agent gets this one. */
+  readonly withoutName: string;
+  /** `message` may hold one `{name}` slot; the owner's message fills it with the (cut) entry name. */
+  constructor(message: string, entryName?: string) {
+    super(entryName === undefined ? message : message.replace('{name}', () => JSON.stringify(entryName.slice(0, 80))));
+    this.withoutName = message.replace(/ ?\(\{name\}\)/, '');
+    this.name = 'ZipRefused';
+  }
 }
 
 export interface ZipEntry {
@@ -96,16 +103,16 @@ export function listEntries(zipPath: string): ZipEntry[] {
         throw new ZipRefused('This zip uses a large-file format (zip64) the importer does not read.');
       }
       if (flags & 0x1) throw new ZipRefused('This zip is password-protected; export it again without a password.');
-      if (badName(name)) throw new ZipRefused(`This zip contains an unsafe file name (${JSON.stringify(name.slice(0, 80))}).`);
+      if (badName(name)) throw new ZipRefused(`This zip contains an unsafe file name ({name}).`, name);
       if ((madeBy >> 8) === 3 && ((extAttr >>> 16) & 0o170000) === 0o120000) {
-        throw new ZipRefused(`This zip contains a link (${JSON.stringify(name.slice(0, 80))}), which the importer refuses.`);
+        throw new ZipRefused(`This zip contains a link ({name}), which the importer refuses.`, name);
       }
-      if (seen.has(name)) throw new ZipRefused(`This zip names the same file twice (${JSON.stringify(name.slice(0, 80))}).`);
+      if (seen.has(name)) throw new ZipRefused(`This zip names the same file twice ({name}).`, name);
       seen.add(name);
       if (name.endsWith('/')) continue;
-      if (method !== 0 && method !== 8) throw new ZipRefused(`This zip uses a compression the importer does not read (${JSON.stringify(name.slice(0, 80))}).`);
+      if (method !== 0 && method !== 8) throw new ZipRefused(`This zip uses a compression the importer does not read ({name}).`, name);
       if (compressedSize > 0 && usize / compressedSize > MAX_RATIO) {
-        throw new ZipRefused(`A file in this zip unpacks to more than ${MAX_RATIO} times its size (${JSON.stringify(name.slice(0, 80))}).`);
+        throw new ZipRefused(`A file in this zip unpacks to more than ${MAX_RATIO} times its size ({name}).`, name);
       }
       total += usize;
       if (total > MAX_TOTAL_UNPACKED) throw new ZipRefused('This zip unpacks to more than 4 GB, the most the importer reads.');
@@ -163,13 +170,13 @@ export function openEntry(zipPath: string, e: ZipEntry): Readable {
     if (seen > limit) {
       inflated.destroy();
       raw.destroy();
-      out.destroy(new ZipRefused(`A file in this zip unpacks to more than it says (${JSON.stringify(e.name.slice(0, 80))}).`));
+      out.destroy(new ZipRefused('A file in this zip unpacks to more than it says ({name}).', e.name));
       return;
     }
     if (!out.push(chunk)) inflated.pause();
   });
   inflated.on('end', () => out.push(null));
-  inflated.on('error', (err) => out.destroy(err instanceof ZipRefused ? err : new ZipRefused(`A file in this zip could not be unpacked (${JSON.stringify(e.name.slice(0, 80))}).`)));
+  inflated.on('error', (err) => out.destroy(err instanceof ZipRefused ? err : new ZipRefused('A file in this zip could not be unpacked ({name}).', e.name)));
   raw.on('error', (err) => out.destroy(err));
   return out;
 }
