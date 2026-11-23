@@ -117,3 +117,6 @@ Separate pass over the security-sensitive diff (AgentServer verifier, PinAttempt
 - Insecure-connection refusal comes first and is not counted.
 
 Concur with the review.
+
+## After Local Verify (2026-11-23)
+The full run on head e485208cc failed one unit test, and the run record does not name the file. On a head brought up to date with main, the fifteen unit tests nearest this change pass: the SEC-135 suites, the ladder, dev-gated, awareness and bounded-accumulation registries, the PIN store and verifier, and the middleware and security scans. The change is resubmitted unchanged for a fresh run.
