@@ -48,7 +48,7 @@ export function stripModel(res, { expanded = false } = {}) {
     // "12+" when some place could not be checked: at least that many (the line under it names what was missed).
     badge: `${count}${complete ? '' : '+'}`,
     incomplete: !complete,
-    title: count > 0 ? `Needs you · ${count}` : 'Nothing found so far',
+    title: count > 0 ? 'Needs you' : 'Nothing found so far',
     rows,
     more: Math.max(0, items.length - rows.length),
     truncated,
@@ -84,6 +84,18 @@ export function cardLinkOf(row) {
   return { href: c.href, label: typeof c.label === 'string' && c.label ? c.label : 'Has a card on the work board' };
 }
 
+/** Group only by structured source and severity; never infer whether an ask is legitimate from its wording. */
+export function needGroups(rows) {
+  const labels = { plans: 'Plans to review', workBoard: 'Work that needs you', 'chief-of-staff': 'Project decisions', accounts: 'Sign-ins', 'document-decisions': 'Documents to review', approvals: 'Permissions to review' };
+  const groups = new Map();
+  for (const row of rows) {
+    const label = row.tone === 'bad' ? 'Problems to check' : labels[row.source] || 'Other requests';
+    if (!groups.has(label)) groups.set(label, { label, rows: [] });
+    groups.get(label).rows.push(row);
+  }
+  return [...groups.values()];
+}
+
 // Each shell owns its answer and timer. A late read from a previous door cannot populate this one.
 let stopPrevious;
 // Open or closed, kept across page changes in this tab (closed by default).
@@ -114,7 +126,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
       return;
     }
     const heading = el('h2', { class: 'needs-heading', tabindex: '-1', text: m.title });
-    const rows = el('ul', { class: 'needs-rows' }, m.rows.map((r) => {
+    const renderRow = (r) => {
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
@@ -128,7 +140,12 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
       return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
         ...(showCard ? [el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label })] : []),
         ...(also ? [el('a', { class: 'needs-also', href: also, text: r.alsoOpens.label || 'Open the project conversation' })] : []));
-    }));
+    };
+    const rows = expanded ? el('div', { class: 'needs-groups', tabindex: '0', role: 'region', 'aria-label': 'Requests that need you' }, needGroups(m.rows).map((g) =>
+      el('section', { class: 'needs-group', 'aria-label': g.label },
+        el('h3', { class: 'needs-group-heading', text: `${g.label} · ${g.rows.length}` }),
+        el('ul', { class: 'needs-rows' }, g.rows.map(renderRow)))))
+      : el('ul', { class: 'needs-rows' }, m.rows.map(renderRow));
     const controls = [];
     if (m.more > 0 || (expanded && (m.rows.length > STRIP_ROWS || m.page?.previousCursor)) || (!expanded && m.page?.nextCursor)) {
       const text = expanded ? 'Show fewer' : m.page?.nextCursor ? 'Show more needs' : m.truncated ? `Show ${m.more} more available ${m.more === 1 ? 'item' : 'items'}` :
@@ -138,7 +155,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
         if (!expanded && m.page?.start > 0) { void load({ cursor: null, start: 0 }); return; }
         if (!expanded) cursor = null;
         paint();
-        const firstNewRow = expanded && host.querySelector(`li:nth-child(${STRIP_ROWS + 1}) a`);
+        const firstNewRow = expanded && host.querySelector('.needs-groups');
         (firstNewRow || host.querySelector('[aria-expanded]'))?.focus();
       }, { 'aria-expanded': String(expanded) }));
     }
@@ -179,7 +196,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
     const focused = document.activeElement;
     const focusInStrip = host.contains(focused);
     // Keep a live action stable during ordinary polling. A heading is only a reading position.
-    if (background && res?.ok && !failure && focusInStrip && focused.matches('a, button')) return;
+    if (background && res?.ok && !failure && focusInStrip && focused.matches('a, button, .needs-groups')) return;
     failure = res?.ok || denied ? null : res?.status === 409 ? 'stale' : 'retry';
     retryTarget = denied ? { cursor: null, start: 0 } : target;
     cursor = denied ? null : target.cursor;
