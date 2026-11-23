@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-names-not-ids-audit-2026-11-20",
+  "sessionId": "7425a2df-18e9-4cee-a96e-d5b574e65668",
+  "timestamp": "2026-11-20T21:49:21.435Z",
+  "artifactPath": "upgrades/side-effects/console-names-not-ids-audit-2026-11-20.md",
+  "artifactSha256": "dffcee45a68a22f63276f36c532ba41cc08c19ffdf60f55b652107514ed84ca2",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-20T21-45-42-568Z-console-names-not-ids-audit-2026-11-20.json",
+    ".instar/instar-dev-decisions/2026-11-20T21-49-07-510Z-console-names-not-ids-audit-2026-11-20.json",
+    ".instar/instar-dev-traces/2026-11-20T21-44-42-446Z-console-names-not-ids-audit-2026-11-20-7371f444.json",
+    "docs/specs/console-names-not-ids-audit-2026-11-20.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "upgrades/side-effects/console-names-not-ids-audit-2026-11-20.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves the new name-learning method next to captureTopicName (no behavior change); overview now mentions the Costs breakdown.",
+  "eli16Path": "docs/specs/console-names-not-ids-audit-2026-11-20.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-names-not-ids-audit-2026-11-20.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

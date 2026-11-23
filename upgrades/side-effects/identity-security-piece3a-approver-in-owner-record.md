@@ -197,3 +197,11 @@ A bad approval-key signature on `POST /mobile/approver/first/sign` and `/revoke/
   tap handler accepts, so it did nothing (found by the stand-in owner chat, PR 3626). It now carries a 24-hex
   `md:d:` nonce in the form the tap router accepts, and the Decline handler ends that claim at once: the code
   stops working and nothing is granted. The message still says to ignore it if it was not you.
+
+## Prerequisite merge repair, 2026-11-22
+
+Tier 2 maintenance under the existing approved 3a spec: normal merge of corrected prerequisite 207df123684fa64f91262ba2ba27242399f5e792 into the existing ae2d0bb6c98cb209c6111774079f756b1abed546 head. The only textual conflict was pairing-route imports. All four approver imports and both current credential-masking imports are retained. Current stall/reclaim protections, types and server wiring match the corrected prerequisite exactly; there are no deleted paths against it. No new ceremony, native approval authority, Apple or Windows implementation was added.
+
+Independent parent source review concurred after inspecting the actual candidate: existing approved approver behavior remains, no identity check is weakened, and no new merge regression was identified. Focused checks passed: 37 unit tests in four files (3a record, claim, ratchet and 2d fence), 42 HTTP integration tests in two files (owner presence and pairing approval), two production-wiring lifecycle tests in the existing 3a E2E file, and TypeScript checking. These are focused results, not full-suite clearance.
+
+The first-approver private-chat/Telegram dependency remains known and held. All native ceremony, app, prerequisite, queue and release holds remain in force; this repair does not authorize full admission or release. The existing signal-versus-authority, over/under-block and multi-machine analysis above remains unchanged. Rollback is a normal revert of this merge, returning the known stale prerequisite state. One independent merge-review pass; no new design convergence rounds.

@@ -545,18 +545,24 @@ describe('identity-security-creation-provenance v5: a change the owner confirmed
     const refused = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm' });
     expect(refused.ok).toBe(false);
     expect(refused.refusal?.reason).toBe('no-bound-operator');
-    const outside = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
-    expect(outside.ok).toBe(false);
-    expect(outside.refusal?.reason).toBe('cross-topic-field');
     const ok = await h.surface.applyWrite({ topicKey: 24, patch: { model: 'opus' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
     expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    const framework = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(framework.ok, JSON.stringify(framework)).toBe(true);
+    expect(h.store.resolve(24)?.framework).toBe('codex-cli');
+    expect(h.store.resolve(24)?.updatedBy).toBe('telegram:777');
+    expect(h.respawns).toEqual(['24']);
+    const outside = await h.surface.applyWrite({ topicKey: 24, patch: { escalationOverride: 'suppress' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(outside.refusal?.reason).toBe('cross-topic-field');
     expect(h.audits.some(a => a.outcome === 'accepted' && a.authorizedBy === 'owner-confirmed-in:130715')).toBe(true);
   });
   it('a topic bound to SOMEONE ELSE still refuses, crossTopicConfirm or not', async () => {
     const h = harness(FLEET_REGIME, { boundUid: '7000001' });
-    const r = await h.surface.applyWrite({ topicKey: 24, patch: { model: 'opus' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    const r = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
     expect(r.ok).toBe(false);
     expect(r.refusal?.reason).toBe('not-bound-operator');
+    expect(h.store.resolve(24)).toBeNull();
+    expect(h.respawns).toEqual([]);
   });
   it('a non-Telegram key never takes the cross-conversation path', async () => {
     const h = harness(FLEET_REGIME, { boundUid: null });

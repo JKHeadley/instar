@@ -1,0 +1,56 @@
+{
+  "version": 3,
+  "slug": "lifeline-standby-never-boot-polls",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-21T22:40:05.110Z",
+  "artifactPath": "upgrades/side-effects/lifeline-standby-never-boot-polls.md",
+  "artifactSha256": "75f04d9ed131f969b0fd19afe69550de2fc171349abfac71203a8d328b410f74",
+  "coveredFiles": [
+    "docs/specs/lifeline-standby-never-boot-polls.eli16.md",
+    "docs/specs/lifeline-standby-never-boot-polls.md",
+    "docs/specs/reports/lifeline-standby-never-boot-polls-convergence.md",
+    "src/core/restartRequestAttribution.ts",
+    "src/data/awareness/lifeline-standby-never-boot-polls.md",
+    "src/data/awareness/server-restart-and-boot-readiness.md",
+    "src/lifeline/RestartOrchestrator.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/pollDecision.ts",
+    "tests/e2e/lifeline-keep-server-adoption.test.ts",
+    "tests/e2e/lifeline-standby-boot-lifecycle.test.ts",
+    "tests/integration/server-restart-route.test.ts",
+    "tests/unit/lifeline/n72-poll-floor.test.ts",
+    "tests/unit/lifeline/n72-restart-ledger.test.ts",
+    "tests/unit/lifeline/n72-restart-outcome.test.ts",
+    "tests/unit/lifeline/standby-no-poll-wiring.test.ts",
+    "upgrades/next/lifeline-standby-never-boot-polls.md",
+    "upgrades/side-effects/lifeline-standby-never-boot-polls.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible bug repair to existing startup and recovery; no new config, migration, lease format or message policy.",
+  "eli16Path": "docs/specs/lifeline-standby-never-boot-polls.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifeline-standby-never-boot-polls.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/lifeline-standby-never-boot-polls-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

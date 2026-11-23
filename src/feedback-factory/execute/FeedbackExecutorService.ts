@@ -1776,12 +1776,16 @@ export class FeedbackExecutorService {
     // CI queueing is not a failed merge attempt. Keep the reviewed PR open and
     // retry on the executor cadence without consuming the one refusal retry.
     // A durable deadline prevents a missing workflow from retrying forever.
-    if (merge.reason === 'deferred:checks-pending') {
+    // Under the `local` floor safe-merge answers `refused:verify-pending` while
+    // Local Verify has no record for the head yet (it is queued, not failed):
+    // the same wait, so a queued verify never parks a reviewed PR (2026-11-21,
+    // when ci.yml stopped running the heavy jobs on pull requests).
+    if (merge.reason === 'deferred:checks-pending' || merge.reason === 'verify-pending') {
       if (row.mergeDeadlineAt !== null && this.now() > row.mergeDeadlineAt) {
         await this.mergeRefused(this.opts.store.get(row.attemptId)!, epoch, 'checks-timeout');
         return;
       }
-      this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', reason: 'merge-deferred:checks-pending', mergeRetryAt: this.now() + 5 * 60_000,
+      this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', reason: `merge-deferred:${merge.reason === 'verify-pending' ? 'verify-pending' : 'checks-pending'}`, mergeRetryAt: this.now() + 5 * 60_000,
         mergeDeadlineAt: row.mergeDeadlineAt ?? this.now() + 3 * 60 * 60_000 });
       return;
     }
