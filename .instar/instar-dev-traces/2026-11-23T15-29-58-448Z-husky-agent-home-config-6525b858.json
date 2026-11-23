@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "husky-agent-home-config",
+  "sessionId": "5400b725-7dc1-4672-b441-5e80da962c64",
+  "timestamp": "2026-11-23T15:29:58.448Z",
+  "artifactPath": "upgrades/side-effects/husky-agent-home-config.md",
+  "artifactSha256": "02e880b8c22f9cc1f30004c1dbdfd6a9828ec0e5ab57e8351df9df9baec72948",
+  "coveredFiles": [
+    ".husky/pre-commit"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One hook file, +9/-4 lines: adds one fail-open config read path in front of the existing four; a revert fully undoes it and no agent has the flag on today, so no commit behaves differently.",
+  "eli16Path": "docs/eli16/husky-agent-home-config.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/husky-agent-home-config.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
