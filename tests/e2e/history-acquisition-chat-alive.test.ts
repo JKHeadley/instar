@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import request from 'supertest';
@@ -7,6 +7,20 @@ import { HistoryAcquisitionStore } from '../../src/import/HistoryAcquisition.js'
 import { AcquisitionArchives } from '../../src/import/archiveStaging.js';
 import { AcquisitionWorkerLease } from '../../src/import/AcquisitionWorkerLease.js';
 import { historyApp } from '../helpers/historyAcquisitionApp.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+
+it('reports unsafe preview staging on the production boot path while keeping owner history readable', async () => {
+  const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+  let h: Awaited<ReturnType<typeof historyApp>> | undefined;
+  try {
+    h = await historyApp(undefined, stateDir => {
+      fs.writeFileSync(path.join(stateDir, 'import-preview-staging'), 'synthetic unsafe staging');
+    });
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ feature: 'ImportedHistory.stagingCleanup', internalOnly: true }));
+    expect(JSON.stringify(report.mock.calls.filter(([entry]) => entry.feature === 'ImportedHistory.stagingCleanup'))).not.toContain(h.stateDir);
+    expect((await h.send('GET', '/mobile/imported-history/conversations')).status).toBe(200);
+  } finally { await h?.close(); report.mockRestore(); }
+});
 
 it('boots with an empty signed capability and no acquisition storage; owner chat explains the fallback',async () => {
   const h = await historyApp();

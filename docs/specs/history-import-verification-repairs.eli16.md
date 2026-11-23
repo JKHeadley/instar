@@ -1,0 +1,9 @@
+# Two Repairs Found While Checking History Import
+
+The history-import work must pass the complete test suite before it can move forward. Testing the older import changes together with the latest server code found two small problems. Neither repair changes what a person can import or gives anyone new access to private conversations.
+
+The first problem happens when the server starts and cannot clean up temporary export files left by an earlier process. The route tries to write a diagnostic through an optional logger. If that logger is missing, nothing records the cleanup problem. The repair also reports it through the existing background health reporter. That report contains a fixed explanation and the system error code. It contains no conversation text, filename or private folder path. The server keeps its existing private-directory checks and does not try to delete an unsafe directory. This is an internal diagnostic, so it does not add another alert to the person's chat.
+
+The second problem is in generating the list of files Git must never copy. Two otherwise valid lists now include the same private-history folder. On a new project, the generator wrote that exclusion twice. The folder was still protected, but the existing idempotency test correctly rejected the duplicate. The repair removes repeated entries from the additions before writing them, keeping their original order. It does not remove or rewrite anything the person already put in their ignore file. The existing test checks the actual Git behavior as well as the exact number of entries.
+
+Both changes are small and reversible. Their focused tests must pass, an independent reader reviews them, and the full test suite still has to finish successfully. Passing a focused check is not evidence that the Mac app's complete import journey is available. No operator approval is needed for these ordinary verification repairs.
