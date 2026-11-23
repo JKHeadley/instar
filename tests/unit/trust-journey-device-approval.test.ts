@@ -25,6 +25,7 @@ class FakeDevices implements DeviceDirectory {
   on = true;
   enabled() { return this.on; }
   get(id: string) { return this.map.get(id) ?? null; }
+  list() { return [...this.map.values()]; }
   notify(subject: string, key: string) { this.notices.push([subject, key]); }
   add(id: string, over: Partial<DeviceSnapshot> = {}): DeviceSnapshot {
     const d: DeviceSnapshot = { deviceId: id, name: `${id} device`, active: true, keyFingerprint: `${id.toUpperCase().padEnd(4, '0').slice(0, 4)}-0000-0000-0000`, presenceKeyHash: H(id[0]!), deviceKind: 'phone', localInstall: false, ...over };
@@ -85,6 +86,192 @@ async function acceptMac(svc: AccountPathService) {
   return mac;
 }
 const auth = (requestId: string, over: Record<string, string> = {}) => ({ deviceId: 'mac', keyFingerprint: devices.get('mac')!.keyFingerprint!, host: 'localhost:4040', requestId, proposalHash: HASH, challengeId: `ch${Math.random().toString(16).slice(2, 10)}`, ...over });
+
+describe('app-first publication', () => {
+  it('reserves capacity across the durability await against an independent acceptance flush', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    await store.write('acceptance', { acceptanceId: 'chat-acc', principal: 'owner', adapter: 'telegram', accountId: '777', acceptedAt: now.toISOString(), messageId: 'old' });
+    for (const service of ['one', 'two']) expect((await svc.propose({ ...change, service })).status).toBe('sent');
+    const send = chat.sendDirect.bind(chat);
+    chat.sendDirect = async () => null;
+    expect((await svc.propose({ ...change, service: 'old-pending' })).status).toBe('undelivered');
+    chat.sendDirect = send;
+    let entered!: () => void, release!: () => void;
+    const began = new Promise<void>((r) => { entered = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    const write = store.write.bind(store);
+    store.write = async (...args) => { if (args[0] === 'request' && (args[1].change as { service?: string })?.service === 'fresh') { entered(); await gate; } return write(...args); };
+    const fresh = svc.propose({ ...change, service: 'fresh' });
+    await began;
+    const statement = acceptanceStatement({ adapter: 'telegram', accountId: '777', installationId: 'inst-1' });
+    await svc.onReceipt({ receiptId: 'flush', adapter: 'telegram', senderId: '777', chatId: '777', chatType: 'private', messageId: 'flush-msg', text: statement, senderIsBot: false, forwarded: false, uniqueKey: 'flush', receivedAt: now.toISOString(), receivedBy: 'm1' });
+    expect(chat.sent).toHaveLength(2);
+    release();
+    expect((await fresh).status).toBe('sent');
+    expect(store.openRequests().filter((r) => !!r.cardMessageId)).toHaveLength(3);
+  });
+
+  it('reports unknown if the holder lease changes during the acceptance read', async () => {
+    const store = mkStore();
+    const svc = mkService(store);
+    await acceptMac(svc);
+    const sweep = svc.sweepDeviceAcceptances.bind(svc);
+    svc.sweepDeviceAcceptances = async () => { const rows = await sweep(); holder = false; return rows; };
+    expect(await svc.approvalDelivery()).toMatchObject({ state: 'unknown' });
+  });
+
+  it('suppresses a prepared chat send after the holder lease is lost', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    await store.write('acceptance', { acceptanceId: 'chat-acc', principal: 'owner', adapter: 'telegram', accountId: '777', acceptedAt: now.toISOString(), messageId: 'old' });
+    const write = store.write.bind(store);
+    store.write = async (...args) => { const out = await write(...args); if (args[0] === 'request') holder = false; return out; };
+    expect((await svc.propose(change)).status).toBe('not-holder');
+    expect(chat.sent).toEqual([]);
+    expect(store.openRequests()).toHaveLength(1);
+  });
+
+  it('an accepted-chat send failure remains durable and the authenticated statement replay recovers the same request', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    await store.write('acceptance', { acceptanceId: 'chat-acc', principal: 'owner', adapter: 'telegram', accountId: '777', acceptedAt: now.toISOString(), messageId: 'old' });
+    chat.sendDirect = async () => null;
+    expect((await svc.propose(change)).status).toBe('undelivered');
+    const old = store.openRequests()[0]!;
+    expect(old.cardMessageId).toBe('');
+    const restoredStore = mkStore();
+    const restoredChat = new FakeChat();
+    const restored = mkService(restoredStore, restoredChat);
+    const statement = acceptanceStatement({ adapter: 'telegram', accountId: '777', installationId: 'inst-1' });
+    expect(await restored.onReceipt({ receiptId: 'recover', adapter: 'telegram', senderId: '777', chatId: '777', chatType: 'private', messageId: 'recover-msg', text: statement, senderIsBot: false, forwarded: false, uniqueKey: 'recover', receivedAt: now.toISOString(), receivedBy: 'm1' })).toBe('acceptance-recorded');
+    expect(restoredStore.request(old.requestId)).toMatchObject({ requestId: old.requestId, proposalHash: old.proposalHash, expiresAt: old.expiresAt, cardMessageId: restoredChat.sent[0].messageId });
+  });
+
+  it('acceptance replay does not resend a creator-owned card while its send is stalled', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    await store.write('acceptance', { acceptanceId: 'chat-acc', principal: 'owner', adapter: 'telegram', accountId: '777', acceptedAt: now.toISOString(), messageId: 'old' });
+    let entered!: () => void, release!: () => void, calls = 0;
+    const began = new Promise<void>((r) => { entered = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    chat.sendDirect = async () => { calls++; entered(); await gate; return { chatId: '777', messageId: 'pending' }; };
+    const pending = svc.propose(change);
+    await began;
+    const statement = acceptanceStatement({ adapter: 'telegram', accountId: '777', installationId: 'inst-1' });
+    expect(await svc.onReceipt({ receiptId: 'repeat', adapter: 'telegram', senderId: '777', chatId: '777', chatType: 'private', messageId: 'repeat-msg', text: statement, senderIsBot: false, forwarded: false, uniqueKey: 'repeat', receivedAt: now.toISOString(), receivedBy: 'm1' })).toBe('acceptance-recorded');
+    expect(calls).toBe(1);
+    release();
+    expect((await pending).status).toBe('sent');
+    expect(calls).toBe(1);
+  });
+
+  it('reserves the last fresh delivered slot while an accepted-chat send is pending', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    await store.write('acceptance', { acceptanceId: 'chat-acc', principal: 'owner', adapter: 'telegram', accountId: '777', acceptedAt: now.toISOString(), messageId: 'old' });
+    for (const service of ['one', 'two']) expect((await svc.propose({ ...change, service })).status).toBe('sent');
+    let entered!: () => void, release!: () => void;
+    const began = new Promise<void>((r) => { entered = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    chat.sendDirect = async () => { entered(); await gate; return { chatId: '777', messageId: 'pending' }; };
+    const last = svc.propose({ ...change, service: 'three' });
+    await began;
+    expect((await svc.propose({ ...change, service: 'four' })).status).toBe('too-many-open');
+    release();
+    expect((await last).status).toBe('sent');
+    expect(store.openRequests()).toHaveLength(3);
+  });
+
+  it('a paired device receives setup without gaining approval authority, then approves the same request after acceptance', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    const mac = devices.add('mac', { deviceKind: 'computer', localInstall: true });
+    const r = await svc.propose(change);
+    expect(r).toMatchObject({ status: 'awaiting-acceptance', via: 'device' });
+    const id = (r as { requestId: string }).requestId;
+    expect((await svc.onPresenceApproval(auth(id))).status).toBe('refused');
+    expect(chat.sent).toHaveLength(0);
+    expect((await svc.recordDeviceAcceptance({ deviceId: 'mac', keyFingerprint: mac.keyFingerprint!, presenceKeyHash: mac.presenceKeyHash!, keyPolicy: 'biometryCurrentSet', disclosureHash: H('d') })).status).toBe('recorded');
+    expect(await svc.propose(change)).toMatchObject({ requestId: id, status: 'sent', via: 'device', deduped: true });
+    expect((await svc.onPresenceApproval(auth(id))).status).toBe('applied');
+  });
+
+  it('moves an existing unconfirmed chat request without changing identity, hash, change or expiry', async () => {
+    const store = mkStore();
+    const svc = mkService(store, new FakeChat());
+    const first = await svc.propose(change);
+    const id = (first as { requestId: string }).requestId;
+    const old = store.request(id)!;
+    await acceptMac(svc);
+    const migrated = await svc.propose(change);
+    expect(migrated).toMatchObject({ requestId: id, via: 'device', deduped: true });
+    expect(store.request(id)).toMatchObject({ adapter: 'device', proposalHash: old.proposalHash, change: old.change, expiresAt: old.expiresAt, requestId: old.requestId });
+    expect(store.allRequests()).toHaveLength(1);
+    const notices = devices.notices.length;
+    await svc.propose(change);
+    expect(devices.notices).toHaveLength(notices);
+  });
+
+  it('an unavailable directory never falls back to an accepted chat', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    devices.list = () => { throw new Error('registry unavailable'); };
+    expect(await svc.propose(change)).toMatchObject({ status: 'not-recorded' });
+    expect(chat.sent).toEqual([]);
+    expect(store.allRequests()).toEqual([]);
+  });
+
+  it('a non-holder publishes nothing and reports unknown current app availability', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    holder = false;
+    expect(await svc.propose(change)).toMatchObject({ status: 'not-holder' });
+    expect(await svc.approvalDelivery()).toMatchObject({ state: 'unknown' });
+    expect(store.allRequests()).toEqual([]);
+    expect(chat.sent).toEqual([]);
+  });
+
+  it('a stalled chat send does not hold admission for a different app request', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    const svc = mkService(store, chat);
+    let entered!: () => void, release!: () => void;
+    const began = new Promise<void>((r) => { entered = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    chat.sendDirect = async () => { entered(); await gate; return null; };
+    const stalled = svc.propose(change);
+    await began;
+    await acceptMac(svc);
+    const next = await svc.propose({ ...change, service: 'calendar' });
+    expect(next).toMatchObject({ status: 'sent', via: 'device' });
+    release();
+    expect((await stalled).status).toBe('undelivered');
+  });
+
+  it('an accepted device takes precedence over a configured chat that never accepted approvals', async () => {
+    const chat = new FakeChat();
+    const store = mkStore();
+    const svc = mkService(store, chat);
+    await acceptMac(svc);
+    const result = await svc.propose(change);
+    expect(result).toMatchObject({ status: 'sent', via: 'device' });
+    expect(chat.sent).toEqual([]);
+    const requestId = (result as { requestId: string }).requestId;
+    expect(store.request(requestId)?.adapter).toBe('device');
+    expect(svc.deviceListing()).toContainEqual(expect.objectContaining({ requestId, status: 'open' }));
+    expect((await svc.onPresenceApproval(auth(requestId))).status).toBe('applied');
+    expect(applied).toHaveLength(1);
+  });
+});
 
 describe('propose without a chat', () => {
   it('no chat and no device acceptance: no-approver, with the set-up words', async () => {
@@ -237,13 +424,13 @@ describe('a chat approval and a device approval of the same request', () => {
     const chat = new FakeChat();
     const store = mkStore();
     const svc = mkService(store, chat);
-    await acceptMac(svc);
     const statement = acceptanceStatement({ adapter: 'telegram', accountId: '777', installationId: 'inst-1' });
     const p = await svc.propose(change);
     let n = 0;
     const receipt = (text: string, replyTo?: string): Receipt => ({ receiptId: `rc${++n}`, adapter: 'telegram', senderId: '777', chatId: '777', chatType: 'private', messageId: String(900 + n), ...(replyTo ? { replyToMessageId: replyTo } : {}), text, senderIsBot: false, forwarded: false, uniqueKey: `tg:${n}`, receivedAt: now.toISOString(), receivedBy: 'm1' });
     expect(await svc.onReceipt(receipt(statement))).toBe('acceptance-recorded');
     const card = chat.sent.at(-1)!;
+    await acceptMac(svc);
     const requestId = (p as { requestId: string }).requestId;
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });

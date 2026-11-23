@@ -28,7 +28,11 @@ export const TRUST_READER_VERSION = 1;
 export const TRUST_RECORD_TYPES = ['request', 'request-status', 'receipt', 'acceptance-sent', 'acceptance', 'acceptance-withdrawn', 'consumption', 'change', 'legacy-grant', 'action-approval', 'dispatch',
   // Approving from the Instar app (docs/specs/app-trust-approval.md): a device's acceptance, its
   // withdrawal, an accepted device's approval of a new device, and the outcome of an applied raise.
-  'device-acceptance', 'device-acceptance-withdrawn', 'device-approval', 'apply-outcome'] as const;
+  'device-acceptance', 'device-acceptance-withdrawn', 'device-approval', 'apply-outcome',
+  // Delivery metadata only: an older reader's schema rejects this unknown record type and its
+  // fold has no matching case. The original request and approval checks remain valid; no grant,
+  // acceptance or consumption meaning changes, so this does not raise minReader.
+  'request-carrier'] as const;
 export type TrustRecordType = typeof TRUST_RECORD_TYPES[number];
 
 /** A change the person can approve, as structured data the server renders and hashes. */
@@ -103,6 +107,15 @@ export interface DeviceApprovalRecord {
   disclosureHash: string;
   expiresAt: string;
   at: string;
+}
+
+/** A device delivery marker, bound to an existing immutable request rather than replacing it. */
+interface RequestCarrierRecord {
+  requestId: string;
+  principal: string;
+  proposalHash: string;
+  expiresAt: string;
+  adapter: 'device';
 }
 
 /** What happened after a consumption: written once the apply returns. A consumption without one is `unknown`. */
@@ -190,6 +203,10 @@ export class LocalFileTrustSink implements TrustRecordSink {
 export class TrustJourneyStore {
   private records = new Map<string, TrustRecord>();
   private requests = new Map<string, RequestRecord & { change: TrustChange; summary: string[] }>();
+  // Keep raw base/card records above for chat receipt verification. Markers may arrive first,
+  // but are never requests themselves. Keep each marker so a mismatched one cannot shadow a
+  // matching one merely because replication presented it later.
+  private requestCarriers = new Map<string, RequestCarrierRecord[]>();
   private receiptsByKey = new Map<string, Receipt>();
   private consumedReceiptKeys = new Set<string>();
   /** Used state from consumption records, independent of load order (a consumption may fold first). */
@@ -265,6 +282,15 @@ export class TrustJourneyStore {
         this.requests.set(r.requestId as string, { ...(r as unknown as RequestRecord), change: r.change as TrustChange, summary: (r.summary as string[]) ?? [] });
         break;
       }
+      case 'request-carrier': {
+        if (r.adapter !== 'device' || !str(r.requestId) || !str(r.principal)
+          || !str(r.proposalHash) || !str(r.expiresAt, 40)) break;
+        const carriers = this.requestCarriers.get(r.requestId) ?? [];
+        carriers.push({ requestId: r.requestId, principal: r.principal,
+          proposalHash: r.proposalHash, expiresAt: r.expiresAt, adapter: 'device' });
+        this.requestCarriers.set(r.requestId, carriers);
+        break;
+      }
       case 'request-status': {
         if (r.status !== 'open') this.closedRequests.set(r.requestId as string, r.status as RequestRecord['status']);
         break;
@@ -330,9 +356,15 @@ export class TrustJourneyStore {
     const status = this.consumedRequestIds.has(r.requestId) ? 'consumed' : (this.closedRequests.get(r.requestId) ?? r.status);
     return status === r.status ? r : { ...r, status };
   }
-  request(id: string) { const r = this.requests.get(id); return r ? this.withStatus(r) : null; }
-  openRequests() { return [...this.requests.values()].map((r) => this.withStatus(r)).filter((r) => r.status === 'open'); }
-  allRequests() { return [...this.requests.values()].map((r) => this.withStatus(r)); }
+  /** Delivery metadata cannot replace request contents or supersede confirmed chat evidence. */
+  private withCarrier<T extends RequestRecord>(r: T): T {
+    const matches = !r.cardMessageId && this.requestCarriers.get(r.requestId)?.some((c) =>
+      c.principal === r.principal && c.proposalHash === r.proposalHash && c.expiresAt === r.expiresAt);
+    return matches && r.adapter !== 'device' ? { ...r, adapter: 'device' } : r;
+  }
+  request(id: string) { const r = this.requests.get(id); return r ? this.withStatus(this.withCarrier(r)) : null; }
+  openRequests() { return this.allRequests().filter((r) => r.status === 'open'); }
+  allRequests() { return [...this.requests.values()].map((r) => this.withStatus(this.withCarrier(r))); }
   requestByCode(code: string) { return this.openRequests().find((r) => r.code === code) ?? null; }
   requestByCard(adapter: AdapterKind, cardMessageId: string) { const r = [...this.requests.values()].find((x) => x.adapter === adapter && x.cardMessageId === cardMessageId); return r ? this.withStatus(r) : null; }
   codeTaken(code: string) { return [...this.requests.values()].some((r) => r.code === code); }
