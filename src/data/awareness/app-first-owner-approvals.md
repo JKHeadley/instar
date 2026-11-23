@@ -1,4 +1,6 @@
+---
 title: Approvals in the Paired Instar App
+---
 
 When the owner has paired the Instar app, approval requests go there before optional chat delivery. Pairing permits receiving a request; the owner still turns on approvals and confirms the exact change with Face ID or Touch ID. Telegram is never a prerequisite for this path.
 

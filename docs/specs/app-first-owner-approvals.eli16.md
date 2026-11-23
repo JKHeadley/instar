@@ -9,3 +9,5 @@ Requests that could not reach chat also appear in Needs-you. If the agent asks a
 The first live check will resend the Work Board policy request to your app. You will decide there whether to start those waiting cards. The change does not start them on its own.
 
 The app must also show the whole request before it can approve. The current phone app limits the number and length of the paragraphs it reads. The server now formats long requests into pieces that fit those limits, keeping emoji and combining characters together. It does not change the proposed action or its signed identity. If an older request is too large to show completely, it stays waiting with an explanation and the server refuses approval. A shortened preview can never stand in for the complete change.
+
+The full verification run also found that the agent’s instruction entry was missing the formatting markers needed to load it. The correction adds those two markers so new and updated agents receive the same instructions. It changes no approval permission or device check. Focused migration and lifecycle checks pass; full verification remains required before release.
