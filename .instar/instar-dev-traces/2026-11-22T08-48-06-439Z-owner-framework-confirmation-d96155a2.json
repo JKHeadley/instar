@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "owner-framework-confirmation",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-22T08:48:06.439Z",
+  "artifactPath": "upgrades/side-effects/owner-framework-confirmation.md",
+  "artifactSha256": "d4a0a482aa7bf3129a9a58271e556f1d540500585fdaa8f3d447ffd675aa4da2",
+  "coveredFiles": [
+    "docs/specs/identity-security-creation-provenance.md",
+    "docs/specs/owner-framework-confirmation.eli16.md",
+    "docs/specs/reports/owner-framework-confirmation-convergence.md",
+    "scripts/lint-notification-selectivity.mjs",
+    "src/core/topicCreationProvenance.ts",
+    "src/core/topicProfileWriteSurface.ts",
+    "src/data/awareness/owner-framework-confirmation.md",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/notificationStampers.ts",
+    "src/server/routes.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/integration/topic-profile-routes.test.ts",
+    "tests/unit/notification-owner-decision-category.test.ts",
+    "tests/unit/notification-selectivity-lint.test.ts",
+    "tests/unit/topicProfileWriteSurface.test.ts",
+    "upgrades/next/owner-framework-confirmation.md",
+    "upgrades/side-effects/owner-framework-confirmation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Chief-authorized spec-light repair of an existing owner-confirmation path: finite framework allowlist addition and source-bound owner-decision delivery; existing eligibility and typed confirmation authority unchanged. No new route, config, state format or automatic controller. Both-side tests and one bounded independent review completed.",
+  "eli16Path": "docs/specs/owner-framework-confirmation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-framework-confirmation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/owner-framework-confirmation-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

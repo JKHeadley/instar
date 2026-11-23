@@ -226,9 +226,10 @@ describe('PR-B second-pass fixes', () => {
     expect(resign).toMatch(/env\.transport\.relayChain = \[config\.localMachine\];/);
   });
 
-  it('boot recovery only touches messages still at received', () => {
+  it('boot recovery excludes settled outcomes and delegates unfinished work through its exclusive wrapper', () => {
     const src = fs.readFileSync(path.join(__dirname, '../../src/messaging/MessageRouter.ts'), 'utf8');
     const rec = src.slice(src.indexOf('async recoverPendingRelayed'), src.indexOf('private async applyRemoteNotice'));
-    expect(rec).toMatch(/env\.delivery\.phase !== 'received'\) continue;/);
+    expect(rec).toContain("['delivered', 'read', 'failed', 'expired', 'dead-lettered'].includes(env.delivery.phase)");
+    expect(rec).toContain("if (env.delivery.typingStartedAt || env.delivery.phase === 'received') await this.deliverRelayed(env)");
   });
 });

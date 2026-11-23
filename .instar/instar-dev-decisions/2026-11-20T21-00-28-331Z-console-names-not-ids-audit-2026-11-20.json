@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-20T21:00:28.331Z",
+  "slug": "console-names-not-ids-audit-2026-11-20",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/workBoardViews.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

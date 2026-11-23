@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "agent-work-cards-slice1",
+  "sessionId": "6c99af40-ccb7-4ea9-9511-e3bdca92008c",
+  "timestamp": "2026-11-21T19:57:59.193Z",
+  "artifactPath": "upgrades/side-effects/agent-work-cards-slice1.md",
+  "artifactSha256": "27cfb98c237e0433e82cca1a2fe1184dfd86ee77f01f9770d690ccd96dbad098",
+  "specPath": "docs/specs/agent-work-cards-default.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Moves one private method above another so an existing catch block's ratchet window reads as on main; no behaviour change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

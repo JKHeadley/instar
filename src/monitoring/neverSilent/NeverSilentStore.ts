@@ -94,15 +94,40 @@ export interface Incident {
   closedReason?: string;
 }
 
+/**
+ * lease-freshness-lapse-retry — one of this machine's own replies held at the Telegram send boundary because the
+ * machine did not hold the lease at that moment. A count beside the incidents, never an incident: the silence judge,
+ * the notices and the actions never see it. One row per operation; the per-refusal record is the server log line.
+ */
+export interface SendHold {
+  id: string;
+  platform: ConversationPlatform;
+  conversationKey: string;
+  operationId: string;
+  /** `lease-freshness-lapsed` (the coordinator's renewal fence answered) or `lease-not-held-at-send`. */
+  reason: string;
+  heldAt: number;
+  /** The operation's own deadline; an undelivered row past it is closed as unobserved. */
+  deadlineAt: number;
+  deliveredAt?: number;
+  closedAt?: number;
+  /** `delivered-after-hold` (a recorded Telegram receipt) or `hold-unobserved-past-deadline` (this store saw no delivery; it claims none). */
+  closedReason?: 'delivered-after-hold' | 'hold-unobserved-past-deadline';
+}
+
 interface FileShape {
   schema: 'never-silent/1';
   obligations: Obligation[];
   incidents: Incident[];
+  /** Additive (files from before this list load with it empty; an older reader carries it along untouched). */
+  sendHolds?: SendHold[];
 }
 
 const RETAIN_CLOSED_MS = 7 * 24 * 60 * 60_000;
 const MAX_CLOSED_OBLIGATIONS = 500;
 const MAX_CLOSED_INCIDENTS = 200;
+/** Closed send holds are history, not state; the same figure the judged incidents use. */
+const MAX_CLOSED_SEND_HOLDS = 200;
 
 export class NeverSilentStore {
   private data: FileShape = { schema: 'never-silent/1', obligations: [], incidents: [] };
@@ -119,6 +144,7 @@ export class NeverSilentStore {
       const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8')) as FileShape;
       if (parsed && parsed.schema === 'never-silent/1' && Array.isArray(parsed.obligations) && Array.isArray(parsed.incidents)) {
         this.data = parsed;
+        if (!Array.isArray(this.data.sendHolds)) this.data.sendHolds = [];
       }
     } catch {
       // @silent-fallback-ok — an unreadable file starts empty; the corrupt copy is kept beside it for audit
@@ -144,7 +170,46 @@ export class NeverSilentStore {
     const openInc = this.data.incidents.filter((i) => !i.closedAt);
     const closedInc = this.data.incidents.filter((i) => i.closedAt && i.closedAt >= cutoff).slice(-MAX_CLOSED_INCIDENTS);
     this.data.incidents = [...closedInc, ...openInc].sort((a, b) => a.openedAt - b.openedAt);
+    this.closeExpiredSendHolds();
+    const holds = this.data.sendHolds ?? [];
+    const openHolds = holds.filter((h) => !h.closedAt);
+    const closedHolds = holds.filter((h) => h.closedAt && h.closedAt >= cutoff).slice(-MAX_CLOSED_SEND_HOLDS);
+    this.data.sendHolds = [...closedHolds, ...openHolds].sort((a, b) => a.heldAt - b.heldAt);
   }
+
+  /** An undelivered send hold past its operation deadline: this store saw no delivery, so it claims none either way. */
+  private closeExpiredSendHolds(): boolean {
+    const now = this.now();
+    let changed = false;
+    for (const h of this.data.sendHolds ?? []) {
+      if (h.closedAt || h.deadlineAt > now) continue;
+      h.closedAt = now; h.closedReason = 'hold-unobserved-past-deadline'; changed = true;
+    }
+    return changed;
+  }
+
+  /** lease-freshness-lapse-retry — a reply held at the send boundary for the lease (idempotent on the operation id). */
+  recordSendHold(platform: ConversationPlatform, conversationKey: string, input: { operationId: string; reason: string; heldAt: number; deadlineAt: number }): SendHold {
+    const holds = this.data.sendHolds ?? (this.data.sendHolds = []);
+    const existing = holds.find((h) => h.operationId === input.operationId && !h.closedAt);
+    if (existing) return existing;
+    const row: SendHold = { id: `nsh-${crypto.randomBytes(6).toString('hex')}`, platform, conversationKey,
+      operationId: input.operationId, reason: input.reason, heldAt: input.heldAt, deadlineAt: input.deadlineAt };
+    holds.push(row);
+    this.flush();
+    return row;
+  }
+
+  /** The held reply's accepted outcome was recorded: close the row with the delivery time. No write when no open row matches. */
+  recordSendHoldDelivered(operationId: string, deliveredAt: number): SendHold | null {
+    const row = (this.data.sendHolds ?? []).find((h) => h.operationId === operationId && !h.closedAt);
+    if (!row) return null;
+    row.deliveredAt = deliveredAt; row.closedAt = deliveredAt; row.closedReason = 'delivered-after-hold';
+    this.flush();
+    return row;
+  }
+
+  openSendHolds(): SendHold[] { return (this.data.sendHolds ?? []).filter((h) => !h.closedAt); }
 
   static obligationId(platform: ConversationPlatform, conversationKey: string, inboundMessageId: string): string {
     return `${platform}:${conversationKey}:${inboundMessageId}`;
@@ -327,10 +392,14 @@ export class NeverSilentStore {
     return this.data.incidents.filter((i) => i.fallback && !i.fallback.restoredAt);
   }
 
-  snapshot(): { obligations: Obligation[]; incidents: Incident[] } {
+  snapshot(): { obligations: Obligation[]; incidents: Incident[]; sendHolds: SendHold[] } {
+    // A read also settles send holds past their deadline (a quiet agent may not write for hours); it flushes only
+    // when something was closed.
+    if (this.closeExpiredSendHolds()) this.flush();
     return {
       // The waiting text never leaves the store through a read surface.
       obligations: this.data.obligations.map((o) => ({ ...o, text: null })),
+      sendHolds: (this.data.sendHolds ?? []).map((h) => ({ ...h })),
       incidents: this.data.incidents.map((i) => ({ ...i })),
     };
   }

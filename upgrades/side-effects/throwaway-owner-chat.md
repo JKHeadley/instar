@@ -103,3 +103,11 @@ Audited the code, not the artifact. Safety holds: a real agent's folder fails th
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. The shut-off sweep is a one-shot, self-limiting step (it runs once per shut-off, records `swept`, and re-runs at boot only while a registered hook failed), not a recurring self-triggered controller.
+
+## Current-main conflict repair, 2026-11-23
+
+Tier 2 maintenance under this existing approved spec. Normal merge of main ea3bc4574de878058677a5077b366a8f10431330 into PR3626 head 0a97fad42e2570693609c7d592331bf2c18834cb had one conflict, in TelegramAdapter imports. Retained both the harness shared tap helpers and main's learningOwnerId import. No unrelated feature or path is deleted against main. Production throwaway-only conditions, Telegram priority, isolated ownerChat seam, never assigning stand-in to options.telegram, permanent pairing block and master bearer/loopback/no-device/no-Origin route checks remain unchanged. There is no new runtime authority or test-to-production migration.
+
+Independent parent source review inspected the actual merged candidate and concurred: all named throwaway and production controls survive; no material merge defect found. Focused verification passed all three tiers: 41 unit tests across two harness files, two real HTTP integration tests, and two production-wiring E2E cases, plus TypeScript checking. Full suites remain exclusively with the throughput coordinator; no full pass is claimed. All native and identity dependency holds remain unchanged. Frozen approval PR3660 and parked native design lanes were not modified.
+
+Existing over-block, under-block, signal-versus-authority, multi-machine and rollback analysis above continues to apply without a new decision boundary. Rollback is a normal revert of the merge repair, returning the stale prerequisite branch. One independent merge review and one planned commit attempt; no new design review rounds or behavioral limits.

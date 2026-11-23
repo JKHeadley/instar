@@ -153,6 +153,9 @@ export interface LeaseTransport {
   attachProbeListener?(listener: (peerId: string, answer: ProbeAnswer, round: number) => void): () => void;
 }
 
+/** lease-freshness-lapse-retry — which of `holdsLease()`'s checks answered, in its order; `holding` when all pass. */
+export type LeaseHoldVerdict = 'holding' | 'suspended' | 'not-current-holder' | 'renewal-lapsed' | 'superseded';
+
 export interface LeaseCoordinatorDeps {
   lease: FencedLease;
   store: LeaseStore;
@@ -524,6 +527,35 @@ export class LeaseCoordinator {
   msSinceConfirmedRenewal(): number | null {
     if (this.lastRenewOkMonoMs === null) return null;
     return this.monotonicNow() - this.lastRenewOkMonoMs;
+  }
+  /**
+   * lease-freshness-lapse-retry — what a send refused for the lease at the network boundary
+   * needs to name its cause: which of `holdsLease()`'s checks answered (`holdVerdict()`, the
+   * same checks in the same order, each clock sampled once), how long since the last
+   * CONFIRMED renewal, and the lifetime that renewal is good for. `renewal-lapsed` is the
+   * monotonic self-fence; any other non-holding verdict means the lease was lost another
+   * way. Read-only; never changes the fence.
+   */
+  renewalFreshness(): { msSinceConfirmedRenewal: number | null; ttlMs: number; verdict: LeaseHoldVerdict } {
+    return { msSinceConfirmedRenewal: this.msSinceConfirmedRenewal(), ttlMs: this.fl.ttlMs, verdict: this.holdVerdict() };
+  }
+  /**
+   * The first check of `holdsLease()` that answers, in its order; `holding` when all pass. The
+   * wall-clock expiry of our OWN current-epoch lease and the monotonic gap past the lifetime
+   * are both `renewal-lapsed`: each means no renewal was confirmed in time (the ordinary late
+   * renewal trips the wall clock a hair before the monotonic fence). `not-current-holder` is
+   * another holder, a stale epoch, or a record that does not verify.
+   */
+  holdVerdict(): LeaseHoldVerdict {
+    if (this.suspended) return 'suspended';
+    const view = this.effectiveView();
+    const lease = view.lease;
+    if (!lease || lease.holder !== this.selfMachineId || lease.epoch !== view.epoch || !this.fl.verifyLease(lease)) return 'not-current-holder';
+    if (this.fl.isExpired(lease, this.now())) return 'renewal-lapsed';
+    if (this.lastRenewOkMonoMs === null) return 'not-current-holder'; // planned boot has not confirmed ownership in this process
+    if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return 'renewal-lapsed';
+    if (this.higherEpochEvidence() > view.epoch) return 'superseded';
+    return 'holding';
   }
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);

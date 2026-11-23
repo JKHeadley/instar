@@ -75,7 +75,27 @@ export interface OfferRow extends RowSignature {
   at: string;
 }
 
-export type LedgerRow = ChoiceRow | LegacyImportRow | OfferRow;
+/**
+ * A re-offer after a real problem (docs/specs/recommended-services.md, Real-problem events). `event` is written by
+ * whichever machine saw the problem; `pending` by the lease holder just before it sends, naming the event in
+ * `eventRef`; `offered` only from the platform's message id. A re-offer never touches the choice fold, so a no
+ * stands until a confirmed yes. `evidenceRef` is a short fixed token, never error text.
+ */
+export interface ReofferRow extends RowSignature {
+  type: 'reoffer';
+  eventId: string;
+  service: string;
+  owner: string;
+  kind: string;
+  state: 'event' | 'pending' | 'offered';
+  evidenceRef: string;
+  /** On `pending` and `offered`: the `event` row this re-offer answers. */
+  eventRef?: string;
+  messageId?: string;
+  at: string;
+}
+
+export type LedgerRow = ChoiceRow | LegacyImportRow | OfferRow | ReofferRow;
 
 export type OfferState = 'none' | 'pending' | 'offered';
 /** A pending offer older than this is treated as never sent. */
@@ -98,6 +118,8 @@ export interface EffectiveChoice {
 const SERVICE_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const ID_RE = /^[0-9a-f]{32}$/;
 const ORIGIN_RE = /^event:[a-z][a-z0-9-]{0,63}$/;
+/** A fixed token naming where a problem was seen (`telegram`, `boot`): never free text, never an error message. */
+const EVIDENCE_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_ROWS = 10_000;
 
 function signature(r: Record<string, unknown>): RowSignature | null {
@@ -119,6 +141,22 @@ export function validateRow(raw: unknown): LedgerRow | null {
   if (typeof service !== 'string' || !SERVICE_RE.test(service)) return null;
   if (typeof at !== 'string' || !Number.isFinite(Date.parse(at))) return null;
   if (r.type === 'legacy-import') return { type: 'legacy-import', eventId, service, at, ...s };
+  if (r.type === 'reoffer') {
+    const { owner, kind, state, evidenceRef, eventRef, messageId } = r;
+    if (typeof owner !== 'string' || !owner || owner.length > 128) return null;
+    if (typeof kind !== 'string' || !SERVICE_RE.test(kind)) return null;
+    if (state !== 'event' && state !== 'pending' && state !== 'offered') return null;
+    if (typeof evidenceRef !== 'string' || !EVIDENCE_RE.test(evidenceRef)) return null;
+    if (state === 'event' ? eventRef !== undefined : typeof eventRef !== 'string' || !ID_RE.test(eventRef)) return null;
+    if (messageId !== undefined && (state !== 'offered' || typeof messageId !== 'string' || !messageId || messageId.length > 64)) return null;
+    if (state === 'offered' && messageId === undefined) return null;
+    return {
+      type: 'reoffer', eventId, service, owner, kind, state, evidenceRef, at,
+      ...(eventRef === undefined ? {} : { eventRef: eventRef as string }),
+      ...(messageId === undefined ? {} : { messageId: messageId as string }),
+      ...s,
+    };
+  }
   if (r.type === 'offer') {
     const { owner, listId, state, origin, messageId } = r;
     if (typeof owner !== 'string' || !owner || owner.length > 128) return null;
@@ -306,6 +344,25 @@ export class RecommendedServicesLedger {
   lastListAt(owner: string): number | null {
     const ats = this.offerRows(owner).map((r) => Date.parse(r.at)).filter((n) => Number.isFinite(n));
     return ats.length ? Math.max(...ats) : null;
+  }
+
+  /** A problem a service would help with, seen on this machine. Recorded on any machine; only the lease holder sends. */
+  recordReofferEvent(input: { service: string; owner: string; kind: string; evidenceRef: string }): ReofferRow {
+    return this.signAndStore({ type: 'reoffer', eventId: newId(), service: input.service, owner: input.owner, kind: input.kind, state: 'event', evidenceRef: input.evidenceRef, at: this.at() }) as ReofferRow;
+  }
+
+  /** Written by the lease holder before the send, so a crash between send and record repeats at most this one. */
+  recordReofferPending(event: ReofferRow): ReofferRow {
+    return this.signAndStore({ type: 'reoffer', eventId: newId(), service: event.service, owner: event.owner, kind: event.kind, state: 'pending', evidenceRef: event.evidenceRef, eventRef: event.eventId, at: this.at() }) as ReofferRow;
+  }
+
+  /** Written only from the platform's own message id: the allowance is spent on delivery. */
+  recordReofferDelivered(pending: ReofferRow, messageId: string | number): ReofferRow {
+    return this.signAndStore({ type: 'reoffer', eventId: newId(), service: pending.service, owner: pending.owner, kind: pending.kind, state: 'offered', evidenceRef: pending.evidenceRef, eventRef: pending.eventRef, messageId: String(messageId), at: this.at() }) as ReofferRow;
+  }
+
+  reofferRows(owner?: string): ReofferRow[] {
+    return this.all().filter((r): r is ReofferRow => r.type === 'reoffer' && (owner === undefined || r.owner === owner));
   }
 
   /** A peer's row lands only when it verifies under the pinned key of the machine it names. */

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "member-browser-any-computer",
+  "sessionId": "7f37c566-5a6b-4ca6-8057-da4b18c6d052",
+  "timestamp": "2026-11-21T00:16:02.079Z",
+  "artifactPath": "upgrades/side-effects/member-browser-any-computer.md",
+  "artifactSha256": "cf993a6c39cf860acdcbd0bcdcf55b4c79fcf18f8f600db35711c561870556e9",
+  "specPath": "docs/specs/member-browser-any-computer.md",
+  "coveredFiles": [
+    "dashboard/docs/doc-page.js",
+    "src/server/AgentServer.ts",
+    "upgrades/side-effects/member-browser-any-computer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fix found by the browser live proof of the joined-computer flow: record slot and newest-record choice.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

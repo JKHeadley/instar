@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "slug": "relay-asof-holder-skew",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-22T01:15:25.030Z",
+  "artifactPath": "upgrades/side-effects/relay-asof-holder-skew.md",
+  "artifactSha256": "7cff3e94a56e4a377fe99d2f651f32914f1534a85469acf5d2310d51781e86a0",
+  "specPath": "docs/specs/relay-asof-holder-skew.md",
+  "coveredFiles": [
+    "docs/specs/reports/relay-asof-holder-skew-convergence.md",
+    "docs/specs/reports/relay-asof-holder-skew-failure-followup.md",
+    "src/messaging/MessageDelivery.ts",
+    "src/messaging/MessageRouter.ts",
+    "tests/unit/message-router.test.ts",
+    "tests/unit/messages-reach-renamed-sessions.test.ts",
+    "tests/unit/runbooks/messaging-delivery-failed.test.ts",
+    "upgrades/next/relay-asof-holder-skew.md",
+    "upgrades/side-effects/relay-asof-holder-skew.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Narrow corrective delta on reviewed generation-delivery invariant: classify proven read-only preflight without weakening physical uncertainty. Root and existing reviewer concur; complete-suite rerun remains reserved.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "root-causes-verified",
+        "verified": false
+      },
+      {
+        "name": "instar-dev",
+        "outcome": "corrective-concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/relay-asof-holder-skew-convergence.md",
+      "iterations": 7,
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "318922be1 classified all delivery exceptions as uncertain, including known read-only preflight failure. Its observable audit catch lacked its source-local exemption, and a remediation fixture bypassed DeliveryResult typing and omitted shouldRetry. Corrected those exact boundaries with stronger no-write/unknown-write/queued-state tests; baseline remains494."
+  }
+}

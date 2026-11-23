@@ -10,6 +10,8 @@
  * handles reconnection internally (no offset tracking needed).
  */
 
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SlackApiClient } from '../messaging/slack/SlackApiClient.js';
@@ -260,6 +262,11 @@ export class SlackLifeline {
   }
 
   private enqueue(msg: QueuedSlackMessage): void {
+    // SEC-164 §3.5 (the lifeline rule): the raw text never reaches the queue file. The switch is read
+    // fresh for each message, because the lifeline loads its settings only once at start.
+    let enabled = false;
+    try { enabled = credentialScrubEnabledReader(path.join(path.dirname(this.queuePath), '..'))(); } catch { enabled = false; } // @silent-fallback-ok — unreadable switch is off
+    if (enabled && typeof msg.text === 'string' && msg.text) msg = { ...msg, text: maskInbound(msg.text, { enabled }).text };
     this.queue.push(msg);
     this.saveQueue();
   }

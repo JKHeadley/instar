@@ -5,7 +5,7 @@ import type { OutboundEnvelope } from '../NotificationSelectivityGate.js';
 // Governed by: Telegram Message Origin Is Mandatory; Its Display Is Optional
 // (docs/STANDARDS-REGISTRY.md). Recording and presentation are independent.
 import { sealOriginAdmission, validOriginAdmission } from './OriginAdmissionSeal.js';
-import { OriginCapacityUnavailable } from './OriginEgressCapacity.js';
+import { OriginCapacityUnavailable, ORIGIN_LEASE_REFUSAL_REASONS, originLocalRefusalReason } from './OriginEgressCapacity.js';
 import { consumeOriginLocalRefusal } from './OriginBotEgress.js';
 import { recordTelegramEditRejection } from '../TelegramEditRejection.js';
 import type { OriginCapacityAuthority } from './OriginEgressCapacity.js';
@@ -19,7 +19,7 @@ import { redact } from '../secret-patterns.js';
 import type { OriginLegacyAttribution, OriginLegacySnapshot } from './OriginLegacy.js';
 import type { OriginAutomationAuthor } from './OriginAutomationAuthor.js';
 import { bindBotCompanion } from './OriginBotCompanion.js';
-import { nextOriginKnownFailure, nextOriginLocalRefusal } from './OriginRetry.js';
+import { nextOriginKnownFailure, nextOriginLeaseLapse, nextOriginLocalRefusal } from './OriginRetry.js';
 import { OriginTransportCancelledBeforeNetwork, OriginTransportUnsent, fetchFailureCode } from './OriginTransportCancellation.js';
 import { correlateBotReceipt, correlatePartialBotReceipt, replayBotReceipt } from './OriginBotReceipt.js';
 import type { OriginBotReceipt } from './OriginBotReceipt.js';
@@ -89,7 +89,10 @@ export interface OriginServiceOptions {
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
   spoolEvidence: (record: StoredOriginInput) => Promise<unknown>;
   peerEvidence?: (record: StoredOriginInput) => Promise<unknown>;
-  onHold: (input: { operationId: string; reason: string; producerKind: string; operationKind: string; destination: { accountId: string; chatId: string | null; topicId: string | null } }) => void;
+  onHold: (input: { operationId: string; reason: string; producerKind: string; operationKind: string; destination: { accountId: string; chatId: string | null; topicId: string | null }; deadlineAt?: number }) => void;
+  /** lease-freshness-lapse-retry — an operation completed after its accepted outcome was recorded (first sends and
+   * recovery replays both end here, after the in-memory hold is cleared). Observability only; never a gate. */
+  onDelivered?: (input: { operationId: string; deliveredAt: number }) => void;
   diagnoseUnknown?: (originId: string, reason: string) => Promise<string | void>;
   diagnosticMode?: 'local' | 'delegate';
   limits?: Partial<OriginLimits>;
@@ -594,8 +597,11 @@ export class TelegramOriginService {
       this.#heldBytes += operation.admission.payloadBytes;
       this.#held.set(id, { reason, since: this.#now(), operation: structuredClone(operation) });
     } else this.#held.get(id)!.reason = reason;
-    if (reason === 'lease-not-held' && this.#leaseHeldIds.size < 10_000) this.#leaseHeldIds.add(id);
-    this.options.onHold({ operationId: id, reason, producerKind: operation.record.producerKind, operationKind: operation.record.operationKind, destination: operation.record.destination });
+    // A boundary refusal for the lease is the same fact `lease-not-held` records one gate earlier: both enter the
+    // sticky set so the §2(b) hand-back bound does not depend on which gate noticed first.
+    if ((reason === 'lease-not-held' || ORIGIN_LEASE_REFUSAL_REASONS.includes(reason)) && this.#leaseHeldIds.size < 10_000) this.#leaseHeldIds.add(id);
+    this.options.onHold({ operationId: id, reason, producerKind: operation.record.producerKind, operationKind: operation.record.operationKind, destination: operation.record.destination,
+      deadlineAt: operation.admission.deadlineAt });
     throw new TelegramOriginHoldError(reason, id);
   }
   /** §4.2 — a refused destination is one of two facts: a foreign chat
@@ -619,7 +625,15 @@ export class TelegramOriginService {
   heldReason(operationId: string): string | null { return this.#held.get(operationId)?.reason ?? null; }
   /** Sticky: true once this process held the operation for `lease-not-held`, even if a later hold
    * replaced the reason (a failed admit re-holds it as `execution-admission-unavailable`). */
-  wasLeaseHeldInMemory(operationId: string): boolean { return this.#leaseHeldIds.has(operationId) || this.heldReason(operationId) === 'lease-not-held'; }
+  wasLeaseHeldInMemory(operationId: string): boolean {
+    if (this.#leaseHeldIds.has(operationId)) return true;
+    const reason = this.heldReason(operationId);
+    return reason === 'lease-not-held' || (reason !== null && ORIGIN_LEASE_REFUSAL_REASONS.includes(reason));
+  }
+  /** lease-freshness-lapse-retry — the operations still held in memory for one of `reasons`. */
+  heldOperationIdsByReason(reasons: readonly string[]): string[] {
+    return [...this.#held].filter(([, held]) => reasons.includes(held.reason)).map(([id]) => id);
+  }
   readonly #leaseHeldIds = new Set<string>();
   heldOperations(limit = 10): OriginPreparedBotOperation[] {
     this.pruneExpiredHolds();
@@ -880,6 +894,9 @@ export class TelegramOriginService {
         if (prepared && !prepared.valid()) {
           prepared.cancel();
           await this.options.store.releaseUndispatchedClaim?.(claim.child);
+          // The commonest capacity hold measured on 2026-09-21 (incident_wedge_sentinel_1ms_tick_telegram_holds);
+          // it writes no outcome row, so this line is its only record.
+          console.warn(`[telegram-origin] credential-capacity-unavailable: start permit expired before send for ${operation.record.operationId}`);
           return this.#hold(operation, 'credential-capacity-unavailable');
         }
         if (!await this.options.store.markDispatched(claim.child)) return this.#hold(operation, 'stale-dispatch-fence');
@@ -890,14 +907,27 @@ export class TelegramOriginService {
         catch (error) {
           const localRefusal = consumeOriginLocalRefusal(error, request);
           if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork || error instanceof OriginTransportUnsent) {
-            const reason = localRefusal ? 'credential-capacity-unavailable'
+            // lease-freshness-lapse-retry — the reason names what the refusing evaluation observed, never an
+            // inferred cause: the lease reasons only when the capacity's cause was `lease-not-held`.
+            const reason = localRefusal ? originLocalRefusalReason(error)
               : error instanceof OriginTransportUnsent ? 'telegram-connect-failed' : 'telegram-request-cancelled-before-network';
+            const leaseRefusal = localRefusal && ORIGIN_LEASE_REFUSAL_REASONS.includes(reason);
             if (error instanceof OriginTransportUnsent) {
               console.warn(`[telegram-origin] connect failed before request for ${operation.record.operationId}: ${error.code}`);
             }
+            if (leaseRefusal) {
+              // One line per lease refusal: the operation id, the coordinator's verdict and two durations. No token, no chat, no text.
+              const freshness = error instanceof OriginCapacityUnavailable ? error.refusal?.leaseFreshness ?? null : null;
+              const measured = freshness
+                ? `lease verdict ${freshness.verdict}, ${freshness.msSinceConfirmedRenewal === null ? "no confirmed lease renewal in this process" : `${freshness.msSinceConfirmedRenewal} ms since the last confirmed lease renewal`} (lease lifetime ${freshness.ttlMs} ms)`
+                : 'lease verdict unknown, renewal gap unknown';
+              console.warn(`[telegram-origin] ${reason}: held ${operation.record.operationId} at the network boundary; ${measured} — retried within seconds once the lease is held again`);
+            }
             // Only a request-bound proof from the egress closure returns budget.
             // A crash without that proof remains uncertain on recovery.
-            const nextAttemptAt = localRefusal
+            const nextAttemptAt = leaseRefusal
+              ? nextOriginLeaseLapse(this.#now(), operation.admission.deadlineAt)
+              : localRefusal
               ? nextOriginLocalRefusal(this.#now(), operation.admission.deadlineAt)
               : nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
               maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now() });
@@ -954,6 +984,10 @@ export class TelegramOriginService {
     const held = this.#held.get(operation.record.operationId);
     if (held?.operation) this.#heldBytes -= held.operation.admission.payloadBytes;
     this.#held.delete(operation.record.operationId);
+    // lease-freshness-lapse-retry — delivery bound to the recorded receipt: every accepted outcome above returned
+    // `recorded: true` (an unrecorded one threw). Observability only; a listener failure never changes the result.
+    try { this.options.onDelivered?.({ operationId: operation.record.operationId, deliveredAt: this.#now() }); }
+    catch (listenerError) { console.warn('[telegram-origin] delivery listener failed', listenerError instanceof Error ? listenerError.name : 'unknown-error'); }
     const headers = new Headers(last.headers); headers.set('X-Instar-Origin-Id', operation.record.originId);
     return new Response(last.body, { status: last.status, statusText: last.statusText, headers });
   }

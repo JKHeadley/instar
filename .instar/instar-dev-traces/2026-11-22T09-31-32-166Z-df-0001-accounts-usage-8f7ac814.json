@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "df-0001-accounts-usage",
+  "sessionId": "1b1f58d5-94f8-4c95-9782-f1e8ac75af3a",
+  "timestamp": "2026-11-22T09:31:32.166Z",
+  "artifactPath": "upgrades/side-effects/df-0001-accounts-usage.md",
+  "artifactSha256": "a1e27a78a1dd6b2058d5a919dc66187ac5bca22e9d181edddbb0a793bb61633c",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "src/data/design/usage-tone-vectors.json",
+    "src/server/mobileCapacityRoutes.ts",
+    "tests/integration/mobile-native-capacity-screens.test.ts",
+    "tests/unit/mobile-native-capacity-screens.test.ts",
+    "tests/unit/usage-tone-parity.test.ts",
+    "upgrades/next/df-0001-accounts-usage.md",
+    "upgrades/side-effects/df-0001-accounts-usage.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Stage 1 of an approved Tier-2 spec; small additive display change",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   SeedFetchLog, DeltaShadowLog, fitDeltaForDelivery, PromptCursorStore, computePromptDelta, foldSuppression, messageKey,
-  reductionVerdict, renderPromptContextText, resolveContextEpoch, stableBriefingHash, summarizeShadow, unansweredOf,
+  reductionVerdict, renderPromptContextText, resolveContextEpoch, reworkBaselineOf, stableBriefingHash, summarizeShadow, unansweredOf,
   boundBriefing, MAX_BRIEFING_CHARS, type PromptMessage, type ShadowPromptRow,
 } from '../../src/monitoring/contextLayers/promptContext.js';
 import { writeFoldMarker } from '../../src/monitoring/foldMarker.js';
@@ -294,5 +294,27 @@ describe('the shadow log', () => {
     expect(s.refetched.status).toBe('unknown');
     if (s.refetched.status === 'unknown') { expect(s.refetched.historyReadsAfterOmission).toBe(1); expect(s.refetched.reason.length).toBeGreaterThan(20); }
     expect(s.reworkBaseline.status).toBe('unknown');
+    if (s.reworkBaseline.status === 'unknown') expect(s.reworkBaseline.reason).not.toMatch(/not built yet/);
+  });
+  it('the rework baseline comes from the measurement backend when it is wired, and is never a silent zero', () => {
+    const sd = tmp();
+    const log = new DeltaShadowLog(sd);
+    log.append(row(1));
+    const base = reworkBaselineOf({
+      sessions: [
+        { rework: { status: 'ok', toolInputs: 200, repeats: 2, windowTurns: 30 } },
+        { rework: { status: 'ok', toolInputs: 100, repeats: 1, windowTurns: 30 } },
+      ],
+      sinceHours: 24, sessionsTruncated: false, windowTurns: 30,
+    });
+    const s = summarizeShadow(log, undefined, base);
+    expect(s.reworkBaseline).toMatchObject({ status: 'ok', toolInputs: 300, repeats: 3, rate: 0.01, sessionsCounted: 2, partial: false, source: 'GET /context-budget/metrics' });
+    // One lagging session makes the whole baseline pending, not ok.
+    const lagging = reworkBaselineOf({ sessions: [{ rework: { status: 'ok', toolInputs: 10, repeats: 0, windowTurns: 30 } }, { rework: { status: 'pending', toolInputs: 5, repeats: 1, windowTurns: 30 } }], sinceHours: 24, sessionsTruncated: true, windowTurns: 30 });
+    expect(lagging).toMatchObject({ status: 'pending', partial: true });
+    // No tool inputs ⇒ rate null; no sessions ⇒ unknown with a reason.
+    expect(reworkBaselineOf({ sessions: [{ rework: { status: 'ok', toolInputs: 0, repeats: 0, windowTurns: 30 } }], sinceHours: 24, sessionsTruncated: false, windowTurns: 30 })).toMatchObject({ status: 'ok', rate: null });
+    const none = reworkBaselineOf({ sessions: [], sinceHours: 24, sessionsTruncated: false, windowTurns: 30 });
+    expect(none.status).toBe('unknown');
   });
 });

@@ -608,6 +608,27 @@ const NEVER_EDITABLE_PREFIXES = [
   // is a machine-local operator surface, not a document to edit from a phone;
   // the conversational config path and a raw file edit remain.
   '.instar/config.json',
+  // SEC-144: the rest of what decides what runs. `.claude/settings*.json` hold the hook command
+  // lines; `.instar/hooks/` holds the hook scripts that actually run (`.claude/hooks/` above is the
+  // older location); `.instar/scripts/` holds the scripts sessions and jobs call; `.instar/jobs.json`
+  // and `.instar/jobs/user/` define scheduled jobs (the dashboard's schedule editor saves them through
+  // `POST /jobs/:slug/save`, which the same token can still use, so this is defence in depth); `.mcp.json` names the MCP
+  // servers sessions launch. Viewing them is unchanged.
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.instar/hooks/',
+  '.instar/scripts/',
+  '.instar/jobs.json',
+  '.instar/jobs/user/',
+  // A job's manifest (`execute`, `enabled`, `schedule`) decides what the scheduler runs, so it is
+  // fenced with the job body.
+  '.instar/jobs/schedule/',
+  '.mcp.json',
+  // Other frameworks' project config names the commands their MCP servers and hooks start; Husky
+  // hook files run through `sh` on every commit and push the agent makes.
+  '.codex/',
+  '.gemini/',
+  '.husky/',
 ];
 
 /**
@@ -625,13 +646,18 @@ export function isNeverEditable(relativePath: string): boolean {
   // lower-cases both sides; this list did not, and the entries it guards are
   // the ones whose invariant is "a PIN compromise must never result in
   // arbitrary code execution" (`.claude/hooks/`, `.claude/scripts/`).
-  const normalized = path.normalize(relativePath).toLowerCase();
+  // SEC-144: Windows separators are folded to `/` so the `/`-based entries hold on win32 too.
+  const normalized = path.normalize(relativePath).replace(/\\/g, '/').toLowerCase();
   // A never-served path is never-editable by construction (spec §3.5): the
   // serve-deny implies the edit-deny at every chokepoint that consults this.
   if (isNeverServed(normalized)) return true;
   return NEVER_EDITABLE_PREFIXES.some(prefix => {
     const p = prefix.toLowerCase();
-    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
+    // SEC-144: also match the same path inside a nested project root, such as a worktree under
+    // `.worktrees/<name>/`, whose sessions load that copy's hooks and settings.
+    const nested = `/${p}`;
+    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '')
+      || normalized.includes(nested) || normalized.endsWith(nested.replace(/\/$/, ''));
   });
 }
 

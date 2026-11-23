@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "pr3408-test-wiring-repair",
+  "sessionId": "da999158-c831-478d-be06-9a4da92854f8",
+  "timestamp": "2026-11-22T02:49:54.093Z",
+  "artifactPath": "upgrades/side-effects/pr3408-test-wiring-repair.md",
+  "artifactSha256": "4ea4ac4d9024bb60ba4b281fe4616431958904bb5c6a19c6ee8515a679e98d80",
+  "coveredFiles": [
+    "scripts/framework-name-ratchet-baseline.json",
+    "tests/e2e/codex-device-limit-lifecycle.test.ts",
+    "upgrades/side-effects/pr3408-test-wiring-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test assertion follows existing production wiring; baseline only decreases after merged source change.",
+  "eli16Path": "docs/specs/job-launch-intent-record.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr3408-test-wiring-repair.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
