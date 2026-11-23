@@ -545,3 +545,51 @@ describe('TopicProfileTransferCarrier — supersede & updatedAt backstop', () =>
     expect(h.store.previousFor(1)?.framework).toBe('gemini-cli');
   });
 });
+
+describe('batch transfer admission fences', () => {
+  it('refuses a delayed response after a same-value local acceptance without a notification', async () => {
+    const store = new TopicProfileStore({ stateFilePath: path.join(tmpDir, 'state', 'topic-profiles.json'), now: () => new Date('2026-06-01T00:00:00Z') });
+    await store.mutate('42', { framework: 'claude-code', updatedBy: 'owner' });
+    let release!: () => void; let entered!: () => void;
+    const started = new Promise<void>(r => entered = r), gate = new Promise<void>(r => release = r);
+    const { carrier } = newCarrier({ now: () => new Date('2026-06-03T00:00:00Z'), sendPull: async () => { entered(); await gate; return { kind: 'ok', entries: [entryFor('42', profile({ updatedAt: '2026-06-02T00:00:00Z' }))] }; } }, store);
+    carrier.onTopicAcquired('42', 'peer'); const pending = carrier.flushStaged(); await started;
+    await store.mutate('42', { framework: 'claude-code', updatedBy: 'owner' });
+    release(); await pending; expect(store.resolve('42')?.framework).toBe('claude-code'); expect(carrier.hasPendingPull('42')).toBe(false);
+  });
+  it('refuses away-and-back ownership even when the owner name and local settings match', async () => {
+    let epoch = 1; let release!: () => void; let entered!: () => void;
+    const started = new Promise<void>(r => entered = r), gate = new Promise<void>(r => release = r);
+    const { carrier, store } = newCarrier({ placementStamp: () => `self:${epoch}`, sendPull: async () => { entered(); await gate; return { kind: 'ok', entries: [entryFor('42', profile())] }; } });
+    carrier.onTopicAcquired('42', 'peer'); const pending = carrier.flushStaged(); await started;
+    epoch += 2; release(); await pending; expect(store.resolve('42')).toBeNull();
+  });
+});
+
+it('retains original transfer admission across retry after a same-timestamp reaffirmation', async () => {
+  let now=Date.parse('2026-06-03T00:00:00Z'), attempts=0;
+  const store=new TopicProfileStore({stateFilePath:path.join(tmpDir,'state','topic-profiles.json'),now:()=>new Date('2026-06-01T00:00:00Z')});
+  await store.mutate('42',{framework:'claude-code',updatedBy:'owner'});const stamp=store.resolve('42')!.updatedAt;
+  const {carrier}=newCarrier({now:()=>new Date(now),sendPull:async()=>++attempts===1?{kind:'unreachable'}:{kind:'ok',entries:[entryFor('42',profile({updatedAt:'2026-06-02T00:00:00Z'}))]}},store);
+  carrier.onTopicAcquired('42','peer');await carrier.flushStaged();expect(carrier.hasPendingPull('42')).toBe(true);
+  await store.mutate('42',{framework:'claude-code',updatedBy:'owner'});expect(store.resolve('42')!.updatedAt).toBe(stamp);
+  now+=2000;await carrier.tick();expect(attempts).toBe(2);expect(store.resolve('42')?.framework).toBe('claude-code');expect(carrier.hasPendingPull('42')).toBe(false);
+});
+
+it('rechecks placement inside replacement lock after a queued landing',async()=>{
+  let epoch=1;const {carrier,store,sent}=newCarrier({placementStamp:()=>`self:${epoch}`});
+  let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);
+  const holder=store.withTopicLock('42',async()=>{entered();await gate;});await started;
+  carrier.onTopicAcquired('42','peer');const pending=carrier.flushStaged();while(!sent.length)await new Promise(r=>setImmediate(r));
+  // Let the transport result queue the replacement behind the existing lock.
+  await new Promise(r=>setImmediate(r));epoch+=2;release();await holder;await pending;expect(store.resolve('42')).toBeNull();
+});
+
+it('does not adopt a newer staged acquisition as an old restored retry baseline',async()=>{
+ let now=Date.parse('2026-06-03T00:00:00Z');const store=newStore();
+ const old=newCarrier({now:()=>new Date(now),sendPull:async()=>({kind:'unreachable'})},store);
+ old.carrier.onTopicAcquired('42','old-peer');await old.carrier.flushStaged();now+=2000;
+ const fresh=newCarrier({now:()=>new Date(now),batchWindowMs:60_000},store);
+ fresh.carrier.onTopicAcquired('42','new-peer');await fresh.carrier.tick();expect(store.resolve('42')).toBeNull();
+ await fresh.carrier.flushStaged();expect(store.resolve('42')?.framework).toBe('codex-cli');
+});

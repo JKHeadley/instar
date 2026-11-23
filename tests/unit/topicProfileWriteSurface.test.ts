@@ -1,3 +1,6 @@
+import { ProfileProposalRequests } from '../../src/core/ProfileProposalRequests.js';
+import { handleProfileProposalReply } from '../../src/core/handleProfileProposalReply.js';
+import { renderProfileBatchProposal } from '../../src/core/profileProposalBatch.js';
 /**
  * Unit tests — TopicProfileWriteSurface (TOPIC-PROFILE-SPEC §5.2 / §10 / §11).
  *
@@ -670,4 +673,121 @@ it('does not apply a different parked profile after the owner answers the earlie
     confirmed: true, expectedParkedVersion: question.parkedVersion, discloseInReply: true });
   expect(result.refusal?.reason).toBe('parked-profile-changed');
   expect(h.store.get(23)).toEqual(before); expect(h.respawns).toEqual([]);
+});
+
+// The batch uses the same real persistence and regime boundaries as one write.
+describe('one confirmed question for several targets', () => {
+  function batchItem(h: Harness, target: string, patch: Record<string, unknown>) {
+    const name = `Conversation ${target}`;
+    const rendered = h.surface.renderProposalEcho(target, patch, name);
+    if (!rendered.ok) throw new Error(rendered.reply);
+    return { topicKey: target, patch, name, echo: rendered.echo,
+      baselineStamp: (rendered as typeof rendered & { baselineStamp?: string }).baselineStamp };
+  }
+  it('saves two target settings together and preserves an unrelated target', async () => {
+    const h = harness(DEV_REGIME);
+    await h.store.mutate('303', { framework: 'claude-code', updatedBy: 'telegram:777' });
+    const items = [batchItem(h, '301', { framework: 'codex-cli' }), batchItem(h, '302', { framework: 'codex-cli' })];
+    const result = await h.surface.applyBatch({ source: '300', items, principal: OPERATOR,
+      eligible: () => true, validAtCommit: () => true });
+    expect(result.settingsSaved).toBe(true);
+    expect(h.store.resolve('301')?.framework).toBe('codex-cli');
+    expect(h.store.resolve('302')?.framework).toBe('codex-cli');
+    expect(h.store.resolve('303')?.framework).toBe('claude-code');
+    expect(result.batchItems).toHaveLength(2);
+  });
+  it('refuses the complete batch when a remote item includes a forbidden cosmetic field', async () => {
+    const h = harness(DEV_REGIME);
+    const items = [batchItem(h, '301', { framework: 'codex-cli' }), batchItem(h, '302', { messageOriginDisplay: { enabled: false } })];
+    const result = await h.surface.applyBatch({ source: '300', items, principal: OPERATOR,
+      eligible: () => true, validAtCommit: () => true });
+    expect(result.ok).toBe(false);
+    expect(result.refusal?.reason).toBe('cross-topic-field');
+    expect(h.store.get('301')).toBeNull();
+    expect(h.store.get('302')).toBeNull();
+  });
+  it('refuses all targets if final under-lock eligibility changes', async () => {
+    const h = harness(DEV_REGIME);
+    const items = [batchItem(h, '301', { framework: 'codex-cli' }), batchItem(h, '302', { framework: 'codex-cli' })];
+    const result = await h.surface.applyBatch({ source: '300', items, principal: OPERATOR,
+      eligible: () => true, validAtCommit: () => false });
+    expect(result.ok).toBe(false);
+    expect(h.store.get('301')).toBeNull();
+    expect(h.store.get('302')).toBeNull();
+  });
+  it('keeps the saved batch outcome when a later onSaved callback throws', async () => {
+    const h = harness(DEV_REGIME);
+    const items = [batchItem(h, '301', { framework: 'codex-cli' }), batchItem(h, '302', { framework: 'codex-cli' })];
+    const result = await h.surface.applyBatch({ source: '300', items, principal: OPERATOR,
+      eligible: () => true, validAtCommit: () => true, onSaved: () => { throw new Error('callback interrupted'); } });
+    expect(result.ok).toBe(true);
+    expect(result.settingsSaved).toBe(true);
+    expect(h.store.resolve('301')?.framework).toBe('codex-cli');
+    expect(h.store.resolve('302')?.framework).toBe('codex-cli');
+  });
+});
+
+
+describe('proposal recovery disclosure follows the actual mutation plan', () => {
+  it('does not claim a preview-only or refused model clears a parked recovery', async () => {
+    for (const regime of [DEV_REGIME, FLEET_REGIME]) {
+      const h = harness(regime);
+      await h.store.mutate('401', { framework: 'claude-code', updatedBy: 'telegram:777' });
+      await h.store.parkAndRevert('401', 'preview-test', { framework: 'claude-code', updatedAt: new Date().toISOString(), updatedBy: 'telegram:777' });
+      const rendered = h.surface.renderProposalEcho('401', { model: 'claude-fable-5' }, 'Parked conversation');
+      expect(rendered.ok).toBe(true);
+      if (rendered.ok) expect(rendered.echo).not.toContain('replaces the saved recovery option');
+    }
+  });
+  it('discloses a recovery removal from an unchanged engine plus changed cosmetic field', async () => {
+    const h = harness(DEV_REGIME);
+    await h.store.mutate('402', { framework: 'claude-code', updatedBy: 'telegram:777' });
+    await h.store.parkAndRevert('402', 'mixed-test', { framework: 'claude-code', updatedAt: new Date().toISOString(), updatedBy: 'telegram:777' });
+    const rendered = h.surface.renderProposalEcho('402', { framework: 'claude-code', messageOriginDisplay: { enabled: false } }, 'Parked conversation');
+    expect(rendered.ok).toBe(true);
+    if (rendered.ok) expect(rendered.echo).toContain('replaces the saved recovery option');
+  });
+});
+
+
+it('requires the current verified owner even for a batch that only changes its source conversation', async () => {
+  const h = harness(DEV_REGIME);
+  const requests = new ProfileProposalRequests();
+  const rendered = renderProfileBatchProposal({ source: '501', targets: [{ target: '501', patch: { framework: 'codex-cli' } }],
+    surface: h.surface, name: () => 'Main conversation', link: () => null, placement: () => 'local' });
+  if (!rendered.ok) throw new Error(rendered.message);
+  const question = requests.beginBatch('501', rendered.items, rendered.core);
+  if (!question.ok) throw new Error(question.reason);
+  question.onDelivery(100);
+  let owner = false;
+  const input = { requests, surface: h.surface, source: '501', text: 'yes', messageId: 101, replyTo: 100,
+    forwarded: false, principal: OPERATOR, verifiedOwner: () => owner, eligible: () => true,
+    placement: () => 'local', name: () => 'Main conversation' };
+  expect((await handleProfileProposalReply(input)).matched).toBe(false);
+  expect(h.store.resolve('501')).toBeNull();
+  expect(requests.get('501', question.request.id)).not.toBeNull();
+  owner = true;
+  expect((await handleProfileProposalReply({ ...input, messageId: 102 })).result?.settingsSaved).toBe(true);
+  expect(h.store.resolve('501')?.framework).toBe('codex-cli');
+});
+
+it('preserves a pending batch when the source binding no longer belongs to its replying owner', async () => {
+  const roles = { boundUid: '777' };
+  const h = harness(DEV_REGIME, roles);
+  const requests = new ProfileProposalRequests();
+  const rendered = renderProfileBatchProposal({ source: '601', targets: [{ target: '601', patch: { framework: 'codex-cli' } }],
+    surface: h.surface, name: () => 'Bound conversation', link: () => null, placement: () => 'local' });
+  if (!rendered.ok) throw new Error(rendered.message);
+  const question = requests.beginBatch('601', rendered.items, rendered.core);
+  if (!question.ok) throw new Error(question.reason);
+  question.onDelivery(200);
+  const input = { requests, surface: h.surface, source: '601', text: 'yes', messageId: 201, replyTo: 200,
+    forwarded: false, principal: OPERATOR, verifiedOwner: () => true, eligible: () => true,
+    placement: () => 'local', name: () => 'Bound conversation' };
+  roles.boundUid = '888';
+  expect((await handleProfileProposalReply(input)).reason).toBe('not-authorized');
+  expect(requests.get('601', question.request.id)).not.toBeNull();
+  expect(h.store.resolve('601')).toBeNull();
+  roles.boundUid = '777';
+  expect((await handleProfileProposalReply({ ...input, messageId: 202 })).result?.settingsSaved).toBe(true);
 });

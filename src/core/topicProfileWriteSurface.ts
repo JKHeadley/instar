@@ -45,7 +45,8 @@
  *  - new-axis live writes apply at the next natural spawn, told out loud.
  */
 
-import { assertProfileRuntimeGuard } from './ProfileRuntimeGuard.js';
+import { createHash } from 'node:crypto';
+import { createProfileRuntimeFence, assertProfileRuntimeGuard } from './ProfileRuntimeGuard.js';
 import type { TopicProfileStore, TopicProfile } from './TopicProfileStore.js';
 import { ProfileValidationRefusal, ProfileLockTimeoutError, ProfileDisplayConflictError, FlushRefusedError, parkedProfileVersion } from './TopicProfileStore.js';
 import type { TopicProfileResolver } from './TopicProfileResolver.js';
@@ -96,6 +97,7 @@ export interface ProfileWriteResult {
   /** The desired live/preview settings are durable; separate from runtime and delivery effects. */
   settingsSaved?: boolean;
   runtimeOutcome?: 'unknown';
+  batchItems?: ProfileBatchItemResult[];
   effectFailure?: 'post-save-callback';
   /** Operator-facing reply text (refusal or confirmation+disclosure). */
   reply: string;
@@ -113,6 +115,17 @@ export interface ProfileWriteResult {
   supersededParked?: boolean;
   /** The legacy immediate respawn fired (§5.2(d)). */
   legacyRespawned?: boolean;
+}
+
+export interface ProfileBatchWriteItem {
+  topicKey: string; patch: ProfilePatchInput; name: string; echo: string; baselineStamp?: string;
+}
+export interface ProfileBatchItemResult {
+  topicKey: string; name: string; appliedLive: string[]; shadowed: string[]; refusedFields: string[];
+  runtime: 'pending' | 'next-start' | 'skipped' | 'failed' | 'launched' | 'unchanged' | 'unknown';
+}
+class BatchWriteRefusal extends Error {
+  constructor(readonly result: ProfileWriteResult) { super(result.reply); }
 }
 
 export interface ReapplyResult extends ProfileWriteResult {
@@ -143,6 +156,8 @@ export interface TopicProfileWriteSurfaceDeps {
    * Returns respawned:false when the topic has no live session (write still
    * lands; takes effect at next spawn).
    */
+  /** Actual live managed incarnation; null is verified absence, unreadable must throw. */
+  runtimeSessionId?: (topicKey: string) => string | null;
   legacyFrameworkRespawn: (topicKey: string, runtimeGuard?: () => boolean) => Promise<{ respawned: boolean; error?: string }>;
   /** §8 orchestrator seam (TODO-wire — null until the parallel build lands). */
   orchestrator?: ProfileOrchestratorLike | null;
@@ -186,6 +201,155 @@ export class TopicProfileWriteSurface {
     this.now = deps.now ?? (() => Date.now());
   }
 
+  /** First-party reply ownership, before a request reservation can be consumed. */
+  isBoundOperator(topicKey: string, principal: ProfileWritePrincipal): boolean {
+    if (principal.kind !== 'operator') return false;
+    try { const bound = this.deps.boundOperator(topicKey); return bound?.platform === principal.platform && bound.uid === principal.uid; }
+    catch { return false; }
+  }
+
+  private splitWritePlan(patch: ValidatedProfilePatch, regime: ProfileWriteRegime, currentFramework: IntelligenceFramework | null) {
+
+      const frameworkArm: ValidatedProfilePatch = {};
+      if (patch.framework !== undefined) frameworkArm.framework = patch.framework;
+
+      const liveNewAxes: ValidatedProfilePatch = {};
+      const shadowNewAxes: ValidatedProfilePatch = {};
+      const refusedFields: string[] = [];
+      for (const field of NEW_AXES) {
+        const value = patch[field];
+        if (value === undefined) continue;
+        if (field === 'messageOriginDisplay' || value === null) {
+          // Cosmetic presentation is independent of model-profile rollout.
+          // §5.2(b): clearing a pin is a recovery write — permitted (LIVE) in
+          // every regime, never shadowed.
+          (liveNewAxes as Record<string, unknown>)[field] = value;
+        } else if (!regime.enabled) {
+          refusedFields.push(field);
+        } else if (regime.dryRun) {
+          (shadowNewAxes as Record<string, unknown>)[field] = value;
+        } else {
+          (liveNewAxes as Record<string, unknown>)[field] = value;
+        }
+      }
+
+      const frameworkChanged =
+        frameworkArm.framework !== undefined
+        && currentFramework !== frameworkArm.framework;
+
+      // ── live store write (framework arm — always — plus live new axes) ─────
+      const livePatch: ValidatedProfilePatch = { ...frameworkArm, ...liveNewAxes };
+      const liveFields = Object.keys(livePatch);
+      const shadowFields = Object.keys(shadowNewAxes);
+      return { livePatch, liveNewAxes, shadowNewAxes, refusedFields, frameworkChanged, liveFields, shadowFields };
+  }
+
+  /** Only a receipt-bound, authenticated server consumer calls this atomic settings door. */
+  async applyBatch(req: {
+    source: string; items: readonly ProfileBatchWriteItem[]; principal: ProfileWritePrincipal;
+    eligible: (target: string) => boolean; validAtCommit: () => boolean;
+    onSaved?: (result: ProfileWriteResult) => void;
+  }): Promise<ProfileWriteResult> {
+    const refuse = (reason: string, reply: string): never => { throw new BatchWriteRefusal({ ok: false, reply, refusal: { reason } }); };
+    const keys = req.items.map(item => String(item.topicKey));
+    if (!keys.length || new Set(keys).size !== keys.length || req.principal.kind !== 'operator') {
+      return { ok: false, reply: 'I need a valid, owner-confirmed list before changing anything.', refusal: { reason: 'invalid-batch' } };
+    }
+    let saved: ProfileWriteResult | undefined;
+    const updatedBy = this.principalStamp(req.principal);
+    const plans = new Map<string, { item: ProfileBatchWriteItem; plan: ReturnType<TopicProfileWriteSurface['splitWritePlan']>;
+      regime: ProfileWriteRegime; sessionId: string | null | undefined }>();
+    let lockedRegime: ProfileWriteRegime | undefined;
+    const prepare = (item: ProfileBatchWriteItem, locked: boolean) => {
+      const key = String(item.topicKey);
+      if (key !== req.source && Object.keys(item.patch).some(field => !CROSS_TOPIC_FIELDS.includes(field))) {
+        return refuse('cross-topic-field', 'From another conversation I can change only the engine, model, model tier, thinking mode or effort. Nothing in this list was changed.');
+      }
+      const auth = this.authorize(key, req.principal, 'propose-confirm', key !== req.source ? { sourceTopicId: Number(req.source) } : undefined);
+      if (auth) throw new BatchWriteRefusal(auth);
+      if (!req.eligible(key)) return refuse('proposal-changed', 'Ownership changed after that question. I need to send a fresh question before changing this list.');
+      const regime = locked ? (lockedRegime ??= { ...this.deps.regime() }) : { ...this.deps.regime() };
+      const rendered = this.renderProposalEcho(key, item.patch, item.name, regime);
+      if (!rendered.ok) return refuse('validation', rendered.reply);
+      if (rendered.echo !== item.echo || (item.baselineStamp !== undefined && rendered.baselineStamp !== item.baselineStamp)) {
+        return refuse('proposal-changed', 'The settings changed after that question. I need to prepare the list again before changing anything.');
+      }
+      const plan = this.splitWritePlan(rendered.patch, regime, this.deps.store.resolve(key)?.framework ?? null);
+      if (!plan.liveFields.length && !plan.shadowFields.length) return refuse('disabled', 'This list includes a setting that is not enabled. Nothing was changed.');
+      let sessionId: string | null | undefined;
+      try { sessionId = this.deps.runtimeSessionId?.(key); } catch { sessionId = undefined; }
+      plans.set(key, { item, plan, regime, sessionId });
+      return { patch: { ...plan.livePatch, updatedBy }, ...(plan.shadowFields.length ? { shadow: plan.shadowNewAxes } : {}) };
+    };
+    try {
+      const initial = req.items.map(item => ({ item, prepared: prepare(item, false) }));
+      const results = await this.deps.store.mutateBatch(initial.map(({ item, prepared }) => ({ topicKey: item.topicKey,
+        patch: prepared.patch, options: { shiftPrevious: true, prepare: () => prepare(item, true) } })), {
+        beforeCommit: () => { if (!req.validAtCommit() || keys.some(key => !req.eligible(key))) {
+          refuse('proposal-changed', 'This question is no longer current. Nothing in the list was changed.');
+        } },
+      });
+      const items: ProfileBatchItemResult[] = results.map(result => {
+        const p = plans.get(result.topicKey)!;
+        return { topicKey: result.topicKey, name: p.item.name, appliedLive: [...p.plan.liveFields],
+          shadowed: [...p.plan.shadowFields], refusedFields: [...p.plan.refusedFields], runtime: 'unknown' };
+      });
+      saved = { ok: true, settingsSaved: true, batchItems: items, runtimeOutcome: 'unknown',
+        reply: 'The conversation settings were saved. Running-session changes are not yet confirmed.' };
+      // Transfer cancellation is preserved even if a later result/audit callback throws.
+      for (const item of items) if (item.appliedLive.length) this.notifyLocalWriteDurable(item.topicKey, 'propose-confirm');
+      req.onSaved?.(saved);
+      for (const result of results) {
+        const p = plans.get(result.topicKey)!;
+        const item = items.find(i => i.topicKey === result.topicKey)!;
+        try {
+          this.deps.audit({ type: 'write', outcome: 'accepted', topic: result.topicKey, origin: 'propose-confirm',
+            principal: updatedBy, crossTopic: result.topicKey !== req.source, batch: true,
+            appliedLive: item.appliedLive, shadowed: item.shadowed, refusedFields: item.refusedFields });
+          const executionChanged = result.changed && (p.plan.frameworkChanged || Object.keys(p.plan.liveNewAxes).some(field => field !== 'messageOriginDisplay'));
+          if (!executionChanged) { item.runtime = 'unchanged'; continue; }
+          if (p.sessionId === undefined) { item.runtime = 'unknown'; continue; }
+          if (p.sessionId === null) { item.runtime = 'next-start'; continue; }
+          const guard = createProfileRuntimeFence({ sessionId: p.sessionId,
+            readSessionId: () => { if (!this.deps.runtimeSessionId) throw new Error('runtime identity unavailable'); return this.deps.runtimeSessionId(result.topicKey); },
+            validAssignment: () => req.eligible(result.topicKey) && this.deps.store.getExecutionEpoch(result.topicKey) === result.executionEpoch });
+          if (!guard()) { item.runtime = 'skipped'; continue; }
+          if (p.regime.enabled && !p.regime.dryRun && this.deps.orchestrator) {
+            await this.deps.orchestrator.onProfileWrite(result.topicKey, { frameworkChanged: p.plan.frameworkChanged, origin: 'propose-confirm', runtimeGuard: guard });
+            item.runtime = 'pending';
+          } else if (p.plan.frameworkChanged) {
+            const runtime = await this.deps.legacyFrameworkRespawn(result.topicKey, guard);
+            item.runtime = runtime.respawned ? 'launched' : runtime.error ? 'failed' : 'next-start';
+          } else item.runtime = 'next-start';
+        } catch { item.runtime = 'failed'; }
+      }
+      const preview = items.reduce((n, i) => n + i.shadowed.length, 0);
+      const refused = items.reduce((n, i) => n + i.refusedFields.length, 0);
+      const countPhrase = (n: number, singular: string, plural = singular + 's') => `${n} ${n === 1 ? singular : plural}`;
+      const liveTargets = items.filter(item => item.appliedLive.length > 0).length;
+      const statements = [liveTargets
+        ? `Saved the settings for ${countPhrase(liveTargets, 'conversation')}.`
+        : `Recorded the preview for ${countPhrase(items.length, 'conversation')}; their running settings were not changed.`];
+      if (preview && liveTargets) statements.push(`${countPhrase(preview, 'requested setting')} ${preview === 1 ? 'was' : 'were'} kept as previews.`);
+      if (refused) statements.push(`${countPhrase(refused, 'requested setting')} ${refused === 1 ? 'was' : 'were'} not applied.`);
+      const runtimeCount = (state: ProfileBatchItemResult['runtime']) => items.filter(item => item.runtime === state).length;
+      const pending = runtimeCount('pending'), unknown = runtimeCount('unknown'), failed = runtimeCount('failed');
+      const skipped = runtimeCount('skipped'), launched = runtimeCount('launched'), next = runtimeCount('next-start');
+      if (pending) statements.push(`${countPhrase(pending, 'restart')} ${pending === 1 ? 'is' : 'are'} still pending.`);
+      if (unknown) statements.push(`I could not verify the running state of ${countPhrase(unknown, 'conversation')}.`);
+      if (failed) statements.push(`${countPhrase(failed, 'restart')} failed.`);
+      if (skipped) statements.push(`${countPhrase(skipped, 'restart')} ${skipped === 1 ? 'was' : 'were'} skipped because the conversation changed.`);
+      if (launched) statements.push(`Requested ${countPhrase(launched, 'restart')}.`);
+      if (next) statements.push(`${countPhrase(next, 'conversation')} will use the settings at the next start.`);
+      saved.reply = statements.join(' ');
+      return saved;
+    } catch (err) {
+      if (saved) return { ...saved, effectFailure: 'post-save-callback', runtimeOutcome: 'unknown' };
+      if (err instanceof BatchWriteRefusal) return err.result;
+      return this.writeFailure(err, keys.join(','), updatedBy, 'propose-confirm');
+    }
+  }
+
   // ── the main write path ───────────────────────────────────────────────────
 
   /** The live write regime (read-only; dashboard-door-model-controls §3.1 `regime`). */
@@ -203,7 +367,7 @@ export class TopicProfileWriteSurface {
     /** §10.1 propose-confirm provenance flag for the audit. */
     agentComposedPayload?: boolean;
     /** Server-held disclosure and eligibility fence; never read from HTTP bodies. */
-    confirmation?: { echo: string; name?: string; eligible: () => boolean; validAtCommit?: () => boolean; onSaved?: (result: ProfileWriteResult) => void };
+    confirmation?: { echo: string; name?: string; baselineStamp?: string; eligible: () => boolean; validAtCommit?: () => boolean; onSaved?: (result: ProfileWriteResult) => void };
     /** Trusted HTTP cosmetic compare-and-set; store checks under its lock. */
     expectedDisplayRevision?: string;
     /**
@@ -266,40 +430,7 @@ export class TopicProfileWriteSurface {
     }
 
     // ── mixed-delta split (§5.2(d) + §10.1 round-12) ───────────────────────
-    const makePlan = () => {
-      const frameworkArm: ValidatedProfilePatch = {};
-      if (patch.framework !== undefined) frameworkArm.framework = patch.framework;
-
-      const liveNewAxes: ValidatedProfilePatch = {};
-      const shadowNewAxes: ValidatedProfilePatch = {};
-      const refusedFields: string[] = [];
-      for (const field of NEW_AXES) {
-        const value = patch[field];
-        if (value === undefined) continue;
-        if (field === 'messageOriginDisplay' || value === null) {
-          // Cosmetic presentation is independent of model-profile rollout.
-          // §5.2(b): clearing a pin is a recovery write — permitted (LIVE) in
-          // every regime, never shadowed.
-          (liveNewAxes as Record<string, unknown>)[field] = value;
-        } else if (!regime.enabled) {
-          refusedFields.push(field);
-        } else if (regime.dryRun) {
-          (shadowNewAxes as Record<string, unknown>)[field] = value;
-        } else {
-          (liveNewAxes as Record<string, unknown>)[field] = value;
-        }
-      }
-
-      const frameworkChanged =
-        frameworkArm.framework !== undefined
-        && (this.deps.store.resolve(topicKey)?.framework ?? null) !== frameworkArm.framework;
-
-      // ── live store write (framework arm — always — plus live new axes) ─────
-      const livePatch: ValidatedProfilePatch = { ...frameworkArm, ...liveNewAxes };
-      const liveFields = Object.keys(livePatch);
-      const shadowFields = Object.keys(shadowNewAxes);
-      return { livePatch, liveNewAxes, shadowNewAxes, refusedFields, frameworkChanged, liveFields, shadowFields };
-    };
+    const makePlan = () => this.splitWritePlan(patch, regime, this.deps.store.resolve(topicKey)?.framework ?? null);
     let plan = makePlan();
 
     if (!req.confirmation && plan.liveFields.length === 0 && plan.shadowFields.length === 0) {
@@ -345,7 +476,8 @@ export class TopicProfileWriteSurface {
                 prepare: () => {
                   regime = { ...this.deps.regime() };
                   const fresh = this.renderProposalEcho(topicKey, req.patch, req.confirmation!.name, regime);
-                  if (!req.confirmation!.eligible() || !fresh.ok || fresh.echo !== req.confirmation!.echo) throw new ProposalChangedError();
+                  if (!req.confirmation!.eligible() || !fresh.ok || fresh.echo !== req.confirmation!.echo
+                    || (req.confirmation!.baselineStamp !== undefined && fresh.baselineStamp !== req.confirmation!.baselineStamp)) throw new ProposalChangedError();
                   patch = fresh.patch;
                   before = this.profileSnapshot(topicKey);
                   plan = makePlan();
@@ -729,12 +861,19 @@ export class TopicProfileWriteSurface {
    * what will be written. The caller arms the shared confirm slot with the
    * returned patch+echo and sends the echo to the topic.
    */
+  proposalBaselineStamp(topicKey: string | number, regime = this.deps.regime()): string {
+    const entry = this.deps.store.get(topicKey);
+    return createHash('sha256').update(JSON.stringify({ current: entry?.current ?? null,
+      parked: entry?.parked ?? null, breakerCount: entry?.breakerCount ?? 0,
+      intendedProfile: entry?.intendedProfile ?? null, regime })).digest('hex');
+  }
+
   renderProposalEcho(
     topicKey: string | number,
     patch: ProfilePatchInput,
     conversationName?: string,
     regimeSnapshot?: ProfileWriteRegime,
-  ): { ok: true; echo: string; patch: ValidatedProfilePatch } | { ok: false; reply: string; validation?: ProfileValidationError } {
+  ): { ok: true; echo: string; patch: ValidatedProfilePatch; baselineStamp: string } | { ok: false; reply: string; validation?: ProfileValidationError } {
     const key = String(topicKey);
     const resolved = this.deps.resolver.resolve(key);
     const validated = validateProfileFields(patch, resolved.framework);
@@ -776,7 +915,15 @@ export class TopicProfileWriteSurface {
       }
     }
     if (lines.length === 1) return { ok: false, reply: 'Nothing to propose — the delta is empty.' };
-    return { ok: true, echo: lines.join('\n'), patch: validated.patch };
+    const plan = this.splitWritePlan(validated.patch, regime, this.deps.store.resolve(key)?.framework ?? null);
+    try {
+      const mutation = this.deps.store.previewMutation(key, { ...plan.livePatch, updatedBy: 'operator:proposal-preview' },
+        { shiftPrevious: true, ...(plan.shadowFields.length ? { shadow: plan.shadowNewAxes } : {}) });
+      if (mutation.supersededParked) lines.push('This replaces the saved recovery option for this conversation and resets its restart-failure count.');
+    } catch (error) {
+      return { ok: false, reply: error instanceof ProfileValidationRefusal ? error.validation.reason : 'I could not verify the full effects of this change.' };
+    }
+    return { ok: true, echo: lines.join('\n'), patch: validated.patch, baselineStamp: this.proposalBaselineStamp(key, regime) };
   }
 
   // ── readout (conversational + /topic status) ─────────────────────────────

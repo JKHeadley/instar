@@ -42,6 +42,25 @@ describe('TelegramAdapter — issues group', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter-issuesGroup.test.ts' });
   });
 
+  it('exposes the same native destination as actual normal and issues dispatch', async () => {
+    expect(adapter.getNativeTopicDestination(7)).toEqual({ chatId: MAIN, threadId: 7 });
+    expect(adapter.getNativeTopicDestination(ISSUES_TOPIC_OFFSET + 7)).toEqual({ chatId: ISSUES, threadId: 7 });
+    expect(adapter.getNativeTopicDestination(ISSUES_TOPIC_OFFSET + 1)).toEqual({ chatId: ISSUES, threadId: 1 });
+    const f = okFetch(); vi.stubGlobal('fetch', f);
+    await adapter.send({ userId: 'u', content: 'actual issues dispatch', channel: { type: 'telegram', identifier: String(ISSUES_TOPIC_OFFSET + 7) } });
+    const wire = bodies(f, 'sendMessage')[0];
+    expect(adapter.getNativeTopicDestination(ISSUES_TOPIC_OFFSET + 7)).toEqual({ chatId: wire.chat_id, threadId: wire.message_thread_id });
+  });
+
+  it('has no wrong-main-group fallback when an issues destination is not configured', async () => {
+    const mainOnly = new TelegramAdapter({ token: 't', chatId: MAIN }, tmpDir, { suppressLifelineAutoCreate: true });
+    try {
+      expect(mainOnly.getNativeTopicDestination(7)).toEqual({ chatId: MAIN, threadId: 7 });
+      expect(mainOnly.getNativeTopicDestination(ISSUES_TOPIC_OFFSET + 7)).toBeNull();
+      for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect(mainOnly.getNativeTopicDestination(id)).toBeNull();
+    } finally { await mainOnly.stop(); }
+  });
+
   it('rejects a non-numeric issuesChatId', () => {
     expect(() => new TelegramAdapter({ token: 't', chatId: MAIN, issuesChatId: 'echo-bugs' }, tmpDir)).toThrow(/issuesChatId/);
   });

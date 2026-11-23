@@ -190,13 +190,14 @@ describe('TopicProfileStore — durability precedes acknowledgment (§5.1)', () 
 });
 
 describe('TopicProfileStore — legacy seed (one-directional, §5.1)', () => {
-  it('seeds framework for topics absent from the profile store', () => {
+  it('seeds framework for topics absent from the profile store', async () => {
     fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
     fs.writeFileSync(
       legacyFile,
       JSON.stringify({ updatedAt: new Date().toISOString(), topics: { '42': 'codex-cli' } }),
     );
     const store = newStore();
+    await store.ready();
     expect(store.resolve(42)?.framework).toBe('codex-cli');
     expect(store.resolve(42)?.updatedBy).toBe('system:legacy-seed');
     // previous is null — undo with no snapshot is refused upstream.
@@ -230,6 +231,7 @@ describe('TopicProfileStore — legacy seed (one-directional, §5.1)', () => {
       JSON.stringify({ updatedAt: new Date(Date.now() + 60_000).toISOString(), topics: { '42': 'codex-cli' } }),
     );
     const reloaded = newStore();
+    await reloaded.ready();
     const current = reloaded.resolve(42);
     expect(current?.framework).toBe('codex-cli');
     // Framework arm ONLY — the model pin survives the reconcile.

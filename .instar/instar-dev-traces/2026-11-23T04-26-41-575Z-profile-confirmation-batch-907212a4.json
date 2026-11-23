@@ -1,0 +1,75 @@
+{
+  "version": 3,
+  "slug": "profile-confirmation-batch",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-23T04:26:41.575Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-batch.md",
+  "artifactSha256": "b67c4d74a45b677e8890e6aaf23e990cf65eefc616cfdaadb8f4652147e68024",
+  "specPath": "docs/specs/profile-confirmation-batch.md",
+  "coveredFiles": [
+    "docs/specs/profile-confirmation-batch.eli16.md",
+    "docs/specs/profile-confirmation-batch.md",
+    "docs/specs/reports/profile-confirmation-batch-convergence.md",
+    "src/commands/server.ts",
+    "src/core/ProfileProposalOwnerTurns.ts",
+    "src/core/ProfileProposalRequests.ts",
+    "src/core/ProfileRuntimeGuard.ts",
+    "src/core/TopicProfileOrchestrator.ts",
+    "src/core/TopicProfileStore.ts",
+    "src/core/TopicProfileTransferCarrier.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "src/core/profileInboundDisposition.ts",
+    "src/core/profileProposalBatch.ts",
+    "src/core/topicProfileIngress.ts",
+    "src/core/topicProfileWriteSurface.ts",
+    "src/data/awareness/profile-confirmation-batch.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "tests/e2e/lifeline-profile-disposition-lifecycle.test.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/integration/topic-profile-routes.test.ts",
+    "tests/unit/ProfileRuntimeGuard.test.ts",
+    "tests/unit/TelegramAdapter-issuesGroup.test.ts",
+    "tests/unit/TopicProfileBatchStore.test.ts",
+    "tests/unit/TopicProfileOrchestrator.test.ts",
+    "tests/unit/TopicProfileStore.test.ts",
+    "tests/unit/TopicProfileTransferCarrier.test.ts",
+    "tests/unit/lifeline/refused-forward-no-delivered.test.ts",
+    "tests/unit/profile-proposal-batch-render.test.ts",
+    "tests/unit/profile-proposal-batch-requests.test.ts",
+    "tests/unit/topicProfileWriteSurface.test.ts",
+    "upgrades/next/profile-confirmation-batch.md",
+    "upgrades/side-effects/profile-confirmation-batch.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "Atomic persistence, deferred process restarts and paired ingress change security-sensitive confirmation plumbing.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "operator-delegated-bounded-closure",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "implementation-security",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/profile-confirmation-batch-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

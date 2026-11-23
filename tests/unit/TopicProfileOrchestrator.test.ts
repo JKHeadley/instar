@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TopicProfileStore } from '../../src/core/TopicProfileStore.js';
+import { createProfileRuntimeFence, assertProfileRuntimeGuard } from '../../src/core/ProfileRuntimeGuard.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   TopicProfileOrchestrator,
@@ -1227,4 +1228,29 @@ it.each(['changed', 'unreadable'] as const)('rechecks the confirmed placement at
   await waitUntil(() => h.audits.some(event => event.type === 'respawn-skipped' && event.reason === 'ownership-changed'));
   expect(h.kills).toEqual([]); expect(h.spawns).toEqual([]); expect(h.escalation.cleared).toEqual([]);
   expect(h.store.resolve('7')?.model).toBe('claude-opus-4-8');
+});
+
+
+it.each([false, true])('carries the owned incarnation fence through kill and async spawn (replacement=%s)', async replacement => {
+  const h = makeHarness(); liveSession(h);
+  await h.store.mutate('7', { framework: 'codex-cli', updatedBy: 'telegram:111' });
+  let incarnation: string | null = 'actual-original-id';
+  const guard = createProfileRuntimeFence({ sessionId: incarnation,
+    readSessionId: () => incarnation, validAssignment: () => true });
+  h.deps.sessions.killFresh = async name => {
+    h.kills.push({ name, mode: 'fresh' }); incarnation = null; h.sessions.delete('7'); return true;
+  };
+  h.deps.sessions.spawn = async (_topic, _resolved, directive) => {
+    // Mirrors SessionManager's final guard after asynchronous launch preparation.
+    await Promise.resolve();
+    if (replacement) incarnation = 'competing-id';
+    assertProfileRuntimeGuard(directive.runtimeGuard);
+    h.spawns.push({ topicKey: '7', framework: 'codex-cli', model: undefined, method: directive.method });
+    return { ok: true };
+  };
+  h.orch.onProfileWrite('7', { frameworkChanged: true, origin: 'propose-confirm', runtimeGuard: guard });
+  await waitUntil(() => replacement
+    ? h.audits.some(e => e.type === 'respawn-skipped' && e.reason === 'ownership-changed')
+    : h.spawns.length === 1);
+  expect(h.kills).toHaveLength(1); expect(h.spawns).toHaveLength(replacement ? 0 : 1);
 });

@@ -188,6 +188,8 @@ export interface TopicProfileTransferCarrierDeps {
   effectiveFramework: () => IntelligenceFramework;
   /** Live ownership read — the ONLY actuation authority at apply time. */
   ownerOf: (topicKey: string) => { owner: string | null };
+  /** Same registry owner/epoch/status identity captured at original admission. Null is unknown. */
+  placementStamp?: (topicKey: string) => string | null;
   /**
    * Previous-owner evidence (journal placement history) for acquires whose
    * hook could not name the previous owner. Null = unknown → nothing to pull.
@@ -235,6 +237,9 @@ const DEFAULT_RETRY_BACKOFF_START_MS = 30_000;
 const DEFAULT_RETRY_BACKOFF_MAX_MS = 30 * 60_000;
 const DEFAULT_PENDING_TTL_MS = 7 * 24 * 60 * 60_000;
 
+interface PullAdmission { identity: number; acceptance: number; placement: string | null }
+class PullAdmissionChanged extends Error {}
+
 export class TopicProfileTransferCarrier {
   private readonly d: TopicProfileTransferCarrierDeps;
   private readonly ledgerFile: string;
@@ -245,6 +250,21 @@ export class TopicProfileTransferCarrier {
   /** Single-flight per peer (attempts never overlap per peer). */
   private inFlight = new Map<string, Promise<void>>();
   private episodeSeq = 0;
+  private admissionSeq = 0;
+  private latestAdmissions = new Map<string, PullAdmission>();
+  private episodeAdmissions = new Map<string, Map<string, PullAdmission>>();
+  private placement(key: string): string | null {
+    try {
+      if (this.d.placementStamp) return this.d.placementStamp(key);
+      const owner = this.d.ownerOf(key).owner;
+      return owner === this.d.selfMachineId ? owner : null;
+    } catch { return null; }
+  }
+  private admit(key: string): PullAdmission {
+    const admission = { identity: ++this.admissionSeq, acceptance: this.d.store.getLocalAcceptanceVersion(key), placement: this.placement(key) };
+    this.latestAdmissions.set(key, admission); return admission;
+  }
+
   /** Durable ledger cache (loaded lazily, kept in sync with every write). */
   private pulls: PendingPullRecord[] | null = null;
 
@@ -280,6 +300,8 @@ export class TopicProfileTransferCarrier {
       }
     }
     if (!prev || prev === this.d.selfMachineId) return; // nothing to pull / self-move
+    // Capture BEFORE the batching window and retain across every retry.
+    this.admit(key);
 
     let set = this.staged.get(prev);
     if (!set) {
@@ -324,6 +346,7 @@ export class TopicProfileTransferCarrier {
     // re-fires on the next tick), superseding any older pending pull for
     // these topics (§5.3 — two pulls must never race for one topic).
     const episodeId = `${peer}:${this.now().getTime()}:${++this.episodeSeq}`;
+    this.episodeAdmissions.set(episodeId, new Map(topics.map(key => [key, this.latestAdmissions.get(key) ?? this.admit(key)])));
     this.amendLedger((pulls) => {
       for (const rec of pulls) {
         const before = rec.topics.length;
@@ -463,6 +486,14 @@ export class TopicProfileTransferCarrier {
     const nowMs = this.now().getTime();
     const records = this.loadLedger().filter((r) => r.peer === peer);
     for (const rec of records) {
+      if (!this.episodeAdmissions.has(rec.episodeId)) {
+        this.episodeAdmissions.set(rec.episodeId, new Map(rec.topics.map(key => {
+          const newer = this.latestAdmissions.get(key);
+          // A newly staged acquire already supersedes this restored old episode.
+          // Never move its baseline forward to that newer admission.
+          return [key, newer ? { ...newer, identity: ++this.admissionSeq } : this.admit(key)];
+        })));
+      }
       if (rec.parkedForProtocol) {
         if (this.d.peerSupportsPull?.(peer) !== true) continue; // still parked
         this.amendLedger((pulls) => {
@@ -626,7 +657,14 @@ export class TopicProfileTransferCarrier {
         const result = await this.d.store.replaceEntry(
           key,
           { current: entry.current, intendedProfile: entry.intendedProfile },
-          { revalidate: { fallbackFramework: this.d.effectiveFramework() } },
+          { revalidate: { fallbackFramework: this.d.effectiveFramework() }, beforeCommit: () => {
+            const admitted = this.episodeAdmissions.get(episodeId)?.get(key);
+            const current = this.loadLedger().find(record => record.episodeId === episodeId);
+            const placement = this.placement(key);
+            if (!admitted || this.latestAdmissions.get(key) !== admitted || !current?.topics.includes(key)
+              || admitted.acceptance !== this.d.store.getLocalAcceptanceVersion(key)
+              || placement === null || placement !== admitted.placement) throw new PullAdmissionChanged();
+          } },
         );
         applied += 1;
         this.d.audit?.({
@@ -643,6 +681,11 @@ export class TopicProfileTransferCarrier {
           );
         }
       } catch (e) {
+        if (e instanceof PullAdmissionChanged) {
+          liveTopics.delete(key);
+          this.d.audit?.({ kind: 'pull-admission-changed', topic: key, episodeId, peer });
+          continue;
+        }
         // FlushRefusedError etc. — the topic STAYS in the record (it remains
         // in liveTopics); the next tick retries the pull (REPLACE is
         // idempotent). Back the episode off so a wedged disk doesn't spin.
@@ -704,6 +747,12 @@ export class TopicProfileTransferCarrier {
   private amendLedger(fn: (pulls: PendingPullRecord[]) => PendingPullRecord[]): void {
     const next = fn(this.loadLedger());
     this.pulls = next;
+    const episodes = new Set(next.map(record => record.episodeId));
+    for (const id of this.episodeAdmissions.keys()) if (!episodes.has(id)) this.episodeAdmissions.delete(id);
+    for (const key of this.latestAdmissions.keys()) {
+      if (![...this.staged.values()].some(topics => topics.has(key))
+        && ![...this.episodeAdmissions.values()].some(admissions => admissions.has(key))) this.latestAdmissions.delete(key);
+    }
     try {
       fs.mkdirSync(path.dirname(this.ledgerFile), { recursive: true });
       const tmp = `${this.ledgerFile}.${process.pid}.tmp`;

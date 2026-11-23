@@ -22,7 +22,9 @@
 
 import { randomBytes } from 'node:crypto';
 import type { EffortLevel, ProfilePatchInput } from './topicProfileValidation.js';
-import { ProfileProposalRequests } from './ProfileProposalRequests.js';
+import { ProfileProposalRequests, DEFAULT_PROFILE_PROPOSAL_TTL_MS } from './ProfileProposalRequests.js';
+import { ProfileProposalOwnerTurns } from './ProfileProposalOwnerTurns.js';
+import { profileProposalFitsTelegram } from './profileProposalBatch.js';
 
 // ── trigger grammar ─────────────────────────────────────────────────────────
 
@@ -173,6 +175,7 @@ export interface ProfileConfirmSlotsOptions {
   proposalTtlMs?: () => number;
   proposalTimeZone?: (source: string) => string | undefined;
   proposalSourceExists?: (source: string) => boolean | undefined;
+  proposalValidateFormat?: (text: string) => boolean;
   /** Re-proposal rate bound per topic (hardcoded v1 default: 5 per 10min). */
   maxProposalsPerWindow?: number;
   proposalWindowMs?: number;
@@ -186,6 +189,7 @@ const DEFAULT_PROPOSAL_WINDOW_MS = 600_000;
 
 export class ProfileConfirmSlots {
   readonly proposals: ProfileProposalRequests;
+  readonly ownerTurns: ProfileProposalOwnerTurns;
   private slots = new Map<string, ArmedConfirm>();
   /** Re-proposal timestamps per topic (rate bound, round-7). */
   private proposalTimes = new Map<string, number[]>();
@@ -201,9 +205,19 @@ export class ProfileConfirmSlots {
       ...opts,
     };
     this.now = opts.now ?? (() => Date.now());
+    this.ownerTurns = new ProfileProposalOwnerTurns({ now: this.now });
     this.proposals = new ProfileProposalRequests({ now: this.now, ttlMs: opts.proposalTtlMs,
       maxSends: this.opts.maxProposalsPerWindow, windowMs: this.opts.proposalWindowMs,
-      audit: opts.audit, timeZone: opts.proposalTimeZone, sourceExists: opts.proposalSourceExists });
+      audit: opts.audit, timeZone: opts.proposalTimeZone, sourceExists: opts.proposalSourceExists,
+      validateFormat: opts.proposalValidateFormat ?? profileProposalFitsTelegram });
+  }
+
+  /** Called only by first-party verified inbound, never by a proposal body. */
+  issueOwnerTurn(source: string, principal: string, inboundId: string): { handle: string; inboundId: string } {
+    const configured = this.opts.proposalTtlMs?.() ?? DEFAULT_PROFILE_PROPOSAL_TTL_MS;
+    const ttl = Number.isFinite(configured) && configured > 0 && Number.isFinite(new Date(this.now() + configured).getTime())
+      ? configured : DEFAULT_PROFILE_PROPOSAL_TTL_MS;
+    return { handle: this.ownerTurns.issue({ source, principal, inboundId }, this.now() + ttl), inboundId };
   }
 
   private ttl(): number {

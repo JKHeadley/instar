@@ -10,7 +10,7 @@
  *    three independently-writable axes — a whole-object rewrite would clobber
  *    a concurrently-set field. `mutate` does a read-modify-write under a
  *    per-topic process-local lock, merging only the changed fields.
- *  - In-memory cache is AUTHORITATIVE for reads. The file is read once at
+ *  - Last durably renamed snapshot is AUTHORITATIVE for reads. The file is read once at
  *    boot and on explicit external-change invalidation only — per-spawn
  *    resolution is O(1) (§5.1).
  *  - Durability precedes acknowledgment: `mutate` resolves only after a flush
@@ -177,6 +177,11 @@ export interface MutateResult {
   supersededParked: boolean;
 }
 
+export type ProfilePatch = Partial<Omit<TopicProfile, 'updatedAt'>> & { updatedBy: string };
+export interface BatchMutateItem { topicKey: number | string; patch: ProfilePatch; options?: MutateOptions }
+export interface BatchMutateOptions { beforeCommit?: () => void; lockTimeoutMs?: number }
+export interface BatchMutateResult extends MutateResult { topicKey: string; executionEpoch: number; localAcceptanceVersion: number }
+
 export interface ReplaceResult {
   /** False when the arriving entry equals local current (no effective delta). */
   delta: boolean;
@@ -204,6 +209,8 @@ export interface ReplaceRevalidationOptions {
 }
 
 export interface ReplaceOptions {
+  /** Synchronous transfer admission/placement CAS, checked inside the replacement lock. */
+  beforeCommit?: () => void;
   /**
    * §5.3 (mandatory at the transfer-apply and §12 restore-apply doors): run
    * the full §10.2 closed-enum + framework-compat clamp over the ARRIVING
@@ -241,11 +248,59 @@ export class TopicProfileStore {
   private readonly isDryRun: () => boolean;
   private readonly now: () => Date;
 
-  /** AUTHORITATIVE in-memory cache (§5.1). */
+  /** Private working state; readers never observe uncommitted mutations. */
   private topics: Record<string, TopicProfileEntry> = {};
   /** Deep snapshot of the last durably-flushed topics map (rollback target). */
   private lastFlushed: Record<string, TopicProfileEntry> = {};
   private mirrorGeneratedAt: string | undefined;
+  private readiness: Promise<void> = Promise.resolve();
+  private executionEpochs = new Map<string, number>();
+  private acceptanceVersions = new Map<string, number>();
+  private admissionReaders = 0;
+  private admissionWriter = false;
+  private admissionQueue: Array<{ exclusive: boolean; enter: (release: () => void) => void }> = [];
+
+  ready(): Promise<void> { return this.readiness; }
+  getExecutionEpoch(key: number | string): number { return this.executionEpochs.get(String(key)) ?? 0; }
+  getLocalAcceptanceVersion(key: number | string): number { return this.acceptanceVersions.get(String(key)) ?? 0; }
+
+  private acquireAdmission(exclusive: boolean): Promise<() => void> {
+    return new Promise(resolve => {
+      this.admissionQueue.push({ exclusive, enter: resolve }); this.drainAdmission();
+    });
+  }
+  private drainAdmission(): void {
+    if (this.admissionWriter) return;
+    while (this.admissionQueue.length) {
+      const next = this.admissionQueue[0];
+      if (next.exclusive && this.admissionReaders) return;
+      this.admissionQueue.shift();
+      if (next.exclusive) this.admissionWriter = true; else this.admissionReaders++;
+      let released = false;
+      next.enter(() => {
+        if (released) return; released = true;
+        if (next.exclusive) this.admissionWriter = false; else this.admissionReaders--;
+        this.drainAdmission();
+      });
+      if (next.exclusive) return;
+    }
+  }
+  private async withAdmission<T>(exclusive: boolean, fn: () => Promise<T> | T): Promise<T> {
+    await this.ready();
+    const release = await this.acquireAdmission(exclusive);
+    try { return await fn(); } finally { release(); }
+  }
+  private advanceExecution(key: string): number {
+    const epoch = this.getExecutionEpoch(key) + 1; this.executionEpochs.set(key, epoch); return epoch;
+  }
+  private publishEntry(key: string, entry: TopicProfileEntry, force = false): number {
+    const before = this.topics[key]?.current ?? null;
+    const executionFields = PROFILE_FIELDS.filter(field => field !== 'messageOriginDisplay');
+    if (force || executionFields.some(field => !profileFieldEqual(before?.[field], entry.current?.[field]))) this.advanceExecution(key);
+    this.topics[key] = entry;
+    return this.getExecutionEpoch(key);
+  }
+
 
   /** Per-topic process-local locks (promise chains). */
   private locks = new Map<string, Promise<unknown>>();
@@ -260,7 +315,9 @@ export class TopicProfileStore {
     this.isDryRun = options.isDryRun ?? (() => false);
     this.now = options.now ?? (() => new Date());
     this.audit = options.audit ?? (() => {});
-    this.loadFromDisk();
+    this.readiness = this.loadFromDisk();
+    // The rejection remains observable through ready(); prevent an unhandled boot rejection.
+    void this.readiness.catch(() => {});
   }
 
   private readonly audit: (event: Record<string, unknown>) => void;
@@ -269,22 +326,22 @@ export class TopicProfileStore {
 
   /** Entry for a topic, or null. Cache read — never touches disk. */
   get(topicKey: number | string): TopicProfileEntry | null {
-    return this.topics[String(topicKey)] ?? null;
+    return cloneValue(this.lastFlushed[String(topicKey)] ?? null);
   }
 
   /** The live profile for a topic (resolution input). Never the shadow. */
   resolve(topicKey: number | string): TopicProfile | null {
-    return this.topics[String(topicKey)]?.current ?? null;
+    return cloneValue(this.lastFlushed[String(topicKey)]?.current ?? null);
   }
 
   /** Undo target (§10.3). Null when nothing to undo yet. */
   previousFor(topicKey: number | string): TopicProfile | null {
-    return this.topics[String(topicKey)]?.previous ?? null;
+    return cloneValue(this.lastFlushed[String(topicKey)]?.previous ?? null);
   }
 
   /** Admin/migration only (§5.1) — read surfaces use get(). */
   all(): Record<string, TopicProfileEntry> {
-    return { ...this.topics };
+    return deepCloneTopics(this.lastFlushed);
   }
 
   // ── per-topic lock (shared ordering primitive, §5.1/§8) ──────────────────
@@ -301,6 +358,10 @@ export class TopicProfileStore {
     fn: () => Promise<T> | T,
     timeoutMs = WRITE_LOCK_TIMEOUT_MS,
   ): Promise<T> {
+    return this.withAdmission(false, () => this.withRawTopicLock(topicKey, fn, timeoutMs));
+  }
+
+  private async withRawTopicLock<T>(topicKey: number | string, fn: () => Promise<T> | T, timeoutMs = WRITE_LOCK_TIMEOUT_MS): Promise<T> {
     const key = String(topicKey);
     const prior = this.locks.get(key) ?? Promise.resolve();
 
@@ -340,98 +401,128 @@ export class TopicProfileStore {
    * mutual exclusion against the MERGE RESULT. Resolves only after the write
    * is durable; throws FlushRefusedError (with rollback) when it is not.
    */
-  async mutate(
-    topicKey: number | string,
-    inputPatch: Partial<Omit<TopicProfile, 'updatedAt'>> & { updatedBy: string },
-    opts: MutateOptions = {},
-  ): Promise<MutateResult> {
-    const key = String(topicKey);
-    return this.withTopicLock(
-      key,
-      async () => {
-        opts.beforeWrite?.();
-        const prepared = opts.prepare?.();
-        const patch = prepared?.patch ?? inputPatch;
-        const shadow = prepared ? prepared.shadow : opts.shadow;
-        // Validation and deadline checks must not publish a null husk for an absent topic.
-        const existing = this.topics[key];
-        const entry: TopicProfileEntry = existing ? deepCloneTopics({ entry: existing }).entry
-          : { current: null, previous: null, intendedProfile: null, parked: null, breakerCount: 0 };
-        if (opts.expectedDisplayRevision !== undefined &&
-          topicDisplayRevision(entry.current?.messageOriginDisplay) !== opts.expectedDisplayRevision) {
-          throw new ProfileDisplayConflictError();
+  async mutate(topicKey: number | string, inputPatch: ProfilePatch, opts: MutateOptions = {}): Promise<MutateResult> {
+    const [result] = await this.mutateBatch([{ topicKey, patch: inputPatch, options: opts }], { lockTimeoutMs: opts.lockTimeoutMs });
+    return result;
+  }
+
+  async mutateBatch(items: readonly BatchMutateItem[], options: BatchMutateOptions = {}): Promise<BatchMutateResult[]> {
+    const keys = items.map(item => String(item.topicKey));
+    if (!items.length || new Set(keys).size !== keys.length) throw new Error('A profile batch needs unique nonempty targets.');
+    return this.withAdmission(false, async () => {
+      const sorted = [...keys].sort();
+      const deadline = Date.now() + (options.lockTimeoutMs ?? WRITE_LOCK_TIMEOUT_MS);
+      const locked = async (index: number): Promise<BatchMutateResult[]> => {
+        if (index < sorted.length) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new ProfileLockTimeoutError(sorted[index]);
+          return this.withRawTopicLock(sorted[index], () => locked(index + 1), remaining);
         }
-        // Derive this from actual supplied fields, never a caller's exemption flag.
-        const suppliedFields = PROFILE_FIELDS.filter(field => patch[field] !== undefined);
-        const displayOnly = suppliedFields.length === 1 && suppliedFields[0] === 'messageOriginDisplay';
-        const base: TopicProfile = entry.current ?? {
-          updatedAt: this.now().toISOString(),
-          updatedBy: patch.updatedBy,
-        };
+        // All candidates and all final guards complete before the first assignment.
+        const planned = items.map(item => this.prepareMutation(String(item.topicKey), item.patch, item.options ?? {}));
+        for (const item of items) item.options?.beforeCommit?.();
+        options.beforeCommit?.();
+        const captured = planned.map((plan, i) => ({ ...plan, topicKey: keys[i],
+          executionEpoch: this.topics[keys[i]] || plan.changed || plan.entry.intendedProfile
+            ? this.publishEntry(keys[i], cloneValue(plan.entry)) : this.getExecutionEpoch(keys[i]) }));
+        await this.flushDurably();
+        return captured.map((plan, i) => {
+          const fields = PROFILE_FIELDS.filter(field => planned[i].acceptedPatch[field] !== undefined);
+          if (fields.length && !planned[i].acceptedPatch.updatedBy.startsWith('system:'))
+            this.acceptanceVersions.set(plan.topicKey, this.getLocalAcceptanceVersion(plan.topicKey) + 1);
+          return { changed: plan.changed, supersededParked: plan.supersededParked, topicKey: plan.topicKey,
+            entry: cloneValue(plan.entry), executionEpoch: plan.executionEpoch,
+            localAcceptanceVersion: this.getLocalAcceptanceVersion(plan.topicKey) };
+        });
+      };
+      return locked(0);
+    });
+  }
 
-        // Merge only the supplied fields.
-        const merged: TopicProfile = { ...base };
-        let changed = false;
-        for (const field of PROFILE_FIELDS) {
-          if (patch[field] === undefined) continue;
-          const next = patch[field] as TopicProfile[ProfileField];
-          if (!profileFieldEqual(merged[field], next)) changed = true;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (merged as any)[field] = next;
-        }
+  /** Detached disclosure preview using exactly the mutation planner and the durable read view. */
+  previewMutation(topicKey: number | string, patch: ProfilePatch, opts: Pick<MutateOptions, 'shiftPrevious' | 'shadow'> = {}): MutateResult {
+    const planned = this.prepareMutation(String(topicKey), patch, { shiftPrevious: opts.shiftPrevious, shadow: opts.shadow }, this.lastFlushed);
+    return { changed: planned.changed, supersededParked: planned.supersededParked, entry: cloneValue(planned.entry) };
+  }
 
-        // §4 hard refusal against the merge RESULT (a patch setting model on
-        // a tier-pinned topic without clearing the tier is refused too).
-        const exclusion = modelTierMutualExclusionError(merged);
-        if (exclusion) throw new ProfileValidationRefusal(exclusion);
+  private prepareMutation(key: string, inputPatch: ProfilePatch, opts: MutateOptions,
+    snapshot: Record<string, TopicProfileEntry> = this.topics): MutateResult & { acceptedPatch: ProfilePatch } {
+    opts.beforeWrite?.();
+    const prepared = opts.prepare?.();
+    const patch = prepared?.patch ?? inputPatch;
+    const shadow = prepared ? prepared.shadow : opts.shadow;
+    // Validation and deadline checks must not publish a null husk for an absent topic.
+    const existing = snapshot[key];
+    const entry: TopicProfileEntry = existing ? deepCloneTopics({ entry: existing }).entry
+      : { current: null, previous: null, intendedProfile: null, parked: null, breakerCount: 0 };
+    if (opts.expectedDisplayRevision !== undefined &&
+      topicDisplayRevision(entry.current?.messageOriginDisplay) !== opts.expectedDisplayRevision) {
+      throw new ProfileDisplayConflictError();
+    }
+    // Derive this from actual supplied fields, never a caller's exemption flag.
+    const suppliedFields = PROFILE_FIELDS.filter(field => patch[field] !== undefined);
+    const displayOnly = suppliedFields.length === 1 && suppliedFields[0] === 'messageOriginDisplay';
+    const base: TopicProfile = entry.current ?? {
+      updatedAt: this.now().toISOString(),
+      updatedBy: patch.updatedBy,
+    };
 
-        if (!changed) {
-          if (shadow) {
-            entry.intendedProfile = { fields: { ...entry.intendedProfile?.fields, ...shadow },
-              recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
-            opts.beforeCommit?.();
-            this.topics[key] = entry;
-            await this.flushDurably();
-          }
-          return { changed: false, entry, supersededParked: false };
-        }
+    // Merge only the supplied fields.
+    const merged: TopicProfile = { ...base };
+    let changed = false;
+    for (const field of PROFILE_FIELDS) {
+      if (patch[field] === undefined) continue;
+      const next = patch[field] as TopicProfile[ProfileField];
+      if (!profileFieldEqual(merged[field], next)) changed = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (merged as any)[field] = next;
+    }
 
-        merged.updatedAt = this.now().toISOString();
-        // Keep execution-history provenance for legacy undo eligibility.
-        // Cosmetic authorship is audited by the write surface; updatedAt still
-        // advances so replicated display preferences remain fresh.
-        merged.updatedBy = displayOnly ? base.updatedBy : patch.updatedBy;
+    // §4 hard refusal against the merge RESULT (a patch setting model on
+    // a tier-pinned topic without clearing the tier is refused too).
+    const exclusion = modelTierMutualExclusionError(merged);
+    if (exclusion) throw new ProfileValidationRefusal(exclusion);
 
-        // §10.4 — a deliberate operator pin atomically supersedes a parked
-        // intended-but-unhealthy profile + the breaker counter in the SAME
-        // mutate. System writes (breaker revert itself) manage parked state
-        // through park()/unparkProfile(), not here.
-        const isOperatorWrite = !patch.updatedBy.startsWith('system:');
-        let supersededParked = false;
-        if (isOperatorWrite && !displayOnly && entry.parked) {
-          entry.parked = null;
-          entry.breakerCount = 0;
-          supersededParked = true;
-        }
-
-        if (opts.shiftPrevious && !displayOnly) {
-          entry.previous = entry.current ? { ...entry.current } : null;
-        }
-        entry.current = merged;
-
-        // An accepted LIVE write clears that topic's stale dry-run shadow
-        // (§14 supersession discipline).
-        if (!displayOnly && entry.intendedProfile) entry.intendedProfile = null;
-        if (shadow) entry.intendedProfile = { fields: shadow,
+    if (!changed) {
+      if (shadow) {
+        entry.intendedProfile = { fields: { ...entry.intendedProfile?.fields, ...shadow },
           recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
 
-        opts.beforeCommit?.();
-        this.topics[key] = entry;
-        await this.flushDurably();
-        return { changed: true, entry, supersededParked };
-      },
-      opts.lockTimeoutMs ?? WRITE_LOCK_TIMEOUT_MS,
-    );
+      }
+      return { changed: false, entry, supersededParked: false, acceptedPatch: patch };
+    }
+
+    merged.updatedAt = this.now().toISOString();
+    // Keep execution-history provenance for legacy undo eligibility.
+    // Cosmetic authorship is audited by the write surface; updatedAt still
+    // advances so replicated display preferences remain fresh.
+    merged.updatedBy = displayOnly ? base.updatedBy : patch.updatedBy;
+
+    // §10.4 — a deliberate operator pin atomically supersedes a parked
+    // intended-but-unhealthy profile + the breaker counter in the SAME
+    // mutate. System writes (breaker revert itself) manage parked state
+    // through park()/unparkProfile(), not here.
+    const isOperatorWrite = !patch.updatedBy.startsWith('system:');
+    let supersededParked = false;
+    if (isOperatorWrite && !displayOnly && entry.parked) {
+      entry.parked = null;
+      entry.breakerCount = 0;
+      supersededParked = true;
+    }
+
+    if (opts.shiftPrevious && !displayOnly) {
+      entry.previous = entry.current ? { ...entry.current } : null;
+    }
+    entry.current = merged;
+
+    // An accepted LIVE write clears that topic's stale dry-run shadow
+    // (§14 supersession discipline).
+    if (!displayOnly && entry.intendedProfile) entry.intendedProfile = null;
+    if (shadow) entry.intendedProfile = { fields: shadow,
+      recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
+
+
+    return { changed: true, entry, supersededParked, acceptedPatch: patch };
   }
 
   // ── creation-time seed (dashboard-door-model-controls §3.2) ──────────────
@@ -457,8 +548,9 @@ export class TopicProfileStore {
         updatedAt: this.now().toISOString(),
         updatedBy: seed.updatedBy,
       };
-      this.topics[key] = { current, previous: null, intendedProfile: null, parked: null, breakerCount: 0 };
+      this.publishEntry(key, { current, previous: null, intendedProfile: null, parked: null, breakerCount: 0 });
       await this.flushDurably();
+      if (!seed.updatedBy.startsWith('system:')) this.acceptanceVersions.set(key, this.getLocalAcceptanceVersion(key) + 1);
       return 'seeded';
     });
   }
@@ -503,7 +595,8 @@ export class TopicProfileStore {
     }
 
     return this.withTopicLock(key, async () => {
-      const entry = this.entryFor(key);
+      opts.beforeCommit?.();
+      const entry = cloneValue(this.topics[key] ?? { current: null, previous: null, intendedProfile: null, parked: null, breakerCount: 0 });
       const delta = !profilesEqual(entry.current, arrivingCurrent);
 
       let discardedArrivingShadow = false;
@@ -529,9 +622,9 @@ export class TopicProfileStore {
         entry.current = arrivingCurrent ? { ...arrivingCurrent } : null;
       }
       entry.intendedProfile = nextShadow;
-
+      this.publishEntry(key, entry, true);
       await this.flushDurably();
-      return { delta, entry, retainedLocalShadow, discardedArrivingShadow, droppedFields };
+      return { delta, entry: cloneValue(entry), retainedLocalShadow, discardedArrivingShadow, droppedFields };
     });
   }
 
@@ -547,7 +640,7 @@ export class TopicProfileStore {
     await this.withTopicLock(key, async () => {
       const entry = this.entryFor(key);
       entry.intendedProfile = {
-        fields,
+        fields: cloneValue(fields),
         recordedAt: this.now().toISOString(),
         recordedBy,
       };
@@ -562,6 +655,7 @@ export class TopicProfileStore {
    * notice.
    */
   async clearAllShadows(): Promise<Array<{ topicKey: string; shadow: IntendedProfileShadow }>> {
+    return this.withAdmission(true, async () => {
     const cleared: Array<{ topicKey: string; shadow: IntendedProfileShadow }> = [];
     for (const [key, entry] of Object.entries(this.topics)) {
       if (entry.intendedProfile) {
@@ -570,7 +664,8 @@ export class TopicProfileStore {
       }
     }
     if (cleared.length > 0) await this.flushDurably();
-    return cleared;
+    return cloneValue(cleared);
+    });
   }
 
   // ── §10.4 parked-profile + breaker counter ───────────────────────────────
@@ -598,13 +693,14 @@ export class TopicProfileStore {
         ? { ...revertTo, messageOriginDisplay: display ?? null, updatedAt: this.now().toISOString(), updatedBy: 'system:circuit-breaker' }
         : null;
       entry.breakerCount = 0;
+      this.advanceExecution(key);
       await this.flushDurably();
     });
   }
 
   /** The parked pin, for the §5.2(b) re-apply recovery write. */
   parkedFor(topicKey: number | string): ParkedProfile | null {
-    return this.topics[String(topicKey)]?.parked ?? null;
+    return cloneValue(this.lastFlushed[String(topicKey)]?.parked ?? null);
   }
 
   /** Clear the parked state (after a successful re-apply). */
@@ -649,14 +745,31 @@ export class TopicProfileStore {
    * snapshot restore lands on disk (the file is otherwise server-owned
    * single-writer; external edits reconcile only here or at boot).
    */
-  invalidateAndReload(): void {
-    this.topics = {};
-    this.loadFromDisk();
+  async invalidateAndReload(): Promise<void> {
+    await this.withRestoreBarrier(() => {});
+  }
+
+  /** Acquire BEFORE external file installation. Earlier admitted operations drain first. */
+  async withRestoreBarrier(install: () => Promise<void> | void): Promise<void> {
+    return this.withAdmission(true, async () => {
+      const priorKeys = new Set([...Object.keys(this.topics), ...this.executionEpochs.keys()]);
+      // Fence old operations before a restore can touch disk, even if installation fails partially.
+      for (const key of priorKeys) this.advanceExecution(key);
+      let installFailed = false;
+      let installError: unknown;
+      try { await install(); } catch (error) { installFailed = true; installError = error; }
+      this.topics = {};
+      this.readiness = this.loadFromDisk();
+      void this.readiness.catch(() => {});
+      for (const key of Object.keys(this.topics)) if (!priorKeys.has(key)) this.advanceExecution(key);
+      await this.readiness;
+      if (installFailed) throw installError;
+    });
   }
 
   // ── boot load + legacy seed (§5.1) ───────────────────────────────────────
 
-  private loadFromDisk(): void {
+  private loadFromDisk(): Promise<void> {
     try {
       if (fs.existsSync(this.stateFilePath)) {
         const raw = fs.readFileSync(this.stateFilePath, 'utf-8');
@@ -676,19 +789,19 @@ export class TopicProfileStore {
       this.topics = {};
     }
 
-    const seeded = this.seedFromLegacy();
     this.lastFlushed = deepCloneTopics(this.topics);
-    this.bootFinalize(seeded);
+    const seeded = this.seedFromLegacy();
+    return this.bootFinalize(seeded);
   }
 
   /**
    * Boot persistence + mirror self-heal (§12). Seeded/reconciled entries are
    * flushed so `topic-profiles.json` exists from first boot, and a mirror
    * that diverges from the profile store is regenerated (the flush path does
-   * both). Best-effort and async — boot itself never refuses; the cache is
-   * authoritative and the seed is reconstructible at every boot.
+   * both). Awaitable startup persistence: launch callers must await ready(), and
+   * a failed seed never becomes a public assignment.
    */
-  private bootFinalize(seededOrReconciled: boolean): void {
+  private async bootFinalize(seededOrReconciled: boolean): Promise<void> {
     let needsFlush = seededOrReconciled;
     if (!needsFlush && Object.keys(this.topics).length > 0 && !fs.existsSync(this.stateFilePath)) {
       needsFlush = true;
@@ -716,16 +829,15 @@ export class TopicProfileStore {
       }
     }
     if (needsFlush) {
-      void this.flushDurably().catch((err) => {
-        console.warn(`[TopicProfileStore] Boot flush failed (cache stays authoritative, retried at next write): ${err}`);
+      try { await this.flushDurably(); }
+      catch (err) {
         DegradationReporter.getInstance().report({
-          feature: 'TopicProfileStore.bootFlush',
-          primary: 'Persist topic-profile state and regenerate the legacy mirror at boot',
-          fallback: 'In-memory cache stays authoritative; the durable file and legacy mirror stay stale until the next successful write',
-          reason: `Boot flush failed: ${err instanceof Error ? err.message : String(err)}`,
-          impact: 'A crash before the next successful write loses boot-time seeds/reconciles; a rolled-back binary would read a divergent legacy mirror',
+          feature: 'TopicProfileStore.bootFlush', primary: 'Persist legacy profile seed before launch',
+          fallback: 'Profile startup is refused until the persistence failure is repaired',
+          reason: String(err), impact: 'Sessions must not launch using a hidden missing pin',
         });
-      });
+        throw err;
+      }
     }
   }
 
@@ -858,6 +970,9 @@ export class TopicProfileStore {
         this.lastFlushed = snapshot;
       } catch (err) {
         // Rollback to the last durably-flushed snapshot, then refuse loudly.
+        for (const key of new Set([...Object.keys(this.topics), ...Object.keys(this.lastFlushed)])) {
+          if (JSON.stringify(this.topics[key]) !== JSON.stringify(this.lastFlushed[key])) this.advanceExecution(key);
+        }
         this.topics = deepCloneTopics(this.lastFlushed);
         throw new FlushRefusedError(err);
       } finally {
@@ -1106,3 +1221,5 @@ function sanitizeProfile(value: unknown): TopicProfile | null {
   if (typeof v.updatedAt !== 'string' || typeof v.updatedBy !== 'string') return null;
   return v as TopicProfile;
 }
+
+function cloneValue<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }

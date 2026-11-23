@@ -1,0 +1,13 @@
+---
+title: One answer for several conversation changes
+requires: telegram
+---
+When the owner wants to change several conversations, prepare one registered question with `POST /topic-profile/propose-batch`. Send Bearer authorization and `X-Instar-Request: 1`. The body is `{"confirmIn":123,"targets":[{"topicId":456,"patch":{"framework":"codex-cli"}},{"topicId":789,"patch":{"framework":"codex-cli"}}]}`. Use the actual source and target IDs. The server validates each target, renders every effect and delivers the question only in `confirmIn`; do not post an extra approval question yourself.
+
+Only the verified owner's exact yes, sent using Reply on that actually delivered question, can apply the list. Numbered, quoted, forwarded or unbound replies grant nothing. Preserve the original text for ordinary conversation and use judgment to clarify or propose a registered reminder. One valid reply saves the described settings together; individual restarts may still be pending, skipped or failed. A saved setting or accepted launch does not prove the destination is running correctly.
+
+For several compatible pending questions, use the server-supplied reminder operation or `{"confirmIn":123,"remindRequestIds":["R-first","R-second"]}` on the batch route. The server registers one aggregate question and retires the originals only after actual delivery and an all-pending check. Reminder unions keep the earliest original deadline. A fresh owner-requested corrected proposal may use `fresh:true` with a newly disclosed lifetime. When a clear list is too large, plan fitting groups without silently omitting changes; ask for a preference only when it is genuinely missing. Same-name conversations include verified native links beside their effects.
+
+Verified inbound context may supply an opaque `ownerTurnHandle` and its `ownerTurnInboundId`. Pass those exact server-provided values when the registered operation includes them. They allow preparing a fresh, corrected or aggregate question during creation cooldown; they never approve settings. Never invent a handle, substitute an owner ID or treat a body field as first-party identity. Oversize preflight does not spend the handle; uncertain actual dispatch does.
+
+The existing fixed shown deadline remains, defaulting to 24 hours; reminders do not extend it. Ordinary or agent messages cancel no identified request. Old single-target APIs remain available. This batch slice does not preserve pending permission across server restart or ownership change, add Slack or App consent, or prove destination runtime health. After an interrupted result, inspect actual settings and session evidence before recovery; never repeat a change merely because its acknowledgment is missing.

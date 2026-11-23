@@ -26,20 +26,20 @@ describe('readForwardRefused', () => {
 describe('every lifeline "✓ Delivered" asks whether the server refused the message', () => {
   it('text, photo and document acks are all conditional on !fwd.refused', () => {
     const acks = src.match(/sendFixedNotice\(topicId, '✓ Delivered'\)/g) ?? [];
-    const guarded = src.match(/if \(!fwd\.refused\) await this\.sendFixedNotice\(topicId, '✓ Delivered'\)/g) ?? [];
+    const guarded = src.match(/if \(!fwd\.refused && fwd\.disposition !== 'profile-control-handled'\) await this\.sendFixedNotice\(topicId, '✓ Delivered'\)/g) ?? [];
     expect(acks.length).toBe(3);
     expect(guarded.length).toBe(3);
   });
   it('both accepted-forward branches record the refusal', () => {
-    expect(src).toContain('if (ack) ack.refused = await readForwardRefused(response);');
-    expect(src).toContain('if (r2.ok) { if (ack) ack.refused = await readForwardRefused(r2); return true; }');
+    expect(src).toContain('if (ack) Object.assign(ack, await readForwardAcknowledgment(response));');
+    expect(src).toContain('if (r2.ok) { if (ack) Object.assign(ack, await readForwardAcknowledgment(r2)); return true; }');
   });
   it('a refused replay is handled (never re-queued) but not counted as delivered', () => {
     const loop = src.slice(src.indexOf('private async replayQueue('), src.indexOf('private async replayQueue(') + 8000);
     // SEC-164 part 1b passes the replayed message's removed-key kinds after the ack (its notice survives a replay).
     expect(loop).toContain('}, replayAck, undefined, msg.credentialRemovedKinds);');
     const mark = loop.indexOf("this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it");
-    const guard = loop.indexOf('if (!replayAck.refused) {');
+    const guard = loop.indexOf("if (!replayAck.refused && replayAck.disposition !== 'profile-control-handled') {");
     const count = loop.indexOf('replayed++;');
     expect(mark).toBeGreaterThan(0);
     expect(guard).toBeGreaterThan(mark);

@@ -18,12 +18,15 @@ import { withNotificationEnvelope } from '../../src/messaging/notificationStampe
 import { TeamConfinement } from '../../src/users/TeamConfinement.js';
 import { TEAM_ACCESS_DIR } from '../../src/core/TeamAccessLog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { renderProfileBatchProposal } from '../../src/core/profileProposalBatch.js';
+import { proposalItems } from '../../src/core/ProfileProposalRequests.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 const OWNER = 777;
 const SOURCE = 1001;
 const TARGET = 2002;
+const SECOND_TARGET = 2003;
 const AUTH = 'owner-framework-lifecycle-fixture';
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -37,7 +40,8 @@ function harness() {
   const resolver = new TopicProfileResolver({ store, defaultFramework: () => 'claude-code', configTopicFrameworks: () => ({}), configProfileDefaults: () => ({}), frameworkDefaultModels: () => ({}), tierEscalationConfig: () => undefined, localModelBinding: () => null, frameworkBinaryPath: () => null });
   const slots = new ProfileConfirmSlots();
   const telegram = new TelegramAdapter({ token: '123:lifecycle-fixture', chatId: '-1001', ownerUserId: OWNER, authorizedUserIds: [OWNER] }, stateDir, { suppressLifelineAutoCreate: true });
-  vi.spyOn(telegram, 'getTopicName').mockImplementation(id => id === TARGET ? 'Project Work' : id === SOURCE ? 'Planning' : null);
+  const names = new Map<number, string>([[SOURCE, 'Planning'], [TARGET, 'Project Work'], [SECOND_TARGET, 'Second Project']]);
+  vi.spyOn(telegram, 'getTopicName').mockImplementation(id => names.get(id) ?? null);
   const gate = new NotificationSelectivityGate(stateDir, 'test-machine', () => ({ enabled: true, dryRun: false }));
   telegram.selectivity = gate;
   const sent: Array<Record<string, unknown>> = [];
@@ -60,12 +64,22 @@ function harness() {
       receipt: slots.proposals.get(String(confirmIn ?? TARGET), response.body.requestId)!.receipts.at(-1)!.messageId });
     return response;
   };
+  const proposeBatch = async (body: Record<string, unknown> = {}) => {
+    const response = await request(server.getApp()).post('/topic-profile/propose-batch')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1')
+      .send({ confirmIn: SOURCE, ...(body.remindRequestIds === undefined ? { targets: [{ topicId: TARGET, patch: { framework: 'codex-cli' } },
+        { topicId: SECOND_TARGET, patch: { framework: 'claude-code' } }] } : {}), ...body });
+    if (response.status === 200) delivered.set(response.body.requestId, { source: SOURCE,
+      receipt: slots.proposals.get(String(SOURCE), response.body.requestId)!.receipts.at(-1)!.messageId });
+    return response;
+  };
   const remind = (id: string) => request(server.getApp()).post(`/topic-profile/${TARGET}/propose`).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({ remindRequestId: id, confirmIn: SOURCE });
   const confirm = async (uid = OWNER, id = [...delivered.keys()].at(-1)!, text = 'yes', inboundId = mid + 1, nativeReply?: number) => {
     const delivery = delivered.get(id)!;
     const out = await handleAndAcknowledgeProfileProposalReply({ requests: slots.proposals, surface,
       source: String(delivery.source), text, messageId: inboundId, replyTo: nativeReply ?? delivery.receipt, forwarded: false,
       principal: { kind: 'operator', platform: 'telegram', uid: String(uid) },
+      verifiedOwner: () => uid === OWNER,
       eligible: destKey => {
         const ops = server.getTopicOperatorStore()!; const confinement = new TeamConfinement(stateDir);
         return crossTopicEligible({ ownerUid: String(OWNER), confirmerUid: String(uid), sourceConfined: confinement.isConfined(`telegram:${delivery.source}`),
@@ -78,7 +92,7 @@ function harness() {
     return { ...out, written: out.result?.ok ?? false, reply: out.result?.reply };
   };
 
-  return { stateDir, store, surface, slots, telegram, sent, respawns, bind, propose, remind, confirm, operators: server.getTopicOperatorStore()!, app: server.getApp() };
+  return { stateDir, store, surface, slots, telegram, sent, respawns, bind, propose, proposeBatch, names, remind, confirm, operators: server.getTopicOperatorStore()!, app: server.getApp() };
 }
 
 describe('Owner framework confirmation is alive through production composition', () => {
@@ -232,16 +246,16 @@ describe('Owner framework confirmation is alive through production composition',
     expect(h.respawns).toEqual([String(TARGET)]);
   });
 
-  it('replays the saved result through the production acknowledgment consumer after a real adapter send failure', async () => {
+  it('retains the saved result without blindly resending an acknowledgment after a real adapter send failure', async () => {
     const h = harness(); const proposed = await h.propose(SOURCE); expect(proposed.status).toBe(200);
     const failedSend = vi.spyOn(h.telegram, 'sendToTopic').mockRejectedValueOnce(new Error('ack transport failed'));
     const first = await h.confirm(OWNER, proposed.body.requestId, 'yes', 950);
     expect(first.written).toBe(true); expect(first.acknowledgment).toBe('failed');
     expect(failedSend).toHaveBeenCalledTimes(1); failedSend.mockRestore();
     const duplicate = await h.confirm(OWNER, proposed.body.requestId, 'yes', 950);
-    expect(duplicate.result).toEqual(first.result); expect(duplicate.acknowledgment).toBe('delivered');
+    expect(duplicate.result).toEqual(first.result); expect(duplicate.acknowledgment).toBe('not-needed');
     expect(h.respawns).toEqual([String(TARGET)]); expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli');
-    expect(h.sent.at(-1)!.text).toContain('codex-cli');
+    expect(h.sent).toHaveLength(1); // Only the question was actually sent; the failed acknowledgment was not retried.
   });
 
   it.each(['non-owner', 'other-operator', 'team'])('rechecks %s at confirmation and never writes or respawns the target', async boundary => {
@@ -256,5 +270,85 @@ describe('Owner framework confirmation is alive through production composition',
     expect(out.written).toBe(false);
     expect(h.store.resolve(TARGET)).toBeNull();
     expect(h.respawns).toEqual([]);
+  });
+});
+
+describe('batch confirmation through native Telegram polling and production composition', () => {
+  it('applies exactly two targets from one real native reply and emits one aggregate completion', async () => {
+    const h = harness(); await h.store.mutate('9009', { framework: 'claude-code', updatedBy: 'fixture' });
+    const proposed = await h.proposeBatch(); expect(proposed.status).toBe(200); expect(h.sent).toHaveLength(1);
+    const receipt = h.slots.proposals.get(String(SOURCE), proposed.body.requestId)!.receipts[0].messageId;
+    let outcome: Awaited<ReturnType<typeof h.confirm>> | undefined;
+    h.telegram.onTopicMessage = async message => {
+      outcome = await h.confirm(Number(message.userId), proposed.body.requestId, message.content, Number(message.id.slice(3)), Number(message.metadata?.replyToMessageId));
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    const message = { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000), from: { id: OWNER, first_name: 'Fixture owner' }, chat: { id: -1001, type: 'supergroup' }, text: 'yes', reply_to_message: { message_id: receipt } };
+    await polling.processUpdate({ update_id: 1, message: { ...message, reply_to_message: { message_id: receipt - 1 } } });
+    expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
+    await polling.processUpdate({ update_id: 2, message: { ...message, message_id: 991 } });
+    expect(outcome).toMatchObject({ written: true, acknowledgment: 'delivered' });
+    expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.store.resolve(SECOND_TARGET)?.framework).toBe('claude-code');
+    expect(h.store.resolve(SOURCE)).toBeNull(); expect(h.store.resolve('9009')?.framework).toBe('claude-code');
+    expect(h.sent).toHaveLength(2); expect(h.sent[1].text).toContain('Saved the settings for 2 conversations');
+    expect(h.respawns).toEqual([]); // Unknown live-session identity is truthful: settings saved, no guessed restart.
+  });
+
+  it('keeps numbered yes conversational, sends a registered batch reminder, and survives agent activity', async () => {
+    const h = harness(); const proposed = await h.proposeBatch(); expect(proposed.status).toBe(200);
+    const receipt = h.slots.proposals.get(String(SOURCE), proposed.body.requestId)!.receipts[0].messageId;
+    let context = '', words = '';
+    h.telegram.onTopicMessage = async message => {
+      words = message.content;
+      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE), replyTo: message.metadata?.replyToMessageId,
+        messageId: Number(message.id.slice(3)), forwarded: message.metadata?.forwarded === true,
+        authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId,
+        eligible: target => h.telegram.getTopicName(Number(target)) !== null, placement: () => 'standalone',
+        currentEcho: proposal => {
+          const rendered = renderProfileBatchProposal({ source: String(SOURCE), targets: proposalItems(proposal).map(item => ({ target: item.target, patch: item.patch })),
+            surface: h.surface, name: target => h.telegram.getTopicName(Number(target))!, link: target => `https://t.me/c/1/${target}`, placement: () => 'standalone' });
+          return rendered.ok ? rendered.core : null;
+        } });
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    await polling.processUpdate({ update_id: 1, message: { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000),
+      from: { id: OWNER, first_name: 'Fixture owner' }, chat: { id: -1001, type: 'supergroup' }, text: '1) yes', reply_to_message: { message_id: receipt } } });
+    expect(words).toBe('1) yes'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
+    const operation = JSON.parse(context.split('\n')[1]).reminder;
+    expect(operation.path).toBe('/topic-profile/propose-batch'); expect(operation.body.remindRequestIds).toEqual([proposed.body.requestId]);
+    await withNotificationEnvelope(verifiedReplyEnvelope('agent-progress-fixture'), () => h.telegram.sendToTopic(SOURCE, 'I am still working on the other task.'));
+    expect(h.slots.proposals.get(String(SOURCE), proposed.body.requestId)).not.toBeNull();
+    const reminder = await h.proposeBatch(operation.body); expect(reminder.status).toBe(200);
+    expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
+    const current = h.slots.proposals.get(String(SOURCE), reminder.body.requestId)!;
+    expect(current.receipts).toHaveLength(1); expect(current.receipts[0].messageId).not.toBe(receipt);
+    expect((await h.confirm(OWNER, reminder.body.requestId, 'yes', 1000, current.receipts[0].messageId)).written).toBe(true);
+    expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.store.resolve(SECOND_TARGET)?.framework).toBe('claude-code');
+  });
+
+  it('associates same-title links with their distinct real Telegram target and effect', async () => {
+    const h = harness(); h.names.set(TARGET, 'Identical title'); h.names.set(SECOND_TARGET, 'Identical title');
+    const proposed = await h.proposeBatch(); expect(proposed.status).toBe(200);
+    const html = String(h.sent[0].text);
+    expect(html).toMatch(/href="https:\/\/t\.me\/c\/1\/2002"/); expect(html).toMatch(/href="https:\/\/t\.me\/c\/1\/2003"/);
+    const first = html.slice(html.indexOf('/2002"'), html.indexOf('/2003"')); const second = html.slice(html.indexOf('/2003"'));
+    expect(first).toContain('Use Codex'); expect(first).not.toContain('Use Claude'); expect(second).toContain('Use Claude');
+  });
+
+  it('uses one acknowledgment consumer for simultaneous duplicate confirmations', async () => {
+    const h = harness(); const proposed = await h.proposeBatch(); expect(proposed.status).toBe(200);
+    const results = await Promise.all([h.confirm(OWNER, proposed.body.requestId, 'yes', 990), h.confirm(OWNER, proposed.body.requestId, 'yes', 990)]);
+    expect(results.every(result => result.written)).toBe(true);
+    expect(results.map(result => result.acknowledgment).sort()).toEqual(['delivered', 'not-needed']);
+    expect(h.sent).toHaveLength(2); expect(h.sent.filter(message => String(message.text).includes('Saved the settings for 2 conversations'))).toHaveLength(1);
+  });
+
+  it('leaves no usable batch receipt after a known failed real-adapter delivery', async () => {
+    const h = harness(); const fail = vi.spyOn(h.telegram, 'sendToTopic').mockRejectedValueOnce(new Error('dispatch definitely failed'));
+    const proposed = await h.proposeBatch(); expect(proposed.status).toBe(502); fail.mockRestore();
+    expect(h.slots.proposals.list(String(SOURCE))).toEqual([]); expect(h.store.all()).toEqual({});
+    const result = await handleAndAcknowledgeProfileProposalReply({ requests: h.slots.proposals, surface: h.surface, source: String(SOURCE), text: 'yes', messageId: 990,
+      replyTo: 901, forwarded: false, principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, verifiedOwner: () => true, eligible: () => true, placement: () => 'standalone', name: () => 'Project Work' }, async () => { throw new Error('No acknowledgment expected'); });
+    expect(result.result?.settingsSaved).not.toBe(true); expect(h.store.all()).toEqual({});
   });
 });

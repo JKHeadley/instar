@@ -80,7 +80,7 @@
  * (classifyProfileChange, profilesEqual) is imported directly.
  */
 
-import { assertProfileRuntimeGuard, ProfileRuntimeOwnershipChangedError } from './ProfileRuntimeGuard.js';
+import { assertProfileRuntimeGuard, markProfileRuntimeOwnedStop, ProfileRuntimeOwnershipChangedError } from './ProfileRuntimeGuard.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1124,6 +1124,7 @@ export class TopicProfileOrchestrator {
       return;
     }
 
+    markProfileRuntimeOwnedStop(runtimeGuard);
     assertProfileRuntimeGuard(runtimeGuard);
     const outcome = await this.deps.sessions.spawn(key, resolved, {
       method,

@@ -2,10 +2,21 @@
  * Governed by profile-confirmation-clarity: only exact yes + a delivered reply id.
  */
 import { randomBytes } from 'node:crypto';
+import type { ProfileProposalOwnerTurns } from './ProfileProposalOwnerTurns.js';
 import type { ProfilePatchInput } from './topicProfileValidation.js';
 import type { ProfileWriteResult } from './topicProfileWriteSurface.js';
 
+export interface ProfileProposalItem { target: string; patch: ProfilePatchInput; core: string; contextStamp: string; baselineStamp?: string }
+export interface ProfileProposalSendOptions {
+  ownerTurn?: { registry: ProfileProposalOwnerTurns; handle: string; principal: string; inboundId: string };
+  constituents?: readonly string[];
+  fresh?: boolean;
+}
+export function proposalItems(p: ProfileProposal): ProfileProposalItem[] {
+  return JSON.parse(JSON.stringify(p.items ?? [{ target: p.target, patch: p.patch, core: p.core, contextStamp: p.contextStamp }])) as ProfileProposalItem[];
+}
 export interface ProfileProposal {
+  items?: ProfileProposalItem[];
   id: string;
   source: string;
   target: string;
@@ -21,9 +32,9 @@ export interface ProfileProposal {
   receipts: Array<{ messageId: number; text: string }>;
 }
 interface Attempt { id: string; text: string; done: Promise<void>; finish: () => void; onDelivery: (messageId: number | null) => void }
-interface Stored extends ProfileProposal { attempts: Map<string, Attempt>; ordinal: number; lastDeliveredSequence: number }
-export type ProposalSend = { ok: true; request: ProfileProposal; attemptId: string; text: string; created: boolean; onDelivery: (messageId: number | null) => void }
-  | { ok: false; reason: 'send-budget' | 'fresh-proposal-needed' };
+interface Stored extends ProfileProposal { replyReservation?: string; constituents?: Stored[]; attempts: Map<string, Attempt>; ordinal: number; lastDeliveredSequence: number }
+export type ProposalSend = { ok: true; request: ProfileProposal; attemptId: string; text: string; created: boolean; ownerTurnReservation?: string; onDelivery: (messageId: number | null) => void }
+  | { ok: false; reason: 'send-budget' | 'fresh-proposal-needed' | 'invalid-format' | 'invalid-items' | 'invalid-owner-turn' };
 export interface ProposalReply { matched: boolean; result?: ProfileWriteResult; reason?: string }
 export interface ProposalFailureSummary {
   requestId: string; attemptId: string; sequence: number; generation: string;
@@ -39,6 +50,8 @@ const canonical = (v: unknown): string => {
 export const DEFAULT_PROFILE_PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
 
 export class ProfileProposalRequests {
+  private acknowledgmentClaims = new Set<string>();
+  private acknowledgmentEligible = new Map<string, number>();
   private requests = new Map<string, Stored>();
   private sends = new Map<string, number[]>();
   private sequences = new Map<string, number>();
@@ -50,6 +63,7 @@ export class ProfileProposalRequests {
   constructor(private readonly options: {
     now?: () => number; ttlMs?: () => number; maxSends?: number; windowMs?: number;
     receiptWaitMs?: number;
+    validateFormat?: (text: string) => boolean;
     timeZone?: (source: string) => string | undefined;
     sourceExists?: (source: string) => boolean | undefined;
     audit?: (event: Record<string, unknown>) => void;
@@ -72,7 +86,7 @@ export class ProfileProposalRequests {
     return new Date(r.expiresAt).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
   }
   private snapshot(r: Stored): ProfileProposal {
-    const { attempts: _attempts, ordinal: _ordinal, lastDeliveredSequence: _lastDeliveredSequence, ...p } = r;
+    const { attempts: _attempts, ordinal: _ordinal, lastDeliveredSequence: _lastDeliveredSequence, constituents: _constituents, replyReservation: _replyReservation, ...p } = r;
     return copy(p);
   }
   private cleanup(): void {
@@ -85,6 +99,9 @@ export class ProfileProposalRequests {
       this.notify(r.source);
     }
     for (const [id, r] of this.replies) if (now >= r.expiresAt) this.replies.delete(id);
+    for (const [id, expiresAt] of this.acknowledgmentEligible) if (now >= expiresAt) {
+      this.acknowledgmentEligible.delete(id); this.acknowledgmentClaims.delete(id);
+    }
     for (const [topic, times] of this.sends) {
       const kept = times.filter(t => now - t < (this.options.windowMs ?? 600_000));
       if (kept.length) this.sends.set(topic, kept); else this.sends.delete(topic);
@@ -100,35 +117,68 @@ export class ProfileProposalRequests {
   validAtCommit(proposal: ProfileProposal): boolean {
     const r = this.requests.get(proposal.id);
     return !!r && r.source === proposal.source && r.consumed && !!proposal.applyClaim
-      && r.applyClaim === proposal.applyClaim && this.now() < r.expiresAt;
+      && r.applyClaim === proposal.applyClaim && this.now() < r.expiresAt
+      && r.expiresAt === proposal.expiresAt && r.core === proposal.core
+      && canonical(proposalItems(r)) === canonical(proposalItems(proposal));
   }
-  begin(source: string, target: string, patch: ProfilePatchInput, core: string, contextStamp: string): ProposalSend {
+  begin(source: string, target: string, patch: ProfilePatchInput, core: string, contextStamp: string, options?: ProfileProposalSendOptions): ProposalSend {
+    return this.beginBatch(source, [{ target, patch, core, contextStamp }], core, options);
+  }
+  beginBatch(source: string, items: readonly ProfileProposalItem[], core: string, options: ProfileProposalSendOptions = {}): ProposalSend {
     this.cleanup();
-    let r = [...this.requests.values()].find(p => p.source === source && p.target === target && !p.consumed
-      && this.now() < p.expiresAt && p.contextStamp === contextStamp && p.core === core && canonical(p.patch) === canonical(patch));
+    if (!items.length || new Set(items.map(i => i.target)).size !== items.length
+      || items.some(i => !i.target || !i.core || !i.contextStamp || !i.patch)) return { ok: false, reason: 'invalid-items' };
+    const constituents: Stored[] = [];
+    for (const id of options.constituents ?? []) {
+      const c = this.requests.get(id);
+      if (!c || c.source !== source || c.consumed || this.now() >= c.expiresAt || constituents.includes(c)) return { ok: false, reason: 'fresh-proposal-needed' };
+      constituents.push(c);
+    }
+    if (constituents.length && !options.fresh) {
+      const union = new Map<string, ProfileProposalItem>();
+      for (const c of constituents) for (const i of proposalItems(c)) {
+        const old = union.get(i.target);
+        if (old && canonical(old) !== canonical(i)) return { ok: false, reason: 'invalid-items' };
+        union.set(i.target, i);
+      }
+      if (union.size !== items.length || items.some(i => canonical(union.get(i.target)) !== canonical(i))) return { ok: false, reason: 'invalid-items' };
+    }
+    let r = !options.fresh && !constituents.length ? [...this.requests.values()].find(p => p.source === source && !p.consumed
+      && this.now() < p.expiresAt && p.core === core && canonical(proposalItems(p)) === canonical(items)) : undefined;
     const created = !r;
     if (!r) {
-      const armedAt = this.now();
-      r = { id: `R-${randomBytes(8).toString('hex')}`, source, target, patch: copy(patch), core,
-        contextStamp, armedAt, expiresAt: this.deadline(armedAt), consumed: false, receipts: [], attempts: new Map(), ordinal: 0, lastDeliveredSequence: 0 };
+      const armedAt = this.now(); const first = items[0];
+      r = { id: `R-${randomBytes(8).toString('hex')}`, source, target: first.target, patch: copy(first.patch), core,
+        contextStamp: first.contextStamp, items: copy([...items]),
+        armedAt, expiresAt: constituents.length && !options.fresh ? Math.min(...constituents.map(c => c.expiresAt)) : this.deadline(armedAt),
+        consumed: false, receipts: [], attempts: new Map(), ordinal: 0, lastDeliveredSequence: 0,
+        ...(constituents.length ? { constituents } : {}) };
     }
-    const send = this.attempt(r, created);
+    const send = this.attempt(r, created, options);
     if (send.ok) this.requests.set(r.id, r);
     return send;
   }
-  remind(source: string, id: string, core: string, contextStamp: string): ProposalSend {
+  remind(source: string, id: string, core: string, contextStamp: string, options?: ProfileProposalSendOptions): ProposalSend {
     this.cleanup();
     const r = this.requests.get(id);
     if (!r || r.source !== source || r.consumed || this.now() >= r.expiresAt
       || r.core !== core || r.contextStamp !== contextStamp) return { ok: false, reason: 'fresh-proposal-needed' };
-    return this.attempt(r, false);
+    return this.attempt(r, false, options);
   }
-  private attempt(r: Stored, created: boolean): ProposalSend {
-    if (!this.reserveNotice(r.source)) return { ok: false, reason: 'send-budget' };
-    const ordinal = ++r.ordinal;
+  private attempt(r: Stored, created: boolean, options: ProfileProposalSendOptions = {}): ProposalSend {
+    const ordinal = r.ordinal + 1;
+    const text = `${ordinal > 1 ? `Reminder ${ordinal}.\n` : ''}${r.core}\nRequest ${r.id}.\nReply to this message with yes. I can apply this change until ${this.deadlineText(r)}.\nIf this request becomes unavailable, I’ll check it and send a fresh question when I can verify the change.`;
+    try { if (this.options.validateFormat && !this.options.validateFormat(text)) return { ok: false, reason: 'invalid-format' }; }
+    catch { return { ok: false, reason: 'invalid-format' }; }
+    let ownerTurnReservation: string | undefined;
+    if (options.ownerTurn) {
+      const o = options.ownerTurn;
+      ownerTurnReservation = o.registry.claim(o.handle, { source: r.source, principal: o.principal, inboundId: o.inboundId }) ?? undefined;
+      if (!ownerTurnReservation) return { ok: false, reason: 'invalid-owner-turn' };
+    } else if (!this.reserveNotice(r.source)) return { ok: false, reason: 'send-budget' };
+    r.ordinal = ordinal;
     const sequence = (this.sequences.get(r.source) ?? 0) + 1;
     this.sequences.set(r.source, sequence);
-    const text = `${ordinal > 1 ? `Reminder ${ordinal}.\n` : ''}${r.core}\nRequest ${r.id}.\nReply to this message with yes. I can apply this change until ${this.deadlineText(r)}.\nIf this request becomes unavailable, I’ll check it and send a fresh question when I can verify the change.`;
     let finish!: () => void;
     const done = new Promise<void>(resolve => { finish = resolve; });
     const id = randomBytes(12).toString('hex');
@@ -136,8 +186,18 @@ export class ProfileProposalRequests {
     const onDelivery = (messageId: number | null): void => {
       if (completed) return;
       completed = true;
+      if (ownerTurnReservation) options.ownerTurn?.registry.seal(ownerTurnReservation);
       const delivered = messageId !== null && Number.isSafeInteger(messageId) && messageId > 0;
-      const active = this.requests.get(r.id) === r && !r.consumed && this.now() < r.expiresAt;
+      let active = this.requests.get(r.id) === r && !r.consumed && this.now() < r.expiresAt;
+      if (active && delivered && r.constituents?.length) {
+        const valid = r.constituents.every(c => this.requests.get(c.id) === c && !c.consumed && !c.replyReservation && this.now() < c.expiresAt);
+        if (!valid) { active = false; this.requests.delete(r.id); }
+        else {
+          // No await between validating every constituent and retiring them.
+          for (const c of r.constituents) c.consumed = true;
+          r.constituents = undefined;
+        }
+      }
       this.emit({ type: delivered ? active ? 'proposal-delivered' : 'proposal-delivered-inactive' : 'proposal-delivery-unconfirmed',
         topic: r.source, targetTopic: r.target, requestId: r.id, attemptId: id, sequence,
         ...(delivered ? { messageId } : {}), ...(this.now() >= r.expiresAt ? { reason: 'expired' } : r.consumed ? { reason: 'already-consumed' } : !active ? { reason: 'request-unavailable' } : {}) });
@@ -158,7 +218,7 @@ export class ProfileProposalRequests {
     };
     r.attempts.set(id, { id, text, done, finish, onDelivery });
     this.emit({ type: 'proposal-prepared', topic: r.source, targetTopic: r.target, requestId: r.id, attemptId: id, sequence, expiresAt: r.expiresAt });
-    return { ok: true, request: this.snapshot(r), attemptId: id, text, created, onDelivery };
+    return { ok: true, request: this.snapshot(r), attemptId: id, text, created, ...(ownerTurnReservation ? { ownerTurnReservation } : {}), onDelivery };
   }
   private emit(event: Record<string, unknown>): void {
     try { this.options.audit?.(event); }
@@ -214,14 +274,26 @@ export class ProfileProposalRequests {
       wake();
     });
   }
+  claimAcknowledgment(source: string, inboundId: number): boolean {
+    const key = `${source}:${inboundId}`;
+    this.cleanup();
+    if (!this.acknowledgmentEligible.has(key) || this.acknowledgmentClaims.has(key)) return false;
+    this.acknowledgmentClaims.add(key); return true;
+  }
   /** Reserve before any await. The cached result excludes acknowledgment delivery. */
   reply(source: string, input: { text: string; messageId: number; replyTo: number; forwarded: boolean },
-    apply: (p: ProfileProposal, recordSaved: (result: ProfileWriteResult) => void) => Promise<ProfileWriteResult>): Promise<ProposalReply> {
+    apply: (p: ProfileProposal, recordSaved: (result: ProfileWriteResult) => void) => Promise<ProfileWriteResult>,
+    authorize?: (p: ProfileProposal) => boolean): Promise<ProposalReply> {
     if (input.forwarded || input.text.trim() !== 'yes' || !Number.isSafeInteger(input.messageId) || input.messageId <= 0 || !Number.isSafeInteger(input.replyTo) || input.replyTo <= 0) return Promise.resolve({ matched: false, reason: 'not-exact-consent' });
     this.cleanup();
     const key = `${source}:${input.messageId}`;
     const old = this.replies.get(key);
     if (old) return old.promise;
+    const known = [...this.requests.values()].find(p => p.source === source && p.receipts.some(x => x.messageId === input.replyTo));
+    // A known native reply claims its constituent before yielding to a send
+    // callback that might otherwise replace it with an aggregate question.
+    const authorized = (p: Stored): boolean => { try { return !authorize || authorize(this.snapshot(p)) === true; } catch { return false; } };
+    if (known && authorized(known) && !known.consumed && !known.replyReservation && this.now() < known.expiresAt && input.messageId > input.replyTo) known.replyReservation = key;
     let savedOutcome: ProfileWriteResult | undefined;
     const promise = Promise.resolve().then(async (): Promise<ProposalReply> => {
       const find = () => [...this.requests.values()].find(p => p.source === source && p.receipts.some(x => x.messageId === input.replyTo));
@@ -238,7 +310,12 @@ export class ProfileProposalRequests {
         this.emit({ type: 'proposal-reply-unidentified', topic: source, messageId: input.messageId, replyToMessageId: input.replyTo, reason: 'unknown-request', outcome: 'no-application' });
         return { matched: false, reason: 'unknown-request' };
       }
-      if (r.consumed || this.now() >= r.expiresAt || input.messageId <= input.replyTo) {
+      if (!authorized(r)) {
+        this.emit({ type: 'proposal-reply-result', topic: source, requestId: r.id, messageId: input.messageId,
+          replyToMessageId: input.replyTo, outcome: 'no-application', reason: 'not-authorized' });
+        return { matched: false, reason: 'not-authorized' };
+      }
+      if (r.consumed || (r.replyReservation && r.replyReservation !== key) || this.now() >= r.expiresAt || input.messageId <= input.replyTo) {
         this.emit({ type: 'proposal-reply-result', topic: source, messageId: input.messageId, requestId: r.id, outcome: 'refused', reason: 'inactive-request' });
         return {
         matched: true, reason: 'inactive-request', result: { ok: false,
@@ -264,7 +341,11 @@ export class ProfileProposalRequests {
     const request = [...this.requests.values()].find(p => p.source === source && p.receipts.some(x => x.messageId === input.replyTo));
     const entry = { at, expiresAt: request?.expiresAt ?? this.deadline(at), complete: false, promise };
     this.replies.set(key, entry);
-    void promise.then(result => { entry.complete = true; if (!result.matched && this.replies.get(key) === entry) this.replies.delete(key); });
+    void promise.then(result => { entry.complete = true;
+      // A valid save may finish after the original question expires. Delivery
+      // authority for its result is separate from the now-expired apply grant.
+      if (result.matched && result.result && !this.acknowledgmentEligible.has(key)) this.acknowledgmentEligible.set(key, this.deadline(this.now()));
+      if (!result.matched && result.reason !== 'not-authorized' && this.replies.get(key) === entry) this.replies.delete(key); });
     return promise;
   }
 }

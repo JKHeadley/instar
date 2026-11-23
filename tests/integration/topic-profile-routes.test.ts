@@ -42,6 +42,7 @@ interface Bundle {
   confirmSlots: ProfileConfirmSlots;
   respawns: string[];
   disclosures: Array<{ topic: string; text: string }>;
+  bindOperatorLookup: (lookup: (key: string) => { platform: string; uid: string } | null) => void;
 }
 
 function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean; now?: () => number; proposalTtlMs?: () => number } = {}): Bundle {
@@ -62,19 +63,21 @@ function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean
   });
   const respawns: string[] = [];
   const disclosures: Array<{ topic: string; text: string }> = [];
+  let operatorLookup = (_key: string): { platform: string; uid: string } | null => opts.boundOperator === false
+    ? null : { platform: 'telegram', uid: '777' };
   const surface = new TopicProfileWriteSurface({
     store,
     resolver,
     regime: () => regime,
-    boundOperator: () =>
-      opts.boundOperator === false ? null : { platform: 'telegram', uid: '777' },
+    boundOperator: key => operatorLookup(key),
     localModelBinding: () => null,
     legacyFrameworkRespawn: async (k) => { respawns.push(k); return { respawned: true }; },
     disclose: async (topic, text) => { disclosures.push({ topic, text }); },
     audit: () => 'seq-test',
   });
   const confirmSlots = new ProfileConfirmSlots({ ttlMs: () => 300_000, now: opts.now, proposalTtlMs: opts.proposalTtlMs });
-  return { store, resolver, surface, confirmSlots, respawns, disclosures };
+  return { store, resolver, surface, confirmSlots, respawns, disclosures,
+    bindOperatorLookup: lookup => { operatorLookup = lookup; } };
 }
 
 function buildApp(bundle: Bundle | null, extra: Record<string, unknown> = {}): express.Express {
@@ -113,6 +116,8 @@ function buildApp(bundle: Bundle | null, extra: Record<string, unknown> = {}): e
     startTime: new Date(),
     ...extra,
   } as unknown as RouteContext;
+  // The route and write surface share the same operator source, as in server initialization.
+  if (bundle && ctx.topicOperatorStore) bundle.bindOperatorLookup(key => ctx.topicOperatorStore!.getOperator(key));
   const app = express();
   app.use(express.json());
   app.use('/', createRoutes(ctx));
@@ -404,6 +409,8 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
         telegram: {
           sendToTopic: async (topic: number, text: string) => { sends.push({ topic, text, category: notificationContext.getStore()?.category }); return { messageId: ++mid }; },
           getOwnerUserId: () => OWNER,
+          getChatId: () => '-1001',
+          getNativeTopicDestination: (topicId: number) => ({ chatId: '-1001', threadId: topicId }),
           getTopicName: (t: number) => (t === 23 ? 'Scaling' : t === 130715 ? 'Main' : null),
         },
         topicOperatorStore: {
@@ -430,7 +437,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     now += 8 * 60_000;
     const outcome = await handleAndAcknowledgeProfileProposalReply({ requests: bundle.confirmSlots.proposals, surface: bundle.surface,
       source: '130715', text: 'yes', messageId: 950, replyTo: question.receipts[0].messageId, forwarded: false,
-      principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, eligible: () => true,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, verifiedOwner: () => true, eligible: () => true,
       placement: () => 'standalone', name: () => 'Scaling' }, async () => {});
     expect(outcome.result?.settingsSaved).toBe(true); expect(bundle.store.resolve(23)?.framework).toBe('codex-cli');
   });
@@ -491,14 +498,14 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     let failAck = true; let ackAttempts = 0;
     const run = () => handleAndAcknowledgeProfileProposalReply({ requests: bundle.confirmSlots.proposals, surface: bundle.surface,
       source: '130715', text: 'yes', messageId: 950, replyTo: proposed.receipts[0].messageId, forwarded: false,
-      principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, eligible: () => true,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, verifiedOwner: () => true, eligible: () => true,
       placement: () => 'standalone', name: () => 'Scaling' }, async () => {
         ackAttempts++; if (failAck) throw new Error('Telegram acknowledgment unavailable');
       });
     const first = await run(); expect(first.result?.ok).toBe(true); expect(first.acknowledgment).toBe('failed');
     failAck = false;
     const duplicate = await run(); expect(duplicate.result).toEqual(first.result);
-    expect(duplicate.acknowledgment).toBe('delivered'); expect(ackAttempts).toBe(2);
+    expect(duplicate.acknowledgment).toBe('not-needed'); expect(ackAttempts).toBe(1);
     expect(bundle.respawns).toEqual(['23']); expect(bundle.store.resolve(23)?.framework).toBe('codex-cli');
     const durable = new TopicProfileStore({ stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
     expect(durable.resolve(23)?.framework).toBe('codex-cli');
@@ -621,3 +628,109 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
   });
 });
 
+
+describe('one owner-confirmed HTTP batch', () => {
+  const owner = 777, source = 1001;
+  function batchFixture(options: { owner?: number; sameNames?: boolean; failDelivery?: boolean } = {}) {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const sends: Array<{ topic: number; text: string; options: unknown }> = [];
+    const names = new Map<number, string>([[source, 'Planning'], [23, 'Work'], [24, options.sameNames ? 'Work' : 'Other Work']]);
+    let mid = 900;
+    const app = buildApp(bundle, {
+      config: { projectName: 'batch-fixture', projectDir: path.dirname(stateDir), stateDir, developmentAgent: true, port: 0, sessions: {}, scheduler: {} },
+      telegram: {
+        getOwnerUserId: () => owner, getChatId: () => '-1001',
+        getNativeTopicDestination: (topicId: number) => ({ chatId: '-1001', threadId: topicId }),
+        getTopicName: (id: number) => names.get(id) ?? null,
+        sendToTopic: async (topic: number, text: string, sendOptions: unknown) => {
+          if (options.failDelivery) throw new Error('verified transport failure');
+          sends.push({ topic, text, options: sendOptions }); return { messageId: ++mid };
+        },
+      },
+      topicOperatorStore: { getOperator: (id: string | number) => String(id) === String(source) ? { platform: 'telegram', uid: String(options.owner ?? owner) } : null,
+        getBinding: () => null, allBindings: () => [], everVerifiedOperatorUids: () => [] },
+    });
+    const post = (body: Record<string, unknown> = {}) => request(app).post('/topic-profile/propose-batch').set('X-Instar-Request', '1')
+      .send({ confirmIn: source, targets: [{ topicId: 23, patch: { framework: 'codex-cli' } }, { topicId: 24, patch: { framework: 'claude-code' } }], ...body });
+    return { bundle, app, sends, names, post };
+  }
+  it('delivers one question and atomically saves only its two named targets on an exact native reply', async () => {
+    const h = batchFixture(); await h.bundle.store.mutate('99', { framework: 'claude-code', updatedBy: 'fixture' });
+    const response = await h.post(); expect(response.status).toBe(200); expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]).toMatchObject({ topic: source, options: { formatMode: 'html' } });
+    expect(h.bundle.store.resolve('23')).toBeNull(); expect(h.bundle.store.resolve('24')).toBeNull();
+    const question = h.bundle.confirmSlots.proposals.get(String(source), response.body.requestId)!;
+    let acknowledgments = 0;
+    const outcome = await handleAndAcknowledgeProfileProposalReply({ requests: h.bundle.confirmSlots.proposals, surface: h.bundle.surface,
+      source: String(source), text: 'yes', messageId: 950, replyTo: question.receipts[0].messageId, forwarded: false,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(owner) }, verifiedOwner: () => true, eligible: () => true, placement: () => 'standalone',
+      name: key => h.names.get(Number(key))! }, async () => { acknowledgments++; });
+    expect(outcome.result).toMatchObject({ ok: true, settingsSaved: true }); expect(acknowledgments).toBe(1);
+    expect(h.bundle.store.resolve('23')?.framework).toBe('codex-cli'); expect(h.bundle.store.resolve('24')?.framework).toBe('claude-code');
+    expect(h.bundle.store.resolve('99')?.framework).toBe('claude-code'); expect(h.bundle.store.resolve(source)).toBeNull();
+    const disk = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'topic-profiles.json'), 'utf8'));
+    expect(Object.keys(disk.topics).sort()).toEqual(['23', '24', '99']);
+  });
+  it('renders distinct native links beside effects when titles collide', async () => {
+    const h = batchFixture({ sameNames: true }); const response = await h.post(); expect(response.status).toBe(200);
+    const html = h.sends[0].text;
+    expect(html).toContain('href="https://t.me/c/1/23"'); expect(html).toContain('href="https://t.me/c/1/24"');
+    expect(html.indexOf('/23"')).toBeLessThan(html.indexOf('Use Codex'));
+    expect(html.indexOf('/24"')).toBeLessThan(html.indexOf('Use Claude'));
+  });
+  it('rejects a non-owner source and a forbidden cross-topic field before any send or mutation', async () => {
+    const foreign = batchFixture({ owner: 888 }); expect((await foreign.post()).status).toBe(403); expect(foreign.sends).toEqual([]);
+    const h = batchFixture(); const response = await h.post({ targets: [{ topicId: 23, patch: { framework: 'codex-cli' } }, { topicId: 24, patch: { escalationOverride: 'inherit' } }] });
+    expect(response.status).toBe(400); expect(response.body.reason).toBe('cross-topic-field'); expect(h.sends).toEqual([]); expect(h.bundle.store.all()).toEqual({});
+  });
+  it('rejects duplicate normalized targets and an invalid sibling without arming a partial list', async () => {
+    const h = batchFixture();
+    expect((await h.post({ targets: [{ topicId: '023', patch: { framework: 'codex-cli' } }, { topicId: 23, patch: { framework: 'claude-code' } }] })).status).toBe(400);
+    expect((await h.post({ targets: [{ topicId: 23, patch: { framework: 'codex-cli' } }, { topicId: 24, patch: { framework: 'invented' } }] })).status).toBe(400);
+    expect(h.sends).toEqual([]); expect(h.bundle.confirmSlots.proposals.list(String(source))).toEqual([]);
+  });
+  it('keeps a genuine ingress-issued handle usable after oversized preflight under creation cooldown', async () => {
+    const h = batchFixture(); for (let i = 0; i < 5; i++) expect(h.bundle.confirmSlots.proposals.reserveNotice(String(source))).toBe(true);
+    // Trusted fixture represents authenticated first-party ingress, never an HTTP body claim.
+    const inboundId = 'tg-authenticated-950';
+    const handle = h.bundle.confirmSlots.ownerTurns.issue({ source: String(source), principal: `telegram:${owner}`, inboundId });
+    const oversizedTargets = Array.from({ length: 20 }, (_, i) => {
+      const topicId = 2100 + i; h.names.set(topicId, `Project ${i} ${'A'.repeat(100)}`);
+      return { topicId, patch: { framework: 'codex-cli' } };
+    });
+    const oversized = await h.post({ targets: oversizedTargets, ownerTurnHandle: handle, ownerTurnInboundId: inboundId });
+    expect(oversized.status).toBe(400); expect(oversized.body.reason).toBe('question-too-large'); expect(h.sends).toEqual([]);
+    expect(h.bundle.confirmSlots.ownerTurns.canDispatch(handle, { source: String(source), principal: `telegram:${owner}`, inboundId })).toBe(true);
+    h.names.set(23, 'Work'); const fitting = await h.post({ ownerTurnHandle: handle, ownerTurnInboundId: inboundId });
+    expect(fitting.status).toBe(200); expect(h.sends).toHaveLength(1);
+    expect(h.bundle.confirmSlots.ownerTurns.canDispatch(handle, { source: String(source), principal: `telegram:${owner}`, inboundId })).toBe(false);
+    expect((await h.post({ ownerTurnHandle: handle, ownerTurnInboundId: inboundId })).status).toBe(409); expect(h.sends).toHaveLength(1);
+  });
+  it('does not arm an unanswered batch when delivery fails, or accept a forged owner-turn claim', async () => {
+    const h = batchFixture({ failDelivery: true }); expect((await h.post()).status).toBe(502);
+    expect(h.bundle.confirmSlots.proposals.list(String(source))).toEqual([]); expect(h.bundle.store.all()).toEqual({});
+    const other = batchFixture(); const response = await other.post({ ownerTurnHandle: 'caller-invented', ownerTurnInboundId: 'tg-authenticated-950' });
+    expect(response.status).toBe(409); expect(other.sends).toEqual([]);
+  });
+  it('repeats one unchanged batch as the same identified question and keeps its original receipt answerable', async () => {
+    const h = batchFixture();
+    const first = await h.post(); expect(first.status).toBe(200);
+    const original = h.bundle.confirmSlots.proposals.get(String(source), first.body.requestId)!;
+    const oldReceipt = original.receipts[0].messageId;
+    const reminder = await h.post({ targets: undefined, remindRequestIds: [first.body.requestId] });
+    expect(reminder.status).toBe(200);
+    expect(reminder.body.requestId).toBe(first.body.requestId);
+    expect(reminder.body.expiresAt).toBe(first.body.expiresAt);
+    expect(reminder.body.reminder).toBe(true);
+    expect(reminder.body.echo).toContain('Reminder 2.');
+    expect(h.bundle.confirmSlots.proposals.get(String(source), first.body.requestId)?.receipts).toHaveLength(2);
+    const result = await handleAndAcknowledgeProfileProposalReply({ requests: h.bundle.confirmSlots.proposals, surface: h.bundle.surface,
+      source: String(source), text: 'yes', messageId: 950, replyTo: oldReceipt, forwarded: false,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(owner) }, verifiedOwner: () => true,
+      eligible: () => true, placement: () => 'standalone', name: key => h.names.get(Number(key))! }, async () => {});
+    expect(result.result?.settingsSaved).toBe(true);
+    expect(h.bundle.store.resolve('23')?.framework).toBe('codex-cli');
+    expect(h.bundle.store.resolve('24')?.framework).toBe('claude-code');
+  });
+
+});

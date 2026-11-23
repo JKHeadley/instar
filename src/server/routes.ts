@@ -1,3 +1,6 @@
+import { renderProfileBatchProposal, telegramProfileTopicLink } from '../core/profileProposalBatch.js';
+import { proposalItems, type ProfileProposalSendOptions } from '../core/ProfileProposalRequests.js';
+import { formatForTelegram } from '../messaging/TelegramMarkdownFormatter.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
@@ -14069,6 +14072,116 @@ export function createRoutes(ctx: RouteContext): Router {
     return { key: req.params.topicId, surface: ctx.topicProfile.surface };
   };
 
+  // Static route must precede the generic /:topicId write door.
+  router.post('/topic-profile/propose-batch', async (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'Question requests require X-Instar-Request: 1.' }); return; }
+    if (!ctx.topicProfile || !ctx.telegram || !ctx.topicOperatorStore) { res.status(503).json({ error: 'Conversation questions are not wired on this server.' }); return; }
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(k => !['confirmIn', 'targets', 'remindRequestIds', 'ownerTurnHandle', 'ownerTurnInboundId', 'fresh'].includes(k))) {
+      res.status(400).json({ error: 'A batch takes its confirming conversation, target changes or existing request IDs, and an optional server-issued delivery handle.' }); return;
+    }
+    const numeric = (value: unknown): string | null => {
+      const n = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+      return Number.isSafeInteger(n) && Number(n) > 0 ? String(n) : null;
+    };
+    const source = numeric(body.confirmIn);
+    if (!source) { res.status(400).json({ error: 'confirmIn must identify the conversation where the person will answer.' }); return; }
+    const owner = ctx.telegram.getOwnerUserId();
+    const operator = ctx.topicOperatorStore.getOperator(source);
+    if (!Number.isSafeInteger(owner) || !operator || operator.platform !== 'telegram' || operator.uid !== String(owner)) {
+      res.status(403).json({ error: 'The confirming conversation must belong to the verified owner.' }); return;
+    }
+    const switchLive = ctx.liveConfig?.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined)
+      ?? (ctx.config as { security?: { crossTopicConfirm?: { enabled?: boolean } } }).security?.crossTopicConfirm?.enabled;
+    if (!resolveDevAgentGate(switchLive, ctx.config)) { res.status(503).json({ ok: false, reason: 'confirmIn-dark' }); return; }
+    const slots = ctx.topicProfile.confirmSlots;
+    const proposals = slots.proposals;
+    const sendOptions: ProfileProposalSendOptions = {};
+    if (body.fresh !== undefined && typeof body.fresh !== 'boolean') { res.status(400).json({ error: 'fresh must be a boolean.' }); return; }
+    if (body.fresh === true) sendOptions.fresh = true;
+    if (body.ownerTurnHandle !== undefined || body.ownerTurnInboundId !== undefined) {
+      if (typeof body.ownerTurnHandle !== 'string' || typeof body.ownerTurnInboundId !== 'string') { res.status(400).json({ error: 'The server-issued delivery handle must include its inbound reference.' }); return; }
+      sendOptions.ownerTurn = { registry: slots.ownerTurns, handle: body.ownerTurnHandle, principal: `telegram:${operator.uid}`, inboundId: body.ownerTurnInboundId };
+    }
+    let targets: { target: string; patch: import('../core/topicProfileValidation.js').ProfilePatchInput }[] = [];
+    if (body.remindRequestIds !== undefined) {
+      if (body.targets !== undefined || !Array.isArray(body.remindRequestIds) || !body.remindRequestIds.length
+        || body.remindRequestIds.some((id: unknown) => typeof id !== 'string') || new Set(body.remindRequestIds).size !== body.remindRequestIds.length) {
+        res.status(400).json({ error: 'Choose target changes or a distinct list of existing questions, not both.' }); return;
+      }
+      const union = new Map<string, import('../core/ProfileProposalRequests.js').ProfileProposalItem>();
+      for (const id of body.remindRequestIds as string[]) {
+        const pending = proposals.get(source, id);
+        if (!pending) { res.status(409).json({ ok: false, reason: 'fresh-proposal-needed' }); return; }
+        for (const item of proposalItems(pending)) {
+          const prior = union.get(item.target);
+          if (prior && JSON.stringify(prior.patch) !== JSON.stringify(item.patch)) {
+            res.status(409).json({ ok: false, reason: 'conflicting-changes', message: 'These questions describe different changes for the same conversation. Ask which change is wanted before preparing a new question.' }); return;
+          }
+          union.set(item.target, item);
+        }
+      }
+      targets = [...union.values()].map(item => ({ target: item.target, patch: item.patch }));
+      sendOptions.constituents = body.remindRequestIds;
+    } else {
+      if (!Array.isArray(body.targets) || !body.targets.length) { res.status(400).json({ error: 'List at least one target conversation and its changes.' }); return; }
+      for (const raw of body.targets) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(k => !['topicId', 'patch'].includes(k))
+          || !numeric(raw.topicId) || !raw.patch || typeof raw.patch !== 'object' || Array.isArray(raw.patch)
+          || Object.keys(raw.patch).some(k => !['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride', 'messageOriginDisplay'].includes(k))) {
+          res.status(400).json({ error: 'Each target needs a topicId and an existing supported profile patch.' }); return;
+        }
+        targets.push({ target: numeric(raw.topicId)!, patch: raw.patch });
+      }
+    }
+    if (new Set(targets.map(t => t.target)).size !== targets.length) { res.status(400).json({ error: 'Each target conversation may appear once.' }); return; }
+    for (const item of targets) {
+      if (item.target !== source && Object.keys(item.patch).some(k => !CROSS_TOPIC_FIELDS.includes(k))) {
+        res.status(400).json({ ok: false, reason: 'cross-topic-field', message: 'A remote conversation can change only its engine, model, model tier, thinking mode or effort.' }); return;
+      }
+      if (!crossTopicEligibilityFor(Number(source), item.target).ok) { res.status(403).json({ ok: false, reason: 'target-ineligible' }); return; }
+    }
+    const rendered = renderProfileBatchProposal({ source, targets, surface: ctx.topicProfile.surface,
+      name: target => safeConversationName(ctx.telegram!.getTopicName(Number(target)), target),
+      link: target => { const destination = ctx.telegram!.getNativeTopicDestination(Number(target));
+        return destination ? telegramProfileTopicLink(destination.chatId, String(destination.threadId)) : null; },
+      placement: target => profileProposalPlacement(ctx.sessionOwnershipRegistry, ctx.meshSelfId, source, target, !!ctx.coordinator?.enabled) });
+    if (!rendered.ok) { res.status(400).json({ ok: false, reason: rendered.reason, message: rendered.message }); return; }
+    // An unchanged single-request reminder keeps its descriptor, deadline and every prior receipt.
+    const priorReminder = sendOptions.constituents?.length === 1 && !sendOptions.fresh
+      ? proposals.get(source, sendOptions.constituents[0]) : null;
+    if (priorReminder && (priorReminder.core !== rendered.core
+      || JSON.stringify(proposalItems(priorReminder)) !== JSON.stringify(rendered.items))) {
+      res.status(409).json({ ok: false, reason: 'fresh-proposal-needed',
+        message: 'The question changed. Prepare a fresh, fully disclosed batch instead of extending the old question.' }); return;
+    }
+    const attempt = priorReminder
+      ? proposals.remind(source, priorReminder.id, rendered.core, rendered.items[0].contextStamp, sendOptions)
+      : proposals.beginBatch(source, rendered.items, rendered.core, sendOptions);
+    if (!attempt.ok) {
+      res.status(attempt.reason === 'send-budget' ? 429 : 409).json({ ok: false, reason: attempt.reason,
+        message: attempt.reason === 'invalid-format' ? 'The complete question is too long. Prepare a smaller fully disclosed batch.' : 'I need to prepare a fresh question before sending this list.' }); return;
+    }
+    slots.disarm(source);
+    try {
+      const html = formatForTelegram(attempt.text).text;
+      const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => ctx.telegram!.sendToTopic(Number(source), html,
+        { formatMode: 'html', parseFailureRetryOnly: true }));
+      const delivered = requireTelegramDelivery(sent).messageId;
+      attempt.onDelivery(delivered);
+      if (!proposals.get(source, attempt.request.id)?.receipts.some(r => r.messageId === delivered)) {
+        res.status(409).json({ ok: false, delivered: true, reason: 'question-no-longer-active', requestId: attempt.request.id }); return;
+      }
+      res.json({ ok: true, requestId: attempt.request.id, confirmIn: Number(source), targetTopicIds: targets.map(t => t.target),
+        expiresAt: attempt.request.expiresAt, echo: attempt.text, reminder: !attempt.created });
+    } catch {
+      attempt.onDelivery(null);
+      res.status(502).json({ ok: false, reason: 'delivery-unconfirmed', requestId: attempt.request.id,
+        message: 'I could not confirm that the question is ready to answer. No reply to an unregistered question can apply this list.' });
+    }
+  });
+
   router.post('/topic-profile/:topicId', async (req, res) => {
     const gate = requireTopicProfileWrite(req, res);
     if (!gate) return;
@@ -14158,7 +14271,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const remindId = body.remindRequestId;
-    if (remindId !== undefined && (typeof remindId !== 'string' || Object.keys(body).some(k => !['remindRequestId', 'confirmIn'].includes(k)))) {
+    if (remindId !== undefined && (typeof remindId !== 'string' || Object.keys(body).some(k => !['remindRequestId', 'confirmIn', 'ownerTurnHandle', 'ownerTurnInboundId'].includes(k)))) {
       res.status(400).json({ error: 'A reminder takes only the existing request id and confirming conversation.' }); return;
     }
 
@@ -14234,9 +14347,19 @@ export function createRoutes(ctx: RouteContext): Router {
     const name = safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key);
     const rendered = gate.surface.renderProposalEcho(gate.key, patch, name);
     if (!rendered.ok) { res.status(400).json({ ok: false, message: rendered.reply }); return; }
+    const ownerTurnOptions: ProfileProposalSendOptions = {};
+    if (body.ownerTurnHandle !== undefined || body.ownerTurnInboundId !== undefined) {
+      const operator = ctx.topicOperatorStore?.getOperator(String(echoTopic));
+      if (!operator || operator.platform !== 'telegram' || typeof body.ownerTurnHandle !== 'string' || typeof body.ownerTurnInboundId !== 'string') {
+        res.status(400).json({ ok: false, reason: 'invalid-owner-turn' }); return;
+      }
+      ownerTurnOptions.ownerTurn = { registry: ctx.topicProfile.confirmSlots.ownerTurns, handle: body.ownerTurnHandle,
+        principal: `telegram:${operator.uid}`, inboundId: body.ownerTurnInboundId };
+    }
     const attempt = typeof remindId === 'string'
-      ? proposals.remind(String(echoTopic), remindId, rendered.echo, contextStamp)
-      : proposals.begin(String(echoTopic), gate.key, rendered.patch, rendered.echo, contextStamp);
+      ? proposals.remind(String(echoTopic), remindId, rendered.echo, contextStamp, ownerTurnOptions)
+      : proposals.beginBatch(String(echoTopic), [{ target: gate.key, patch: rendered.patch, core: rendered.echo, contextStamp,
+        baselineStamp: rendered.baselineStamp }], rendered.echo, ownerTurnOptions);
     if (!attempt.ok) {
       res.status(attempt.reason === 'send-budget' ? 429 : 409).json({ ok: false, reason: attempt.reason,
         message: attempt.reason === 'send-budget' ? 'The question is still available. Please wait before requesting another reminder.' : 'The change is different now. Ask for a fresh question.' }); return;
@@ -32938,14 +33061,37 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // "✓ Delivered" for it (Echo Bugs 10000002533).
         let refused = false;
         try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
+        // Prepare before invoking ingress. Ordinary cold-start injection can
+        // take minutes; only profile admission, not that whole callback, is awaited.
+        const { prepareProfileInboundDisposition, markProfileControlPassed } = await import('../core/profileInboundDisposition.js');
+        const dispositionReady = prepareProfileInboundDisposition(message);
+        const { parseProfileTrigger } = await import('../core/topicProfileIngress.js');
+        // This existing detector is only a timing signal. It cannot produce
+        // a handled receipt or suppress a checkmark without the WeakMap gate.
+        const profileCandidate = !trust && typeof text === 'string' && parseProfileTrigger(text) !== null;
         const delivered = ctx.telegram.onTopicMessage(message) as unknown;
-        if (trust) await delivered;
+        if (trust) {
+          // Paired App ingress requires full routing acceptance. A later
+          // rejection must reach its existing uncertain-delivery handling.
+          await delivered;
+          markProfileControlPassed(message);
+        } else {
+          void Promise.resolve(delivered).then(() => markProfileControlPassed(message), err => {
+            markProfileControlPassed(message);
+            DegradationReporter.getInstance().report({ feature: 'routes.onTopicMessage',
+              primary: 'Route Telegram message to handler', fallback: 'Record asynchronous routing failure',
+              reason: err instanceof Error ? err.message : String(err), impact: 'Forwarded message routing failed after ingress' });
+          });
+        }
+        // Only the exact server-owned object can settle this handshake; body
+        // flags cannot suppress an ordinary delivery acknowledgment.
+        const disposition = trust || profileCandidate ? await dispositionReady : undefined;
         if (credMask?.removed && credMask.team && !refused) {
           void withNotificationEnvelope(stampForwardResponse(), async () => inboundCredentialNotice.notify({
             target: String(topicId), messageKey: String(messageId ?? req.body.updateId ?? ''), channel: 'telegram', result: credMask!,
           })).catch(() => { /* @silent-fallback-ok — notify reports its own failures */ });
         }
-        res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });
+        res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}), ...(disposition ? { disposition } : {}) });
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'routes.onTopicMessage',

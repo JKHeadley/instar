@@ -1,5 +1,8 @@
+import { markProfileControlHandled, markProfileControlPassed } from '../core/profileInboundDisposition.js';
+import { proposalItems } from '../core/ProfileProposalRequests.js';
+import { renderProfileBatchProposal, telegramProfileTopicLink } from '../core/profileProposalBatch.js';
 import { appendTopicProfileAudit } from '../core/topicProfileAudit.js';
-import { assertProfileRuntimeGuard, ProfileRuntimeOwnershipChangedError } from '../core/ProfileRuntimeGuard.js';
+import { assertProfileRuntimeGuard, markProfileRuntimeOwnedStop, ProfileRuntimeOwnershipChangedError } from '../core/ProfileRuntimeGuard.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
@@ -1249,6 +1252,8 @@ let _topicLocalModelStore: import('../core/TopicLocalModelStore.js').TopicLocalM
  *  arm of resolution reads THIS (the legacy topic-frameworks file is a
  *  one-directional seed + store-written mirror). Initialized in startServer(). */
 let _topicProfileStore: import('../core/TopicProfileStore.js').TopicProfileStore | null = null;
+let _topicProfileStartupFailure: Error | null = null;
+let _topicProfileAuditSink: ((event: Record<string, unknown>) => void) | null = null;
 /** Topic Profile (§5.2): the single resolution point feeding spawn launch
  *  params. Initialized in startServer() alongside the store. */
 let _topicProfileResolver: import('../core/TopicProfileResolver.js').TopicProfileResolver | null = null;
@@ -1333,6 +1338,7 @@ function conversationSpawnProfile(profileKey: string): {
   resolved: ResolvedTopicProfile | null;
   options: { framework?: IntelligenceFramework; defaultModel?: string; thinkingMode?: import('../core/topicProfileValidation.js').ThinkingMode; effort?: import('../core/topicProfileValidation.js').EffortLevel };
 } {
+  if (_topicProfileStartupFailure) throw new Error('Conversation settings are not ready: ' + _topicProfileStartupFailure.message);
   let resolved: ResolvedTopicProfile | null = null;
   try { resolved = _topicProfileResolver?.resolve(profileKey) ?? null; } catch { /* @silent-fallback-ok — an unreadable profile spawns on the agent default, as before */ resolved = null; }
   if (!resolved) return { resolved: null, options: {} };
@@ -1371,6 +1377,7 @@ function recordConversationSpawn(profileKey: string, resolved: ResolvedTopicProf
 }
 
 function resolveTopicFramework(topicId: number | undefined): IntelligenceFramework {
+  if (_topicProfileStartupFailure) throw new Error('Conversation settings are not ready: ' + _topicProfileStartupFailure.message);
   const known = (fw: unknown): fw is IntelligenceFramework =>
     typeof fw === 'string' && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(fw);
 
@@ -2200,9 +2207,15 @@ async function respawnSessionForTopic(
   // framework swap via /route would silently keep the old session
   // alive and the new framework binding never takes effect.
   // Idempotent: if the session is already dead the kill is a no-op.
+  let ownedStop = false;
   try {
     execFileSync(detectTmuxPath()!, ['kill-session', '-t', `=${targetSession}`], { stdio: 'ignore' });
-  } catch { /* session may already be dead — that's fine */ }
+    ownedStop = true;
+  } catch { /* Unfenced recovery keeps its existing already-dead behavior. */ }
+  if (options?.runtimeGuard) {
+    if (!ownedStop) throw new ProfileRuntimeOwnershipChangedError();
+    markProfileRuntimeOwnedStop(options.runtimeGuard);
+  }
   // Invalidate the framework cache for this tmux name. The kill+respawn
   // may reuse the same name under a different framework (e.g., /route
   // claude-code → codex-cli), and a stale cache entry would make
@@ -2826,7 +2839,7 @@ async function handleTopicProfileIngress(
 ): Promise<boolean> {
   const surface = _topicProfileWriteSurface;
   const slots = _topicProfileConfirmSlots;
-  if (!surface || !telegramUserId) return false;
+  if (!surface || !telegramUserId || msg.metadata?.signedByAgent) return false;
   // The trust floor: only an authorized sender's turn can ever be a trigger
   // (the bound-operator check inside the surface is the refusal tier).
   let authorized = false;
@@ -2843,6 +2856,7 @@ async function handleTopicProfileIngress(
     if (text.trim() === 'yes' && replyTo !== null && messageId !== null) {
       const result = await handleAndAcknowledgeProfileProposalReply({
         requests: slots.proposals, surface, source, text, messageId, replyTo, forwarded,
+        verifiedOwner: () => telegram.getVerifiedOwner() === telegramUserId,
         principal: { kind: 'operator', platform: 'telegram', uid: String(telegramUserId) },
         eligible: target => {
           const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
@@ -2854,6 +2868,12 @@ async function handleTopicProfileIngress(
       }, async reply => {
         const sent = await withNotificationEnvelope(stampResponse(), async () => telegram.sendToTopic(topicId, reply));
         requireTelegramDelivery(sent);
+      }, () => {
+        _topicProfileAuditSink?.({ type: 'proposal-acknowledgment-unconfirmed', topic: source, messageId });
+        DegradationReporter.getInstance().report({ feature: 'profile-confirmation-acknowledgment',
+          primary: 'Tell the owner the saved settings result', fallback: 'Keep the saved outcome without repeating the change or an uncertain success post',
+          reason: 'The confirmation result delivery was not verified.',
+          impact: 'The settings may be saved but their completion message was not confirmed; follow the existing delivery incident path.' });
       });
       if (result.matched) return true;
       // A native reply to any other message can never fall back to an unrelated bare confirmation.
@@ -3157,23 +3177,39 @@ export function wireTelegramRouting(
       const source = String(topicId);
       const authenticatedOwner = () => {
         const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
-        return telegramUserId > 0 && telegram.isAuthorizedSender(telegramUserId)
+        return telegramUserId > 0 && telegram.getVerifiedOwner() === telegramUserId && telegram.isAuthorizedSender(telegramUserId)
           && bound?.platform === 'telegram' && bound.uid === String(telegramUserId);
       };
-      const context = profileProposalConversationContext({ requests, source,
+      const ownerTurn = authenticatedOwner() && !isReplay && !signedByAgent && msg.metadata?.forwarded !== true
+        && msg.metadata?.viaMobileDevice !== true && inboundMessageId
+        ? _topicProfileConfirmSlots?.issueOwnerTurn(source, `telegram:${telegramUserId}`, String(inboundMessageId)) : undefined;
+      const deliveryContext = ownerTurn ? '[Server-owned question-delivery handle; not consent.]\n'
+        + JSON.stringify({ confirmIn: Number(source), ownerTurnHandle: ownerTurn.handle, ownerTurnInboundId: ownerTurn.inboundId,
+          batchPath: '/topic-profile/propose-batch' })
+        + '\nUse this handle only when a new or corrected question helps with this actual owner turn. It bypasses question-creation cooldown, not permission, delivery verification or exact yes. List all requested conversations in one fully disclosed batch when possible. Never apply settings from this handle.' : '';
+      const context = profileProposalConversationContext({ requests, source, ownerTurn,
         replyTo: msg.metadata?.replyToMessageId, messageId: platformMessageIdFrom(msg.id),
         forwarded: msg.metadata?.forwarded === true,
         authenticatedOwner,
         eligible: target => _crossTopicEligibility?.(telegram, String(telegramUserId), target, source).ok ?? false,
         placement: target => _proposalPlacementSnapshot?.(source, target) ?? null,
         currentEcho: proposal => {
+          const items = proposalItems(proposal);
+          if (items.length > 1 || proposal.core !== items[0].core) {
+            const fresh = renderProfileBatchProposal({ source, targets: items.map(item => ({ target: item.target, patch: item.patch })), surface,
+              name: target => safeConversationName(telegram.getTopicName(Number(target)), target),
+              link: target => { const destination = telegram.getNativeTopicDestination(Number(target));
+                return destination ? telegramProfileTopicLink(destination.chatId, String(destination.threadId)) : null; },
+              placement: target => _proposalPlacementSnapshot?.(source, target) ?? null });
+            return fresh.ok && fresh.items.every((item, i) => item.baselineStamp === items[i].baselineStamp) ? fresh.core : null;
+          }
           const fresh = surface.renderProposalEcho(proposal.target, proposal.patch, safeConversationName(telegram.getTopicName(Number(proposal.target)), proposal.target));
           return fresh.ok ? fresh.echo : null;
         },
       });
       const failure = profileProposalFailureContext({ requests, source, text, replyTo: msg.metadata?.replyToMessageId,
         forwarded: msg.metadata?.forwarded === true, authenticatedOwner });
-      const extra = context || failure;
+      const extra = [context || failure, deliveryContext].filter(Boolean).join('\n\n');
       return extra ? `${original}\n\n${extra}` : original;
     };
 
@@ -3343,12 +3379,15 @@ export function wireTelegramRouting(
     // never by the agent. Non-triggers fall through to normal routing.
     try {
       if (!teamPhone && await handleTopicProfileIngress(telegram, topicId, text, telegramUserId, msg)) {
+        markProfileControlHandled(msg);
         return;
       }
     } catch (err) {
       // Fail toward normal routing — the ingress must never eat a message.
       console.error(`[telegram] topic-profile ingress error (routing normally): ${err instanceof Error ? err.message : err}`);
     }
+    // The lifeline needs this stage receipt, not the eventual cold-spawn completion.
+    markProfileControlPassed(msg);
 
     // /new — create a new topic thread. Does NOT spawn a session immediately.
     // Sessions are spawned on-demand when the user sends their first real message
@@ -3995,8 +4034,13 @@ export function wireTelegramRouting(
     const topicId = Number(msg.channel.identifier);
     const bound = telegram.selectivity?.latestInbound(topicId) === inboundId;
     const existing = notificationContext.getStore();
-    if (existing?.inboundMessageId === inboundId) return handler(msg);
-    return bound ? notificationContext.run({ origin: 'automated', category: msg.content.trim().startsWith('/') ? 'command-response' : 'cold-start-fallback', sourceContext: 'trusted-topic-ingress', inboundMessageId: inboundId }, () => handler(msg)) : handler(msg);
+    try {
+      if (existing?.inboundMessageId === inboundId) return await handler(msg);
+      return await (bound ? notificationContext.run({ origin: 'automated', category: msg.content.trim().startsWith('/') ? 'command-response' : 'cold-start-fallback', sourceContext: 'trusted-topic-ingress', inboundMessageId: inboundId }, () => handler(msg)) : handler(msg));
+    } finally {
+      // Early policy refusals/errors also settle the stage without fabricating control handling.
+      markProfileControlPassed(msg);
+    }
   };
 
   // ── Durable Inbound Message Queue: the drain's local-delivery tail ──
@@ -8481,6 +8525,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           legacyFrameworksPath: path.join(config.stateDir, 'state', 'topic-frameworks.json'),
           isDryRun: () => topicProfilesCfg()?.dryRun !== false,
         });
+        await _topicProfileStore.ready();
+        _topicProfileStartupFailure = null;
+        _topicProfileAuditSink = event => appendTopicProfileAudit(config.stateDir, event);
         _topicProfileResolver = new TopicProfileResolver({
           store: _topicProfileStore,
           defaultFramework: () => _defaultFramework,
@@ -8591,6 +8638,25 @@ export async function startServer(options: StartOptions): Promise<void> {
             /^\d+$/.test(topicKey) ? (_topicLocalModelStore?.get(Number(topicKey)) ?? null) : null,
           // Late-bound (wireTelegramCallbacks owns the adapter): §5.2(d)
           // legacy immediate respawn + the §8 disclosure send.
+          runtimeSessionId: (topicKey) => {
+            if (!/^\d+$/.test(topicKey)) throw new Error('runtime identity is not wired for this platform');
+            const tmuxName = telegram?.getSessionForTopic(Number(topicKey));
+            if (!tmuxName) return null;
+            let incarnation: string;
+            try {
+              const tmux = detectTmuxPath();
+              if (!tmux) throw new Error('tmux unavailable');
+              incarnation = execFileSync(tmux, ['display-message', '-p', '-t', `=${tmuxName}:`, '#{session_id}'],
+                { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000 }).trim();
+            } catch (error) {
+              // has-session's missing target status is actual absence; timeouts and IO errors are unknown.
+              if ((error as { status?: number }).status === 1) return null;
+              throw error;
+            }
+            const managed = sessionManager.getCachedRunningSessions().sessions.filter(session => session.tmuxSession === tmuxName);
+            if (!incarnation || managed.length !== 1) throw new Error('managed session identity is unreadable');
+            return `${managed[0].id}:${incarnation}`;
+          },
           legacyFrameworkRespawn: async (topicKey, runtimeGuard) => {
             assertProfileRuntimeGuard(runtimeGuard);
             // session-swap-any-conversation §3.2: an app or Slack conversation restarts through its ports.
@@ -8626,6 +8692,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           audit: (event) => appendTopicProfileAudit(config.stateDir, event),
         });
       } catch (err) {
+        _topicProfileStartupFailure = err instanceof Error ? err : new Error(String(err));
+        _topicProfileWriteSurface = null;
         console.warn(`[server] TopicProfileStore/Resolver failed to initialize: ${err}`);
       }
       // June-15 subscription-path routing (spec 04 Rule 1). Built ONCE here;
@@ -32870,6 +32938,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 store: _topicProfileStore,
                 effectiveFramework: () => _defaultFramework,
                 ownerOf: (topicKey) => ({ owner: ownReg.ownerOf(topicKey) }),
+                placementStamp: (topicKey) => {
+                  try { const record = ownReg.read(topicKey); return JSON.stringify(record
+                    ? { owner: record.ownerMachineId, epoch: record.ownershipEpoch, status: record.status }
+                    : { owner: meshSelfId, epoch: 0, status: 'absent' }); }
+                  catch { return null; }
+                },
                 // Previous-owner evidence from the journal's topic-placement
                 // history (the most-recent entry naming a prevOwner). Used only
                 // when an acquire seam could not name the previous owner.

@@ -180,21 +180,27 @@ interface TelegramUpdate {
 
 
 /** What the server said about a forward it accepted: `refused` = its inbound gate turned the message away. */
-interface ForwardAck { refused?: boolean }
+interface ForwardAck { refused?: boolean; disposition?: 'profile-control-handled' }
 
 /**
  * Read `refused` from an accepted forward's body. An older server sends no such field, and an
  * unreadable body reads as not refused (the acknowledgement stays as it was before this field).
  */
-export async function readForwardRefused(response: { json?: () => Promise<unknown> }): Promise<boolean> {
+export async function readForwardAcknowledgment(response: { json?: () => Promise<unknown> }): Promise<ForwardAck> {
   try {
-    if (typeof response.json !== 'function') return false;
+    if (typeof response.json !== 'function') return {};
     const body = await response.json();
-    return !!body && typeof body === 'object' && (body as { refused?: unknown }).refused === true;
+    if (!body || typeof body !== 'object') return {};
+    const value = body as Record<string, unknown>;
+    return { ...(value.refused === true ? { refused: true } : {}),
+      ...(value.disposition === 'profile-control-handled' ? { disposition: 'profile-control-handled' as const } : {}) };
   } catch {
-    // @silent-fallback-ok: no readable body means no refusal claim; the server's gate already acted
-    return false;
+    // @silent-fallback-ok: older/unreadable server replies retain ordinary acknowledgment behavior.
+    return {};
   }
+}
+export async function readForwardRefused(response: { json?: () => Promise<unknown> }): Promise<boolean> {
+  return (await readForwardAcknowledgment(response)).refused === true;
 }
 
 export class TelegramLifeline {
@@ -1469,7 +1475,7 @@ export class TelegramLifeline {
       if (forwarded) {
         // Delivery confirmation — user knows message reached the server. Never for a message the
         // server's inbound gate refused (it already told the sender it was not delivered).
-        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused && fwd.disposition !== 'profile-control-handled') await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1558,7 +1564,7 @@ export class TelegramLifeline {
       const fwd: ForwardAck = {};
       const forwarded = await this.forwardToServer(topicId, content, msg, fwd, media);
       if (forwarded) {
-        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused && fwd.disposition !== 'profile-control-handled') await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1669,7 +1675,7 @@ export class TelegramLifeline {
       const fwd: ForwardAck = {};
       const forwarded = await this.forwardToServer(topicId, content, msg, fwd, media);
       if (forwarded) {
-        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused && fwd.disposition !== 'profile-control-handled') await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -2065,7 +2071,7 @@ export class TelegramLifeline {
         if (response.ok) {
           this.observeForwardResponseDriftHeader(response);
           this.observeStaleSecretHint(response);
-          if (ack) ack.refused = await readForwardRefused(response);
+          if (ack) Object.assign(ack, await readForwardAcknowledgment(response));
           return true;
         }
         if (response.status === 426) {
@@ -2105,7 +2111,7 @@ export class TelegramLifeline {
               `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`,
               { method: 'POST', headers: fwdHeaders, body: buildBody(false) }
             );
-            if (r2.ok) { if (ack) ack.refused = await readForwardRefused(r2); return true; }
+            if (r2.ok) { if (ack) Object.assign(ack, await readForwardAcknowledgment(r2)); return true; }
             if (r2.status === 400) throw new ForwardBadRequestError(await r2.json().catch(() => ({})));
             throw new ForwardTransientError(r2.status);
           }
@@ -2509,7 +2515,7 @@ export class TelegramLifeline {
         this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it
         // Handled, but refused by the server's inbound gate: it is not counted in the
         // "has now been delivered" notice (the sender was told it was not delivered).
-        if (!replayAck.refused) {
+        if (!replayAck.refused && replayAck.disposition !== 'profile-control-handled') {
           replayed++;
           const counts = deliveredByTopic.get(msg.topicId) ?? { outage: 0, delayedHandoff: 0, legacyUnknown: 0 };
           if (msg.queueReason === 'server-unhealthy') counts.outage++;

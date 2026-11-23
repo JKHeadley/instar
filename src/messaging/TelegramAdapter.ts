@@ -1388,6 +1388,22 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.config.chatId;
   }
 
+  /** Read-only native destination using the same namespace translation as dispatch.
+   * Missing issues configuration is unknown, never a fallback to the main group.
+   */
+  getNativeTopicDestination(topicId: number): { chatId: string; threadId: number } | null {
+    if (!Number.isSafeInteger(topicId) || topicId <= 0) return null;
+    try {
+      const wire = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());
+      const chatId = String(wire.chat_id).trim();
+      // Telegram omits message_thread_id for the issues group's General topic.
+      const threadId = wire.message_thread_id ?? 1;
+      return chatId && Number.isSafeInteger(threadId) && threadId > 0 ? { chatId, threadId } : null;
+    } catch {
+      return null; // Unknown routing identity must never produce a misleading conversation link.
+    }
+  }
+
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
   /**
