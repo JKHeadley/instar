@@ -1,0 +1,76 @@
+{
+  "artifact": {
+    "build": {
+      "candidate": "8f6bc817060dc0d5f64ed8247e139f7a96e3b07e",
+      "files": {
+        "dist/commands/server.js": "44282f0b6614b83a714dbd1d7718b50016e39069e3be60ed80fb3fe89c0b2feb",
+        "dist/core/ProfileProposalOwnerTurns.js": "eeb82ff9a8ffc452d30c1fae74918246e3cc1a1769e45f8c42fcab5131f8305c",
+        "dist/core/ProfileProposalRequests.js": "752d21a2afdd2239f74218b44189c329f49e1d82bec26e6ccab6b8ac7d15f6d9",
+        "dist/core/ProfileRuntimeGuard.js": "fef680f3e7b7c765173589037d0a32cfb6ce3fced3ee092308efcde1962212e5",
+        "dist/core/TopicProfileOrchestrator.js": "c800717b1a8f1d94e83b97c7e9851f32ebee7aad9df75ae6fcefb09a93f749f3",
+        "dist/core/TopicProfileStore.js": "6c8f4287073eb34fbefdb9cc9b51428b2a8cfe1196b7e38aaaa8dbbdc9a90680",
+        "dist/core/TopicProfileTransferCarrier.js": "f707eb6b88d55199e5252c6616245f5ff9b56f67400fdc5a1253a6b4abfddc22",
+        "dist/core/handleProfileProposalReply.js": "e072915210cd4630e2b867bf927f0eb8a350e753a15db40136fac8f3d508ab08",
+        "dist/core/profileInboundDisposition.js": "ea3edb24ffd94a7454b20c33295979db7b22a211cbd6d9d8d584519ae3ccb7c7",
+        "dist/core/profileProposalBatch.js": "dfa461d68125e7a9b97d6e74a5feddf71c78dc7780bde292973e02458311997c",
+        "dist/core/topicProfileIngress.js": "632f04249907568696bf90b35b62bdd19dd1ff3d1a4040b5a0338b617ffda6c4",
+        "dist/core/topicProfileWriteSurface.js": "feb46a948c5298a566f454feb057c9b0ece3d60b86c342e1492bdc3c9b265861",
+        "dist/lifeline/TelegramLifeline.js": "44a3ba74f4ed7270ab37f962b320cc1d2c1735ccfbea44d997f3f83d51003fc1",
+        "dist/messaging/TelegramAdapter.js": "e4f41b6cba257c7f4fd4fd10252145579b3b0cb9f5b9c27ee6b9ee56a543100e",
+        "dist/server/routes.js": "0b4ec6e2ae4f08ac039e2795e418ae6225f9d422119efeb9453145a7a1ceef18"
+      },
+      "sourceTree": "5f4a62225b00631c224a892be133d6197e376237"
+    },
+    "cleanup": {
+      "complete": true,
+      "ownBrowserClosed": true,
+      "ownPollerStopped": true,
+      "ownServerPortClosed": true,
+      "ownSessionsClosed": 1
+    },
+    "createdAt": "2026-11-23T05:17:34.038Z",
+    "featureId": "profile-confirmation-batch",
+    "riskCategories": [
+      "lifecycle"
+    ],
+    "runId": "initial-runtime-binding-failure-20261122",
+    "runnerFingerprint": "authorized-demo-user-driver-and-bot:7ffcaf6e49675d29cdaf51a57d12702bcb33261f24cd9a5a3e100e3c55e64ec3",
+    "scenarios": [
+      {
+        "description": "An ordinary automatic update replaced the intended test package before any batch question was armed",
+        "evidence": {
+          "actualPackageVersion": "1.3.1979",
+          "correction": "Preserved replaced package, stopped own processes, set normal updates.autoApply:false, restored candidate and repeated protocol exercise",
+          "httpStatus": 400,
+          "protocolQuestionArmed": false,
+          "runtimeHashesMatched": false
+        },
+        "id": "automatic-update-replaced-test-runtime",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      }
+    ],
+    "scope": "Preserved setup failure, not a protocol pass",
+    "surfaces": [
+      "telegram"
+    ],
+    "telegramVerdict": "FAIL"
+  },
+  "entry": {
+    "featureId": "profile-confirmation-batch",
+    "runId": "initial-runtime-binding-failure-20261122",
+    "contentHash": "9362f36232f23c69b536bf3f2a9fc996fc73114866a2ea3a759105cb89139e5e",
+    "signature": "aLM2gn/PuC7Mt39SPvZ82+HQ4ef1smptZHjMnMYrbLPUCeEsb+YVw+c3qwyFxRWJLLk7WWPF8EObfQMKDtriDg==",
+    "signerFingerprint": "7ffcaf6e49675d29cdaf51a57d12702bcb33261f24cd9a5a3e100e3c55e64ec3",
+    "surfaces": [
+      "telegram"
+    ],
+    "riskCategories": [
+      "lifecycle"
+    ],
+    "createdAt": "2026-11-23T05:17:34.038Z",
+    "prevEntryHash": null
+  },
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAP0eweO2WpfBjkVF4Wtt9fop+vY+1i2kb0Pu9TGdEcMw=\n-----END PUBLIC KEY-----\n"
+}

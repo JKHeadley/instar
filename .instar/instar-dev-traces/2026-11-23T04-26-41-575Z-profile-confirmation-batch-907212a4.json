@@ -71,5 +71,10 @@
       "iterations": 6,
       "verified": true
     }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This slice serves an owner-driven, receipt-bound one-shot batch and delivery allowance. It adds no autonomous approval, restart-repost, polling or repeated-repair loop. Existing orchestration remains behind its existing controls; the new guards fence its one approved effect. A failed acknowledgment emits audit/degradation signals without retrying the mutation or blindly reposting success."
   }
 }
