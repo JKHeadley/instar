@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "merge-actions-fixture-isolation",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T13:29:22.781Z",
+  "artifactPath": "upgrades/side-effects/merge-actions-fixture-isolation.md",
+  "artifactSha256": "40ec44f05d9af861b689e8882eacaf0aa8851595e295c125e941497a7d42712a",
+  "coveredFiles": [
+    "docs/specs/merge-actions-fixture-isolation.eli16.md",
+    "upgrades/next/merge-actions-fixture-isolation.md",
+    "upgrades/side-effects/merge-actions-fixture-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release prose correction required by branch-level runtime-surface check; no runtime changes.",
+  "eli16Path": "docs/specs/merge-actions-fixture-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/merge-actions-fixture-isolation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
