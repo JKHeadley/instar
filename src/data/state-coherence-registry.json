@@ -5,6 +5,20 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "local-history-upload-local",
+      "description": "Private local-session intake exchange coordination on the selected machine; never replicated or exposed through file routes.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["local-history-upload/*"],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution", "boundedByResolution": true,
+        "note": "The process-held exchange lock is released only after owned transport disposal or actual process exit. It holds no message content or authority; child and disk custody remain separate."
+      }
+    },
+    {
       "category": "history-acquisition-local",
       "description": "Owner-scoped export request identities, notification delivery state, writer lease and privately staged export files on the machine that requested the export.",
       "scope": "machine-local",

@@ -114,6 +114,7 @@ const LONG_LIVED_STORES = [
  * each documented as a transient (closes itself) or a non-owning helper.
  */
 const TRANSIENT_SKIP: Record<string, string> = {
+  'src/import/LocalHistoryExchange.ts': 'Exchange-scoped process-held lock registers after admission and unregisters/closes after the owned transport and buffers are disposed',
   'src/import/ImportedHistoryStore.ts': 'withWriter registers its transaction-scoped writer-lock handle, then unregisters and closes it in finally',
   'src/core/GraphCustodyRetiredRoles.ts': 'Opens a retired role database briefly to purge or verify it, then closes it in the same call.',
   'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',

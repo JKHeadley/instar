@@ -23,7 +23,7 @@ export function privateAcquisitionDatabasePath(stateDir: string, name: 'jobs.sql
   return privateImportDatabasePath(privateAcquisitionStateDir(stateDir), name);
 }
 
-export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite'): string {
+export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite' | 'exchange-lock.sqlite'): string {
   verifyPrivateImportDirectory(directory);
   const file = path.join(directory, name);
   try { fs.closeSync(fs.openSync(file, 'wx', 0o600)); }
