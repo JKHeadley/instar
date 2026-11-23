@@ -60,7 +60,7 @@ describe('codex spawn placement — E2E alive', () => {
     mockTmuxSessions.clear();
   });
 
-  async function boot(accounts: Array<[string, number]>) {
+  async function boot(accounts: Array<[string, number]>, options: { interactiveCodex?: boolean; resets?: Record<string, string> } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-spawn-wall-e2e-'));
     cleanups.push(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/codex-spawn-wall-placement-alive.test.ts:cleanup' }));
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
@@ -76,13 +76,13 @@ describe('codex spawn placement — E2E alive', () => {
       homes[id] = path.join(dir, `.codex-${id}`);
       fs.mkdirSync(homes[id], { recursive: true });
       pool.addFixture({ id, nickname: id, email: `${id}@example.test`, provider: 'openai', framework: 'codex-cli', configHome: homes[id] });
-      pool.update(id, { lastQuota: { sevenDay: { utilizationPct: weekly, resetsAt: '2099-11-14T18:01:00Z' }, measuredAt: new Date().toISOString() } });
+      pool.update(id, { lastQuota: { sevenDay: { utilizationPct: weekly, resetsAt: options.resets?.[id] ?? '2099-11-14T18:01:00Z' }, measuredAt: new Date().toISOString() } });
     }
     const state = new StateManager(path.join(dir, 'state'));
     const manager = new SessionManager({
       tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude',
       projectDir: dir, maxSessions: 5, protectedSessions: [],
-      completionPatterns: ['done'], framework: 'claude-code',
+      completionPatterns: ['done'], framework: options.interactiveCodex ? 'codex-cli' : 'claude-code',
       frameworkBinaryPaths: { 'codex-cli': '/usr/local/bin/codex' },
     } as SessionManagerConfig, state);
     cleanups.push(() => manager.stopMonitoring());
@@ -119,7 +119,12 @@ describe('codex spawn placement — E2E alive', () => {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
       body: JSON.stringify({ name, prompt: 'build it', framework: 'codex-cli' }),
     });
-    return { spawn, state, homes };
+    const create = (name: string) => fetch(`${url}/sessions/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ name, platform: 'headless' }),
+    });
+    return { spawn, create, state, homes, pool };
   }
 
   const codexHomeArg = (): string | undefined => {
@@ -147,5 +152,31 @@ describe('codex spawn placement — E2E alive', () => {
     expect(body.error).toMatch(/every Codex account on this machine is at its usage limit/);
     expect(codexHomeArg()).toBeUndefined();
     expect(state.listSessions({ status: 'running' })).toHaveLength(0);
+  });
+
+  it('FEATURE ALIVE: interactive creation uses weekly expiration, then uses the next account when the first has no room', async () => {
+    const now = Date.now();
+    const { create, pool, state, homes } = await boot([['reserve', 9], ['soon', 20], ['next', 10]], {
+      interactiveCodex: true,
+      resets: {
+        soon: new Date(now + 86_400_000).toISOString(),
+        next: new Date(now + 2 * 86_400_000).toISOString(),
+        reserve: new Date(now + 6 * 86_400_000).toISOString(),
+      },
+    });
+    vi.mocked(execFileSync).mockClear();
+    const first = await create('first-conversation');
+    expect(first.status).toBe(201);
+    const firstBody = await first.json() as { session: string };
+    expect(codexHomeArg()).toBe(`CODEX_HOME=${homes.soon}`);
+    expect(state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === firstBody.session)?.subscriptionAccountId).toBe('soon');
+    const prior = pool.get('soon')!;
+    pool.update('soon', { lastQuota: { ...prior.lastQuota!, sevenDay: { ...prior.lastQuota!.sevenDay!, utilizationPct: 100 }, measuredAt: new Date().toISOString() } });
+    vi.mocked(execFileSync).mockClear();
+    const second = await create('second-conversation');
+    expect(second.status).toBe(201);
+    expect(codexHomeArg()).toBe(`CODEX_HOME=${homes.next}`);
+    // Placement does not rewrite or restart the already-running conversation.
+    expect(state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === firstBody.session)?.subscriptionAccountId).toBe('soon');
   });
 });
