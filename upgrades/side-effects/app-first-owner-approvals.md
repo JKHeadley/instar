@@ -54,3 +54,14 @@ No new static heuristic at a competing-signals judgment point. Carrier state is 
 ## Second-pass review
 
 Two independent source reviewers concurred after concurrency and holder fixes. UI action ordering/humanization then passed40 focused discovery/Needs checks and normal-browser phone inspection. Full exact-head verification remains pending.
+
+
+## Native disclosure compatibility correction
+
+The shipped Apple decoder bounds each summary to 40 entries of 400 Characters. The previous server card-size limit could publish a line the app silently shortened. The correction changes only native presentation and refusal: grapheme-safe packing under conservative codepoint bounds, applied equally to old persisted requests, with no canonical change or hash rewrite. Fresh or duplicate native publication refuses an undisplayable summary before writing; accepted-device consumption refuses it before proof issuance and effect. It remains visible with an explanation. Chat-only publication retains its existing whole-message bound.
+
+No filesystem, timer, network, installed-file, configuration, ownership or replication-writer change is introduced. Work is linear in the already bounded normal disclosure; an exceptionally oversized legacy disclosure is refused. Rollback restores the prior disclosure risk, so keep the candidate held until the corrected exact head is verified. Existing records do not require a migration because formatting is derived at read and consumption time. The actual phone renderer uses separate dynamic Text entries with no lineLimit or Markdown interpolation on full summaries. No app binary change is needed for the conservative server format.
+
+Independent second pass identified a grapheme split at the first implementation's boundary; fixed with Intl.Segmenter before commit. The reviewer then concurred with no remaining material source defect. Universal Unicode-version visual equivalence is not claimed. This is source and focused-test evidence; no live owner approval or shared full pass is claimed.
+
+Correction validation: 13 boundary units plus existing 59 device/service regressions passed (72 total); distinct signed HTTP boundary test passed; production-runtime long-disclosure E2E passed; TypeScript checked clean; all 55 lint steps passed. Independent source reviewer and test reviewer concurred. Full verification remains exclusively with the shared coordinator.

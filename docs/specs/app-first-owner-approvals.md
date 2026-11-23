@@ -78,3 +78,12 @@ Live Studio: confirm an actual device acceptance and private route; after verifi
 ## Open questions
 
 *(none)*
+
+
+## Shipped native disclosure boundary correction
+
+Source inspection after initial admission found that the shipped Apple decoder (apps/instar-ios/InstarApp/TrustApprovalData.swift:62 in the separate app checkout) retains only 40 entries and 400 Swift Characters per entry. Both iPhone and Mac render entries in separate Text views. The server's 3000-character card maximum alone does not guarantee complete native disclosure. This is a correction to the full exact disclosure invariant above, not new approval authority.
+
+Before native publication and before accepted-device consumption, require the stored summary to be losslessly displayable. Preserve arrays already within conservative limits. Otherwise join the original summary with its original newline separators and pack whole Intl.Segmenter grapheme clusters into at most 40 entries of at most 400 Unicode code points each. This bound is conservative for Swift Characters. Never split a flag, combining sequence or ZWJ cluster across Text views. Refuse a single indivisible cluster above that budget or a summary requiring more entries. Native listings normalize existing persisted requests as well as new ones. Undisplayable old requests remain pending and show an explicit explanation; they cannot consume or apply through the native approval route. Re-proposing such a request does not migrate or reset it. The canonical stored summary, change, proposal hash, request id and expiry remain unchanged. This does not claim universal cross-Unicode-version visual equivalence.
+
+Independent source review found the first codepoint-only split changed grapheme rendering, then concurred after the grapheme-safe correction. Verification includes long real runtime disclosures through device-signed HTTP and production lifecycle routes, Unicode boundary fixtures and fail-closed legacy consumption. Shared full verification must use the corrected exact head; the previously admitted c85c12077 candidate remains held and cannot certify this correction.

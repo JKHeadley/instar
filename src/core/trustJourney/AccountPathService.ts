@@ -126,6 +126,30 @@ export type ProposeResult =
 
 /** The card's change lines may not exceed this (the card must fit whole in one message). */
 export const MAX_CARD_SUMMARY = 3000;
+
+/** Compatibility with the shipped native decoder: 40 lines of 400 Characters.
+ * Code points are at least as numerous as Swift grapheme clusters. Never truncate
+ * disclosure, including requests persisted by older servers.
+ */
+export function appApprovalSummaryLines(summary: readonly string[]): string[] | null {
+  if (summary.length <= 40 && summary.every((line) => Array.from(line).length <= 400)) return [...summary];
+  const text = summary.join('\n');
+  if (Array.from(text).length > 40 * 400) return null;
+  const lines: string[] = [];
+  let line = '', count = 0;
+  // Native views render each entry separately. Keep flags, combining marks and
+  // ZWJ sequences together rather than changing their displayed meaning.
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+    const size = Array.from(segment).length;
+    if (size > 400) return null;
+    if (count + size > 400) { lines.push(line); line = ''; count = 0; }
+    line += segment; count += size;
+  }
+  if (line) lines.push(line);
+  if (lines.length > 40) return null;
+  return lines;
+}
+
 /** Open, unexpired requests one person may have at a time. */
 export const MAX_OPEN_REQUESTS = 3;
 
@@ -192,6 +216,7 @@ export class AccountPathService {
     const proposalHash = proposalHashOf(proofSubject(change));
     const dup = this.d.store.openRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && new Date(r.expiresAt) > this.now());
     if (dup) {
+      if (app && !appApprovalSummaryLines(dup.summary)) return { status: 'too-large', message: 'This request cannot be shown whole in this app. The existing request is unchanged; split the change into smaller requests.' };
       if (app) {
         if (dup.adapter !== 'device' && !dup.cardMessageId) {
           if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
@@ -209,7 +234,7 @@ export class AccountPathService {
     const recentlyWithdrawn = this.d.store.allRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && r.status === 'withdrawn' && new Date(r.expiresAt) > this.now());
     if (recentlyWithdrawn) return { status: 'withdrawn-recently', message: `This exact change was withdrawn by the agent and cannot be asked again until ${recentlyWithdrawn.expiresAt}.` };
     const summary = this.d.summarize(change);
-    if (summary.join('\n').length > MAX_CARD_SUMMARY) return { status: 'too-large', message: 'This change is too large to show whole on one card, so no card was sent. Split it into smaller changes.' };
+    if (summary.join('\n').length > MAX_CARD_SUMMARY || (app && !appApprovalSummaryLines(summary))) return { status: 'too-large', message: 'This change is too large to show whole on one card, so no card was sent. Split it into smaller changes.' };
     const live = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now());
     if (this.deliveryCount(principal) >= MAX_OPEN_REQUESTS) return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting for the person; no new card is sent until one is answered or expires.` };
     if (live.filter((r) => !this.delivered(r)).length >= MAX_OPEN_REQUESTS) return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting to be delivered. Answer, deliver or let one expire before creating another.` };
@@ -702,6 +727,7 @@ export class AccountPathService {
       return refuse('request-expired', 'This request has expired, so nothing was approved. The agent can send a fresh one.');
     }
     if (req.proposalHash !== auth.proposalHash) return refuse('proposal-changed', 'This request is not the one shown on the card, so nothing was approved. Look again.');
+    if (!appApprovalSummaryLines(req.summary)) return refuse('disclosure-too-large', 'This request cannot be shown whole in this app, so nothing was approved. Ask the agent to split it into smaller requests.');
     const onRecord = this.d.store.deviceAcceptance(auth.deviceId);
     if (!onRecord) {
       return this.d.store.deviceAcceptanceWithdrawn(auth.deviceId)
@@ -765,7 +791,7 @@ export class AccountPathService {
       const outcome = this.d.store.applyOutcome(r.requestId);
       const byDevice = consumption?.kind === 'accepted-device';
       out.push({
-        requestId: r.requestId, status, summary: r.summary, proposalHash: r.proposalHash, expiresAt: r.expiresAt,
+        requestId: r.requestId, status, summary: appApprovalSummaryLines(r.summary) ?? ['This request is too large to show whole in this app. It cannot be approved here. Ask the agent to split it into smaller requests.'], proposalHash: r.proposalHash, expiresAt: r.expiresAt,
         changeKind: r.change?.kind ?? null, via: r.adapter === 'device' ? 'device' : 'chat',
         delivery: r.adapter === 'device' ? 'app-listed' : r.cardMessageId ? 'chat-confirmed' : 'chat-unconfirmed',
         ...(consumption ? {
