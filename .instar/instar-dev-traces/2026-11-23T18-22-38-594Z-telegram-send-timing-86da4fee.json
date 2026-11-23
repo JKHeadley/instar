@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "telegram-send-timing",
+  "sessionId": "2e25f3d9-f7bf-4cf2-8f9f-2029e2b45a48",
+  "timestamp": "2026-11-23T18:22:38.594Z",
+  "artifactPath": "upgrades/side-effects/telegram-send-timing.md",
+  "artifactSha256": "9949b29653f179842bd81dc3eba6c777814feedecd4d9a1662592bbac33d12fa",
+  "coveredFiles": [
+    "docs/specs/telegram-send-timing.eli16.md",
+    "src/data/awareness/telegram-send-timing.md",
+    "src/messaging/TelegramSendTiming.ts",
+    "src/messaging/telegram-egress.ts",
+    "tests/e2e/telegram-send-timing-alive.test.ts",
+    "tests/integration/telegram-send-timing-http.test.ts",
+    "tests/unit/telegram-send-timing.test.ts",
+    "upgrades/next/telegram-send-timing.md",
+    "upgrades/side-effects/telegram-send-timing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible process-local observability only; no transport, deadline, retry, authority, credential or durable-state changes. Actual independent review and all allocated focused tiers passed; complete coordinator verification still required.",
+  "eli16Path": "docs/specs/telegram-send-timing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-send-timing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Diagnostics are driven once by each existing sendMessage invocation, not a self-triggered controller. Native event-loop sampling has no actuation, permits at most sixteen concurrent probes and is disabled on completion. This adds no retry, notify, restart, spawn, kill or queue mutation; existing transport deadlines and delivery policies are unchanged."
+  }
+}
