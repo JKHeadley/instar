@@ -6,6 +6,7 @@
 // @ts-nocheck — the modules are browser-native ESM (.js), no types.
 import fs from 'node:fs';
 import path from 'node:path';
+import { JSDOM } from 'jsdom';
 import { describe, it, expect } from 'vitest';
 import { conversationSession, sessionConversationRef } from '../../dashboard/console/conversation-session.js';
 import { sessionKey } from '../../dashboard/console/sessions-model.js';
@@ -75,8 +76,26 @@ describe('conversation page wiring', () => {
 
   it('a link styled as the primary button centers its label (Open Chief of Staff sat in the top-left corner)', () => {
     const css = fs.readFileSync(path.join(__dirname, '../../dashboard/console/console.css'), 'utf8');
-    expect(css).toMatch(/a\.btn-primary \{ display: flex; align-items: center; justify-content: center; text-decoration: none; \}/);
-    // .btn-inline still wins for inline link buttons: it comes later in the file.
-    expect(css.indexOf('a.btn-primary {')).toBeLessThan(css.indexOf('.btn-inline { width: auto;'));
+    // Exercise the real cascade instead of requiring an obsolete exact declaration.
+    const dom = new JSDOM(`<style>${css}</style><a class="btn-primary">Open the Chief of Staff conversation</a><a class="btn-primary btn-inline">Watch the session</a>`);
+    try {
+      const [full, inline] = [...dom.window.document.querySelectorAll('a')].map(a => dom.window.getComputedStyle(a));
+      for (const style of [full, inline]) {
+        expect(style.display).toBe('inline-flex');
+        expect(style.alignItems).toBe('center');
+        expect(style.justifyContent).toBe('center');
+        expect(style.textAlign).toBe('center');
+        expect(style.textDecoration).toBe('none');
+        expect(style.boxSizing).toBe('border-box');
+      }
+      expect(full.width).toBe('100%');
+      expect(full.minHeight).toBe('48px');
+      expect(full.height).toBe('auto'); // a wrapped label can grow the button
+      expect(full.paddingTop).toBe('10px');
+      expect(full.paddingRight).toBe('16px');
+      expect(full.paddingBottom).toBe('10px');
+      expect(full.paddingLeft).toBe('16px');
+      expect(inline.width).toBe('auto');
+    } finally { dom.window.close(); }
   });
 });
