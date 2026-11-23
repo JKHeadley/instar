@@ -1045,6 +1045,9 @@ export class AgentServer {
   private spendPlanStore: RenderedPlanStore | null = null;
   private pinAttemptStore: PinAttemptStore | null = null;
   private pinShare: import('../core/PinShare.js').PinShareProvider | null = null;
+  private pinOwnerSurface: import('../core/PinOwnerSurface.js').PinOwnerSurface | null = null;
+  /** SEC-170 part 3: this machine's wrong unknown-browser guesses within the last `withinMs` (for the agent-wide alert). */
+  pinGlobalFailuresWithin(withinMs: number): number { return this.pinAttemptStore?.globalFailuresWithin(withinMs) ?? 0; }
   private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
   private spendAlertResolver: SpendAlertResolver | null = null;
   private spendAlertTimer: ReturnType<typeof setInterval> | null = null;
@@ -1393,6 +1396,8 @@ export class AgentServer {
     pinShare?: import('../core/PinShare.js').PinShareProvider | null;
     /** SEC-170 part 2: the agreement protocol's machine-route hooks (signed state report, hand-down). */
     pinBudgetMachineHooks?: Pick<import('./machineRoutes.js').MachineRouteContext, 'pinBudgetState' | 'pinBudgetHandDown'> | null;
+    /** SEC-170 part 3: the owner's side of the pool-wide PIN budget (silent machines, "gone for good"). */
+    pinOwnerSurface?: import('../core/PinOwnerSurface.js').PinOwnerSurface | null;
     terminateSessionAuthority?: SessionTerminateAuthority;
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
     apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
@@ -2148,6 +2153,7 @@ export class AgentServer {
     // PIN-only desktop access requires a durable guess budget. Construct it
     // before any dashboard unlock can mint an operator session.
     this.pinShare = options.pinShare ?? null;
+    this.pinOwnerSurface = options.pinOwnerSurface ?? null;
     try {
       const pinShareRef = this.pinShare;
       this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir, strictGlobal: () => pinShareRef?.state().enabled === true });
@@ -6878,6 +6884,7 @@ export class AgentServer {
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
       pinShare: this.pinShare,
+      pinOwnerSurface: this.pinOwnerSurface,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,

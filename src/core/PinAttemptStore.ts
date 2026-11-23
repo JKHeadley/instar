@@ -45,6 +45,12 @@ export class PinAttemptStore {
    */
   private globalUnsavedSince = 0;
   private lastGlobalRetryAt = 0;
+  /**
+   * SEC-170 part 3: times of recent wrong guesses on the shared unknown-browser key, for the agent-wide alert
+   * (failures across all machines within one hour). In memory only: a restart forgets them, which only
+   * delays an alert; it never changes what is admitted.
+   */
+  private globalFailureTimes: number[] = [];
   private readonly maxAttempts: number;
   private readonly windowMs: number;
   private readonly now: () => number;
@@ -88,9 +94,20 @@ export class PinAttemptStore {
       this.entries.set(ip, e);
     }
     e.count++;
+    if (ip === GLOBAL_PIN_KEY) {
+      this.globalFailureTimes.push(this.now());
+      if (this.globalFailureTimes.length > PIN_ATTEMPT_MAX_ROWS) this.globalFailureTimes.splice(0, this.globalFailureTimes.length - PIN_ATTEMPT_MAX_ROWS);
+    }
     this.prune();
     if (!this.persist() && ip === GLOBAL_PIN_KEY && !this.globalUnsavedSince) { this.globalUnsavedSince = this.now(); this.lastGlobalRetryAt = this.now(); }
     return Math.max(0, maxAttempts - e.count);
+  }
+
+  /** SEC-170 part 3: wrong guesses on the shared unknown-browser key within the last `withinMs`. */
+  globalFailuresWithin(withinMs: number): number {
+    const since = this.now() - withinMs;
+    while (this.globalFailureTimes.length > 0 && this.globalFailureTimes[0] < since) this.globalFailureTimes.shift();
+    return this.globalFailureTimes.length;
   }
 
   /** Clear an IP's counter on a successful PIN entry. */

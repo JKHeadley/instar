@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-23T04:12:44.447Z",
+  "slug": "sec170-pin-share-part3",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 547,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PinAttemptStore.ts",
+      "src/core/PinGoneForGood.ts",
+      "src/core/PinOwnerSurface.ts",
+      "src/core/PinShareTable.ts",
+      "src/core/pinBudgetPoller.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileOwnerPresenceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 534,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "one unref 60-second check timer; the alert at most once per 30 minutes; adoption capped at 64 confirmations per report"
+  },
+  "verdict": "pass"
+}

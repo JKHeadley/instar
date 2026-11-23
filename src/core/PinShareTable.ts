@@ -51,6 +51,10 @@ export interface PeerShareReport {
   needsShare: boolean;
   /** The hand-down this peer currently holds (its transferId), or null. Lets a giver see its loan was taken. */
   heldTransfer?: string | null;
+  /** SEC-170 part 3: the owner's "gone for good" confirmations this peer holds (adopted by the receiver). */
+  goneForGood?: Array<{ machineId: string; confirmedAt: number; approvedOn: string }>;
+  /** SEC-170 part 3: this peer's wrong unknown-browser guesses within the last hour, for the agent-wide alert. */
+  failuresLastHour?: number;
 }
 
 /** Far above any real pool's changes; stops one report from pushing seq past the safe-integer range. */

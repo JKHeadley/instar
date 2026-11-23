@@ -1912,6 +1912,8 @@ export interface RouteContext {
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
   /** SEC-170: this machine's share of the agent's unknown-browser PIN budget (absent = 20). */
   pinShare?: import('../core/PinShare.js').PinShareProvider | null;
+  /** SEC-170 part 3: the owner's side (silent machines, "gone for good"). Absent when the budget is unwired. */
+  pinOwnerSurface?: import('../core/PinOwnerSurface.js').PinOwnerSurface | null;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefusedHere?: (req: import('express').Request) => boolean;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
@@ -17337,6 +17339,35 @@ export function createRoutes(ctx: RouteContext): Router {
     pinSource: (req) => `req:${String((req as unknown as { _pinRequestKey?: string })._pinRequestKey ?? 'none')}` });
   const publicCapPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
     pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, maxAttemptsLive: () => ctx.pinShare?.share() ?? GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
+  // SEC-170 part 3: the owner's side of the pool-wide PIN budget. The silent-machines list feeds the one agent-wide
+  // Needs-you item; "gone for good" only registers a pending owner approval, applied after the phone's Face ID tap.
+  router.get('/pin-budget/silent-machines', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const surface = ctx.pinOwnerSurface;
+    if (!surface) { res.json({ enabled: false, rows: [], heldBack: false, fingerprint: '', dismissed: false, show: false }); return; }
+    const view = surface.silent();
+    res.json({ ...view, rows: view.rows.map((r) => ({ ...r, silentSince: new Date(r.silentSince).toISOString() })) });
+  });
+  router.post('/pin-budget/silent-machines/dismiss', (req, res) => {
+    const fingerprint = (req.body as { fingerprint?: unknown } | undefined)?.fingerprint;
+    if (!ctx.pinOwnerSurface) { res.status(503).json({ error: 'pin-budget-off' }); return; }
+    if (typeof fingerprint !== 'string' || fingerprint.length > 64) { res.status(400).json({ error: 'fingerprint-required' }); return; }
+    const r = ctx.pinOwnerSurface.dismiss(fingerprint);
+    if (!r.ok) { res.status(409).json({ error: 'list-changed', detail: 'The list of silent computers changed since it was shown. Look again before dismissing.' }); return; }
+    res.json({ ok: true });
+  });
+  router.post('/pin-budget/gone-for-good', (req, res) => {
+    const machineId = (req.body as { machineId?: unknown } | undefined)?.machineId;
+    if (!ctx.pinOwnerSurface) { res.status(503).json({ error: 'pin-budget-off' }); return; }
+    if (typeof machineId !== 'string' || !/^m_[0-9a-f]{32}$/.test(machineId)) { res.status(400).json({ error: 'machine-id-required' }); return; }
+    const r = ctx.pinOwnerSurface.requestGoneForGood(machineId);
+    if (!r.ok) {
+      const words = r.reason === 'self' ? 'This computer cannot confirm itself gone.' : r.reason === 'not-silent' ? 'Only a computer that has been silent for 7 days or more can be confirmed gone for good.' : 'The pool-wide PIN guess limit is off on this agent.';
+      res.status(r.reason === 'off' ? 503 : 409).json({ error: r.reason, detail: words });
+      return;
+    }
+    res.status(202).json('already' in r ? { ok: true, already: true } : { ok: true, pending: true, detail: 'Approve it on your phone with Face ID.' });
+  });
   const PIN_ALERT_ONLY_KEY = '__pin_alert_only__';
   function checkPublicPin(req: import('express').Request, res: import('express').Response, requestKey?: string): boolean {
     if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
@@ -43499,6 +43530,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // SEC-018: the phone's approval routes write these; the MCP delete handler reads them.
         approvalStore: ctx.ownerApprovedActionStore,
         pendingRegistry: ctx.ownerApprovedActionPending,
+        // SEC-170 part 3: "gone for good" uses this flow under the pool-wide PIN budget's own switch.
+        purposeOn: (p) => p === 'pin-gone-for-good' && ctx.pinShare?.state().enabled === true && !!ctx.pinOwnerSurface,
+        onActionApproved: (p, key) => (p === 'pin-gone-for-good' ? (ctx.pinOwnerSurface?.onApproved(p, key) ?? false) : undefined),
       });
     }
     // Approving trust raises from the app (docs/specs/app-trust-approval.md): the account path reads the

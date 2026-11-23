@@ -12,6 +12,7 @@
  * thrown.
  */
 
+import { parseReportedConfirmations } from './PinGoneForGood.js';
 import { randomBytes } from 'node:crypto';
 import type { PeerShareReport } from './PinShareTable.js';
 import { validateTable, MAX_TABLE_SEQ } from './PinShareTable.js';
@@ -46,6 +47,8 @@ export interface PinBudgetPollerDeps {
   fetchState: (peerId: string, nonce: string) => Promise<unknown>;
   /** Verify `sig` over `text` with the peer's signing key. */
   verify: (peerId: string, text: string, sig: string) => boolean;
+  /** SEC-170 part 3: called with each verified report (adopt its gone-for-good confirmations). Errors are ignored. */
+  onReport?: (peerId: string, report: PeerShareReport) => void;
   now?: () => number;
 }
 
@@ -130,7 +133,11 @@ export class PinBudgetPoller {
       if (!Number.isInteger(r.applied) || r.applied < 0 || r.applied > AGENT_PIN_BUDGET) throw new Error('bad-applied');
       if (r.table !== null && !validateTable(r.table, r.table?.members ?? [], 0).ok) throw new Error('bad-table');
       if (r.table && (!Number.isSafeInteger(r.table.seq) || r.table.seq > MAX_TABLE_SEQ)) throw new Error('bad-seq');
-      this.reportsMap.set(peerId, { machineId: peerId, table: r.table ?? null, applied: r.applied, retired: !!r.retired, needsShare: !!r.needsShare, heldTransfer: typeof r.heldTransfer === 'string' ? r.heldTransfer.slice(0, 64) : null, receivedAt: now });
+      // Absent on an older build: left undefined, so that peer is never chosen as the alert's one voice.
+      const failuresLastHour = Number.isInteger(r.failuresLastHour) && (r.failuresLastHour as number) >= 0 ? Math.min(r.failuresLastHour as number, 10_000) : undefined;
+      const parsed = { machineId: peerId, table: r.table ?? null, applied: r.applied, retired: !!r.retired, needsShare: !!r.needsShare, heldTransfer: typeof r.heldTransfer === 'string' ? r.heldTransfer.slice(0, 64) : null, goneForGood: parseReportedConfirmations(r.goneForGood), failuresLastHour };
+      this.reportsMap.set(peerId, { ...parsed, receivedAt: now });
+      try { this.deps.onReport?.(peerId, parsed); } catch { /* @silent-fallback-ok — adopting extras never fails a verified pull */ }
       this.bumpContact(peerId, now);
       for (const [m, at] of Object.entries(body.contacts)) if (typeof at === 'number' && Number.isFinite(at) && at <= now + 60_000) this.bumpContact(m, at);
       t.failures = 0; t.nextAt = now + POLL_INTERVAL_MS; t.failingSince = null; t.lastOkAt = now;

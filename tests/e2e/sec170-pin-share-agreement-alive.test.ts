@@ -19,6 +19,10 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import { signRequest } from '../../src/server/machineAuth.js';
 import { PinShareProvider, registryMembership } from '../../src/core/PinShare.js';
 import { PinBudgetPoller, stateSigningText } from '../../src/core/pinBudgetPoller.js';
+import { GoneForGoodStore } from '../../src/core/PinGoneForGood.js';
+import { PinOwnerSurface } from '../../src/core/PinOwnerSurface.js';
+import { PendingApprovalRegistry } from '../../src/server/PendingApprovalRegistry.js';
+import { OwnerApprovedActionStore } from '../../src/server/OwnerApprovedActionStore.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
@@ -41,6 +45,8 @@ function env(name: string) {
   return { stateDir, mgr, identity, machineId, signingKeys, config };
 }
 
+type PartThreeHandles = { gone: GoneForGoodStore; surface: PinOwnerSurface; pending: PendingApprovalRegistry; approvals: OwnerApprovedActionStore };
+
 describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
   let a: ReturnType<typeof env>;
   let b: ReturnType<typeof env>;
@@ -54,13 +60,16 @@ describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
   let shareB: PinShareProvider;
   let coordA: MultiMachineCoordinator;
   let coordB: MultiMachineCoordinator;
+  let wiredA: PartThreeHandles;
+  let wiredB: PartThreeHandles;
 
   const wire = (self: ReturnType<typeof env>, otherBase: () => string) => {
     let poller: PinBudgetPoller;
+    const gone = new GoneForGoodStore(self.stateDir);
     const share: PinShareProvider = new PinShareProvider({
       stateDir: self.stateDir, enabled: () => true, membership: registryMembership(self.mgr),
       protocol: {
-        reports: () => poller.reports(), pollReady: () => poller.pollReady(), goneForGood: () => new Set(),
+        reports: () => poller.reports(), pollReady: () => poller.pollReady(), goneForGood: () => gone.standing(poller.contacts().map),
         contacts: () => poller.contacts(), monoNow: () => performance.now(), sendHandDown: () => {},
       },
     });
@@ -75,18 +84,27 @@ describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
         return r.json();
       },
       verify: (id, text, sig) => { const pem = self.mgr.getSigningPublicKeyPem(id); return !!pem && verify(text, sig, pem); },
+      onReport: (_id, r) => { if (r.goneForGood?.length) gone.adopt(r.goneForGood, self.machineId); },
     });
     const hooks = {
       pinBudgetState: (nonce: string, sender: string) => {
         poller.noteSeen(sender);
-        const report = share.report();
-        if (!report) return null;
+        const base = share.report();
+        if (!base) return null;
+        const report = { ...base, goneForGood: gone.reportable(), failuresLastHour: 3 };
         const contacts = Object.fromEntries(poller.contacts().map);
         return { report, contacts, sig: sign(stateSigningText(nonce, report, contacts), self.signingKeys.privateKey) };
       },
       pinBudgetHandDown: (gift: { transferId: string; amount: number; baseSeq: number }, sender: string) => share.receiveHandDown(sender, gift),
     };
-    return { share, poller: () => poller, hooks };
+    const pending = new PendingApprovalRegistry();
+    const approvals = new OwnerApprovedActionStore();
+    const surface = new PinOwnerSurface({
+      stateDir: self.stateDir, store: gone, enabled: () => true, self: () => self.machineId,
+      members: () => Object.keys(self.mgr.loadRegistry().machines).map((m) => ({ machineId: m, name: m, lastSeen: 0, pairedAt: 0 })),
+      contacts: () => poller.contacts().map, raiseWaiting: () => false, pending, approvals, machineName: () => self.identity.name, invalidate: () => share.invalidate(),
+    });
+    return { share, poller: () => poller, hooks, gone, surface, pending, approvals };
   };
 
   beforeAll(async () => {
@@ -95,6 +113,7 @@ describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
     b.mgr.registerMachine(a.identity as never, 'awake'); b.mgr.storeRemoteIdentity(a.identity as never);
     const wa = wire(a, () => baseB);
     const wb = wire(b, () => baseA);
+    wiredA = wa; wiredB = wb;
     shareA = wa.share; shareB = wb.share;
     // Machine routes (/api/*) mount only with multi-machine coordination on, as in production.
     const stateA = new StateManager(a.stateDir); const stateB = new StateManager(b.stateDir);
@@ -130,6 +149,24 @@ describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
     expect(pollB.reports().get(a.machineId)).toMatchObject({ applied: 10 });
     expect(pollA.reports().get(b.machineId)!.table!.hash).toBe(pollB.reports().get(a.machineId)!.table!.hash);
     expect(pollA.contacts().complete).toBe(true);
+  });
+
+  it('part 3: a "gone for good" confirmation saved on one machine reaches the other in its signed report, with the hourly failure count', async () => {
+    const lost = 'm_' + 'e'.repeat(32);
+    // Saved on A only after the owner's phone approval. On a real server the phone can get a challenge only for a
+    // pending request, which only a listed (silent) machine gets; here the approval store is written directly.
+    wiredA.approvals.record({ purpose: 'pin-gone-for-good', actionKey: lost });
+    expect(wiredA.surface.onApproved('pin-gone-for-good', lost)).toBe(true);
+    expect(Object.keys(wiredA.gone.read())).toEqual([lost]);
+    await pollB.round({ force: true });
+    expect(pollB.reports().get(a.machineId)).toMatchObject({ failuresLastHour: 3, goneForGood: [{ machineId: lost, approvedOn: a.machineId }] });
+    expect(wiredB.gone.read()[lost]).toMatchObject({ source: 'relayed', approvedOn: a.machineId });
+  });
+
+  it('part 3: a live peer is not on the silent list, so "gone for good" is refused for it', () => {
+    expect(wiredA.surface.silent().rows).toEqual([]);
+    expect(wiredA.surface.requestGoneForGood(b.machineId)).toEqual({ ok: false, reason: 'not-silent' });
+    expect(wiredA.pending.list()).toEqual([]);
   });
 
   it('a hand-down to a machine that did not ask for one is refused', async () => {
