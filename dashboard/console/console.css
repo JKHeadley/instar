@@ -1771,3 +1771,7 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* Suggestions still under review do not bury the useful next step. */
+.ideas-unranked { min-width: 0; margin: var(--s-4) 0; }
+.ideas-unranked > summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
