@@ -1,4 +1,5 @@
 import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapshot.js';
+import { reportTelegramInjectionFailure } from '../messaging/telegramInjectionFailure.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
@@ -3100,6 +3101,7 @@ export function wireTelegramRouting(
     stateDir: string;
   } | null,
   poolHistoryAccess?: { port: number; authToken: string },
+  getInjectionFailureTracker?: () => import('../monitoring/CommitmentTracker.js').CommitmentTracker | null,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -3684,7 +3686,11 @@ export function wireTelegramRouting(
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
         const sessionText = await sessionTextFor();
-        const injected = sessionManager.injectTelegramMessage(
+        // The observed wrapper preserves one synchronous injection and identifies only the
+        // exact pre-prepare baseline refusal. Boolean-only embedders keep their old surface.
+        const observeInjection = sessionManager.injectTelegramMessageObserved?.bind(sessionManager)
+          ?? ((...args: Parameters<SessionManager['injectTelegramMessage']>) => ({ injected: sessionManager.injectTelegramMessage(...args), refusal: undefined }));
+        const injectionResult = observeInjection(
           targetSession, topicId, sessionText, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
           parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
           // W21: the ONE place the re-delivery flag exists in-process. Set by
@@ -3696,10 +3702,27 @@ export function wireTelegramRouting(
             signedByAgent: framingLabel(signedLabelSource, isReplay ? 'F' : 'live', { topicId, messageId: inboundMessageId ?? undefined }),
           },
         );
+        const injected = injectionResult.injected;
         if (injected === false) {
           console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}; not sending delivery confirmation`);
-          withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `❌ Message could not be delivered to the session. Try sending it again in a moment.`)).catch(() => {});
-          return;
+          if (injectionResult.refusal === 'codex-baseline-unavailable-before-dispatch') {
+            const visibility = await reportTelegramInjectionFailure({
+              telegram,
+              getTracker: () => getInjectionFailureTracker?.() ?? null,
+              sendNotice: (topic, notice) => withNotificationEnvelope(stampResponse(), () => telegram.sendToTopic(topic, notice)),
+              reportDegradation: (reason) => DegradationReporter.getInstance().report({
+                feature: 'telegram-injection-refusal', primary: 'durable truthful failure and agent-owned follow-through',
+                fallback: 'refused input remains refused; no delivery or retry claim', reason,
+                impact: 'Failure visibility or follow-through could not be verified.',
+              }),
+            }, { namespace: telegram.getInboundSourceNamespace(), topicId, messageId: String(inboundMessageId ?? msg.id) });
+            console.warn('[telegram→session] Baseline refusal visibility:', JSON.stringify(visibility));
+            return { refused: true as const };
+          }
+          withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId,
+            'I could not verify that this message attempt reached the conversation. Its outcome may be uncertain; please do not assume it was not sent.'
+          )).catch(() => { /* @silent-fallback-ok: legacy generic failure has no new custody claim; the callback still withholds delivery acknowledgement. */ });
+          return { refused: true as const };
         }
         if (injected) confirmLocalSessionPoolClaim();
         // Delivery confirmation — only when WE own polling. When lifeline owns
@@ -10094,7 +10117,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
         () => resolveHubClassifierDeps(config, _sharedIntelligence),
-        { port: config.port, authToken: config.authToken ?? '' });
+        { port: config.port, authToken: config.authToken ?? '' },
+        () => commitmentTracker ?? null);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
       wireTopicRenameLabel(telegram);
@@ -10241,7 +10265,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
         () => resolveHubClassifierDeps(config, _sharedIntelligence),
-        { port: config.port, authToken: config.authToken ?? '' });
+        { port: config.port, authToken: config.authToken ?? '' },
+        () => commitmentTracker ?? null);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)

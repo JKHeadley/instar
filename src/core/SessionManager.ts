@@ -1319,6 +1319,9 @@ export class SessionManager extends EventEmitter {
    *  re-drive, sentinel pause/resume) must still reach the session at most once.
    *  Bounded by pruning entries older than the dedup window on each delivery. */
   private recentTelegramDeliveries = new Map<string, number>();
+  /** An uncertain attempt is suppressed without claiming delivery, using the same existing window. */
+  private recentTelegramUncertainAttempts = new Map<string, number>();
+  private telegramInjectionObservation: { kind: 'wrapper' | 'dispatch'; refusal?: 'codex-baseline-unavailable-before-dispatch' } | null = null;
   private static readonly TELEGRAM_DELIVERY_DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
   /** Track sessions nudged after an API error in the CURRENT idle episode.
@@ -9619,6 +9622,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return 'ceiling';
   }
 
+  /** Observe only this synchronous call; never infer a refusal from logs or later state. */
+  injectTelegramMessageObserved(...args: Parameters<SessionManager['injectTelegramMessage']>): {
+    injected: boolean;
+    refusal?: 'codex-baseline-unavailable-before-dispatch';
+  } {
+    const previous = this.telegramInjectionObservation;
+    const observation: NonNullable<SessionManager['telegramInjectionObservation']> = { kind: 'wrapper' };
+    this.telegramInjectionObservation = observation;
+    try {
+      const injected = this.injectTelegramMessage(...args);
+      return { injected, ...(observation.refusal ? { refusal: observation.refusal } : {}) };
+    } finally {
+      this.telegramInjectionObservation = previous;
+    }
+  }
+
   injectTelegramMessage(
     tmuxSession: string,
     topicId: number,
@@ -9654,7 +9673,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // quota and queues the task repeatedly. Suppress the duplicate but LOG it so
     // the upstream over-forward stays visible for root-cause. Skipped when no
     // positive messageId is available (in-process callers that don't carry one).
-    if (typeof messageId === 'number' && messageId > 0) {
+    const dedupKey = typeof messageId === 'number' && messageId > 0 ? `${tmuxSession}:${messageId}` : null;
+    if (dedupKey !== null) {
       const now = Date.now();
       // Prune expired entries to keep the ledger bounded.
       for (const [k, ts] of this.recentTelegramDeliveries) {
@@ -9662,7 +9682,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.recentTelegramDeliveries.delete(k);
         }
       }
-      const dedupKey = `${tmuxSession}:${messageId}`;
+      for (const [k, ts] of this.recentTelegramUncertainAttempts) {
+        if (now - ts > SessionManager.TELEGRAM_DELIVERY_DEDUP_WINDOW_MS) this.recentTelegramUncertainAttempts.delete(k);
+      }
+      if (this.recentTelegramUncertainAttempts.has(dedupKey)) {
+        console.warn(`[SessionManager] Suppressed duplicate Telegram attempt with an uncertain prior outcome for ${topicRef(topicId)}`);
+        return false;
+      }
       const priorAt = this.recentTelegramDeliveries.get(dedupKey);
       if (priorAt !== undefined) {
         console.warn(
@@ -9672,8 +9698,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
         );
         return true; // already delivered on the first call — success without re-injecting
       }
-      this.recentTelegramDeliveries.set(dedupKey, now);
     }
+    const injectPayload = (payload: string): boolean => {
+      const previous = this.telegramInjectionObservation;
+      const observation: NonNullable<SessionManager['telegramInjectionObservation']> = { kind: 'dispatch' };
+      this.telegramInjectionObservation = observation;
+      try {
+        const injected = this.injectMessage(tmuxSession, payload) !== false;
+        if (dedupKey !== null) {
+          if (injected) this.recentTelegramDeliveries.set(dedupKey, Date.now());
+          else if (!observation.refusal) this.recentTelegramUncertainAttempts.set(dedupKey, Date.now());
+        }
+        // Only the explicit observed wrapper receives this dispatch's reason.
+        // A nested ordinary dispatch cannot poison its parent's observation.
+        if (previous?.kind === 'wrapper' && observation.refusal) previous.refusal = observation.refusal;
+        return injected;
+      } catch (err) {
+        if (dedupKey !== null) this.recentTelegramUncertainAttempts.set(dedupKey, Date.now());
+        throw err;
+      } finally {
+        this.telegramInjectionObservation = previous;
+      }
+    };
 
     // Track this injection for response verification.
     // If the session dies before the agent replies, the monitor loop will detect it.
@@ -9716,7 +9762,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const taggedText = `${topicTag} ${transformed}`;
 
     if (taggedText.length <= FILE_THRESHOLD) {
-      return this.injectMessage(tmuxSession, taggedText) !== false;
+      return injectPayload(taggedText);
     }
 
     // Write full message to a project-local inbound file readable by sandboxed agents.
@@ -9733,7 +9779,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
     const refTag = buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
     const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
-    return this.injectMessage(tmuxSession, ref) !== false;
+    return injectPayload(ref);
   }
 
   /**
@@ -10145,6 +10191,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // physical effect. The owning ingress sees `false`, retains its source
         // custody, and (for conversational routes) respawns the stale session.
         if (!preRolloutBootstrap && (!transcriptPath || !rolloutId || baseline < 0)) {
+          if (this.telegramInjectionObservation) {
+            this.telegramInjectionObservation.refusal = 'codex-baseline-unavailable-before-dispatch';
+          }
           console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);
           return false;
         }

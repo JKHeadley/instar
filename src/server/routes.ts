@@ -32917,8 +32917,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // "✓ Delivered" for it (Echo Bugs 10000002533).
         let refused = false;
         try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
-        const delivered = ctx.telegram.onTopicMessage(message) as unknown;
-        if (trust) await delivered;
+        // Do not acknowledge delivery while the actual handler is still deciding
+        // whether the attempt can dispatch. Mobile ingress already awaited this
+        // callback; lifeline ingress must also observe its explicit refusal.
+        const delivered = await ctx.telegram.onTopicMessage(message);
+        if (delivered && delivered.refused === true) refused = true;
         if (credMask?.removed && credMask.team && !refused) {
           void withNotificationEnvelope(stampForwardResponse(), async () => inboundCredentialNotice.notify({
             target: String(topicId), messageKey: String(messageId ?? req.body.updateId ?? ''), channel: 'telegram', result: credMask!,
