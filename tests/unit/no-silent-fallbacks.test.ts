@@ -426,9 +426,10 @@ describe('No Silent Fallbacks', () => {
     // /memory-picker/session-context were counted because the 20-line window
     // reached `?? 'fallback'`. pick() never rejects, so both now carry an
     // in-window @silent-fallback-ok; the scanner reports exactly 494.
-    // 494 -> 493: preference and typed-push catches explicitly expose unavailable
-    // state, hold admission, return HTTP503 or report through injected seams.
-    // The exact scanner is 493; no fallback gains authority and no threshold rises.
+    // Keep the stricter 493 ceiling from both independently reviewed candidates.
+    // Creation evidence catches expose unknown/conflict or reportOnce; preference
+    // and typed-push catches expose unavailable/held/HTTP503 outcomes. The merged
+    // scanner still needs its focused check; no threshold is raised.
     const BASELINE = 493;
 
     if (silentFallbacks.length > 0) {

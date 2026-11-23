@@ -8,7 +8,7 @@ standard-response-article-id: iterative-audit-to-convergence
 standard-response-article: Iterative Audit to Convergence
 standard-response-rationale: Existing current-authorization, durable custody and repeated-review requirements already govern these seams; production-path regressions enforce them without another constitutional rule.
 converged: "2026-11-23T00:26:37.432Z"
-rounds: "6"
+rounds: "8"
 standard-response-digest: "5505039f748ca3861ec2d399966503a57b5080138e073a3d87b7f31683b37c47"
 meta-artifact-at: "2026-11-23T00:26:37.432Z"
 meta-artifact-digest: "25a7a0a6988afa432c8ba3886f634acbf38ba3e0c88da81c8d3a60428b4281c4"
@@ -114,3 +114,29 @@ Surface delta: unknown standing now holds with an explicit diagnostic reason; pr
 New findings this round: 0
 
 Independent security review reported zero remaining material findings in source and correction artifacts. Provider restart tests cover reply and urgent notice retention, recovery, and affirmative cancellation. The production lifecycle uses the actual signed team-access log becoming unreadable and readable again, without replacing the ACL predicate. Review concurrence does not claim independent test execution or a complete gate pass.
+
+## Round 7
+
+Search angles: normal merge with current parent metadata, explicit represented readers, production canonical Slack lookup and independent integration tracing.
+Surface delta: retain preferences and hierarchy together; require the resolved reader for owner metadata and exact workspace-qualified canonical parent identity.
+
+| location | behavior | bucket | disposition |
+| --- | --- | --- | --- |
+| src/server/mobileConversationRoutes.ts:ownerMetadataOf | Newly combined explicit-reader reads needed one consistent role for personal preferences and owner hierarchy fields | cross-feature-reader-context | fixed:tests/integration/app-creation-hierarchy.test.ts |
+| src/server/AgentServer.ts:creationHierarchySource.resolveRef | Workspace-free registry tuple lookup could rewrite a canonical Slack parent to a different readable local workspace | mistaken-parent-identity | fixed:tests/e2e/session-app-new-alive.test.ts |
+
+New findings this round: 2
+
+The Slack finding is source-reachable mistaken placement, not a demonstrated unauthorized-access incident. The fix requires returned canonical-key equality. Origin-checked machine-qualified aliases are unchanged. Tests use the real AgentServer dependency and registry with a synthetic transport; they do not certify a live Slack account.
+
+## Round 8
+
+Search angles: independent final merge/identity review; actual private Node24 ABI137 SQLite probe; all nine allocated whole files across unit, HTTP and production lifecycle; exact frozen index/source hashes.
+Surface delta: corrected merged source unchanged during the allocated checks. Reviewer concurrence and actual execution agree on represented-reader refusal/reassignment, read-only preview, preserved preferences and exact canonical parent identity.
+
+| location | behavior | bucket | disposition |
+| --- | --- | --- | --- |
+
+New findings this round: 0
+
+The normal build passed. All78unit,25HTTP and4lifecycle tests passed with zero failures/skips; every selected whole file executed. Full stdout, ordinary enforcing admission and exact source/index hashes are retained in the private allocation receipts. These focused results are supporting evidence, not a complete Local Verify pass. The corrected pushed candidate must still pass the normal complete gate and later installation/native proof. No existing conversation was moved or deleted.

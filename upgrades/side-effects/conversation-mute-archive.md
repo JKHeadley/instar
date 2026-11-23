@@ -3,7 +3,7 @@
 **Version / slug:** conversation-mute-archive
 **Date:** 2026-11-22
 **Author:** Echo
-**Second-pass reviewer:** context_spec_security and context_spec_adversarial.
+**Second-pass reviewers:** mute_archive_merge_review and mute_final_identity_review for the current merge; context_spec_security and context_spec_adversarial for the historical feature review.
 
 ## Summary of the change
 
@@ -68,3 +68,13 @@ Independent runtime review converged after six rounds, and real AgentServer life
 **Reviewer:** context_spec_security and context_spec_adversarial.
 
 Security independently verified corrected identity, recipient custody, document policy, decision payload and strict represented-witness admission. Adversarial review repeated after its list and cursor findings and reported zero new material findings on the final source. Integration, performance and completeness reviewers also rechecked their fixes. Their concurrence does not replace actual full verification or native evidence.
+
+## Integration With Current Main
+
+The normal merge retains both per-reader preference identities and authoritative creation hierarchy metadata. Explicit represented readers are resolved consistently; non-owner rows omit owner hierarchy fields, malformed or removed readers fail closed, and removal during an awaited pool read cannot become implicit owner access.
+
+The final source review found a canonical Slack identity issue: the registry tuple lookup can match a different workspace. The hierarchy dependency now additionally requires exact returned canonical-key equality. This preserves the separate origin-checked machine-qualified alias path and does not change registry-wide routing. The actual AgentServer signed-device lifecycle fixture covers refusal without child creation for a wrong workspace and successful exact-workspace parent recording. This is mistaken-placement prevention; no unauthorized access incident is claimed.
+
+Independent main-merge and final identity reviewers concurred with bounded validation. Actual validation receipts below distinguish the executed focused pass from pending complete and live gates. The old remote head remains held. A new exact pushed head needs normal complete Local Verify, then separate guarded installation and actual native evidence. No conversation was moved or deleted.
+
+Actual corrected-merge validation: normal build passed;78unit,25HTTP and4production lifecycle cases passed, zero failures/skips, all nine whole files executed under the independent allocation. Initial ABI failure stopped before execution and is retained; dependencies were isolated before rebuilding the private binding. The App and graph binding paths remained separate. Final reviewers: mute_archive_merge_review and mute_final_identity_review concurred on the final source. No full candidate, deployment or native pass is claimed here.

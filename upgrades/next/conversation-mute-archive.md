@@ -18,3 +18,5 @@ The server can now remember your personal mute and archive choices. Archiving ke
 | Reversible archive lists | GET /mobile/conversations with archive=exclude, only or all |
 | Truthful save and delivery status | Read local receipt, emission status and delivery support separately |
 | Reader-bound pending notifications | Automatic at guarded provider transport; unknown proof holds evidence |
+
+Parent references also retain their exact Slack workspace identity. An unresolved reference cannot silently place a chat under another workspace with the same channel ID. Production initialization tests cover the refusal and exact-parent success.

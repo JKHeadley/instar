@@ -10,11 +10,13 @@
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { Server } from 'node:http';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { createMockSessionManager } from '../helpers/setup.js';
@@ -59,7 +61,7 @@ async function boot() {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'app-new-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent: true, dashboardPin: PIN,
-    mobilePairing: { multiRoute: { enabled: false } },
+    mobilePairing: { multiRoute: { enabled: false }, slackOwnerUserId: 'UOWNER' },
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 4, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -111,7 +113,11 @@ async function boot() {
       return landed ? { session: svc.sessionFor(key), refusal: null } : { session: null, refusal: 'spawn-failed' };
     },
   };
-  const server = new AgentServer({ config, sessionManager, state, initiativeTracker: new InitiativeTracker(stateDir), tunnel, terminateSessionAuthority, topicProfile } as never);
+  // Real registry and production Slack bridge wiring; transport only is a stand-in.
+  const conversationRegistry = new ConversationRegistry({ stateDir, machineId: () => 'e2e-slack', isRecordingEnabled: () => true, getLocalWorkspaceId: () => 'TLOCAL' });
+  conversationRegistry.mintForInbound('C123');
+  const slack = { getLogPath: () => path.join(stateDir, 'slack-messages.jsonl'), getAmbientStats: () => null, getSessionForChannel: () => undefined };
+  const server = new AgentServer({ config, sessionManager, state, initiativeTracker: new InitiativeTracker(stateDir), tunnel, terminateSessionAuthority, topicProfile, conversationRegistry, slack } as never);
   servers.push(server);
   const row = sessionRow('throwaway-session');
   sessionManager._sessions.push(row);
@@ -158,6 +164,17 @@ describe('a New session with its own app conversation — production wiring', ()
     expect((await signed('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
     expect((await signed('POST', '/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(deviceId, HOST, presence.publicKey)) })).status).toBe(200);
 
+    // Exercise AgentServer's actual hierarchy dependency, not a test resolver that
+    // already knows which workspace to accept. A tuple match cannot rewrite intent.
+    const beforeWrongParent = server.appConversations!.store.listConversations().conversations.length;
+    const wrongParent = await signed('POST', '/mobile/conversations', { title: 'Wrong workspace child', requestId: `${Date.now()}-${crypto.randomUUID()}`, parentConversationKey: 'slack:TOTHER:C123' });
+    expect(wrongParent.status, JSON.stringify(wrongParent.body)).toBe(404);
+    expect(wrongParent.body.error).toBe('unknown-parent');
+    expect(server.appConversations!.store.listConversations().conversations).toHaveLength(beforeWrongParent);
+    const exactParent = await signed('POST', '/mobile/conversations', { title: 'Exact workspace child', requestId: `${Date.now()}-${crypto.randomUUID()}`, parentConversationKey: 'slack:TLOCAL:C123' });
+    expect(exactParent.status, JSON.stringify(exactParent.body)).toBe(200);
+    expect(server.appConversations!.store.getCreationRecord(exactParent.body.conversationKey)?.creationContext?.parentConversationKey).toBe('slack:TLOCAL:C123');
+
     const act = async (issue: Record<string, unknown>, route: string, body: Record<string, unknown>) => {
       const built = buildAction(issue.action, issue.target, issue);
       if (!built.ok) throw new Error(built.error);
@@ -177,6 +194,15 @@ describe('a New session with its own app conversation — production wiring', ()
     expect(convs.status, JSON.stringify(convs.body)).toBe(200);
     const row = (convs.body.conversations as Array<{ id: string; platform: string; title: string }>).find((c) => c.platform === 'app' && c.title === 'Plans');
     expect(row, JSON.stringify(convs.body)).toBeTruthy();
+
+    // The production session-create path records historical provenance even with Chief placement unavailable.
+    const recorded = server.appConversations!.store.getCreationRecord(row!.id);
+    expect(recorded?.creationContext?.source.kind).toBe('session');
+    expect(recorded?.creationContext?.source.requestId).toBeTruthy();
+    expect(Object.hasOwn(recorded!.creationContext!, 'parentConversationKey')).toBe(false);
+    const preview = await signed('GET', '/mobile/conversations/parent-preview');
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body).toMatchObject({ dryRun: true, canApply: false });
 
     // The session is real and registered on it: the session list names this conversation as its own.
     const list = await bearer(request(app).get('/sessions'));

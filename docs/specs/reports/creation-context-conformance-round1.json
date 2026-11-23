@@ -1,0 +1,40 @@
+{
+  "report": {
+    "standardsChecked": 102,
+    "checkedAt": "2026-11-22T22:21:18.026Z",
+    "findings": [
+      {
+        "standard": "Judgment Within Floors",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "A card can originate in a readable conversation about several projects while having an owner-confirmed binding to its specific project conversation, yet source-first selection always excludes the project parent when both qualify; keep readability and evidence checks deterministic, and let the Chief judge competing candidates or report the placement unresolved."
+      },
+      {
+        "standard": "Judgment Within Floors",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "The targeted-checks-only rule bars a developer from running a full regression suite even when a failure suggests effects beyond the targeted tests, and the spec gives no capacity constraint that requires this blanket ban; development test breadth can follow engineering judgment while exact-head merge validation remains mandatory."
+      },
+      {
+        "standard": "Constitutional Traceability \u2014 No Unconstitutional Work",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "The spec identifies a Chief of Staff handoff as authorization but never names the parent constitutional standard or explains how preserving a chat\u2019s origin serves it."
+      },
+      {
+        "standard": "Live-User-Channel Proof Before Done",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "The proposed acceptance tests stop at server persistence and HTTP list responses, so they can pass while the mobile App still presents a generated chat as an unrelated root."
+      }
+    ],
+    "degraded": false
+  },
+  "registryCanary": {
+    "ok": true,
+    "articleCount": 102,
+    "failures": [],
+    "articleHeadings": 102,
+    "completenessAssessed": true
+  }
+}

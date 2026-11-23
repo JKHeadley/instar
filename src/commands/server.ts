@@ -1,3 +1,4 @@
+import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapshot.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
@@ -11182,9 +11183,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return n;
               },
               conversation: {
-                create: (cardId, conversationKey, title) => {
+                create: (cardId, conversationKey, title, creationContext) => {
                   // Device id `work-board`, request id = the card id: the event id is stable, so a second create is a no-op.
-                  const r = appSvc.applyCreate('work-board', cardId, conversationKey, title.slice(0, 80) || 'Work card', null);
+                  const r = appSvc.applyCreate('work-board', cardId, conversationKey, title.slice(0, 80) || 'Work card', null, creationContext);
                   if (r.status !== 200) throw new Error(String((r.body as { error?: string }).error ?? 'conversation-not-created'));
                 },
                 exists: (conversationKey) => !!appSvc.liveConversation(conversationKey),
@@ -31775,9 +31776,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // The Chief of Staff union from a COMPLETE read of this machine's journal (every archive and the current
               // file, in full) plus peer streams; null when the own journal could not be read completely
               // (conversation-groups-phone §3: "already a project?" must never come from a tail read).
-              const cosLoadUnionComplete = (): Array<{ data: Record<string, unknown>; origin: string }> | null => {
+              const cosLoadUnionComplete = (flush = true): Array<{ data: Record<string, unknown>; origin: string }> | null => {
                 // Write out this machine's queued records first, so a binding it made a moment ago is on disk to be seen.
-                try { cosJournal.flush(); } catch { /* @silent-fallback-ok: an unflushed queue only makes the read older; the refusal paths still hold */ }
+                try { if (flush) cosJournal.flush(); } catch { /* @silent-fallback-ok: an unflushed queue only makes the read older; the refusal paths still hold */ }
                 const all = cosJournal.readKindComplete(storeMod.CHIEF_OF_STAFF_RECORD_KIND);
                 const peersWhole = cosPeerStreams.peerStreamsReadComplete(storeMod.CHIEF_OF_STAFF_STORE_KEY);
                 if (!all.complete || !peersWhole) {
@@ -31991,7 +31992,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               };
               const loop = new loopMod.ChiefOfStaffLoop({
                 now: () => Date.now(), machineId: meshSelfId, enabled: cosEnabled, holdsLease: () => cosLease.holdsLease(), config: cosCfg,
-                journal: { emit: (recordKey, build) => { const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion: () => protocol['d'].journal.loadUnion(), loadUnionComplete: cosLoadUnionComplete, awaitDurable: (seq) => protocol['d'].journal.awaitDurable(seq) },
+                journal: { emit: (recordKey, build) => { const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion: () => protocol['d'].journal.loadUnion(), loadUnionComplete: cosLoadUnionComplete, loadUnionCompleteReadOnly: () => cosLoadUnionComplete(false), creationSourceVersion: () => creationPlacementSourceVersion(config.stateDir, cosJournal.streamStatuses().filter(s => s.kind === storeMod.CHIEF_OF_STAFF_RECORD_KIND)), awaitDurable: (seq) => protocol['d'].journal.awaitDurable(seq) },
                 verifyRenewal: (r) => { const m = String(r.machine ?? ''); const pem = meshIdMgr.getSigningPublicKeyPem(m); const canonical = `cos-renewal:${r.renewedAt}:${r.renewedVia}:${r.principal}:${m}`; return pem ? idMod.verify(canonical, String(r.machineSignature ?? ''), pem) : false; },
                 gather, judge, protocol,
                 mirrorInitiativeStatus: (id, status) => { try { (initiativeTracker as unknown as { update?: (id: string, patch: Record<string, unknown>) => unknown }).update?.(id, { status }); } catch { /* @silent-fallback-ok: the binding is the authority; the mirror retries next tick (§1.2) */ } },
