@@ -86,7 +86,7 @@ describe('Routing Control Room spend view E2E lifecycle (feature is alive)', () 
     expect(res.status).toBe(200);
     expect(res.body.meteredLiveYet).toBe(false);
     const keys = res.body.keys.map((k: { keyRef: string }) => k.keyRef).sort();
-    expect(keys).toEqual(['metered_gemini_bench', 'metered_groq_bench', 'metered_openrouter_bench']);
+    expect(keys).toEqual(['gemini_api_key_payg', 'metered_groq_bench', 'metered_openrouter_bench']);
     for (const k of res.body.keys) {
       expect(k.goLiveState).toBe('not-live');
       expect(k.committedLifetimeUsd).toBe(0);

@@ -391,6 +391,35 @@ export class MessageStore implements IMessageStore {
     return filePath !== null && fs.existsSync(filePath);
   }
 
+  /** messages-reach-renamed-sessions §D.2: a message id that already reached dead-letter. */
+  async isDeadLettered(messageId: string): Promise<boolean> {
+    if (!isSafeFileId(messageId)) return false; // SEC-127: ids are only ever plain file names
+    return fs.existsSync(path.join(this.basePath, 'dead-letter', `${messageId}.json`));
+  }
+
+  /**
+   * messages-reach-renamed-sessions §D.2: store a relayed envelope only if no record of
+   * its id exists. One step both claims the id and writes the whole record (temp file,
+   * then `link()`, which fails if the path exists), so two copies arriving at once can't
+   * both proceed and a crash never leaves a claimed-but-empty record. True = stored.
+   */
+  async saveIfAbsent(envelope: MessageEnvelope): Promise<boolean> {
+    const filePath = this.messageFilePath(envelope.message.id);
+    if (!filePath) throw new Error('unsafe message id: refusing to store a message whose id is not a plain file name');
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.claim`;
+    fs.writeFileSync(tmpPath, JSON.stringify(envelope, null, 2));
+    try {
+      fs.linkSync(tmpPath, filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw err;
+    } finally {
+      SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/MessageStore.ts:saveIfAbsent' });
+    }
+    this.appendToIndex(envelope);
+    return true;
+  }
+
   // ── Thread Management ──────────────────────────────────────────
 
   async saveThread(thread: MessageThread): Promise<void> {

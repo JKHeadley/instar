@@ -1,3 +1,4 @@
+import { FailureEvidence } from '../../../src/localVerify/failureEvidence.js';
 // safe-git-allow: test fixture setup — builds a throwaway repo for the directory-rename regression.
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 import { execFileSync } from 'node:child_process';
@@ -909,6 +910,42 @@ describe('runVerify — e2e shards', () => {
 });
 
 describe('runVerify — retention of failed worktrees', () => {
+  it('preserves the failed verdict if evidence capture throws', async () => {
+    const spy = vi.spyOn(FailureEvidence.prototype, 'capture').mockImplementation(() => { throw new Error('capture failed'); });
+    try {
+      const f = fake({ laneStatuses: { unit: ['failed'] } });
+      const r = await runVerify(input(), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+      expect(f.logs).toContainEqual({ event: 'failure-evidence-capture-failed' });
+    } finally { spy.mockRestore(); }
+  });
+
+  it('keeps assertion details after temporary lane reports are removed', async () => {
+    const f = fake({ laneStatuses: { integration: ['failed'] }, rerun: { 'tests/integration/b.test.ts': ['failed'] } });
+    const write = f.seams.fs.writeFile;
+    const modes: unknown[] = [];
+    f.seams.fs.writeFile = (p, data, mode) => { if (p.endsWith('.local-verify-failures.json')) modes.push(mode); write(p, data); };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    const artifact = f.files.get(path.join(P.runDir, '.local-verify-failures.json'));
+    expect(JSON.parse(artifact!).failures).toContainEqual(expect.objectContaining({ file: 'tests/integration/b.test.ts', message: 'boom' }));
+    expect(modes).toEqual([{ mode: 0o600, flag: 'wx' }]);
+    expect(f.removed).toContain(P.reportsDir);
+  });
+  it('keeps a failed verdict when diagnostic storage fails', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] } });
+    const write = f.seams.fs.writeFile;
+    f.seams.fs.writeFile = (p, data) => { if (p.endsWith('.local-verify-failures.json')) throw new Error('disk full'); write(p, data); };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'failure-evidence-write-failed' }));
+  });
+  it('does not retain diagnostic output for a successful run', async () => {
+    const f = fake();
+    await runVerify(input(), f.seams);
+    expect(f.files.has(path.join(P.runDir, '.local-verify-failures.json'))).toBe(false);
+  });
+
   it('keeps at most three failed-run worktrees', async () => {
     const f = fake({ laneStatuses: { unit: ['failed'] } });
     const heads = ['1', '2', '3', '4'].map((c) => c.repeat(40));
@@ -1617,6 +1654,27 @@ describe('runVerify — balanced shards from duration history', () => {
     await runVerify(input(), f.seams);
     expect(f.shardLists).toHaveLength(0);
     expect(f.logs.some((l) => l.event === 'shard-plan' && l.balanced === false)).toBe(true);
+  });
+  it('records unit files in the duration history too (borrowed-unit-slices spec, A), and logs the unit wall factor', async () => {
+    const f = fake();
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const hist = JSON.parse(f.files.get(P.durationsPath) as string) as Record<string, number>;
+    expect(Object.keys(hist)).toEqual(expect.arrayContaining(['tests/unit/a.test.ts', 'tests/integration/b.test.ts', 'tests/e2e/c.test.ts']));
+    const wf = f.logs.find((l) => l.event === 'unit-wall-factor');
+    expect(wf).toMatchObject({ workers: LOCAL_VERIFY_LIMITS.unitWorkersParallel });
+    expect(typeof wf?.factor).toBe('number');
+  });
+  it('unit entries in the history never change a slow lane\'s shard plan', async () => {
+    const withUnit = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const without = fake({ laneFiles: { integration: many(INT), e2e: many(E2E) } });
+    const hist = Object.fromEntries([...INT, ...E2E].map((x, i) => [x, 1000 * (i + 1)]));
+    without.files.set(P.durationsPath, JSON.stringify(hist));
+    withUnit.files.set(P.durationsPath, JSON.stringify({ ...hist, 'tests/unit/a.test.ts': 999_999, 'tests/unit/z.test.ts': 1 }));
+    await runVerify(input(), withUnit.seams);
+    await runVerify(input(), without.seams);
+    const lists = (f: ReturnType<typeof fake>) => f.shardLists.map((s) => `${s.lane}:${s.files.join(',')}`).sort();
+    expect(lists(withUnit)).toEqual(lists(without));
   });
   it('an unreadable history file is ignored, never a failure', async () => {
     const f = fake();

@@ -212,7 +212,7 @@ describe('MessageRouter', () => {
       expect(inbox.map(e => e.message.id)).toContain(result.messageId);
     });
 
-    it('queues (never throws) when delivery itself throws', async () => {
+    it('queues a proven read-only pre-injection failure without typing', async () => {
       const tmux = createMockTmuxOps();
       tmux.getForegroundProcess.mockImplementation(() => { throw new Error('tmux exploded'); });
       const r = new MessageRouter(store, new MessageDelivery(new MessageFormatter(), tmux as any), {
@@ -225,6 +225,29 @@ describe('MessageRouter', () => {
       );
       expect(result.phase).toBe('queued');
       expect((await store.get(result.messageId))!.delivery.failureReason).toBe('tmux exploded');
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
+    });
+
+    it('an unclassified delivery exception after a physical side effect stays terminal unknown', async () => {
+      const tmux = createMockTmuxOps();
+      const delivery = new MessageDelivery(new MessageFormatter(), tmux);
+      vi.spyOn(delivery, 'deliverToSession').mockImplementation(async () => {
+        tmux.sendKeys('other-session', 'already submitted');
+        throw new Error('result lost after submission');
+      });
+      const r = new MessageRouter(store, delivery, {
+        localAgent: 'my-agent', localMachine: 'my-machine', serverUrl: 'http://localhost:3000',
+      });
+      const result = await r.send(
+        { agent: 'my-agent', session: 'desk', machine: 'my-machine' },
+        { agent: 'my-agent', session: 'other-session', machine: 'local' },
+        'info', 'low', 'Subject', 'Body',
+      );
+      expect(result.phase).toBe('failed');
+      expect((await store.get(result.messageId))!.delivery.failureReason).toContain('outcome unknown');
+      expect(tmux.sendKeys).toHaveBeenCalledOnce();
+      await r.recoverPendingRelayed();
+      expect(tmux.sendKeys).toHaveBeenCalledOnce();
     });
 
     it('refuses (failed, never typed, never retried) a target that is not a running session of this agent', async () => {

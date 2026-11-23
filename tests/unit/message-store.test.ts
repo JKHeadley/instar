@@ -534,6 +534,16 @@ describe('MessageStore', () => {
       await expect(store.updateDelivery('../planted', { phase: 'sent', transitions: [], attempts: 0 })).rejects.toThrow(/not found/);
     });
 
+    it('saveIfAbsent refuses an unsafe id and isDeadLettered never looks outside dead-letter/', async () => {
+      await expect(store.saveIfAbsent(makeEnvelope({ id: '../planted' }))).rejects.toThrow(/unsafe message id/);
+      expect(fs.existsSync(path.join(tmpDir, 'planted.json'))).toBe(false);
+      fs.writeFileSync(path.join(tmpDir, 'planted.json'), '{}');
+      expect(await store.isDeadLettered('../planted')).toBe(false);
+      const env = makeEnvelope({ id: 'fresh-1' });
+      expect(await store.saveIfAbsent(env)).toBe(true);
+      expect(await store.saveIfAbsent(env)).toBe(false);
+    });
+
     it('ordinary ids still work: UUIDs, msg-/thr- ids and ids with dots or colons', async () => {
       for (const id of [crypto.randomUUID(), 'thr-1-abc', 'relay:peer.thread_1', 'a..b']) {
         await store.saveThread(makeThread({ id }));

@@ -20,6 +20,7 @@ import { HelperWatchdog } from '../../src/monitoring/HelperWatchdog.js';
 import {
   wireCompactionTrigger1,
   wirePreCompactionFlush,
+  wireShadowFoldStop,
   createHelperAlertDelivery,
   resolvePreCompactTarget,
 } from '../../src/monitoring/hookEventConsumers.js';
@@ -96,7 +97,7 @@ describe('session-id bridge + shared side effects (criterion 3a)', () => {
   it('both routes call the same side-effect function (wiring)', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf8');
     const oldRoute = src.slice(src.indexOf("router.post('/hooks/events'"), src.indexOf("router.post('/hooks/events'") + 2500);
-    expect(oldRoute).toContain('dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid)');
+    expect(oldRoute).toContain('dispatchHookEvent(hookEventDispatchDeps(), payload, sid)'); // sid: the route-selected id, validated once (hook-reporter-event-delivery)
     expect(oldRoute).not.toContain('setClaudeSessionId');
     expect(oldRoute).not.toContain('subagentTracker.onStart');
     const nativeBlock = src.slice(src.indexOf('ctx.nativeHookIngest.setProcessor'), src.indexOf("router.post('/hooks/native-events'"));
@@ -177,6 +178,7 @@ const D2_DISPATCH_CASES = ['PostToolUse', 'SubagentStart', 'SubagentStop', 'Sess
 const D2_RECEIVER_LISTENERS: Record<string, string[]> = {
   // event → consumer rows
   PreCompact: ['Compaction sentinel Trigger 1', 'PreCompactionFlush (off by default)'],
+  Stop: ['Shadow fold runner (dev-gated)'],
 };
 
 describe('D2 consumer enumeration (ratchet)', () => {
@@ -192,16 +194,21 @@ describe('D2 consumer enumeration (ratchet)', () => {
     expect(src.match(/hookEventReceiver\.on\(/g) ?? []).toEqual([]);
     expect(src).toContain('wireCompactionTrigger1(hookEventReceiver,');
     expect(src).toContain('wirePreCompactionFlush(hookEventReceiver,');
+    expect(src).toContain('wireShadowFoldStop(hookEventReceiver,');
   });
 
   it('after the real wiring runs, the receiver\'s listeners match the D2 fixture', () => {
     const receiver = new HookEventReceiver({ stateDir: tmp() });
     wireCompactionTrigger1(receiver, { report: () => {}, getSessionById: () => undefined, topicSessionNames: () => null });
     wirePreCompactionFlush(receiver, { handle: async () => undefined });
+    const unwire = wireShadowFoldStop(receiver, () => undefined);
+    expect(receiver.listenerCount('Stop')).toBe(1);
     const names = receiver.eventNames().map(String).sort();
     expect(names).toEqual(Object.keys(D2_RECEIVER_LISTENERS).sort());
     for (const [event, rows] of Object.entries(D2_RECEIVER_LISTENERS)) {
       expect(receiver.listenerCount(event)).toBe(rows.length);
     }
+    unwire();
+    expect(receiver.listenerCount('Stop')).toBe(0);
   });
 });

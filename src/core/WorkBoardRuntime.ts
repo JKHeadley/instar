@@ -10,16 +10,19 @@
  */
 
 import {
-  WorkBoardService, resolveWorkBoardSettings, lineIdFor, transcriptLineFor,
-  type WorkBoardSettings, type CardView,
+  WorkBoardService, resolveWorkBoardSettings, lineIdFor, transcriptLineFor, noteRefusalFor, JOURNAL_BUCKET_CAPACITY,
+  type WorkBoardSettings, type CardView, type WorkPrincipal, type Refusal,
 } from './WorkBoardService.js';
 import { WorkBoardPickupController, type DeliverOutcome } from './WorkBoardPickupController.js';
-import { WORK_CARD_RECORD_KIND, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
+import { WorkBoardRequestGate, type RequestGateDeps } from './WorkBoardRequestGate.js';
+import { WORK_CARD_RECORD_KIND, cardConversationKey, workCardRecordStoreSchema, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
+import type { AppCreationContext } from './AppCreationContext.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import { createHash } from 'node:crypto';
 
 export interface WorkBoardConversationSeam {
   /** Create the card's conversation with a derived key (idempotent). */
-  create: (cardId: string, conversationKey: string, title: string) => void;
+  create: (cardId: string, conversationKey: string, title: string, creationContext?: AppCreationContext) => void;
   exists: (conversationKey: string) => boolean;
   /** Append one agent-role message carrying `systemSource: 'work-board'`; a repeat of the same id is a no-op. Throws on a credential hit. */
   appendSystemLine: (conversationKey: string, lineId: string, text: string) => void;
@@ -36,6 +39,29 @@ export interface WorkBoardConversationSeam {
   attachment: (attachmentId: string) => { sha256: string; conversationKey: string; purged: boolean } | null;
   /** ISO time of the newest message by a person in the conversation, or null. */
   lastPersonMessageAt: (conversationKey: string) => string | null;
+  // ── agent-work-cards-default §2/§3 (optional: absent ⇒ notes and holds are inert on this build of the wiring) ──
+  /** The agent's progress note as an agent-role `work-board-note` event, emit reserved FIRST (appendWithEmit). */
+  appendNoteEvent?: (conversationKey: string, eventId: string, text: string, writerBinding: string) => 'appended' | 'duplicate' | 'rate-limited' | 'not-accepted';
+  /** One note event's words and time, or null when it has not replicated here yet. */
+  noteEvent?: (conversationKey: string, eventId: string) => { text: string; at: string } | null;
+  /** Every `work-board-note` event id on the conversation, oldest first (the drain's boot seed; bounded by the conversation's event count). */
+  noteEventIds?: (conversationKey: string) => Array<{ eventId: string; at: string }>;
+  /** Is the RECORDING conversation's session live (app, Telegram topic or Slack thread)? null = this wiring cannot tell (treated as live: no second worker is ever started on a guess). */
+  recordingSessionLive?: (conversationKey: string) => boolean | null;
+}
+
+/** Locally held immutable card evidence; a proposal source, never placement authority. */
+export interface WorkBoardCreationEvidence {
+  conversationKey: string;
+  cardId: string;
+  creationContext: AppCreationContext;
+  conflict: boolean;
+}
+
+export interface WorkBoardCreationEvidenceSnapshot {
+  version: number;
+  complete: boolean;
+  items: ReadonlyArray<WorkBoardCreationEvidence>;
 }
 
 export interface WorkBoardRuntimeSeams {
@@ -71,15 +97,27 @@ const SYNC_INTERVAL_MS = 60_000;
 export class WorkBoardRuntime {
   readonly svc: WorkBoardService;
   readonly controller: WorkBoardPickupController;
+  /** agent-work-cards-default §3: the request-to-card gate; null until the server attaches the commitments seams. */
+  gate: WorkBoardRequestGate | null = null;
   private readonly exchanges = new Map<string, Exchange>();
   private lastOtherHolder: string | null = null;
   private selfWasHolder = false;
   private journalSignalled = false;
   private started = false;
   private readonly now: () => number;
+  /** §2 "Note rate and the drain set": pending note event ids per card conversation, reconciled by event id against the pointers. */
+  private readonly pendingNotes = new Map<string, Map<string, string>>();
+  private notesSeeded = false;
+  private readonly bootMs: number;
+  private readonly creationEvidence = new Map<string, WorkBoardCreationEvidence>();
+  private creationEvidenceVersion = 0;
+  private creationEvidenceReady = false;
+  private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
+  readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
   constructor(private readonly seams: WorkBoardRuntimeSeams) {
     this.now = seams.now ?? Date.now;
+    this.bootMs = this.now();
     const settings = (): WorkBoardSettings => resolveWorkBoardSettings(seams.rawSettings());
     this.svc = new WorkBoardService({
       machineId: seams.machineId,
@@ -122,8 +160,214 @@ export class WorkBoardRuntime {
       degradation: seams.degradation,
       previousOwnerCaughtUp: (ck, since) => this.previousOwnerCaughtUp(ck, since),
       name: seams.displayName, when: (iso) => this.when(iso),
+      beforeTick: () => this.holderPass(),
       log: seams.log,
     });
+  }
+
+  // ── agent-work-cards-default: the gate, notes and the holder's pass ────────
+
+  /** The server attaches the commitments and adapter seams once they exist; the gate then runs on every recorded request. */
+  attachRequestGate(deps: Omit<RequestGateDeps, 'svc' | 'machineId' | 'now' | 'settings' | 'ownerPersonKey' | 'detectCredential' | 'writeNote' | 'caughtUpWithAllPeers'>): WorkBoardRequestGate {
+    this.gate = new WorkBoardRequestGate({
+      ...deps,
+      svc: this.svc, machineId: this.seams.machineId, now: this.now, settings: () => this.settings(),
+      ownerPersonKey: this.seams.ownerPersonKey, detectCredential: this.seams.detectCredential,
+      writeNote: (cardId, text, writerBinding) => this.writeNote({ kind: 'agent', server: true }, cardId, text, writerBinding),
+      caughtUpWithAllPeers: () => this.caughtUpWithAllPeers(this.bootMs),
+      log: deps.log ?? this.seams.log,
+    });
+    return this.gate;
+  }
+
+  /**
+   * §2: the agent's progress note. The conversation event lands FIRST (emit reserved, then the durable append), on the
+   * card's conversation, agent role, `systemSource: 'work-board-note'`, the writer's binding recorded. The holder writes
+   * the `note` pointer record from the pending set on its tick. A refused emit writes nothing and says so.
+   */
+  writeNote(p: WorkPrincipal, cardId: string, text: unknown, writerBinding: string): { ok: true; eventId: string; conversationKey: string } | Refusal {
+    const r = noteRefusalFor(this.svc, p, cardId); if (r) return r;
+    const t = this.svc.checkNoteText(text); if (!t.ok) return t;
+    const v = this.svc.view(cardId)!;
+    if (!this.seams.conversation.appendNoteEvent) return { ok: false, status: 503, error: 'notes-unavailable', detail: { message: 'Progress notes are not wired on this machine yet.' } };
+    this.ensureConversation(cardId);
+    const eventId = `wbn-${createHash('sha256').update(`${cardId}:${this.seams.machineId}:${this.now()}:${t.text}`).digest('hex').slice(0, 24)}`;
+    const out = this.seams.conversation.appendNoteEvent(v.card.conversationKey, eventId, t.text, writerBinding.slice(0, 200));
+    if (out === 'rate-limited') return { ok: false, status: 503, error: 'rate-limited', detail: { retryable: true, message: 'The replicated journal refused the note just now (rate cap). Nothing was written; write it again in a moment.' } };
+    if (out === 'not-accepted') return { ok: false, status: 503, error: 'store-unavailable', detail: { retryable: true, message: 'The note could not be reserved for replication, so nothing was written. Try again.' } };
+    this.notePending(v.card.conversationKey, eventId, new Date(this.now()).toISOString());
+    return { ok: true, eventId, conversationKey: v.card.conversationKey };
+  }
+
+  /** The store's append listener feeds this live (local and replicated events alike), filtered on `systemSource`. */
+  onNoteEvent(conversationKey: string, eventId: string, at: string): void { this.notePending(conversationKey, eventId, at); }
+
+  private notePending(conversationKey: string, eventId: string, at: string): void {
+    const cardId = this.svc.cardIdForConversation(conversationKey); if (!cardId) return;
+    if (this.svc.notedEventIds(cardId).has(eventId)) return;
+    const m = this.pendingNotes.get(conversationKey) ?? new Map<string, string>();
+    m.set(eventId, at);
+    this.pendingNotes.set(conversationKey, m);
+  }
+
+  /** The card's last note: its words when the event is here, `pending` when the pointer names an event not yet replicated. */
+  lastNote(cardId: string): { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null {
+    const v = this.svc.view(cardId); if (!v) return null;
+    const last = v.card.notes.length ? v.card.notes[v.card.notes.length - 1] : null;
+    let eventId = last ? last.eventIds[last.eventIds.length - 1] : null;
+    // A note written but not yet pointed at is still the newest note.
+    const pend = this.pendingNotes.get(v.card.conversationKey);
+    if (pend && pend.size) { let newest: [string, string] | null = null; for (const e of pend) if (!newest || e[1] > newest[1]) newest = e; if (newest && (!last || newest[1] >= last.at)) eventId = newest[0]; }
+    if (!eventId) return null;
+    const ev = this.seams.conversation.noteEvent?.(v.card.conversationKey, eventId) ?? null;
+    if (!ev) return { pending: true, eventId };
+    const text = ev.text.startsWith('Work board: the agent noted: ') ? ev.text.slice('Work board: the agent noted: '.length) : ev.text;
+    return { text, at: ev.at, eventId };
+  }
+
+  pendingNoteCount(): number { let n = 0; for (const m of this.pendingNotes.values()) n += m.size; return n; }
+
+  /** Boot or takeover: one bounded scan per card conversation seeds the pending set by event id (never by time). */
+  private seedPendingNotes(): void {
+    if (this.notesSeeded || !this.seams.conversation.noteEventIds) return;
+    this.notesSeeded = true;
+    for (const id of this.svc.cardIds()) {
+      const v = this.svc.view(id); if (!v || !v.card.created || v.card.redacted) continue;
+      let ids: Array<{ eventId: string; at: string }> = [];
+      try { ids = this.seams.conversation.noteEventIds(v.card.conversationKey); } catch { continue; /* @silent-fallback-ok: an unreadable conversation is seeded on the next takeover; live events still arrive through the listener */ }
+      const noted = this.svc.notedEventIds(id);
+      for (const e of ids) if (!noted.has(e.eventId)) this.notePending(v.card.conversationKey, e.eventId, e.at);
+    }
+  }
+
+  /**
+   * The lease holder's pass (§3 "Where and when it runs"; §2 "Note rate and the drain set"; §3 "Pickup hold" and
+   * "Quiet"): runs at the start of every pickup tick, only on the holder, each step paced to the shared journal bucket.
+   */
+  holderPass(): void {
+    if (!this.seams.enabled() || !this.holdsLease()) return;
+    this.holderStats.lastPassAt = this.now();
+    const s = this.settings();
+    let budget = JOURNAL_BUCKET_CAPACITY;
+    // 1. the request-card sweep
+    if (this.gate) {
+      try {
+        const r = this.gate.sweep();
+        this.holderStats.sweeps++; this.holderStats.cardsSwept += r.written + r.linked; this.holderStats.lastSweep = r;
+        budget -= r.written + r.linked;
+      } catch (err) { /* @silent-fallback-ok: logged; the sweep runs again on the next tick and the commitments stay cardPending until it lands */ this.seams.log?.('work-board-sweep-failed', { error: (err as Error)?.message }); }
+    }
+    // 2. the note drain
+    this.seedPendingNotes();
+    budget -= this.drainNotes(Math.min(s.noteDrainPerTick, Math.max(0, budget)));
+    // 3. one hold lift, then one quiet re-pickup, each only while no work pickup is pending or in a capacity wait
+    if (budget > 0 && !this.workPickupPending()) { if (this.liftOneHold()) budget--; }
+    if (budget > 0 && !this.workPickupPending()) { if (this.repickupOneQuiet()) budget--; }
+  }
+
+  private workPickupPending(): boolean {
+    for (const id of this.svc.cardIds()) {
+      const v = this.svc.view(id); if (!v) continue;
+      if (v.pickups.some((p) => p.status === 'pending' && p.cause.kind === 'work')) return true;
+    }
+    return false;
+  }
+
+  /** At most `max` pointer records, oldest events first; above the daily ceiling, one coalesced pointer per interval. */
+  private drainNotes(max: number): number {
+    let written = 0;
+    const s = this.settings();
+    const todayDay = this.dayOf(this.now()).day;
+    for (const [conversationKey, pend] of this.pendingNotes) {
+      if (written >= max) break;
+      if (!pend.size) { this.pendingNotes.delete(conversationKey); continue; }
+      const cardId = this.svc.cardIdForConversation(conversationKey); if (!cardId) { this.pendingNotes.delete(conversationKey); continue; }
+      const noted = this.svc.notedEventIds(cardId);
+      for (const e of [...pend.keys()]) if (noted.has(e)) pend.delete(e);
+      const events = [...pend.entries()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : 1));
+      if (!events.length) continue;
+      const today = this.svc.notePointersOn(cardId, todayDay);
+      if (today >= s.maxNotesPerCardPerDay) {
+        // Coalesce: one pointer per `noteCoalesceMinutes` carrying that interval's events, the newest interval only when it has settled.
+        const v = this.svc.view(cardId)!;
+        const lastAt = v.card.notes.length ? Date.parse(v.card.notes[v.card.notes.length - 1].at) : 0;
+        if (this.now() - lastAt < s.noteCoalesceMinutes * 60_000) continue;
+        const r = this.svc.notePointer(cardId, events.map((x) => x[0]));
+        if (r.ok) { for (const [e] of events) pend.delete(e); written++; this.holderStats.notesCoalesced++; }
+        else if (r.error === 'store-unavailable') return written; // rate-capped: the events stay pending for the next tick
+        continue;
+      }
+      for (const [eventId] of events) {
+        if (written >= max) break;
+        const r = this.svc.notePointer(cardId, [eventId]);
+        if (!r.ok) { if (r.error === 'store-unavailable') return written; pend.delete(eventId); continue; }
+        pend.delete(eventId); written++; this.holderStats.notesDrained++;
+        if (this.svc.notePointersOn(cardId, todayDay) >= s.maxNotesPerCardPerDay) break;
+      }
+    }
+    return written;
+  }
+
+  /**
+   * §3 "Pickup hold": the oldest held card whose hold should lift — a person's or the system's cause with no live
+   * recording session, or no agent record for `quietAfterHours` (the quiet lift) — gets ONE `hold-lifted` record.
+   */
+  private liftOneHold(): boolean {
+    const s = this.settings();
+    const quietMs = s.quietAfterHours * 3_600_000;
+    const held: Array<{ id: string; at: string; reason: 'quiet' | 'person-cause' }> = [];
+    for (const id of this.svc.cardIds()) {
+      const v = this.svc.view(id); if (!v) continue;
+      const c = v.card;
+      if (!c.created || !c.pickupHeld || c.redacted || c.archives.length || c.done) continue;
+      if (!this.seams.conversation.serves(c.conversationKey)) continue;
+      const recording = c.pickupHold?.kind === 'recording-session' ? c.pickupHold.conversationKey : null;
+      const live = recording ? (this.seams.conversation.recordingSessionLive?.(recording) ?? null) : false;
+      const quiet = this.now() - c.newestAgentRecordAt > quietMs;
+      // A person's cause (an approve or an answer after creation) lifts the hold only when no live session can take it.
+      const personCause = c.taps.some((t) => t.by.kind === 'person' && (t.action === 'approve' || t.action === 'answer' || t.action === 'retry') && Date.parse(t.at) >= Date.parse(c.createdAt ?? ''));
+      if (personCause && live === false) { held.push({ id, at: c.createdAt ?? '', reason: 'person-cause' }); continue; }
+      // No cause: the hold lifts only when the recording conversation has gone quiet (a long silent tool run is not a dead session, so `live === true` waits).
+      if (quiet && live !== true) held.push({ id, at: c.createdAt ?? '', reason: 'quiet' });
+    }
+    if (!held.length) return false;
+    held.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+    const pick = held[0];
+    const r = this.svc.liftHold(pick.id, pick.reason);
+    if (r.ok) { this.holderStats.holdsLifted++; this.seams.log?.('work-board-hold-lifted', { cardId: pick.id, reason: pick.reason }); }
+    return r.ok;
+  }
+
+  /**
+   * §3 "Quiet, with one self-heal first": the oldest workable, unheld, agent-carried card with no agent record for
+   * `quietAfterHours` and no pending pickup gets ONE `quiet-repickup` record (idempotent on the newest agent record).
+   */
+  private repickupOneQuiet(): boolean {
+    const s = this.settings();
+    const quietMs = s.quietAfterHours * 3_600_000;
+    const due: Array<{ id: string; at: number }> = [];
+    for (const id of this.svc.cardIds()) {
+      const v = this.svc.view(id); if (!v) continue;
+      const c = v.card;
+      if (!c.workable || c.pickupHeld || c.carrier !== 'agent' || !c.newestAgentRecordId) continue;
+      if (!this.seams.conversation.serves(c.conversationKey)) continue;
+      if (v.pickups.some((p) => p.status === 'pending' || p.status === 'parked')) continue; // a park (the quiet row) or a wait stands
+      if (c.quietRepickups.some((q) => q.newestAgentRecordId === c.newestAgentRecordId)) continue; // one per quiet period
+      if (this.now() - c.newestAgentRecordAt <= quietMs) continue;
+      due.push({ id, at: c.newestAgentRecordAt });
+    }
+    if (!due.length) return false;
+    due.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
+    const r = this.svc.quietRepickup(due[0].id);
+    if (r.ok && !r.duplicate) { this.holderStats.quietRepickups++; this.seams.log?.('work-board-quiet-repickup', { cardId: due[0].id }); }
+    return r.ok && !r.duplicate;
+  }
+
+  /** The holder has completed an exchange with every peer it knows since `sinceMs` (§3 "The first run", §5 "one offer"). */
+  caughtUpWithAllPeers(sinceMs: number): boolean {
+    if (!this.exchanges.size) return this.holdsLease();
+    for (const [peer] of this.exchanges) if (!this.caughtUpWith(peer, sinceMs)) return false;
+    return true;
   }
 
   settings(): WorkBoardSettings { return resolveWorkBoardSettings(this.seams.rawSettings()); }
@@ -134,7 +378,12 @@ export class WorkBoardRuntime {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.creationEvidenceReady = false;
     this.svc.rebuild();
+    this.creationEvidence.clear();
+    this.bumpCreationEvidence();
+    for (const cardId of this.svc.cardIds()) this.refreshCreationEvidence(cardId);
+    this.creationEvidenceReady = true;
     // Boot is not an ownership change: start from the holder as it is now, so a plain restart never
     // spends a failure park's one automatic re-try.
     const holder = this.seams.leaseHolder();
@@ -152,7 +401,11 @@ export class WorkBoardRuntime {
     if (!this.started) return;
     // Switched off live: the records still land in the index (they are data, and re-enabling must
     // show them), but nothing is created, noted or handed over.
-    if (!this.seams.enabled()) { this.svc.apply(entries.map((e) => { const d = e.data as Record<string, unknown>; return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) }; })); return; }
+    if (!this.seams.enabled()) {
+      const changed = this.svc.apply(entries.map((e) => { const d = e.data as Record<string, unknown>; return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) }; }));
+      for (const id of changed) this.refreshCreationEvidence(id);
+      return;
+    }
     const union: UnionEntry[] = entries.map((e) => {
       const d = e.data as Record<string, unknown>;
       return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) };
@@ -160,6 +413,7 @@ export class WorkBoardRuntime {
     const before = new Set(this.svc.cardIds());
     const changed = this.svc.apply(union);
     if (!changed.length) return;
+    for (const id of changed) this.refreshCreationEvidence(id);
     for (const u of union) {
       const d = u.data;
       if (fromPeer && typeof d.cardId === 'string' && typeof d.recordType === 'string') this.afterWrite(d.cardId, d.recordType as WorkRecordType, d, false);
@@ -172,6 +426,7 @@ export class WorkBoardRuntime {
 
   /** After any record lands (local write, or a peer's record applied live). */
   private afterWrite(cardId: string, type: WorkRecordType, data: Record<string, unknown>, local: boolean): void {
+    if (type === 'created' || type === 'tap') this.refreshCreationEvidence(cardId);
     if (type === 'dispatched' && (data.outcome === 'injected' || data.outcome === 'spawned')) {
       // Every machine writes its own note from the same replicated record (§6 "Other sessions can see it").
       if (!local) { try { this.seams.ledgerNote(cardId, String(data.for)); } catch { /* @silent-fallback-ok: best-effort note; the pickup is unaffected */ } }
@@ -199,9 +454,70 @@ export class WorkBoardRuntime {
   ensureConversation(cardId: string): void {
     const v = this.svc.view(cardId);
     if (!v || !v.card.created || v.card.redacted) return;
+    this.refreshCreationEvidence(cardId);
     if (this.seams.conversation.exists(v.card.conversationKey)) return;
-    try { this.seams.conversation.create(cardId, v.card.conversationKey, v.card.title); }
+    const evidence = this.creationEvidence.get(v.card.conversationKey);
+    try { this.seams.conversation.create(cardId, v.card.conversationKey, v.card.title, evidence?.creationContext); }
     catch (err) { /* @silent-fallback-ok: logged; the card shows "waiting for the chat" and the next write or boot creates it (the key is derived) */ this.seams.log?.('work-board-conversation-create-failed', { cardId, error: (err as Error)?.message }); }
+  }
+
+  /** Exact card-derived identity lookup. Reads do not create chats, scan journals or repair state. */
+  creationEvidenceForConversation(conversationKey: string): WorkBoardCreationEvidence | null {
+    const key = conversationKey.startsWith('app:') ? conversationKey.slice(4) : conversationKey;
+    return this.creationEvidence.get(key) ?? null;
+  }
+
+  creationEvidenceGeneration(): number { return this.creationEvidenceVersion; }
+
+  creationEvidenceSnapshot(): WorkBoardCreationEvidenceSnapshot {
+    return { version: this.creationEvidenceVersion, complete: this.started && this.seams.enabled() && this.creationEvidenceReady, items: this.creationEvidenceItems };
+  }
+
+  /** Called only by existing boot/write paths; the immutable created record, not the edited fold. */
+  private refreshCreationEvidence(cardId: string): void {
+    const key = cardConversationKey(cardId);
+    const view = this.svc.view(cardId);
+    const prior = this.creationEvidence.get(key);
+    if (!view?.card.created || view.card.redacted || view.card.conversationKey !== key) {
+      if (this.creationEvidence.delete(key)) this.bumpCreationEvidence();
+      return;
+    }
+    const contexts: AppCreationContext[] = [];
+    for (const record of this.svc.recordsOf(cardId)) {
+      if (record.d.recordType !== 'created' || record.d.cardId !== cardId) continue;
+      const valid = workCardRecordStoreSchema.validate(record.d, { countDroppedField: () => {} } as never);
+      if (!valid) continue;
+      const source = valid.source as { conversationKey?: unknown } | undefined;
+      const context: AppCreationContext = {
+        v: 1,
+        source: {
+          kind: 'work-board-card', cardId,
+          ...(record.origin && record.origin.length <= 256 ? { originMachineId: record.origin } : {}),
+          ...(typeof source?.conversationKey === 'string' && source.conversationKey.length > 0 && source.conversationKey.length <= 256 && !/[\u0000-\u001f\u007f]/.test(source.conversationKey) ? { sourceConversationKey: source.conversationKey } : {}),
+          ...(typeof valid.projectKey === 'string' ? { projectKey: valid.projectKey } : {}),
+        },
+      };
+      Object.freeze(context.source);
+      contexts.push(Object.freeze(context));
+    }
+    if (!contexts.length) {
+      if (this.creationEvidence.delete(key)) this.bumpCreationEvidence();
+      return;
+    }
+    const first = contexts[0]!;
+    const signature = JSON.stringify(first);
+    // This conservative local observation does not repair the underlying card-key replacement substrate.
+    const conflict = prior?.conflict === true || contexts.some((context) => JSON.stringify(context) !== signature)
+      || (prior !== undefined && JSON.stringify(prior.creationContext) !== signature);
+    const next = Object.freeze({ conversationKey: key, cardId, creationContext: first, conflict });
+    if (prior && JSON.stringify(prior) === JSON.stringify(next)) return;
+    this.creationEvidence.set(key, next);
+    this.bumpCreationEvidence();
+  }
+
+  private bumpCreationEvidence(): void {
+    this.creationEvidenceVersion++;
+    this.creationEvidenceItems = Object.freeze([...this.creationEvidence.values()]);
   }
 
   private ensureConversations(): void { for (const id of this.svc.cardIds()) this.ensureConversation(id); }

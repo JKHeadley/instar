@@ -42,7 +42,8 @@ function makeService() {
   return { svc, advance: (ms: number) => { clock += ms; } };
 }
 
-const base = { need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked', certify: 'agent-may-certify' }], outward: false };
+// These cards are ASKS (outward): an inward agent-work card is `not-started` and never on a person's board (agent-work-cards-default §1).
+const base = { need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked', certify: 'agent-may-certify' }], outward: true };
 type Sections = Array<{ reason: string; words: string; cardIds: string[]; notStarted: number; more?: number }>;
 const sectionsOf = (b: Record<string, unknown>) => (b.myBoard as { sections: Sections }).sections;
 const section = (b: Record<string, unknown>, reason: string) => sectionsOf(b).find((s) => s.reason === reason)!;
@@ -64,7 +65,7 @@ describe('My board: each card once, under its most pressing reason', () => {
     const asks = make(t, 'Asks a question'); approve(t, asks);
     const q = t.svc.setWaitingOn(AGENT, asks, { principal: { personKey: 'justin' }, question: { text: 'Which hall?' } }); if (!q.ok) throw new Error('q');
     t.advance(1000);
-    const mine = make(t, 'Carried by Justin', { carrier: { personKey: 'justin' } }, OWNER);
+    const mine = make(t, 'Carried by Justin', { carrier: { personKey: 'justin' }, outward: false }, OWNER); // inward and his: no approve tap
     const held = make(t, 'Held'); t.svc.tap(OWNER, held, { action: 'hold' }); t.advance(1000);
     const working = make(t, 'Agent working'); approve(t, working);
     const finished = make(t, 'Finished'); t.svc.tap(OWNER, finished, { action: 'archive', closeAs: 'done', note: 'Booked it' }); t.advance(1000);

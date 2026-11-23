@@ -3,7 +3,7 @@
 // and whether recovery after a compression works here. Every value reaches the DOM through
 // textContent; context-model.js decides every word.
 
-import { buildContextPage, RECOVERY_INTRO, WATCHER_INTRO } from './context-model.js';
+import { buildContextPage, RECOVERY_INTRO, WATCHER_INTRO, PRACTICE_INTRO } from './context-model.js';
 import { el, setKids, pageHead, section, sheet, story, note, firstPaint, markNeed, askLink } from './ui.js';
 import { topicNameMap } from './topic-names.js';
 
@@ -29,12 +29,13 @@ function linesBlock(id, title, block, intro) {
 export async function renderContext(main, ctx) {
   const { get } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading conversation summaries' })));
-  const [layers, metrics, sentinel, delta, topics] = await Promise.all([
+  const [layers, metrics, sentinel, delta, practice, topics] = await Promise.all([
     get('/context-budget/layers'), get('/context-budget/metrics'), get('/context-budget/sentinel'), get('/context-budget/delta-shadow'),
+    get('/context-budget/fold-shadow'),
     get('/telegram/topics?scope=pool', POOL_TIMEOUT_MS),
   ]);
   const names = topicNameMap(topics);
-  const page = buildContextPage({ layers, metrics, sentinel, delta }, Date.now(), names);
+  const page = buildContextPage({ layers, metrics, sentinel, delta, practice }, Date.now(), names);
   const hero = pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts, noAsk: page.needs.length > 0 });
   if (page.off) { setKids(main, el('div', { class: 'context-page' }, hero)); return; }
 
@@ -62,6 +63,7 @@ export async function renderContext(main, ctx) {
       conv,
       linesBlock('cost', 'What it costs', page.cost),
       linesBlock('trial', 'Trial: sending only what changed', page.trial),
+      page.practice ? linesBlock('practice', 'Practice folds', page.practice, PRACTICE_INTRO) : null,
       linesBlock('upkeep', 'The watcher', page.upkeep, WATCHER_INTRO),
     ),
     el('p', { class: 'foot-note', text: 'A token is about three quarters of a word; re-reading text the AI already has costs a tenth as much, and costs here are counted that way.' }),

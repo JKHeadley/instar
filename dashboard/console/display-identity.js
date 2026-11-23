@@ -46,6 +46,8 @@ export function plainReferenceText(text, { topicNames = {}, machineNames = {} } 
     const name = verifiedDisplayName(topicNames[id], id);
     return name ? `the “${name}” conversation` : 'a conversation';
   });
+  // "a conversation (name unresolved)" says the same thing twice.
+  t = t.replace(/(\ba conversation)\s*\((?:name unresolved|name unavailable)\)/gi, '$1');
   // Agent-to-agent threads and their message ids.
   t = t.replace(/\b(?:(?:canonical|threadline|A2A)\s+)*thread[\s-]+(?:\d{10,}-[0-9a-z]+|[0-9a-f]{6,}(?:-[0-9a-f]{3,})*)\b/gi, 'an agent thread');
   t = t.replace(/\bmsg-\d{10,}-[0-9a-z]+\b/gi, 'a message');

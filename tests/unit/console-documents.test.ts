@@ -7,7 +7,10 @@ import { GROUPS, CONSOLE_ONLY_TABS, NATIVE_PAGES } from '../../dashboard/console
 
 describe('console documents list', () => {
   it('names a row by title, version, open comments and its conversation', () => {
-    expect(rowWords({ title: 'Plan', version: 3, openComments: 2, primary: 'telegram:7' })).toEqual({ title: 'Plan', sub: 'version 3, 2 open comments · Telegram topic 7' });
+    expect(rowWords({ title: 'Plan', version: 3, openComments: 2, primary: 'telegram:7' })).toEqual({ title: 'Plan', sub: 'version 3, 2 open comments · A Telegram conversation' });
+    expect(rowWords({ title: 'Plan', version: 3, openComments: 2, primary: 'telegram:7' }, { 7: 'Dashboard makeover' }).sub).toBe('version 3, 2 open comments · Telegram: Dashboard makeover');
+    // The topic id never stands in for the conversation's name.
+    expect(conversationWords('telegram:145840')).not.toMatch(/145840/);
     expect(rowWords({ title: null, version: 1, openComments: 1, primary: 'app:x' }).title).toContain('only its conversation can read it');
     expect(conversationWords('app:abc')).toBe('App conversation');
   });

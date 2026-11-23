@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-20T20:44:07.885Z",
+  "slug": "takeover-ready-pool-boot-claim-safety",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 599,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BootClaimHold.ts",
+      "src/core/HttpLeaseTransport.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/server/AgentServer.ts",
+      "src/server/BootHealthBeacon.ts"
+    ],
+    "addedLines": 588,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

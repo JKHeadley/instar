@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "join-test-no-real-autostart",
+  "sessionId": "5024840c-354e-48be-91a4-ae22c59672f1",
+  "timestamp": "2026-11-21T20:34:25.182Z",
+  "artifactPath": "upgrades/side-effects/join-test-no-real-autostart.md",
+  "artifactSha256": "ae3b14ac7a6d632c7d12129554e3229ae79ac61fe79b728b29c7aacf80f2213c",
+  "coveredFiles": [
+    "docs/specs/join-test-no-real-autostart.eli16.md",
+    "tests/unit/join-missing-dir.test.ts",
+    "upgrades/next/join-test-no-real-autostart.md",
+    "upgrades/side-effects/join-test-no-real-autostart.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only change: one unit test mocks the auto-start installer; a revert fully undoes it",
+  "eli16Path": "docs/specs/join-test-no-real-autostart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/join-test-no-real-autostart.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

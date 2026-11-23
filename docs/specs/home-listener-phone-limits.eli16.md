@@ -1,0 +1,9 @@
+# ELI16: a phone at home is no longer turned away for opening too many connections at once
+
+When you pair your phone with your agent at home, on the same Wi-Fi, the phone talks to a small, separate "home door" on the agent's computer. That door counts how many connections each device opens, so one broken or hostile gadget on your Wi-Fi cannot tie it up.
+
+The counts were set too low. A real test with an iPhone showed that one screen of the Instar app opens about eight connections at the same moment, and the door only allowed six at a time from one device (and forty new ones a minute). The extra ones were cut off, the phone showed a connection error, and the owner's messages never got through. On Windows it was worse: the Windows app passes phone traffic through to the agent, so in one Windows network mode every phone looked like the same single device, and they all shared those six places.
+
+Now each device may hold 24 connections at once (twice what a busy phone screen needs) and open 240 new ones a minute (four a second), and the whole door holds 64. Where all phones arrive through the Windows app as one address, that address gets the whole door's room, because the Windows app already counts each phone separately before it passes anything on. A misbehaving device is still held to a few connections a second.
+
+The door also keeps a short diary of what it turned away: which page was asked for, the answer number (like 403 or 404), a short reason word, the first eight characters of the phone's id, and when. It never writes down passwords, signatures, codes or message contents, it keeps at most 300 entries, and a flood of the same refusal is one line with a count. Your agent can read the diary from its own computer, so the next time a phone says "not allowed", there is something to look at instead of a guess.

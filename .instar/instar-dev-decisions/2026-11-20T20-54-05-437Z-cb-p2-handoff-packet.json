@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-20T20:54:05.437Z",
+  "slug": "cb-p2-handoff-packet",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 707,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/foldCarriers.ts",
+      "src/monitoring/foldHandoff.ts",
+      "src/monitoring/foldPacket.ts"
+    ],
+    "addedLines": 707,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

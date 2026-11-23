@@ -860,9 +860,6 @@ describe('preconditions and plan (spec §4)', () => {
     expect(await run(() => nukeHere({ dir, skipConfirm: true }))).toBe(0);
     const seen = spy.mock.calls.map(([t, o]) => [path.basename(t), o?.recursive, o?.force]);
     expect(seen).toEqual([
-      ['CLAUDE.md', false, true],
-      ['.claude', true, true],
-      ['.mcp.json', true, true],
       ['.instar', true, true],
     ]);
   });
@@ -872,13 +869,13 @@ describe('preconditions and plan (spec §4)', () => {
     addSession('zz-proj-server', dir);
     const real = SafeFsExecutor.checkScope.bind(SafeFsExecutor);
     vi.spyOn(SafeFsExecutor, 'checkScope').mockImplementation((t, o) =>
-      path.basename(t) === '.mcp.json'
+      path.basename(t) === '.instar'
         ? { allowed: false, canonical: t, reason: 'test refusal', error: new Error('test refusal') }
         : real(t, o));
     expect(await run(() => nukeHere({ dir, skipConfirm: true }))).toBe(1);
     expect(killTargets()).toEqual([]);
     for (const rel of ['.instar', '.claude', '.mcp.json', 'CLAUDE.md']) expect(fs.existsSync(path.join(dir, rel))).toBe(true);
-    expect(logs.join('\n')).toMatch(/\.mcp\.json: test refusal/);
+    expect(logs.join('\n')).toMatch(/\.instar: test refusal/);
   });
 
   it('an unregistered foreign home under H/.instar/agents/ refuses --here', async () => {
@@ -902,28 +899,25 @@ describe('preconditions and plan (spec §4)', () => {
 // ── Result ──────────────────────────────────────────────────────────
 
 describe('honest result (spec §5)', () => {
-  it('a failed restore followed by a successful delete exits non-zero, names the failure, and claims no removal', async () => {
-    const dir = mkdir(path.join(h.home, 'zz-proj'));
-    SafeGitExecutor.execSync(['init', '-q'], { cwd: dir, stdio: 'pipe', operation: 'test:init' });
-    SafeGitExecutor.execSync(['config', 'user.email', 't@zz.test'], { cwd: dir, stdio: 'pipe', operation: 'test:cfg' });
-    SafeGitExecutor.execSync(['config', 'user.name', 'zz'], { cwd: dir, stdio: 'pipe', operation: 'test:cfg' });
-    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# pre-existing\n');
-    SafeGitExecutor.execSync(['add', '-A'], { cwd: dir, stdio: 'pipe', operation: 'test:add' });
-    SafeGitExecutor.execSync(['commit', '-q', '-m', 'seed'], { cwd: dir, stdio: 'pipe', operation: 'test:commit' });
-    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# pre-existing\n\n## instar\n');
-    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# instar-created\n');
-    fs.mkdirSync(path.join(dir, '.instar'));
-    fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({ projectName: 'zz-proj' }));
-    const realExec = SafeGitExecutor.execSync.bind(SafeGitExecutor);
-    vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation(((args: string[], opts: never) => {
-      if (args[0] === 'checkout') throw new Error('checkout refused');
-      return realExec(args, opts);
-    }) as never);
+  it('a partial teardown repeats kept paths and the review offer', async () => {
+    const dir = makeHome(h.home, 'zz-proj');
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'keep me');
+    h.unregister = () => { throw new Error('registry locked'); };
     expect(await run(() => nukeHere({ dir, skipConfirm: true }))).toBe(1);
-    expect(fs.existsSync(path.join(dir, 'AGENTS.md'))).toBe(false);
-    const out = logs.join('\n');
-    expect(out).toMatch(/restore — .*CLAUDE\.md: checkout refused/);
-    expect(out).not.toMatch(/has been removed/);
+    expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8')).toBe('keep me');
+    expect(logs.filter(l => l.includes('Your agent can review these files read-only'))).toHaveLength(2);
+    expect(logs.filter(l => l.includes('- CLAUDE.md'))).toHaveLength(2);
+    expect(logs.join('\n')).not.toMatch(/has been removed/);
+  });
+
+  it('a stop failure repeats the kept-path notice before reporting failure', async () => {
+    const dir = makeHome(h.home, 'zz-proj');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'keep');
+    const session = addSession('zz-proj-server', dir);
+    h.unkillable.add(session.id);
+    expect(await run(() => nukeHere({ dir, skipConfirm: true }))).toBe(1);
+    expect(logs.filter(l => l.includes('Your agent can review these files read-only'))).toHaveLength(2);
+    expect(fs.existsSync(path.join(dir, '.instar'))).toBe(true);
   });
 
   it('a failed unregister is reported', async () => {

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T14:36:38.480Z",
+  "slug": "messages-reach-renamed-sessions-a",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 618,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/data/awareness/messages-reach-renamed-sessions.md",
+      "src/messaging/DeliveryRetryManager.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/messaging/SenderNotifier.ts",
+      "src/messaging/sessionAddressResolver.ts",
+      "src/messaging/types.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 596,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -413,6 +413,29 @@ export class PlaywrightProfileRegistry {
 
   // ── Reads ─────────────────────────────────────────────────────────────────────
 
+  /**
+   * The LIGHT accounts view (sibling-machine-reach §3.2): each profile's accounts with
+   * service, identity, owner and the last-asserted login state ONLY. Reads the registry
+   * file and nothing else: NO vault read (no keychain call), NO seeding, NO write. An
+   * absent file answers []. A corrupt file throws like every other read.
+   */
+  listAccountsLight(): Array<{
+    id: string;
+    accounts: Array<{ service: string; identity: string; owner: PlaywrightAccountOwner; lastAsserted: boolean; lastVerifiedAt: string | null }>;
+  }> {
+    if (!fs.existsSync(this.filePath())) return [];
+    return this.read().profiles.map((p) => ({
+      id: p.id,
+      accounts: p.accounts.map((a) => ({
+        service: a.service,
+        identity: a.identity,
+        owner: a.owner,
+        lastAsserted: a.lastAsserted === true,
+        lastVerifiedAt: a.lastVerifiedAt ?? null,
+      })),
+    }));
+  }
+
   /** The FULL detail surface (GET-only): every account, vault NAMES, dangling-ref flags (D17). */
   listProfiles(): PlaywrightProfileDetail[] {
     const store = this.ensureSeeded();
