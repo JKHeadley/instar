@@ -768,10 +768,26 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
     // the asset and its meta are untouched and perfectly consistent — same sha, same
     // article count, same package version — and the AUTHORED constitution has moved on.
     // Every operand written by the build that wrote the asset still agrees.
-    const authored = path.join(ROOT, 'docs', 'STANDARDS-REGISTRY.md');
-    const original = fs.readFileSync(authored, 'utf-8');
+    const original = fs.readFileSync(AUTHORED, 'utf-8');
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-authored-drift-'));
     try {
+      // Guard evidence stays identical and read-only, but the authored document
+      // belongs to this fixture. Parallel readers never observe a temporary
+      // extra article in the actual checkout.
+      // Only these directories contain the packed guard references. Projecting
+      // package/source-identity markers would turn this synthetic fixture into
+      // a protected source checkout that the normal cleanup guard must retain.
+      for (const name of ['src', 'scripts', 'tests']) {
+        fs.symlinkSync(path.join(ROOT, name), path.join(fixture, name));
+      }
+      fs.writeFileSync(path.join(fixture, '.git'), 'fixture source-tree marker\n');
+      fs.mkdirSync(path.join(fixture, 'docs'));
+      for (const name of fs.readdirSync(path.join(ROOT, 'docs'))) {
+        if (name !== 'STANDARDS-REGISTRY.md') fs.symlinkSync(path.join(ROOT, 'docs', name), path.join(fixture, 'docs', name));
+      }
+      const authored = path.join(fixture, 'docs', 'STANDARDS-REGISTRY.md');
       fs.writeFileSync(authored, `${original}\n### A Standard Added After The Build\n**Rule.** r.\n`);
+      expect(fs.readFileSync(AUTHORED, 'utf-8')).toBe(original);
 
       // Confirm the other three operands are UNMOVED — otherwise this test proves nothing.
       const stillFine = resolveStandardsRegistry();
@@ -780,14 +796,17 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
 
       const report = computeCoverage({
         registryPath: stillFine.path,
-        projectDir: ROOT,
+        projectDir: fixture,
         registryMarkdown: stillFine.markdown,
         integrity: stillFine.integrity,
       });
+      expect(report.summary.guards.projectDir).toBe(fs.realpathSync(fixture));
+      expect(report.summary.guards.basis).toBe('source-tree-index-match');
       expect(report.summary.assessmentConfidence).toBe('unverified');
       expect(report.summary.confidenceReason).toMatch(/does NOT match the authored/);
+      expect(fs.readFileSync(AUTHORED, 'utf-8')).toBe(original);
     } finally {
-      fs.writeFileSync(authored, original);
+      SafeFsExecutor.safeRmSync(fixture, { recursive: true, force: true, operation: 'isolated authored registry drift fixture' });
     }
   });
 
