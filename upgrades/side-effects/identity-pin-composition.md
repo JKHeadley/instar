@@ -69,3 +69,7 @@ Combined focused unit65/65; HTTP13/13 (including three new cross-boundary cases)
 - pin_sideeffects_review: concur; hard-invariant exception, machine-local scope, no new migration or renderer, rollback guidance appropriate.
 
 All reviews were read-only and certify neither full verification nor deployment. Existing prerequisites and safety holds remain.
+
+## Release1988 base refresh
+
+Merged current main1d6be3d585 after Chief575d46dc returned priority to identity items. The three conflicts were only file-location guesses after the release emptied upgrades/next. Keep all three pending fragments in upgrades/next, still consumed by assemble-next-md.mjs; their bytes/hashes match the previous head exactly. No authored runtime change. Main's routes.ts merge is automatic. An incoming-main unit file had one extra blank EOF line flagged by cached diff-check; trimmed only that blank line. Independent pin_correctness_review concurred with all three fragment resolutions and preserved PIN wiring. Focused reruns passed65unit13HTTP6E2E; no full-suite or deployment result inferred. Parent3406/3586, draft and full exact-head verification holds remain.
