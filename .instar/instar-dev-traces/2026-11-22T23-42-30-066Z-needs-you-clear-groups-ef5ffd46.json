@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "needs-you-clear-groups",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-22T23:42:30.066Z",
+  "artifactPath": "upgrades/side-effects/needs-you-clear-groups.md",
+  "artifactSha256": "519f3fd422a75bbd61ca75b85bbd3e7b78b961d446798a1ebea527f4d550c3e3",
+  "coveredFiles": [
+    "dashboard/console/needs-strip.js",
+    "tests/unit/console-front-doors.test.ts",
+    "upgrades/next/needs-you-clear-groups.md",
+    "upgrades/side-effects/needs-you-clear-groups.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Remove duplicate visible count found in browser preview and correct release fragment formatting; no authorization changes",
+  "eli16Path": "docs/specs/needs-you-clear-groups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/needs-you-clear-groups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

@@ -70,3 +70,8 @@ Revert the source change. Correctly tagged sessions and their CODEX_HOME remain 
 - `.instar/recovery/token-reset-routing/codex-live-selector-comparison.json`: one fresh, read-only pool snapshot fed to both installed and corrected selectors. Installed headless choice: codex-sagemindai (9%, Thursday); corrected choice: codex-justin-gmail (20%, Tuesday). The Studio's default interactive login was separately observed as dawn. This comparison is not an installed-code or live-user-channel claim.
 - Final mixed-provider delta review found no material findings; 78 related ordering checks passed. Final HTTP integration passed 7 checks and lifecycle passed 3 checks.
 - Type checking and normal commit/push gates run before publication. Full normal Local Verify and a verified installed-session reply remain required before a live-success claim.
+
+
+## Critical rollout main alignment (2026-11-23)
+
+The previous exact dcc90cfbb4d761ca35ec84620480ba227014e85a complete-gate attempt stopped during merge preparation against the actual merged prerequisite, before any tests ran. The only conflict is the shared ledger side-effects document: current main adds retained failure-history and alignment evidence. This merge preserves that document byte-for-byte from current main 6b331e26e and introduces no manual routing, test assertion, native-lock or timing change. The original preflight error is retained separately and is not called a test pass or failure. Independent reviewer reset_spec_integration confirmed the resolved document equals main blob dd55c946536506b464d16b1d02b89d16a1031c48 and no source/test differences from the automatic merge. The resolution is staged and no unmerged entries remain. The corrected head still requires a new normal complete gate.

@@ -23,3 +23,10 @@ Revert this picker repair and its tests/docs; the account store schema and crede
 
 ## 7. Evidence and review
 The new unit regression failed before the source fix (reserve selected instead of sooner-reset account). After the fix: 26 unit, 4 real-provider integration and 1 durable-pool restart lifecycle test passed. Native CLI behavior and live installation are not claimed; tests use a local stand-in executable and make no model calls. Independent reviewer reset_spec_safety concurred with the production change and identified a lifecycle coverage gap. The test was corrected to persist distinct reset deadlines before reopening the pool. Normal complete verification remains required.
+
+
+## Prerequisite alignment for the critical rollout (2026-11-23)
+
+This candidate merges corrected prerequisite 3664 at 1e13322bdbf10c3c3576adde59e07cb1313d003e, including current main 6b331e26e. The merge completed automatically with no conflict. The prerequisite correction preserves the already-merged ledger evidence artifact; it changes no routing or test assertions manually. This dependent alignment preserves the internal picker repair and introduces no new authority, credentials or schema. The prior 3664 merge-preparation error ran zero tests and is not replaced by the focused evidence. A new complete gate is still required for the corrected dependent head after its actual prerequisite merge.
+
+Independent reviewer reset_spec_integration concurred: the alignment leaves internal picker source and all three related test files unchanged, with no manual assertions or lock changes. Fresh focused checks passed 26 unit, 4 real-child integration and 1 restart lifecycle test.
