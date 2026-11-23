@@ -2583,6 +2583,40 @@
       }
     },
     {
+      "category": "recommended-service-confirm-stats",
+      "description": "SEC-135: per-machine counters for the recommended-service confirm page (answers by path, refused public answers, owner opens, exempt-path answers while the public aggregate was full, with times). Machine-local, proxied-on-read: each machine reports its own in GET /recommended-services and the graduation review sums every machine's.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/recommended-service-tokens/confirm-stats.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file of cumulative counters, written at most once a minute; its timed event list keeps the newest 200."
+      }
+    },
+    {
+      "category": "pin-attempts",
+      "description": "Durable PIN guess counters (identity-security piece 1c): the public aggregate, per-source, local and per-approval-link budgets. Machine-local by design: each machine bounds the guesses it accepts itself, and piece 1c section 4 declares the per-machine posture.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/pin-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 4096,
+        "note": "PinAttemptStore keeps at most 4096 rows (PIN_ATTEMPT_MAX_ROWS); expired rows are pruned on every write and the oldest unlocked rows go first above the cap."
+      }
+    },
+    {
       "category": "recommended-service-setup",
       "description": "Per machine: whether a recommended service passed its setup check here, and the session and promise working on it. A login or install lives on one disk, so this is never replicated.",
       "scope": "machine-local",

@@ -9,6 +9,8 @@
  */
 import crypto from 'node:crypto';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -16,8 +18,9 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
 import { challengeSecretProof, exchangeText, useText } from '../../src/core/LocalAccessStore.js';
-import { hmac, mintProofText, mintResponseText, readListenerKey, sha256Hex } from '../../src/server/localAccessRoutes.js';
+import { hmac, mintProofText, mintResponseText, readListenerKey, sha256Hex, verifiedLocalBudgetKey } from '../../src/server/localAccessRoutes.js';
 
 const AUTH = 'itest-auth-token-local-access';
 const PIN = '135791';
@@ -27,10 +30,11 @@ function makeConfig(stateDir: string, enabled = true): InstarConfig {
   return {
     projectName: NAME, projectDir: '/tmp/la', stateDir, port: 0,
     authToken: AUTH, dashboardPin: PIN,
-    security: { localAccessLink: { enabled } },
+    developmentAgent: true,
+    security: { localAccessLink: { enabled }, approvalLinks: { enabled: true }, pinThrottle: { enabled: true, globalFailureBudget: 6, coarseFailureBudget: 100 } },
     sessions: { tmuxPath: '/usr/bin/tmux', claudePath: '/usr/bin/claude', projectDir: '/tmp/la', maxSessions: 3, protectedSessions: [], completionPatterns: [] },
     scheduler: { jobsFile: '', enabled: false, maxParallelJobs: 2, quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } },
-    users: [], messaging: [], monitoring: { quotaTracking: false, memoryMonitoring: false, healthCheckIntervalMs: 30000 },
+    users: [], messaging: [], monitoring: { quotaTracking: false, memoryMonitoring: false, healthCheckIntervalMs: 30000, promptGate: { ownerId: 777 } },
   } as InstarConfig;
 }
 
@@ -62,7 +66,13 @@ let base: string;
 async function boot(enabled = true) {
   project = createTempProject();
   const config = makeConfig(project.stateDir, enabled);
-  server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: project.state } as any);
+  const { privateKey } = crypto.generateKeyPairSync('ed25519');
+  const ledger = new RecommendedServicesLedger({
+    stateDir: project.stateDir,
+    signer: { machineId: () => 'm_composition', signerKeyHash: () => 'h', sign: (payload: string) => ({ machineId: 'm_composition', signerKeyHash: 'h', sig: crypto.sign(null, Buffer.from(payload), privateKey).toString('base64') }) } as any,
+    keyLookup: (() => ({ status: 'unknown' })) as any,
+  });
+  server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: project.state, recommendedServicesLedger: ledger, tunnel: { url: 'https://composition.trycloudflare.test' } } as any);
   const app = server.getApp();
   srv = await new Promise<http.Server>((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   port = (srv.address() as AddressInfo).port;
@@ -187,6 +197,57 @@ describe('local access link — switch on', () => {
     // verified budget full: today's local rules apply (the loopback budget is untouched, so the right PIN works)
     const r = await unlock({ pin: PIN, localAccess: await localAccessProof(k, credentialId) });
     expect(r.status).toBe(200);
+  });
+
+  it('keeps the confirm request cap even when the request carries a valid local-link proof', async () => {
+    const { k, credentialId } = await redeem();
+    const route = '/recommended-services/bitwarden/confirm';
+    const page = await request(srv).get(route).set('Host', `127.0.0.1:${port}`);
+    expect(page.status).toBe(200);
+    expect(page.body.token).toEqual(expect.any(String));
+    const answer = async (pin: string) => request(srv).post(route).set('Host', `127.0.0.1:${port}`).set('Origin', base)
+      .set('X-Instar-Request', '1').send({ token: page.body.token, pin, answer: 'names', reason: 'none', shutdown: false, localAccess: await localAccessProof(k, credentialId) });
+    for (let i = 0; i < 5; i++) expect((await answer('000000')).status).toBe(403);
+    const paused = await answer(PIN);
+    expect(paused.status).toBe(429);
+    expect(paused.body.error).toBe('pin-paused');
+    // Only the confirm request is exhausted: the valid link still unlocks the dashboard.
+    expect((await unlock({ pin: PIN, localAccess: await localAccessProof(k, credentialId) })).status).toBe(200);
+  });
+
+  it('keeps public confirm throttling while a verified local link still unlocks', async () => {
+    const route = '/recommended-services/bitwarden/confirm';
+    const page = await request(srv).get(route).set('Host', 'composition.trycloudflare.test')
+      .set('cf-connecting-ip', '192.0.2.10').set('x-forwarded-proto', 'https');
+    expect(page.status).toBe(200);
+    for (let i = 0; i < 6; i++) {
+      expect((await request(srv).post('/dashboard/unlock').set('Host', 'composition.trycloudflare.test')
+        .set('cf-connecting-ip', `198.${30 + i}.0.1`).set('x-forwarded-proto', 'https').send({ pin: '000000' })).status).toBe(403);
+    }
+    const refused = await request(srv).post(route).set('Host', 'composition.trycloudflare.test')
+      .set('cf-connecting-ip', '192.0.2.11').set('x-forwarded-proto', 'https').set('X-Instar-Request', '1')
+      .send({ token: page.body.token, pin: PIN, answer: 'names', reason: 'none', shutdown: false });
+    expect(refused.status).toBe(429);
+    expect(refused.body.error).toBe('pin-paused');
+    const { k, credentialId } = await redeem();
+    expect((await unlock({ pin: PIN, localAccess: await localAccessProof(k, credentialId) })).status).toBe(200);
+    // Local success must leave the strangers' exhausted allowance intact.
+    expect((await request(srv).post('/dashboard/unlock').set('Host', 'composition.trycloudflare.test')
+      .set('cf-connecting-ip', '192.0.2.12').set('x-forwarded-proto', 'https').send({ pin: PIN })).status).toBe(429);
+  });
+
+  it('does not replenish verified-link failures after a successful unlock and retains the recovery hint', async () => {
+    const { k, credentialId } = await redeem();
+    expect((await unlock({ pin: '000000', localAccess: await localAccessProof(k, credentialId) })).status).toBe(403);
+    const file = path.join(project.stateDir, 'state', 'pin-attempts.json');
+    const key = verifiedLocalBudgetKey(null, null);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))[key].count).toBe(1);
+    expect((await unlock({ pin: PIN, localAccess: await localAccessProof(k, credentialId) })).status).toBe(200);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))[key].count).toBe(1);
+    for (let i = 0; i < 10; i++) await unlock({ pin: '000000' });
+    const paused = await unlock({ pin: PIN });
+    expect(paused.status).toBe(429);
+    expect(paused.body.error).toContain('ask your agent to open the dashboard');
   });
 
   it('print mode: a different browser port works end to end with Host and Origin on that port', async () => {
