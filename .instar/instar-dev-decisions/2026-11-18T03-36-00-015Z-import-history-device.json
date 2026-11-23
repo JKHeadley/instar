@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T03:36:00.015Z",
+  "slug": "import-history-device",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/importedHistoryRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "new capability (app access to imported history)"
+  },
+  "verdict": "pass"
+}

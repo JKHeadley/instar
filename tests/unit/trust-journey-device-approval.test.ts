@@ -232,6 +232,40 @@ describe('onPresenceApproval', () => {
   });
 });
 
+describe('SEC-141: the approved text is rebuilt from the change, never read from the stored request', () => {
+  const forge = async (store: TrustJourneyStore, rec: { requestId: string; change: TrustChange; proposalHash: string; summary: string[] }) => {
+    const w = await store.write('request', {
+      requestId: rec.requestId, code: 'ZZZZZZ', proposalHash: rec.proposalHash, principal: 'owner', adapter: 'device', approverPlatformId: '',
+      expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), status: 'open', change: rec.change, summary: rec.summary, cardMessageId: '', cardChatId: '',
+    }, `tj:request:${rec.requestId}`);
+    expect(w.ok).toBe(true);
+  };
+  const dangerous: TrustChange = { kind: 'autonomy-profile', from: 'supervised', to: 'autonomous' } as TrustChange;
+
+  it('a forged request pairing a harmless summary and hash with a dangerous change is neither listed nor approved', async () => {
+    const store = mkStore();
+    const svc = mkService(store);
+    await acceptMac(svc);
+    await forge(store, { requestId: 'forged-1', change: dangerous, proposalHash: HASH, summary: ['Change: write actions on "gmail": just do it'] });
+    expect(svc.deviceListing().some((x) => x.requestId === 'forged-1')).toBe(false);
+    expect(await svc.onPresenceApproval(auth('forged-1'))).toMatchObject({ status: 'refused', reason: 'request-altered' });
+    expect(applied).toHaveLength(0);
+  });
+
+  it('a request whose stored summary differs from its change shows and confirms the text derived from the change', async () => {
+    const store = mkStore();
+    const svc = mkService(store);
+    await acceptMac(svc);
+    await forge(store, { requestId: 'mismatch-1', change, proposalHash: HASH, summary: ['Nothing important'] });
+    const row = svc.deviceListing().find((x) => x.requestId === 'mismatch-1');
+    expect(row?.summary).toEqual(['Change: write actions on "gmail": just do it']);
+    const r = await svc.onPresenceApproval(auth('mismatch-1'));
+    expect(r.status).toBe('applied');
+    expect((r as { message: string }).message).toContain('write actions on "gmail"');
+    expect((r as { message: string }).message).not.toContain('Nothing important');
+  });
+});
+
 describe('a chat approval and a device approval of the same request', () => {
   it('arriving together produce exactly one raise; the loser is told it was already approved', async () => {
     const chat = new FakeChat();

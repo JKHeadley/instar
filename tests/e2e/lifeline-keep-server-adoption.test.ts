@@ -12,6 +12,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { TelegramLifeline } from '../../src/lifeline/TelegramLifeline.js';
+import { RestartOrchestrator } from '../../src/lifeline/RestartOrchestrator.js';
 import { ServerSupervisor } from '../../src/lifeline/ServerSupervisor.js';
 
 /** The e2e lane runs on a machine with tmux (every session test needs it); a missing tmux is a loud failure, not a skip. */
@@ -64,7 +70,20 @@ describe('lifeline-only restart: the server survives and the successor adopts it
     const spawnA = vi.spyOn(a as unknown as { spawnServer: () => boolean }, 'spawnServer');
     expect(await a.start()).toBe(true);
     expect(spawnA).not.toHaveBeenCalled();
-    a.detach();
+    // N72: run the production watchdog -> initiateRestart -> real orchestrator path.
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n72-adopt-'));
+    cleanup.push(() => SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/e2e/lifeline-keep-server-adoption.test.ts' }));
+    const exitFn = vi.fn();
+    const l = Object.create(TelegramLifeline.prototype) as any;
+    Object.assign(l, { projectConfig: { stateDir }, orchestrator: new RestartOrchestrator({
+      quiesce: async (req) => { if (req?.keepServer) a.detach(); else await a.stop(); },
+      persistAll: async () => {}, exitFn, isSupervised: true,
+      observeServerStopped: () => a.observeServerStopped(),
+    }) });
+    l.restartForWatchdog({ primary: 'conflict409Stuck', tripped: ['conflict409Stuck'], snapshot: {} });
+    for (let i = 0; !exitFn.mock.calls.length && i < 100; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(exitFn).toHaveBeenCalledWith(0);
+    expect(a.observeServerStopped()).toBe(false);
     expect(sessionPanePid(name)).toBe(pidBefore); // untouched
 
     // Lifeline 2 boots and adopts the running server.
@@ -90,7 +109,6 @@ describe('lifeline-only restart: the server survives and the successor adopts it
 
     // And once the session is genuinely gone, start() spawns (the P1 behaviour, unchanged).
     execFileSync(TMUX, ['kill-session', '-t', `=${name}`], { stdio: 'ignore' });
-    cleanup.pop();
     const d = supervisor(name, port);
     (d as unknown as { serverSessionName: string }).serverSessionName = name;
     const spawnD = vi.spyOn(d as unknown as { spawnServer: () => boolean }, 'spawnServer').mockReturnValue(true);

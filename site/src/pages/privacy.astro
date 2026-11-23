@@ -2,7 +2,7 @@
 // Privacy policy for the Instar Agents apps for iPhone and Android (App Store and Google Play listing link).
 // Keep this accurate to what the app does: apps/instar-ios (Info.plist usage strings,
 // network calls go only to agents the person pairs).
-const updated = 'November 14, 2026';
+const updated = 'November 22, 2026';
 ---
 <!doctype html>
 <html lang="en">
@@ -31,7 +31,7 @@ const updated = 'November 14, 2026';
       <h1>Privacy Policy</h1>
       <p class="meta">Instar Agents for iPhone and Android · Last updated {updated}</p>
 
-      <p>Instar Agents is an app for iPhone and Android for talking to AI agents that you run yourself, on your own computers or servers, with the open-source Instar software. This policy explains what the app does with your information. The short version: the app talks only to the agents you pair it with. We, the developer, do not run a service that receives your messages, and the app contains no advertising, analytics or tracking.</p>
+      <p>Instar Agents is an app for iPhone and Android for talking to AI agents that you run yourself, on your own computers or servers, with the open-source Instar software. This policy explains what the app does with your information. The short version: what you write and send goes only to the agents you pair the app with. We, the developer, do not run a service that receives your messages, and the app contains no advertising, analytics or tracking.</p>
 
       <h2>Who we are</h2>
       <p>The app is published by Justin Headley (SageMind AI). Contact: <a href="mailto:echo@sagemindai.io">echo@sagemindai.io</a>.</p>
@@ -41,6 +41,7 @@ const updated = 'November 14, 2026';
         <li><strong>To your own agents only.</strong> When you pair an agent, the app connects to that agent's address. It sends the agent what you write and choose to send: messages, photos, files and voice notes, plus the name of your phone and a public key that identifies your phone to that agent. Your agent stores these on the machine where you run it. We do not receive them.</li>
         <li><strong>Notifications.</strong> If you allow notifications, the app gives your agent the push token your phone's platform assigns (Apple Push Notification service on iPhone, Google Firebase Cloud Messaging on Android), so your agent can notify you. The notification itself carries no message text; the app fetches the preview from your agent.</li>
         <li><strong>AI providers you choose.</strong> Your agent may send your messages to AI services you have set up on it (for example Anthropic or OpenAI) under your own accounts. That happens on your agent, under those providers' terms, not in this app.</li>
+        <li><strong>Optional natural voice (iPhone).</strong> If you tap "Get the natural voice" for reading messages aloud, the app downloads the voice files (about 50 MB) from the open-source sherpa-onnx project on GitHub and checks them against a fingerprint. Like any download, this shows GitHub your network address. Nothing you wrote is sent, and the voice then runs on your phone.</li>
       </ul>
 
       <h2>What stays on your phone</h2>
@@ -67,6 +68,7 @@ const updated = 'November 14, 2026';
 
       <h2>Pairing links</h2>
       <p>A pairing link from your agent opens instar.sh/pair. The secret part of the link stays in your browser and is never sent to the instar.sh website.</p>
+      <p>When you pair a computer by scanning the code it shows, the app can hand that computer its pairing link through a small drop box on instar.sh. The app first locks the message so that only that computer can open it (it is encrypted to a key only the computer holds). The message contains the pairing link and the display names of the agent and your phone. The drop box sees only the locked message, cannot read it, does not log it, and deletes it after two minutes. Like any website, it sees your network address when the app connects. You can skip it by pasting the pairing link yourself.</p>
 
       <h2>Deleting your information</h2>
       <p>Remove an agent in the app, or delete the app, to erase what the app stores on your phone. Messages kept by your agent live on your own machine, where you control and can delete them.</p>

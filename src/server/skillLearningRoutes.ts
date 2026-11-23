@@ -37,6 +37,7 @@
  * The routes consume `SkillLearningSentinelLike` through an injected getter; the sentinel itself is
  * built in src/monitoring/SkillLearningSentinel.ts and bound with `AgentServer.setSkillLearningSentinel()`.
  */
+import { signedInPinSource } from './ownerPinSource.js';
 import { Router, type Request, type Response } from 'express';
 import { operatorError } from '../core/storageMachineName.js';
 import type { RouteContext } from './routes.js';
@@ -129,7 +130,8 @@ function holderUrlOf(ctx: SkillCtx, req: Request): string | null {
 export function createSkillLearningRoutes(ctx: SkillCtx, timings: { forwardTimeoutMs?: number } = {}): Router {
   const FORWARD_TIMEOUT_MS = timings.forwardTimeoutMs ?? 5_000;
   const router = Router();
-  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
+  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
+    pinSource: (req, fwd) => signedInPinSource(req, { agentToken: () => ctx.config.authToken }, fwd) });
 
   /** The live sentinel, or a 503 already sent. */
   const live = (res: Response): SkillLearningSentinelLike | null => {

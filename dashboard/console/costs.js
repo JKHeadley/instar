@@ -10,6 +10,7 @@ import { sessionLabel } from './home-model.js';
 import { buildUsageSection, grainFor, drillQuery, ledgerOff } from './usage-model.js';
 import { usageSection } from './usage.js';
 import { topicNameMap } from './topic-names.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 const EYEBROW = 'Capacity · What thinking costs';
 const COST_KEYS = ['door', 'modelId', 'doorClass', 'priceBasis', 'costBasis', 'tokensIn', 'tokensOut', 'tokensCached', 'grossUsd', 'subsidyUsd', 'netUsd', 'committedUsd', 'providerReportedUsd', 'providerDriftPct', 'unpricedTokensIn', 'unpricedTokensOut', 'priceStale', 'notLiveYet'];
@@ -38,16 +39,20 @@ export async function renderCosts(main, ctx) {
   const usageSummaryRes = await get(`/usage/summary?since=${uSince}&grain=${uGrain}`);
   let usageModel = { off: true };
   if (!ledgerOff(usageSummaryRes)) {
-    const [uSeries, uTree, uTopic, uJob, uFeature, uCoverage, uTopics] = await Promise.all([
+    const [uSeries, uTree, uTopic, uJob, uFeature, uCoverage, uTopics, uPool] = await Promise.all([
       get(`/usage/series?since=${uSince}&grain=${uGrain}&split=${view.usage.split}`),
       get(drillQuery(view.usage.path, uSince)),
       get(`/usage/top?dim=topic&limit=8&since=${uSince}`), get(`/usage/top?dim=job&limit=8&since=${uSince}`), get(`/usage/top?dim=feature&limit=8&since=${uSince}`),
-      get('/usage/coverage'), get('/telegram/topics?scope=pool'),
+      get('/usage/coverage'), get('/telegram/topics?scope=pool'), get('/pool'),
     ]);
     const topicNames = topicNameMap(uTopics);
+    // Machines by nickname, never by id (an unnamed one reads as plain words).
+    const machineNames = {};
+    if (uPool && uPool.ok && Array.isArray(uPool.data?.machines)) for (const m of uPool.data.machines) if (m && typeof m.machineId === 'string') machineNames[m.machineId] = verifiedDisplayName(m.nickname, m.machineId);
     usageModel = buildUsageSection(
       { summary: usageSummaryRes, series: uSeries, tree: uTree, topTopic: uTopic, topJob: uJob, topFeature: uFeature, coverage: uCoverage },
-      { split: view.usage.split, phrase: w.phrase, path: view.usage.path, namesOf: (k) => topicNames[k] || `Conversation ${k}` },
+      { split: view.usage.split, phrase: w.phrase, path: view.usage.path, namesOf: (k) => topicNames[k] || 'A conversation whose name isn’t known yet',
+        machineName: (id) => machineNames[id] || 'A machine with no name yet' },
     );
   }
   // Conversation names: the session list carries each live session's Claude conversation id.

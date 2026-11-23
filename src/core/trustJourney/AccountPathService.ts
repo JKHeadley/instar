@@ -119,7 +119,7 @@ export type ProposeResult =
   | { status: 'awaiting-acceptance' | 'sent'; requestId: string; code: string; expiresAt: string; deduped?: boolean; via?: 'chat' | 'device' }
   | { status: 'undelivered'; message: string }
   | { status: 'not-recorded'; message: string }
-  | { status: 'too-large' | 'too-many-open'; message: string };
+  | { status: 'too-large' | 'too-many-open' | 'too-many-undelivered' | 'withdrawn-recently'; message: string };
 
 /** The card's change lines may not exceed this (the card must fit whole in one message). */
 export const MAX_CARD_SUMMARY = 3000;
@@ -158,6 +158,9 @@ export class AccountPathService {
       if (dup.adapter === 'device') return { status: 'sent', via: 'device', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true };
       return { status: dup.cardMessageId ? 'sent' : 'awaiting-acceptance', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true };
     }
+    // agent-work-cards-default §5 (b): a withdrawn proposal cannot be re-raised for `cardTtlDays`, so withdraw-and-re-raise mints no fresh cards.
+    const recentlyWithdrawn = this.d.store.allRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && r.status === 'withdrawn' && new Date(r.expiresAt) > this.now());
+    if (recentlyWithdrawn) return { status: 'withdrawn-recently', message: `This exact change was withdrawn by the agent and cannot be asked again until ${recentlyWithdrawn.expiresAt}.` };
     const code = newApprovalCode((c) => this.d.store.codeTaken(c));
     const expiresAt = new Date(this.now().getTime() + this.d.cardTtlDays() * 86_400_000).toISOString();
     const requestId = `tr-${proposalHash.slice(0, 12)}-${code}`;
@@ -165,9 +168,15 @@ export class AccountPathService {
     if (summary.join('\n').length > MAX_CARD_SUMMARY) {
       return { status: 'too-large', message: 'This change is too large to show whole on one card, so no card was sent. Split it into smaller changes.' };
     }
-    // At most a few open requests per person, so the person is never flooded toward approving.
-    if (this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now()).length >= MAX_OPEN_REQUESTS) {
+    // At most a few open requests per person, so the person is never flooded toward approving. Only a DELIVERED
+    // request (a card in the chat, or a device request) counts toward the open cap (agent-work-cards-default §5):
+    // undelivered chat requests have their own cap of the same size, and the acceptance flush sends what fits.
+    const live = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now());
+    if (live.filter((r) => this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
       return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting for the person; no new card is sent until one is answered or expires.` };
+    }
+    if (live.filter((r) => !this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
+      return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting to be delivered to the person (their chat has not accepted approvals yet); no new one is recorded until one is sent, answered or expires.` };
     }
     if (!adapter) {
       // No chat: the request goes to the accepted devices (app-trust-approval §B, When there's no chat).
@@ -212,7 +221,11 @@ export class AccountPathService {
   private async sendCard(req: RequestRecord & { summary: string[]; change?: TrustChange }): Promise<ProposeResult> {
     if (req.adapter === 'device') return { status: 'sent', via: 'device', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt };
     const port = this.d.adapters[req.adapter]!;
-    const text = renderRequestCard({ summary: { lines: req.summary }, code: req.code, expiresAt: req.expiresAt });
+    // SEC-141: the card shows text rebuilt from the change, never the stored summary (a deferred card
+    // is re-sent from the stored record when the owner accepts).
+    const live = this.verified(req);
+    if (!live.ok) return { status: 'undelivered', message: 'This request does not match the change it would make, so no card was sent and nothing was approved.' };
+    const text = renderRequestCard({ summary: { lines: live.summary }, code: req.code, expiresAt: req.expiresAt });
     const sent = await port.sendDirect(req.approverPlatformId, text);
     if (!sent) {
       return { status: 'undelivered', message: 'The request card could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet). Nothing was approved.' };
@@ -248,10 +261,23 @@ export class AccountPathService {
     return this.process(r);
   }
 
-  /** The holder processing a receipt another machine already wrote to the replicated store. */
-  async onReceiptFromStore(r: Receipt): Promise<ReceiptOutcome> {
-    if (this.d.store.receiptConsumed(r.uniqueKey)) return 'duplicate';
-    return this.process(r);
+  /**
+   * SEC-088: an owner reply that reached a machine that does not hold the lease. Nothing is approved
+   * or accepted here, and nothing is written for the holder (a replicated receipt is the writing
+   * machine's word, so the holder never takes one as the owner's reply). When the reply would have
+   * acted (an acceptance, a reply to a request card, or an approve command), the owner is told once
+   * to send it again; the holder then receives it from the chat itself.
+   */
+  async onReceiptAwayFromHolder(r: Receipt): Promise<ReceiptOutcome> {
+    const ownerId = this.d.ownerPlatformId(r.adapter);
+    const direct = r.adapter === 'telegram' ? (r.chatType === 'private' && r.chatId === r.senderId) : r.chatType === 'im';
+    if (!ownerId || r.senderId !== ownerId || !direct || r.senderIsBot || r.forwarded) return 'not-for-us';
+    const statement = acceptanceStatement({ adapter: r.adapter, accountId: ownerId, installationId: this.d.installationId });
+    const wouldAct = isAcceptanceReply(r.text, statement)
+      || (!!r.replyToMessageId && !!this.d.store.requestByCard(r.adapter, r.replyToMessageId))
+      || parseApproveCommand(r.text) !== null;
+    if (!wouldAct) return 'not-for-us';
+    return this.instruct(r, 'That reply reached one of my machines that is not handling approvals right now, so nothing changed. Please send the same reply again in a minute.');
   }
 
   private async process(r: Receipt): Promise<ReceiptOutcome> {
@@ -268,7 +294,12 @@ export class AccountPathService {
         await this.d.store.write('acceptance', { acceptanceId: `acc-${r.uniqueKey}`, principal, adapter, accountId: ownerId, acceptedAt: this.now().toISOString(), messageId: r.messageId });
       }
       await this.d.adapters[adapter]?.replyTo(r.chatId, r.messageId, 'Recorded. Your replies from this account now count as your approval. You can withdraw this at any time by saying so.');
-      for (const q of this.d.store.openRequests().filter((x) => x.principal === principal && x.adapter === adapter && !x.cardMessageId)) {
+      // The flush is bounded (agent-work-cards-default §5): min(cap − delivered open, undelivered), newest first; the
+      // rest stay undelivered and expire at `cardTtlDays`.
+      const open = this.d.store.openRequests().filter((x) => x.principal === principal && new Date(x.expiresAt) > this.now());
+      const room = Math.max(0, MAX_OPEN_REQUESTS - open.filter((x) => this.delivered(x)).length);
+      const undelivered = open.filter((x) => x.adapter === adapter && !x.cardMessageId).sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : a.expiresAt > b.expiresAt ? -1 : 0));
+      for (const q of undelivered.slice(0, room)) {
         await this.sendCard(q);
       }
       return 'acceptance-recorded';
@@ -302,11 +333,18 @@ export class AccountPathService {
       return 'refused';
     }
 
+    // SEC-141: approve only a request whose change still matches its hash; the reply names the change itself.
+    const live = this.verified(req);
+    if (!live.ok) {
+      await this.d.adapters[adapter]?.replyTo(r.chatId, r.messageId, 'This request does not match the change it would make, so nothing was approved. The agent can send a fresh one.');
+      return 'refused';
+    }
+
     // 3. Approve: claim the request before any wait, so a second reply arriving meanwhile is refused.
     if (this.inFlight.has(req.requestId)) return 'refused';
     this.inFlight.add(req.requestId);
     try {
-      return await this.consume(r, req, acceptance!);
+      return await this.consume(r, { ...req, summary: live.summary }, acceptance!);
     } finally {
       this.inFlight.delete(req.requestId);
     }
@@ -372,6 +410,32 @@ export class AccountPathService {
   }
 
   /** The person withdraws their acceptance (a narrowing: stops new consumption, keeps committed grants). */
+  /** A request counts as delivered when its card is in the person's chat, or it is a device request. */
+  private delivered(r: { adapter: string; cardMessageId: string }): boolean { return r.adapter === 'device' || !!r.cardMessageId; }
+
+  /**
+   * agent-work-cards-default §5 (b): withdraw a request the agent raised and that no person has answered. The stored
+   * request becomes `withdrawn`, its chat card (when delivered) is told so, a reply with its code is refused, and the
+   * same `proposalHash` cannot be re-raised for `cardTtlDays`. A `board-policy` request (the owner's path to the lighter
+   * policy) cannot be withdrawn by the agent. Withdrawing never approves anything.
+   */
+  async withdraw(requestId: string): Promise<{ ok: true; status: 'withdrawn'; cardTold: boolean } | { ok: false; reason: 'not-found' | 'not-open' | 'board-policy-not-withdrawable' | 'not-recorded' }> {
+    const req = this.d.store.request(requestId);
+    if (!req) return { ok: false, reason: 'not-found' };
+    if (req.status !== 'open') return { ok: false, reason: 'not-open' };
+    if ((req.change as { kind?: string } | undefined)?.kind === 'board-policy') return { ok: false, reason: 'board-policy-not-withdrawable' };
+    const w = await this.d.store.write('request-status', { requestId, status: 'withdrawn' });
+    if (!w.ok) return { ok: false, reason: 'not-recorded' };
+    this.d.log?.('trust-request-withdrawn', { requestId, proposalHash: req.proposalHash });
+    let cardTold = false;
+    if (req.adapter !== 'device' && req.cardMessageId) {
+      const port = this.d.adapters[req.adapter];
+      // The port has no edit verb: the card is told in a threaded reply, which every reader of the card sees.
+      cardTold = !!(await port?.replyTo(req.cardChatId, req.cardMessageId, 'The agent withdrew this request. Replying to it approves nothing now.').catch(() => false));
+    }
+    return { ok: true, status: 'withdrawn', cardTold };
+  }
+
   async withdrawAcceptance(principal: string, adapter: AdapterKind): Promise<boolean> {
     const a = this.d.store.acceptance(principal, adapter);
     if (!a) return false;
@@ -570,6 +634,34 @@ export class AccountPathService {
    * device with this key; the device is still paired and active with that same key. Then the shared
    * consumption (one key, one compare-and-set), the proof `accepted-device`, the apply and the outcome.
    */
+  /**
+   * SEC-141: the text a person approves is rebuilt from the change itself, never read from the stored
+   * request. A request record is replicated, and its `summary` is a separate field nothing derived
+   * again, so a forged record could pair a harmless summary with a dangerous change and a matching
+   * hash. A request whose change no longer hashes to its recorded `proposalHash`, or that has no
+   * change, is treated as altered and is neither listed as approvable nor approved.
+   */
+  /** SEC-141: the text for a request rebuilt from its change, or null when the request is altered. */
+  derivedSummary(req: { change?: TrustChange; proposalHash: string; requestId: string }): string[] | null {
+    const v = this.verified(req);
+    return v.ok ? v.summary : null;
+  }
+
+  private verified<R extends { change?: TrustChange; proposalHash: string; requestId: string }>(req: R): { ok: true; summary: string[] } | { ok: false } {
+    if (!req.change) return { ok: false };
+    try {
+      if (proposalHashOf(proofSubject(req.change)) !== req.proposalHash) {
+        this.d.log?.('trust-request-altered', { requestId: req.requestId });
+        return { ok: false };
+      }
+      return { ok: true, summary: this.d.summarize(req.change) };
+    } catch {
+      // @silent-fallback-ok — an unreadable change is refused (ok:false), and logged
+      this.d.log?.('trust-request-altered', { requestId: req.requestId, reason: 'summarize-failed' });
+      return { ok: false };
+    }
+  }
+
   async onPresenceApproval(auth: DeviceAuthorization): Promise<DeviceApprovalResult> {
     const refuse = (reason: string, message: string): DeviceApprovalResult => ({ status: 'refused', reason, message });
     if (!this.holds()) return { status: 'not-holder', reason: 'not-holder', message: HOLDER_MESSAGE };
@@ -584,6 +676,8 @@ export class AccountPathService {
       return refuse('request-expired', 'This request has expired, so nothing was approved. The agent can send a fresh one.');
     }
     if (req.proposalHash !== auth.proposalHash) return refuse('proposal-changed', 'This request is not the one shown on the card, so nothing was approved. Look again.');
+    const live = this.verified(req);
+    if (!live.ok) return refuse('request-altered', 'This request does not match the change it would make, so nothing was approved. The agent can send a fresh one.');
     const onRecord = this.d.store.deviceAcceptance(auth.deviceId);
     if (!onRecord) {
       return this.d.store.deviceAcceptanceWithdrawn(auth.deviceId)
@@ -617,7 +711,7 @@ export class AccountPathService {
       const name = this.devices?.get(auth.deviceId)?.name ?? null;
       if (!done.outcomeRecorded) return { status: 'unknown', requestId: req.requestId, message: UNKNOWN_OUTCOME_TEXT };
       if (!done.applied.ok) return { status: 'not-applied', requestId: req.requestId, message: `Your approval was recorded, but the change did not take effect (${done.applied.detail ?? 'unknown reason'}). Nothing else changed; the agent will need to ask again.` };
-      return { status: 'applied', requestId: req.requestId, message: `Done: ${req.summary.join('; ')}. ${deviceApprovalDisclosure(name)}`, ...(done.applied.detail ? { detail: done.applied.detail } : {}) };
+      return { status: 'applied', requestId: req.requestId, message: `Done: ${live.summary.join('; ')}. ${deviceApprovalDisclosure(name)}`, ...(done.applied.detail ? { detail: done.applied.detail } : {}) };
     } finally {
       this.inFlight.delete(req.requestId);
     }
@@ -633,6 +727,9 @@ export class AccountPathService {
     const weekAgo = now - 7 * 86_400_000;
     const out: DeviceRequestRow[] = [];
     for (const r of this.d.store.allRequests()) {
+      // SEC-141: list only requests whose change matches their hash, with text rebuilt from the change.
+      const live = this.verified(r);
+      if (!live.ok) continue;
       const consumption = this.d.store.consumptionOf(r.requestId);
       const expired = new Date(r.expiresAt).getTime() <= now;
       let status: DeviceRequestRow['status'];
@@ -647,7 +744,7 @@ export class AccountPathService {
       const outcome = this.d.store.applyOutcome(r.requestId);
       const byDevice = consumption?.kind === 'accepted-device';
       out.push({
-        requestId: r.requestId, status, summary: r.summary, proposalHash: r.proposalHash, expiresAt: r.expiresAt,
+        requestId: r.requestId, status, summary: live.summary, proposalHash: r.proposalHash, expiresAt: r.expiresAt,
         changeKind: r.change?.kind ?? null, via: r.adapter === 'device' ? 'device' : 'chat',
         ...(consumption ? {
           approvedAt: consumption.at,

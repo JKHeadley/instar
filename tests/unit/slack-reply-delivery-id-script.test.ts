@@ -95,4 +95,14 @@ describe('slack-reply.sh — delivery-id + 409', () => {
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('Sent');
   });
+
+  it('the sent line carries the message timestamp and its permalink, after the unchanged prefix (waiting-on-you-links)', async () => {
+    const withLink = await run('200', '{"ok":true,"topicId":"C_MAIN","ts":"1731900000.123456","messageLink":"https://acme.slack.com/archives/C0123ABC/p1731900000123456"}');
+    expect(withLink.code).toBe(0);
+    expect(withLink.stdout).toMatch(/^Sent \d+ chars to channel C_MAIN \(ts 1731900000\.123456\) link: https:\/\/acme\.slack\.com\/archives\/C0123ABC\/p1731900000123456\n?$/);
+    const noLink = await run('200', '{"ok":true,"ts":"1731900000.123456"}');
+    expect(noLink.stdout).toMatch(/^Sent \d+ chars to channel C_MAIN \(ts 1731900000\.123456\)\n?$/);
+    const bad = await run('200', '{"ok":true,"ts":"1731900000.123456","messageLink":"javascript:alert(1)"}');
+    expect(bad.stdout).not.toContain('link:');
+  });
 });

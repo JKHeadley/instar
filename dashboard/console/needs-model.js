@@ -42,6 +42,17 @@ export function cutAtWord(text, max) {
   return `${base}…`;
 }
 
+/**
+ * The rows the Conversations page's Chief of Staff card shows. Where the Needs-you list is on screen it
+ * already lists every project's wait, so the card keeps only what that list cannot do on this page: the
+ * check-in for a Chief of Staff that is paused or about to pause (2026-11-20 dashboard audit: two stacked
+ * boxes repeated the same waits and pushed the page below the first screen on a phone).
+ */
+export function chiefOfStaffCardRows(rows, { stripShown = false } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  return stripShown ? list.filter((r) => r && (r.key === 'need:cos:paused' || r.key === 'need:cos:expiring')) : list;
+}
+
 /** A short project name from its goal, the same rule as `shortProjectTitle` in src/core/ChiefOfStaffLoop.ts. */
 export function shortProjectTitle(goal, max = 60) {
   const g = String(goal == null ? '' : goal).replace(/\s+/g, ' ').trim();
@@ -124,7 +135,7 @@ export const NEED_SOURCES = [
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
-    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => row(r.key, r.main, r.sub, r.href)); } },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
   // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
   { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
     rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
@@ -186,6 +197,72 @@ export const NEED_EXEMPT = [
 
 const failedRead = (res) => sourceState(res) === 'failed';
 
+/** Plain words a linked row shows for its card: fixed, never the agent's own title (work-board-cards-appear §3). */
+export const HAS_CARD_LABEL = 'Has a card on the work board';
+/** The fixed label of a row that IS its card (needs-one-list): the card opens from the row itself. */
+export const IS_CARD_LABEL = 'Opens its card on the work board';
+/** The fixed words of the source's own link kept on a row that became its card. */
+export const ALSO_OPENS_LABEL = 'Open the project conversation';
+/** The covers namespace only the server writes (work-board-cards-appear §2: reserved `cos:`). */
+const SERVER_COVERS = /^cos:/;
+
+/**
+ * Each need once (docs/specs/work-board-cards-appear.md §3, as amended 2026-11-18 "One row per Chief of Staff wait"). A card in the owner's shown
+ * "Waiting on you" slice that says it is about other rows (`covers`) stands in for them in one of two ways:
+ *
+ * - The Chief of Staff's own wait card (server-owned, covering a row in the server-only `cos:` namespace) BECOMES that
+ *   row: one row, with the card's title and words, whose action opens the card, whatever the card asks (an open wait or
+ *   a Confirm done). The row keeps its key and source; the source's own action stays on it as `alsoOpens`. The card's
+ *   own row is dropped. Both texts are the server's, so no agent text replaces a source's words.
+ * - Any other card that only waits on the person to act (with the person, no Approve, no Confirm done, no open question,
+ *   nothing outward) links the rows it covers: each keeps its own words, source and action and gains `card`. An agent
+ *   session's card keeps its own row too, so an agent's card can never take over another source's button.
+ *
+ * Two cards on one row: the older card (creation time, then id) takes it. A card none of whose rows is present, or
+ * that asks for Approve, an answer or something outward (other than the Chief of Staff's own), keeps its own row.
+ * Pure: returns new rows, mutates none.
+ */
+export function linkCoveredRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const becomes = (c, k) => !!(c.board.serverOwned && SERVER_COVERS.test(k));
+  const cards = list.filter((r) => r && r.board && Array.isArray(r.board.covers) && r.board.covers.length && (r.board.linkable || r.board.serverOwned))
+    .sort((a, b) => String(a.board.createdAt).localeCompare(String(b.board.createdAt)) || String(a.board.cardId).localeCompare(String(b.board.cardId)));
+  if (!cards.length) return list;
+  // The plans source keys its rows `plan:` + the plan model's own key, which already reads `plan:<id>`; a card names `plan:<id>`.
+  const keyOf = (r) => String(r && r.key || '').replace(/^need:/, '').replace(/^plan:plan:/, 'plan:');
+  const present = new Map(list.filter((r) => r && !r.board).map((r) => [keyOf(r), r]));
+  const linkedBy = new Map(); // row key -> card row
+  const standsIn = new Set();
+  for (const c of cards) {
+    let any = false;
+    for (const k of c.board.covers) {
+      if (!present.has(k) || linkedBy.has(k)) continue;
+      // A card that asks for more than the person's own act links a row only when it is the Chief of Staff's own mirror of it.
+      if (!c.board.linkable && !becomes(c, k)) continue;
+      linkedBy.set(k, c); any = true;
+    }
+    // Only a server-owned card (the Chief of Staff's mirror of its own row) drops its own row; an agent session's
+    // card keeps its row, so an ask can never be made less visible by covering another item.
+    if (any && c.board.serverOwned) standsIn.add(c);
+  }
+  if (!linkedBy.size) return list;
+  const out = [];
+  for (const r of list) {
+    if (standsIn.has(r)) continue;
+    const k = r && !r.board ? keyOf(r) : null;
+    const c = k ? linkedBy.get(k) : null;
+    if (!c) { out.push(r); continue; }
+    if (becomes(c, k)) {
+      // Only a link to the project's own conversation is kept (a malformed key falls back to the chats list, which is not it).
+      const src = r.action && r.action.kind === 'href' && typeof r.action.href === 'string' && /^#\/work\/chats\?c=/.test(r.action.href) ? r.action.href : null;
+      out.push({ ...r, main: c.main || r.main, sub: c.sub || r.sub, action: { kind: 'href', href: c.board.href },
+        card: { id: c.board.cardId, href: c.board.href, label: IS_CARD_LABEL },
+        ...(src && src !== c.board.href ? { alsoOpens: { href: src, label: ALSO_OPENS_LABEL } } : {}) });
+    } else out.push({ ...r, card: { id: c.board.cardId, href: c.board.href, label: HAS_CARD_LABEL } });
+  }
+  return out;
+}
+
 /**
  * known: id → { results, rows?, rowsAt? }, Home's reads so far. Returns the rows that need the
  * operator, plus which sources are unread (say "checking", never "quiet") or failed (say
@@ -210,5 +287,6 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
     k.rowsAt = now;
     out.rows.push(...rows);
   }
+  out.rows = linkCoveredRows(out.rows);
   return out;
 }

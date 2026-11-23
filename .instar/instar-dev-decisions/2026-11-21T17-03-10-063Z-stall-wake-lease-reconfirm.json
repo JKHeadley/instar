@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-21T17:03:10.063Z",
+  "slug": "stall-wake-lease-reconfirm",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 433,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/StallReconfirm.ts",
+      "src/core/types.ts",
+      "src/data/awareness/stall-wake-lease-reconfirm.md"
+    ],
+    "addedLines": 433,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

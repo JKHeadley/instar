@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "locked-proof-human-steps",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T02:28:11.875Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-human-steps.md",
+  "artifactSha256": "f160653f899d11568f5084e10a9de7c5e3725b946a8f25f11082935ca0b03790",
+  "coveredFiles": [
+    "docs/specs/locked-proof-human-steps.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-human-steps.test.ts",
+    "tests/unit/locked-proof-person-delivery.test.ts",
+    "upgrades/next/locked-proof-human-steps.md",
+    "upgrades/side-effects/locked-proof-human-steps.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible proof-harness delivery and action-evidence correction. No relay policy, transport, native lock decision, permissions or fleet change. Unknown receipt and late observed action fail the test.",
+  "eli16Path": "docs/specs/locked-proof-human-steps.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-human-steps.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}

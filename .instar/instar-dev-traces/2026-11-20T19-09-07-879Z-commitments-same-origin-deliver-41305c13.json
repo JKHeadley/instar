@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "commitments-same-origin-deliver",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T19:09:07.879Z",
+  "artifactPath": "upgrades/side-effects/commitments-same-origin-deliver.md",
+  "artifactSha256": "e2a7ff31446e77a9cb9310adc2e746820dc032c173c1dcb16f30a1d39ea5ce66",
+  "coveredFiles": [
+    "docs/specs/commitments-same-origin-deliver.eli16.md",
+    "src/core/CommitmentsSync.ts",
+    "src/server/routes.ts",
+    "tests/e2e/commitments-deliver-same-origin-lifecycle.test.ts",
+    "tests/integration/commitments-deliver-same-origin.test.ts",
+    "tests/unit/CommitmentsSync.test.ts",
+    "upgrades/next/commitments-same-origin-deliver.md",
+    "upgrades/side-effects/commitments-same-origin-deliver.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow resolver fix (2 src files, ~35 LOC), no persisted state, a revert fully undoes it",
+  "eli16Path": "docs/specs/commitments-same-origin-deliver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/commitments-same-origin-deliver.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

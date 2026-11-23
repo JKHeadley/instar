@@ -194,6 +194,24 @@ function layerTopicKeys(root: string): string[] {
   } catch { return []; /* @silent-fallback-ok — no layer root yet */ }
 }
 
+/**
+ * The overall rework rate over the same sessions and window the metrics route
+ * lists (the delta comparison's baseline, §16), without the rest of that route's
+ * work. Null when no ledger is wired.
+ */
+export function computeOverallRework(ledger: ContextBudgetMetricsDeps['ledger'], opts: { now?: number; sinceHours?: number } = {}) {
+  if (!ledger) return null;
+  const now = opts.now ?? Date.now();
+  const sinceHours = Math.min(MAX_SINCE_HOURS, opts.sinceHours ?? DEFAULT_SINCE_HOURS);
+  const sinceMs = now - sinceHours * 3_600_000;
+  const totals = ledger.sessionRequestTotals({ sinceMs, limit: MAX_SESSIONS });
+  const inWindow = ledger.windowTotals({ sinceMs }).sessions ?? 0;
+  const sessions = totals.map((t) => ({
+    rework: reworkWithFreshness(ledger.reworkForSession(t.sessionId, { sinceMs, windowTurns: REWORK_WINDOW_TURNS }), ledger.sessionScanLag(t.sessionId, { now, toleranceMs: POLLER_LAG_TOLERANCE_MS })),
+  }));
+  return { sessions, sinceHours, sessionsTruncated: inWindow > sessions.length, windowTurns: REWORK_WINDOW_TURNS };
+}
+
 /** Compute the §11 metrics. Bounded: ≤ 50 sessions, ≤ 50 topics, ≤ 48 series points per session. */
 export function computeContextBudgetMetrics(deps: ContextBudgetMetricsDeps, q: ContextBudgetMetricsQuery = {}) {
   const now = (deps.now ?? Date.now)();

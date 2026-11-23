@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   readBoard, headline, cardActions, phoneOnlyLine, pinExplain, tapBody, tapCovers, cardRow, workBoardNeedRows, settingsPatch, donePaging, donePageFrom,
-  cardSourceLink, cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords,
+  cardSourceLink, cardFromQuery, policyPinExplain, refusalWords, isOff, POLICIES, claimEvidence, capacityWords, behindLine, needRowTitle, NEED_ROW_TITLE_MAX,
 } from '../../dashboard/console/work-model.js';
 import { NEED_SOURCES } from '../../dashboard/console/needs-model.js';
 import { NATIVE_PAGES, CONSOLE_ONLY_TABS, GROUPS, PHONE_PAGE_ALIASES, tabHref } from '../../dashboard/console/nav-model.js';
@@ -194,7 +194,20 @@ describe('what the confirm step shows (§4)', () => {
 describe('rows', () => {
   it('a reply after the question shows on the row', () => {
     expect(cardRow(card({ repliedAfterQuestion: true })).notes).toContain('You replied; the agent has not updated the card');
-    expect(cardRow(card({ mayHaveChangedOn: 'm-studio' })).notes).toContain('This card may have changed on m-studio');
+    expect(cardRow(card({ mayHaveChangedOn: 'm-studio', mayHaveChangedOnName: 'Mac Studio' })).notes).toContain('This card may have changed on Mac Studio');
+  });
+  it('a machine is named by its nickname, never its id', () => {
+    expect(cardRow(card({ mayHaveChangedOn: 'm_a804869356b259820b3236e7c5a2ae7d' })).notes).toContain('This card may have changed on another of your machines');
+    expect(behindLine({ machineId: 'm_a804869356b259820b3236e7c5a2ae7d', since: 'x', machineName: 'M5 Pro' })).toBe('This machine may not have the newest changes from M5 Pro yet, so a card here can be out of date.');
+    expect(behindLine({ machineId: 'm_a804869356b259820b3236e7c5a2ae7d', since: 'x' })).not.toContain('m_a804');
+  });
+  it('a Needs-you row keeps whole words (never "needs y")', () => {
+    const long = 'Conversations grouped under efforts, with suggestions and… looks done and needs your OK';
+    expect(needRowTitle(long)).toBe(long);
+    const cut = needRowTitle('word '.repeat(60));
+    expect(cut.endsWith('…')).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(NEED_ROW_TITLE_MAX);
+    expect(cut).toMatch(/word…$/);
   });
   it('capacity is said with the time in words, not a raw timestamp', () => {
     const w = capacityWords({ reason: 'every session slot is busy', nextCheckAt: '2026-11-12T12:30:00Z', since: '2026-11-12T11:00:00Z', words: 'x' }, NOW);
@@ -358,7 +371,8 @@ describe('the page', () => {
     expect(lead).toBeTruthy();
     expect(lead.textContent).toContain('Waiting on you');
     expect(lead.textContent).toContain('Renew the domain');
-    expect(lead.textContent).toContain('Needs your approval before the agent starts');
+    // The tile's status chip (the redesigned tile: chip, title, ask, one main button).
+    expect(lead.querySelector('.wc-chip-you').textContent).toBe('Needs your approval');
     expect(lead.textContent).toContain('You replied; the agent has not updated the card');
     expect(lead.textContent).toContain('2 more waiting');
     const approve = [...lead.querySelectorAll('button')].find((b) => b.textContent === 'Approve');
@@ -374,7 +388,7 @@ describe('the page', () => {
     main.querySelector('.work-open').click();
     const links = [...document.querySelectorAll('.sheet a')];
     expect(links.find(a => a.textContent === 'Original message')?.getAttribute('href')).toBe('#/work/chats?c=telegram%3A142440&m=144556');
-    expect(links.find(a => a.textContent === 'Open its conversation')).toBeTruthy();
+    expect(links.find(a => a.textContent === 'Open full conversation')).toBeTruthy();
     expect(document.querySelector('.sheet').textContent).not.toContain('144556');
   });
 
@@ -418,7 +432,7 @@ describe('the page', () => {
 
   it('opening a card shows the fields, evidence, warnings, the proof behind taps and a link to its conversation', async () => {
     const c = card({
-      status: 'claims-done', mayHaveBeenHandedOver: true, mayHaveChangedOn: 'm-studio',
+      status: 'claims-done', mayHaveBeenHandedOver: true, mayHaveChangedOn: 'm-studio', mayHaveChangedOnName: 'Mac Studio',
       claim: { id: 'rc1', evidenceIds: ['re1'], needsConfirm: true, at: '2026-11-12T11:00:00Z' },
       evidence: [{ id: 're1', itemId: 'd1', text: 'Paid, order 77', counts: true, at: '2026-11-12T10:30:00Z', by: { kind: 'agent' } }],
       questions: [{ id: 'rq0', text: 'Old question', state: 'replaced', reason: 'asked the wrong thing', at: 'x' }],
@@ -430,9 +444,31 @@ describe('the page', () => {
     await renderWork(main, ctx());
     (main.querySelector('.work-open') as any).click();
     const s = document.querySelector('.sheet').textContent;
-    for (const t of ['This may already have been handed over', 'This card may have changed on m-studio', 'Paid, order 77', 'Replaced: asked the wrong thing', 'Justin, proved by the console PIN', 'One year is enough.', 'Approval covers this address, not what it serves later', 'Confirm done', 'Remove for good']) expect(s).toContain(t);
-    const conv = [...document.querySelectorAll('.sheet a')].find((a) => a.textContent === 'Open its conversation');
+    for (const t of ['This may already have been handed over', 'This card may have changed on Mac Studio', 'Paid, order 77', 'Replaced: asked the wrong thing', 'Justin, proved by the console PIN', 'One year is enough.', 'Approval covers this address, not what it serves later', 'Confirm done', 'Remove for good']) expect(s).toContain(t);
+    const conv = [...document.querySelectorAll('.sheet a')].find((a) => a.textContent === 'Open full conversation');
     expect(conv.getAttribute('href')).toBe('#/work/chats?c=app%3A0b0c0d0e-0f10-5111-8213-141516171819');
+  });
+
+  it('opens a linked card omitted from capped board lanes using its own reader', async () => {
+    const id='wc_aaaaaaaaaaaaaa01';location.hash='#/work/board?card='+id;
+    reads['/work-board']=ok(board([]));reads['/work-board/cards/'+id]=ok({card:card({id,status:'done',title:'Older finished card'})});
+    const {renderWork}=await import(path.join(CONSOLE,'work.js'));const context=ctx();await renderWork(mainNode(),context);
+    expect(context.get).toHaveBeenCalledWith('/work-board/cards/'+id);expect(document.querySelector('.sheet').textContent).toContain('Older finished card');
+  });
+  it('reopens the same source tile on a new visit, but not on periodic refresh', async () => {
+    const id='wc_aaaaaaaaaaaaaa03';location.hash='#/work/board?card='+id;await tick();reads['/work-board']=ok(board([]));reads['/work-board/cards/'+id]=ok({card:card({id,title:'Return to this card'})});
+    const {renderWork}=await import(path.join(CONSOLE,'work.js'));const {closeSheet}=await import(path.join(CONSOLE,'ui.js'));const main=mainNode();await renderWork(main,ctx());expect(document.querySelector('.sheet')).toBeTruthy();
+    closeSheet();await tick();await renderWork(main,ctx());expect(document.querySelector('.sheet')).toBeNull();
+    location.hash='#/work/conversations?node=source';await tick();location.hash='#/work/board?card='+id;await tick();
+    await renderWork(main,ctx());expect(document.querySelector('.sheet').textContent).toContain('Return to this card');
+  });
+
+  it('does not consume a failed direct-card link and retries explicitly', async () => {
+    const id='wc_aaaaaaaaaaaaaa02';location.hash='#/work/board?card='+id;reads['/work-board']=ok(board([]));
+    reads['/work-board/cards/'+id]={ok:false,status:500};const {renderWork}=await import(path.join(CONSOLE,'work.js'));const main=mainNode();await renderWork(main,ctx());
+    expect(document.querySelector('.sheet')).toBeNull();expect(main.textContent).toContain('could not be loaded');
+    reads['/work-board/cards/'+id]=ok({card:card({id,title:'Recovered card'})});
+    [...main.querySelectorAll('button')].find(b=>b.textContent==='Try again').click();await tick();expect(document.querySelector('.sheet').textContent).toContain('Recovered card');
   });
 
   it('switched off says so; a shapeless answer cannot tell', async () => {

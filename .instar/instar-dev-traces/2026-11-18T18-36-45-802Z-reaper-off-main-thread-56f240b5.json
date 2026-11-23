@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "reaper-off-main-thread",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T18:36:45.802Z",
+  "artifactPath": "upgrades/side-effects/reaper-off-main-thread.md",
+  "artifactSha256": "284f8dc196d13ef26a86cdc4a71c8ddeca4edddbcd554bd12730be23828397e4",
+  "coveredFiles": [
+    "docs/specs/reaper-off-main-thread.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/AgentWorktreeReaper.ts",
+    "src/monitoring/agentWorktreeEvaluation.worker.ts",
+    "src/monitoring/agentWorktreeEvaluationJob.ts",
+    "src/server/routes.ts",
+    "tests/unit/agent-worktree-reaper-off-thread.test.ts",
+    "upgrades/next/reaper-off-main-thread.md",
+    "upgrades/side-effects/reaper-off-main-thread.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "same verdicts, moved off the event loop (PR 3134 pattern); revert fully undoes it; asked for separately by the Chief of Staff",
+  "eli16Path": "docs/specs/reaper-off-main-thread.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reaper-off-main-thread.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

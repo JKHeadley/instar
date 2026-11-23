@@ -133,7 +133,7 @@ describe('selection → projection offsets', () => {
     expect(pieces[0].keys).toEqual([]);
   });
 
-  it('highlights only on the latest version and only placed open comments', () => {
+  it('highlights placed open comments on whichever version is being read', () => {
     const comments = [
       { key: 'a', start: 1, end: 3, resolved: false, anchorState: 'ok' },
       { key: 'b', start: 1, end: 3, resolved: true, anchorState: 'ok' },
@@ -141,7 +141,8 @@ describe('selection → projection offsets', () => {
       { key: 'd', start: 4, end: 9, resolved: false, anchorState: 'edited' },
     ];
     expect(m.highlightRanges({ version: { latest: true }, comments }).map((r) => r.key)).toEqual(['a', 'd']);
-    expect(m.highlightRanges({ version: { latest: false }, comments })).toEqual([]);
+    expect(m.highlightRanges({ version: { latest: false }, comments }).map((r) => r.key)).toEqual(['a', 'd']);
+    expect(m.highlightRanges({ version: null, comments })).toEqual([]);
   });
 
   it('numbers ordered items per level', () => {
@@ -204,6 +205,12 @@ describe('links, location and words', () => {
     expect(m.anchorNote('edited')).toBe('The passage changed since this comment');
     expect(m.anchorNote('orphaned')).toBe('The passage this comment was on was removed');
     expect(m.anchorNote('ok')).toBeNull();
+    const page = { version: { id: 'v2' } };
+    const fromV1 = { onVersion: 'v1', onVersionLabel: 1 };
+    expect(m.anchorNote('ok', { onVersion: 'v2', onVersionLabel: 2 }, page)).toBeNull();
+    expect(m.anchorNote('ok', fromV1, page)).toBe('Made on version 1');
+    expect(m.anchorNote('edited', fromV1, page)).toBe('Made on version 1. The passage changed since this comment');
+    expect(m.anchorNote('orphaned', fromV1, page)).toBe("Made on version 1. This passage isn't in the version you're reading");
   });
 
   it('turns errors into plain words, never raw codes', () => {
@@ -313,5 +320,35 @@ describe('the decision panel (document-decisions §3.3)', () => {
     expect(m.phoneAskWords('no-phone')).toMatch(/Pair your phone/);
     expect(m.phoneAskWords('unavailable')).toMatch(/Open this document in the Instar app/);
     expect(m.decisionPollDelays().reduce((a: number, b: number) => a + b, 0)).toBeLessThanOrEqual(600_000);
+  });
+});
+
+describe('joining a computer from a team invite (member-browser-any-computer)', async () => {
+  const { joinConfirmString, joinForgetString } = await import('../../src/server/documentJoinRoutes.js');
+  it('parses the join fragment: a 22-character code, an optional document id, nothing else', () => {
+    const code = 'A'.repeat(22);
+    expect(m.parseJoinFragment(`#v=1&c=${code}`)).toEqual({ code, docId: null });
+    const doc = crypto.randomUUID();
+    expect(m.parseJoinFragment(`#v=1&c=${code}&d=${doc}`)).toEqual({ code, docId: doc });
+    expect(m.parseJoinFragment(`#v=1&c=${code}&d=not-a-doc`)).toEqual({ code, docId: null });
+    expect(m.parseJoinFragment(`#v=2&c=${code}`)).toBeNull();
+    expect(m.parseJoinFragment('#v=1&c=short')).toBeNull();
+    expect(m.parseJoinFragment('')).toBeNull();
+  });
+  it('signs exactly what the server verifies', () => {
+    expect(m.joinConfirmString({ deviceId: 'd', host: 'Echo.Example.dev', timeMs: '1', code: '123456' })).toBe(joinConfirmString('d', 'echo.example.dev', '1', '123456'));
+    expect(m.joinForgetString({ deviceId: 'd', host: 'Echo.Example.dev', timeMs: '1' })).toBe(joinForgetString('d', 'echo.example.dev', '1'));
+  });
+  it('cleans a typed code, and words refusals plainly', () => {
+    expect(m.cleanJoinCode('123 456')).toBe('123456');
+    expect(m.cleanJoinCode('12345')).toBeNull();
+    expect(m.joinErrorWords(403, { error: 'wrong-code', attemptsLeft: 1 }, 'Justin')).toBe('That code isn\'t right. One try left.');
+    expect(m.joinErrorWords(403, null, 'Justin')).toContain('Ask Justin for a new link');
+    expect(m.joinErrorWords(409, { detail: 'Your agent is finishing an update on echo-laptop. Try this link again later.' }, 'Justin')).toContain('echo-laptop');
+  });
+  it('shows the end line only in the last 7 days', () => {
+    const now = Date.parse('2026-11-20T12:00:00Z');
+    expect(m.computerEndLine(new Date(now + 10 * 86_400_000).toISOString(), 'Justin', now)).toBeNull();
+    expect(m.computerEndLine(new Date(now + 3 * 86_400_000).toISOString(), 'Justin', now)).toMatch(/ask Justin for a new link\.$/);
   });
 });

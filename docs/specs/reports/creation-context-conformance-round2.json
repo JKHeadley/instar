@@ -1,0 +1,46 @@
+{
+  "report": {
+    "standardsChecked": 102,
+    "checkedAt": "2026-11-22T22:29:51.731Z",
+    "findings": [
+      {
+        "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "A supported older relay can strip creation context before forwarding a created event, leaving an upgraded machine unable to recover a parent the agent already knows, with no pending-item receipt or repair obligation."
+      },
+      {
+        "standard": "Verify the State, Not Its Symbol",
+        "family": "The Substrate",
+        "status": "possible-violation",
+        "reason": "Chief being disabled on the answering machine permits a creation-time parent to be displayed as current even though that configuration does not establish that no later explicit placement exists."
+      },
+      {
+        "standard": "Close the Loop",
+        "family": "The Substrate",
+        "status": "possible-violation",
+        "reason": "After a transient placement-snapshot read failure, an unchanged source version can leave placement unknown indefinitely because the design specifies no recurring retry or tracked recovery obligation for that state."
+      },
+      {
+        "standard": "A Dispatch Supplies the Question and Withholds the Answer",
+        "family": "The Substrate",
+        "status": "possible-violation",
+        "reason": "The rollout directs the compatibility probe to record a predetermined result that the previous codec accepts the event and strips its context, compromising the independent check that determines whether writers can be enabled safely."
+      },
+      {
+        "standard": "Attributed Statements Trace to Their Source",
+        "family": "Interaction",
+        "status": "possible-violation",
+        "reason": "The testing gate attributes the full-suite routing restriction to an explicit operator instruction without quoting the operator or pointing to the logged message authorizing that restriction."
+      }
+    ],
+    "degraded": false
+  },
+  "registryCanary": {
+    "ok": true,
+    "articleCount": 102,
+    "failures": [],
+    "articleHeadings": 102,
+    "completenessAssessed": true
+  }
+}

@@ -25,6 +25,7 @@ import { buildFoldCoordinator, type FoldBootDeps } from '../../src/monitoring/fo
 import { writeClearSeedPointer, listClearSeedPointers, contextLayersRoot } from '../../src/monitoring/clearSeedPointer.js';
 import { writeKeepInstructions, readKeepInstructionsPointer } from '../../src/monitoring/keepInstructions.js';
 import { foldKeepSource } from '../../src/monitoring/foldCarriers.js';
+import { stagedFoldDir, listStagedFoldPackets } from '../../src/monitoring/foldPacket.js';
 import { PendingInjectStore, sweepPendingInjects } from '../../src/core/PendingInjectStore.js';
 import { LOCAL_FOLD_HOLDER } from '../../src/core/foldLeaseFactory.js';
 import type { FoldRecord } from '../../src/monitoring/FoldCoordinator.js';
@@ -149,6 +150,28 @@ describe('FoldCoordinator boot wiring × real lock × real carriers', () => {
     expect(swept.orphans.map((o) => o.kind).sort()).toEqual(['clear-seed-pointer', 'keep-instructions', 'pending-inject']);
     expect(events.filter((t) => t === 'orphan-carrier')).toHaveLength(3);
     expect(carriersPresent()).toEqual({ clearSeed: 0, keep: false, inject: 0 });
+  });
+
+  it('a staged fold packet (Phase 2) is released by the abort at boot, and swept as an orphan when its record is gone', () => {
+    const writeStage = (foldId: string) => {
+      const dir = stagedFoldDir(stateDir, TOPIC);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(dir, `${foldId}.txt`), 'packet', { mode: 0o600 });
+      fs.writeFileSync(path.join(dir, `${foldId}.json`), '{}', { mode: 0o600 });
+    };
+    // A shadow fold that crashed while prepared: the boot sweep aborts it and releases its stage.
+    const a = buildFoldCoordinator(deps()).coordinator;
+    const b0 = a.begin(TOPIC);
+    if (!b0.ok) throw new Error(b0.reason);
+    writeStage(b0.record.foldId);
+    const swept = buildFoldCoordinator(deps()).coordinator.recoverPendingFolds();
+    expect(swept.aborted.map((r) => r.foldId)).toEqual([b0.record.foldId]);
+    expect(listStagedFoldPackets(stateDir)).toEqual([]);
+    // A stage with no record at all is an orphan, released loudly.
+    writeStage('fghoststage');
+    const again = buildFoldCoordinator(deps()).coordinator.recoverPendingFolds();
+    expect(again.orphans.map((o) => o.kind)).toEqual(['staged-fold-packet']);
+    expect(listStagedFoldPackets(stateDir)).toEqual([]);
   });
 
   it('a standing (non-fold) keep-instructions file is never treated as a fold carrier', () => {

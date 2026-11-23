@@ -426,7 +426,10 @@ describe('No Silent Fallbacks', () => {
     // /memory-picker/session-context were counted because the 20-line window
     // reached `?? 'fallback'`. pick() never rejects, so both now carry an
     // in-window @silent-fallback-ok; the scanner reports exactly 494.
-    const BASELINE = 494;
+    // 494 -> 493: creation evidence failure paths now explicitly document their
+    // fail-closed unknown/conflicting response or existing reportOnce signal.
+    // No fallback gains authority; exact scanner count is 493 on this candidate.
+    const BASELINE = 493;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

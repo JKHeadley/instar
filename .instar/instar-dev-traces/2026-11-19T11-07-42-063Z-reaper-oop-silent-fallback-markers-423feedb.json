@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "reaper-oop-silent-fallback-markers",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T11:07:42.063Z",
+  "artifactPath": "upgrades/side-effects/reaper-oop-silent-fallback-markers.md",
+  "artifactSha256": "bcd58cfed8caa4421e52caa4e75d10a39b03ae4fa2eb3d32d29ab86055b9b151",
+  "coveredFiles": [
+    "src/monitoring/agentWorktreeGit.ts",
+    "upgrades/side-effects/reaper-oop-silent-fallback-markers.eli16.md",
+    "upgrades/side-effects/reaper-oop-silent-fallback-markers.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "comment-only markers on two intended fail-safe fallbacks; no runtime change",
+  "eli16Path": "upgrades/side-effects/reaper-oop-silent-fallback-markers.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reaper-oop-silent-fallback-markers.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

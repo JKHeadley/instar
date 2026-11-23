@@ -6,7 +6,8 @@
  * this manages agent→agent trust in the Threadline mesh.
  *
  * Trust rules (Section 7.3/7.4):
- * - ALL trust level UPGRADES require source: 'user-granted' — NO auto-escalation
+ * - ALL trust level UPGRADES require source: 'user-granted', 'paired-machine-granted' or 'agent-proposal' — NO auto-escalation
+ *   ('agent-proposal' is the honest label for a change an agent session made; identity-security-piece1b)
  * - Auto-DOWNGRADE only: circuit breaker (3 activations in 24h → untrusted),
  *   crypto verification failure → untrusted, 90 days no interaction → downgrade one level
  * - All trust changes logged to append-only audit trail
@@ -32,6 +33,11 @@ export type AgentTrustSource =
   | 'user-granted'
   | 'paired-machine-granted'
   | 'setup-default'
+  /**
+   * A change an agent session made through the trust tool (identity-security-piece1b §3). Allowed
+   * where 'user-granted' is allowed at Basic, but recorded honestly and never userInitiated.
+   */
+  | 'agent-proposal'
   /**
    * Out-of-band SAS-verified pairing (Secure A2A Verified Pairing, §3.3).
    * Structurally un-self-grantable: ONLY `markMutualVerified` may set this source.
@@ -546,7 +552,7 @@ export class AgentTrustManager implements InviteTrust {
 
   /**
    * Set trust level for an agent (by name).
-   * UPGRADES require source: 'user-granted' or 'paired-machine-granted'.
+   * UPGRADES require source: 'user-granted', 'paired-machine-granted' or 'agent-proposal'.
    * Returns true if the change was applied, false if rejected.
    */
   setTrustLevel(
@@ -581,14 +587,14 @@ export class AgentTrustManager implements InviteTrust {
 
     // Unknown/forward-incompat source values degrade to un-verified — they must
     // NEVER elevate trust (a downgrade-rollback can't silently grant anything).
-    const KNOWN_SOURCES: AgentTrustSource[] = ['user-granted', 'paired-machine-granted', 'setup-default'];
+    const KNOWN_SOURCES: AgentTrustSource[] = ['user-granted', 'paired-machine-granted', 'setup-default', 'agent-proposal'];
     if (!KNOWN_SOURCES.includes(source)) {
       return false;
     }
 
-    // Upgrades require user-granted or paired-machine-granted source
+    // Upgrades require user-granted, paired-machine-granted or agent-proposal source
     if (this.compareTrust(level, previousLevel) > 0) {
-      if (source !== 'user-granted' && source !== 'paired-machine-granted') {
+      if (source !== 'user-granted' && source !== 'paired-machine-granted' && source !== 'agent-proposal') {
         return false;
       }
     }

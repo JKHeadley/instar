@@ -18,7 +18,7 @@
   "population": "src/templates/**/*.{sh,js,mjs}",
   "censusRef": "docs/audits/phase-b/f10-triage.md",
   "seededAt": "2026-08-06",
-  "blockingCeiling": 12,
+  "blockingCeiling": 13,
   "blocking": [
     {
       "path": "src/templates/hooks/build-stop-hook.sh",
@@ -67,6 +67,10 @@
     {
       "path": "src/templates/scripts/whatsapp-reply.sh",
       "decision": "blocks send on server tone-gate denial"
+    },
+    {
+      "path": "src/templates/scripts/secret-get.mjs",
+      "decision": "refuses metered (pay-per-use) vault names, exit 3, before vault resolution (gemini-payg-metered-lane §4.2; secrets ruled exception, Rule 86). The name list is pinned to src/core/meteredSecrets.ts METERED_SECRET_NAMES by a template-drift test."
     }
   ],
   "nonBlocking": [
@@ -92,8 +96,8 @@
     },
     {
       "path": "src/templates/scripts/app-reply.sh",
-      "sha256": "989a677291ac3c066d5063e91f5f43dea6a5c105fdec39309e38c6d56fc5b815",
-      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file). Re-declared 2026-11-03 (message-origin-all-platforms): the script now also forwards the session's origin credential header (read from its own tmux environment when present, dropped unless it carries the ior1_ prefix); it refuses nothing on that basis, and the server records unknown evidence when the header is absent."
+      "sha256": "c12c2d464a43248b0f1ec0a877b5c56cc67f9ea102d2afc8faec0e15d63307a2",
+      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file). Re-declared 2026-11-03 (message-origin-all-platforms): the script now also forwards the session's origin credential header (read from its own tmux environment when present, dropped unless it carries the ior1_ prefix); it refuses nothing on that basis, and the server records unknown evidence when the header is absent. Re-declared 2026-11-16 (org-never-actions): a 422 `org-policy` answer is printed as the organization rule, who to ask and the allow-once id; the refusal is the server's, the script only reports it."
     },
     {
       "path": "src/templates/hooks/compaction-recovery.sh",
@@ -147,8 +151,8 @@
     },
     {
       "path": "src/templates/scripts/browser/native-drive.ps1",
-      "sha256": "9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e",
-      "reason": "normal-chrome-cross-platform: PP's Windows normal-Chrome driver, shipped byte-identical to the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
+      "sha256": "74f2071c3a53ad92b305ed0d6b4ac5cfc73b6df0671da946adb7c9e1be6aad92",
+      "reason": "normal-chrome-cross-platform + normal-chrome-windows-occlusion: PP's Windows normal-Chrome driver, the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS) plus the occlusion launch flag and the named ERR page-not-rendering read failure (live-run on the Mama PC 2026-11-19); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
@@ -186,11 +190,6 @@
       "reason": "Re-declared 2026-11-17 (secret-drop-self-mint-hardening + secret-drops-machine-local): supports safe #N field selection and reports/retries refused consume. No message or session blocking authority; browser handoff refusal stays scoped to the requested operation."
     },
     {
-      "path": "src/templates/scripts/secret-get.mjs",
-      "sha256": "c6acba715f339c63d53a889bcea35b5e7de4b46a51de375093631189668447c4",
-      "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
-    },
-    {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",
       "sha256": "a2f6cbbcbbfca746b279718013e277cda8bd8a63eefced1c1b1b03b297a3c84b",
       "reason": "machine-self-maintenance Part B: writes this agent's browser-instance ledger for the helpers that call it; refuses only a directory outside the profiles folder and gates no message, session or agent action"
@@ -214,6 +213,11 @@
       "path": "src/templates/scripts/threadline-reply.sh",
       "sha256": "2c24fd497c4e98488e1a120909b4d4330d2aab79672e33077de2f73acfb9ea93",
       "reason": "memory-privacy-agent-places: a reply relay; it refuses only its own empty input, and every send decision (recipient, thread, ownership) is the server route's, in TypeScript"
+    },
+    {
+      "path": "src/templates/scripts/secret-set.mjs",
+      "sha256": "2e0bf076e0fad233561642b4562ebe2e49bdf899e2457746255180b305c5594e",
+      "reason": "Added 2026-11-20 (gemini-payg-metered-lane §4 no-echo transfer target, found missing by the user-role live test): refuses only its own malformed invocation (no key path, a value on argv, a credential-shaped key path, a terminal on stdin, an empty value). No message, session or money blocking authority; it writes one vault entry from stdin."
     }
   ]
 }
