@@ -1,12 +1,16 @@
 /** Fixed private parse child. All provenance and selected bytes arrive on stdin,
- * never argv, environment, logs or a client-supplied path. No filesystem writes.
+ * never argv, environment, logs or a client-supplied path. No history mutation.
  */
 import { holdLocalHistoryChild } from './LocalHistoryChildCustody.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { once } from 'node:events';
 import { TextDecoder } from 'node:util';
-import { createLocalSessionParser, type LocalSessionSource } from './localSessionParsers.js';
+import { createLocalSessionParser, localSessionOriginalId, type LocalSessionSource } from './localSessionParsers.js';
+import { ImportedHistoryStore } from './ImportedHistoryStore.js';
+import type { LocalSourceClaim } from './LocalSourceIdentity.js';
 import { MAX_LOCAL_SESSION_BYTES } from './localSessionSnapshot.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 
@@ -17,7 +21,8 @@ async function run(): Promise<void> {
   const custodyBytes = process.env.INSTAR_LOCAL_HISTORY_CUSTODY;
   delete process.env.INSTAR_LOCAL_HISTORY_CUSTODY;
   if (!custodyBytes || custodyBytes.length > CHUNK_BYTES) throw new Error('no-custody');
-  const custody = holdLocalHistoryChild(JSON.parse(custodyBytes));
+  const custodyToken = JSON.parse(custodyBytes);
+  const custody = holdLocalHistoryChild(custodyToken);
   // This fork does not run the server shutdown handlers. Close SQLite only in
   // its synchronous exit phase, after all parsing/stream work has stopped.
   process.once('exit', () => custody.close());
@@ -29,6 +34,7 @@ async function run(): Promise<void> {
   let parser: ReturnType<typeof createLocalSessionParser> | undefined;
   let declaredBytes = 0;
   let declaredHash = '';
+  let previousClaim: Readonly<LocalSourceClaim> | null = null;
   let seen = 0;
   let pending = '';
   const hash = crypto.createHash('sha256');
@@ -55,13 +61,23 @@ async function run(): Promise<void> {
       if (!header || (header.source !== 'codex' && header.source !== CLAUDE_CODE_FRAMEWORK)
         || typeof header.expectedSessionId !== 'string' || !header.expectedSessionId
         || typeof header.expectedProjectPath !== 'string' || !header.expectedProjectPath
+        || (header.ownerUserId !== undefined && (typeof header.ownerUserId !== 'string' || !header.ownerUserId.trim()
+          || header.ownerUserId.includes('\0') || Buffer.byteLength(header.ownerUserId) > 256))
         || !Number.isSafeInteger(header.bytes) || header.bytes <= 0 || header.bytes > MAX_LOCAL_SESSION_BYTES
         || (header.expectedRepresentation !== undefined && !['canonical', 'event-fallback', 'claude-records'].includes(header.expectedRepresentation))
         || typeof header.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(header.sha256)) throw new Error('invalid-header');
       declaredBytes = header.bytes; declaredHash = header.sha256;
+      if (header.ownerUserId !== undefined && fs.existsSync(path.join(custodyToken.stateDir, 'imported-history'))) {
+        // Manifest hydration and authoritative source-mode lookup stay inside
+        // the admitted, bounded child. This path never claims or appends data.
+        previousClaim = new ImportedHistoryStore(custodyToken.stateDir, { existingOnly: true }).readLocalSourceClaim({
+          ownerUserId: header.ownerUserId, source: header.source, originalId: localSessionOriginalId(header.expectedSessionId),
+        });
+        if (previousClaim && header.expectedRepresentation !== undefined && header.expectedRepresentation !== previousClaim.representation) throw new Error('claim-mode-mismatch');
+      }
       parser = createLocalSessionParser(header.source as LocalSessionSource, {
         expectedSessionId: header.expectedSessionId, expectedProjectPath: header.expectedProjectPath,
-        expectedRepresentation: header.expectedRepresentation,
+        expectedRepresentation: previousClaim?.representation ?? header.expectedRepresentation,
       });
       chunk = prefix.subarray(4 + headerBytes);
     }
@@ -75,6 +91,9 @@ async function run(): Promise<void> {
   consume(decoder.decode());
   if (pending) parser.push(pending);
   const proposal = parser.finish();
+  if (previousClaim && (previousClaim.originalId !== proposal.conversation.originalId || previousClaim.source !== proposal.conversation.from
+    || previousClaim.projectPath !== proposal.projectPath || previousClaim.representation !== proposal.representation
+    || previousClaim.parserContractVersion !== 1)) throw new Error('source-claim-mismatch');
   const serialized = JSON.stringify(proposal);
   const digest = crypto.createHash('sha256');
   let outputBytes = 0;

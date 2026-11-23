@@ -7,6 +7,7 @@ import { performance } from 'node:perf_hooks';
 import Database from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import { acquireLocalHistoryChild, type LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
@@ -16,6 +17,8 @@ import { LOCAL_HISTORY_PLAINTEXT_BYTES } from './LocalHistoryChannel.js';
 import { MAX_LOCAL_SESSION_BYTES } from './localSessionSnapshot.js';
 import { privateImportDatabasePath } from './privateImportState.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { runLocalHistoryParseJob, type LocalHistoryParseReceipt } from './LocalHistoryParseJob.js';
+import { localSessionOriginalId } from './localSessionParsers.js';
 import type { LocalHistoryAuthenticatedDevice, LocalHistoryChannelIssuer, LocalHistoryChannelPrincipal } from './LocalHistoryChannelRegistry.js';
 
 export interface LocalHistoryStagingIssuer extends LocalHistoryChannelIssuer { origin: string }
@@ -26,16 +29,20 @@ export interface LocalHistoryUploadStagingDeps {
   now?: () => number;
   uploadTtlMs?: number;
   disk?: () => LocalHistoryDiskMeasurement;
+  parserPolicy?: { heapMiB: number; deadlineMs: number; rssBytes: number };
 }
-type Phase = 'uploading' | 'verifying' | 'verified' | 'cancelled' | 'expired' | 'interrupted' | 'conflicted';
+type Phase = 'uploading' | 'verifying' | 'verified' | 'preparing' | 'prepared' | 'cancelled' | 'expired' | 'interrupted' | 'conflicted';
 interface Row {
   id: string; requestKey: string; ownerHash: string; deviceHash: string; issuerHash: string;
   boot: string; fingerprint: string; tag: string; plan: string; planHash: string; created: number; deadline: number; phase: Phase;
 }
 interface Plan { manifest: LocalHistoryManifest; files: Array<{ fileId: string; allocation: string }> }
+interface PreparedFile extends LocalHistoryParseReceipt { fileId: string; allocation: string }
+interface PreparedPlan { version: 1; parserContractVersion: 1; operationId: string; fingerprint: string; files: PreparedFile[] }
 export interface LocalHistoryUploadStatus {
   operationId: string; uploadId: string; phase: Phase; expiresAt: number;
   files: Array<{ fileId: string; plaintextOffset: number; nextExpectedChunk: number }>;
+  preparation?: Array<Omit<PreparedFile, 'allocation'>>;
 }
 export class LocalHistoryUploadStagingRefused extends Error {
   constructor(readonly reason: 'unavailable' | 'invalid' | 'not-found' | 'busy' | 'capacity' | 'expired' | 'conflict') {
@@ -44,7 +51,7 @@ export class LocalHistoryUploadStagingRefused extends Error {
 }
 function refuse(reason: LocalHistoryUploadStagingRefused['reason']): never { throw new LocalHistoryUploadStagingRefused(reason); }
 const digest = (value: unknown) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const live = (phase: Phase) => ['uploading', 'verifying', 'verified'].includes(phase);
+const live = (phase: Phase) => ['uploading', 'verifying', 'verified', 'preparing', 'prepared'].includes(phase);
 const opaque = (value: unknown) => typeof value === 'string' && /^[\x21-\x7e]{1,256}$/.test(value);
 const id = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 const MAX_ROWS = 1024;
@@ -61,6 +68,7 @@ export class LocalHistoryUploadStaging {
   private readonly issuerHash: string;
   private readonly ttl: number;
   private readonly now: () => number;
+  private readonly parserPolicy: Readonly<{ heapMiB: number; deadlineMs: number; rssBytes: number }>;
   private metadata: string | undefined;
   private readonly invalidated = new Map<string, Phase>();
   private readonly expiryTicks = new Map<string, number>();
@@ -69,6 +77,7 @@ export class LocalHistoryUploadStaging {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly cleanups = new Map<string, ReturnType<typeof setTimeout>[]>();
   private verification: { id: string; done: Promise<void> } | undefined;
+  private preparation: { id: string; tag: string; done: Promise<void> } | undefined;
   private stopped = false;
   private stopping: Promise<void> | undefined;
 
@@ -76,6 +85,9 @@ export class LocalHistoryUploadStaging {
     if (![deps?.principal, deps?.issuer].every(value => typeof value === 'function')) refuse('invalid');
     this.now = deps.now ?? Date.now;
     this.ttl = deps.uploadTtlMs ?? UPLOAD_TTL_MS;
+    this.parserPolicy = Object.freeze({ ...(deps.parserPolicy ?? { heapMiB: 512, deadlineMs: 120_000, rssBytes: 768 * 1024 ** 2 }) });
+    if (!['heapMiB', 'deadlineMs', 'rssBytes'].every(key => Number.isSafeInteger(this.parserPolicy[key as keyof typeof this.parserPolicy])
+      && this.parserPolicy[key as keyof typeof this.parserPolicy] > 0)) refuse('invalid');
     if (typeof this.now !== 'function' || !Number.isSafeInteger(this.ttl) || this.ttl <= 0) refuse('invalid');
     this.issuer = Object.freeze(this.readIssuer());
     this.issuerHash = this.hashIssuer(this.issuer);
@@ -96,6 +108,8 @@ export class LocalHistoryUploadStaging {
       ); CREATE TABLE IF NOT EXISTS upload_challenges (
         hash TEXT PRIMARY KEY, ownerHash TEXT NOT NULL, boot TEXT NOT NULL,
         created INTEGER NOT NULL, deadline INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0
+      ); CREATE TABLE IF NOT EXISTS upload_preparations (
+        id TEXT PRIMARY KEY, allocation TEXT NOT NULL, sha256 TEXT NOT NULL
       )`);
       this.ledger = ledger; this.db = db;
       this.unregister = unregister = registerSqliteHandle(() => this.db.close());
@@ -133,7 +147,7 @@ export class LocalHistoryUploadStaging {
   private hashIssuer(issuer: LocalHistoryStagingIssuer): string {
     return digest(['local-history-issuer-v1', issuer.agentId, issuer.machineId, issuer.origin, issuer.signingKeyHash]);
   }
-  private owner(device: LocalHistoryAuthenticatedDevice): { ownerHash: string; deviceHash: string } {
+  private owner(device: LocalHistoryAuthenticatedDevice): { ownerHash: string; deviceHash: string; ownerUserId: string } {
     if (this.stopped) refuse('unavailable');
     try {
       const issuer = this.readIssuer();
@@ -143,7 +157,7 @@ export class LocalHistoryUploadStaging {
         || !opaque(device.deviceId) || !opaque(device.deviceKeyHash) || typeof principal.ownerUserId !== 'string'
         || !principal.ownerUserId.trim() || principal.ownerUserId.includes('\0') || Buffer.byteLength(principal.ownerUserId) > 256) refuse('unavailable');
       return { ownerHash: digest(['local-history-owner-v1', principal.ownerUserId, principal.deviceId, principal.deviceKeyHash]),
-        deviceHash: digest(['local-history-device-v1', principal.deviceId]) };
+        deviceHash: digest(['local-history-device-v1', principal.deviceId]), ownerUserId: principal.ownerUserId };
     } catch { return refuse('unavailable'); }
   }
   private transaction<T>(work: () => T): T {
@@ -166,7 +180,7 @@ export class LocalHistoryUploadStaging {
     if (![row.requestKey, row.ownerHash, row.deviceHash, row.issuerHash, row.fingerprint, row.planHash].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))
       || !opaque(row.boot) || !id(row.plan) || typeof row.tag !== 'string' || !/^r-[a-f0-9]{64}-[a-f0-9]{32}$/.test(row.tag) || !row.tag.endsWith('-' + row.id)
       || !Number.isSafeInteger(row.created) || row.created < 0 || !Number.isSafeInteger(row.deadline) || row.deadline <= row.created
-      || !['uploading', 'verifying', 'verified', 'cancelled', 'expired', 'interrupted', 'conflicted'].includes(row.phase)) refuse('unavailable');
+      || !['uploading', 'verifying', 'verified', 'preparing', 'prepared', 'cancelled', 'expired', 'interrupted', 'conflicted'].includes(row.phase)) refuse('unavailable');
     return { ...row, phase: this.invalidated.get(row.id) ?? row.phase };
   }
   private owned(operationId: string, device: LocalHistoryAuthenticatedDevice): Row {
@@ -282,6 +296,10 @@ export class LocalHistoryUploadStaging {
         if (file.fileId !== parsed.manifest.files[index].fileId || !id(file.allocation) || seen.has(file.allocation)) refuse('unavailable');
         seen.add(file.allocation);
         const allocation = this.ledger.inspect(file.allocation);
+        if (row.phase === 'prepared') {
+          if (allocation.operation !== row.tag || allocation.state !== 'disposed') refuse('unavailable');
+          continue;
+        }
         if (allocation.operation !== row.tag || !['active', 'sealed'].includes(allocation.state)
           || (row.phase === 'verified' && allocation.state !== 'sealed') || allocation.planned !== parsed.manifest.files[index].bytes) refuse('unavailable');
       }
@@ -291,11 +309,17 @@ export class LocalHistoryUploadStaging {
   }
   status(device: LocalHistoryAuthenticatedDevice, operationId: string): LocalHistoryUploadStatus {
     const row = this.owned(operationId, device);
-    const files = live(row.phase) ? this.plan(row).files.map(file => {
+    const plan = live(row.phase) ? this.plan(row) : undefined;
+    const files = plan ? plan.files.map((file, index) => {
+      if (row.phase === 'prepared') {
+        const expected = plan.manifest.files[index];
+        return { fileId: file.fileId, plaintextOffset: expected.bytes, nextExpectedChunk: Math.ceil(expected.bytes / LOCAL_HISTORY_PLAINTEXT_BYTES) };
+      }
       const allocation = this.ledger.inspect(file.allocation);
       return { fileId: file.fileId, plaintextOffset: allocation.written, nextExpectedChunk: Math.ceil(allocation.written / LOCAL_HISTORY_PLAINTEXT_BYTES) };
     }) : [];
-    return { operationId: row.id, uploadId: row.id, phase: row.phase, expiresAt: row.deadline, files };
+    return { operationId: row.id, uploadId: row.id, phase: row.phase, expiresAt: row.deadline, files,
+      ...(row.phase === 'prepared' ? { preparation: this.prepared(row).files.map(({ allocation: _allocation, ...receipt }) => receipt) } : {}) };
   }
   write(device: LocalHistoryAuthenticatedDevice, operationId: string, fileId: string, index: number, bytes: Buffer): LocalHistoryUploadStatus {
     const row = this.owned(operationId, device);
@@ -323,9 +347,9 @@ export class LocalHistoryUploadStaging {
   }
   complete(device: LocalHistoryAuthenticatedDevice, operationId: string): LocalHistoryUploadStatus {
     const row = this.owned(operationId, device);
-    if (row.phase === 'verifying' || row.phase === 'verified') return this.status(device, operationId);
+    if (['verifying', 'verified', 'preparing', 'prepared'].includes(row.phase)) return this.status(device, operationId);
     if (row.phase !== 'uploading') refuse('conflict');
-    if (this.verification) refuse('busy');
+    if (this.verification || this.preparation) refuse('busy');
     const plan = this.plan(row);
     if (plan.files.some((file, index) => this.ledger.inspect(file.allocation).written !== plan.manifest.files[index].bytes)) refuse('invalid');
     this.transaction(() => {
@@ -362,6 +386,136 @@ export class LocalHistoryUploadStaging {
       this.db.prepare("UPDATE upload_operations SET phase = 'verified' WHERE id = ?").run(row.id);
     });
   }
+  /** Start real semantic parsing without holding an HTTP request open. A
+   * prepared artifact is still not a preview confirmation or copy permit. */
+  prepare(device: LocalHistoryAuthenticatedDevice, operationId: string): LocalHistoryUploadStatus {
+    const row = this.owned(operationId, device);
+    if (row.phase === 'preparing' || row.phase === 'prepared') return this.status(device, operationId);
+    if (row.phase !== 'verified') refuse('conflict');
+    if (this.verification || this.preparation) refuse('busy');
+    const plan = this.plan(row), ownerUserId = this.owner(device).ownerUserId;
+    const destinations = new Set(plan.manifest.files.map(file => JSON.stringify([file.source, localSessionOriginalId(file.expectedSessionId)])));
+    if (destinations.size !== plan.files.length) refuse('conflict');
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    this.transaction(() => {
+      this.metadataRoom();
+      if (this.owned(operationId, deviceCopy).phase !== 'verified') refuse('conflict');
+      this.db.prepare("UPDATE upload_operations SET phase = 'preparing' WHERE id = ?").run(row.id);
+    });
+    const done = Promise.resolve().then(() => this.parse(deviceCopy, row, plan, ownerUserId)).catch(() => {
+      try { const current = this.row(row.id); if (live(current.phase)) this.invalidate(current, 'interrupted'); }
+      catch { this.invalidated.set(row.id, 'interrupted'); }
+    }).finally(() => {
+      if (this.preparation?.done === done) this.preparation = undefined;
+      // runLocalHistoryParseJob resolves only after the actual child exited.
+      // Cancellation cannot retire its files while that promise is outstanding.
+      try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }
+      catch { if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag); }
+    });
+    this.preparation = { id: row.id, tag: row.tag, done };
+    return this.status(deviceCopy, operationId);
+  }
+  private async parse(device: LocalHistoryAuthenticatedDevice, row: Row, plan: Plan, ownerUserId: string): Promise<void> {
+    const authorized = () => {
+      try { return this.owned(row.id, device).phase === 'preparing'; } catch { return false; }
+    };
+    const check = () => { if (!authorized()) refuse('unavailable'); };
+    const files: PreparedFile[] = [];
+    for (const [index, file] of plan.files.entries()) {
+      check();
+      const expected = plan.manifest.files[index], output = this.ledger.create(row.tag, 0);
+      let leased = false;
+      const receipt = await runLocalHistoryParseJob({
+        input: { source: expected.source, expectedSessionId: expected.expectedSessionId,
+          expectedProjectPath: plan.manifest.project, bytes: expected.bytes, sha256: expected.sha256, ownerUserId },
+        ...this.parserPolicy,
+        deadlineMs: Math.max(1, Math.floor(Math.min(this.parserPolicy.deadlineMs, row.deadline - this.clock(),
+          (this.expiryTicks.get(row.id) ?? 0) - performance.now()))),
+        acquireChild: async () => {
+          check(); if (leased) return null; leased = true;
+          return { custody: this.custody.custody,
+            registerChild: async pid => { check(); if (!leased) refuse('unavailable'); await this.custody.registerChild(pid); check(); },
+            release: () => { if (!leased) refuse('unavailable'); leased = false; },
+          };
+        },
+        authorized,
+        chunks: async function* (this: LocalHistoryUploadStaging, signal: AbortSignal) {
+          for (let offset = 0; offset < expected.bytes; offset += CHUNK_BYTES) {
+            check(); if (signal.aborted) refuse('unavailable');
+            const bytes = this.ledger.read(file.allocation, offset, Math.min(CHUNK_BYTES, expected.bytes - offset));
+            try { check(); yield bytes; check(); } finally { bytes.fill(0); }
+          }
+        }.bind(this),
+        writeOutput: async (bytes, signal) => {
+          check(); if (signal.aborted) refuse('unavailable');
+          for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+            const block = bytes.subarray(offset, offset + CHUNK_BYTES);
+            this.ledger.grow(output, block.length); check(); this.ledger.write(output, block); check();
+          }
+        },
+      });
+      check();
+      const allocation = this.ledger.inspect(output);
+      if (allocation.written !== receipt.bytes || allocation.planned !== receipt.bytes) refuse('unavailable');
+      this.ledger.seal(output);
+      files.push({ fileId: file.fileId, allocation: output, ...receipt });
+    }
+    check();
+    const result: PreparedPlan = { version: 1, parserContractVersion: 1, operationId: row.id, fingerprint: row.fingerprint, files };
+    const bytes = Buffer.from(JSON.stringify(result));
+    let allocation: string;
+    try {
+      if (bytes.length > PLAN_BYTES) refuse('capacity');
+      allocation = this.ledger.create(row.tag, bytes.length);
+      for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) { check(); this.ledger.write(allocation, bytes.subarray(offset, offset + CHUNK_BYTES)); }
+      this.ledger.seal(allocation);
+      const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      this.transaction(() => {
+        check(); this.metadataRoom();
+        this.db.prepare('INSERT INTO upload_preparations(id,allocation,sha256) VALUES(?,?,?)').run(row.id, allocation, sha256);
+      });
+    } finally { bytes.fill(0); }
+    check();
+    // No whole-tag retry here: that would also dispose the published outputs.
+    // A failed raw retirement terminates the operation and later owns the tag.
+    for (const file of plan.files) { check(); this.ledger.dispose(file.allocation); }
+    this.transaction(() => {
+      check(); this.metadataRoom();
+      this.db.prepare("UPDATE upload_operations SET phase = 'prepared' WHERE id = ?").run(row.id);
+    });
+  }
+  private prepared(row: Row): PreparedPlan {
+    const record = this.db.prepare('SELECT allocation,sha256 FROM upload_preparations WHERE id = ?').get(row.id) as {allocation: string; sha256: string} | undefined;
+    if (!record || !id(record.allocation) || !/^[a-f0-9]{64}$/.test(record.sha256)) refuse('unavailable');
+    const allocation = this.ledger.inspect(record.allocation);
+    if (allocation.operation !== row.tag || allocation.state !== 'sealed' || allocation.written !== allocation.planned || allocation.written > PLAN_BYTES) refuse('unavailable');
+    const parts: Buffer[] = []; let bytes: Buffer | undefined;
+    try {
+      for (let offset = 0; offset < allocation.written; offset += CHUNK_BYTES) parts.push(this.ledger.read(record.allocation, offset, Math.min(CHUNK_BYTES, allocation.written - offset)));
+      bytes = Buffer.concat(parts);
+      if (crypto.createHash('sha256').update(bytes).digest('hex') !== record.sha256) refuse('unavailable');
+      const result = JSON.parse(bytes.toString('utf8')) as PreparedPlan, plan = this.plan(row);
+      if (result.version !== 1 || result.parserContractVersion !== 1 || result.operationId !== row.id || result.fingerprint !== row.fingerprint
+        || Object.keys(result).length !== 5
+        || !Array.isArray(result.files) || result.files.length !== plan.files.length) refuse('unavailable');
+      const seen = new Set<string>([row.plan, record.allocation, ...plan.files.map(file => file.allocation)]);
+      for (const [index, file] of result.files.entries()) {
+        if (file.fileId !== plan.files[index].fileId || !id(file.allocation) || seen.has(file.allocation)
+          || Object.keys(file).length !== 7
+          || !Number.isSafeInteger(file.bytes) || file.bytes <= 0 || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)
+          || !['canonical', 'event-fallback', 'claude-records'].includes(file.representation)
+          || (plan.manifest.files[index].source === CLAUDE_CODE_FRAMEWORK ? file.representation !== 'claude-records' : file.representation === 'claude-records')
+          || !['sampled', 'unavailable'].includes(file.rssProtection)
+          || !file.counts || Object.keys(file.counts).length !== 5
+          || !['records', 'malformed', 'excluded', 'duplicateMessages', 'toolCalls'].every(key => Number.isSafeInteger(file.counts[key as keyof typeof file.counts]) && file.counts[key as keyof typeof file.counts] >= 0)) refuse('unavailable');
+        seen.add(file.allocation);
+        const stored = this.ledger.inspect(file.allocation);
+        if (stored.operation !== row.tag || stored.state !== 'sealed' || stored.planned !== file.bytes || stored.written !== file.bytes) refuse('unavailable');
+      }
+      return result;
+    } catch { return refuse('unavailable'); }
+    finally { bytes?.fill(0); for (const part of parts) part.fill(0); }
+  }
   cancel(device: LocalHistoryAuthenticatedDevice, operationId: string): LocalHistoryUploadStatus {
     const row = this.owned(operationId, device);
     if (live(row.phase)) this.invalidate(row, 'cancelled');
@@ -376,6 +530,7 @@ export class LocalHistoryUploadStaging {
     catch { /* live memory denies authority; durable generation remains charged */ }
   }
   private disposeTag(tag: string): boolean {
+    if (this.preparation?.tag === tag) return false;
     let disposed = true;
     let allocations: ReturnType<LocalHistoryDiskLedger['list']>;
     try { allocations = this.ledger.list(tag); } catch { return false; }
@@ -421,6 +576,9 @@ export class LocalHistoryUploadStaging {
     // not acquire deletion authority merely by lacking an operation row.
     const count = this.db.prepare('SELECT (SELECT COUNT(*) FROM upload_operations) + (SELECT COUNT(*) FROM upload_challenges) AS n').get() as {n: number};
     if (!Number.isSafeInteger(count.n) || count.n > MAX_ROWS) refuse('unavailable');
+    const preparedCount = this.db.prepare('SELECT COUNT(*) AS n FROM upload_preparations').get() as {n: number};
+    if (!Number.isSafeInteger(preparedCount.n) || preparedCount.n > MAX_ROWS
+      || this.db.prepare('SELECT 1 FROM upload_preparations p LEFT JOIN upload_operations o ON o.id = p.id WHERE o.id IS NULL LIMIT 1').get()) refuse('unavailable');
     const inventory = this.ledger.inventory();
     const old = new Set(inventory.map(row => row.operation).filter(tag => /^r-[a-f0-9]{64}-[a-f0-9]{32}$/.test(tag)
       && !tag.startsWith('r-' + this.custody.custody.generation + '-')));
@@ -453,6 +611,7 @@ export class LocalHistoryUploadStaging {
     } finally {
       try {
         await this.verification?.done;
+        await this.preparation?.done;
         for (const tag of pending) this.disposeTag(tag);
       } finally {
         this.expiryTicks.clear(); this.challengeTicks.clear();

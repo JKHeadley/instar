@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "local-history-semantic-preparation",
+  "sessionId": "2d7f3894-f027-4c8b-b015-2c9311ec6ec0",
+  "timestamp": "2026-11-23T21:33:49.450Z",
+  "artifactPath": "upgrades/side-effects/local-history-semantic-preparation.md",
+  "artifactSha256": "fa4544651e39487067cf6e63dcf21d5146cedc38ff2cf9d176b6311064bd473e",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/local-history/server-upload-staging.md",
+    "src/import/ImportedHistoryStore.ts",
+    "src/import/LocalHistoryParseJob.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "src/import/localHistoryParseWorker.ts",
+    "src/import/localSessionParsers.ts",
+    "tests/unit/local-history-parse-job.test.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-semantic-preparation.md",
+    "upgrades/side-effects/local-history-semantic-preparation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Connects actual private parser children to owner-specific claims and reserved normalized storage with cancellation and crash custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-history-native-contract-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

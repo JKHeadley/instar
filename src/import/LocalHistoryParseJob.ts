@@ -37,6 +37,9 @@ export interface LocalHistoryParseInput {
   bytes: number;
   sha256: string;
   expectedRepresentation?: LocalSessionRepresentation;
+  /** Actual stable native owner from current parent admission, never a manifest
+   * field. Enables authoritative existing-claim lookup inside the admitted child. */
+  ownerUserId?: string;
 }
 export interface LocalHistoryParseJobOptions {
   input: LocalHistoryParseInput;
@@ -86,6 +89,7 @@ function ownOptions(value: LocalHistoryParseJobOptions): LocalHistoryParseJobOpt
     const source = value.input;
     const input = Object.freeze({ source: source.source, expectedSessionId: source.expectedSessionId,
       expectedProjectPath: source.expectedProjectPath, bytes: source.bytes, sha256: source.sha256,
+      ...(source.ownerUserId !== undefined ? { ownerUserId: source.ownerUserId } : {}),
       ...(source.expectedRepresentation !== undefined ? { expectedRepresentation: source.expectedRepresentation } : {}) });
     const owned = { input, acquireChild: value.acquireChild, authorized: value.authorized,
       chunks: value.chunks, writeOutput: value.writeOutput, heapMiB: value.heapMiB,
@@ -104,6 +108,8 @@ export async function runLocalHistoryParseJob(value: LocalHistoryParseJobOptions
     || (input.source !== 'codex' && input.source !== CLAUDE_CODE_FRAMEWORK)
     || typeof input.expectedSessionId !== 'string' || !input.expectedSessionId
     || typeof input.expectedProjectPath !== 'string' || !input.expectedProjectPath
+    || (input.ownerUserId !== undefined && (typeof input.ownerUserId !== 'string' || !input.ownerUserId.trim()
+      || input.ownerUserId.includes('\0') || Buffer.byteLength(input.ownerUserId) > 256))
     || typeof input.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(input.sha256)
     || (input.expectedRepresentation !== undefined && !['canonical', 'event-fallback', 'claude-records'].includes(input.expectedRepresentation))) throw new LocalHistoryParseJobRefused('local-history-parser-policy');
   const header = Buffer.from(JSON.stringify(input));

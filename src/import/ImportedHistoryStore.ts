@@ -82,10 +82,10 @@ export class ImportedHistoryStore {
   private localDirty = false;
   private readonly activeLocalClaims = new Map<string, Readonly<LocalSourceClaim>>();
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, options: { existingOnly?: boolean } = {}) {
     this.dir = path.join(stateDir, IMPORTED_HISTORY_DIRNAME);
     for (const directory of [this.dir, path.join(this.dir, 'conversations'), path.join(this.dir, 'attachments')]) {
-      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      if (!options.existingOnly) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
       verifyPrivateImportDirectory(directory);
     }
     this.manifest = this.readManifest();
