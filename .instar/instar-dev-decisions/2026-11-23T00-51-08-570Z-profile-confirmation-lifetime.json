@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-23T00:51:08.570Z",
+  "slug": "profile-confirmation-lifetime",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 1017,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ProfileProposalRequests.ts",
+      "src/core/ProfileRuntimeGuard.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicProfileOrchestrator.ts",
+      "src/core/TopicProfileStore.ts",
+      "src/core/handleProfileProposalReply.ts",
+      "src/core/topicProfileAudit.ts",
+      "src/core/topicProfileIngress.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/core/types.ts",
+      "src/data/awareness/profile-change-questions.md",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 683,
+    "deletedLines": 334
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

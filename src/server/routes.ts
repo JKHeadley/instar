@@ -502,6 +502,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { profileProposalPlacement } from '../core/profileProposalPlacement.js';
 import { TopicCreationProvenanceStore, checkCitation, parseOnBehalfOf, crossTopicEligible, safeConversationName, CROSS_TOPIC_FIELDS, type CitationDeps } from '../core/topicCreationProvenance.js';
 import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
 import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
@@ -14134,6 +14135,37 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.clarifyPending === true) {
+      if (Object.keys(body).some(k => k !== 'clarifyPending')) {
+        res.status(400).json({ error: 'A clarification cannot include a change.' }); return;
+      }
+      const pending = ctx.topicProfile.confirmSlots.proposals.list(gate.key);
+      const eligible = pending.filter(p => {
+        try { return crossTopicEligibilityFor(Number(gate.key), p.target).ok
+          && profileProposalPlacement(ctx.sessionOwnershipRegistry, ctx.meshSelfId, gate.key, p.target, !!ctx.coordinator?.enabled) !== null; }
+        catch { return false; }
+      });
+      const text = eligible.length === pending.length && eligible.length
+        ? `Which change do you mean?\n${eligible.map(p => `${p.core.split('\n')[0]} Request ${p.id}.`).join('\n')}`
+        : 'Which change do you mean? Please name the change you want to make.';
+      if (!ctx.topicProfile.confirmSlots.proposals.reserveNotice(gate.key)) {
+        res.status(429).json({ ok: false, reason: 'send-budget', message: 'The pending questions are still available. Please wait before sending another clarification.' }); return;
+      }
+      // A new question must not leave an older bare-yes recovery armed.
+      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      try {
+        const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => (ctx.telegram)!.sendToTopic(Number(gate.key), text));
+        requireTelegramDelivery(sent);
+        res.json({ ok: true, clarification: true, text, requests: eligible.length === pending.length
+          ? eligible.map(p => ({ requestId: p.id, targetTopicId: p.target, summary: p.core.split('\n')[0] })) : [] });
+      } catch (err) { res.status(502).json({ ok: false, error: operatorError(err, res.app?.locals?.stateDir) }); }
+      return;
+    }
+    const remindId = body.remindRequestId;
+    if (remindId !== undefined && (typeof remindId !== 'string' || Object.keys(body).some(k => !['remindRequestId', 'confirmIn'].includes(k)))) {
+      res.status(400).json({ error: 'A reminder takes only the existing request id and confirming conversation.' }); return;
+    }
+
     const patch: import('../core/topicProfileValidation.js').ProfilePatchInput = {};
     if ('messageOriginDisplay' in body) patch.messageOriginDisplay = body.messageOriginDisplay as typeof patch.messageOriginDisplay;
     for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
@@ -14190,33 +14222,46 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
     }
-    const rendered = gate.surface.renderProposalEcho(gate.key, patch);
-    if (!rendered.ok) {
-      res.status(400).json({ ok: false, message: rendered.reply });
-      return;
-    }
     const echoTopic = confirmIn ?? Number(gate.key);
-    let echoText = confirmIn !== null
-      ? rendered.echo.replace('Proposed profile change for this topic:', `Proposed change for the conversation "${safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key)}" (not this one):`)
-      : rendered.echo;
-    const armed = ctx.topicProfile.confirmSlots.arm(String(echoTopic), 'propose-confirm', rendered.patch, echoText, 'agent-composed', confirmIn !== null ? gate.key : undefined);
-    if (armed.ok && armed.superseded) echoText = `${echoText}\n(This replaces the earlier proposal here.)`;
-    if (!armed.ok) {
-      res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
-      return;
+    const proposals = ctx.topicProfile.confirmSlots.proposals;
+    if (typeof remindId === 'string') {
+      const prior = proposals.get(String(echoTopic), remindId);
+      if (!prior || prior.target !== gate.key) {
+        res.status(409).json({ ok: false, reason: 'fresh-proposal-needed', message: 'That question is no longer available. Ask for a fresh question.' }); return;
+      }
+      Object.assign(patch, prior.patch);
+    }
+    const contextStamp = profileProposalPlacement(ctx.sessionOwnershipRegistry, ctx.meshSelfId, String(echoTopic), gate.key, !!ctx.coordinator?.enabled);
+    if (contextStamp === null) {
+      res.status(409).json({ ok: false, reason: 'destination-owner', message: 'I need to prepare this question in the destination conversation. No settings changed.' }); return;
+    }
+    const name = safeConversationName(ctx.telegram.getTopicName(Number(gate.key)), gate.key);
+    const rendered = gate.surface.renderProposalEcho(gate.key, patch, name);
+    if (!rendered.ok) { res.status(400).json({ ok: false, message: rendered.reply }); return; }
+    const attempt = typeof remindId === 'string'
+      ? proposals.remind(String(echoTopic), remindId, rendered.echo, contextStamp)
+      : proposals.begin(String(echoTopic), gate.key, rendered.patch, rendered.echo, contextStamp);
+    if (!attempt.ok) {
+      res.status(attempt.reason === 'send-budget' ? 429 : 409).json({ ok: false, reason: attempt.reason,
+        message: attempt.reason === 'send-budget' ? 'The question is still available. Please wait before requesting another reminder.' : 'The change is different now. Ask for a fresh question.' }); return;
     }
     try {
-      // This armed exact-change proposal needs a human answer, so it uses the
-      // existing bounded owner-decision lane rather than the quiet report feed.
-      const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => (ctx.telegram)!.sendToTopic(echoTopic, echoText));
-      ctx.topicProfile.confirmSlots.recordEchoMessageId(String(echoTopic), requireTelegramDelivery(sent).messageId);
-      res.json({ ok: true, echo: echoText, superseded: armed.superseded, ...(confirmIn !== null ? { confirmIn } : {}) });
+      const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => (ctx.telegram)!.sendToTopic(echoTopic, attempt.text));
+      const delivered = requireTelegramDelivery(sent).messageId;
+      attempt.onDelivery(delivered);
+      const active = proposals.get(String(echoTopic), attempt.request.id);
+      if (!active?.receipts.some(receipt => receipt.messageId === delivered)) {
+        res.status(409).json({ ok: false, delivered: true, reason: 'question-no-longer-active', requestId: attempt.request.id,
+          message: 'The question arrived after it stopped being available. I need to check the current settings before asking again.' });
+        return;
+      }
+      res.json({ ok: true, expiresAt: attempt.request.expiresAt, requestId: attempt.request.id, targetTopicId: gate.key, echo: attempt.text,
+        reminder: !attempt.created, superseded: false, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
-      // Echo undelivered — tear the slot down (an unseen echo must never be
-      // confirmable; matchConfirm would refuse on no-echo-id anyway).
-      ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
-      res.status(502).json({ ok: false, error: `Echo delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
+      attempt.onDelivery(null);
+      res.status(502).json({ ok: false, reason: 'delivery-unconfirmed', requestId: attempt.request.id, error: 'I could not confirm that the question is ready to answer.' });
     }
+
   });
 
   // §10.3 / §5.2(b) recovery surfaces (token-trust like the main POST).
@@ -32851,6 +32896,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: !trust,
+          // Only the verified lifeline's native platform receipt can identify a confirmation.
+          ...(!trust && ingressDecision.verified && !senderUntrusted
+            && Number.isSafeInteger(req.body.replyToMessageId) && req.body.replyToMessageId > 0
+            ? { replyToMessageId: req.body.replyToMessageId } : {}),
           // §3c: the files, in process (a confined local path never leaves this machine). Absent for an
           // older lifeline's plain text, so the receiver can tell; a new sender always sets it.
           ...(fwdMedia.legacy && fwdMedia.media.length === 0 ? {} : { media: fwdMedia.media }),

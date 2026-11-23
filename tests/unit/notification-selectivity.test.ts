@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { NotificationSelectivityGate, verifiedReplyEnvelope, verifiedInboundMirrorEnvelope, QuietRecordedError } from '../../src/messaging/NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, verifiedReplyEnvelope, verifiedInboundMirrorEnvelope, QuietRecordedError, requireTelegramDelivery } from '../../src/messaging/NotificationSelectivityGate.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const cleanup: Array<() => Promise<void>> = [];
@@ -373,4 +373,14 @@ describe('effective category choices and bounded authority', () => {
     expect(network).toHaveBeenCalledOnce(); expect(item.hubHeld).not.toBe(true); expect(adapter.attentionHubAdmits(item.id)).toBe(true);
   });
 
+});
+
+ describe('native confirmation receipt floor', () => {
+  it.each([undefined, NaN, Infinity, -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])('refuses invalid message receipt %s', messageId => {
+    expect(() => requireTelegramDelivery({ messageId })).toThrow('no valid message receipt');
+  });
+  it('accepts a delivered positive integer but refuses a quiet record with the same number', () => {
+    expect(requireTelegramDelivery({ messageId: 42 }).messageId).toBe(42);
+    expect(() => requireTelegramDelivery({ messageId: 42, recorded: true })).toThrow(QuietRecordedError);
+  });
 });

@@ -12,25 +12,17 @@
  *     no fuzzy matcher ever holds write authority. Out-of-grammar phrasings
  *     ride the propose-then-confirm lane instead.
  *
- *  2. The ARMED-CONFIRM slot manager (`ProfileConfirmSlots`). ALL THREE
- *     confirm surfaces — §10.1 propose-confirm, §8 switch-now, §10.4
- *     re-apply-cooldown — share ONE armed slot per topic (round-7: a bare
- *     "yes" must never be ambiguous about which confirm it fires). The slot
- *     enforces:
- *      - TTL (`switchNowConfirmTtlMs`),
- *      - event-based ordering on PLATFORM MESSAGE IDS (the confirm's id must
- *        be > the latest echo's platform-returned id; ties refused toward
- *        re-echo — never a cross-clock timestamp compare, round-7),
- *      - supersession (a re-proposal invalidates any in-flight confirm; the
- *        confirm must answer the LATEST echo),
- *      - a re-proposal rate bound per topic (churn is a suspicion signal —
- *        past the bound the slot refuses re-proposals for a cooldown and
- *        tears down, round-7),
- *      - forwarded-content rejection (a message carrying platform forward
- *        metadata never matches ANY ingress recognition, round-5).
+ *  2. The legacy ARMED-CONFIRM slot manager retains its existing recovery
+ *     and compatibility protocol. Identified HTTP proposals now use its
+ *     separate `proposals` collection: exact yes plus a delivered native
+ *     reply, independent requests and per-attempt receipts. Agent messages
+ *     never delete those identified questions. The legacy slot keeps TTL,
+ *     ordering, rate and forwarded-content checks for its existing callers.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { EffortLevel, ProfilePatchInput } from './topicProfileValidation.js';
+import { ProfileProposalRequests } from './ProfileProposalRequests.js';
 
 // ── trigger grammar ─────────────────────────────────────────────────────────
 
@@ -139,6 +131,10 @@ export function parseProfileTrigger(text: string): ProfileTrigger | null {
 export type ArmedConfirmKind = 'propose-confirm' | 'switch-now' | 'reapply-cooldown';
 
 export interface ArmedConfirm {
+  id: string;
+  echoAttemptId: string;
+  echoAttemptNumber: number;
+  parkedVersion?: string;
   kind: ArmedConfirmKind;
   topicKey: string;
   /** The registered structured delta (what a confirm will actually write). */
@@ -166,12 +162,17 @@ export type ConfirmMatch =
         | 'expired'
         | 'stale-order'
         | 'no-echo-id'
-        | 'forwarded';
+        | 'forwarded'
+        | 'wrong-question';
     };
 
 export interface ProfileConfirmSlotsOptions {
   /** §12.5 switchNowConfirmTtlMs (default 300000). */
   ttlMs?: () => number;
+  /** Human proposal lifetime, independent of legacy recovery command TTL. */
+  proposalTtlMs?: () => number;
+  proposalTimeZone?: (source: string) => string | undefined;
+  proposalSourceExists?: (source: string) => boolean | undefined;
   /** Re-proposal rate bound per topic (hardcoded v1 default: 5 per 10min). */
   maxProposalsPerWindow?: number;
   proposalWindowMs?: number;
@@ -184,6 +185,7 @@ const DEFAULT_MAX_PROPOSALS = 5;
 const DEFAULT_PROPOSAL_WINDOW_MS = 600_000;
 
 export class ProfileConfirmSlots {
+  readonly proposals: ProfileProposalRequests;
   private slots = new Map<string, ArmedConfirm>();
   /** Re-proposal timestamps per topic (rate bound, round-7). */
   private proposalTimes = new Map<string, number[]>();
@@ -199,6 +201,9 @@ export class ProfileConfirmSlots {
       ...opts,
     };
     this.now = opts.now ?? (() => Date.now());
+    this.proposals = new ProfileProposalRequests({ now: this.now, ttlMs: opts.proposalTtlMs,
+      maxSends: this.opts.maxProposalsPerWindow, windowMs: this.opts.proposalWindowMs,
+      audit: opts.audit, timeZone: opts.proposalTimeZone, sourceExists: opts.proposalSourceExists });
   }
 
   private ttl(): number {
@@ -217,7 +222,8 @@ export class ProfileConfirmSlots {
     echoText: string,
     origin: ArmedConfirm['origin'],
     targetTopicKey?: string,
-  ): { ok: true; superseded: boolean } | { ok: false; reason: 'proposal-churn-cooldown' } {
+    context?: { parkedVersion?: string },
+  ): { ok: true; superseded: boolean; id: string; attemptId: string } | { ok: false; reason: 'proposal-churn-cooldown' } {
     const key = String(topicKey);
     const now = this.now();
 
@@ -241,7 +247,10 @@ export class ProfileConfirmSlots {
     }
 
     const superseded = this.slots.has(key);
+    const id = randomBytes(12).toString('hex');
+    const attemptId = randomBytes(12).toString('hex');
     this.slots.set(key, {
+      id, echoAttemptId: attemptId, echoAttemptNumber: 1, ...(context?.parkedVersion ? { parkedVersion: context.parkedVersion } : {}),
       kind,
       topicKey: key,
       patch,
@@ -259,13 +268,26 @@ export class ProfileConfirmSlots {
       superseded,
       ...(targetTopicKey !== undefined && String(targetTopicKey) !== key ? { crossTopic: true, targetTopic: String(targetTopicKey) } : {}),
     });
-    return { ok: true, superseded };
+    return { ok: true, superseded, id, attemptId };
   }
 
   /** Record the platform-returned id of the echo we just sent (ordering anchor). */
-  recordEchoMessageId(topicKey: string, platformMessageId: number): void {
+  recordEchoMessageId(topicKey: string, platformMessageId: number, armId: string, attemptId: string): boolean {
     const slot = this.slots.get(String(topicKey));
-    if (slot) slot.echoPlatformMessageId = platformMessageId;
+    if (!slot || slot.id !== armId || slot.echoAttemptId !== attemptId) return false;
+    if (!Number.isSafeInteger(platformMessageId) || platformMessageId <= 0) return false;
+    slot.echoPlatformMessageId = platformMessageId;
+    this.opts.audit?.({ type: 'confirm-delivered', topic: String(topicKey), requestId: armId, attemptId, messageId: platformMessageId });
+    return true;
+  }
+
+  completeEcho(topicKey: string, armId: string, attemptId: string, messageId: number | null): boolean {
+    const slot = this.slots.get(String(topicKey));
+    if (!slot || slot.id !== armId || slot.echoAttemptId !== attemptId) return false;
+    if (messageId !== null) return this.recordEchoMessageId(topicKey, messageId, armId, attemptId);
+    this.opts.audit?.({ type: 'confirm-delivery-unconfirmed', topic: String(topicKey), requestId: armId, attemptId });
+    this.disarm(topicKey, armId, attemptId);
+    return false;
   }
 
   /** The armed slot, if any (readout / switch-now no-op reply). */
@@ -278,9 +300,13 @@ export class ProfileConfirmSlots {
    * re-send itself is not taken for a later message that disarms a cross-topic slot. The new echo's
    * id is recorded after it is sent.
    */
-  clearEchoMessageId(topicKey: string): void {
+  clearEchoMessageId(topicKey: string, armId: string): string | null {
     const slot = this.slots.get(String(topicKey));
-    if (slot) slot.echoPlatformMessageId = null;
+    if (!slot || slot.id !== armId) return null;
+    slot.echoPlatformMessageId = null;
+    slot.echoAttemptId = randomBytes(12).toString('hex');
+    slot.echoAttemptNumber++;
+    return slot.echoAttemptId;
   }
 
   /**
@@ -297,8 +323,12 @@ export class ProfileConfirmSlots {
     this.opts.audit?.({ type: 'cross-topic-disarmed', crossTopic: true, topic: key, targetTopic: slot.targetTopicKey, reason: 'later-message' });
   }
 
-  disarm(topicKey: string): void {
-    this.slots.delete(String(topicKey));
+  disarm(topicKey: string, armId?: string, attemptId?: string): boolean {
+    const key = String(topicKey); const slot = this.slots.get(key);
+    if (!slot || (armId !== undefined && slot.id !== armId) || (attemptId !== undefined && slot.echoAttemptId !== attemptId)) return false;
+    this.slots.delete(key);
+    this.opts.audit?.({ type: 'confirm-disarmed', topic: key, requestId: slot.id, attemptId: slot.echoAttemptId });
+    return true;
   }
 
   /**
@@ -308,7 +338,7 @@ export class ProfileConfirmSlots {
    */
   matchConfirm(
     topicKey: string,
-    ctx: { platformMessageId: number | null; forwarded: boolean },
+    ctx: { platformMessageId: number | null; forwarded: boolean; replyToMessageId: number | null; explicitSwitchNow?: boolean },
   ): ConfirmMatch {
     const key = String(topicKey);
     // Forwarded content never matches ANY ingress recognition (round-5).
@@ -332,6 +362,11 @@ export class ProfileConfirmSlots {
     }
     if (ctx.platformMessageId === null || ctx.platformMessageId <= slot.echoPlatformMessageId) {
       return { ok: false, reason: 'stale-order' };
+    }
+
+    if (!(ctx.explicitSwitchNow === true && slot.kind === 'switch-now') && ctx.replyToMessageId !== slot.echoPlatformMessageId) {
+      this.opts.audit?.({ type: 'confirm-rejected', topic: key, requestId: slot.id, reason: 'wrong-question', messageId: ctx.platformMessageId });
+      return { ok: false, reason: 'wrong-question' };
     }
 
     this.slots.delete(key);

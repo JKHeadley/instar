@@ -1,0 +1,170 @@
+{
+  "artifact": {
+    "build": {
+      "candidate": "4006b886c1b17c70a84b85bf77d39292101998c3",
+      "files": {
+        "dist/commands/server.js": "45c69c82d5e9be0df943d9267f4da2e955876b30212a7b092825a3c52b8cd8c4",
+        "dist/core/ProfileProposalRequests.js": "483ecedcabb8bd09243f2194b652df99ca9e62e741f034be248b476a2b7080b2",
+        "dist/core/ProfileRuntimeGuard.js": "131b47a765f1a6f8d5c9a5ebfea4a6bc89421a910df0b0231f667b0b9d296309",
+        "dist/core/SessionManager.js": "582bf4ca1060a7f3c06780781ca238c6939183400beae5ff3f469a07b5412094",
+        "dist/core/TopicProfileOrchestrator.js": "a8fc0a2943607bdefeb4b8dcea6803e6bee7f3650542f770436ed0b30e3b9a7c",
+        "dist/core/TopicProfileStore.js": "ce99f333dc495a888f0c6c5e7ab13aec4dbf1c1e926b6eb830d0c52eb672a99f",
+        "dist/core/handleProfileProposalReply.js": "7352e2cd97333f4729aca5f464a60e7506909d3a833c6ce54ec8a1833d9013d1",
+        "dist/core/topicProfileAudit.js": "79bad03a545c9895770d59dc8e30dd44b48b73c1a1a5b4e7be5c4bb4f85e12c6",
+        "dist/core/topicProfileIngress.js": "c3037088d42b56856e3f08286620e51aa3b56d6375a5e6b6cff45a34d2ebfd63",
+        "dist/core/topicProfileWriteSurface.js": "9df036e4f5236a3b4bae5666692094cee2868e2cf2a95cba81748d0bbaf816ef",
+        "dist/core/types.js": "34841aad9008c1212772caeb3457502e99861020073b8ee28505d158fe192b87",
+        "dist/messaging/NotificationSelectivityGate.js": "bd941040c2d073df290bd7c4d2a4719150747121b7f1bb105e117efcb875feef",
+        "dist/messaging/TelegramAdapter.js": "2ad56f6768e248efc519e86e4d1b6da4c1153edd4dd63d8ad82f9be3ae83820c",
+        "dist/monitoring/guardManifest.js": "329b99ee4972b6829d28b2791968ec168f3eaff727cefaf2c2e1ec79d3e1a745",
+        "dist/server/routes.js": "8d7a8b856582fa8d430a981b313d4ec167bd7b390fe96cbcda4dcd2a0a5739f7"
+      },
+      "runtimeUnchanged": true,
+      "sourceTree": "9ac6d0be819513ef0af74f22c877ec19529f152d"
+    },
+    "createdAt": "2026-11-23T01:17:52.282Z",
+    "featureId": "profile-confirmation-lifetime",
+    "riskCategories": [
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "runId": "first-live-forum-anchor-failed-20261122",
+    "runnerFingerprint": "real-user-browser-and-real-bot:5747e7a1cee05c5cca817cec0a9b4375dbbbe6226551e9384280c99b2b9f4ca7",
+    "scenarios": [
+      {
+        "description": "Exact owner native yes after492seconds applies only its target",
+        "evidence": {
+          "channelId": "241",
+          "elapsedSeconds": 492.0019724369049,
+          "expiresAt": 1795482060000,
+          "messageIds": [
+            "251",
+            "260"
+          ]
+        },
+        "id": "long-visible-deadline",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Numbered yes applies nothing; one registered reminder retains its deadline; two extra acknowledgment posts are retained as UX findings",
+        "evidence": {
+          "additionalPosts": 2,
+          "channelId": "241",
+          "messageIds": [
+            "252",
+            "256",
+            "257",
+            "258",
+            "259"
+          ]
+        },
+        "id": "numbered-reminder",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Actual agent activity and verified native compaction do not cancel the pending question",
+        "evidence": {
+          "channelId": "241",
+          "compactionTimestamp": "2026-11-23T01:08:01.971Z",
+          "control": "authenticated console input /compact; consent remained real Telegram",
+          "messageIds": [
+            "251",
+            "254",
+            "260"
+          ]
+        },
+        "id": "agent-and-compaction-survival",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Two native replies change only their respective targets; source remains unchanged",
+        "evidence": {
+          "channelId": "241",
+          "messageIds": [
+            "251",
+            "252",
+            "258",
+            "260",
+            "262"
+          ]
+        },
+        "id": "two-independent-requests",
+        "riskCategory": "concurrency",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "A reply to a pre-restart question applies nothing; subsequent repost was unconfirmed, not a successful fresh question",
+        "evidence": {
+          "channelId": "241",
+          "freshProposalHttpStatus": 502,
+          "messageIds": [
+            "264",
+            "265"
+          ],
+          "oldReplyApplied": false,
+          "reason": "fresh-question-unconfirmed"
+        },
+        "id": "restart-old-receipt",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      },
+      {
+        "description": "An actual prepared/unconfirmed delivery followed by unbound owner yes changes nothing but omits the delivery diagnostic because the forum service anchor is mistaken for question identification",
+        "evidence": {
+          "channelId": "241",
+          "messageIds": [
+            "270",
+            "271",
+            "272"
+          ],
+          "reason": "forum-service-anchor-suppresses-diagnostic",
+          "requestId": "R-db6cd8f808b9491d",
+          "transportAcceptance": "unknown"
+        },
+        "id": "unconfirmed-delivery-explanation",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      }
+    ],
+    "surfaces": [
+      "telegram"
+    ]
+  },
+  "entry": {
+    "featureId": "profile-confirmation-lifetime",
+    "runId": "first-live-forum-anchor-failed-20261122",
+    "contentHash": "a039f3bb8c0739c425a3dc0a5ab5f6813bc7b34e274a52ebbeb504716aaf1a9b",
+    "signature": "mrrtboGgGkKl/ZOhcr3aNey5JioLqezIRKUWn8ua7bYjZbY6B2yyNRRvwgmh5f+GOIZrJHOyLtP6Ht+9sFHkAA==",
+    "signerFingerprint": "5747e7a1cee05c5cca817cec0a9b4375dbbbe6226551e9384280c99b2b9f4ca7",
+    "surfaces": [
+      "telegram"
+    ],
+    "riskCategories": [
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "createdAt": "2026-11-23T01:17:52.282Z",
+    "prevEntryHash": null
+  },
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAywI+xo4LBzX4FoW03NZb1pEKjt6+Nnr6V18VraIIHas=\n-----END PUBLIC KEY-----\n",
+  "overallVerdict": "FAIL",
+  "unproven": [
+    {
+      "surface": "slack",
+      "reason": "no-fixture",
+      "authority": "Chief1ab4c33e"
+    }
+  ],
+  "scope": "Real Telegram interaction evidence; no full suite, automatic restart repost, Slack or App feature claim."
+}

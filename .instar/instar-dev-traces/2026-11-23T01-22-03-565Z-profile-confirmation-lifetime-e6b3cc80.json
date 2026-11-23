@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "profile-confirmation-lifetime",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-23T01:22:03.565Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-lifetime.md",
+  "artifactSha256": "bb305e650558180aa170854735ee9a1cfda742e3a7782abf6731e3977776c78a",
+  "specPath": "docs/specs/profile-confirmation-lifetime.md",
+  "coveredFiles": [
+    "docs/specs/reports/profile-confirmation-lifetime-live/README.md",
+    "docs/specs/reports/profile-confirmation-lifetime-live/first-failed.json",
+    "src/core/handleProfileProposalReply.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/unit/profile-proposal-requests.test.ts",
+    "upgrades/side-effects/profile-confirmation-lifetime.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A live-found forum thread anchor suppressed diagnostic context; the narrow correction leaves consent and receipt matching unchanged and has independent security concurrence.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

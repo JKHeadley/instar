@@ -14,6 +14,11 @@ import {
   platformMessageIdFrom,
 } from '../../src/core/topicProfileIngress.js';
 
+function recordEcho(s: ProfileConfirmSlots, topic: string, messageId: number) {
+  const arm = s.peek(topic); if (!arm) throw new Error('test did not arm a recovery question');
+  return s.recordEchoMessageId(topic, messageId, arm.id, arm.echoAttemptId);
+}
+
 describe('parseProfileTrigger — the closed grammar (§10.1, Tier 0)', () => {
   // Framework / model / thinking CHANGE recognition NO LONGER lives here — it was
   // the keyword-intent audit's offender #1 (2026-07-03), per the constitutional
@@ -90,8 +95,8 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     const now = { t: 1000 };
     const s = slots(now);
     expect(s.arm('130715', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '145097').ok).toBe(true);
-    s.recordEchoMessageId('130715', 500);
-    const m = s.matchConfirm('130715', { platformMessageId: 501, forwarded: false });
+    recordEcho(s, '130715', 500);
+    const m = s.matchConfirm('130715', { replyToMessageId: s.peek('130715')?.echoPlatformMessageId ?? null, platformMessageId: 501, forwarded: false });
     expect(m.ok && m.armed.targetTopicKey).toBe('145097');
     s.arm('23', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '23');
     expect(s.peek('23')?.targetTopicKey).toBeUndefined();
@@ -103,13 +108,13 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     s.arm('130715', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '145097');
     s.noteOutbound('130715', 499); // the echo being sent: its id is not recorded yet
     expect(s.peek('130715')).not.toBeNull();
-    s.recordEchoMessageId('130715', 500);
+    recordEcho(s, '130715', 500);
     s.noteOutbound('130715', 500); // the echo's own id
     expect(s.peek('130715')).not.toBeNull();
     s.noteOutbound('130715', 501); // the agent posts something else after the echo
     expect(s.peek('130715')).toBeNull();
     s.arm('23', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed');
-    s.recordEchoMessageId('23', 600);
+    recordEcho(s, '23', 600);
     s.noteOutbound('23', 601);
     expect(s.peek('23')).not.toBeNull(); // the same-topic lane keeps today's behaviour
   });
@@ -118,12 +123,12 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     const now = { t: 1000 };
     const s = slots(now);
     s.arm('130715', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '145097');
-    s.recordEchoMessageId('130715', 500);
-    s.clearEchoMessageId('130715'); // before the re-send
+    recordEcho(s, '130715', 500);
+    s.clearEchoMessageId('130715', s.peek('130715')!.id); // before the re-send
     s.noteOutbound('130715', 510); // the re-sent echo itself
     expect(s.peek('130715')).not.toBeNull();
-    s.recordEchoMessageId('130715', 510);
-    const m = s.matchConfirm('130715', { platformMessageId: 511, forwarded: false });
+    recordEcho(s, '130715', 510);
+    const m = s.matchConfirm('130715', { replyToMessageId: s.peek('130715')?.echoPlatformMessageId ?? null, platformMessageId: 511, forwarded: false });
     expect(m.ok && m.armed.targetTopicKey).toBe('145097');
   });
 
@@ -131,47 +136,47 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     const now = { t: 1000 };
     const s = slots(now);
     expect(s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo', 'agent-composed').ok).toBe(true);
-    s.recordEchoMessageId('23', 500);
-    const match = s.matchConfirm('23', { platformMessageId: 501, forwarded: false });
+    recordEcho(s, '23', 500);
+    const match = s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 501, forwarded: false });
     expect(match.ok).toBe(true);
     if (match.ok) expect(match.armed.patch).toEqual({ thinkingMode: 'high' });
     // slot consumed
-    expect(s.matchConfirm('23', { platformMessageId: 502, forwarded: false })).toEqual({ ok: false, reason: 'none-armed' });
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 502, forwarded: false })).toEqual({ ok: false, reason: 'none-armed' });
   });
 
   it('refuses a confirm whose platform id ties or predates the echo (stale-order)', () => {
     const now = { t: 1000 };
     const s = slots(now);
     s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo', 'agent-composed');
-    s.recordEchoMessageId('23', 500);
-    expect(s.matchConfirm('23', { platformMessageId: 500, forwarded: false })).toEqual({ ok: false, reason: 'stale-order' });
-    expect(s.matchConfirm('23', { platformMessageId: 499, forwarded: false })).toEqual({ ok: false, reason: 'stale-order' });
+    recordEcho(s, '23', 500);
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 500, forwarded: false })).toEqual({ ok: false, reason: 'stale-order' });
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 499, forwarded: false })).toEqual({ ok: false, reason: 'stale-order' });
     // still armed — a later confirm can fire
-    expect(s.matchConfirm('23', { platformMessageId: 501, forwarded: false }).ok).toBe(true);
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 501, forwarded: false }).ok).toBe(true);
   });
 
   it('refuses toward re-echo when the echo id is unknown (no-echo-id)', () => {
     const now = { t: 1000 };
     const s = slots(now);
     s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo', 'agent-composed');
-    expect(s.matchConfirm('23', { platformMessageId: 999, forwarded: false })).toEqual({ ok: false, reason: 'no-echo-id' });
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 999, forwarded: false })).toEqual({ ok: false, reason: 'no-echo-id' });
   });
 
   it('forwarded content never matches (round-5)', () => {
     const now = { t: 1000 };
     const s = slots(now);
     s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo', 'agent-composed');
-    s.recordEchoMessageId('23', 500);
-    expect(s.matchConfirm('23', { platformMessageId: 501, forwarded: true })).toEqual({ ok: false, reason: 'forwarded' });
+    recordEcho(s, '23', 500);
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 501, forwarded: true })).toEqual({ ok: false, reason: 'forwarded' });
   });
 
   it('expires on TTL and tears the slot down', () => {
     const now = { t: 1000 };
     const s = slots(now, 1000);
     s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo', 'agent-composed');
-    s.recordEchoMessageId('23', 500);
+    recordEcho(s, '23', 500);
     now.t += 1500;
-    expect(s.matchConfirm('23', { platformMessageId: 501, forwarded: false })).toEqual({ ok: false, reason: 'expired' });
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 501, forwarded: false })).toEqual({ ok: false, reason: 'expired' });
     expect(s.peek('23')).toBeNull();
   });
 
@@ -179,13 +184,13 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     const now = { t: 1000 };
     const s = slots(now);
     s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo-1', 'agent-composed');
-    s.recordEchoMessageId('23', 500);
+    recordEcho(s, '23', 500);
     const second = s.arm('23', 'propose-confirm', { framework: 'codex-cli' }, 'echo-2', 'agent-composed');
-    expect(second).toEqual({ ok: true, superseded: true });
+    expect(second).toMatchObject({ ok: true, superseded: true, id: expect.any(String), attemptId: expect.any(String) });
     // The new slot's echo id is unrecorded → a confirm is refused toward re-echo
-    expect(s.matchConfirm('23', { platformMessageId: 501, forwarded: false })).toEqual({ ok: false, reason: 'no-echo-id' });
-    s.recordEchoMessageId('23', 510);
-    const match = s.matchConfirm('23', { platformMessageId: 511, forwarded: false });
+    expect(s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 501, forwarded: false })).toEqual({ ok: false, reason: 'no-echo-id' });
+    recordEcho(s, '23', 510);
+    const match = s.matchConfirm('23', { replyToMessageId: s.peek('23')?.echoPlatformMessageId ?? null, platformMessageId: 511, forwarded: false });
     expect(match.ok).toBe(true);
     if (match.ok) expect(match.armed.patch).toEqual({ framework: 'codex-cli' });
   });
@@ -219,7 +224,7 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     const now = { t: 1000 };
     const s = slots(now);
     s.arm('23', 'propose-confirm', { thinkingMode: 'high' }, 'echo', 'agent-composed');
-    expect(s.matchConfirm('99', { platformMessageId: 1, forwarded: false })).toEqual({ ok: false, reason: 'none-armed' });
+    expect(s.matchConfirm('99', { replyToMessageId: s.peek('99')?.echoPlatformMessageId ?? null, platformMessageId: 1, forwarded: false })).toEqual({ ok: false, reason: 'none-armed' });
   });
 });
 
@@ -229,4 +234,31 @@ describe('platformMessageIdFrom', () => {
     expect(platformMessageIdFrom('slack-1.2')).toBeNull();
     expect(platformMessageIdFrom(undefined)).toBeNull();
   });
+});
+
+
+it('never binds an earlier delivery callback to a superseding recovery action', () => {
+  const s = new ProfileConfirmSlots();
+  const a = s.arm('23', 'reapply-cooldown', {}, 'First saved version', 'ingress');
+  const b = s.arm('23', 'reapply-cooldown', {}, 'Second saved version', 'ingress');
+  if (!a.ok || !b.ok) throw new Error('arm');
+  expect(s.completeEcho('23', a.id, a.attemptId, 10)).toBe(false);
+  expect(s.completeEcho('23', b.id, b.attemptId, 11)).toBe(true);
+  expect(s.matchConfirm('23', { platformMessageId: 12, replyToMessageId: 10, forwarded: false })).toMatchObject({ ok: false, reason: 'wrong-question' });
+  expect(s.peek('23')?.id).toBe(b.id);
+  expect(s.matchConfirm('23', { platformMessageId: 13, replyToMessageId: 11, forwarded: false }).ok).toBe(true);
+});
+
+it('refuses an unbound affirmative even after proposal diagnostics are absent', () => {
+  const s = new ProfileConfirmSlots(); const armed = s.arm('23', 'reapply-cooldown', {}, 'Recovery question', 'ingress');
+  if (!armed.ok) throw new Error('arm'); s.completeEcho('23', armed.id, armed.attemptId, 10);
+  expect(s.matchConfirm('23', { platformMessageId: 11, replyToMessageId: null, forwarded: false })).toMatchObject({ ok: false, reason: 'wrong-question' });
+  expect(s.peek('23')?.id).toBe(armed.id);
+});
+
+it('keeps identified proposal time independent of the short legacy recovery timeout', () => {
+  let now = 0; const s = new ProfileConfirmSlots({ now: () => now, ttlMs: () => 1000 });
+  const a = s.proposals.begin('23', '24', { effort: 'high' }, 'Use more reasoning?', 'epoch');
+  if (!a.ok) throw new Error('arm'); a.onDelivery(10); now = 8 * 60_000;
+  expect(s.proposals.get('23', a.request.id)?.expiresAt).toBe(86_400_000);
 });

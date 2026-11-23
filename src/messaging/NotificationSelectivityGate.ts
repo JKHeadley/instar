@@ -426,7 +426,7 @@ function pushedJobs(config: SelectivityConfig): string[] {
 /** For contracts that require a real conversational anchor, a quiet record is not one. */
 export function requireTelegramDelivery<T extends { messageId?: number; recorded?: boolean }>(result: T): T & { messageId: number } {
   if (result.recorded) throw new QuietRecordedError(result as unknown as QuietReceipt);
-  if (typeof result.messageId !== 'number' || result.messageId <= 0) throw new Error('Telegram delivery has no message receipt');
+  if (typeof result.messageId !== 'number' || !Number.isSafeInteger(result.messageId) || result.messageId <= 0) throw new Error('Telegram delivery has no valid message receipt');
   return result as T & { messageId: number };
 }
 

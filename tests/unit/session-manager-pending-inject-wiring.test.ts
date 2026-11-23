@@ -85,6 +85,18 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/session-manager-pending-inject-wiring.test.ts:afterEach' });
   });
 
+  it('rejects a profile launch after ownership changes during asynchronous preparation', async () => {
+    let current = true; let entered!: () => void; let release!: () => void;
+    const preparing = new Promise<void>(resolve => { entered = resolve; });
+    const pause = new Promise<void>(resolve => { release = resolve; });
+    const seam = manager as unknown as { resolveCodexLaunchModel: () => Promise<string | undefined> };
+    seam.resolveCodexLaunchModel = async () => { entered(); await pause; return undefined; };
+    const launch = manager.spawnInteractiveSession(undefined, 'profile-guarded', { runtimeGuard: () => current });
+    await preparing; current = false; release();
+    await expect(launch).rejects.toMatchObject({ name: 'ProfileRuntimeOwnershipChangedError' });
+    expect(mockTmuxSessions.size).toBe(0);
+  });
+
   function pendingDir(): string {
     return path.join(stateDir, 'state', 'pending-injects');
   }

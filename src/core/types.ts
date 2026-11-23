@@ -4482,6 +4482,8 @@ export interface InstarConfig {
     spawnFailureBreakerThreshold?: number;
     /** §8 'switch now' confirmation validity window, ms (default 300000). */
     switchNowConfirmTtlMs?: number;
+    /** Identified human proposal window; default 24 hours, fixed per delivered request. */
+    proposalConfirmTtlMs?: number;
     /**
      * Optional per-topic config-default profiles (§5.2); keys use the §10.5
      * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).

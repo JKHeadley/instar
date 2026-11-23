@@ -584,3 +584,16 @@ describe('cosmetic display changes preserve model recovery state', () => {
     expect(store.get(42)?.breakerCount).toBe(0); expect(store.get(42)?.intendedProfile).toBeNull();
   });
 });
+
+it.each([false, true])('does not publish an absent entry when the final commit guard refuses (shadow=%s)', async shadow => {
+  const store = newStore();
+  const guard = () => { throw new Error('deadline reached before assignment'); };
+  await expect(store.mutate(900, { ...(shadow ? {} : { thinkingMode: 'high' }), updatedBy: 'op:1' }, {
+    beforeCommit: guard, ...(shadow ? { shadow: { thinkingMode: 'high' } } : {}),
+  })).rejects.toThrow('deadline reached');
+  expect(store.get(900)).toBeNull();
+  await store.mutate(901, { framework: 'codex-cli', updatedBy: 'op:1' });
+  const reloaded = newStore();
+  expect(reloaded.get(900)).toBeNull();
+  expect(await store.mutateIfAbsent(900, { framework: 'codex-cli', updatedBy: 'op:1' })).toBe('seeded');
+});

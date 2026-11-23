@@ -45,8 +45,9 @@
  *  - new-axis live writes apply at the next natural spawn, told out loud.
  */
 
+import { assertProfileRuntimeGuard } from './ProfileRuntimeGuard.js';
 import type { TopicProfileStore, TopicProfile } from './TopicProfileStore.js';
-import { ProfileValidationRefusal, ProfileLockTimeoutError, ProfileDisplayConflictError, FlushRefusedError } from './TopicProfileStore.js';
+import { ProfileValidationRefusal, ProfileLockTimeoutError, ProfileDisplayConflictError, FlushRefusedError, parkedProfileVersion } from './TopicProfileStore.js';
 import type { TopicProfileResolver } from './TopicProfileResolver.js';
 import {
   validateProfileFields,
@@ -55,6 +56,7 @@ import {
   type ValidatedProfilePatch,
 } from './topicProfileValidation.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { FRAMEWORK_DISPLAY_NAMES, CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
 import { CROSS_TOPIC_FIELDS } from './topicCreationProvenance.js';
 
 // ── locally-defined shared types (noted in the build report) ────────────────
@@ -85,12 +87,16 @@ export type ProfileWriteOrigin =
 export interface ProfileOrchestratorLike {
   onProfileWrite(
     topicKey: string,
-    info: { frameworkChanged: boolean; origin: ProfileWriteOrigin },
+    info: { frameworkChanged: boolean; origin: ProfileWriteOrigin; runtimeGuard?: () => boolean },
   ): void | Promise<void>;
 }
 
 export interface ProfileWriteResult {
   ok: boolean;
+  /** The desired live/preview settings are durable; separate from runtime and delivery effects. */
+  settingsSaved?: boolean;
+  runtimeOutcome?: 'unknown';
+  effectFailure?: 'post-save-callback';
   /** Operator-facing reply text (refusal or confirmation+disclosure). */
   reply: string;
   /** Structured refusal when ok:false. */
@@ -112,6 +118,7 @@ export interface ProfileWriteResult {
 export interface ReapplyResult extends ProfileWriteResult {
   /** §10.4 cooldown: the re-apply needs an explicit confirm first. */
   needsConfirm?: boolean;
+  parkedVersion?: string;
 }
 
 export interface TopicProfileWriteSurfaceDeps {
@@ -136,7 +143,7 @@ export interface TopicProfileWriteSurfaceDeps {
    * Returns respawned:false when the topic has no live session (write still
    * lands; takes effect at next spawn).
    */
-  legacyFrameworkRespawn: (topicKey: string) => Promise<{ respawned: boolean; error?: string }>;
+  legacyFrameworkRespawn: (topicKey: string, runtimeGuard?: () => boolean) => Promise<{ respawned: boolean; error?: string }>;
   /** §8 orchestrator seam (TODO-wire — null until the parallel build lands). */
   orchestrator?: ProfileOrchestratorLike | null;
   /**
@@ -168,6 +175,7 @@ const NEW_AXES = ['model', 'modelTier', 'thinkingMode', 'effort', 'escalationOve
 const ALL_FIELDS = ['framework', ...NEW_AXES] as const;
 const EXECUTION_FIELDS = ALL_FIELDS.filter(field => field !== 'messageOriginDisplay');
 const DEFAULT_REAPPLY_COOLDOWN_MS = 600_000;
+class ProposalChangedError extends Error {}
 
 export class TopicProfileWriteSurface {
   private readonly deps: TopicProfileWriteSurfaceDeps;
@@ -194,6 +202,8 @@ export class TopicProfileWriteSurface {
     discloseInReply?: boolean;
     /** §10.1 propose-confirm provenance flag for the audit. */
     agentComposedPayload?: boolean;
+    /** Server-held disclosure and eligibility fence; never read from HTTP bodies. */
+    confirmation?: { echo: string; name?: string; eligible: () => boolean; validAtCommit?: () => boolean; onSaved?: (result: ProfileWriteResult) => void };
     /** Trusted HTTP cosmetic compare-and-set; store checks under its lock. */
     expectedDisplayRevision?: string;
     /**
@@ -204,7 +214,7 @@ export class TopicProfileWriteSurface {
     crossTopicConfirm?: { sourceTopicId: number };
   }): Promise<ProfileWriteResult> {
     const topicKey = String(req.topicKey);
-    const regime = this.deps.regime();
+    let regime = { ...this.deps.regime() };
 
     // ── §10.1 principal / bound-operator gate ──────────────────────────────
     if (req.crossTopicConfirm) {
@@ -240,7 +250,7 @@ export class TopicProfileWriteSurface {
         refusal: { reason: 'validation', validation: validated.error },
       };
     }
-    const patch = validated.patch;
+    let patch = validated.patch;
 
     // ── §5.2 local-model-binding precedence (cloud pin refused) ────────────
     if ((patch.model != null || patch.modelTier != null) && this.deps.localModelBinding(topicKey)) {
@@ -256,178 +266,230 @@ export class TopicProfileWriteSurface {
     }
 
     // ── mixed-delta split (§5.2(d) + §10.1 round-12) ───────────────────────
-    const frameworkArm: ValidatedProfilePatch = {};
-    if (patch.framework !== undefined) frameworkArm.framework = patch.framework;
+    const makePlan = () => {
+      const frameworkArm: ValidatedProfilePatch = {};
+      if (patch.framework !== undefined) frameworkArm.framework = patch.framework;
 
-    const liveNewAxes: ValidatedProfilePatch = {};
-    const shadowNewAxes: ValidatedProfilePatch = {};
-    const refusedFields: string[] = [];
-    for (const field of NEW_AXES) {
-      const value = patch[field];
-      if (value === undefined) continue;
-      if (field === 'messageOriginDisplay' || value === null) {
-        // Cosmetic presentation is independent of model-profile rollout.
-        // §5.2(b): clearing a pin is a recovery write — permitted (LIVE) in
-        // every regime, never shadowed.
-        (liveNewAxes as Record<string, unknown>)[field] = value;
-      } else if (!regime.enabled) {
-        refusedFields.push(field);
-      } else if (regime.dryRun) {
-        (shadowNewAxes as Record<string, unknown>)[field] = value;
-      } else {
-        (liveNewAxes as Record<string, unknown>)[field] = value;
+      const liveNewAxes: ValidatedProfilePatch = {};
+      const shadowNewAxes: ValidatedProfilePatch = {};
+      const refusedFields: string[] = [];
+      for (const field of NEW_AXES) {
+        const value = patch[field];
+        if (value === undefined) continue;
+        if (field === 'messageOriginDisplay' || value === null) {
+          // Cosmetic presentation is independent of model-profile rollout.
+          // §5.2(b): clearing a pin is a recovery write — permitted (LIVE) in
+          // every regime, never shadowed.
+          (liveNewAxes as Record<string, unknown>)[field] = value;
+        } else if (!regime.enabled) {
+          refusedFields.push(field);
+        } else if (regime.dryRun) {
+          (shadowNewAxes as Record<string, unknown>)[field] = value;
+        } else {
+          (liveNewAxes as Record<string, unknown>)[field] = value;
+        }
       }
-    }
 
-    const frameworkChanged =
-      frameworkArm.framework !== undefined
-      && (this.deps.store.resolve(topicKey)?.framework ?? null) !== frameworkArm.framework;
+      const frameworkChanged =
+        frameworkArm.framework !== undefined
+        && (this.deps.store.resolve(topicKey)?.framework ?? null) !== frameworkArm.framework;
 
-    // ── live store write (framework arm — always — plus live new axes) ─────
-    const livePatch: ValidatedProfilePatch = { ...frameworkArm, ...liveNewAxes };
-    const liveFields = Object.keys(livePatch);
-    const shadowFields = Object.keys(shadowNewAxes);
+      // ── live store write (framework arm — always — plus live new axes) ─────
+      const livePatch: ValidatedProfilePatch = { ...frameworkArm, ...liveNewAxes };
+      const liveFields = Object.keys(livePatch);
+      const shadowFields = Object.keys(shadowNewAxes);
+      return { livePatch, liveNewAxes, shadowNewAxes, refusedFields, frameworkChanged, liveFields, shadowFields };
+    };
+    let plan = makePlan();
 
-    if (liveFields.length === 0 && shadowFields.length === 0) {
-      if (refusedFields.length > 0) {
+    if (!req.confirmation && plan.liveFields.length === 0 && plan.shadowFields.length === 0) {
+      if (plan.refusedFields.length > 0) {
         // §5.2 disabled-flag semantics: NEW operator pins are refused while
         // the feature is off (reads still honor existing pins).
         this.deps.audit({
           type: 'write', outcome: 'refused', reason: 'disabled',
-          fields: refusedFields, topic: topicKey, principal: updatedBy, origin: req.origin,
+          fields: plan.refusedFields, topic: topicKey, principal: updatedBy, origin: req.origin,
         });
         return {
           ok: false,
-          reply: `The ${refusedFields.join('/')} control isn't enabled on this agent — the profile is unchanged.`,
+          reply: `The ${plan.refusedFields.join('/')} control isn't enabled on this agent — the profile is unchanged.`,
           refusal: { reason: 'disabled' },
-          refusedFields,
+          refusedFields: plan.refusedFields,
         };
       }
       return { ok: false, reply: 'Nothing to change — say what you want set on this topic.', refusal: { reason: 'empty-patch' } };
     }
 
-    const before = this.profileSnapshot(topicKey);
+    let before = this.profileSnapshot(topicKey);
     let supersededParked = false;
     let changed = false;
-    if (liveFields.length > 0) {
-      try {
-        const result = await this.deps.store.mutate(
-          topicKey,
-          { ...livePatch, updatedBy },
-          // §5.1 cadence: every accepted write here is individually disclosed
-          // (no §8 coalescing window until the orchestrator is live).
-          { shiftPrevious: true, expectedDisplayRevision: req.expectedDisplayRevision },
-        );
-        changed = result.changed;
-        supersededParked = result.supersededParked;
-      } catch (err) {
-        return this.writeFailure(err, topicKey, updatedBy, req.origin);
-      }
-      // §5.3: the mutate's flush durably landed (mutate resolved) — a local
-      // operator/HTTP write cancels any pending transfer-pull REPLACE.
-      this.notifyLocalWriteDurable(topicKey, req.origin);
-    }
-
-    if (shadowFields.length > 0) {
-      try {
-        // §14: the dry-run shadow records the intent; resolution never reads it.
-        const current = this.deps.store.get(topicKey)?.intendedProfile?.fields ?? {};
-        await this.deps.store.setShadow(topicKey, { ...current, ...shadowNewAxes }, updatedBy);
-      } catch (err) {
-        return this.writeFailure(err, topicKey, updatedBy, req.origin);
-      }
-    }
-
-    const after = this.profileSnapshot(topicKey);
-    const seq = this.deps.audit({
-      type: 'write',
-      outcome: 'accepted',
-      topic: topicKey,
-      principal: updatedBy,
-      origin: req.origin,
-      ...(req.agentComposedPayload ? { payloadProvenance: 'agent-composed' } : {}),
-      ...(req.crossTopicConfirm ? { crossTopic: true, authorizedBy: `owner-confirmed-in:${req.crossTopicConfirm.sourceTopicId}` } : {}),
-      appliedLive: liveFields,
-      shadowed: shadowFields,
-      refusedFields,
-      old: before,
-      new: after,
-      ...(supersededParked ? { supersededParked: true } : {}),
-    }) ?? new Date(this.now()).toISOString();
-
-    // ── application arm ─────────────────────────────────────────────────────
-    const fullyLive = regime.enabled && !regime.dryRun;
-    let legacyRespawned = false;
-    let respawnNote = '';
-    if (frameworkChanged && changed) {
-      if (fullyLive && this.deps.orchestrator) {
-        // §8 fully-live orchestration (debounce, busy-refusal, parking).
-        await this.deps.orchestrator.onProfileWrite(topicKey, { frameworkChanged: true, origin: req.origin });
-        respawnNote = ' Applying shortly (waiting for an idle moment).';
-      } else {
-        // §5.2(d): the legacy path serves the switch byte-for-byte — immediate
-        // kill + CONTINUATION respawn, resume-UUID drop. In the fully-live
-        // regime with no orchestrator wired this is the keep-working fallback.
-        if (fullyLive) this.deps.audit({ type: 'orchestration-unavailable', topic: topicKey });
-        const respawn = await this.deps.legacyFrameworkRespawn(topicKey);
-        legacyRespawned = respawn.respawned;
-        respawnNote = respawn.respawned
-          ? ' Session respawned — recent history carries over; the full transcript can\'t follow across frameworks.'
-          : respawn.error
-            ? ` Persisted, but the respawn failed: ${respawn.error} — it takes effect on this topic's next session.`
-            : ' Takes effect when a session starts for this topic.';
-      }
-    } else if (Object.keys(liveNewAxes).some(field => field !== 'messageOriginDisplay') && changed) {
-      if (fullyLive && this.deps.orchestrator) {
-        await this.deps.orchestrator.onProfileWrite(topicKey, { frameworkChanged: false, origin: req.origin });
-        respawnNote = ' Applying shortly (waiting for an idle moment).';
-      } else {
-        // No profile-triggered kill outside the fully-live orchestration —
-        // told out loud (§5.2(b) precedent: apply-at-next-spawn, boot-sweep
-        // reconcile is the backstop).
-        respawnNote = ' Takes effect at this topic\'s next session restart.';
-      }
-    } else if (liveNewAxes.messageOriginDisplay !== undefined && changed) {
-      respawnNote = ' Applies to newly prepared messages; origin recording continues.';
-    }
-
-    // ── §8 disclosure (delta-carrying, audit-stamped) ───────────────────────
-    const parts: string[] = [];
-    if (liveFields.length > 0) {
-      parts.push(`${this.renderDelta(before, after)}${respawnNote}`);
-    }
-    if (shadowFields.length > 0) {
-      parts.push(
-        `[dry-run] recorded as an intent, not applied: ${shadowFields.map(f => `${f} → ${String((shadowNewAxes as Record<string, unknown>)[f])}`).join(', ')} — the new profile machinery is in its observation canary on this agent.`,
-      );
-    }
-    if (refusedFields.length > 0) {
-      parts.push(`Not applied (the ${refusedFields.join('/')} control isn't enabled on this agent): re-issue once it's on.`);
-    }
-    if (supersededParked) {
-      parts.push('Your previously parked pin was superseded by this change.');
-    }
-    if (liveFields.length > 0 && !changed && shadowFields.length === 0 && refusedFields.length === 0) {
-      return { ok: true, noop: true, reply: 'Already set — nothing to change.', appliedLive: [] };
-    }
-
-    const reply = `${parts.join('\n')}\n(profile change ${seq}${req.origin === 'http' ? ', via API' : ''})`;
-    if (!req.discloseInReply && (liveFields.length > 0 || shadowFields.length > 0)) {
-      // §8: token-trust/HTTP writes (and any caller whose reply isn't the
-      // topic conversation) post the disclosure to the topic itself.
-      await this.deps.disclose(topicKey, reply).catch(() => { /* best-effort */ });
-    }
-
-    return {
-      ok: true,
-      reply,
-      appliedLive: liveFields,
-      shadowed: shadowFields,
-      refusedFields,
-      supersededParked,
-      legacyRespawned,
-      noop: liveFields.length > 0 ? !changed : undefined,
+    let savedOutcome: ProfileWriteResult | undefined;
+    const captureSaved = (shadowed: string[]) => {
+      savedOutcome = { ok: true, settingsSaved: true,
+        reply: plan.liveFields.length ? 'The settings were saved. I could not confirm whether the running conversation was updated.'
+          : 'The preview was recorded. It did not change the running conversation.',
+        appliedLive: [...plan.liveFields], shadowed: [...shadowed], refusedFields: [...plan.refusedFields],
+        supersededParked };
+      req.confirmation?.onSaved?.(savedOutcome);
     };
+    try {
+      if (plan.liveFields.length > 0 || req.confirmation) {
+        try {
+          const result = await this.deps.store.mutate(
+            topicKey,
+            { ...plan.livePatch, updatedBy },
+            // §5.1 cadence: every accepted write here is individually disclosed
+            // (no §8 coalescing window until the orchestrator is live).
+            { shiftPrevious: true, expectedDisplayRevision: req.expectedDisplayRevision,
+              ...(req.confirmation ? {
+                prepare: () => {
+                  regime = { ...this.deps.regime() };
+                  const fresh = this.renderProposalEcho(topicKey, req.patch, req.confirmation!.name, regime);
+                  if (!req.confirmation!.eligible() || !fresh.ok || fresh.echo !== req.confirmation!.echo) throw new ProposalChangedError();
+                  patch = fresh.patch;
+                  before = this.profileSnapshot(topicKey);
+                  plan = makePlan();
+                  if (!plan.liveFields.length && !plan.shadowFields.length) throw new ProposalChangedError();
+                  return { patch: { ...plan.livePatch, updatedBy },
+                    ...(plan.shadowFields.length ? { shadow: plan.shadowNewAxes } : {}) };
+                },
+                beforeCommit: () => {
+                  if (!req.confirmation!.eligible() || req.confirmation!.validAtCommit?.() === false) throw new ProposalChangedError();
+                },
+              } : {}),
+            },
+          );
+          changed = result.changed;
+          supersededParked = result.supersededParked;
+          captureSaved(req.confirmation ? plan.shadowFields : []);
+        } catch (err) {
+          if (savedOutcome) throw err;
+          if (err instanceof ProposalChangedError) return { ok: false,
+            reply: 'The settings or ownership changed after that question. I need to send a fresh question before changing anything.',
+            refusal: { reason: 'proposal-changed' } };
+          return this.writeFailure(err, topicKey, updatedBy, req.origin);
+        }
+        // §5.3: the mutate's flush durably landed (mutate resolved) — a local
+        // operator/HTTP write cancels any pending transfer-pull REPLACE.
+        if (plan.liveFields.length > 0) this.notifyLocalWriteDurable(topicKey, req.origin);
+      }
+
+      if (plan.shadowFields.length > 0 && !req.confirmation) {
+        try {
+          // §14: the dry-run shadow records the intent; resolution never reads it.
+          const current = this.deps.store.get(topicKey)?.intendedProfile?.fields ?? {};
+          await this.deps.store.setShadow(topicKey, { ...current, ...plan.shadowNewAxes }, updatedBy);
+          captureSaved(plan.shadowFields);
+        } catch (err) {
+          if (savedOutcome) throw err;
+          return this.writeFailure(err, topicKey, updatedBy, req.origin);
+        }
+      }
+
+      const after = this.profileSnapshot(topicKey);
+      const seq = this.deps.audit({
+        type: 'write',
+        outcome: 'accepted',
+        topic: topicKey,
+        principal: updatedBy,
+        origin: req.origin,
+        ...(req.agentComposedPayload ? { payloadProvenance: 'agent-composed' } : {}),
+        ...(req.crossTopicConfirm ? { crossTopic: true, authorizedBy: `owner-confirmed-in:${req.crossTopicConfirm.sourceTopicId}` } : {}),
+        appliedLive: plan.liveFields,
+        shadowed: plan.shadowFields,
+        refusedFields: plan.refusedFields,
+        old: before,
+        new: after,
+        ...(supersededParked ? { supersededParked: true } : {}),
+      }) ?? new Date(this.now()).toISOString();
+
+      if (req.confirmation && !req.confirmation.eligible()) {
+        const reply = 'The settings were saved. I did not start or restart the conversation because I could no longer verify permission to do that.';
+        if (!req.discloseInReply) await this.deps.disclose(topicKey, reply).catch(() => {});
+        return { ok: true, settingsSaved: true, reply, appliedLive: plan.liveFields, shadowed: plan.shadowFields };
+      }
+
+      // ── application arm ─────────────────────────────────────────────────────
+      const fullyLive = regime.enabled && !regime.dryRun;
+      let legacyRespawned = false;
+      let respawnNote = '';
+      if (plan.frameworkChanged && changed) {
+        if (fullyLive && this.deps.orchestrator) {
+          // §8 fully-live orchestration (debounce, busy-refusal, parking).
+          await this.deps.orchestrator.onProfileWrite(topicKey, { frameworkChanged: true, origin: req.origin, ...(req.confirmation ? { runtimeGuard: req.confirmation.eligible } : {}) });
+          respawnNote = ' Applying shortly (waiting for an idle moment).';
+        } else {
+          // §5.2(d): the legacy path serves the switch byte-for-byte — immediate
+          // kill + CONTINUATION respawn, resume-UUID drop. In the fully-live
+          // regime with no orchestrator wired this is the keep-working fallback.
+          if (fullyLive) this.deps.audit({ type: 'orchestration-unavailable', topic: topicKey });
+          assertProfileRuntimeGuard(req.confirmation?.eligible);
+          const respawn = await this.deps.legacyFrameworkRespawn(topicKey, req.confirmation?.eligible);
+          legacyRespawned = respawn.respawned;
+          respawnNote = respawn.respawned
+            ? ' Session respawned — recent history carries over; the full transcript can\'t follow across frameworks.'
+            : respawn.error
+              ? ` Persisted, but the respawn failed: ${respawn.error} — it takes effect on this topic's next session.`
+              : ' Takes effect when a session starts for this topic.';
+        }
+      } else if (Object.keys(plan.liveNewAxes).some(field => field !== 'messageOriginDisplay') && changed) {
+        if (fullyLive && this.deps.orchestrator) {
+          await this.deps.orchestrator.onProfileWrite(topicKey, { frameworkChanged: false, origin: req.origin, ...(req.confirmation ? { runtimeGuard: req.confirmation.eligible } : {}) });
+          respawnNote = ' Applying shortly (waiting for an idle moment).';
+        } else {
+          // No profile-triggered kill outside the fully-live orchestration —
+          // told out loud (§5.2(b) precedent: apply-at-next-spawn, boot-sweep
+          // reconcile is the backstop).
+          respawnNote = ' Takes effect at this topic\'s next session restart.';
+        }
+      } else if (plan.liveNewAxes.messageOriginDisplay !== undefined && changed) {
+        respawnNote = ' Applies to newly prepared messages; origin recording continues.';
+      }
+
+      // ── §8 disclosure (delta-carrying, audit-stamped) ───────────────────────
+      const parts: string[] = [];
+      if (plan.liveFields.length > 0) {
+        parts.push(`${this.renderDelta(before, after)}${respawnNote}`);
+      }
+      if (plan.shadowFields.length > 0) {
+        parts.push(
+          `[dry-run] recorded as an intent, not applied: ${plan.shadowFields.map(f => `${f} → ${String((plan.shadowNewAxes as Record<string, unknown>)[f])}`).join(', ')} — the new profile machinery is in its observation canary on this agent.`,
+        );
+      }
+      if (plan.refusedFields.length > 0) {
+        parts.push(`Not applied (the ${plan.refusedFields.join('/')} control isn't enabled on this agent): re-issue once it's on.`);
+      }
+      if (supersededParked) {
+        parts.push('Your previously parked pin was superseded by this change.');
+      }
+      if (plan.liveFields.length > 0 && !changed && plan.shadowFields.length === 0 && plan.refusedFields.length === 0) {
+        return { ok: true, settingsSaved: true, noop: true, reply: 'Already set — nothing to change.', appliedLive: [] };
+      }
+
+      const reply = `${parts.join('\n')}\n(profile change ${seq}${req.origin === 'http' ? ', via API' : ''})`;
+      if (!req.discloseInReply && (plan.liveFields.length > 0 || plan.shadowFields.length > 0)) {
+        // §8: token-trust/HTTP writes (and any caller whose reply isn't the
+        // topic conversation) post the disclosure to the topic itself.
+        await this.deps.disclose(topicKey, reply).catch(() => { /* best-effort */ });
+      }
+
+      return {
+        ok: true,
+        settingsSaved: true,
+        reply,
+        appliedLive: plan.liveFields,
+        shadowed: plan.shadowFields,
+        refusedFields: plan.refusedFields,
+        supersededParked,
+        legacyRespawned,
+        noop: plan.liveFields.length > 0 ? !changed : undefined,
+      };
+    } catch (error) {
+      if (!savedOutcome) return this.writeFailure(error, topicKey, updatedBy, req.origin);
+      // A post-save callback cannot turn a durable write into "nothing changed".
+      console.error('[topic-profile-post-save-callback-failed]', JSON.stringify({ topic: topicKey, origin: req.origin }));
+      return { ...savedOutcome, runtimeOutcome: 'unknown', effectFailure: 'post-save-callback' };
+    }
   }
 
   // ── §10.3 undo ────────────────────────────────────────────────────────────
@@ -579,6 +641,7 @@ export class TopicProfileWriteSurface {
     origin: ProfileWriteOrigin;
     /** The operator already confirmed through the §10.4 cooldown echo. */
     confirmed?: boolean;
+    expectedParkedVersion?: string;
     discloseInReply?: boolean;
   }): Promise<ReapplyResult> {
     const topicKey = String(req.topicKey);
@@ -600,12 +663,17 @@ export class TopicProfileWriteSurface {
       };
     }
 
+    const observedVersion = parkedProfileVersion(parked)!;
+    if (req.expectedParkedVersion !== undefined && req.expectedParkedVersion !== observedVersion) return {
+      ok: false, reply: 'The saved recovery settings changed after that question. I need to ask again before applying them.',
+      refusal: { reason: 'parked-profile-changed' },
+    };
     const cooldownMs = this.deps.reapplyCooldownMs ?? DEFAULT_REAPPLY_COOLDOWN_MS;
     const parkedAgeMs = this.now() - Date.parse(parked.parkedAt);
     if (!req.confirmed && Number.isFinite(parkedAgeMs) && parkedAgeMs < cooldownMs) {
       const echo = `This exact profile failed to launch ${Math.max(1, Math.round(parkedAgeMs / 60_000))} minute(s) ago (${parked.reason}) — apply it anyway?`;
       this.deps.audit({ type: 'reapply', outcome: 'needs-confirm', topic: topicKey, principal: updatedBy, origin: req.origin });
-      return { ok: false, needsConfirm: true, reply: echo, refusal: { reason: 'cooldown-confirm-required' } };
+      return { ok: false, needsConfirm: true, parkedVersion: observedVersion, reply: echo, refusal: { reason: 'cooldown-confirm-required' } };
     }
 
     const patch: ValidatedProfilePatch = {};
@@ -618,8 +686,13 @@ export class TopicProfileWriteSurface {
     try {
       // The operator-attributed mutate atomically clears the parked state +
       // breaker counter (store supersession discipline).
-      await this.deps.store.mutate(topicKey, { ...patch, updatedBy }, { shiftPrevious: true });
+      await this.deps.store.mutate(topicKey, { ...patch, updatedBy }, { shiftPrevious: true,
+        beforeCommit: () => { if (parkedProfileVersion(this.deps.store.parkedFor(topicKey)) !== observedVersion) throw new ProposalChangedError(); },
+      });
     } catch (err) {
+      if (err instanceof ProposalChangedError) return { ok: false,
+        reply: 'The saved recovery settings changed after that question. I need to ask again before applying them.',
+        refusal: { reason: 'parked-profile-changed' } };
       return this.writeFailure(err, topicKey, updatedBy, req.origin);
     }
     // §5.3 cancel marker — the re-apply's mutate flushed durably.
@@ -659,6 +732,8 @@ export class TopicProfileWriteSurface {
   renderProposalEcho(
     topicKey: string | number,
     patch: ProfilePatchInput,
+    conversationName?: string,
+    regimeSnapshot?: ProfileWriteRegime,
   ): { ok: true; echo: string; patch: ValidatedProfilePatch } | { ok: false; reply: string; validation?: ProfileValidationError } {
     const key = String(topicKey);
     const resolved = this.deps.resolver.resolve(key);
@@ -669,28 +744,38 @@ export class TopicProfileWriteSurface {
     if ((validated.patch.model != null || validated.patch.modelTier != null) && this.deps.localModelBinding(key)) {
       return { ok: false, reply: 'This topic has a local-model binding — clear it first to pin a cloud model.' };
     }
-    const regime = this.deps.regime();
-    const lines: string[] = ['Proposed profile change for this topic:'];
+    const regime = regimeSnapshot ?? this.deps.regime();
+    const name = conversationName ? `“${conversationName}”` : 'this conversation';
+    const lines: string[] = [`Change how ${name} runs?`];
+    const labels: Record<string, string> = { model: 'Model', modelTier: 'Model level', thinkingMode: 'Thinking level',
+      effort: 'Reasoning effort', escalationOverride: 'Automatic model upgrades', messageOriginDisplay: 'Message signatures' };
     for (const field of ALL_FIELDS) {
       const value = (validated.patch as Record<string, unknown>)[field];
       if (value === undefined) continue;
       const rendered = value === null ? 'cleared' : typeof value === 'object' ? JSON.stringify(value) : String(value);
       if (field === 'framework') {
-        lines.push(`  • framework → ${rendered}: switches now (live)`);
+        const engine = value === null ? 'the default engine' : FRAMEWORK_DISPLAY_NAMES[value as IntelligenceFramework] ?? rendered;
+        lines.push(`Use ${engine} for ${name}.`);
+        lines.push(regime.enabled && !regime.dryRun && this.deps.orchestrator
+          ? 'If a session is running, it will wait for an idle moment before restarting with a summary of recent work. Otherwise, this engine applies when the conversation next starts. The full transcript may not carry over.'
+          : 'If a session is running, it will restart with a summary of recent work. Otherwise, this engine applies when the conversation next starts. The full transcript may not carry over.');
+        if (regime.enabled && !regime.dryRun && resolved.framework === CLAUDE_CODE_FRAMEWORK && value !== null && value !== CLAUDE_CODE_FRAMEWORK) lines.push('Automatic upgrades to a stronger model for heavy work will no longer be available in this conversation.');
       } else if (field === 'messageOriginDisplay') {
-        lines.push(`  • Message signature display → ${rendered}: applies to new messages after confirmation; recording continues`);
+        const signatureLabels: Record<string, string> = { enabled: 'Message signatures', machine: 'Machine name', harness: 'Engine name', model: 'Model name' };
+        lines.push(value === null ? 'Return message signatures to the defaults.'
+          : Object.entries(value as Record<string, boolean>).map(([key, enabled]) => `${signatureLabels[key]}: ${enabled ? 'show' : 'hide'}.`).join(' '));
+        lines.push('This affects new messages; origin recording continues.');
       } else if (value === null) {
-        lines.push(`  • ${field} → ${rendered}: applies now (recovery write, live in every regime)`);
+        lines.push(`${labels[field]}: return to the default setting after confirmation.`);
       } else if (!regime.enabled) {
-        lines.push(`  • ${field} → ${rendered}: refused — the ${field} control isn't enabled on this agent`);
+        lines.push(`${labels[field]}: ${rendered} cannot be applied because this setting is not enabled.`);
       } else if (regime.dryRun) {
-        lines.push(`  • ${field} → ${rendered}: recorded as a dry-run intent (not applied)`);
+        lines.push(`${labels[field]}: ${rendered} will be recorded for preview only. It will not change the running model.`);
       } else {
-        lines.push(`  • ${field} → ${rendered}: applies after you confirm`);
+        lines.push(`${labels[field]}: ${rendered} will apply after confirmation, when the conversation can restart safely.`);
       }
     }
     if (lines.length === 1) return { ok: false, reply: 'Nothing to propose — the delta is empty.' };
-    lines.push('Reply "yes" to apply exactly the above.');
     return { ok: true, echo: lines.join('\n'), patch: validated.patch };
   }
 
