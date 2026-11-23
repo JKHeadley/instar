@@ -1,3 +1,4 @@
+import { isCommitmentReceiptAction, commitmentActionIntentHash, commitmentActionProof } from './CommitmentReceiptAction.js';
 /**
  * Evolution Manager — the feedback loop that turns running into evolving.
  *
@@ -211,6 +212,34 @@ interface ActionState {
 }
 
 export class EvolutionManager {
+  private commitmentReceiptModeProvider: (() => boolean) | null = null;
+
+  setCommitmentReceiptModeProvider(provider: (() => boolean) | null): void {
+    this.commitmentReceiptModeProvider = provider;
+  }
+
+  /** Exact archive-inclusive identity view, not the lossy replication projection. */
+  listCommitmentReceiptActions(): ActionItem[] {
+    for (const file of [this.filePath('action-queue'), this.archive.filePath]) {
+      if (fs.existsSync(file) && fs.statSync(file).size > 8 * 1024 * 1024) throw new Error('receipt action view exceeds bounded read');
+    }
+    const rows = [...this.loadActionArchive().map(entry => entry.action), ...this.loadActions().actions];
+    if (rows.length > 20000) throw new Error('receipt action view exceeds bounded rows');
+    const byId = new Map<string, ActionItem>();
+    const reservedKeys = new Map<string, string>();
+    for (const row of rows) {
+      const previous = byId.get(row.id);
+      if (previous && commitmentActionProof(previous) !== commitmentActionProof(row)) throw new Error('conflicting receipt action identity');
+      byId.set(row.id, row);
+      if (isCommitmentReceiptAction(row.source)) {
+        const key = row.source!.contentId!;
+        if (reservedKeys.has(key) && reservedKeys.get(key) !== row.id) throw new Error('conflicting receipt registration key');
+        reservedKeys.set(key, row.id);
+      }
+    }
+    return [...byId.values()];
+  }
+
   private stateDir: string;
   private config: EvolutionManagerConfig;
   readonly archive: EvolutionArchive;
@@ -1571,6 +1600,17 @@ export class EvolutionManager {
     source?: ActionItem['source'];
     tags?: string[];
   }): ActionItem {
+    if (opts.source?.platform === 'commitment-detection' && opts.source.contentId?.startsWith('cf1:')) {
+      if (!isCommitmentReceiptAction(opts.source) || this.commitmentReceiptModeProvider?.() !== true) {
+        throw new Error('commitment receipt mode is off or its registration identity is invalid');
+      }
+      const existing = this.listCommitmentReceiptActions().find(row =>
+        row.source?.platform === opts.source!.platform && row.source?.contentId === opts.source!.contentId);
+      if (existing) {
+        if (commitmentActionIntentHash(existing) !== commitmentActionIntentHash(opts)) throw new Error('commitment receipt intent conflict');
+        return existing;
+      }
+    }
     const state = this.loadActions();
     const id = this.nextActionId(state);
     const action: ActionItem = {

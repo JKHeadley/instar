@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "slug": "commitment-consumed-frontier",
+  "sessionId": "3f879ccf-9bce-46f4-9ea5-9839c11dff20",
+  "timestamp": "2026-11-23T22:18:27.983Z",
+  "artifactPath": "upgrades/side-effects/commitment-consumed-frontier.md",
+  "artifactSha256": "e50abb95229cf0905e1da214eadf3a4da9f6e56c039ba01148afc0c171838970",
+  "coveredFiles": [
+    "docs/specs/commitment-consumed-frontier.eli16.md",
+    "docs/specs/commitment-consumed-frontier.md",
+    "src/commands/server.ts",
+    "src/core/CommitmentReceiptAction.ts",
+    "src/core/EvolutionManager.ts",
+    "src/data/awareness/commitment-consumed-frontier.md",
+    "src/data/state-coherence-registry.json",
+    "src/scheduler/CommitmentConsumedFrontier.ts",
+    "src/scheduler/CommitmentReceiptWiring.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/commitment-frontier-alive.test.ts",
+    "tests/helpers/commitment-frontier.ts",
+    "tests/integration/commitment-frontier-routes.test.ts",
+    "tests/unit/commitment-consumed-frontier.test.ts",
+    "tests/unit/commitment-frontier-proof.test.ts",
+    "tests/unit/commitment-frontier-scheduler.test.ts",
+    "tests/unit/commitment-receipt-action.test.ts",
+    "upgrades/next/commitment-consumed-frontier.md",
+    "upgrades/side-effects/commitment-consumed-frontier.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible default-off dark addition: no activation, external operation, public route, auth grant or fleet migration. Reverting code restores normal reviews and leaves inert local receipt metadata. Size is 20 files/1465 added lines because independently tested source, effects and lifecycle proof are required.",
+  "eli16Path": "docs/specs/commitment-consumed-frontier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/commitment-consumed-frontier.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "New default-off source/batch coverage capability; existing scalar bookmark is deliberately not treated as consumption evidence."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The commitment-receipt-reconciliation model binds one terminal run. The control edge re-enters ordinary trigger admission at most once via frontierReconciledTriggers. Completion removes the binding; replayed unbound reserved callbacks are inert; frontierCompleting and the per-slug fence prevent overlap. No timer or additional model call is added. Four convergence assertions and live scheduler replay/removal/standby regressions verify the settling brake."
+    }
+  }
+}

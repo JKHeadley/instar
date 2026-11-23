@@ -6228,7 +6228,28 @@ function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): 
 }
 
 
+/** Exact terminal receipt re-drive; no cadence or model retry is created. */
+const commitmentReceiptReconciliation: SelfActionController = {
+  id: 'commitment-receipt-reconciliation', actionVerb: 're-drive-trigger',
+  models: 'JobScheduler.triggerJob terminal binding reconciliation: one guarded re-entry, then ordinary admission; completed bindings are removed and unbound callbacks are inert.',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  boundK: 1, perTargetBoundK: 1, ticks: 100, tickMs: 1000,
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The exact active receipt binding is process-local. After reconstruction a reserved receipt callback without that binding is inert; reboot cannot recreate the old re-drive.' },
+  makeUnderPressure(_f, sink) {
+    let terminalBinding = true; let reconciling = false;
+    return { tick() {
+      sink.considered++;
+      if (!terminalBinding || reconciling) return;
+      reconciling = true;
+      terminalBinding = false; // completion finally removes this exact binding
+      sink.emit({ verb: 're-drive-trigger', target: 'exact-terminal-receipt-run' });
+      reconciling = false;
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  commitmentReceiptReconciliation,
   siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
