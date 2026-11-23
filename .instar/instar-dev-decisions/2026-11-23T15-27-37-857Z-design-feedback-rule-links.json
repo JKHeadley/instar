@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-23T15:27:37.857Z",
+  "slug": "design-feedback-rule-links",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 135,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/designGate/feedbackRuleLinks.ts"
+    ],
+    "addedLines": 135,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
