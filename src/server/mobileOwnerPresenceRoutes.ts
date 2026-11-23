@@ -45,7 +45,7 @@ export const ACTION_APPROVAL_PENDING_PATH = '/mobile/action-approval/pending';
 export const ACTION_APPROVAL_DECLINE_PATH = '/mobile/action-approval/decline';
 export const ACTION_APPROVAL_VERSION = 'instar-owner-action-v1';
 /** The purposes an owner-presence approval may authorize (one per sensitive handler). */
-export const OWNER_ACTION_PURPOSES = ['thread-delete', 'trust-grant', 'pin-gone-for-good'] as const;
+export const OWNER_ACTION_PURPOSES = ['thread-delete', 'trust-grant'] as const;
 export type OwnerActionPurpose = (typeof OWNER_ACTION_PURPOSES)[number];
 
 /** The exact bytes the presence key signs for a sensitive-action approval. Unlike the
@@ -117,13 +117,6 @@ export interface OwnerPresenceDeps {
   approvalStore?: OwnerApprovedActionStore;
   /** SEC-018: pending requests the handler registered (what the phone discovers + gates the challenge). */
   pendingRegistry?: PendingApprovalRegistry;
-  /**
-   * SEC-170 part 3: a purpose that carries its own switch is usable even while `security.ownerApprovedActions`
-   * is off (today only 'pin-gone-for-good', under the pool-wide PIN budget switch). Absent: none.
-   */
-  purposeOn?: (purpose: OwnerActionPurpose) => boolean;
-  /** Called once a verified approval is recorded, so the owning feature can apply it at once. Errors are ignored. */
-  onActionApproved?: (purpose: OwnerActionPurpose, actionKey: string) => boolean | void;
   /** Emit the existing item push so a tap opens the card (fast-follow; optional). */
   pushItem?: (itemId: string) => void;
   /** Applies a pending PIN change to the session stores before a new session is issued. */
@@ -280,17 +273,8 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
   // active owner phone, presence key) and additionally require security.ownerApprovedActions.
   // The challenge is bound to {deviceId, host, purpose, actionKey}; the presence signature commits
   // to the purpose + actionKey directly, so a tap can authorize only the exact action it was shown.
-  const allActionApprovalsOn = (): boolean =>
+  const actionApprovalsOn = (): boolean =>
     (deps.config() as { security?: { ownerApprovedActions?: { enabled?: boolean } } }).security?.ownerApprovedActions?.enabled === true;
-  // SEC-170 part 3: a purpose with its own switch is on when that switch is, whatever the general one says.
-  const purposeOn = (purpose: unknown): boolean => {
-    if (allActionApprovalsOn()) return true;
-    if (typeof purpose !== 'string' || !(OWNER_ACTION_PURPOSES as readonly string[]).includes(purpose)) return false;
-    try { return deps.purposeOn?.(purpose as OwnerActionPurpose) === true; } catch { return false; } // @silent-fallback-ok — an unreadable switch is off
-  };
-  const actionApprovalsOn = (purpose?: unknown): boolean =>
-    purpose === undefined ? (allActionApprovalsOn() || OWNER_ACTION_PURPOSES.some((p) => purposeOn(p))) : purposeOn(purpose);
-  const bodyPurpose = (req: Request): unknown => (req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>).purpose : undefined);
   const validAction = (body: Record<string, unknown>): { purpose: OwnerActionPurpose; actionKey: string } | null => {
     const { purpose, actionKey } = body;
     if (typeof purpose !== 'string' || !(OWNER_ACTION_PURPOSES as readonly string[]).includes(purpose)) return null;
@@ -299,7 +283,7 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
   };
 
   router.post(ACTION_APPROVAL_CHALLENGE_PATH, (req: Request, res: Response) => {
-    if (!actionApprovalsOn(bodyPurpose(req)) || !deps.approvalStore) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    if (!actionApprovalsOn() || !deps.approvalStore) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
     const g = gate(req, res, 'action');
     if (!g) return;
     const a = validAction((req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);
@@ -313,7 +297,7 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
   });
 
   router.post(ACTION_APPROVAL_PATH, (req: Request, res: Response) => {
-    if (!actionApprovalsOn(bodyPurpose(req)) || !deps.approvalStore) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    if (!actionApprovalsOn() || !deps.approvalStore) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
     const g = gate(req, res, 'action');
     if (!g) return;
     const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
@@ -333,12 +317,6 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
     deps.pendingRegistry?.remove(a.purpose, a.actionKey); // the request is answered
     record(g.svc, { event: 'minted', deviceId: g.deviceId, reason: `action-approved:${a.purpose}`, ticketRef: ref });
     featureEvidence.record(OWNER_PRESENCE_FEATURE, { kind: 'fired', reason: `action-approved:${a.purpose}` });
-    let applied: boolean | void;
-    try { applied = deps.onActionApproved?.(a.purpose, a.actionKey); } catch { applied = false; } // @silent-fallback-ok — reported to the phone just below
-    if (applied === false) {
-      res.status(500).json({ error: 'apply-failed', detail: 'Your approval was received, but this computer could not save it. Ask for it again.' });
-      return;
-    }
     res.json({ ok: true, ref });
   });
 
@@ -347,13 +325,12 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
     if (!actionApprovalsOn() || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
     const g = gate(req, res, 'action');
     if (!g) return;
-    // Only the purposes switched on here (all of them when the general switch is on).
-    res.json({ pending: deps.pendingRegistry.list().filter((p) => purposeOn(p.purpose)) });
+    res.json({ pending: deps.pendingRegistry.list() });
   });
 
   // Decline needs NO presence signature — it only CANCELS a pending request, it grants nothing.
   router.post(ACTION_APPROVAL_DECLINE_PATH, (req: Request, res: Response) => {
-    if (!actionApprovalsOn(bodyPurpose(req)) || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    if (!actionApprovalsOn() || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
     const g = gate(req, res, 'action');
     if (!g) return;
     const a = validAction((req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);

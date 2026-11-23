@@ -146,7 +146,12 @@ export type PermissionAction =
   /** Check or uncheck one judged done item (work-door-project-rows §3.3): the item by its checkRef (goal, id, text). */
   | { kind: 'project-item-check'; target: string; itemId: string; checkRef: string; value: 'checked' | 'unchecked' }
   /** Finish a project (work-door-project-rows §3.5): the binding version the owner saw. */
-  | { kind: 'project-finish'; target: string; bindingRef: string };
+  | { kind: 'project-finish'; target: string; bindingRef: string }
+  /**
+   * SEC-170 part 3: the owner's choice for one computer silent for 7 days or more (retire it, or confirm it gone
+   * for good). The list version the owner saw is on the signed line, so a stale screen cannot act.
+   */
+  | { kind: 'silent-machine'; target: string; choice: 'retire' | 'gone-for-good'; fingerprint: string };
 
 /** The three project actions (work-door-project-rows §3.3–3.5). */
 export type ProjectAction = Extract<PermissionAction, { kind: 'project-pause' | 'project-item-check' | 'project-finish' }>;
@@ -211,6 +216,7 @@ export function actionLine(a: PermissionAction): string {
     case 'project-pause': return `project-pause ${a.target} ${a.value} ${a.noteHash ?? 'none'}`;
     case 'project-item-check': return `project-item-check ${a.target} ${a.checkRef} ${a.value}`;
     case 'project-finish': return `project-finish ${a.target} ${a.bindingRef}`;
+    case 'silent-machine': return `silent-machine ${a.target} ${a.choice} ${a.fingerprint}`;
   }
 }
 
@@ -228,7 +234,7 @@ export const TRUST_REQUEST_ID = /^tr-[0-9a-f]{12}-[0-9A-Z]{6}$/;
 /** A device key fingerprint as `deviceFingerprint` writes one. */
 export const KEY_FINGERPRINT = /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/;
 
-export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: unknown; itemId?: unknown; checkRef?: unknown; bindingRef?: unknown; noteHash?: unknown; keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+export function buildAction(kind: unknown, target: unknown, extra: { choice?: unknown; fingerprint?: unknown; closeAs?: unknown; itemId?: unknown; checkRef?: unknown; bindingRef?: unknown; noteHash?: unknown; keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
   if (kind === 'work-card-tap') {
     if (!isCardId(target)) return { ok: false, error: 'bad-target' };
@@ -255,6 +261,12 @@ export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: u
       tap.closeAs = extra.closeAs; tap.note = extra.note;
     }
     return { ok: true, action: { kind, target, tap } };
+  }
+  if (kind === 'silent-machine') {
+    if (typeof target !== 'string' || !/^m_[0-9a-f]{32}$/.test(target)) return { ok: false, error: 'bad-target' };
+    if (extra.choice !== 'retire' && extra.choice !== 'gone-for-good') return { ok: false, error: 'bad-choice' };
+    if (typeof extra.fingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(extra.fingerprint)) return { ok: false, error: 'bad-fingerprint' };
+    return { ok: true, action: { kind, target, choice: extra.choice, fingerprint: extra.fingerprint } };
   }
   if (kind === 'work-card-create') {
     if (typeof target !== 'string' || !PHONE_CARD_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
@@ -407,7 +419,7 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
 
 /** The fields one request can carry into `buildAction`. */
 function actionExtras(b: Rec): Parameters<typeof buildAction>[2] {
-  return { closeAs: b.closeAs, itemId: b.itemId, checkRef: b.checkRef, bindingRef: b.bindingRef, noteHash: b.noteHash, keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
+  return { choice: b.choice, fingerprint: b.fingerprint, closeAs: b.closeAs, itemId: b.itemId, checkRef: b.checkRef, bindingRef: b.bindingRef, noteHash: b.noteHash, keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
 }
 
 /** Text that holds a token, before or after cleaning: a name is not where a key goes. */
@@ -469,7 +481,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'silent-machine' | 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -771,6 +783,11 @@ export interface MobilePermissionsDeps {
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
   teamAction?: (kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<ActionResult>;
   /**
+   * SEC-170 part 3: the owner's choice for a silent computer. `precheck` refuses before any challenge (so no Face
+   * ID is spent on what cannot succeed); `apply` runs after the signed tap. Absent: the PIN budget is off here.
+   */
+  silentMachine?: { precheck(machineId: string, choice: 'retire' | 'gone-for-good', fingerprint: string): ActionResult | null; apply(machineId: string, choice: 'retire' | 'gone-for-good', fingerprint: string): ActionResult };
+  /**
    * Start a fresh sign-in for one account on one machine: the console's own
    * `POST /subscription-pool/matrix/start-cell` core after its PIN check (routes.ts runMatrixStartCell),
    * answering the same body. Face ID stands in for the PIN (account-sign-in-face-id).
@@ -952,7 +969,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
     const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
-      : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
+      : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on' || b.action === 'silent-machine');
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
@@ -966,6 +983,11 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       const port = deps.trust?.() ?? null;
       if (!port) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'trust-approvals-unavailable', status: 503 }); res.status(503).json({ error: 'trust-approvals-unavailable' }); return; }
       if (!port.holdsLease()) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 }); res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' }); return; }
+    }
+    // SEC-170 part 3: a silent-computer choice that cannot succeed (switch off, list changed, not listed) gets no challenge.
+    if (built.action.kind === 'silent-machine') {
+      const refusal = deps.silentMachine ? deps.silentMachine.precheck(built.action.target, built.action.choice, built.action.fingerprint) : { status: 503, body: { error: 'pin-budget-off', detail: 'The pool-wide PIN guess limit is off on this agent.' } };
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(refusal.body), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
     }
     // A group-project confirm that this machine cannot decide gets no challenge, so no Face ID is spent on it.
     if (built.action.kind === 'group-project-confirm') {
@@ -1205,6 +1227,23 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       finish(res, 'team-changed', built.action, g, r);
     });
   };
+  // SEC-170 part 3: retire a silent computer, or confirm it gone for good. Owner phone, Face ID over the exact line.
+  router.post('/mobile/pin-budget/silent-machine', (req: Request, res: Response) => {
+    const g = writeGate(req, res, true);
+    if (!g) return;
+    const b = rec(req.body);
+    const built = buildAction('silent-machine', b.target, actionExtras(b));
+    if (!built.ok || built.action.kind !== 'silent-machine') { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.ok ? 'bad-action' : built.error, status: 400 }); res.status(400).json({ error: built.ok ? 'bad-action' : built.error }); return; }
+    if (!deps.silentMachine) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'pin-budget-off', status: 503 }); res.status(503).json({ error: 'pin-budget-off', detail: 'The pool-wide PIN guess limit is off on this agent.' }); return; }
+    if (!proven(req, res, g, built.action)) return;
+    let r: ActionResult;
+    try { r = deps.silentMachine.apply(built.action.target, built.action.choice, built.action.fingerprint); }
+    catch (err) {
+      console.warn(`[pin-budget] silent-machine failed: ${err instanceof Error ? err.message : String(err)}`);
+      r = { status: 500, body: { error: 'apply-failed', detail: 'That did not work, and nothing changed. Try again.' } };
+    }
+    finish(res, 'silent-machine', built.action, g, r);
+  });
   teamRoute('/mobile/team/off', 'team-off');
   teamRoute('/mobile/team/restore', 'team-restore');
   teamRoute('/mobile/team/origin-gone', 'team-origin-gone');

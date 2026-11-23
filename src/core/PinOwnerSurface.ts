@@ -4,9 +4,10 @@
  *  - silent(): the one agent-wide list of machines silent for 7 days or more, the data behind the single
  *    Needs-you item. It says whether the item should show: a dismissed item stays quiet until something new
  *    (another machine goes silent, or a raise starts being held back by a silent machine).
- *  - requestGoneForGood(id): the "It's gone for good" choice. It never applies anything itself: it registers a
- *    server-worded pending owner approval (the SEC-018 flow), which the owner approves on the phone with Face ID.
- *  - onApproved(purpose, id): called by the phone approval route. Consumes the approval and saves the confirmation.
+ *  - precheck/apply(id, choice, fingerprint): the owner's two choices for a listed computer, "retire" (remove its
+ *    pairing) and "gone-for-good" (record that it was wiped, lost or destroyed). Only the owner's phone reaches
+ *    apply, through a Face ID permission action whose signed line names the computer, the choice and the list
+ *    version (POST /mobile/pin-budget/silent-machine). No bearer token or dashboard PIN reaches it.
  *
  * Signal, not authority: the list proposes; only the owner retires a machine or confirms it gone, and a
  * confirmation counts toward a raise only while PinShare's pool-wide 7-day silence check agrees.
@@ -17,7 +18,7 @@ import { GoneForGoodStore, silentMachines, isNewSince, type SilentMachineRow } f
 import { writeDurable } from './PinShare.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
-export const GONE_FOR_GOOD_PURPOSE = 'pin-gone-for-good';
+export type SilentChoice = 'retire' | 'gone-for-good';
 const DISMISS_FILE = 'pin-silent-dismissed.json';
 
 export interface PinOwnerSurfaceDeps {
@@ -27,13 +28,16 @@ export interface PinOwnerSurfaceDeps {
   self: () => string | null;
   /** Non-retired registry members with registry timestamps (ms; 0 when unknown) and a display name. */
   members: () => Array<{ machineId: string; name: string; lastSeen: number; pairedAt: number }>;
+  /** True when this id is in the registry and already retired (revoked). */
+  isRetired: (machineId: string) => boolean;
   contacts: () => ReadonlyMap<string, number>;
+  /** False when some member's contact records could not be read (the list may then be incomplete). */
+  evidenceComplete: () => boolean;
   /** True while this machine's share is below its equal entry, i.e. a raise is waiting on acknowledgments. */
   raiseWaiting: () => boolean;
-  pending: { register(req: { purpose: string; actionKey: string; title: string; why: string; machine: string }): unknown; remove(purpose: string, actionKey: string): void };
-  approvals: { consume(key: { purpose: string; actionKey: string }): string | null };
-  machineName: () => string;
-  /** Re-read the share after a confirmation is saved. */
+  /** Retire (revoke) the machine in the replicated registry, by this machine. Throws on failure. */
+  retire: (machineId: string) => void;
+  /** Re-read the share after a change. */
   invalidate: () => void;
   now?: () => number;
 }
@@ -42,6 +46,7 @@ export interface SilentMachinesView {
   enabled: boolean;
   rows: Array<SilentMachineRow & { name: string }>;
   heldBack: boolean;
+  evidenceComplete: boolean;
   fingerprint: string;
   /** True when the owner dismissed the item and nothing new has happened since. */
   dismissed: boolean;
@@ -49,12 +54,12 @@ export interface SilentMachinesView {
   show: boolean;
 }
 
-export type GoneForGoodRequestResult =
-  | { ok: true; pending: true }
-  | { ok: true; already: true }
-  | { ok: false; reason: 'off' | 'not-silent' | 'self' };
+/** A route answer: status and JSON body (the phone route passes it through). */
+export interface SurfaceResult { status: number; body: Record<string, unknown> }
 
 interface DismissRecord { silentIds: string[]; heldBack: boolean; fingerprint: string; at: number }
+
+const OFF: SurfaceResult = { status: 503, body: { error: 'pin-budget-off', detail: 'The pool-wide PIN guess limit is off on this agent.' } };
 
 export class PinOwnerSurface {
   private readonly now: () => number;
@@ -65,7 +70,7 @@ export class PinOwnerSurface {
   }
 
   silent(): SilentMachinesView {
-    if (!this.deps.enabled()) return { enabled: false, rows: [], heldBack: false, fingerprint: '', dismissed: false, show: false };
+    if (!this.deps.enabled()) return { enabled: false, rows: [], heldBack: false, evidenceComplete: true, fingerprint: '', dismissed: false, show: false };
     const members = this.deps.members();
     const contacts = this.deps.contacts();
     const confirmed = this.deps.store.standing(contacts);
@@ -74,8 +79,8 @@ export class PinOwnerSurface {
     let dismissedRec = this.readDismissed();
     // A machine that came back drops out of the dismissal, so going silent again later counts as something new.
     if (dismissedRec) {
-      const now = new Set(rows.map((r) => r.machineId));
-      const kept = dismissedRec.silentIds.filter((x) => now.has(x));
+      const listed = new Set(rows.map((r) => r.machineId));
+      const kept = dismissedRec.silentIds.filter((x) => listed.has(x));
       if (kept.length !== dismissedRec.silentIds.length) {
         dismissedRec = { ...dismissedRec, silentIds: kept };
         try { writeDurable(this.dismissFile, JSON.stringify(dismissedRec)); } catch { /* @silent-fallback-ok — an unsaved trim only means the item may stay quiet once more */ }
@@ -84,7 +89,9 @@ export class PinOwnerSurface {
     const current = { silentIds: rows.map((r) => r.machineId), heldBack };
     const fresh = isNewSince(dismissedRec, current);
     const dismissed = rows.length > 0 && !!dismissedRec && !fresh;
-    return { enabled: true, rows: rows.map((r) => ({ ...r, name: names.get(r.machineId) || 'A computer with no name yet' })), heldBack, fingerprint, dismissed, show: rows.length > 0 && !dismissed };
+    let evidenceComplete = true;
+    try { evidenceComplete = this.deps.evidenceComplete(); } catch { evidenceComplete = false; } // @silent-fallback-ok — unknown is reported as incomplete
+    return { enabled: true, rows: rows.map((r) => ({ ...r, name: names.get(r.machineId) || 'A computer with no name yet' })), heldBack, evidenceComplete, fingerprint, dismissed, show: rows.length > 0 && !dismissed };
   }
 
   /** Dismiss the item as it stands now. A stale fingerprint (the list changed since it was shown) is refused. */
@@ -97,37 +104,45 @@ export class PinOwnerSurface {
     return { ok: true };
   }
 
-  requestGoneForGood(machineId: string): GoneForGoodRequestResult {
-    if (!this.deps.enabled()) return { ok: false, reason: 'off' };
-    if (machineId === this.deps.self()) return { ok: false, reason: 'self' };
-    const row = this.silent().rows.find((r) => r.machineId === machineId);
-    // Only a machine on the owner's list (silent for 7 days or more) can be confirmed gone.
-    if (!row) return { ok: false, reason: 'not-silent' };
-    if (row.confirmedGone) return { ok: true, already: true };
-    const since = new Date(row.silentSince).toISOString().slice(0, 10);
-    this.deps.pending.register({
-      purpose: GONE_FOR_GOOD_PURPOSE,
-      actionKey: machineId,
-      title: `Is ${row.name} gone for good?`,
-      why: `${row.name} has not been heard from since ${since}. Confirm only if it was wiped, lost or destroyed: its share of the PIN guess limit then goes back to your other computers. Approve on your phone with Face ID; this request expires in 5 minutes.`,
-      machine: this.deps.machineName(),
-    });
-    return { ok: true, pending: true };
+  /**
+   * Can this choice succeed now? Null when it can; otherwise the refusal, answered before any Face ID is asked for.
+   * "Already" counts as able to proceed: apply then answers { already: true } without changing anything.
+   */
+  precheck(machineId: string, choice: SilentChoice, fingerprint: string): SurfaceResult | null {
+    if (!this.deps.enabled()) return OFF;
+    if (machineId === this.deps.self()) return { status: 409, body: { error: 'self', detail: 'This is the computer you are connected to, so it cannot be retired or confirmed gone from here.' } };
+    if (this.already(machineId, choice)) return null;
+    const view = this.silent();
+    if (view.fingerprint !== fingerprint) return { status: 409, body: { error: 'list-changed', detail: 'The list of silent computers changed since you saw it. Look again, then choose.' } };
+    if (!view.rows.some((r) => r.machineId === machineId)) return { status: 409, body: { error: 'not-silent', detail: 'Only a computer that has been silent for 7 days or more can be retired or confirmed gone from this list.' } };
+    // Retiring cannot be undone, so it waits until every computer's records could be read: an unreadable record
+    // might hold recent contact from a computer that only looks silent. (A gone-for-good confirmation is already
+    // held back downstream until the records are complete.)
+    if (choice === 'retire' && !view.evidenceComplete) return { status: 409, body: { error: 'evidence-incomplete', detail: 'Some of your computers could not be checked just now, so I cannot be sure this one is really silent. Try again in a few minutes.' } };
+    return null;
   }
 
-  /** The phone approval route calls this after recording a verified approval. */
-  onApproved(purpose: string, machineId: string): boolean {
-    if (purpose !== GONE_FOR_GOOD_PURPOSE || !this.deps.enabled()) return false;
-    if (!this.deps.approvals.consume({ purpose, actionKey: machineId })) return false;
-    this.deps.pending.remove(purpose, machineId);
+  /** Apply the owner's choice. Reached only after the owner's signed Face ID tap; re-checks everything first. */
+  apply(machineId: string, choice: SilentChoice, fingerprint: string): SurfaceResult {
+    const refusal = this.precheck(machineId, choice, fingerprint);
+    if (refusal) return refusal;
+    if (this.already(machineId, choice)) return { status: 200, body: { ok: true, already: true } };
     try {
-      this.deps.store.confirm(machineId, this.deps.self() ?? '');
+      if (choice === 'retire') this.deps.retire(machineId);
+      else this.deps.store.confirm(machineId, this.deps.self() ?? '');
     } catch {
-      return false; // @silent-fallback-ok — the phone route turns false into a visible "could not save it, ask again"
+      return { status: 500, body: { error: 'apply-failed', detail: 'That did not work, and nothing changed. Try again.' } }; // @silent-fallback-ok — the phone shows this; nothing was saved
     }
-    featureEvidence.record('pinBudgetPoolWide', { kind: 'fired', reason: 'owner confirmed a silent computer gone for good from the phone' });
+    featureEvidence.record('pinBudgetPoolWide', { kind: 'fired', reason: choice === 'retire' ? 'owner retired a silent computer from the phone' : 'owner confirmed a silent computer gone for good from the phone' });
     this.deps.invalidate();
-    return true;
+    return { status: 200, body: choice === 'retire'
+      ? { ok: true, applied: choice, detail: 'Retired. It can no longer connect to your other computers. It still holds a copy of the agent\'s keys, so rotate them if it may be in someone else\'s hands.' }
+      : { ok: true, applied: choice } };
+  }
+
+  private already(machineId: string, choice: SilentChoice): boolean {
+    if (choice === 'retire') return this.deps.isRetired(machineId);
+    return !!this.deps.store.read()[machineId] && this.deps.store.standing(this.deps.contacts()).has(machineId);
   }
 
   private readDismissed(): DismissRecord | null {

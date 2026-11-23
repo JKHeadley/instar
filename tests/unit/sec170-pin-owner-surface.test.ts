@@ -7,16 +7,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import express from 'express';
-import request from 'supertest';
 import { GoneForGoodStore, silentMachines, isNewSince, poolFailureAlert, PoolFailureAlerter, parseReportedConfirmations, POOL_ALERT_COOLDOWN_MS } from '../../src/core/PinGoneForGood.js';
-import { PinOwnerSurface, GONE_FOR_GOOD_PURPOSE } from '../../src/core/PinOwnerSurface.js';
+import { PinOwnerSurface } from '../../src/core/PinOwnerSurface.js';
 import { readGoneForGood } from '../../src/core/PinShare.js';
 import { GONE_FOR_GOOD_SILENCE_MS } from '../../src/core/PinShareTable.js';
-import { PendingApprovalRegistry } from '../../src/server/PendingApprovalRegistry.js';
-import { OwnerApprovedActionStore } from '../../src/server/OwnerApprovedActionStore.js';
-import { mountOwnerPresenceRoutes } from '../../src/server/mobileOwnerPresenceRoutes.js';
-import { PhoneDesktopSessionStore } from '../../src/server/PhoneDesktopSessionStore.js';
+import { buildAction, actionLine } from '../../src/server/mobilePermissionsRoutes.js';
+import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { stateSigningText } from '../../src/core/pinBudgetPoller.js';
 
@@ -90,46 +86,69 @@ describe('silent machines', () => {
   });
 });
 
-function surfaceFor(opts: { contacts: Map<string, number>; raiseWaiting?: boolean; enabled?: boolean }) {
+function surfaceFor(opts: { contacts: Map<string, number>; raiseWaiting?: boolean; enabled?: boolean; evidenceComplete?: boolean }) {
   const store = new GoneForGoodStore(dir, () => clock);
-  const pending = new PendingApprovalRegistry();
-  const approvals = new OwnerApprovedActionStore();
+  const retired = new Set<string>();
   let invalidated = 0;
+  let waiting = opts.raiseWaiting ?? false;
   const surface = new PinOwnerSurface({
     stateDir: dir, store, enabled: () => opts.enabled ?? true, self: () => A,
-    members: () => [A, B, C].map((m) => ({ machineId: m, name: m === B ? 'Old Laptop' : m === C ? 'Mini' : 'Studio', lastSeen: 0, pairedAt: 0 })),
-    contacts: () => opts.contacts, raiseWaiting: () => opts.raiseWaiting ?? false,
-    pending, approvals, machineName: () => 'Studio', invalidate: () => { invalidated += 1; }, now: () => clock,
+    members: () => [A, B, C].filter((m) => !retired.has(m)).map((m) => ({ machineId: m, name: m === B ? 'Old Laptop' : m === C ? 'Mini' : 'Studio', lastSeen: 0, pairedAt: 0 })),
+    isRetired: (m) => retired.has(m),
+    contacts: () => opts.contacts, evidenceComplete: () => opts.evidenceComplete ?? true, raiseWaiting: () => waiting,
+    retire: (m) => { retired.add(m); }, invalidate: () => { invalidated += 1; }, now: () => clock,
   });
-  return { surface, store, pending, approvals, invalidated: () => invalidated };
+  return { surface, store, retired, invalidated: () => invalidated, setWaiting: (w: boolean) => { waiting = w; } };
 }
 
 describe('PinOwnerSurface', () => {
-  it('"gone for good" only registers a server-worded pending approval, and only for a listed machine', () => {
-    const { surface, pending, store } = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
-    expect(surface.requestGoneForGood(C)).toEqual({ ok: false, reason: 'not-silent' });
-    expect(surface.requestGoneForGood(A)).toEqual({ ok: false, reason: 'self' });
-    expect(surface.requestGoneForGood(B)).toEqual({ ok: true, pending: true });
-    const card = pending.list().find((p) => p.purpose === GONE_FOR_GOOD_PURPOSE)!;
-    expect(card.actionKey).toBe(B);
-    expect(card.title).toBe('Is Old Laptop gone for good?');
-    expect(card.why).toMatch(/wiped, lost or destroyed/);
-    expect(store.read()).toEqual({});
+  it('a choice is refused before any Face ID unless the computer is listed and the list is the one the owner saw', () => {
+    const { surface } = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
+    const fp = surface.silent().fingerprint;
+    expect(surface.precheck(C, 'gone-for-good', fp)?.body.error).toBe('not-silent');
+    expect(surface.precheck(A, 'retire', fp)?.body.error).toBe('self');
+    expect(surface.precheck(B, 'retire', 'ffffffffffffffff')?.body.error).toBe('list-changed');
+    expect(surface.precheck(B, 'gone-for-good', fp)).toBeNull();
   });
 
-  it('applies only after the phone\'s verified approval: consumed once, saved, share re-read', () => {
+  it('gone for good saves the owner\'s confirmation, once, and re-reads the share', () => {
     const h = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
-    h.surface.requestGoneForGood(B);
-    expect(h.surface.onApproved(GONE_FOR_GOOD_PURPOSE, B)).toBe(false); // no approval recorded yet
-    h.approvals.record({ purpose: GONE_FOR_GOOD_PURPOSE, actionKey: B });
-    expect(h.surface.onApproved('thread-delete', B)).toBe(false);
-    expect(h.surface.onApproved(GONE_FOR_GOOD_PURPOSE, B)).toBe(true);
-    expect(h.surface.onApproved(GONE_FOR_GOOD_PURPOSE, B)).toBe(false); // consumed
+    const fp = h.surface.silent().fingerprint;
+    expect(h.surface.apply(B, 'gone-for-good', fp)).toEqual({ status: 200, body: { ok: true, applied: 'gone-for-good' } });
     expect(h.store.read()[B]).toMatchObject({ source: 'owner-phone', approvedOn: A });
     expect(h.invalidated()).toBe(1);
-    expect(h.pending.list()).toEqual([]);
+    const fp2 = h.surface.silent().fingerprint;
     expect(h.surface.silent().rows.find((r) => r.machineId === B)?.confirmedGone).toBe(true);
-    expect(h.surface.requestGoneForGood(B)).toEqual({ ok: true, already: true });
+    expect(h.surface.apply(B, 'gone-for-good', fp2)).toEqual({ status: 200, body: { ok: true, already: true } });
+    expect(h.invalidated()).toBe(1);
+  });
+
+  it('retire removes the pairing through the registry, and a second tap changes nothing', () => {
+    const h = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
+    const fp = h.surface.silent().fingerprint;
+    expect(h.surface.apply(B, 'retire', fp).body).toMatchObject({ ok: true, applied: 'retire' });
+    expect([...h.retired]).toEqual([B]);
+    expect(h.surface.apply(B, 'retire', 'any0000000000000').body).toEqual({ ok: true, already: true });
+    expect(h.surface.silent().rows).toEqual([]);
+  });
+
+  it('a save that fails reports it and changes nothing', () => {
+    const h = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
+    h.store.confirm = () => { throw new Error('disk full'); };
+    const r = h.surface.apply(B, 'gone-for-good', h.surface.silent().fingerprint);
+    expect(r.status).toBe(500);
+    expect(r.body.error).toBe('apply-failed');
+    expect(h.invalidated()).toBe(0);
+  });
+
+  it('says when some computer\'s records could not be read, and then refuses to retire (it cannot be undone)', () => {
+    const h = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]), evidenceComplete: false });
+    const v = h.surface.silent();
+    expect(v.evidenceComplete).toBe(false);
+    expect(h.surface.precheck(B, 'retire', v.fingerprint)?.body.error).toBe('evidence-incomplete');
+    expect(h.surface.apply(B, 'retire', v.fingerprint).status).toBe(409);
+    expect([...h.retired]).toEqual([]);
+    expect(h.surface.precheck(B, 'gone-for-good', v.fingerprint)).toBeNull();
   });
 
   it('a dismissed item stays quiet until another machine goes silent or a raise is held back; a stale dismiss is refused', () => {
@@ -149,39 +168,25 @@ describe('PinOwnerSurface', () => {
     const contacts = new Map([[A, clock], [B, clock - 9 * DAY], [C, clock - 8 * DAY]]);
     const h = surfaceFor({ contacts });
     h.surface.dismiss(h.surface.silent().fingerprint);
-    contacts.set(C, clock); // C is heard from again
+    contacts.set(C, clock);
     expect(h.surface.silent().show).toBe(false);
-    clock += 8 * DAY; contacts.set(A, clock); contacts.set(B, clock - 17 * DAY); // C silent again, 8 days later
+    clock += 8 * DAY; contacts.set(A, clock); contacts.set(B, clock - 17 * DAY);
     expect(h.surface.silent()).toMatchObject({ show: true });
   });
 
-  it('a confirmation that cannot be saved reports failure (the phone then says to ask again)', () => {
-    const h = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
-    h.approvals.record({ purpose: GONE_FOR_GOOD_PURPOSE, actionKey: B });
-    h.store.confirm = () => { throw new Error('disk full'); };
-    expect(h.surface.onApproved(GONE_FOR_GOOD_PURPOSE, B)).toBe(false);
-  });
-
   it('a hold that starts after the dismissal raises it again', () => {
-    const contacts = new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]);
-    let waiting = false;
-    const store = new GoneForGoodStore(dir, () => clock);
-    const surface = new PinOwnerSurface({
-      stateDir: dir, store, enabled: () => true, self: () => A,
-      members: () => [A, B, C].map((m) => ({ machineId: m, name: m, lastSeen: 0, pairedAt: 0 })),
-      contacts: () => contacts, raiseWaiting: () => waiting,
-      pending: new PendingApprovalRegistry(), approvals: new OwnerApprovedActionStore(), machineName: () => 'x', invalidate: () => {}, now: () => clock,
-    });
-    surface.dismiss(surface.silent().fingerprint);
-    expect(surface.silent().show).toBe(false);
-    waiting = true;
-    expect(surface.silent()).toMatchObject({ show: true, heldBack: true });
+    const h = surfaceFor({ contacts: new Map([[A, clock], [B, clock - 9 * DAY], [C, clock]]) });
+    h.surface.dismiss(h.surface.silent().fingerprint);
+    expect(h.surface.silent().show).toBe(false);
+    h.setWaiting(true);
+    expect(h.surface.silent()).toMatchObject({ show: true, heldBack: true });
   });
 
-  it('switched off: nothing listed and nothing requested', () => {
+  it('switched off: nothing listed and every choice refused', () => {
     const h = surfaceFor({ contacts: new Map([[B, clock - 9 * DAY]]), enabled: false });
     expect(h.surface.silent()).toMatchObject({ enabled: false, show: false, rows: [] });
-    expect(h.surface.requestGoneForGood(B)).toEqual({ ok: false, reason: 'off' });
+    expect(h.surface.precheck(B, 'retire', 'x')?.status).toBe(503);
+    expect(h.surface.apply(B, 'gone-for-good', 'x').status).toBe(503);
   });
 });
 
@@ -216,27 +221,17 @@ describe('the signed report covers the part 3 fields', () => {
   });
 });
 
-describe('phone owner-approval routes: per-purpose switch', () => {
-  const appWith = (purposeOn: boolean) => {
-    const app = express();
-    app.use(express.json());
-    const router = express.Router();
-    mountOwnerPresenceRoutes(router, {
-      pairing: () => null, config: () => ({ security: {} }) as never, phoneSessions: new PhoneDesktopSessionStore(),
-      approvalStore: new OwnerApprovedActionStore(), pendingRegistry: new PendingApprovalRegistry(), machineName: () => 'Studio',
-      purposeOn: (p) => purposeOn && p === 'pin-gone-for-good',
-    });
-    app.use(router);
-    return app;
-  };
-  it('with the general switch off, "gone for good" passes the switch (and meets the phone check) while other purposes stay off', async () => {
-    const on = appWith(true);
-    const pin = await request(on).post('/mobile/action-approval/challenge').send({ purpose: 'pin-gone-for-good', actionKey: B });
-    expect(pin.body.error).not.toBe('owner-approved-actions-off');
-    const del = await request(on).post('/mobile/action-approval/challenge').send({ purpose: 'thread-delete', actionKey: 't1' });
-    expect(del.status).toBe(503);
-    expect(del.body.error).toBe('owner-approved-actions-off');
-    const off = await request(appWith(false)).post('/mobile/action-approval/challenge').send({ purpose: 'pin-gone-for-good', actionKey: B });
-    expect(off.body.error).toBe('owner-approved-actions-off');
+describe('the phone action', () => {
+  it('names the computer, the choice and the list version on the signed line, and refuses anything else', () => {
+    const ok = buildAction('silent-machine', B, { choice: 'retire', fingerprint: '0123456789abcdef' });
+    expect(ok.ok && actionLine(ok.action)).toBe(`silent-machine ${B} retire 0123456789abcdef`);
+    expect(buildAction('silent-machine', 'not-an-id', { choice: 'retire', fingerprint: '0123456789abcdef' })).toEqual({ ok: false, error: 'bad-target' });
+    expect(buildAction('silent-machine', B, { choice: 'delete', fingerprint: '0123456789abcdef' })).toEqual({ ok: false, error: 'bad-choice' });
+    expect(buildAction('silent-machine', B, { choice: 'gone-for-good', fingerprint: 'nope' })).toEqual({ ok: false, error: 'bad-fingerprint' });
+  });
+
+  it('is reachable only as an owner-phone signed request', () => {
+    const rule = DEVICE_ALLOWLIST.find((r) => r.method === 'POST' && r.re.test('/mobile/pin-budget/silent-machine'));
+    expect(rule).toMatchObject({ ownerOnly: true });
   });
 });

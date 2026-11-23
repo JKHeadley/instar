@@ -36954,16 +36954,17 @@ export async function startServer(options: StartOptions): Promise<void> {
         enabled: pinEnabled,
         self: selfId,
         members: () => registryEntries().filter(([, e]) => e.status !== 'revoked' && !e.revokedAt).map(([id, e]) => ({ machineId: id, name: verifiedEntityName(id, e.nickname ?? e.name) ?? '', lastSeen: ms(e.lastSeen), pairedAt: ms(e.pairedAt) })),
+        isRetired: (id) => registryEntries().some(([mid, e]) => mid === id && (e.status === 'revoked' || !!e.revokedAt)),
         contacts: () => poller.contacts().map,
+        evidenceComplete: () => poller.contacts().complete,
         raiseWaiting: () => {
           const st = share.state(); const self = selfId();
           if (!st.enabled || !self) return false;
           const members = registryEntries().filter(([, e]) => e.status !== 'revoked' && !e.revokedAt).map(([id]) => id);
           return st.share < (canonicalShares(members)[self] ?? 0);
         },
-        pending: { register: (r) => ownerApprovedActionPending.register(r), remove: (p, k) => ownerApprovedActionPending.remove(p, k) },
-        approvals: { consume: (k) => ownerApprovedActionStore.consume(k) },
-        machineName: () => verifiedEntityName(selfId() ?? 'self', os.hostname().replace(/\.local$/i, '')) ?? 'this computer',
+        // The same registry revocation as `instar machines remove`, by this machine, with the owner's reason.
+        retire: (id) => { const self = selfId(); if (!self) throw new Error('no-identity'); pinIdMgr.revokeMachine(id, self, 'Retired by the owner from the phone'); },
         invalidate: () => share.invalidate(),
       });
       // §5 backstop: 20 wrong guesses across all machines within an hour raises the existing alert, from one machine only.

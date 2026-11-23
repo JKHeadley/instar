@@ -21,8 +21,6 @@ import { PinShareProvider, registryMembership } from '../../src/core/PinShare.js
 import { PinBudgetPoller, stateSigningText } from '../../src/core/pinBudgetPoller.js';
 import { GoneForGoodStore } from '../../src/core/PinGoneForGood.js';
 import { PinOwnerSurface } from '../../src/core/PinOwnerSurface.js';
-import { PendingApprovalRegistry } from '../../src/server/PendingApprovalRegistry.js';
-import { OwnerApprovedActionStore } from '../../src/server/OwnerApprovedActionStore.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
@@ -45,7 +43,7 @@ function env(name: string) {
   return { stateDir, mgr, identity, machineId, signingKeys, config };
 }
 
-type PartThreeHandles = { gone: GoneForGoodStore; surface: PinOwnerSurface; pending: PendingApprovalRegistry; approvals: OwnerApprovedActionStore };
+type PartThreeHandles = { gone: GoneForGoodStore; surface: PinOwnerSurface };
 
 describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
   let a: ReturnType<typeof env>;
@@ -97,14 +95,13 @@ describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
       },
       pinBudgetHandDown: (gift: { transferId: string; amount: number; baseSeq: number }, sender: string) => share.receiveHandDown(sender, gift),
     };
-    const pending = new PendingApprovalRegistry();
-    const approvals = new OwnerApprovedActionStore();
     const surface = new PinOwnerSurface({
       stateDir: self.stateDir, store: gone, enabled: () => true, self: () => self.machineId,
       members: () => Object.keys(self.mgr.loadRegistry().machines).map((m) => ({ machineId: m, name: m, lastSeen: 0, pairedAt: 0 })),
-      contacts: () => poller.contacts().map, raiseWaiting: () => false, pending, approvals, machineName: () => self.identity.name, invalidate: () => share.invalidate(),
+      isRetired: () => false, contacts: () => poller.contacts().map, evidenceComplete: () => poller.contacts().complete,
+      raiseWaiting: () => false, retire: () => { throw new Error('not in this test'); }, invalidate: () => share.invalidate(),
     });
-    return { share, poller: () => poller, hooks, gone, surface, pending, approvals };
+    return { share, poller: () => poller, hooks, gone, surface };
   };
 
   beforeAll(async () => {
@@ -153,20 +150,20 @@ describe('SEC-170 part 2 — PIN-share agreement over real signed HTTP', () => {
 
   it('part 3: a "gone for good" confirmation saved on one machine reaches the other in its signed report, with the hourly failure count', async () => {
     const lost = 'm_' + 'e'.repeat(32);
-    // Saved on A only after the owner's phone approval. On a real server the phone can get a challenge only for a
-    // pending request, which only a listed (silent) machine gets; here the approval store is written directly.
-    wiredA.approvals.record({ purpose: 'pin-gone-for-good', actionKey: lost });
-    expect(wiredA.surface.onApproved('pin-gone-for-good', lost)).toBe(true);
+    // On a real server this is saved only by the owner's Face ID tap (unit-tested); here the store is written directly.
+    wiredA.gone.confirm(lost, a.machineId);
     expect(Object.keys(wiredA.gone.read())).toEqual([lost]);
     await pollB.round({ force: true });
     expect(pollB.reports().get(a.machineId)).toMatchObject({ failuresLastHour: 3, goneForGood: [{ machineId: lost, approvedOn: a.machineId }] });
     expect(wiredB.gone.read()[lost]).toMatchObject({ source: 'relayed', approvedOn: a.machineId });
   });
 
-  it('part 3: a live peer is not on the silent list, so "gone for good" is refused for it', () => {
-    expect(wiredA.surface.silent().rows).toEqual([]);
-    expect(wiredA.surface.requestGoneForGood(b.machineId)).toEqual({ ok: false, reason: 'not-silent' });
-    expect(wiredA.pending.list()).toEqual([]);
+  it('part 3: a live peer is not on the silent list, so neither choice can act on it', () => {
+    const view = wiredA.surface.silent();
+    expect(view.rows).toEqual([]);
+    expect(view.evidenceComplete).toBe(true);
+    expect(wiredA.surface.precheck(b.machineId, 'gone-for-good', view.fingerprint)?.body.error).toBe('not-silent');
+    expect(wiredA.surface.precheck(b.machineId, 'retire', view.fingerprint)?.body.error).toBe('not-silent');
   });
 
   it('a hand-down to a machine that did not ask for one is refused', async () => {
