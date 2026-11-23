@@ -321,8 +321,13 @@ describe('batch confirmation through native Telegram polling and production comp
     const reminder = await h.proposeBatch(operation.body); expect(reminder.status).toBe(200);
     expect(h.store.resolve(TARGET)).toBeNull(); expect(h.store.resolve(SECOND_TARGET)).toBeNull();
     const current = h.slots.proposals.get(String(SOURCE), reminder.body.requestId)!;
-    expect(current.receipts).toHaveLength(1); expect(current.receipts[0].messageId).not.toBe(receipt);
-    expect((await h.confirm(OWNER, reminder.body.requestId, 'yes', 1000, current.receipts[0].messageId)).written).toBe(true);
+    expect(reminder.body.requestId).toBe(proposed.body.requestId);
+    expect(reminder.body.expiresAt).toBe(proposed.body.expiresAt);
+    expect(current.receipts).toHaveLength(2);
+    expect(current.receipts[0].messageId).toBe(receipt);
+    const reminderReceipt = current.receipts.at(-1)!.messageId;
+    expect(reminderReceipt).not.toBe(receipt);
+    expect((await h.confirm(OWNER, reminder.body.requestId, 'yes', 1000, reminderReceipt)).written).toBe(true);
     expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.store.resolve(SECOND_TARGET)?.framework).toBe('claude-code');
   });
 
