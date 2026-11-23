@@ -5,6 +5,34 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "history-acquisition-local",
+      "description": "Owner-scoped export request identities, notification delivery state, writer lease and privately staged export files on the machine that requested the export.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["history-acquisition/*", "history-acquisition-archives/*/*", "import-preview-staging/*.zip"],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution", "boundedByResolution": true,
+        "note": "One active request per personal account and machine. Unfinished downloads and review copies expire. Confirmed, cancelled and expired jobs retain request identities to prevent replay. Login secrets and export URLs never enter the job database."
+      }
+    },
+    {
+      "category": "imported-history-local",
+      "description": "Owner-approved imported conversations, projects, source manifest and cross-process writer lease.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["imported-history/*"],
+      "grandfathered": false,
+      "retention": {
+        "class": "C", "access": "streamed", "complianceHold": false,
+        "note": "Personal history chosen by the owner is kept locally. A download or review deadline never prunes a completed import."
+      }
+    },
+    {
       "category": "attribution-ledger",
       "description": "Append-only history of claims credited to a person: wording, verdict, source ref and lineage. Rotated into kept gzip archives, never deleted. One writer per machine; a trace merges every machine's rows on read.",
       "scope": "machine-local",

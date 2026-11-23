@@ -31,11 +31,67 @@ export interface ImportPreview {
   summary: string;
 }
 
-/** Which app the export came from, from its files. */
+export interface ExpectedExport { provider: ExportSource; expectedEmail: string }
+
+const chatgptMarkers = ['chat.html', 'message_feedback.json', 'shared_conversations.json', 'user.json'];
+const claudeMarkers = ['users.json', 'projects.json', 'memories.json'];
+
+/** Match one export layout. Never join conversations and identity records across export roots. */
 export function detectSource(entries: ZipEntry[]): ExportSource {
-  if (findEntry(entries, 'chat.html') || findEntry(entries, 'message_feedback.json') || findEntry(entries, 'shared_conversations.json')) return 'chatgpt';
-  if (findEntry(entries, 'users.json') || findEntry(entries, 'projects.json') || findEntry(entries, 'memories.json')) return 'claude';
-  throw new ZipRefused("This doesn't look like a Claude or ChatGPT export. It has no conversations file the importer knows.");
+  const chatgpt = chatgptMarkers.some(name => findEntry(entries, name));
+  const claude = claudeMarkers.some(name => findEntry(entries, name));
+  if (chatgpt && claude) throw new ZipRefused('This zip contains files from both providers. Choose one export.');
+  if (!chatgpt && !claude) throw new ZipRefused("This doesn't look like a Claude or ChatGPT export.");
+  const names = new Set(['conversations.json', ...(chatgpt ? chatgptMarkers : claudeMarkers)]);
+  const roots = new Set<string>();
+  for (const entry of entries) {
+    const parts = entry.name.split('/');
+    if (parts.length <= 2 && names.has(parts[parts.length - 1]!)) roots.add(parts.length === 2 ? parts[0]! : '');
+  }
+  if (roots.size > 1) throw new ZipRefused('This zip contains more than one export folder. Choose one export.');
+  return chatgpt ? 'chatgpt' : 'claude';
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Shape corroborates the marker before any history writes, including rows over the import count cap. */
+function belongsTo(raw: unknown, from: ExportSource): boolean {
+  if (!record(raw)) return false;
+  const claude = Array.isArray(raw.chat_messages);
+  const chatgpt = record(raw.mapping);
+  if ((from === 'chatgpt' && claude) || (from === 'claude' && chatgpt)) {
+    throw new ZipRefused('The conversations do not all belong to the provider named by this export.');
+  }
+  const ids = from === 'claude' ? [raw.uuid, raw.id] : [raw.conversation_id, raw.id];
+  if (!ids.some(id => typeof id === 'string' && id.trim().length > 0)) return false;
+  if (from === 'claude') {
+    return Array.isArray(raw.chat_messages) && (raw.chat_messages.length === 0 ||
+      raw.chat_messages.some(m => record(m) && (m.sender === 'human' || m.sender === 'assistant')));
+  }
+  if (!record(raw.mapping)) return false;
+  const nodes = Object.values(raw.mapping);
+  return nodes.some(node => record(node) &&
+    ((node.message === null && 'parent' in node && Array.isArray(node.children)) ||
+     (record(node.message) && record(node.message.author) && typeof node.message.author.role === 'string')));
+}
+
+async function corroborateAccount(zipPath: string, entries: ZipEntry[], from: ExportSource, expected?: ExpectedExport): Promise<boolean> {
+  if (expected && expected.provider !== from) throw new ZipRefused('This export belongs to a different provider.');
+  const identity = findEntry(entries, from === 'claude' ? 'users.json' : 'user.json');
+  if (!identity) return false;
+  const raw = await readWholeJson(zipPath, identity, 1024 * 1024);
+  const users = from === 'claude' && Array.isArray(raw) ? raw : from === 'chatgpt' && record(raw) ? [raw] : undefined;
+  if (users?.length === 0) return false;
+  const fields = users?.length === 1 && record(users[0]) ? [users[0].email, users[0].email_address] : [];
+  const addresses = new Set(fields.filter((v): v is string => typeof v === 'string').map(v => v.trim().toLowerCase()));
+  const email = [...addresses][0];
+  const valid = addresses.size === 1 && !!email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  if (expected && (!valid || email !== expected.expectedEmail.trim().toLowerCase())) {
+    throw new ZipRefused('The export account could not be matched to the selected personal account.');
+  }
+  return valid;
 }
 
 function parserFor(from: ExportSource): (raw: unknown) => ImportedConversation | null {
@@ -51,7 +107,8 @@ async function readWholeJson(zipPath: string, e: ZipEntry, maxBytes: number): Pr
 
 interface Walk {
   from: ExportSource;
-  onConversation: (c: ImportedConversation) => void;
+  accountCorroborated: boolean;
+  onConversation?: (c: ImportedConversation) => void;
   onSkipped: (why: 'tooBig' | 'unreadable' | 'overLimit') => void;
 }
 
@@ -63,11 +120,20 @@ async function walkConversations(zipPath: string, entries: ZipEntry[], w: Walk):
   try {
     for await (const item of jsonArrayItems(openEntry(zipPath, e))) {
       if (item.kind === 'skipped') { w.onSkipped(item.reason === 'too-big' ? 'tooBig' : 'unreadable'); continue; }
+      if (!belongsTo(item.value, w.from)) { w.onSkipped('unreadable'); continue; }
       if (n >= MAX_CONVERSATIONS) { w.onSkipped('overLimit'); continue; }
-      const conv = parse(item.value);
-      if (!conv) { w.onSkipped('unreadable'); continue; }
       n++;
-      w.onConversation(conv);
+      if (w.onConversation) {
+        const conv = parse(item.value);
+        if (conv) w.onConversation(conv);
+        else w.onSkipped('unreadable');
+      }
+    }
+    if (n === 0) {
+      const empty = w.accountCorroborated && await readWholeJson(zipPath, e, 1024 * 1024);
+      if (!Array.isArray(empty) || empty.length !== 0) {
+        throw new ZipRefused('This export has no recognizable conversations or verifiable empty account history.');
+      }
     }
   } catch (err) {
     if (err instanceof ZipRefused) throw err;
@@ -96,7 +162,7 @@ function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 }
 
-export async function previewExport(zipPath: string): Promise<ImportPreview> {
+export async function previewExport(zipPath: string, expected?: ExpectedExport): Promise<ImportPreview> {
   const entries = listEntries(zipPath);
   const from = detectSource(entries);
   const p: ImportPreview = {
@@ -104,7 +170,7 @@ export async function previewExport(zipPath: string): Promise<ImportPreview> {
     skipped: { tooBig: 0, unreadable: 0, overLimit: 0 }, projectFiles: [], facts: [], summary: '',
   };
   await walkConversations(zipPath, entries, {
-    from,
+    from, accountCorroborated: await corroborateAccount(zipPath, entries, from, expected),
     onConversation: (c) => {
       p.chats++;
       p.messages += new Set(c.messages.map((m) => m.key.replace(/#\d+$/, ''))).size;
@@ -136,23 +202,30 @@ export async function previewExport(zipPath: string): Promise<ImportPreview> {
 export interface ApplyResult { chatsAdded: number; chatsUpdated: number; messagesAdded: number; projects: number }
 
 /** Writes the export into the imported store. Call only after the person confirmed the preview. */
-export async function applyExport(zipPath: string, store: ImportedHistoryStore): Promise<ApplyResult> {
+export async function applyExport(zipPath: string, store: ImportedHistoryStore, beforeWrite?: () => void, expected?: ExpectedExport): Promise<ApplyResult> {
   const entries = listEntries(zipPath);
   const from = detectSource(entries);
-  const r: ApplyResult = { chatsAdded: 0, chatsUpdated: 0, messagesAdded: 0, projects: 0 };
-  let seen = 0;
-  await walkConversations(zipPath, entries, {
-    from,
-    onConversation: (c) => {
-      const { added, isNew } = store.addConversation(c);
-      r.messagesAdded += added;
-      if (isNew) r.chatsAdded++;
-      else if (added) r.chatsUpdated++;
-      if (++seen % FLUSH_EVERY === 0) store.flush();
-    },
-    onSkipped: () => {},
-  }).finally(() => store.flush());
-  for (const p of await readProjects(zipPath, entries, from)) { store.addProject(p); r.projects++; }
-  store.flush();
-  return r;
+  const accountCorroborated = await corroborateAccount(zipPath, entries, from, expected);
+  // Inspect the complete immutable snapshot before a late mixed-provider row can leave a partial import.
+  await walkConversations(zipPath, entries, { from, accountCorroborated, onSkipped: () => {} });
+  const projects = await readProjects(zipPath, entries, from);
+  return store.withWriter(async () => {
+    beforeWrite?.();
+    const r: ApplyResult = { chatsAdded: 0, chatsUpdated: 0, messagesAdded: 0, projects: 0 };
+    let seen = 0;
+    await walkConversations(zipPath, entries, {
+      from, accountCorroborated,
+      onConversation: (c) => {
+        const { added, isNew } = store.addConversation(c);
+        r.messagesAdded += added;
+        if (isNew) r.chatsAdded++;
+        else if (added) r.chatsUpdated++;
+        if (++seen % FLUSH_EVERY === 0) store.flush();
+      },
+      onSkipped: () => {},
+    }).finally(() => store.flush());
+    for (const p of projects) { store.addProject(p); r.projects++; }
+    store.flush();
+    return r;
+  });
 }

@@ -1,4 +1,5 @@
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
+import { PRIVATE_IMPORT_DIRECTORIES } from './keyMaterialPaths.js';
 /**
  * Git State Manager — optional git tracking of agent state files.
  *
@@ -51,6 +52,9 @@ remediation/llm-raw-*.jsonl
 
 export const DEFAULT_GITIGNORE = `# Telegram origin custody -- machine-local
 ${ORIGIN_LOCAL_GITIGNORE.join('\n')}
+
+# Personal history and unreviewed export files belong to this machine
+${PRIVATE_IMPORT_DIRECTORIES.join('\n')}
 
 # Runtime state -- NOT tracked
 state/
@@ -142,24 +146,25 @@ export class GitStateManager {
 
     // Write .gitignore before git init
     const gitignorePath = path.join(this.stateDir, '.gitignore');
-    if (!fs.existsSync(gitignorePath)) {
-      fs.writeFileSync(gitignorePath, DEFAULT_GITIGNORE);
-    } else {
-      // An existing .gitignore (one init path writes project-relative lines
-      // here) must still keep imported history out of the first `git add -A`.
-      const existing = fs.readFileSync(gitignorePath, 'utf-8');
-      const listed = existing.split('\n').some((line) => line.trim() === IMPORTED_HISTORY_STATE_PATH);
-      if (!listed) {
-        fs.writeFileSync(gitignorePath, existing + (existing.endsWith('\n') || existing.length === 0 ? '' : '\n') + IMPORTED_HISTORY_STATE_PATH + '\n');
-      }
-    }
+    const ignoreStat = fs.lstatSync(gitignorePath, { throwIfNoEntry: false });
+    const sharedIgnore = ignoreStat && (!ignoreStat.isFile() || ignoreStat.nlink !== 1);
+    if (!ignoreStat) fs.writeFileSync(gitignorePath, DEFAULT_GITIGNORE, { flag: 'wx' });
+    else if (!sharedIgnore) this.addPrivateIgnoreRules(gitignorePath);
 
-    // git init
     this.git('init', '-b', this.config.branch);
+    // Preserve the owner's symlink or shared file. These rules belong only to the new local repository.
+    if (sharedIgnore) this.addPrivateIgnoreRules(path.join(this.stateDir, '.git', 'info', 'exclude'));
 
     // Initial commit
     this.git('add', '-A');
     this.git('commit', '-m', '[instar] init: initialized git state tracking');
+  }
+
+  private addPrivateIgnoreRules(file: string): void {
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const rules = new Set(existing.split(/\r?\n/));
+    const missing = PRIVATE_IMPORT_DIRECTORIES.filter(rule => !rules.has(rule));
+    if (missing.length) fs.appendFileSync(file, '\n' + missing.join('\n') + '\n');
   }
 
   /**
