@@ -47,11 +47,19 @@ describe('lease takeover wiring in server.ts', () => {
     expect(server.slice(server.indexOf('const survivorMayHold = '), server.indexOf('const survivorMayHold = ') + 300)).toContain('!acquireHeldBack()');
     expect(server).toMatch(/new LeaseCoordinator\(\{[\s\S]{0,4000}acquireHeldBack,/);
   });
-  it('survivorMayHold needs a non-revoked peer and no named preferred machine', () => {
+  it('survivorMayHold needs a non-revoked peer and no effective preferred machine', () => {
     const start = server.indexOf('const survivorMayHold = ');
-    const block = server.slice(start, start + 300);
-    expect(block).toContain('preferredAwakeMachineId');
-    expect(block).toContain('livePeerIds()');
-    expect(server.slice(server.indexOf('const livePeerIds = '), server.indexOf('const survivorMayHold = '))).toContain('!entry.revokedAt');
+    const preferredStart = server.indexOf('const effectivePreferred = ');
+    expect(preferredStart).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(preferredStart);
+    const preferred = server.slice(preferredStart, start);
+    // A configured preference remains authoritative unless its machine is below the build fence.
+    expect(preferred).toContain('config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null');
+    expect(preferred).toContain('return p && ownerRecordWiring.ownerRecordIsBelow(p) ? null : p;');
+    const block = server.slice(start, server.indexOf('_noLastingLinkYet = ', start));
+    expect(block).toContain('!effectivePreferred()');
+    expect(block).toContain('livePeerIds().length > 0');
+    expect(block).toContain('!acquireHeldBack()');
+    expect(server.slice(server.indexOf('const livePeerIds = '), preferredStart)).toContain('!entry.revokedAt');
   });
 });
