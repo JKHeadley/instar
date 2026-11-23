@@ -59,6 +59,7 @@ const state = {
   pendingBatch: null,
   readySent: false,
   reopenTried: false,
+  computerEndsAt: null, // a joined computer's end, from the session answer (member-browser-any-computer §3.1 step 8)
   sheet: null,
   compareOpen: false,
   appOps: null, // what the app said it can do (document-decisions §3.3); null until it says
@@ -173,7 +174,9 @@ const docsRead = (machineId) => docsTx('readonly', (s, set) => { const r = s.get
 const docsWrite = (rec) => docsTx('readwrite', (s) => { s.put(rec); });
 
 const keyOf = (rec) => (rec ? ((rec.keyPair && rec.keyPair.privateKey) || rec.privateKey || null) : null);
-const activeFor = (recs, host) => (recs || []).find((r) => r && r.deviceId && String(r.host || '').toLowerCase() === host && r.status === 'active' && keyOf(r));
+// The newest active record for this address: a key linked or joined later replaces an older one that may have been removed.
+const activeFor = (recs, host) => (recs || []).filter((r) => r && r.deviceId && String(r.host || '').toLowerCase() === host && r.status === 'active' && keyOf(r))
+  .sort((a, b) => String(b.linkedAt || b.createdAt || '').localeCompare(String(a.linkedAt || a.createdAt || '')))[0];
 
 /**
  * The key this page signs with: an active console record for this address first, else an active
@@ -228,10 +231,56 @@ async function browserOpen() {
     }
     break;
   }
-  if (r.ok) return true;
+  if (r.ok) { state.computerEndsAt = (r.data && r.data.computerEndsAt) || null; return true; }
+  // A refused key stays stored (it may be refused for a passing reason, e.g. the browser switch off);
+  // a key linked or joined afterwards takes its machine's slot and is the newest, so it is the one used.
   if (r.status === 401) { state.device = null; showNoKey(); return false; }
   showMessage(M.errorWords(r.status, r.data, errCtx()), { tone: 'bad' });
   return false;
+}
+
+// ── a member's own computer: its end date and Forget (member-browser-any-computer §3.1, §3.3.5) ──
+
+/** Only on a computer using a documents key (not the owner's console key, not in the app). */
+function renderComputerFooter() {
+  const dev = state.device;
+  if (IN_APP || !dev || dev.source !== 'docs' || !dev.rec || !dev.rec.deviceId) return null;
+  const items = [];
+  const line = M.computerEndLine(state.computerEndsAt, dev.rec.ownerName);
+  if (line) items.push(el('p', { cls: 'note', text: line }));
+  else if (state.computerEndsAt) {
+    const day = new Date(state.computerEndsAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+    items.push(el('p', { cls: 'scope', text: `This computer can open documents until ${day}.` }));
+  }
+  items.push(button('Forget this computer', () => { void forgetThisComputer(); }, 'link-btn'));
+  return el('footer', { cls: 'computer-footer' }, items);
+}
+
+async function forgetThisComputer() {
+  const dev = state.device;
+  if (!dev || !window.confirm('Forget this computer? It will stop opening documents, and its unsent comments here are cleared.')) return;
+  const timeMs = String(Date.now());
+  let sig;
+  try { sig = await dev.bd.signText(dev.privateKey, M.joinForgetString({ deviceId: dev.rec.deviceId, host: location.host, timeMs })); } catch { notice('This computer could not be forgotten. Try again.'); return; }
+  const r = await fetchJson('/docs/_link/forget-self', { method: 'POST', headers: { 'X-Instar-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: dev.rec.deviceId, timeMs, sig }) });
+  if (!r.ok && r.status !== 404) { notice(M.errorWords(r.status, r.data, errCtx())); return; }
+  // Clear this computer's own state: the key, and every unsent comment draft (a shared computer's next person starts clean).
+  try { await docsTx('readwrite', (st) => { st.delete(String(dev.rec.machineId)); }); } catch { /* storage unavailable */ }
+  try { for (let i = window.localStorage.length - 1; i >= 0; i--) { const k = window.localStorage.key(i); if (k && k.startsWith(M.DRAFT_PREFIX)) window.localStorage.removeItem(k); } } catch { /* storage unavailable */ }
+  state.device = null;
+  showMessage('This computer was forgotten. It can no longer open documents.', { tone: 'info' });
+}
+
+/** On a computer with no key for this address: the agent's other addresses, display only (§3.6). */
+async function otherAddresses() {
+  const r = await fetchJson('/docs/_join/addresses', {});
+  const here = location.origin.toLowerCase();
+  const list = r.ok && r.data && Array.isArray(r.data.addresses) ? r.data.addresses.filter((a) => typeof a === 'string' && a.toLowerCase() !== here) : [];
+  if (!list.length) return null;
+  return el('p', { cls: 'scope' }, [
+    'Set up this computer on another of this agent\'s addresses? Open the document there: ',
+    ...list.flatMap((a, i) => [i ? ' · ' : '', el('a', { text: new URL(a).host, attrs: { href: `${a}/docs/${DOC_ID}`, rel: 'noopener' } })]),
+  ]);
 }
 
 // ── linking this computer to the member's phone (§3.6a) ────────────────────────────────────────
@@ -353,16 +402,37 @@ async function startLink(run) {
   let payload;
   try { payload = M.linkPayload({ browserPublicKey: key.publicKey, nonce: data.nonce, machineId: data.machineId, host: data.host || host }); } catch { linkFailed('Something went wrong on the agent. Try again in a moment.'); return; }
   const { qrSvg } = await import('./qr-code.js');
-  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 4, quiet: 4, label: 'Code to scan with the Instar app' })]);
-  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: 'Waiting for your phone…' });
+  const W = M.LINK_WORDS;
+  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 6, quiet: 4, label: W.qrLabel })]);
+  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: W.waiting });
+  // Steps on the left, the code to scan on the right (stacked on a narrow window); each button name is shown as the app says it.
+  const steps = el('ol', { cls: 'link-steps' }, W.steps.map((st, i) => el('li', { attrs: { 'aria-label': `Step ${i + 1}: ${M.linkStepText(st)}` } }, [
+    el('span', { cls: 'link-step-n', text: String(i + 1), attrs: { 'aria-hidden': 'true' } }),
+    el('span', { cls: 'link-step-text' }, st.button ? [st.text, el('strong', { cls: 'link-btn-name', text: st.button }), st.after || ''] : [st.text]),
+  ])));
   linkView([
-    el('h1', { cls: 'link-title', text: 'Link this computer to your phone' }),
-    el('p', { text: 'Open the Instar app on your phone, go to People → Link a computer, scan this code, and check the app shows the same code:' }),
-    el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `Check code: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
-    code,
-    status,
-    el('p', { cls: 'scope', text: LINK_SCOPE_WORDS }),
+    el('header', { cls: 'link-head' }, [
+      el('h1', { cls: 'link-title', text: W.title }),
+      el('p', { cls: 'link-lead', text: W.lead }),
+      el('p', { cls: 'link-limits', text: W.limits }),
+    ]),
+    el('div', { cls: 'link-grid' }, [
+      el('section', { cls: 'link-card link-how', attrs: { 'aria-label': W.stepsTitle } }, [
+        el('h2', { cls: 'link-eyebrow', text: W.stepsTitle }),
+        steps,
+        el('p', { cls: 'link-fallback', text: W.fallback }),
+      ]),
+      el('section', { cls: 'link-card link-scan', attrs: { 'aria-label': 'Scan this code' } }, [
+        code,
+        el('p', { cls: 'link-eyebrow', text: W.codeLabel }),
+        el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `${W.codeLabel}: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
+        el('p', { cls: 'link-hint', text: W.codeHint }),
+        el('div', { cls: 'link-wait' }, [el('span', { cls: 'link-pulse', attrs: { 'aria-hidden': 'true' } }), status]),
+      ]),
+    ]),
   ]);
+  // A computer set up on another of the agent's addresses has its key there (§3.6): a way back.
+  otherAddresses().then((p) => { if (p && run === linkRun) main.querySelector('.link-computer')?.appendChild(p); }).catch(() => { /* display only */ });
   pollLink(bd, rec, deadline, run, status, code);
 }
 
@@ -501,6 +571,8 @@ function render() {
     children.push(el('p', { cls: 'hint', text: isWide() ? 'Select text to comment. Press C with a selection to open the comment box.' : 'Select text to comment.' }));
   }
   children.push(el('div', { cls: 'layout' }, [article, threads]));
+  const computer = renderComputerFooter();
+  if (computer) children.push(computer);
   if (!IN_APP) children.push(renderBar(page));
   main.replaceChildren(...children);
   main.classList.toggle('in-app', IN_APP);

@@ -1407,6 +1407,27 @@ describe('review gate and merge', () => {
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-refused:checks-timeout', mergeRetries: 1 });
   });
 
+  it('a local-floor verify-pending answer is a wait on the same cadence and deadline, never a refusal', async () => {
+    // safe-merge under the `local` floor answers `refused:verify-pending` while Local Verify
+    // has no record for the head yet (queued, not failed). Since ci.yml stopped running the
+    // heavy jobs on pull requests (2026-11-21) this is the executor's normal first answer.
+    h = await createExecHarness();
+    const { initiativeId } = await toPrOpen();
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    h.safeMergeExit = { code: 1, stdout: 'safe-merge-result: {"result":"refused:verify-pending","pr":100,"floor":"local","problems":["no local-verify record yet for head"]}' };
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-deferred:verify-pending', mergeRetries: 0 });
+    expect(h.disarmed).not.toContain(100);
+    expect(h.merges).toHaveLength(1);
+    h.now.value += 5 * 60_000 + 1;
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)?.mergeRetries).toBe(0);
+    h.now.value += 3 * 60 * 60_000 + 1;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-refused:checks-timeout', mergeRetries: 1 });
+  });
+
   it('a merge-armed PR past its 24 h deadline is disarmed and refused (deadline)', async () => {
     h = await createExecHarness();
     const { initiativeId } = await toPrOpen();

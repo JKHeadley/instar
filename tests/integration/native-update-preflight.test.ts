@@ -18,11 +18,10 @@ describe('native update candidate with production CLI', () => {
     fs.mkdirSync(active, { recursive: true });
     fs.writeFileSync(path.join(active, 'package.json'), JSON.stringify({ version: '0.0.1' }));
     vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '0.0.1', latestVersion: version, updateAvailable: true, checkedAt: new Date().toISOString() });
-    // Only npm is faked: the candidate's CLI and SQLite probes run through this helper too, and they
-    // are what this test proves.
-    const realExec = (checker as any).execAsync.bind(checker);
-    vi.spyOn(checker as any, 'execAsync').mockImplementation(async (cmd: string, args: string[], timeoutMs: number) => {
-      if (cmd !== 'npm') return realExec(cmd, args, timeoutMs);
+    // Only npm is faked, at the npm seam (npmExec runs npm under the runtime node, so the command
+    // is no longer a bare 'npm'): the candidate's CLI and SQLite probes run through the real exec
+    // helper, and they are what this test proves.
+    vi.spyOn(checker as any, 'npmExec').mockImplementation(async (args: string[]) => {
       if (args[0] === 'install') {
         const nodeModules = path.join(args[args.indexOf('--prefix') + 1], 'node_modules');
         fs.mkdirSync(nodeModules, { recursive: true });

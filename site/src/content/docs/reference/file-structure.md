@@ -73,3 +73,7 @@ Some state subdirectories (`evolution/`, `serendipity/`, `journal/`) are created
 - **Portability** -- Copy the directory to move the agent
 - **Simplicity** -- No database server to manage
 - **Git-friendly** -- State can be version-controlled and synced
+
+## Machine Operations
+
+For the responsibilities and limits of machine evidence, ownership, connections, worktrees, backups, and maintenance components, see the [Machine Operations Reference](/reference/machine-operations/). It distinguishes observation from authority and explains what must be verified before a recovery action.

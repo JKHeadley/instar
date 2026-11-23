@@ -37,6 +37,45 @@ describe('lane reporter — in-flight progress snapshot', () => {
     expect(p?.finishedFiles).toBe(1);
   });
 
+  it('the end of the process writes a last snapshot outside the throttle: nothing running, every started file finished', () => {
+    process.env.LOCAL_VERIFY_PROGRESS_FILE = out;
+    const prevErr = process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
+    delete process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
+    try {
+      const r = new Reporter();
+      r.onInit(ctx({
+        f1: { type: 'suite', filepath: '/run/tests/e2e/a.test.ts' },
+        f2: { type: 'suite', filepath: '/run/tests/e2e/b.test.ts' },
+      }));
+      r.onTaskUpdate([['f1', { state: 'run' }, {}], ['f2', { state: 'run' }, {}]]);
+      // Both finish inside the throttle window: the snapshot on disk still lists them as running.
+      r.onTaskUpdate([['f1', { state: 'pass' }, {}]]);
+      let p = readProgress(fs.readFileSync(out, 'utf8'), '/run', Date.now());
+      expect(p?.running).toHaveLength(2);
+      expect(p?.finishedFiles).toBe(0);
+      r.onFinished([], []);
+      p = readProgress(fs.readFileSync(out, 'utf8'), '/run', Date.now());
+      expect(p?.running).toEqual([]);
+      expect(p?.finishedFiles).toBe(2); // b never reported its own end; the process ending ends it
+    } finally {
+      if (prevErr === undefined) delete process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE; else process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = prevErr;
+    }
+  });
+
+  it('the end of the process writes no progress file without the env variable', () => {
+    delete process.env.LOCAL_VERIFY_PROGRESS_FILE;
+    const prevErr = process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
+    delete process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
+    try {
+      const r = new Reporter();
+      r.onInit(ctx({}));
+      expect(() => r.onFinished([], [])).not.toThrow();
+      expect(fs.existsSync(out)).toBe(false);
+    } finally {
+      if (prevErr === undefined) delete process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE; else process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = prevErr;
+    }
+  });
+
   it('writes nothing without the env variable, and never throws on unknown task ids', () => {
     delete process.env.LOCAL_VERIFY_PROGRESS_FILE;
     const r = new Reporter();

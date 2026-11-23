@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-21T18:58:18.880Z",
+  "slug": "account-choice-never-silent",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/install/accountChoice.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

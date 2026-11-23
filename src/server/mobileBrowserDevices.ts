@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { arrivedOverLocalTls, isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { normalizeRequestHost } from '../core/MobileOwnNames.js';
 import {
   BROWSER_NOTIFYING_STUCK_MS, isBrowserDevice, isStrictLowSDer, keyHashOf, parseDevicePublicKey,
@@ -95,7 +96,7 @@ export function isLoopbackHost(host: string | undefined | null): boolean {
  */
 export function loopbackBindingOk(d: Pick<DeviceRecord, 'client' | 'host'>, req: Pick<Request, 'headers' | 'socket'>): boolean {
   if (!isBrowserDevice(d) || !isLoopbackHost(d.host)) return false;
-  return isLoopbackPeer(req.socket.remoteAddress)
+  return mayBeLocalArrival(req) && isLoopbackPeer(req.socket.remoteAddress)
     && rawHost(req.headers.host) === d.host
     && !hasForwardingHeaders(req.headers as Record<string, unknown>);
 }
@@ -108,7 +109,7 @@ export function loopbackBindingOk(d: Pick<DeviceRecord, 'client' | 'host'>, req:
 export function boundSetupHost(req: Pick<Request, 'headers' | 'socket' | 'secure'>, svc: MobilePairingService): string | null {
   const port = svc.deps.config.port;
   const raw = rawHost(req.headers.host);
-  if (raw && isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>)
+  if (raw && mayBeLocalArrival(req) && isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>)
     && (raw === `localhost:${port}` || raw === `127.0.0.1:${port}`)) return raw;
   const h = normalizeRequestHost(req.headers.host);
   if (!h) return null;
@@ -143,6 +144,7 @@ const APPROVED_HOW: Record<string, string> = {
   'owner-phone': 'with Face ID on your phone',
   'dashboard-pin': 'with the dashboard PIN',
   'person-phone': 'by its owner\'s own phone',
+  'team-invite': 'from your team invite, with the code on your phone',
 };
 
 /**
@@ -546,7 +548,8 @@ export function mountBrowserDeviceRoutes(
           detail: 'A browser setup was declined in the last hour, so new browser setups are paused until then.' });
         return;
       }
-      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending')) {
+      // A member's computer waiting for the owner's code is not an owner browser setup (member-browser-any-computer §3.3).
+      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending' && !d.joinedVia)) {
         held(409, 'browser-setup-waiting', { detail: 'Another browser is already waiting for approval. Approve or decline it first.' });
         return;
       }

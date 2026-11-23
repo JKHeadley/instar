@@ -173,6 +173,22 @@ describe('signed records — native conversations', () => {
     for (const f of allFiles(e.dir)) expect(fs.readFileSync(f).includes(Buffer.from(token)), f).toBe(false);
   });
 
+  it('SEC-164: a signed app message with a live key is stored masked, verifies through its attestation, and the key is nowhere on disk', async () => {
+    const e = await setup();
+    // The switch is read from the settings file; a development agent has it on by default.
+    fs.mkdirSync(path.join(e.dir, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(e.dir, '.instar', 'config.json'), JSON.stringify({ developmentAgent: true }));
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Plans', requestId: rid() })).body.conversationKey as string;
+    const ghToken = 'ghp_' + 'x'.repeat(36); // built at run time: no key-shaped literal in the source
+    const sent = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: `use ${ghToken} for the build`, requestId: rid() });
+    expect(sent.status).toBe(200);
+    expect(sent.body.redacted).toBe(true);
+    const hist = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    expect(hist.body.messages[0]).toMatchObject({ text: 'use [credential removed] for the build', originVerified: 'redacted' });
+    expect(JSON.stringify(e.dispatched)).not.toContain(ghToken);
+    for (const f of allFiles(e.dir)) expect(fs.readFileSync(f).includes(Buffer.from(ghToken)), f).toBe(false);
+  });
+
   it('a revocation is written ledger-first and earlier messages stay verified', async () => {
     const e = await setup();
     const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Plans', requestId: rid() })).body.conversationKey as string;

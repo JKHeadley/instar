@@ -18,6 +18,31 @@ describe('buildSlackHolderRead', () => {
     expect(calls[0]![1]?.method).toBeUndefined();
   });
 
+  it('forwards known row fingerprints, including the initial empty handshake, and accepts an older holder full page', async () => {
+    const calls: string[] = [];
+    const read = buildSlackHolderRead(deps((async (u: string) => { calls.push(u); return good(); }) as typeof fetch));
+    const fingerprints = `${'a'.repeat(64)},${'b'.repeat(64)}`;
+    const answer = await read({ ...ask(), knownRows: fingerprints });
+    expect(answer.status).toBe(200);
+    expect(answer.body.changeFeed).toBeUndefined();
+    expect(calls[0]).toContain(`&knownRows=${'a'.repeat(64)}%2C${'b'.repeat(64)}`);
+    expect((await read({ ...ask(), knownRows: '' })).status).toBe(200);
+    expect(calls[1]).toContain('&knownRows=');
+    expect((await read(ask())).status).toBe(200);
+    expect(calls[2]).not.toContain('knownRows=');
+    expect(calls).toHaveLength(3);
+  });
+
+  it('refuses malformed or oversized known rows and scroll-back combinations without dialing a holder', async () => {
+    let calls = 0;
+    const read = buildSlackHolderRead(deps((async () => { calls++; return good(); }) as typeof fetch));
+    for (const knownRows of ['x', 'A'.repeat(64), 'a'.repeat(6500), Array.from({ length: 101 }, () => 'a'.repeat(64)).join(',')]) {
+      expect((await read({ ...ask(), knownRows })).status).toBe(400);
+    }
+    expect((await read({ ...ask('m_b', '2026-11-22T08:00:00Z,x'), knownRows: '' })).status).toBe(400);
+    expect(calls).toBe(0);
+  });
+
   it('refuses an oversized cursor and a missing token with no request', async () => {
     let calls = 0;
     const f = (async () => { calls++; return good(); }) as unknown as typeof fetch;

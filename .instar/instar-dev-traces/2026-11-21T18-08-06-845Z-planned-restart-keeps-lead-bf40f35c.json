@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "planned-restart-keeps-lead",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T18:08:06.845Z",
+  "artifactPath": "upgrades/side-effects/planned-restart-keeps-lead.md",
+  "artifactSha256": "f1b66e377753e714d8affb40bd11363c3ff3f816c70ef134939491b3fdf852fb",
+  "specPath": "docs/specs/planned-restart-keeps-lead.md",
+  "coveredFiles": [
+    "src/core/LeaseContinuity.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/restartRequestSignal.ts",
+    "upgrades/side-effects/planned-restart-keeps-lead.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only follow-up on the converged Tier-2 planned-restart spec: five best-effort catches state their @silent-fallback-ok reason so the no-silent-fallbacks ratchet passes; no runtime change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

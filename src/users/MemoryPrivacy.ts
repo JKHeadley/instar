@@ -17,6 +17,9 @@ import {
   isScopedAudience, type MemoryAudience, type MemoryPlace,
 } from './MemoryAudience.js';
 
+/** The synthetic place kind of a fold's shadow answerer (§10): never a channel's place. */
+export const FOLD_PROBE_PLACE_PREFIX = 'fold-probe:';
+
 /** How long proof that a place has one reader stays usable. Inbound re-checks every message. */
 export const READER_PROOF_MS = 5 * 60_000;
 
@@ -443,6 +446,18 @@ export class MemoryPrivacy {
     this.state.tokens[hashToken(token)] = { sessionId, audience, placeKey };
     this.save();
     return token;
+  }
+
+  /**
+   * A token for the context budget's shadow answerer (context-budget-layered-summaries §10): the
+   * system audience (owner reach, no person) bound to the SYNTHETIC place `fold-probe:<topic>`, a
+   * place no channel ever uses. The memory-session guard lets that place reach exactly its own
+   * topic's chunk lookups and nothing else. Revoke with `revokeSessionTokens(sessionId)` when the
+   * answerer ends.
+   */
+  issueFoldProbeToken(sessionId: string, topicKey: string): string {
+    if (!/^-?\d{1,15}$/.test(topicKey)) throw new Error('fold-probe-token: topic key must be a topic id');
+    return this.issueSessionToken(sessionId, { kind: 'system' }, `${FOLD_PROBE_PLACE_PREFIX}${topicKey}`);
   }
 
   /** The record for a session token, or null when it is not one. */

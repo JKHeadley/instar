@@ -124,3 +124,47 @@ describe('RelayRateLimiter', () => {
     });
   });
 });
+
+describe('RelayRateLimiter bounded state (SEC-139)', () => {
+  it('a check alone creates no key', () => {
+    const l = new RelayRateLimiter();
+    for (let i = 0; i < 200; i++) l.checkAuth(`198.51.100.${i}`);
+    expect(l.size).toBe(0);
+  });
+
+  it('forgets callers once their windows have passed, without lifting an active limit', () => {
+    let t = 1_000_000;
+    const l = new RelayRateLimiter({ authAttemptsPerMinute: 2 }, () => t);
+    for (let i = 0; i < 300; i++) l.recordAuth(`10.1.${i >> 8}.${i & 255}`);
+    l.recordAuth('203.0.113.9'); l.recordAuth('203.0.113.9');
+    expect(l.checkAuth('203.0.113.9').allowed).toBe(false);
+    t += 30_000;
+    expect(l.checkAuth('203.0.113.9').allowed).toBe(false);
+    t += 3_600_000;
+    l.checkAuth('192.0.2.1'); // triggers the sweep
+    expect(l.size).toBe(0);
+    expect(l.checkAuth('203.0.113.9').allowed).toBe(true);
+  });
+
+  it('keeps at most MAX_KEYS keys however many addresses are used', () => {
+    const l = new RelayRateLimiter();
+    for (let i = 0; i < RelayRateLimiter.MAX_KEYS + 500; i++) l.recordAuth(`2001:db8::${i.toString(16)}`);
+    expect(l.size).toBeLessThanOrEqual(RelayRateLimiter.MAX_KEYS);
+  });
+
+  it('at the ceiling, an active key and the global window are kept while idle ones go', () => {
+    let t = 1_000_000;
+    const l = new RelayRateLimiter({ perAgentPerMinute: 1000, perIPPerMinute: 1000, globalPerMinute: 100_000, authAttemptsPerMinute: 2 }, () => t);
+    l.recordMessage('agent-1', '203.0.113.9');
+    l.recordAuth('198.51.100.1'); l.recordAuth('198.51.100.1');
+    for (let i = 0; i < RelayRateLimiter.MAX_KEYS + 100; i++) {
+      if (i % 1000 === 0) { l.recordAuth('198.51.100.1'); l.recordMessage('agent-1', '203.0.113.9'); }
+      l.recordAuth(`2001:db8::${i.toString(16)}`);
+    }
+    expect(l.size).toBeLessThanOrEqual(RelayRateLimiter.MAX_KEYS);
+    expect(l.checkAuth('198.51.100.1').allowed).toBe(false);
+    const g = l as unknown as { windows: Map<string, unknown> };
+    expect(g.windows.has('global:min')).toBe(true);
+    expect(g.windows.has('agent:hour:agent-1')).toBe(true);
+  });
+});

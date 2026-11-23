@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "cb-sentinel-pool-owner",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T23:02:44.062Z",
+  "artifactPath": "upgrades/side-effects/cb-sentinel-pool-owner.md",
+  "artifactSha256": "78e07a3d197408ecb277257b4832dff65c51e5f74a5e6c7bd6c4ce885210335a",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/foldCoordinatorBoot.ts",
+    "tests/e2e/context-budget-fold-shadow-alive.test.ts",
+    "tests/unit/fold-pool-ownership.test.ts",
+    "upgrades/next/cb-sentinel-pool-owner.md",
+    "upgrades/side-effects/cb-sentinel-pool-owner.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Sentinel owner gate on pool-live agents (spec §9.3/§7.8); second-pass reviewed.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
