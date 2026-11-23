@@ -24,6 +24,10 @@
  * `false` ⇒ meaning answers 503 `meaning-unavailable`, keyword is untouched). No LLM calls.
  */
 import { Router, type Request, type Response } from 'express';
+import { IMPORTED_REF_RE } from './importedHistoryRoutes.js';
+import type { ImportedHistoryStore } from '../import/ImportedHistoryStore.js';
+import { privateImportedHistoryOwner } from './privateImportedHistoryOwner.js';
+import { afterDateCursor, dateCursor, newestFirst, parseDateCursor, setTelegramDateKey, type DateCursor } from './localSearchPage.js';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceMayUse, devicePersonOf, isMobileNativeEnabled } from './mobilePairingRoutes.js';
@@ -50,7 +54,7 @@ export function isMeaningSearchEnabled(config: InstarConfig): boolean {
   return isConversationSearchEnabled(config) && config.mobilePairing?.native?.search?.meaning?.enabled !== false;
 }
 
-export type SearchPlatform = 'app' | 'telegram' | 'slack';
+export type SearchPlatform = 'app' | 'telegram' | 'slack' | 'imported';
 
 /** One hit as the app receives it. */
 export interface ConversationSearchHit {
@@ -58,6 +62,7 @@ export interface ConversationSearchHit {
   platform: SearchPlatform;
   /** Slack only: the machine that holds the conversation (the history read's `machine=`). */
   machine?: string;
+  label?: string;
   title: string | null;
   /** The id the history read gives this message (app event id; Telegram `in:<n>`/`out:<n>` or its event id; Slack `slack:<ts>` or its event id). */
   messageId: string;
@@ -76,6 +81,7 @@ type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult'> & 
 
 export interface ConversationSearchRouteDeps {
   config: InstarConfig;
+  importedHistory?: () => ImportedHistoryStore | null;
   pairing: MobilePairingService;
   /** Null when native conversations resolved off at boot. */
   service: AppConversationService | null;
@@ -137,7 +143,7 @@ function hitFrom(base: Omit<ConversationSearchHit, 'snippet' | 'marks' | 'rank'>
  */
 export function searchLocal(
   deps: ConversationSearchRouteDeps,
-  q: { terms: string[]; limit: number; only: string | null },
+  q: { terms: string[]; limit: number; only: string | null; newest?: boolean; cursor?: DateCursor | null },
   access: { may: (accessKey: string) => boolean; mayReadApp: (key: string, m: Parameters<MobilePairingService['mayReadStored']>[2]) => boolean },
 ): LocalSearchResult {
   const out: ConversationSearchHit[] = [];
@@ -201,8 +207,9 @@ export function searchLocal(
     }
     if (topics.size > 0) {
       const tm = deps.topicMemory?.() ?? null;
-      const rows = tm ? tm.searchKeyword(ftsMatchExpression(terms), [...topics.keys()], Math.min(150, q.limit * 3), HIGHLIGHT_OPEN, HIGHLIGHT_CLOSE) : null;
+      const rows = tm ? tm.searchKeyword(ftsMatchExpression(terms), [...topics.keys()], q.newest ? 500 : Math.min(150, q.limit * 3), HIGHLIGHT_OPEN, HIGHLIGHT_CLOSE, q.newest ? { cursor: q.cursor ?? null } : undefined) : null;
       if (rows === null) unsearched.push('telegram');
+      if (q.newest && rows?.length === 500) capped = true;
       for (const r of rows ?? []) {
         const at = isoOf(r.timestamp);
         if (!at || !Number.isSafeInteger(r.messageId)) continue;
@@ -211,7 +218,9 @@ export function searchLocal(
         // The index's own spans when the text the phone sees is the indexed text; else the word matcher.
         const marks = parsed && parsed.text === shown ? parsed.marks : termMarks(shown, terms).marks;
         const messageId = deps.telegramHistoryId?.(r.topicId, r.messageId, r.fromUser) ?? `${r.fromUser ? 'in' : 'out'}:${r.messageId}`;
-        out.push(hitFrom({ ref: `telegram:${r.topicId}`, platform: 'telegram', title: topics.get(r.topicId) ?? null, messageId, at, fromUser: r.fromUser }, shown, marks));
+        const hit = hitFrom({ ref: `telegram:${r.topicId}`, platform: 'telegram', title: topics.get(r.topicId) ?? null, messageId, at, fromUser: r.fromUser }, shown, marks);
+        if (q.newest) setTelegramDateKey(hit, r.rowId);
+        out.push(hit);
       }
     }
   }
@@ -240,8 +249,27 @@ export function searchLocal(
     }
   }
 
-  out.sort(compareHits);
-  return { results: dedupeHits(out).slice(0, q.limit), capped, unsearched };
+  const eligible = q.cursor ? out.filter(h => afterDateCursor(h, q.cursor!)) : out;
+  eligible.sort(q.newest ? newestFirst : compareHits);
+  return { results: dedupeHits(eligible).slice(0, q.limit), capped, unsearched };
+}
+
+/** Native owner only. Peer reads never receive this source or its references. */
+async function searchImported(
+  store: ImportedHistoryStore, machine: string, terms: string[], only: string | null, cursor: DateCursor | null,
+): Promise<{ results: ConversationSearchHit[]; capped: boolean }> {
+  const results: ConversationSearchHit[] = [];
+  const complete = await store.visitSearchMessages(only, (conversation, message) => {
+    const found = termMarks(message.text, terms);
+    if (!found.all) return;
+    const hit = hitFrom({
+      platform: 'imported', machine, ref: conversation.ref, title: conversation.title,
+      label: conversation.from === 'claude' ? 'Imported from Claude' : 'Imported from ChatGPT',
+      at: isoOf(message.at ?? conversation.createdAt ?? '') ?? '', messageId: message.key, fromUser: message.role === 'operator',
+    }, message.text, found.marks);
+    if (!cursor || afterDateCursor(hit, cursor)) results.push(hit);
+  });
+  return { results, capped: !complete };
 }
 
 /** The same message from two sources or machines collapses to its first (best-ranked) copy. */
@@ -333,15 +361,24 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     if (query.length < 1 || query.length > MAX_QUERY_CHARS) { res.status(400).json({ error: 'bad-query', detail: 'Type 1-200 characters to search for.' }); return; }
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.min(MAX_LIMIT, Math.floor(rawLimit)) : DEFAULT_LIMIT;
+    const nativeOwner = mode === 'keyword' && kind === 'device' && privateImportedHistoryOwner(deps.pairing, req);
+    const newest = req.query.order === 'date';
+    const cursor = req.query.cursor === undefined ? null : parseDateCursor(req.query.cursor);
+    if ((req.query.order !== undefined && !newest) || (req.query.cursor !== undefined && (!newest || !cursor))
+      || (newest && (!nativeOwner || mode !== 'keyword' || req.query.scope === 'pool'))) {
+      res.status(400).json({ error: 'invalid-search-page' }); return;
+    }
+    const importedRef = typeof req.query.ref === 'string' && IMPORTED_REF_RE.test(req.query.ref) ? req.query.ref : null;
+    if (importedRef && (!nativeOwner || mode !== 'keyword')) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     let only: string | null = null;
     if (req.query.ref !== undefined) {
-      only = canonicalConversationRef(req.query.ref);
+      only = importedRef ?? canonicalConversationRef(req.query.ref);
       if (!only) { res.status(400).json({ error: 'bad-ref', detail: 'ref must be app:<uuid>, telegram:<topic id> or slack:<machine>:<id>.' }); return; }
     }
-    const pool = req.query.scope === 'pool';
+    const pool = req.query.scope === 'pool' && !importedRef;
     const person = devicePersonOf(req);
     const may = (accessKey: string) => deviceMayUse(deps.pairing, req, accessKey);
-    if (only) {
+    if (only && !importedRef) {
       if (!may(accessKeyOf(only))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
       // A conversation this machine does not hold is a 404 here; a pool read asks the others too.
       if (!pool && !heldHere(deps, only)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
@@ -350,13 +387,28 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     if (mode === 'meaning') { await meaningSearch(deps, req, res, { query, terms, limit, only, pool, person, may }); return; }
     let local: LocalSearchResult;
     try {
-      local = searchLocal(deps, { terms, limit, only }, { may, mayReadApp: (key, m) => deps.pairing.mayReadStored(person, key, m) });
+      const take = newest ? limit + 1 : limit;
+      local = searchLocal(deps, { terms, limit: take, only, newest, cursor }, { may, mayReadApp: (key, m) => deps.pairing.mayReadStored(person, key, m) });
+      if (nativeOwner && (!only || importedRef)) {
+        const store = deps.importedHistory?.() ?? null;
+        if (importedRef && !store?.hasConversation(importedRef)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+        if (store && terms.length) {
+          const imported = await searchImported(store, deps.machineId(), terms, importedRef, cursor);
+          local.capped ||= imported.capped;
+          const ordered = [...local.results, ...imported.results].sort(newest ? newestFirst : compareHits);
+          local.results = dedupeHits(ordered).slice(0, take);
+        }
+      }
     } catch (err) {
       deps.service.deps.reportDegradation?.('AppConversations.search', err instanceof Error ? err.message : String(err));
       res.status(503).json({ error: 'search-unavailable', detail: 'Search could not read the conversations right now. Try again shortly.' });
       return;
     }
-    const base = { query, mode: 'keyword' as const, ref: only };
+    const privateReadRevoked = () => nativeOwner && !privateImportedHistoryOwner(deps.pairing, req);
+    if (privateReadRevoked()) { res.status(403).json({ error: 'owner-admission-changed' }); return; }
+    const page = newest ? { nextCursor: local.results.length > limit ? dateCursor(local.results[limit - 1]!) : null } : {};
+    if (newest) local.results = local.results.slice(0, limit);
+    const base = { query, mode: 'keyword' as const, ref: only, ...page };
     // A team phone reads what this machine holds (as the list does): a peer's rows cannot be judged here.
     if (!pool || person?.role === 'team' || terms.length === 0 || !deps.pool) {
       res.json({ ...base, results: local.results, partial: local.capped || local.unsearched.length > 0, failedMachines: [], capped: local.capped, unsearched: local.unsearched });
@@ -364,6 +416,7 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     }
     const path = `/mobile/conversations/search?mode=keyword&limit=${limit}&q=${encodeURIComponent(query)}${only ? `&ref=${encodeURIComponent(only)}` : ''}`;
     const peers = await searchPeers(deps.pool, path);
+    if (privateReadRevoked()) { res.status(403).json({ error: 'owner-admission-changed' }); return; }
     let capped = local.capped;
     const unsearched = new Set<SearchPlatform>(local.unsearched);
     const all: ConversationSearchHit[] = [...local.results];

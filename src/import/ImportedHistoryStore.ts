@@ -13,7 +13,9 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { privateImportDatabasePath, verifyPrivateImportDirectory } from './privateImportState.js';
+import { createInterface } from 'node:readline';
 import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSource } from './exportParsers.js';
+import { isExportSource } from './exportParsers.js';
 import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 
 export interface ConversationSummary {
@@ -82,6 +84,52 @@ export class ImportedHistoryStore {
       verifyPrivateImportDirectory(directory);
     }
     this.manifest = this.readManifest();
+  }
+
+  /** A fresh reader observes later imports and creates nothing when this machine has no history. */
+  static openIfPresent(stateDir: string): ImportedHistoryStore | null {
+    return fs.existsSync(path.join(stateDir, 'imported-history', 'manifest.json')) ? new ImportedHistoryStore(stateDir) : null;
+  }
+
+  hasConversations(): boolean {
+    return Object.values(this.manifest.conversations).some(c => isExportSource(c.from));
+  }
+
+  hasConversation(ref: string): boolean {
+    return Object.hasOwn(this.manifest.conversations, ref);
+  }
+
+  /** A bounded keyword scan reads one local JSONL row at a time. False means some rows were not searched. */
+  async visitSearchMessages(only: string | null, visit: (conversation: ConversationSummary, message: ImportedMessage) => void): Promise<boolean> {
+    const conversations = (only ? (this.hasConversation(only) ? [this.manifest.conversations[only]!] : []) : this.listConversations('exports'))
+      .filter(c => isExportSource(c.from));
+    const deadline = Date.now() + 1500;
+    let rows = 0;
+    let files = 0;
+    let complete = true;
+    for (const conversation of conversations) {
+      if (++files > 2000 || Date.now() > deadline) return false;
+      const input = fs.createReadStream(this.convPath(fileFor(conversation.ref)), { encoding: 'utf8' });
+      const lines = createInterface({ input, crlfDelay: Infinity });
+      try {
+        for await (const line of lines) {
+          if (++rows > 5000 || Date.now() > deadline) return false;
+          if (!line) continue;
+          let message: ImportedMessage;
+          try { message = JSON.parse(line) as ImportedMessage; }
+          catch { complete = false; continue; } // A torn row must not hide the remaining history.
+          if (typeof message?.text !== 'string' || typeof message.key !== 'string') { complete = false; continue; }
+          visit(conversation, message);
+        }
+      } catch (err) {
+        if (!(err instanceof Error && 'code' in err)) throw err;
+        complete = false; // An unreadable file leaves the other conversations searchable.
+      } finally {
+        lines.close();
+        input.destroy();
+      }
+    }
+    return complete;
   }
 
   private readManifest(): Manifest {
@@ -188,9 +236,10 @@ export class ImportedHistoryStore {
   }
 
   /** Imported chats, newest last message first (their own times, not when they were imported). */
-  listConversations(): ConversationSummary[] {
+  listConversations(sources: 'all' | 'exports' = 'all'): ConversationSummary[] {
     this.refreshForRead();
     return Object.values(this.manifest.conversations)
+      .filter(c => sources === 'all' || isExportSource(c.from))
       .map(({ file: _f, hash: _h, ...s }) => s)
       .sort((a, b) => (b.lastAt ?? '').localeCompare(a.lastAt ?? ''));
   }
@@ -235,7 +284,7 @@ export class ImportedHistoryStore {
     if (!words.length) return { hits: [], complete: true };
     const started = Date.now();
     const hits: SearchHit[] = [];
-    for (const c of this.listConversations()) {
+    for (const c of this.listConversations('exports')) {
       if (Date.now() - started > budgetMs) return { hits, complete: false };
       const file = this.manifest.conversations[c.ref]!.file;
       for (const m of this.readMessagesByFile(file)) {

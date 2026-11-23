@@ -12,6 +12,11 @@ import { scrubForStore } from '../core/durableSecretScrub.js';
 export type ExportSource = 'claude' | 'chatgpt';
 export type ImportSource = ExportSource | typeof CLAUDE_CODE_FRAMEWORK | 'codex';
 
+/** The legacy archive APIs implement only these two provider export formats. */
+export function isExportSource(value: unknown): value is ExportSource {
+  return value === 'claude' || value === 'chatgpt';
+}
+
 /** One stored message: at most PART_CHARS characters. A long original becomes numbered parts. */
 export interface ImportedMessage {
   /** The original message id (ChatGPT node id, Claude uuid), or a content hash; plus #<part> when split. */

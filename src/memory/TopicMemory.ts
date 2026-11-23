@@ -1153,24 +1153,29 @@ export class TopicMemory {
    * the full text with each matched token wrapped in `open` / `close`. Null when the database is
    * not open (the caller reports the index as unavailable, never as "no hits").
    */
-  searchKeyword(match: string, topicIds: ReadonlyArray<number>, limit: number, open: string, close: string): Array<{
-    messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string; rank: number; marked: string;
+  searchKeyword(match: string, topicIds: ReadonlyArray<number>, limit: number, open: string, close: string, newest?: { cursor: { at: string; key: string } | null }): Array<{
+    rowId: number; messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string; rank: number; marked: string;
   }> | null {
     if (!this.db) return null;
     if (!match || topicIds.length === 0) return [];
+    const cursor = newest?.cursor;
+    // Telegram ties follow the intrinsic integer row id, after non-Telegram ties at the same time.
+    const afterId = cursor?.key.startsWith('t') ? Number.parseInt(cursor.key.slice(1), 16) : -1;
+    const timestamp = "strftime('%Y-%m-%dT%H:%M:%fZ', m.timestamp)";
     const rows = this.db.prepare(`
-      SELECT m.message_id AS messageId, m.topic_id AS topicId, m.text, m.from_user AS fromUser,
+      SELECT m.id AS rowId, m.message_id AS messageId, m.topic_id AS topicId, m.text, m.from_user AS fromUser,
              m.timestamp, bm25(messages_fts) AS rank,
              highlight(messages_fts, 0, ?, ?) AS marked
       FROM messages_fts
       JOIN messages m ON m.id = messages_fts.rowid
       WHERE messages_fts MATCH ?
         AND m.topic_id IN (SELECT value FROM json_each(?))
-      ORDER BY rank, m.timestamp DESC
+        ${cursor ? `AND (${timestamp} < ? OR (${timestamp} = ? AND m.id > ?))` : ''}
+      ORDER BY ${newest ? `${timestamp} DESC, m.id ASC` : 'rank, m.timestamp DESC'}
       LIMIT ?
-    `).all(open, close, match, JSON.stringify(topicIds), Math.max(1, Math.min(500, Math.floor(limit)))) as Array<Record<string, unknown>>;
+    `).all(open, close, match, JSON.stringify(topicIds), ...(cursor ? [cursor.at, cursor.at, afterId] : []), Math.max(1, Math.min(500, Math.floor(limit)))) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
-      messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''), fromUser: !!r.fromUser,
+      rowId: Number(r.rowId), messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''), fromUser: !!r.fromUser,
       timestamp: String(r.timestamp ?? ''), rank: Number(r.rank), marked: String(r.marked ?? ''),
     }));
   }
