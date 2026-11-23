@@ -151,6 +151,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/team/origin-gone'],
       // SEC-170 part 3: retire a silent computer or confirm it gone for good (Face ID).
       ['POST', '/mobile/pin-budget/silent-machine'],
+      ['POST', '/mobile/pin-budget/silent-machine/preflight'],
+      ['GET', '/mobile/pin-budget/silent-machines'],
       ['POST', '/mobile/team/memory-privacy'],
       // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
       ['GET', '/mobile/introducer'],

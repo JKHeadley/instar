@@ -43587,6 +43587,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // SEC-170 part 3: the owner's choice for a silent computer (retire, or confirm gone for good). Absent when
       // the pool-wide PIN budget is unwired; the surface itself answers 503 while its switch is off.
       silentMachine: ctx.pinOwnerSurface ? {
+        view: () => { const v = ctx.pinOwnerSurface!.silent(); return { ...v, rows: v.rows.map((r) => ({ ...r, silentSince: new Date(r.silentSince).toISOString() })) }; },
         precheck: (id, choice, fp) => ctx.pinOwnerSurface!.precheck(id, choice, fp),
         apply: (id, choice, fp) => ctx.pinOwnerSurface!.apply(id, choice, fp),
       } : undefined,

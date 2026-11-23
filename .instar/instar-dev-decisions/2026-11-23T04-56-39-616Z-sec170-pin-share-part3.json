@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-23T04:56:39.616Z",
+  "slug": "sec170-pin-share-part3",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "one unref 60-second alert check, the alert at most once per 30 minutes, adoption capped at 64 per report, one owner action per Face ID tap"
+  },
+  "verdict": "pass"
+}

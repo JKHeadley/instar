@@ -2873,6 +2873,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone|switches\/turn-on)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // SEC-170 part 3: retire a silent computer or confirm it gone for good (owner phone, Face ID over the exact line).
     { method: 'POST', re: /^\/mobile\/pin-budget\/silent-machine$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Its no-side-effect preflight and the review screen's read (owner phone only, before any Face ID).
+    { method: 'POST', re: /^\/mobile\/pin-budget\/silent-machine\/preflight$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'pin-budget-reads' },
+    { method: 'GET', re: /^\/mobile\/pin-budget\/silent-machines$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'pin-budget-reads' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/people\/[^/]{1,128}\/grants$/, statuses: active },

@@ -786,7 +786,7 @@ export interface MobilePermissionsDeps {
    * SEC-170 part 3: the owner's choice for a silent computer. `precheck` refuses before any challenge (so no Face
    * ID is spent on what cannot succeed); `apply` runs after the signed tap. Absent: the PIN budget is off here.
    */
-  silentMachine?: { precheck(machineId: string, choice: 'retire' | 'gone-for-good', fingerprint: string): ActionResult | null; apply(machineId: string, choice: 'retire' | 'gone-for-good', fingerprint: string): ActionResult };
+  silentMachine?: { view(): Record<string, unknown>; precheck(machineId: string, choice: 'retire' | 'gone-for-good', fingerprint: string): ActionResult | null; apply(machineId: string, choice: 'retire' | 'gone-for-good', fingerprint: string): ActionResult };
   /**
    * Start a fresh sign-in for one account on one machine: the console's own
    * `POST /subscription-pool/matrix/start-cell` core after its PIN check (routes.ts runMatrixStartCell),
@@ -1227,6 +1227,39 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       finish(res, 'team-changed', built.action, g, r);
     });
   };
+  // SEC-170 part 3: the owner phone's own reads, before any Face ID. A device-signed owner phone over local TLS;
+  // no presence key needed, so they work before Face ID is enrolled. Neither changes anything.
+  const ownerPhoneRead = (req: Request, res: Response): string | null => {
+    res.set('Cache-Control', 'no-store');
+    const deviceId = principalDevice(req);
+    const svc = deps.pairing();
+    const refuse = (status: number, error: string, who: string | null): null => { audit.record({ event: 'refused', deviceId: who, route: auditRoute(req), reason: error, status }); res.status(status).json({ error }); return null; };
+    if (!deviceId || !svc) return refuse(403, 'device-signature-required', null);
+    if (!overLocalTls(req)) return refuse(403, 'secure-transport-required', deviceId);
+    if (!activeOwnerPhone(svc, deviceId)) return refuse(403, 'owner-phone-required', deviceId);
+    return deviceId;
+  };
+  const PIN_BUDGET_OFF = { error: 'pin-budget-off', detail: 'The pool-wide PIN guess limit is off on this agent.' };
+  // The silent-computers list for the phone's review screen: the same answer as GET /pin-budget/silent-machines.
+  router.get('/mobile/pin-budget/silent-machines', (req: Request, res: Response) => {
+    if (!ownerPhoneRead(req, res)) return;
+    if (!deps.silentMachine) { res.json({ enabled: false, rows: [], heldBack: false, evidenceComplete: true, fingerprint: '', dismissed: false, show: false }); return; }
+    res.json(deps.silentMachine.view());
+  });
+  // The preflight: would this choice be refused? Answers the same 409/503 states as the challenge and the action,
+  // with no challenge issued and nothing changed, so the app can stop before enrolling or asking for Face ID.
+  router.post('/mobile/pin-budget/silent-machine/preflight', (req: Request, res: Response) => {
+    const deviceId = ownerPhoneRead(req, res);
+    if (!deviceId) return;
+    const b = rec(req.body);
+    const built = buildAction('silent-machine', b.target, actionExtras(b));
+    if (!built.ok || built.action.kind !== 'silent-machine') { res.status(400).json({ error: built.ok ? 'bad-action' : built.error }); return; }
+    if (!deps.silentMachine) { res.status(503).json(PIN_BUDGET_OFF); return; }
+    const refusal = deps.silentMachine.precheck(built.action.target, built.action.choice, built.action.fingerprint);
+    if (refusal) { res.status(refusal.status).json(refusal.body); return; }
+    res.json({ ok: true, line: actionLine(built.action) });
+  });
+
   // SEC-170 part 3: retire a silent computer, or confirm it gone for good. Owner phone, Face ID over the exact line.
   router.post('/mobile/pin-budget/silent-machine', (req: Request, res: Response) => {
     const g = writeGate(req, res, true);

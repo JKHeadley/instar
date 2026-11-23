@@ -11,7 +11,9 @@ import { GoneForGoodStore, silentMachines, isNewSince, poolFailureAlert, PoolFai
 import { PinOwnerSurface } from '../../src/core/PinOwnerSurface.js';
 import { readGoneForGood } from '../../src/core/PinShare.js';
 import { GONE_FOR_GOOD_SILENCE_MS } from '../../src/core/PinShareTable.js';
-import { buildAction, actionLine } from '../../src/server/mobilePermissionsRoutes.js';
+import { buildAction, actionLine, mountMobilePermissionsRoutes } from '../../src/server/mobilePermissionsRoutes.js';
+import express from 'express';
+import request from 'supertest';
 import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { stateSigningText } from '../../src/core/pinBudgetPoller.js';
@@ -230,8 +232,25 @@ describe('the phone action', () => {
     expect(buildAction('silent-machine', B, { choice: 'gone-for-good', fingerprint: 'nope' })).toEqual({ ok: false, error: 'bad-fingerprint' });
   });
 
-  it('is reachable only as an owner-phone signed request', () => {
-    const rule = DEVICE_ALLOWLIST.find((r) => r.method === 'POST' && r.re.test('/mobile/pin-budget/silent-machine'));
-    expect(rule).toMatchObject({ ownerOnly: true });
+  it('the action, its preflight and the phone\'s read are reachable only as owner-phone signed requests', () => {
+    for (const [m, p] of [['POST', '/mobile/pin-budget/silent-machine'], ['POST', '/mobile/pin-budget/silent-machine/preflight'], ['GET', '/mobile/pin-budget/silent-machines']]) {
+      const rule = DEVICE_ALLOWLIST.find((r) => r.method === m && r.re.test(p));
+      expect(rule, `${m} ${p}`).toMatchObject({ ownerOnly: true });
+    }
+  });
+
+  it('the preflight and the read refuse anything but a signed phone, and change nothing', async () => {
+    const calls: string[] = [];
+    const app = express();
+    app.use(express.json());
+    const router = express.Router();
+    mountMobilePermissionsRoutes(router, {
+      pairing: () => null, config: () => ({}) as never, stateDir: dir, bearerOk: () => true, localSlips: () => ({}) as never, personName: () => null,
+      silentMachine: { view: () => { calls.push('view'); return {}; }, precheck: () => { calls.push('precheck'); return null; }, apply: () => { calls.push('apply'); return { status: 200, body: {} }; } },
+    } as never);
+    app.use(router);
+    expect((await request(app).get('/mobile/pin-budget/silent-machines')).body.error).toBe('device-signature-required');
+    expect((await request(app).post('/mobile/pin-budget/silent-machine/preflight').send({ target: B, choice: 'retire', fingerprint: '0123456789abcdef' })).body.error).toBe('device-signature-required');
+    expect(calls).toEqual([]);
   });
 });

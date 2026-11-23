@@ -56,6 +56,8 @@ Addressed from its notes:
 
 Not added: a route-level harness test (replayed challenge, wrong line, team-member phone). Today those paths are covered by the shared, already-tested permission-action machinery.
 
+**Phone reads (added after both reviews, at the Apple app rebuild's request):** `GET /mobile/pin-budget/silent-machines` (the same answer as the bearer read) and `POST /mobile/pin-budget/silent-machine/preflight` (the same 409/503 refusals as the challenge and the action, no challenge issued, nothing changed). Both are owner-phone-only allowlist rules with their own read bucket, and both check a device-signed owner phone over local TLS. Neither needs a presence key, so the app can stop before enrolling Face ID or asking for it. No separate independent review was run for this read-only delta: it reuses the gate checks of the existing owner-phone routes and is unit tested (allowlist rules, refusal of unsigned callers with no surface call).
+
 ## Rollback
 Revert the commit. The two new state files are ignored by older code. With the switch off, nothing reads them.
 
