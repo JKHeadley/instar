@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 let dom: JSDOM;
 afterEach(() => { dom?.window.close(); vi.unstubAllGlobals(); vi.resetModules(); });
-function page() {
+function page(body = '<img src=x onerror="alert(1)"> quoted notice') {
   dom = new JSDOM('<main id="page"></main>', { url: 'https://agent.example/dashboard', pretendToBeVisual: true });
   vi.stubGlobal('window', dom.window); vi.stubGlobal('document', dom.window.document); vi.stubGlobal('localStorage', dom.window.localStorage);
   let read = false;
@@ -10,7 +10,7 @@ function page() {
     if (options?.method === 'PATCH') read = true;
     const data = url.includes('selectivity') ? { dryRun: false, categories: [{ id: 'job-status', description: 'Scheduled job reports', push: false }, { id: 'command-response', description: 'Command responses', push: false, configurable: false }] }
       : options?.method === 'PATCH' ? { ok: true } : { unread: read ? 0 : 1, items: read ? [] : [{ id: 'quiet-1', machineId: 'machine-a', category: 'job-status',
-        text: '<img src=x onerror="alert(1)"> quoted notice', count: 3, updatedAt: new Date().toISOString() }], unavailable: [] };
+        text: body, count: 3, updatedAt: new Date().toISOString() }], unavailable: [] };
     return { ok: true, json: async () => data };
   });
   vi.stubGlobal('fetch', fetch);
@@ -29,6 +29,51 @@ describe('Notifications operator page', () => {
     expect(main.querySelector('h1')?.textContent).toBe('Notifications');
     expect(main.querySelector('.glance-root')?.textContent).toContain('Unread notices');
     expect(main.querySelector('.glance-root')?.textContent).toContain('Push choices');
+  });
+  it('keeps a long notice readable while preserving its full safe text and action', async () => {
+    const body = '<img src=x> ' + 'A long report. '.repeat(1200) + 'Ending 🚀';
+    const { main } = page(body);
+    const { renderNotifications } = await import('../../dashboard/console/notifications.js');
+    await renderNotifications(main);
+    const article = main.querySelector('article.need-card')!;
+    const details = article.querySelector('details')!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(details.querySelector('summary')?.textContent).toBe('Read full notice');
+    expect(article.querySelector('.notice-preview')!.textContent!.length).toBeLessThanOrEqual(225);
+    expect(details.querySelector('.notice-full')?.textContent).toBe(body);
+    expect(article.querySelector('img')).toBeNull();
+    expect(article.querySelector('[title]')).toBeNull();
+    expect([...article.querySelectorAll('button')].some(b => b.textContent === 'Mark read')).toBe(true);
+    details.querySelector('summary')!.click();
+    expect(details.open).toBe(true);
+    const { refreshHeld } = await import('../../dashboard/console/ui.js');
+    await vi.waitFor(() => expect(refreshHeld(main)).toBe(true));
+    details.open = false;
+    await vi.waitFor(() => expect(refreshHeld(main)).toBe(false));
+  });
+  it('uses readable references in both the preview and the full notice', async () => {
+    const id = 'm_' + 'a'.repeat(32);
+    const { main } = page(`Computer ${id} reported in topic 123456789. ` + 'More evidence. '.repeat(100));
+    const { renderNotifications } = await import('../../dashboard/console/notifications.js');
+    await renderNotifications(main);
+    for (const node of main.querySelectorAll('.notice-preview, .notice-full')) {
+      expect(node.textContent).not.toContain(id);
+      expect(node.textContent).not.toContain('123456789');
+      expect(node.textContent).toContain('More evidence.');
+    }
+  });
+  it.each([320, 321])('uses disclosure only beyond the readable threshold (%s characters)', async count => {
+    const { main } = page('🚀'.repeat(count));
+    const { renderNotifications } = await import('../../dashboard/console/notifications.js');
+    await renderNotifications(main);
+    const article = main.querySelector('article.need-card')!;
+    expect(!!article.querySelector('details')).toBe(count > 320);
+    if (count > 320) {
+      const preview = article.querySelector('.notice-preview')!.textContent!;
+      expect(preview).not.toContain('�');
+      expect(Array.from(preview).length).toBeLessThanOrEqual(221);
+    }
   });
   it('marks a notice read at its owner and refreshes the feed', async () => {
     const { main, fetch } = page();

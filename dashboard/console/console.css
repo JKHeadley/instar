@@ -1771,3 +1771,9 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* Quiet reports keep their full text behind an explicit, keyboard-accessible read. */
+.notice-body { min-width: 0; }
+.notice-body p { margin: 0; overflow-wrap: anywhere; }
+.notice-disclosure summary { min-height: 44px; padding: 10px 0; cursor: pointer; color: var(--text); }
+.notice-disclosure[open] .notice-full { white-space: pre-wrap; margin-top: var(--s-2); }
