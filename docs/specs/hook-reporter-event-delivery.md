@@ -139,7 +139,7 @@ machine-local-justification: hardware-bound-resource impossible-because="a hook 
   matching stop. The total `Unknown` count across all sessions is reported alongside (Codex bodies without a name stay
   `Unknown` by design). Rows the receiver trimmed before a snapshot are outside the claim.
 - **dark-window:** none (ships on).
-- **ladder:** none (defect fix, no flag): test agent, then Echo (dev agent), then the fleet in the next release
+- **ladder:** not applicable: defect fix with no new feature flag; test agent, then Echo (dev agent), then the fleet in the next release
 
 ## Acceptance criteria
 

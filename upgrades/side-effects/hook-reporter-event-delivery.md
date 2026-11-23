@@ -133,3 +133,7 @@ pre-compaction flush consumer and its durable writes and audit entries; recovery
 revert cannot undo; direct-caller text redaction being new; scoped callers losing paths; body-only session ids being
 dropped; and a spurious "deleted test suite" that came from comparing against a newer main (the branch was then
 fast-forwarded and the diff taken against the merge base).
+
+## Full-gate metadata correction — 2026-11-22
+
+The retained full-gate failure at `000b49408029` was the ladder registry assertion: this spec used `none` for a flagless defect fix, while the established contract requires `not applicable:` followed by a reason. The spec now uses that contract and preserves the rollout sequence. No registry entry is invented and no assertion or runtime behavior changes. This follow-up is Tier 1, two documentation files and no runtime edits. Full-gate requalification remains required.
