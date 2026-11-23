@@ -17,11 +17,12 @@ describe('App disclosure boundaries over signed HTTP', () => {
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     // Legacy persisted evidence can outlive a server's display contract. Seed that actual boundary;
     // fresh publication already refuses it and cannot produce this historical fixture itself.
-    const change: TrustChange = { kind: 'trust-grant', service: 'calendar', operation: 'write', level: 'autonomous' };
+    const change: TrustChange = { kind: 'trust-grant', service: 'calendar-' + 'x'.repeat(16_001), operation: 'write', level: 'autonomous' };
     const proposalHash = proposalHashOf(proofSubject(change));
     const requestId = `tr-${proposalHash.slice(0, 12)}-LEGACY`;
     const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
-    const rawSummary = ['Persisted disclosure: ' + 'x'.repeat(16_001) + ' LEGACY-END'];
+    // The authoritative change is oversized even if a replicated record claims a harmless summary.
+    const rawSummary = ['A harmless stored description'];
     expect((await s.runtime.store.write('request', { requestId, code: 'LEGACY', proposalHash, principal: 'owner', adapter: 'device', approverPlatformId: '',
       expiresAt, status: 'open', change, summary: rawSummary, cardMessageId: '', cardChatId: '' }, 'persisted-oversized-request')).ok).toBe(true);
     const listed = await mac.signed('GET', '/mobile/trust/requests');
@@ -29,7 +30,7 @@ describe('App disclosure boundaries over signed HTTP', () => {
     const row = listed.body.requests.find((r: { requestId: string }) => r.requestId === requestId);
     expect(row).toMatchObject({ requestId, status: 'open', proposalHash, expiresAt });
     expect(row.summary.join(' ')).toContain('too large to show whole');
-    expect(row.summary.join(' ')).not.toContain('LEGACY-END');
+    expect(row.summary.join(' ')).not.toContain(rawSummary[0]);
     expect(row.code).toBeUndefined();
     const refused = await mac.act({ action: 'approve-widening', target: requestId, proposalHash }, `/mobile/trust/requests/${requestId}/approve`,
       { proposalHash }, `approve-widening ${requestId} ${proposalHash}`);
@@ -37,7 +38,7 @@ describe('App disclosure boundaries over signed HTTP', () => {
     expect(refused.body).toMatchObject({ error: 'disclosure-too-large', status: 'refused' });
     expect(s.runtime.store.consumptionOf(requestId)).toBeNull();
     expect(s.runtime.store.requestConsumedOrPending(requestId)).toBe(false);
-    expect(s.trust.getTrustLevel('calendar', 'write').level).not.toBe('autonomous');
+    expect(s.trust.getTrustLevel(change.service, 'write').level).not.toBe('autonomous');
     const after = await mac.signed('GET', '/mobile/trust/requests');
     expect(after.status).toBe(200);
     expect(after.body.requests.find((r: { requestId: string }) => r.requestId === requestId)).toMatchObject({ status: 'open', expiresAt });

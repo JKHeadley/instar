@@ -155,8 +155,19 @@ export function needsLook(g) {
   return NEEDS_LOOK.has(g.effective);
 }
 
-function humanKey(key) {
-  return String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._-]/g, ' ').replace(/^./, (c) => c.toUpperCase());
+const ACRONYMS = { pr: 'PR', prs: 'PRs', ci: 'CI', llm: 'LLM', api: 'API', url: 'URL', id: 'ID', a2a: 'A2A', mcp: 'MCP', tcc: 'TCC', ssh: 'SSH', os: 'OS' };
+/** A setting key as words: "greenPrAutoMerge" → "Green PR auto merge", "modelTierEscalation.dryRun" → "Model tier escalation dry run". */
+export function humanKey(key) {
+  const words = String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[._-]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+    .map((w) => ACRONYMS[w.toLowerCase()] || w.toLowerCase());
+  const text = words.join(' ') || 'a safety check';
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** A row title without the trailing dated incident tag ("… (2026-07-02 load-stall kill cascade)"); the detail sheet keeps the full text. */
+export function guardTitle(text) {
+  return String(text || '').replace(/\s*\(\s*\d{4}-\d{2}-\d{2}\b[^)]*\)\s*$/, '').trim() || String(text || '');
 }
 
 /** Which writes a row offers. Only this machine's rows can be written; peers never. */
@@ -172,7 +183,7 @@ function guardRow(g, machine, local) {
   return {
     key: `${machine.id || 'self'}:${g.key}`,
     guardKey: g.key,
-    main: g.criticalPath ? `${g.criticalPath}` : humanKey(g.key),
+    main: g.criticalPath ? guardTitle(g.criticalPath) : humanKey(g.key),
     sub: [guardWord(g), machine.name].filter(Boolean).join(' · '),
     end: '',
     // warning-path: row
@@ -205,7 +216,7 @@ export function buildGuards(res, { pool: poolRows = null, now = Date.now() } = {
   const accepted = rows.filter((r) => r.record.loadBearingAccepted);
   return {
     ok: true, look, others, multi, selfName,
-    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${GUARD_UNREACHED.has(f.reason) ? unreachableClause(poolMachine(poolRows, f.machineId), f, now) : FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
+    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(poolMachine(poolRows, f.machineId)?.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${GUARD_UNREACHED.has(f.reason) ? unreachableClause(poolMachine(poolRows, f.machineId), f, now) : FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
     counts: { look: look.length, others: others.length, accepted: accepted.length, total: rows.length },
   };
 }

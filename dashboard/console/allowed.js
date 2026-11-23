@@ -141,7 +141,9 @@ function guardsBlock(guards, refresh) {
   const open = (r) => (r.record ? openGuard(r, refresh) : null);
   return el('div', { class: 'guard-block', id: 'sec-guards' },
     // warning-path: row
-    section({ id: 'guards-look', title: guards.counts.look ? 'Safety checks · need a look' : 'Safety checks', rows: [...guards.look, ...guards.failed], empty: 'Every safety check is where it should be.', onRow: open, tone: guards.counts.look ? 'attn' : null }),
+    section({ id: 'guards-look', title: guards.counts.look ? 'Safety checks · need a look' : 'Safety checks', rows: guards.look, empty: guards.failed.length ? 'Every safety check that answered is where it should be.' : 'Every safety check is where it should be.', onRow: open, tone: guards.counts.look ? 'attn' : null }),
+    // Machines that did not answer are not checks: their own list, so the counts above and here agree (2026-11-20 audit: 40 vs 42).
+    guards.failed.length ? section({ id: 'guards-unchecked', title: 'Machines I couldn’t check', rows: guards.failed }) : null,
     section({ id: 'guards-others', title: `${guards.counts.others} others`, rows: guards.others, collapsed: true, onRow: open }));
 }
 

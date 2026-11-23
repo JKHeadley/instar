@@ -279,6 +279,14 @@ export class TrustJourneyStore {
         // The card record (with its message id) wins over the first write, in any load order.
         const prev = this.requests.get(r.requestId as string);
         if (prev && prev.cardMessageId && !r.cardMessageId) break;
+        // SEC-141: a request's change and proposal hash are fixed by the first record seen for it. A
+        // later record may add the card's message and chat ids, and only when it names the same hash;
+        // it can never replace what the request would change.
+        if (prev) {
+          if (r.proposalHash !== prev.proposalHash) break;
+          this.requests.set(r.requestId as string, { ...prev, cardMessageId: (r.cardMessageId as string) ?? prev.cardMessageId, cardChatId: (r.cardChatId as string) ?? prev.cardChatId });
+          break;
+        }
         this.requests.set(r.requestId as string, { ...(r as unknown as RequestRecord), change: r.change as TrustChange, summary: (r.summary as string[]) ?? [] });
         break;
       }

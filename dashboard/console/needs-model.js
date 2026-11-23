@@ -50,6 +50,17 @@ export function cutAtWord(text, max) {
   return `${base}…`;
 }
 
+/**
+ * The rows the Conversations page's Chief of Staff card shows. Where the Needs-you list is on screen it
+ * already lists every project's wait, so the card keeps only what that list cannot do on this page: the
+ * check-in for a Chief of Staff that is paused or about to pause (2026-11-20 dashboard audit: two stacked
+ * boxes repeated the same waits and pushed the page below the first screen on a phone).
+ */
+export function chiefOfStaffCardRows(rows, { stripShown = false } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  return stripShown ? list.filter((r) => r && (r.key === 'need:cos:paused' || r.key === 'need:cos:expiring')) : list;
+}
+
 /** A short project name from its goal, the same rule as `shortProjectTitle` in src/core/ChiefOfStaffLoop.ts. */
 export function shortProjectTitle(goal, max = 60) {
   const g = String(goal == null ? '' : goal).replace(/\s+/g, ' ').trim();

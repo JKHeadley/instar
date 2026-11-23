@@ -71,7 +71,7 @@ describe('existing Apple approval disclosure representation', () => {
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/app-approval-disclosure-boundaries.test.ts' }); });
 
-async function legacyRequest(summary: string[], adapter: 'device' | 'telegram' = 'device', freshSummary: string[] = ['unused']) {
+async function legacyRequest(summary: string[], adapter: 'device' | 'telegram' = 'device', freshSummary: string[] = summary) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-disclosure-'));
   dirs.push(dir);
   const now = new Date('2026-11-22T23:00:00Z');
@@ -89,6 +89,22 @@ async function legacyRequest(summary: string[], adapter: 'device' | 'telegram' =
 }
 
 describe('legacy persisted disclosures remain safe at consumption', () => {
+  it('ignores an oversized stored summary when the verified change has a short complete disclosure', async () => {
+    const derived = ['The actual verified change'];
+    const { service, apply, authorization } = await legacyRequest(['x'.repeat(16_001)], 'device', derived);
+    expect(service.deviceListing()[0].summary).toEqual(derived);
+    expect((await service.onPresenceApproval(authorization)).status).toBe('applied');
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+  it('bounds the derived change even when its stored summary looks harmless', async () => {
+    const { service, store, change, apply, authorization } = await legacyRequest(['A harmless cached description'], 'telegram', ['x'.repeat(16_001)]);
+    expect(service.deviceListing()[0].summary.join(' ')).toContain('too large to show whole');
+    expect(await service.propose(change)).toMatchObject({ status: 'too-large' });
+    expect(store.request('tr-legacy')?.adapter).toBe('telegram');
+    expect(await service.onPresenceApproval(authorization)).toMatchObject({ status: 'refused', reason: 'disclosure-too-large' });
+    expect(apply).not.toHaveBeenCalled();
+    expect(store.consumptionOf('tr-legacy')).toBeNull();
+  });
   it('lists the complete representable legacy disclosure and permits its exact approval once', async () => {
     const summary = ['Exact old request: ' + 'a'.repeat(900) + ' END'];
     const { service, store, apply, authorization } = await legacyRequest(summary);

@@ -53,6 +53,21 @@ describe('needs read: the console models run on the server', () => {
 });
 
 describe('needs read: the owner', () => {
+  it('reports scheduled launches and explicit asks but no approval for unscheduled tracking', async () => {
+    const base = { kind: 'project', status: 'active', autoAdvance: false, lastTouchedAt: iso(0),
+      phases: [], currentPhaseIndex: 0, rounds: [{ name: 'First step', status: 'pending', itemIds: [] }] };
+    const items = [
+      { ...base, id: 'tracking', title: 'Tracking only' },
+      { ...base, id: 'scheduled', title: 'Scheduled launch', rounds: [{ ...base.rounds[0], autoAdvanceAt: iso(5) }] },
+      { ...base, id: 'explicit', title: 'Choose the layout', needsUser: true, needsUserReason: 'Pick a layout' },
+    ];
+    const result = await composer({ '/initiatives': { status: 200, body: { items, count: items.length } }, '/blockers': { status: 200, body: { entries: [], total: 0 } } }).owner();
+    const plans = result.items.filter(r => r.source === 'plans');
+    expect(plans.map(r => r.title)).toEqual(expect.arrayContaining(['Scheduled launch', 'Choose the layout']));
+    expect(plans).toHaveLength(2);
+    expect(plans.find(r => r.title === 'Choose the layout')?.why).toContain('Pick a layout');
+  });
+
   it('a complete read with nothing waiting is complete and zero (the only case a strip may hide)', async () => {
     const a = await composer({ '/attention?scope=pool&status=OPEN': attention([]), '/commitments?scope=mesh': { status: 200, body: { commitments: [], scope: 'mesh' } }, '/pool': { status: 200, body: { machines: [], selfMachineId: 'm_self' } } }).owner();
     expect(a.count).toBe(0);

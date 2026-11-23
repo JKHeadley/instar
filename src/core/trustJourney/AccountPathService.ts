@@ -216,7 +216,9 @@ export class AccountPathService {
     const proposalHash = proposalHashOf(proofSubject(change));
     const dup = this.d.store.openRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && new Date(r.expiresAt) > this.now());
     if (dup) {
-      if (app && !appApprovalSummaryLines(dup.summary)) return { status: 'too-large', message: 'This request cannot be shown whole in this app. The existing request is unchanged; split the change into smaller requests.' };
+      const derived = app ? this.derivedSummary(dup) : null;
+      if (app && !derived) return { status: 'not-recorded', message: 'This request does not match the change it would make. The existing request is unchanged; ask for a fresh request.' };
+      if (app && !appApprovalSummaryLines(derived!)) return { status: 'too-large', message: 'This request cannot be shown whole in this app. The existing request is unchanged; split the change into smaller requests.' };
       if (app) {
         if (dup.adapter !== 'device' && !dup.cardMessageId) {
           if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
@@ -304,7 +306,9 @@ export class AccountPathService {
     }
     try {
       const port = this.d.adapters[req.adapter]!;
-      const text = renderRequestCard({ summary: { lines: req.summary }, code: req.code, expiresAt: req.expiresAt });
+      const live = this.verified(req);
+      if (!live.ok) return { status: 'undelivered', message: 'This request does not match the change it would make, so no card was sent and nothing was approved.' };
+      const text = renderRequestCard({ summary: { lines: live.summary }, code: req.code, expiresAt: req.expiresAt });
       const sent = await port.sendDirect(req.approverPlatformId, text);
       if (!sent) return { status: 'undelivered', message: 'The request card could not be delivered to the owner’s private chat. The pending request remains visible; nothing was approved.' };
       const w = await this.d.store.write('request', { ...req, cardMessageId: sent.messageId, cardChatId: sent.chatId, status: 'open' }, `tj:request:${req.requestId}:card`);
@@ -411,11 +415,18 @@ export class AccountPathService {
       return 'refused';
     }
 
+    // SEC-141: approve only a request whose change still matches its hash; the reply names the change itself.
+    const live = this.verified(req);
+    if (!live.ok) {
+      await this.d.adapters[adapter]?.replyTo(r.chatId, r.messageId, 'This request does not match the change it would make, so nothing was approved. The agent can send a fresh one.');
+      return 'refused';
+    }
+
     // 3. Approve: claim the request before any wait, so a second reply arriving meanwhile is refused.
     if (this.inFlight.has(req.requestId)) return 'refused';
     this.inFlight.add(req.requestId);
     try {
-      return await this.consume(r, req, acceptance!);
+      return await this.consume(r, { ...req, summary: live.summary }, acceptance!);
     } finally {
       this.inFlight.delete(req.requestId);
     }
@@ -713,6 +724,34 @@ export class AccountPathService {
    * device with this key; the device is still paired and active with that same key. Then the shared
    * consumption (one key, one compare-and-set), the proof `accepted-device`, the apply and the outcome.
    */
+  /**
+   * SEC-141: the text a person approves is rebuilt from the change itself, never read from the stored
+   * request. A request record is replicated, and its `summary` is a separate field nothing derived
+   * again, so a forged record could pair a harmless summary with a dangerous change and a matching
+   * hash. A request whose change no longer hashes to its recorded `proposalHash`, or that has no
+   * change, is treated as altered and is neither listed as approvable nor approved.
+   */
+  /** SEC-141: the text for a request rebuilt from its change, or null when the request is altered. */
+  derivedSummary(req: { change?: TrustChange; proposalHash: string; requestId: string }): string[] | null {
+    const v = this.verified(req);
+    return v.ok ? v.summary : null;
+  }
+
+  private verified<R extends { change?: TrustChange; proposalHash: string; requestId: string }>(req: R): { ok: true; summary: string[] } | { ok: false } {
+    if (!req.change) return { ok: false };
+    try {
+      if (proposalHashOf(proofSubject(req.change)) !== req.proposalHash) {
+        this.d.log?.('trust-request-altered', { requestId: req.requestId });
+        return { ok: false };
+      }
+      return { ok: true, summary: this.d.summarize(req.change) };
+    } catch {
+      // @silent-fallback-ok — an unreadable change is refused (ok:false), and logged
+      this.d.log?.('trust-request-altered', { requestId: req.requestId, reason: 'summarize-failed' });
+      return { ok: false };
+    }
+  }
+
   async onPresenceApproval(auth: DeviceAuthorization): Promise<DeviceApprovalResult> {
     const refuse = (reason: string, message: string): DeviceApprovalResult => ({ status: 'refused', reason, message });
     if (!this.holds()) return { status: 'not-holder', reason: 'not-holder', message: HOLDER_MESSAGE };
@@ -727,7 +766,9 @@ export class AccountPathService {
       return refuse('request-expired', 'This request has expired, so nothing was approved. The agent can send a fresh one.');
     }
     if (req.proposalHash !== auth.proposalHash) return refuse('proposal-changed', 'This request is not the one shown on the card, so nothing was approved. Look again.');
-    if (!appApprovalSummaryLines(req.summary)) return refuse('disclosure-too-large', 'This request cannot be shown whole in this app, so nothing was approved. Ask the agent to split it into smaller requests.');
+    const live = this.verified(req);
+    if (!live.ok) return refuse('request-altered', 'This request does not match the change it would make, so nothing was approved. The agent can send a fresh one.');
+    if (!appApprovalSummaryLines(live.summary)) return refuse('disclosure-too-large', 'This request cannot be shown whole in this app, so nothing was approved. Ask the agent to split it into smaller requests.');
     const onRecord = this.d.store.deviceAcceptance(auth.deviceId);
     if (!onRecord) {
       return this.d.store.deviceAcceptanceWithdrawn(auth.deviceId)
@@ -761,7 +802,7 @@ export class AccountPathService {
       const name = this.devices?.get(auth.deviceId)?.name ?? null;
       if (!done.outcomeRecorded) return { status: 'unknown', requestId: req.requestId, message: UNKNOWN_OUTCOME_TEXT };
       if (!done.applied.ok) return { status: 'not-applied', requestId: req.requestId, message: `Your approval was recorded, but the change did not take effect (${done.applied.detail ?? 'unknown reason'}). Nothing else changed; the agent will need to ask again.` };
-      return { status: 'applied', requestId: req.requestId, message: `Done: ${req.summary.join('; ')}. ${deviceApprovalDisclosure(name)}`, ...(done.applied.detail ? { detail: done.applied.detail } : {}) };
+      return { status: 'applied', requestId: req.requestId, message: `Done: ${live.summary.join('; ')}. ${deviceApprovalDisclosure(name)}`, ...(done.applied.detail ? { detail: done.applied.detail } : {}) };
     } finally {
       this.inFlight.delete(req.requestId);
     }
@@ -777,6 +818,9 @@ export class AccountPathService {
     const weekAgo = now - 7 * 86_400_000;
     const out: DeviceRequestRow[] = [];
     for (const r of this.d.store.allRequests()) {
+      // SEC-141: list only requests whose change matches their hash, with text rebuilt from the change.
+      const live = this.verified(r);
+      if (!live.ok) continue;
       const consumption = this.d.store.consumptionOf(r.requestId);
       const expired = new Date(r.expiresAt).getTime() <= now;
       let status: DeviceRequestRow['status'];
@@ -791,7 +835,7 @@ export class AccountPathService {
       const outcome = this.d.store.applyOutcome(r.requestId);
       const byDevice = consumption?.kind === 'accepted-device';
       out.push({
-        requestId: r.requestId, status, summary: appApprovalSummaryLines(r.summary) ?? ['This request is too large to show whole in this app. It cannot be approved here. Ask the agent to split it into smaller requests.'], proposalHash: r.proposalHash, expiresAt: r.expiresAt,
+        requestId: r.requestId, status, summary: appApprovalSummaryLines(live.summary) ?? ['This request is too large to show whole in this app. It cannot be approved here. Ask the agent to split it into smaller requests.'], proposalHash: r.proposalHash, expiresAt: r.expiresAt,
         changeKind: r.change?.kind ?? null, via: r.adapter === 'device' ? 'device' : 'chat',
         delivery: r.adapter === 'device' ? 'app-listed' : r.cardMessageId ? 'chat-confirmed' : 'chat-unconfirmed',
         ...(consumption ? {

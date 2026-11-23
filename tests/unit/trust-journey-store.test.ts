@@ -113,8 +113,11 @@ describe('TrustJourneyStore device request carrier', () => {
   it('confirmed chat delivery wins in every replay order and retains the raw receipt binding', () => {
     for (const order of permutations([pending, deviceCarrier, req])) {
       const s = new TrustJourneyStore(fixed(order));
-      expect(s.request('r1')).toEqual(req);
-      expect(s.requestByCard('telegram', '50')).toEqual(req);
+      // The first request fixes its contents; a later delivery adds only the receipt binding.
+      const first = order.find(r => r.recordType === 'request')!;
+      const confirmed = { ...first, cardMessageId: req.cardMessageId, cardChatId: req.cardChatId };
+      expect(s.request('r1')).toEqual(confirmed);
+      expect(s.requestByCard('telegram', '50')).toEqual(confirmed);
       expect(s.requestByCard('slack', '50')).toBeNull();
     }
   });

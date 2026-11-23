@@ -40,7 +40,7 @@ import {
   type SpawnPlacementContext,
   type WindowAwareDeps,
 } from './windowAwarePlacement.js';
-import { FRESH_READING_MS } from './windowAwareChoice.js';
+import { FRESH_READING_MS, compareCodexWeeklyReset } from './windowAwareChoice.js';
 
 /** The part of `config.subscriptionPool` this module reads (read LIVE). */
 export interface WallRescueConfigView {
@@ -732,7 +732,8 @@ export class UsageWallRescue {
    *    spawn; otherwise act only when some Codex account is known walled.
    *  - Pick: not walled, a FRESH reading under the soft threshold (a recent
    *    successful read is evidence the login works; unread accounts are never
-   *    picked), most room first. Nothing qualifies → null: the default login.
+   *    picked), earliest valid weekly reset first, then most room. Nothing
+   *    qualifies → null: the default login.
    * "Walled" is the SAME predicate the rescue uses (`isKnownWalled`): a reading
    * at or above 100% in either window counts until that window's resetsAt.
    */
@@ -758,7 +759,7 @@ export class UsageWallRescue {
     const soft = this.soft(cfg);
     const pick = usable
       .filter((a) => !this.isKnownWalled(a.id) && this.isFresh(a, nowMs) && bindingUtilization(a.lastQuota) < soft)
-      .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
+      .sort((a, b) => compareCodexWeeklyReset(a, b, nowMs) || bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
     return pick ? { configHome: pick.configHome, accountId: pick.id } : null;
   }
 }
