@@ -57,7 +57,7 @@ function renderUnlock(message) {
     ev.preventDefault();
     btn.disabled = true; err.textContent = '';
     try {
-      const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: input.value }) });
+      const r = await (await import('/dashboard/local-access.js').catch(() => ({ postUnlock: (pin) => fetch('/dashboard/unlock', { method: 'POST', cache: 'no-store', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }) }))).postUnlock(input.value);
       const data = await r.json().catch(() => ({}));
       if ((r.status === 404 || r.status === 503) && await validToken(input.value)) {
         try { localStorage.setItem(TOKEN_KEY, input.value); } catch { /* storage blocked */ }

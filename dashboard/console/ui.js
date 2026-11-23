@@ -422,7 +422,7 @@ export function askPin({ title, explain, adapter = 'body', fresh = false }) {
       if (adapter === 'body') { input.value = ''; finish({ pin }); closeSheet(); return; }
       go.disabled = true; err.textContent = '';
       try {
-        const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
+        const r = await (await import('/dashboard/local-access.js').catch(() => ({ postUnlock: (pin) => fetch('/dashboard/unlock', { method: 'POST', cache: 'no-store', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }) }))).postUnlock(pin);
         input.value = '';
         const d = await r.json().catch(() => ({}));
         if (!r.ok || typeof d.operatorSessionToken !== 'string' || !d.operatorSessionToken) {

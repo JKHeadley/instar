@@ -14,6 +14,7 @@ import { verifyDeviceRequest, ReplayGuard, parseDevicePublicKey } from '../../sr
 // ── a tiny in-memory IndexedDB (only what browser-device.js uses) ─────────────
 function fakeIndexedDB() {
   const stores = new Map<string, Map<string, unknown>>();
+  const databases = new Map<string, Map<string, Map<string, unknown>>>([['instar-console', stores]]);
   const req = (fn: () => unknown, tx?: { pending: number; done: () => void }) => {
     const r: Record<string, unknown> = {};
     if (tx) tx.pending++;
@@ -26,15 +27,17 @@ function fakeIndexedDB() {
   };
   return {
     stores,
-    open(_name: string) {
+    open(name: string) {
+      const dbStores = databases.get(name) ?? new Map<string, Map<string, unknown>>();
+      databases.set(name, dbStores);
       const r: Record<string, unknown> = {};
       setTimeout(() => {
         const db = {
-          objectStoreNames: { contains: (n: string) => stores.has(n) },
-          createObjectStore: (n: string) => { stores.set(n, new Map()); },
+          objectStoreNames: { contains: (n: string) => dbStores.has(n) },
+          createObjectStore: (n: string) => { dbStores.set(n, new Map()); },
           transaction(name: string) {
             const t: Record<string, unknown> & { pending: number; done: () => void } = { pending: 0, done: () => (t.oncomplete as (() => void) | undefined)?.() };
-            const s = stores.get(name)!;
+            const s = dbStores.get(name)!;
             t.objectStore = () => ({
               get: (k: string) => req(() => s.get(k), t),
               getAll: () => req(() => [...s.values()], t),
@@ -47,7 +50,7 @@ function fakeIndexedDB() {
           close() {},
         };
         r.result = db;
-        if (!stores.has('device')) (r.onupgradeneeded as (() => void) | undefined)?.();
+        if (dbStores.size === 0) (r.onupgradeneeded as (() => void) | undefined)?.();
         (r.onsuccess as (() => void) | undefined)?.();
       }, 0);
       return r;

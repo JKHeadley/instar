@@ -336,6 +336,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Bounded warm-session pool (global/per-peer caps + TTL); no destructive action, no third-party spend.',
   },
   {
+    name: 'localAccessLink',
+    configPath: 'security.localAccessLink.enabled',
+    description: 'The one-time local dashboard link (instar dashboard open) and its verified-local PIN budget.',
+    justification: 'Additive local-only route; mint needs the 0600 listener key; the credential only selects a PIN budget (the PIN is still required); off restores today\'s unlock exactly.',
+  },
+  {
     name: 'secretSync',
     configPath: 'multiMachine.secretSync.enabled',
     description: 'Cross-machine secret sync (receive side).',
