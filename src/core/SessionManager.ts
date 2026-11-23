@@ -9507,9 +9507,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   injectPasteNotification(tmuxSession: string, notification: string): string {
     const FILE_THRESHOLD = 500;
+    const inject = (text: string): void => {
+      if (this.injectMessage(tmuxSession, text) === false) {
+        // Marker absence is not submission evidence when nothing was pasted.
+        // The observed wrapper already maps a thrown refusal to `stuck`.
+        throw new Error('Notification input was refused');
+      }
+    };
 
     if (notification.length <= FILE_THRESHOLD) {
-      this.injectMessage(tmuxSession, notification);
+      inject(notification);
       return notification;
     }
 
@@ -9519,11 +9526,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // notification must never be lost.
     const filepath = writePrivatePasteFile(notification);
     if (!filepath) {
-      this.injectMessage(tmuxSession, notification);
+      inject(notification);
       return notification;
     }
     const ref = `[paste] Content notification saved to ${filepath} — read it to see the details.`;
-    this.injectMessage(tmuxSession, ref);
+    inject(ref);
     return ref;
   }
 

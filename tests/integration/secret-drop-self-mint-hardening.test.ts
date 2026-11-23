@@ -68,6 +68,15 @@ describe('Secret Drop self-mint hardening (routes)', () => {
   }
 
   describe('keyless route (no agent key)', () => {
+    it('does not spend the hourly notice slot when its live injection is refused', async () => {
+      const app = mount();
+      sm.injectPasteNotification.mockImplementationOnce(() => { throw new Error('Notification input was refused'); });
+      const first = await request(app).post('/threadline/secrets/request').send({ label: 'a', topicId: TOPIC });
+      const second = await request(app).post('/threadline/secrets/request').send({ label: 'b', topicId: TOPIC });
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(sm.injectPasteNotification).toHaveBeenCalledTimes(2);
+    });
     it('a request naming a conversation gets a working link, a plain notice, and never reaches a session on submit', async () => {
       const app = mount();
       const mint = await request(app).post('/threadline/secrets/request').send({ label: HOSTILE, topicId: TOPIC, fields: [{ name: 'code', label: 'Code' }] });
@@ -154,6 +163,20 @@ describe('Secret Drop self-mint hardening (routes)', () => {
   });
 
   describe('agent key (master)', () => {
+    it('preserves a successful stored submission when its later session notification is refused', async () => {
+      const app = mount();
+      const mint = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`)
+        .send({ label: 'fixture code', topicId: TOPIC, fields: [{ name: 'code', label: 'Code' }] });
+      expect(mint.status).toBe(201);
+      sm.injectPasteNotification.mockImplementationOnce(() => { throw new Error('Notification input was refused'); });
+      const submitted = await submit(app, mint.body.token, { code: 'fixture-value' });
+      expect(submitted.status).toBe(200);
+      const retrieved = await request(app).post(`/secrets/retrieve/${mint.body.token}`).set('Authorization', `Bearer ${AUTH}`);
+      expect(retrieved.status).toBe(200);
+      expect(retrieved.body.values).toEqual({ code: 'fixture-value' });
+      expect(sm.injectPasteNotification).toHaveBeenCalledTimes(1);
+      expect(sm.spawnInteractiveSession).not.toHaveBeenCalled();
+    });
     it('keeps its conversation: a live session gets the receipt, the label quoted as untrusted data', async () => {
       const app = mount();
       const mint = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`).send({ label: HOSTILE, topicId: TOPIC, fields: [{ name: 'code', label: 'Code' }] });
