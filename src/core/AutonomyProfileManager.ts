@@ -490,6 +490,9 @@ export class AutonomyProfileManager {
     };
   }
 
+  /** The profile this agent's config gives when no profile was ever set (the narrowing target after a new lease run). */
+  configuredDefaultProfile(): AutonomyProfileLevel { return this.deriveProfileFromConfig(); }
+
   /**
    * Infer the autonomy profile from existing config settings.
    * Used when first creating the autonomy state (backward compatibility).

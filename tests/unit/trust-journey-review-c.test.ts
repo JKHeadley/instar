@@ -22,8 +22,8 @@ function slowSink() {
   const rows: TrustRecord[] = [];
   return { description: 'slow', rows, loadAll: () => rows, append: async (k: string, r: TrustRecord) => { await new Promise((res) => setTimeout(res, 30)); rows.push({ ...r, recordKey: k }); return true; } };
 }
-const mk = (opts: { sink?: ReturnType<typeof slowSink>; machineId?: string; imported?: { v: boolean }; mcp?: string[] } = {}) => createTrustJourneyRuntime({
-  stateDir: dir, configPath: path.join(dir, 'config.json'), runtimeConfig: {}, installationId: 'x', machineId: opts.machineId ?? 'm1', sink: opts.sink,
+const mk = (opts: { sink?: ReturnType<typeof slowSink>; machineId?: string; imported?: { v: boolean }; mcp?: string[]; cfg?: Record<string, unknown> } = {}) => createTrustJourneyRuntime({
+  stateDir: dir, configPath: path.join(dir, 'config.json'), runtimeConfig: opts.cfg ?? {}, installationId: 'x', machineId: opts.machineId ?? 'm1', sink: opts.sink,
   adaptiveTrust: new AdaptiveTrust({ stateDir: dir }), autonomyManager: null, trustRecovery: null, telegram: null, slack: null, slackOwnerUserId: () => null, holdsLease: () => true,
   ...(opts.imported ? { legacyImport: { gateEnabled: true, gateServices: ['svc'], readOnlyServices: [], logServices: () => [], mcpServers: () => opts.mcp ?? [], alreadyImported: () => opts.imported!.v, markImported: () => { opts.imported!.v = true; return true; } } } : {}),
 });
@@ -55,29 +55,46 @@ describe('one approval, one call', () => {
 });
 
 describe('legacy status', () => {
-  it('a person-set change ends legacy status; a later joining machine does not revive it', async () => {
+  /** One store shared by two machines, each row tagged with the machine that wrote it (as the journal does). */
+  const shared: TrustRecord[] = [];
+  const taggedSink = (machine: string) => ({ description: 'tagged', loadAll: () => shared.map((r) => ({ ...r })), append: async (k: string, r: TrustRecord) => { shared.push({ ...r, recordKey: k, writer: machine } as TrustRecord); return true; } });
+  const IGNORE = { trustJourney: { peerGrants: 'ignore' } };
+  beforeEach(() => { shared.length = 0; });
+
+  it('a person-set change ends legacy status; a joining machine imports nothing from another machine (SEC-088 part 2)', async () => {
     const imported = { v: false };
-    const a = mk({ imported });
+    const a = mk({ imported, sink: taggedSink('m1') as never, cfg: IGNORE });
     await a.importLegacyAndWriteFallback();
     expect((await a.admit('mcp__svc__send_note', {})).decision.verdict).toBe('legacy');
     await a.store.write('change', { changeId: 'svc.write:1', key: 'svc.write', from: 'log', to: 'approve-always', direction: 'lower', source: 'person' });
     expect((await a.admit('mcp__svc__send_note', {})).decision.verdict).toBe('ask');
-    // Machine m2 joins: svc.write is no longer unchanged-legacy anywhere, so m2 does not import it.
-    const b = mk({ machineId: 'm2', imported: { v: false } });
+    // Machine m2 joins: m1's legacy grants are evidence that it is a joining machine, never imported.
+    const b = mk({ machineId: 'm2', imported: { v: false }, sink: taggedSink('m2') as never, cfg: IGNORE });
+    await b.importLegacyAndWriteFallback();
+    expect(b.store.legacyGrants('svc.write')).toEqual([]);
+    expect(b.store.legacyGrants('svc.modify')).toEqual([]);
+    expect((await b.admit('mcp__svc__send_note', {})).decision.verdict).toBe('ask');
+  });
+  it('under "fold" (today) a joining machine still imports the kinds unchanged elsewhere', async () => {
+    const FOLD = { trustJourney: { peerGrants: 'fold' } };
+    const a = mk({ imported: { v: false }, sink: taggedSink('m1') as never, cfg: FOLD });
+    await a.importLegacyAndWriteFallback();
+    await a.store.write('change', { changeId: 'svc.write:1', key: 'svc.write', from: 'log', to: 'approve-always', direction: 'lower', source: 'person' });
+    const b = mk({ machineId: 'm2', imported: { v: false }, sink: taggedSink('m2') as never, cfg: FOLD });
     await b.importLegacyAndWriteFallback();
     expect(b.store.legacyGrants('svc.write').some((g) => g.machine === 'm2')).toBe(false);
     expect(b.store.legacyGrants('svc.modify').some((g) => g.machine === 'm2')).toBe(true);
   });
   it('when every legacy kind was changed, a joining machine imports nothing', async () => {
-    const a = mk({ imported: { v: false } });
+    const a = mk({ imported: { v: false }, sink: taggedSink('m1') as never, cfg: IGNORE });
     await a.importLegacyAndWriteFallback();
     for (const k of a.store.legacyKeys()) {
       await a.store.write('change', { changeId: `${k}:1`, key: k, from: 'log', to: 'approve-always', direction: 'lower', source: 'person' });
     }
     expect(a.store.unchangedLegacyKeys()).toEqual([]);
-    const b = mk({ machineId: 'm2', imported: { v: false }, mcp: ['other'] });
+    const b = mk({ machineId: 'm2', imported: { v: false }, mcp: ['other'], sink: taggedSink('m2') as never, cfg: IGNORE });
     await b.importLegacyAndWriteFallback();
-    expect(b.store.legacyKeys().some((k) => b.store.legacyGrants(k).some((g) => g.machine === 'm2'))).toBe(false);
+    expect(b.store.legacyKeys()).toEqual([]);
     expect((await b.admit('mcp__svc__send_note', {})).decision.verdict).toBe('ask');
   });
   it('an import that stopped part-way resumes and sets the marker', async () => {

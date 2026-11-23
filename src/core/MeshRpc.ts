@@ -244,7 +244,9 @@ export type MeshCommand =
       //   • batch   — durably-flushed own-stream entries the sender is pushing.
       type: 'journal-sync';
       advert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
-      request?: { machineId: string; kind: string; fromSeq: number };
+      //   • request.requesterNonce — SEC-088 decision 5: a fresh random value per request; the
+      //     server signs its response over it (older servers ignore it, older clients omit it).
+      request?: { machineId: string; kind: string; fromSeq: number; requesterNonce?: string };
       batch?: { kind: string; incarnation: string; entries: unknown[]; oldestRetainedSeq?: number }[];
     }
   | {

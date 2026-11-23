@@ -129,6 +129,9 @@ export const MAX_OPEN_REQUESTS = 3;
 export type ReceiptOutcome =
   | 'duplicate' | 'not-recorded' | 'acceptance-recorded' | 'not-for-us' | 'instruction-sent' | 'refused' | 'approved' | 'apply-failed';
 
+/** Decision 7 (SEC-088 part 2): the honest line when another machine closed or used a request. */
+export const PEER_CLOSED_TEXT = 'Another of my machines closed that request, so nothing was approved. I will ask again when it next comes up.';
+
 export class AccountPathService {
   private readonly now: () => Date;
   private devices: DeviceDirectory | null;
@@ -243,7 +246,8 @@ export class AccountPathService {
     if (!ownerId || r.senderId !== ownerId || !direct || r.senderIsBot || r.forwarded) return false;
     if (isAcceptanceReply(r.text, acceptanceStatement({ adapter: r.adapter, accountId: ownerId, installationId: this.d.installationId }))) return true;
     if (parseApproveCommand(r.text)) return true;
-    return !!(r.replyToMessageId && this.d.store.requestByCard(r.adapter, r.replyToMessageId));
+    // Any own request, from any run: a reply to an earlier run's card gets the "made earlier" line.
+    return !!(r.replyToMessageId && this.d.store.requestByCardAnyRun(r.adapter, r.replyToMessageId));
   }
 
   /** Requests being consumed right now: claimed before any wait, so two quick replies apply once. */
@@ -270,7 +274,7 @@ export class AccountPathService {
     if (!ownerId || r.senderId !== ownerId || !direct || r.senderIsBot || r.forwarded) return 'not-for-us';
     const statement = acceptanceStatement({ adapter: r.adapter, accountId: ownerId, installationId: this.d.installationId });
     const wouldAct = isAcceptanceReply(r.text, statement)
-      || (!!r.replyToMessageId && !!this.d.store.requestByCard(r.adapter, r.replyToMessageId))
+      || (!!r.replyToMessageId && !!this.d.store.requestByCardAnyRun(r.adapter, r.replyToMessageId))
       || parseApproveCommand(r.text) !== null;
     if (!wouldAct) return 'not-for-us';
     return this.instruct(r, 'That reply reached one of my machines that is not handling approvals right now, so nothing changed. Please send the same reply again in a minute.');
@@ -303,6 +307,10 @@ export class AccountPathService {
 
     // 2. A reply to a request card.
     const req = r.replyToMessageId ? this.d.store.requestByCard(adapter, r.replyToMessageId) : null;
+    if (!req && r.replyToMessageId && this.d.store.requestByCardAnyRun(adapter, r.replyToMessageId)) {
+      // SEC-088 part 2 (decision 6): a request from an earlier run of the lease is not answerable here.
+      return this.instruct(r, 'That request was made earlier, before another of my machines was in charge, so nothing changed. I will ask again here when it next comes up.');
+    }
     if (!req) {
       return parseApproveCommand(r.text) ? this.instruct(r, 'To approve, reply to the request card itself with the code it shows.') : 'not-for-us';
     }
@@ -311,6 +319,10 @@ export class AccountPathService {
     if (!verdict.ok) {
       if (verdict.reason === 'not-the-approve-command' || verdict.reason === 'wrong-code') {
         return this.instruct(r, `That approves nothing. To approve, reply to the card with exactly: approve ${req.code}`);
+      }
+      if ((verdict.reason === 'request-consumed' || verdict.reason.startsWith('request-')) && verdict.reason !== 'request-expired' && this.d.store.requestNarrowedByPeer(req.requestId)) {
+        // SEC-088 part 2 (decision 7): another machine closed or used it; never "already approved".
+        return this.instruct(r, PEER_CLOSED_TEXT);
       }
       if (verdict.reason === 'request-consumed') {
         // Approved already (here, or from a paired device): the loser of a race is told so.
@@ -426,9 +438,16 @@ export class AccountPathService {
   }
 
   async withdrawAcceptance(principal: string, adapter: AdapterKind): Promise<boolean> {
-    const a = this.d.store.acceptance(principal, adapter);
-    if (!a) return false;
-    return (await this.d.store.write('acceptance-withdrawn', { acceptanceId: a.acceptanceId, principal, adapter })).ok;
+    // SEC-088 part 2: one withdrawal per acceptance id any machine recorded for this subject, so a
+    // withdrawal made where approvals are not handled still reaches the holder's acceptance.
+    const ids = this.d.store.acceptanceIdsToWithdraw(principal, adapter);
+    if (!ids.length) return false;
+    let ok = true;
+    for (const acceptanceId of ids) {
+      const w = await this.d.store.write('acceptance-withdrawn', { acceptanceId, principal, adapter }, `tj:acceptance-withdrawn:${acceptanceId}`);
+      ok = ok && (w.ok || !this.d.store.acceptanceIdsToWithdraw(principal, adapter).includes(acceptanceId));
+    }
+    return ok;
   }
   // ── Approving from a paired device (docs/specs/app-trust-approval.md) ──────────────
 
@@ -451,7 +470,7 @@ export class AccountPathService {
     const w = await this.d.store.write('device-acceptance-withdrawn', {
       acceptanceId: a.acceptanceId, deviceId: a.deviceId, principal: a.principal, withdrawnAt: this.now().toISOString(), reason,
     }, `tj:device-acceptance-withdrawn:${a.acceptanceId}`);
-    const done = w.ok || !this.d.store.currentDeviceAcceptances().some((x) => x.acceptanceId === a.acceptanceId);
+    const done = w.ok || !this.d.store.deviceAcceptancesToWithdraw().some((x) => x.acceptanceId === a.acceptanceId);
     if (w.ok) { this.d.log?.('trust-device-acceptance-withdrawn', { deviceId: a.deviceId, reason }); this.notifyDevices('trust-device-change', `trust-device:${a.acceptanceId}:withdrawn`); }
     return done;
   }
@@ -609,9 +628,18 @@ export class AccountPathService {
 
   /** The person withdraws a device's acceptance (a narrowing: stops new device approvals, keeps committed grants). */
   async withdrawDeviceAcceptance(deviceId: string | null, reason = 'withdrawn by the person'): Promise<number> {
+    // SEC-088 part 2: every machine's acceptance of this phone (device ids are per machine, so the
+    // phone is also matched by its key fingerprint). Evidence only; it can only narrow.
+    const all = this.d.store.deviceAcceptancesToWithdraw();
+    const fps = new Set<string>();
+    if (deviceId !== null) {
+      for (const a of all) if (a.deviceId === deviceId) fps.add(a.keyFingerprint);
+      const snap = this.devices?.get(deviceId) ?? null;
+      if (snap?.keyFingerprint) fps.add(snap.keyFingerprint);
+    }
     let n = 0;
-    for (const a of this.d.store.currentDeviceAcceptances()) {
-      if (deviceId !== null && a.deviceId !== deviceId) continue;
+    for (const a of all) {
+      if (deviceId !== null && a.deviceId !== deviceId && !fps.has(a.keyFingerprint)) continue;
       if (await this.writeDeviceWithdrawal(a, reason)) n++;
     }
     return n;
@@ -627,7 +655,12 @@ export class AccountPathService {
     const refuse = (reason: string, message: string): DeviceApprovalResult => ({ status: 'refused', reason, message });
     if (!this.holds()) return { status: 'not-holder', reason: 'not-holder', message: HOLDER_MESSAGE };
     const req = this.d.store.request(auth.requestId);
-    if (!req) return refuse('unknown-request', 'There is no such request.');
+    if (!req) {
+      return this.d.store.requestAnyRun(auth.requestId)
+        ? refuse('request-earlier-run', 'That request was made earlier, before another of my machines was in charge, so nothing was approved. I will ask again here when it next comes up.')
+        : refuse('unknown-request', 'There is no such request.');
+    }
+    if (this.d.store.requestNarrowedByPeer(req.requestId) && req.status !== 'open') return refuse('closed-by-peer', PEER_CLOSED_TEXT);
     if (req.status === 'consumed' || this.d.store.requestConsumedOrPending(req.requestId) || this.inFlight.has(req.requestId)) {
       return { status: 'already-approved', reason: 'already-approved', message: 'This request was already approved.' };
     }
