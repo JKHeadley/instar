@@ -1,0 +1,5 @@
+---
+title: Confirm an engine change from another conversation
+requires: telegram
+---
+When the owner wants to change another Telegram conversation's engine, propose the exact change with `POST /topic-profile/TARGET/propose`, the `X-Instar-Request: 1` header, and a body such as `{"framework":"codex-cli","confirmIn":ASKING_TOPIC}`. Include the normal API authorization header. The owner sees the named target and exact change in the asking conversation and replies "yes" there. The proposal does not change the target until that confirmation. The existing cross-conversation switch must be enabled; the asking conversation must belong to the owner and be unshared, and the target must be known, unconfined, and either unbound or verified to the same owner. Never bypass a refusal with a token write or bind another person as the owner. In-topic proposals also request visible confirmation rather than becoming quiet reports. Escalation and message-signature changes still need confirmation within their own conversation.

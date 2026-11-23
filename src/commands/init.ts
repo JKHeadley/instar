@@ -436,9 +436,11 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -808,9 +810,11 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -1632,8 +1636,10 @@ When something isn't working with instar, or the user wants a feature, use your 
 \`\`\`bash
 curl -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -H 'Content-Type: application/json' \\
-  -d '{"type":"bug","title":"Short description","description":"Full details with context"}'
+  -d '{"type":"bug","title":"Short description","description":"Full details with context","source":{"kind":"agent"}}'
 \`\`\`
+
+\`source\` says who the report is from (\`agent\`, \`other-agent\`, \`user\`). A request the person you serve makes of you directly is never feedback: record it as a commitment (POST /commitments) and it becomes a work card you carry.
 
 This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`, \`hallucination\`.
 
@@ -2141,7 +2147,8 @@ curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -d '{
     "type": "bug",
     "title": "Brief description of the issue",
-    "description": "Full context: what happened, what you expected, error messages, steps to reproduce"
+    "description": "Full context: what happened, what you expected, error messages, steps to reproduce",
+    "source": {"kind": "agent"}
   }' | python3 -m json.tool
 \`\`\`
 
@@ -4723,7 +4730,7 @@ fi
   fs.writeFileSync(path.join(hooksDir, 'model-tier-reconciler.js'), migrator.getHookContent('model-tier-reconciler'), { mode: 0o755 });
 }
 
-function getHookEventReporterScript(): string {
+export function getHookEventReporterScript(): string {
   return `#!/usr/bin/env node
 // Hook Event Reporter — command hook replacement for HTTP hooks.
 //
@@ -4740,7 +4747,9 @@ function getHookEventReporterScript(): string {
 
 const serverUrl = process.env.INSTAR_SERVER_URL || 'http://localhost:4042';
 const authToken = process.env.INSTAR_AUTH_TOKEN || '';
-const instarSid = process.env.INSTAR_SESSION_ID || '';
+// Validated once: an id that fails the pattern is sent in neither the query nor the body (the hook exits).
+const rawSid = process.env.INSTAR_SESSION_ID || '';
+const instarSid = /^[A-Za-z0-9._:-]{1,128}$/.test(rawSid) ? rawSid : '';
 
 if (!authToken || !instarSid) {
   // Missing env vars — skip silently
@@ -4753,8 +4762,32 @@ process.stdin.on('end', async () => {
   try {
     const { request } = await import('node:http');
     const input = JSON.parse(data);
+    // Bound the forwarded identifying fields here too: an older server stores a payload as received.
+    const str = (v, max) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
+    const id = (v) => (typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v) ? v : undefined);
+    const absPath = (v) => (typeof v === 'string' && v.startsWith('/') && v.length <= 1024 ? v : undefined);
     const payload = JSON.stringify({
-      event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // Claude Code names the event in hook_event_name (hook_event is the old
+      // spelling, kept as a fallback). Without it every Stop, SubagentStart,
+      // SubagentStop, TaskCompleted, SessionEnd and PreCompact event arrived as
+      // \"Unknown\" and no consumer of those events ever ran (2026-11-21).
+      event: input.hook_event_name || input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // The instar session this hook ran in, so consumers keyed on it (the
+      // practice-fold runner, the subagent tracker) can find the session.
+      instar_session_id: id(instarSid),
+      // The tmux session name, which Compaction Trigger 1 checks against the session id.
+      instar_session: str(process.env.INSTAR_SESSION_NAME, 128),
+      // Short identifying fields the native reporter also forwards (docs/specs/native-hook-events.md
+      // D1); the server bounds them the same way. Message text (last_assistant_message,
+      // task_subject) is deliberately NOT sent from here: an older server stores payloads as
+      // received, so raw text could reach storage during a version mismatch.
+      agent_id: id(input.agent_id),
+      agent_type: str(input.agent_type, 128),
+      agent_transcript_path: absPath(input.agent_transcript_path),
+      task_id: id(input.task_id),
+      reason: str(input.reason, 64),
+      trigger: str(input.trigger, 64),
+
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
       // green-pr-automerge Layer 2: forward the session cwd so the server can

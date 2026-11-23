@@ -188,6 +188,25 @@ export class PhoneSetupStore {
     return { result: 'ok', setup: s };
   }
 
+  /**
+   * A second phone presented this setup's code after a phone already took it (security review of home
+   * pairing, 2026-11-21). A real setup never has two phones redeeming one code, so the code got out: the
+   * whole setup ends and its waiting phone is turned away, before or after its number was typed. The race
+   * can then only cause a restart, never let anyone in. Called by the redeem route; the routes wire
+   * `onSecondPhone` to decline the waiting phone and close the home address if nothing else uses it.
+   * Returns true when this ended an open at-computer setup. A finished setup is left alone (its phone is
+   * already paired, and the owner is told about a reused link separately).
+   */
+  secondPhone(id: string): boolean {
+    const s = this.get(id);
+    if (!s || s.approval !== 'computer' || (s.state !== 'waiting-number' && s.state !== 'number-accepted')) return false;
+    s.state = 'ended'; s.endedReason = 'second-phone'; delete s.number;
+    this.onSecondPhone?.(s);
+    return true;
+  }
+  /** Set by the routes: decline the waiting phone of a setup a second phone ended. */
+  onSecondPhone: ((s: PhoneSetup) => void) | null = null;
+
   /** With a Telegram owner: the phone redeemed and its confirmation went to the private chat. */
   sentToChat(id: string, deviceId: string): void { const s = this.get(id); if (s && s.state === 'waiting-phone') { s.state = 'sent-to-chat'; s.deviceId = deviceId; } }
 
@@ -325,8 +344,25 @@ export interface PhoneSetupRouteDeps {
   pinAttemptStore?: () => PinAttemptStore | null;
 }
 
+const ALREADY_PAIRED_DETAIL = 'This agent already has a phone. To add a different phone here, remove that one first (from the phone itself, or on the dashboard\'s Phones page), then add the new one.';
+const ALREADY_PAIRED_ELSEWHERE_DETAIL = 'This agent already has a phone, paired through another of its computers. Approve new phones from that phone, or remove it first on the dashboard\'s Phones page.';
+const CHECK_INCOMPLETE_DETAIL = 'I could not check every one of this agent\'s computers for a phone already paired there, so I will not set up a first phone. Make sure the agent\'s other computers are on, connected and have phone pairing switched on, or remove any you no longer use, then try again.';
+
+/** What the number screen says (security review of home pairing, 2026-11-21): the number comes from the owner's own phone, never from anyone else. */
+export const NUMBER_SCREEN_SAY = 'Type the number shown on your own phone. If your phone said this code was already used, do not type anything here. Cancel and start again.';
+/** What the computer says when a second phone tried this setup's code. */
+export const SECOND_PHONE_SAY = 'A second phone tried to use this code, so I cancelled this setup to keep your agent safe. No phone was added. Start again to add your phone, and keep the new code out of sight.';
+
+function setupSay(s: PhoneSetup): string | null {
+  if (s.state === 'waiting-number' && s.approval === 'computer') return NUMBER_SCREEN_SAY;
+  if (s.state === 'ended' && s.endedReason === 'second-phone') return SECOND_PHONE_SAY;
+  return null;
+}
+
 function setupView(s: PhoneSetup): Record<string, unknown> {
+  const say = setupSay(s);
   return {
+    ...(say ? { say } : {}),
     setupId: s.id, state: s.state, address: s.address, approval: s.approval, expiresAt: new Date(s.expiresAt).toISOString(),
     ...(s.endedReason ? { endedReason: s.endedReason } : {}),
     ...(s.deviceId ? { phone: { deviceId: s.deviceId, name: s.deviceName ?? null, key: s.fingerprint ?? null, nameNote: 'The phone chose this name, so do not rely on it. Check the key matches the one your phone shows.' } } : {}),
@@ -360,10 +396,32 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
   // (GPT review 5). Only at-computer setups: a Telegram setup's phone waits on the chat, not on it.
   // E2E-PAIRING: EXEMPT — no new route; lifecycle inside existing routes, covered over HTTP by tests/integration/same-network-review-3-lifecycle.test.ts, and the routes stay alive in tests/e2e/same-network-first-phone-alive.test.ts (run, passing).
   svc.phoneSetups.onLapse = (s) => { if (s.approval === 'computer') declineWaitingPhone(s); };
+  // A second phone presented an at-computer setup's code: its waiting phone is turned away, and the home
+  // address closes if nothing else uses it (security review of home pairing, 2026-11-21).
+  svc.phoneSetups.onSecondPhone = (s) => {
+    afterEnd(s).catch((err) => { svc.deps.reportDegradation?.('SameNetworkListener.close', err); }); // @silent-fallback-ok — reported; the waiting phone was already declined synchronously
+  };
   const localOnly = (req: Request, res: Response): boolean => {
     if (!svc.enabled()) { res.status(503).json({ error: 'Phone pairing is off on this agent.' }); return false; }
     if (!fromThisComputer(req)) { res.status(403).json({ error: 'at-the-computer-only', detail: 'A phone is added at the agent\'s own computer.' }); return false; }
     return true;
+  };
+
+  /**
+   * The first-phone rule across the whole agent (security review of home pairing, 2026-11-21): an owner
+   * phone paired on any machine counts, and a machine that cannot be asked refuses the setup. True when
+   * it sent a refusal; false when no owner phone exists anywhere.
+   */
+  const refuseIfAnyOwnerPhone = async (refuse: (status: number, error: string, detail: string) => void): Promise<boolean> => {
+    if (activeOwnerPhones(svc).length > 0) { refuse(409, 'phone-already-paired', ALREADY_PAIRED_DETAIL); return true; }
+    const elsewhere = await svc.ownerPhonesElsewhere();
+    if (elsewhere.count > 0) { refuse(409, 'phone-already-paired', ALREADY_PAIRED_ELSEWHERE_DETAIL); return true; }
+    if (elsewhere.unchecked.length > 0) {
+      featureEvidence.record(FEATURE, { kind: 'held', reason: 'first phone refused: another machine could not be checked', context: { unchecked: elsewhere.unchecked.slice(0, 16).join(',') } });
+      refuse(409, 'phone-check-incomplete', CHECK_INCOMPLETE_DETAIL);
+      return true;
+    }
+    return false;
   };
 
   router.post('/mobile/phone-setup', async (req: Request, res: Response) => {
@@ -402,7 +460,8 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
       // The enrolment bound the app to the id the enrolment route uses; the credential was made under the
       // agent's own identity file, which is what the command reads. Each is checked against its own source.
       if (!creatingAppOnThisMachine(svc, svc.deps.selfMachineId ?? ownMachineId(svc.deps.stateDir))) { refuse(403, 'no-app-on-this-computer', 'Only the Instar app that created this agent on this computer can add a phone without the PIN.'); return; }
-      if (activeOwnerPhones(svc).length > 0) { refuse(409, 'phone-already-paired', 'This agent already has a phone. To add a different phone here, remove that one first (from the phone itself, or on the dashboard\'s Phones page), then add the new one.'); return; }
+      // Before the credential is spent: a phone on any machine of the agent, or a machine that cannot be asked, refuses.
+      if (await refuseIfAnyOwnerPhone(refuse)) return;
       if (!svc.holdsLease()) { refuse(409, 'not-lease-holder', 'Add your first phone at the computer that is serving this agent right now.'); return; }
       // Refusals that can be known now come before the credential is spent.
       if (svc.devices.pairingPaused()) { res.status(429).json({ error: 'pairing-paused' }); return; }
@@ -427,10 +486,7 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
       if (!svc.deps.config.dashboardPin) { res.status(409).json({ error: 'pin-required', detail: 'Set your dashboard PIN first. It is asked for before a phone is added at this computer.' }); return; }
       if (!pinCheck(req, res, { message: 'Type your dashboard PIN to add a phone at this computer.' })) return;
     }
-    if (!telegramOwner && activeOwnerPhones(svc).length > 0) {
-      res.status(409).json({ error: 'phone-already-paired', detail: 'This agent already has a phone. To add a different phone here, remove that one first (from the phone itself, or on the dashboard\'s Phones page), then add the new one.' });
-      return;
-    }
+    if (!telegramOwner && await refuseIfAnyOwnerPhone((status, error, detail) => { res.status(status).json({ error, detail }); })) return;
     if (!telegramOwner && !svc.holdsLease()) {
       res.status(409).json({ error: 'not-lease-holder', detail: 'Add your first phone at the computer that is serving this agent right now.' });
       return;
@@ -499,7 +555,7 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     if (r === 'wrong') { res.status(403).json({ error: 'wrong-number', detail: 'That is not the number on the phone.', triesLeft: PHONE_SETUP_MAX_WRONG_NUMBERS - s.wrongNumbers }); return; }
     if (r === 'ended') {
       await afterEnd(s);
-      res.status(409).json({ error: 'setup-ended', reason: s.endedReason ?? 'ended', detail: 'This setup has ended. Start again to add your phone.' });
+      res.status(409).json({ error: 'setup-ended', reason: s.endedReason ?? 'ended', detail: s.endedReason === 'second-phone' ? SECOND_PHONE_SAY : 'This setup has ended. Start again to add your phone.' });
       return;
     }
     res.status(409).json({ error: 'no-phone-yet', detail: 'No phone has scanned the code yet.' });
@@ -521,6 +577,17 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     // Inside WSL, read the networking mode now, so the app sees it before it opens anything.
     if (ln) await ln.wslPlan(false);
     res.json(ln ? ln.status() : { wanted: false, listening: false, available: false });
+  });
+
+  // What the home listener refused lately (builder #63): route, status, reason code, device id prefix,
+  // caller address and time, newest first. Never a header value, body, query, signature or token.
+  router.get('/mobile/same-network/refusals', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!localOnly(req, res)) return;
+    const ln = svc.sameNetwork;
+    const n = Number(req.query.limit);
+    const limit = Number.isInteger(n) && n > 0 ? Math.min(n, 300) : 100;
+    res.json({ refusals: ln ? ln.recentRefusals(limit) : [] });
   });
 
   router.post('/mobile/same-network/allow-network', async (req: Request, res: Response) => {

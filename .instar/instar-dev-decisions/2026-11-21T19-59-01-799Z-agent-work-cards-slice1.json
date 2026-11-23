@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-21T19:59:01.799Z",
+  "slug": "agent-work-cards-slice1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 37
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

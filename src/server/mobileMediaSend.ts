@@ -29,7 +29,7 @@ import { sha256Hex } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, displayName, effectiveKind, type AppAttachment, type MediaKind,
 } from '../core/appMediaTypes.js';
-import { removeAuthorityTokens } from '../core/appConversationText.js';
+import { removeAuthorityTokensAndKeys } from '../core/appConversationText.js';
 export { telegramGroupTypes, telegramMethodFor, multipartFileName } from '../messaging/telegramMedia.js';
 
 /** One attachment of a send body, as signed by the phone. */
@@ -79,6 +79,8 @@ export interface MediaPreflightOk { ok: true; uploadIds: string[]; stored: AppAt
  */
 export function preflightMediaAttachments(s: AppConversationService, input: {
   deviceId: string; conversationRef: string; messageId: string; files: ReadonlyArray<SignedAttachment>; scanInbound: (text: string) => void;
+  /** SEC-164 §3.5: the live switch; when true, keys in file names and transcripts are masked. */
+  maskCredentials?: boolean;
 }): MediaPreflightOk | ({ ok: false } & RouteRefusal) {
   const media = s.media;
   const uploadIds: string[] = [];
@@ -98,8 +100,9 @@ export function preflightMediaAttachments(s: AppConversationService, input: {
     uploadIds.push(u.uploadId);
     input.scanInbound(a.filename);
     if (a.transcript) input.scanInbound(a.transcript);
-    const f = removeAuthorityTokens(a.filename);
-    const tr = a.transcript !== undefined ? removeAuthorityTokens(a.transcript) : null;
+    // SEC-164 §3.5: with the switch on, a key in a file name or a transcript is masked like the text.
+    const f = removeAuthorityTokensAndKeys(a.filename, input.maskCredentials === true);
+    const tr = a.transcript !== undefined ? removeAuthorityTokensAndKeys(a.transcript, input.maskCredentials === true) : null;
     for (const k of [...f.kinds, ...(tr?.kinds ?? [])]) removedKinds.add(k);
     stored.push({
       attachmentId: attachmentIdFor(input.messageId, i), index: i, sha256: a.sha256, size: a.size,
