@@ -6,9 +6,11 @@
  * Every text is passed through the secret scrub before splitting, so a key can't hide across a split.
  */
 import crypto from 'node:crypto';
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 
-export type ImportSource = 'claude' | 'chatgpt';
+export type ExportSource = 'claude' | 'chatgpt';
+export type ImportSource = ExportSource | typeof CLAUDE_CODE_FRAMEWORK | 'codex';
 
 /** One stored message: at most PART_CHARS characters. A long original becomes numbered parts. */
 export interface ImportedMessage {
@@ -132,11 +134,12 @@ function str(v: unknown): string | null {
 }
 
 /** Splits one message into stored parts; beyond MAX_PARTS the whole text goes to overflow. */
-function pushMessage(conv: ImportedConversation, key: string, role: ImportedMessage['role'], at: string | null, rawText: string): void {
+export function appendImportedMessage(conv: ImportedConversation, key: string, role: ImportedMessage['role'], at: string | null, rawText: string): void {
   const clean = removeSecrets(rawText);
   conv.stats.redactions += clean.removed;
   const text = clean.text;
-  const senderName = role === 'operator' ? 'You' : conv.from === 'claude' ? 'Claude' : 'ChatGPT';
+  const names: Record<ImportSource, string> = { claude: 'Claude', chatgpt: 'ChatGPT', [CLAUDE_CODE_FRAMEWORK]: 'Claude Code', codex: 'Codex' };
+  const senderName = role === 'operator' ? 'You' : names[conv.from];
   if (text.length <= PART_CHARS) {
     conv.messages.push({ key, role, senderName, at, text });
     return;
@@ -185,7 +188,7 @@ export function parseClaudeConversation(raw: unknown): ImportedConversation | nu
     if (!text) return;
     const at = iso(msg.created_at);
     const key = str(msg.uuid) ?? hashKey(originalId, String(index), at ?? '', text);
-    pushMessage(conv, key, sender === 'human' ? 'operator' : 'agent', at, text);
+    appendImportedMessage(conv, key, sender === 'human' ? 'operator' : 'agent', at, text);
   });
   return conv;
 }
@@ -240,7 +243,7 @@ export function parseChatGptConversation(raw: unknown): ImportedConversation | n
     if (!text) return;
     const at = iso(m.create_time);
     const key = str(m.id) ?? str(node.id) ?? hashKey(originalId, String(index), at ?? '', text);
-    pushMessage(conv, key, role === 'user' ? 'operator' : 'agent', at, text);
+    appendImportedMessage(conv, key, role === 'user' ? 'operator' : 'agent', at, text);
   });
   return conv;
 }

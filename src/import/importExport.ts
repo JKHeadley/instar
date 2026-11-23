@@ -7,7 +7,7 @@ import { findEntry, listEntries, openEntry, ZipRefused, type ZipEntry } from './
 import { jsonArrayItems } from './jsonArrayStream.js';
 import {
   parseChatGptConversation, parseClaudeConversation, parseClaudeProject,
-  type ImportedConversation, type ImportSource,
+  type ImportedConversation, type ExportSource,
 } from './exportParsers.js';
 import { memoryTextFromClaudeExport, proposeFacts, type ProposedFact } from './proposedFacts.js';
 import type { ImportedHistoryStore } from './ImportedHistoryStore.js';
@@ -16,7 +16,7 @@ export const MAX_CONVERSATIONS = 50_000;
 const FLUSH_EVERY = 500;
 
 export interface ImportPreview {
-  from: ImportSource;
+  from: ExportSource;
   chats: number;
   messages: number;
   projects: number;
@@ -32,13 +32,13 @@ export interface ImportPreview {
 }
 
 /** Which app the export came from, from its files. */
-export function detectSource(entries: ZipEntry[]): ImportSource {
+export function detectSource(entries: ZipEntry[]): ExportSource {
   if (findEntry(entries, 'chat.html') || findEntry(entries, 'message_feedback.json') || findEntry(entries, 'shared_conversations.json')) return 'chatgpt';
   if (findEntry(entries, 'users.json') || findEntry(entries, 'projects.json') || findEntry(entries, 'memories.json')) return 'claude';
   throw new ZipRefused("This doesn't look like a Claude or ChatGPT export. It has no conversations file the importer knows.");
 }
 
-function parserFor(from: ImportSource): (raw: unknown) => ImportedConversation | null {
+function parserFor(from: ExportSource): (raw: unknown) => ImportedConversation | null {
   return from === 'claude' ? parseClaudeConversation : parseChatGptConversation;
 }
 
@@ -50,7 +50,7 @@ async function readWholeJson(zipPath: string, e: ZipEntry, maxBytes: number): Pr
 }
 
 interface Walk {
-  from: ImportSource;
+  from: ExportSource;
   onConversation: (c: ImportedConversation) => void;
   onSkipped: (why: 'tooBig' | 'unreadable' | 'overLimit') => void;
 }
@@ -75,7 +75,7 @@ async function walkConversations(zipPath: string, entries: ZipEntry[], w: Walk):
   }
 }
 
-async function readProjects(zipPath: string, entries: ZipEntry[], from: ImportSource) {
+async function readProjects(zipPath: string, entries: ZipEntry[], from: ExportSource) {
   const e = from === 'claude' ? findEntry(entries, 'projects.json') : undefined;
   if (!e || e.size === 0) return []; // an empty optional file means no projects
   const out = [];
