@@ -1,9 +1,11 @@
+import { appendTopicProfileAudit } from '../core/topicProfileAudit.js';
+import { assertProfileRuntimeGuard, ProfileRuntimeOwnershipChangedError } from '../core/ProfileRuntimeGuard.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { crossTopicEligible, applyCrossTopicConfirm, safeConversationName } from '../core/topicCreationProvenance.js';
 import { profileProposalPlacement } from '../core/profileProposalPlacement.js';
-import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext } from '../core/handleProfileProposalReply.js';
+import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext, profileProposalFailureContext } from '../core/handleProfileProposalReply.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
@@ -149,6 +151,7 @@ import { repairSlackReplyRelayIfStale, slackReplyRelayReadiness } from '../core/
 import { SlackRefusedHold, setActiveSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { activeUsageLimitWatch, setActiveUsageLimitWatch, UsageLimitWatch } from '../core/UsageLimitWatch.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
+import { DEFAULT_PROFILE_PROPOSAL_TTL_MS } from '../core/ProfileProposalRequests.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
 import { movedMachinesMidStepNotice, movedMachinesResumingNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
@@ -215,7 +218,7 @@ import { AgentServer } from '../server/AgentServer.js';
 import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { resolveBootClaimSafety, resolvePlannedRestartLeaseContinuity, UNSIGNED_WINDOW_CEILING_MS } from '../core/BootClaimHold.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
-import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
+import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji, type TopicProfileCommandResult } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
 import { sendRespawnCollisionNotice } from '../messaging/ColdStartFallbackReply.js';
@@ -1265,7 +1268,7 @@ let _crossTopicEligibility: ((telegram: TelegramAdapter, confirmerUid: string, d
 /** §5.2(d) legacy respawn hook — bound in wireTelegramCallbacks (it needs the
  *  telegram adapter + session manager in scope). Today's exact /route
  *  behavior: drop the resume UUID, kill, CONTINUATION respawn. */
-let _profileLegacyRespawn: ((topicKey: string) => Promise<{ respawned: boolean; error?: string }>) | null = null;
+let _profileLegacyRespawn: ((topicKey: string, runtimeGuard?: () => boolean) => Promise<{ respawned: boolean; error?: string }>) | null = null;
 /** §8 disclosure hook — bound in wireTelegramCallbacks (platform adapter send). */
 let _profileDisclose: ((topicKey: string, text: string) => Promise<void>) | null = null;
 /** session-swap-any-conversation §3.2: the per-kind ports for app and Slack conversations (null until built at boot). */
@@ -1387,37 +1390,6 @@ function resolveTopicFramework(topicId: number | undefined): IntelligenceFramewo
     return _topicFrameworks[String(topicId)]!;
   }
   return _defaultFramework;
-}
-/**
- * Topic Profile §10.3 — append one structured line to the profile audit
- * trail (logs/topic-profile-changes.jsonl). Size-capped like sibling audit
- * logs (simple head-truncation rotation at ~5MB). Never the triggering turn
- * text or any message content — structured deltas + verified principals only.
- */
-let _topicProfileAuditSeq = 0;
-function appendTopicProfileAudit(stateDir: string, event: Record<string, unknown>): string {
-  // The audit sequence stamp is included in rendered disclosures (§8 — so the
-  // relay's exact-duplicate window can never silently swallow a repeat notice).
-  const seq = `${Date.now().toString(36)}.${++_topicProfileAuditSeq}`;
-  try {
-    const logsDir = path.join(stateDir, '..', 'logs');
-    fs.mkdirSync(logsDir, { recursive: true });
-    const auditPath = path.join(logsDir, 'topic-profile-changes.jsonl');
-    try {
-      const stat = fs.statSync(auditPath);
-      if (stat.size > 5 * 1024 * 1024) {
-        // Keep the newest half on overflow — same pragmatic cap as siblings.
-        const lines = fs.readFileSync(auditPath, 'utf-8').split('\n');
-        fs.writeFileSync(auditPath, lines.slice(Math.floor(lines.length / 2)).join('\n'));
-      }
-    } catch { /* @silent-fallback-ok: no audit file yet — the trim is a best-effort size cap, the append below recreates it (TOPIC-PROFILE-SPEC §10.3) */ }
-    fs.appendFileSync(auditPath, `${JSON.stringify({ ts: new Date().toISOString(), seq, ...event })}\n`);
-  } catch {
-    // @silent-fallback-ok: the topic-profile change audit is best-effort —
-    // resolution/writes must NEVER fail on an audit-sink error (a full disk or
-    // a transient fs fault can't break profile resolution) (TOPIC-PROFILE-SPEC §10.3).
-  }
-  return seq;
 }
 
 let _projectDir: string = process.cwd();
@@ -1706,6 +1678,7 @@ export async function spawnSessionForTopic(
    *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
    *  worktree work resumes in ITS tree). Omitted = module project dir. */
   spawnOpts?: {
+    runtimeGuard?: () => boolean;
     cwd?: string;
     awaitInitialInjection?: boolean;
     /** dashboard-door-model-controls §3.3 step 4 — a dashboard-created topic
@@ -2090,7 +2063,9 @@ export async function spawnSessionForTopic(
   // fail-open in the resolver; undefined = no --effort, today's behavior).
   const profileEffort = resolvedProfile?.effort;
 
+  assertProfileRuntimeGuard(spawnOpts?.runtimeGuard);
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {
+    ...(spawnOpts?.runtimeGuard ? { runtimeGuard: spawnOpts.runtimeGuard } : {}),
     // The Chief of Staff executor spawns inside withConversationLock (not re-entrant): tell the spawn the lock is held.
     ...(spawnOpts?.unlocked ? { conversationLockHeld: true } : {}),
     shapedForAudience,
@@ -2199,12 +2174,13 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean; quietAfterRespawn?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean;
+  options?: { runtimeGuard?: () => boolean; silent?: boolean; quietAfterRespawn?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean;
     /** SEC-106 decision 7: threaded explicitly to spawnSessionForTopic. */
     firstMessageLabel?: { signedByAgent: string; senderName?: string } },
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
+  assertProfileRuntimeGuard(options?.runtimeGuard);
   // Save the old session's Claude UUID before respawning so --resume can reattach context
   if (_topicResumeMap) {
     try {
@@ -2254,6 +2230,7 @@ async function respawnSessionForTopic(
       ? `${recoveryPrompt}\n\n${latestMessage || 'Session recovered — continue where you left off.'}`
       : latestMessage;
 
+  assertProfileRuntimeGuard(options?.runtimeGuard);
   const newSessionName = await spawnSessionForTopic(
     sessionManager,
     telegram,
@@ -2264,8 +2241,9 @@ async function respawnSessionForTopic(
     userProfile,
     undefined,
     (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined,
-    (options?.awaitInitialInjection || labelled)
+    (options?.awaitInitialInjection || labelled || options?.runtimeGuard)
       ? {
+        ...(options?.runtimeGuard ? { runtimeGuard: options.runtimeGuard } : {}),
         ...(options?.awaitInitialInjection ? { awaitInitialInjection: true } : {}),
         ...(labelled ? { firstMessageLabel: options!.firstMessageLabel, ...(recoveryPrompt ? { recoveryPreamble: recoveryPrompt } : {}) } : {}),
       }
@@ -2557,7 +2535,8 @@ function wireTelegramCallbacks(
   // resume UUID (created under the previous framework's session-id scheme —
   // meaningless to the new one), then the immediate kill + CONTINUATION
   // respawn via the existing respawn path.
-  _profileLegacyRespawn = async (topicKey: string): Promise<{ respawned: boolean; error?: string }> => {
+  _profileLegacyRespawn = async (topicKey: string, runtimeGuard?: () => boolean): Promise<{ respawned: boolean; error?: string }> => {
+    assertProfileRuntimeGuard(runtimeGuard);
     if (!/^\d+$/.test(topicKey)) return { respawned: false };
     const topicId = Number(topicKey);
     _topicResumeMap?.remove(topicId);
@@ -2566,7 +2545,7 @@ function wireTelegramCallbacks(
     try {
       await respawnSessionForTopic(
         sessionManager, telegram, existingSession, topicId, undefined,
-        topicMemory, undefined, undefined, { silent: true, awaitInitialInjection: true },
+        topicMemory, undefined, undefined, { silent: true, awaitInitialInjection: true, runtimeGuard },
       );
       return { respawned: true };
     } catch (err) {
@@ -2643,7 +2622,7 @@ function wireTelegramCallbacks(
   // conversational surface is PRIMARY). Forwards the authenticated sender uid
   // down to the write — the store stamps updatedBy from it and refuses a
   // non-bound-operator.
-  telegram.onTopicProfileCommand = async (topicId: number, argText: string, userId: number): Promise<{ ok: boolean; message: string }> => {
+  telegram.onTopicProfileCommand = async (topicId: number, argText: string, userId: number): Promise<TopicProfileCommandResult> => {
     const surface = _topicProfileWriteSurface;
     if (!surface) {
       return { ok: false, message: 'Topic profiles aren\'t initialized on this server.' };
@@ -2668,9 +2647,10 @@ function wireTelegramCallbacks(
     if (head === 're-apply' || head === 'reapply') {
       const result = await surface.reapply({ topicKey, principal, origin: 'slash-topic', discloseInReply: true });
       if (result.needsConfirm && _topicProfileConfirmSlots) {
-        const armed = _topicProfileConfirmSlots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress');
+        const armed = _topicProfileConfirmSlots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress', undefined, { parkedVersion: result.parkedVersion });
         if (armed.ok) {
-          return { ok: false, message: `${result.reply} (reply "yes" to apply it anyway)` };
+          return { ok: false, message: `${result.reply}\nReply to this message with yes. Request R-${armed.id}.`,
+            onDelivery: messageId => _topicProfileConfirmSlots?.completeEcho(topicKey, armed.id, armed.attemptId, messageId) };
         }
       }
       return { ok: result.ok, message: result.reply };
@@ -2879,16 +2859,15 @@ async function handleTopicProfileIngress(
       // A native reply to any other message can never fall back to an unrelated bare confirmation.
       if (slots.peek(source)?.echoPlatformMessageId !== replyTo) return false;
     }
-    if (trigger?.kind === 'confirm' || trigger?.kind === 'switch-now') {
-      // The platform can display a new question before its send promise resolves.
-      if (slots.proposals.pending(source) && !(await slots.proposals.settle(source))) return false;
-      const legacy = slots.peek(source);
-      const latest = slots.proposals.latestReceipt(source);
-      if (legacy && latest !== null && (legacy.echoPlatformMessageId === null || legacy.echoPlatformMessageId < latest)) {
-        slots.disarm(source);
+    if (trigger?.kind === 'confirm') {
+      // No unbound affirmative may consume an unrelated legacy recovery slot,
+      // even after proposal diagnostics expired or a server generation changed.
+      if (replyTo === null) {
+        const owner = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
+        if (owner?.platform === 'telegram' && owner.uid === String(telegramUserId)) slots.proposals.recordUnidentifiedReply(source, messageId);
         return false;
       }
-      if (replyTo !== null && legacy?.echoPlatformMessageId !== replyTo) return false;
+      if (slots.peek(source)?.echoPlatformMessageId !== replyTo) return false;
     }
   }
 
@@ -2930,12 +2909,12 @@ async function handleTopicProfileIngress(
       if (result.needsConfirm && slots) {
         // §10.4 cooldown confirm — rides the SAME shared armed slot as the
         // other confirm surfaces, with the server-rendered consequence echo.
-        const armed = slots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress');
+        const armed = slots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress', undefined, { parkedVersion: result.parkedVersion });
         if (armed.ok) {
           try {
-            const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `${result.reply} Reply "yes" to apply it anyway.`));
-            if (!sent.recorded) slots.recordEchoMessageId(topicKey, sent.messageId);
-          } catch { /* echo undelivered — the confirm refuses toward re-echo */ }
+            const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `${result.reply}\nReply to this message with yes. Request R-${armed.id}.`));
+            slots.completeEcho(topicKey, armed.id, armed.attemptId, requireTelegramDelivery(sent).messageId);
+          } catch { slots.completeEcho(topicKey, armed.id, armed.attemptId, null); }
           return true;
         }
         await send('Too many back-to-back proposals here — give it a few minutes, then say it again fresh.');
@@ -2964,7 +2943,7 @@ async function handleTopicProfileIngress(
         await send('Nothing is pending a switch right now.');
         return true;
       }
-      return handleProfileConfirm(telegram, surface, slots!, topicId, principal, msg);
+      return handleProfileConfirm(telegram, surface, slots!, topicId, principal, msg, armedSlot.kind === 'switch-now');
     }
     case 'confirm': {
       if (!slots || !slots.peek(topicKey)) return false; // normal conversation
@@ -2982,6 +2961,7 @@ async function handleProfileConfirm(
   topicId: number,
   principal: { kind: 'operator'; platform: string; uid: string },
   msg: Message,
+  explicitSwitchNow = false,
 ): Promise<boolean> {
   const topicKey = String(topicId);
   const send = async (reply: string): Promise<void> => {
@@ -2990,9 +2970,11 @@ async function handleProfileConfirm(
   const match = slots.matchConfirm(topicKey, {
     platformMessageId: platformMessageIdFrom(msg.id),
     forwarded: (msg.metadata?.forwarded as boolean | undefined) === true,
+    replyToMessageId: typeof msg.metadata?.replyToMessageId === 'number' ? msg.metadata.replyToMessageId : null,
+    explicitSwitchNow,
   });
   if (!match.ok) {
-    if (match.reason === 'none-armed' || match.reason === 'forwarded') return false;
+    if (match.reason === 'none-armed' || match.reason === 'forwarded' || match.reason === 'wrong-question') return false;
     if (match.reason === 'expired') {
       await send('That proposal has expired — say what you want again.');
       return true;
@@ -3002,18 +2984,20 @@ async function handleProfileConfirm(
     const slot = slots.peek(topicKey);
     if (slot) {
       // identity-security-creation-provenance v5: the re-sent echo must not disarm its own slot.
-      slots.clearEchoMessageId(topicKey);
+      const attemptId = slots.clearEchoMessageId(topicKey, slot.id);
+      if (!attemptId) return true;
       try {
-        const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Please confirm this version:\n${slot.echoText}`));
-        if (!sent.recorded) slots.recordEchoMessageId(topicKey, sent.messageId);
-      } catch { /* best-effort */ }
+        const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Reminder ${slot.echoAttemptNumber}.\n${slot.echoText}\nReply to this message with yes. Request R-${slot.id}.`));
+        slots.completeEcho(topicKey, slot.id, attemptId, requireTelegramDelivery(sent).messageId);
+      } catch { slots.completeEcho(topicKey, slot.id, attemptId, null); }
     }
     return true;
   }
   const armed = match.armed;
   if (armed.kind === 'reapply-cooldown') {
+    if (!armed.parkedVersion) { await send('I need to prepare a fresh recovery question before applying those settings.'); return true; }
     const result = await surface.reapply({
-      topicKey, principal, origin: 'propose-confirm', confirmed: true, discloseInReply: true,
+      topicKey, principal, origin: 'propose-confirm', confirmed: true, expectedParkedVersion: armed.parkedVersion, discloseInReply: true,
     });
     await send(result.reply);
     return true;
@@ -3171,14 +3155,15 @@ export function wireTelegramRouting(
       const surface = _topicProfileWriteSurface;
       if (!requests || !surface || msg.metadata?.teamPhone === true) return original;
       const source = String(topicId);
+      const authenticatedOwner = () => {
+        const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
+        return telegramUserId > 0 && telegram.isAuthorizedSender(telegramUserId)
+          && bound?.platform === 'telegram' && bound.uid === String(telegramUserId);
+      };
       const context = profileProposalConversationContext({ requests, source,
         replyTo: msg.metadata?.replyToMessageId, messageId: platformMessageIdFrom(msg.id),
         forwarded: msg.metadata?.forwarded === true,
-        authenticatedOwner: () => {
-          const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
-          return telegramUserId > 0 && telegram.isAuthorizedSender(telegramUserId)
-            && bound?.platform === 'telegram' && bound.uid === String(telegramUserId);
-        },
+        authenticatedOwner,
         eligible: target => _crossTopicEligibility?.(telegram, String(telegramUserId), target, source).ok ?? false,
         placement: target => _proposalPlacementSnapshot?.(source, target) ?? null,
         currentEcho: proposal => {
@@ -3186,7 +3171,10 @@ export function wireTelegramRouting(
           return fresh.ok ? fresh.echo : null;
         },
       });
-      return context ? `${original}\n\n${context}` : original;
+      const failure = profileProposalFailureContext({ requests, source, text, replyTo: msg.metadata?.replyToMessageId,
+        forwarded: msg.metadata?.forwarded === true, authenticatedOwner });
+      const extra = context || failure;
+      return extra ? `${original}\n\n${extra}` : original;
     };
 
     // Resolve user profile for context injection (Gap 8)
@@ -8487,26 +8475,18 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { TopicProfileStore } = await import('../core/TopicProfileStore.js');
         const { TopicProfileResolver } = await import('../core/TopicProfileResolver.js');
         const { normalizeTierEscalationConfig } = await import('../core/ModelTierEscalation.js');
-        const topicProfilesCfg = (config as {
-          topicProfiles?: {
-            enabled?: boolean;
-            dryRun?: boolean;
-            switchNowConfirmTtlMs?: number;
-            defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
-            groupDefaults?: { issues?: { framework?: IntelligenceFramework; model?: string } };
-          };
-        }).topicProfiles;
+        const topicProfilesCfg = () => config.topicProfiles;
         _topicProfileStore = new TopicProfileStore({
           stateFilePath: path.join(config.stateDir, 'state', 'topic-profiles.json'),
           legacyFrameworksPath: path.join(config.stateDir, 'state', 'topic-frameworks.json'),
-          isDryRun: () => topicProfilesCfg?.dryRun !== false,
+          isDryRun: () => topicProfilesCfg()?.dryRun !== false,
         });
         _topicProfileResolver = new TopicProfileResolver({
           store: _topicProfileStore,
           defaultFramework: () => _defaultFramework,
           configTopicFrameworks: () => _topicFrameworks,
-          configProfileDefaults: () => topicProfilesCfg?.defaults ?? {},
-          configGroupDefaults: () => topicProfilesCfg?.groupDefaults ?? {},
+          configProfileDefaults: () => topicProfilesCfg()?.defaults ?? {},
+          configGroupDefaults: () => topicProfilesCfg()?.groupDefaults ?? {},
           frameworkDefaultModels: () => config.sessions?.frameworkDefaultModels ?? {},
           tierEscalationConfig: () =>
             normalizeTierEscalationConfig(
@@ -8570,7 +8550,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         };
         _topicProfileConfirmSlots = new ProfileConfirmSlots({
-          ttlMs: () => topicProfilesCfg?.switchNowConfirmTtlMs ?? 300_000,
+          ttlMs: () => topicProfilesCfg()?.switchNowConfirmTtlMs ?? 300_000,
+          proposalTtlMs: () => topicProfilesCfg()?.proposalConfirmTtlMs ?? DEFAULT_PROFILE_PROPOSAL_TTL_MS,
+          proposalTimeZone: source => {
+            const owner = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
+            if (!owner || owner.platform !== 'telegram') return undefined;
+            return UserManager.readProfilesFromDisk(config.stateDir, loadTestIdentityKey(config.stateDir)).profiles
+              .find(user => String(user.telegramUserId) === owner.uid)?.preferences?.timezone;
+          },
           audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
         });
         _topicProfileWriteSurface = new TopicProfileWriteSurface({
@@ -8578,10 +8565,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           resolver: _topicProfileResolver,
           regime: () => ({
             enabled: resolveDevAgentGate(
-              topicProfilesCfg?.enabled,
+              topicProfilesCfg()?.enabled,
               config as { developmentAgent?: boolean },
             ),
-            dryRun: topicProfilesCfg?.dryRun !== false,
+            dryRun: topicProfilesCfg()?.dryRun !== false,
           }),
           // Late-bound: the AgentServer's TopicOperatorStore is the SAME
           // instance the routes' auto-bind writes (a second instance on the
@@ -8604,7 +8591,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             /^\d+$/.test(topicKey) ? (_topicLocalModelStore?.get(Number(topicKey)) ?? null) : null,
           // Late-bound (wireTelegramCallbacks owns the adapter): §5.2(d)
           // legacy immediate respawn + the §8 disclosure send.
-          legacyFrameworkRespawn: async (topicKey) => {
+          legacyFrameworkRespawn: async (topicKey, runtimeGuard) => {
+            assertProfileRuntimeGuard(runtimeGuard);
             // session-swap-any-conversation §3.2: an app or Slack conversation restarts through its ports.
             if (!/^\d+$/.test(topicKey)) {
               try {
@@ -8614,7 +8602,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return { respawned: false, error: err instanceof Error ? err.message : String(err) };
               }
             }
-            return _profileLegacyRespawn ? _profileLegacyRespawn(topicKey) : { respawned: false };
+            return _profileLegacyRespawn ? _profileLegacyRespawn(topicKey, runtimeGuard) : { respawned: false };
           },
           // §8 orchestration seam — late-bound: the TopicProfileOrchestrator is
           // constructed AFTER the AgentServer exists (it late-binds the
@@ -37838,6 +37826,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return sessionManager.killSessionByTmuxName(sessionName);
             },
             spawn: async (topicKey, _resolved, directive) => {
+              assertProfileRuntimeGuard(directive.runtimeGuard);
               // The orchestrator already killed; respawn re-resolves the (now
               // updated) pin via spawnSessionForTopic and picks up the resume id
               // from the resume map. We mark the spawn in-flight so the spawn-path
@@ -37887,7 +37876,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   undefined,
                   undefined,
                   undefined,
-                  { awaitInitialInjection: true, ...(carriedBrief ? { carriedBrief } : {}) },
+                  { awaitInitialInjection: true, ...(directive.runtimeGuard ? { runtimeGuard: directive.runtimeGuard } : {}), ...(carriedBrief ? { carriedBrief } : {}) },
                 );
                 if (directive.replacedSessionName) {
                   try { _topicSpawnBriefs.rebind(n, directive.replacedSessionName, spawnedName); }
@@ -37907,6 +37896,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   },
                 };
               } catch (err) {
+                if (err instanceof ProfileRuntimeOwnershipChangedError) throw err;
                 // @silent-fallback-ok — not silent: the failure class is returned to the orchestrator, which feeds its breaker and discloses the failed spawn
                 const msg = err instanceof Error ? err.message : String(err);
                 let cls: ProfileSpawnFailureClass = 'unknown';

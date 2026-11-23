@@ -44,7 +44,7 @@ interface Bundle {
   disclosures: Array<{ topic: string; text: string }>;
 }
 
-function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean } = {}): Bundle {
+function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean; now?: () => number; proposalTtlMs?: () => number } = {}): Bundle {
   const store = new TopicProfileStore({
     stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'),
     legacyFrameworksPath: path.join(stateDir, 'state', 'topic-frameworks.json'),
@@ -73,7 +73,7 @@ function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean
     disclose: async (topic, text) => { disclosures.push({ topic, text }); },
     audit: () => 'seq-test',
   });
-  const confirmSlots = new ProfileConfirmSlots({ ttlMs: () => 300_000 });
+  const confirmSlots = new ProfileConfirmSlots({ ttlMs: () => 300_000, now: opts.now, proposalTtlMs: opts.proposalTtlMs });
   return { store, resolver, surface, confirmSlots, respawns, disclosures };
 }
 
@@ -418,6 +418,31 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
       },
     };
   }
+
+  it('shows an immutable hours-long deadline through HTTP and still applies after eight minutes', async () => {
+    let now = Math.floor(Date.now() / 1000) * 1000;
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false, now: () => now, proposalTtlMs: () => 4 * 60 * 60_000 });
+    const f = fakes(); const app = buildApp(bundle, f.extra);
+    const result = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(result.status).toBe(200); expect(result.body.expiresAt).toBe(now + 4 * 60 * 60_000);
+    expect(result.body.echo).toContain('UTC');
+    const question = bundle.confirmSlots.proposals.get('130715', result.body.requestId)!;
+    now += 8 * 60_000;
+    const outcome = await handleAndAcknowledgeProfileProposalReply({ requests: bundle.confirmSlots.proposals, surface: bundle.surface,
+      source: '130715', text: 'yes', messageId: 950, replyTo: question.receipts[0].messageId, forwarded: false,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, eligible: () => true,
+      placement: () => 'standalone', name: () => 'Scaling' }, async () => {});
+    expect(outcome.result?.settingsSaved).toBe(true); expect(bundle.store.resolve(23)?.framework).toBe('codex-cli');
+  });
+
+  it('reports a question delivered after its deadline as delivered but inactive, never armed or transport-failed', async () => {
+    let now = 0; const bundle = buildBundle(FLEET_REGIME, { boundOperator: false, now: () => now, proposalTtlMs: () => 1000 });
+    const f = fakes(); const send = f.extra.telegram.sendToTopic;
+    f.extra.telegram.sendToTopic = async (...args: Parameters<typeof send>) => { const receipt = await send(...args); now = 1000; return receipt; };
+    const result = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(result.status).toBe(409); expect(result.body).toMatchObject({ ok: false, delivered: true, reason: 'question-no-longer-active' });
+    expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]); expect(bundle.store.resolve(23)).toBeNull();
+  });
 
   it('keeps two identified proposals and sends an explicit reminder without creating another', async () => {
     const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });

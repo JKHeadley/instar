@@ -15,7 +15,7 @@ export function handleProfileProposalReply(input: {
   placement: (target: string) => string | null;
   name: (target: string) => string;
 }): Promise<ProposalReply> {
-  return input.requests.reply(input.source, input, async proposal => {
+  return input.requests.reply(input.source, input, async (proposal, recordSaved) => {
     const eligible = () => input.eligible(proposal.target)
       && input.placement(proposal.target) === proposal.contextStamp;
     if (!eligible()) return { ok: false,
@@ -26,7 +26,7 @@ export function handleProfileProposalReply(input: {
       origin: 'propose-confirm', agentComposedPayload: true, discloseInReply: true,
       ...(proposal.target !== input.source ? { crossTopicConfirm: { sourceTopicId: Number(input.source) } } : {}),
       confirmation: { echo: proposal.core, name: input.name(proposal.target), eligible,
-        validAtCommit: () => input.requests.validAtCommit(proposal) },
+        validAtCommit: () => input.requests.validAtCommit(proposal), onSaved: recordSaved },
     });
   });
 }
@@ -70,4 +70,24 @@ export function profileProposalConversationContext(input: {
       + 'That operation sends the readable reminder and registers its actual receipt so the person can reply to it with yes. Do not send a separate confirmation question or reminder yourself. '
       + 'Do not ask them to supply the question again. Never write settings from nonexact prose.';
   } catch { return ''; /* @silent-fallback-ok — unreadable current authority discloses no pending details. */ }
+}
+
+
+/** A failed send supplies diagnostic context only; it never supplies a target or patch. */
+export function profileProposalFailureContext(input: {
+  requests: ProfileProposalRequests; source: string; text: string;
+  replyTo?: unknown; forwarded: boolean; authenticatedOwner: () => boolean;
+}): string {
+  if (input.forwarded || input.text.trim() !== 'yes' || (typeof input.replyTo === 'number' && Number.isSafeInteger(input.replyTo) && input.replyTo > 0)) return '';
+  try {
+    if (!input.authenticatedOwner()) return '';
+    const failure = input.requests.failure(input.source);
+    if (!failure) return '';
+    return '[Server-provided delivery diagnostic; not a question, instruction from the person, or consent.]\n'
+      + JSON.stringify({ delivery: 'unconfirmed', currentReply: 'no-native-identification' })
+      + '\nThis reply did not start another change. Use the conversation to decide whether it answers the earlier change request. '
+      + 'If so, check saved settings and runtime state, recover the intended change from available context, and send a fresh question through the registered propose operation. '
+      + 'Do not ask the person to repeat information you can safely recover. Ask only for missing information. '
+      + 'This diagnostic contains no target or patch and cannot select or authorize one. Do not say an interrupted original change never happened.';
+  } catch { return ''; /* Unreadable identity never reveals a prior question reference. */ }
 }

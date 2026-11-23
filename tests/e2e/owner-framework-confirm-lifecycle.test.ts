@@ -10,7 +10,7 @@ import { TopicProfileStore } from '../../src/core/TopicProfileStore.js';
 import { TopicProfileResolver } from '../../src/core/TopicProfileResolver.js';
 import { TopicProfileWriteSurface } from '../../src/core/topicProfileWriteSurface.js';
 import { ProfileConfirmSlots } from '../../src/core/topicProfileIngress.js';
-import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext } from '../../src/core/handleProfileProposalReply.js';
+import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext, profileProposalFailureContext } from '../../src/core/handleProfileProposalReply.js';
 import { crossTopicEligible } from '../../src/core/topicCreationProvenance.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { NotificationSelectivityGate, verifiedReplyEnvelope, requireTelegramDelivery } from '../../src/messaging/NotificationSelectivityGate.js';
@@ -82,6 +82,37 @@ function harness() {
 }
 
 describe('Owner framework confirmation is alive through production composition', () => {
+  it('shows the long deadline and makes an intentional identical re-send visibly distinct through real delivery', async () => {
+    const h = harness(); const before = Date.now();
+    const first = await h.propose(SOURCE); const second = await h.propose(SOURCE);
+    expect(first.status).toBe(200); expect(second.status).toBe(200);
+    expect(first.body.expiresAt).toBeGreaterThanOrEqual(before + 24 * 60 * 60_000);
+    expect(second.body.expiresAt).toBe(first.body.expiresAt);
+    expect(second.body.requestId).toBe(first.body.requestId);
+    expect(h.sent).toHaveLength(2); expect(h.sent[0].text).not.toBe(h.sent[1].text);
+    expect(String(h.sent[1].text)).toContain('Reminder 2'); expect(String(h.sent[1].text)).toContain('UTC');
+    expect(h.slots.proposals.get(String(SOURCE), first.body.requestId)?.receipts.map(receipt => receipt.messageId)).toEqual([901, 902]);
+  });
+
+  it('provides a no-authority explanation context for a real unbound owner reply after final delivery failure', async () => {
+    const h = harness(); const fail = vi.spyOn(h.telegram, 'sendToTopic').mockRejectedValueOnce(new Error('question delivery unavailable'));
+    expect((await h.propose(SOURCE)).status).toBe(502); fail.mockRestore();
+    expect(h.slots.proposals.list(String(SOURCE))).toEqual([]);
+    let words = ''; let context = '';
+    h.telegram.onTopicMessage = async message => {
+      words = message.content;
+      context = profileProposalFailureContext({ requests: h.slots.proposals, source: String(SOURCE), text: message.content,
+        replyTo: message.metadata?.replyToMessageId, forwarded: message.metadata?.forwarded === true,
+        authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId });
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    await polling.processUpdate({ update_id: 1, message: { message_id: 990, message_thread_id: SOURCE,
+      date: Math.floor(Date.now() / 1000), from: { id: OWNER, first_name: 'Fixture' },
+      chat: { id: -1001, type: 'supergroup' }, text: 'yes' } });
+    expect(words).toBe('yes'); expect(context).toContain('did not start another change');
+    expect(context).not.toContain('Project Work'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.respawns).toEqual([]);
+  });
+
   it('delivers the exact proposal in the asking conversation and writes only the unbound target after the owner confirms', async () => {
     const h = harness();
     const res = await h.propose(SOURCE);

@@ -1,3 +1,4 @@
+import { assertProfileRuntimeGuard, ProfileRuntimeOwnershipChangedError } from './ProfileRuntimeGuard.js';
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
@@ -8319,7 +8320,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return this.withConversationLock(ref, () => this.spawnInteractiveSessionUnlocked(...args));
   }
 
-  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { conversationLockHeld?: boolean; shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { runtimeGuard?: () => boolean; conversationLockHeld?: boolean; shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** durable-conversation-identity §7: the authenticated bootstrap
      *  conversation ids this session may open durable state on (a Slack spawn
      *  passes its minted conversation id). Falls back to [telegramTopicId]. */
@@ -8371,6 +8372,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
      */
     admissionKind?: AdmissionKind;
   }): Promise<string> {
+    assertProfileRuntimeGuard(options?.runtimeGuard);
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
@@ -8416,6 +8418,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     }
     if (this.tmuxSessionExists(tmuxSession)) {
+      assertProfileRuntimeGuard(options?.runtimeGuard);
       // Session already exists — just reuse it. The initial message is
       // instar-composed bootstrap content (F7) — mark it first-party so the
       // InputGuard doesn't flag instar's own boot template as an injection.
@@ -8839,6 +8842,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         console.log(`[SessionManager] Spawning interactive session "${tmuxSession}" (framework: ${framework})`);
       }
 
+      assertProfileRuntimeGuard(options?.runtimeGuard);
       withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
       this.retainFailedExitStatus(tmuxSession);
 
@@ -8853,6 +8857,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     } catch (err) {
       this.revokeOriginSession(interactiveSessionId);
       this.releaseAdmissionFor(tmuxSession); // a failed spawn must not hold the recovery slot
+      if (err instanceof ProfileRuntimeOwnershipChangedError) throw err;
       throw new Error(`Failed to create interactive tmux session: ${this.originSpawnError(err)}`);
     }
 
@@ -8957,6 +8962,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     initialMessage: string,
     readyTimeout: number,
     options?: {
+      runtimeGuard?: () => boolean;
       telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; bootstrapConversationIds?: number[];
       // Carried into the single fresh-spawn retry so it relaunches the same session shape (spec §3.2).
       framework?: IntelligenceFramework; cwd?: string; defaultModel?: string; thinkingMode?: import('./topicProfileValidation.js').ThinkingMode; effort?: import('./topicProfileValidation.js').EffortLevel; configHome?: string; subscriptionAccountId?: string;
@@ -9005,6 +9011,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     const stillAlive = sessionExists && !paneDead;
     if (!stillAlive && options?.resumeSessionId) {
+      assertProfileRuntimeGuard(options.runtimeGuard);
       console.warn(`[SessionManager] Resume failed for "${tmuxSession}" (UUID ${options.resumeSessionId}) — tmux died during startup. Falling back to fresh spawn.`);
 
       // Mark the failed session BEFORE emitting the event. A concurrent
@@ -9051,6 +9058,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           slackThreadTs: options.slackThreadTs,
           bootstrapConversationIds: options.bootstrapConversationIds,
           awaitInitialInjection: true,
+          ...(options.runtimeGuard ? { runtimeGuard: options.runtimeGuard } : {}),
           // Relaunch the same session shape; a caller-pinned login is kept, a
           // pool-resolved one is chosen again by the resolver (spec §3.2).
           ...(options.framework ? { framework: options.framework } : {}),

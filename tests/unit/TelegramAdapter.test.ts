@@ -23,6 +23,19 @@ describe('TelegramAdapter', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter.test.ts:23' });
   });
 
+  it.each(['delivered', 'held', 'throw'] as const)('binds a /topic recovery response only to its actual delivery (%s)', async mode => {
+    const receipt = vi.fn();
+    adapter.onTopicProfileCommand = async () => ({ ok: false, message: 'Apply the saved settings?', onDelivery: receipt });
+    const send = vi.spyOn(adapter, 'sendToTopic');
+    if (mode === 'delivered') send.mockResolvedValue({ messageId: 700, topicId: 42 });
+    else if (mode === 'held') send.mockResolvedValue({ delivered: false, recorded: true, quietId: 'held', topicId: 42 });
+    else send.mockRejectedValue(new Error('delivery unavailable'));
+    expect(await adapter.handleCommand('/topic reapply', 42, 777)).toBe(true);
+    expect(receipt).toHaveBeenCalledTimes(1);
+    expect(receipt).toHaveBeenCalledWith(mode === 'delivered' ? 700 : null);
+    send.mockRestore();
+  });
+
   it('has correct platform name', () => {
     expect(adapter.platform).toBe('telegram');
   });

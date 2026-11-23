@@ -1213,3 +1213,18 @@ describe('§9 escalation interplay', () => {
     expect(h.escalation.markers.has('7')).toBe(false);
   });
 });
+
+it.each(['changed', 'unreadable'] as const)('rechecks the confirmed placement at deferred runtime execution (%s)', async failure => {
+  const h = makeHarness(); liveSession(h); h.idle.value = 'busy';
+  await h.store.mutate('7', { model: 'claude-opus-4-8', updatedBy: 'telegram:111' });
+  let current = true;
+  h.orch.onProfileWrite('7', { frameworkChanged: false, origin: 'propose-confirm', runtimeGuard: () => {
+    if (!current && failure === 'unreadable') throw new Error('placement unavailable');
+    return current;
+  } });
+  await waitUntil(() => h.orch.pendingFor('7')?.deferred === true);
+  current = false; h.idle.value = 'confirmed-idle'; h.orch.tick();
+  await waitUntil(() => h.audits.some(event => event.type === 'respawn-skipped' && event.reason === 'ownership-changed'));
+  expect(h.kills).toEqual([]); expect(h.spawns).toEqual([]); expect(h.escalation.cleared).toEqual([]);
+  expect(h.store.resolve('7')?.model).toBe('claude-opus-4-8');
+});

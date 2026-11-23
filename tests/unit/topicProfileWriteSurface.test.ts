@@ -60,6 +60,8 @@ function harness(regime: ProfileWriteRegime, opts: {
   boundUid?: string | null;
   localBinding?: boolean;
   respawnFails?: boolean;
+  auditFailsAfterSave?: boolean;
+  respawnThrows?: boolean;
   reapplyCooldownMs?: number;
   tokenMayWrite?: (key: string) => { ok: true } | { ok: false; reply: string };
   now?: () => number;
@@ -92,11 +94,12 @@ function harness(regime: ProfileWriteRegime, opts: {
     localModelBinding: () => (opts.localBinding ? { provider: 'ollama' } : null),
     legacyFrameworkRespawn: async (topicKey) => {
       respawns.push(topicKey);
+      if (opts.respawnThrows) throw new Error('runtime callback failed');
       return opts.respawnFails ? { respawned: false, error: 'tmux broke' } : { respawned: true };
     },
     orchestrator: null,
     disclose: async (topic, text) => { disclosures.push({ topic, text }); },
-    audit: (event) => { audits.push(event); return `seq-${++seq}`; },
+    audit: (event) => { audits.push(event); if (opts.auditFailsAfterSave && event.type === 'write' && event.outcome === 'accepted') throw new Error('audit failed after save'); return `seq-${++seq}`; },
     reapplyCooldownMs: opts.reapplyCooldownMs,
     now: opts.now,
   });
@@ -602,13 +605,69 @@ describe('confirmed identified proposals', () => {
     expect(reloaded.resolve('23')?.framework).toBe('codex-cli');
     expect(reloaded.get('23')?.intendedProfile?.fields.thinkingMode).toBe('high');
   });
-  it('reports saved settings separately when ownership changes during flush and skips runtime', async () => {
+  it('reports saved settings separately when ownership changes during real flush and skips runtime', async () => {
     const h = harness({ ...FLEET_REGIME }); const patch = { framework: 'codex-cli' };
     const echo = h.surface.renderProposalEcho('23', patch, 'Scaling'); if (!echo.ok) throw new Error('echo');
-    let checks = 0;
-    const result = await h.surface.applyWrite({ topicKey: '23', patch, principal: OPERATOR, origin: 'propose-confirm',
-      confirmation: { echo: echo.echo, name: 'Scaling', eligible: () => ++checks === 1 }, discloseInReply: true });
+    let entered!: () => void; let release!: () => void; let eligible = true;
+    const writing = new Promise<void>(resolve => { entered = resolve; });
+    const pause = new Promise<void>(resolve => { release = resolve; });
+    const io = h.store as unknown as { writeFileAtomic: (...args: unknown[]) => Promise<void> };
+    const realWrite = io.writeFileAtomic.bind(h.store);
+    io.writeFileAtomic = async (...args) => { entered(); await pause; await realWrite(...args); };
+    const write = h.surface.applyWrite({ topicKey: '23', patch, principal: OPERATOR, origin: 'propose-confirm',
+      confirmation: { echo: echo.echo, name: 'Scaling', eligible: () => eligible }, discloseInReply: true });
+    await writing; eligible = false; release();
+    const result = await write;
     expect(result.ok).toBe(true); expect(result.reply).toContain('settings were saved');
     expect(h.store.resolve('23')?.framework).toBe('codex-cli'); expect(h.respawns).toEqual([]);
+    const reloaded = new TopicProfileStore({ stateFilePath: path.join(tmpDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
+    expect(reloaded.resolve('23')?.framework).toBe('codex-cli');
   });
+});
+
+it('builds the confirmed preview plan from the same under-lock state as its question', async () => {
+  const h = harness({ ...DEV_REGIME }); const patch = { thinkingMode: 'high' };
+  const echo = h.surface.renderProposalEcho('23', patch, 'Scaling'); if (!echo.ok) throw new Error('echo');
+  let release!: () => void; let entered!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const lock = h.store.withTopicLock('23', async () => { entered(); await new Promise<void>(resolve => { release = resolve; }); });
+  await ready;
+  h.regime.dryRun = false;
+  const write = h.surface.applyWrite({ topicKey: '23', patch, principal: OPERATOR, origin: 'propose-confirm',
+    confirmation: { echo: echo.echo, name: 'Scaling', eligible: () => true }, discloseInReply: true });
+  h.regime.dryRun = true; release(); await lock;
+  const result = await write;
+  expect(result.ok).toBe(true); expect(result.appliedLive).toEqual([]);
+  expect(result.shadowed).toEqual(['thinkingMode']);
+  expect(h.store.resolve('23')?.thinkingMode ?? null).toBeNull();
+  expect(h.store.get('23')?.intendedProfile?.fields.thinkingMode).toBe('high');
+  expect(h.respawns).toEqual([]);
+});
+
+
+it.each(['audit', 'runtime'] as const)('preserves saved settings when the %s callback throws after durable mutation', async failing => {
+  const h = harness({ ...FLEET_REGIME }, { auditFailsAfterSave: failing === 'audit', respawnThrows: failing === 'runtime' });
+  const result = await h.surface.applyWrite({ topicKey: '23', patch: { framework: 'codex-cli' }, principal: OPERATOR,
+    origin: 'propose-confirm', discloseInReply: true });
+  expect(result.ok).toBe(true); expect(result.settingsSaved).toBe(true);
+  expect(result.reply).toContain('settings were saved');
+  expect(result.effectFailure).toBe('post-save-callback');
+  const reloaded = new TopicProfileStore({ stateFilePath: path.join(tmpDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
+  expect(reloaded.resolve('23')?.framework).toBe('codex-cli');
+});
+
+
+it('does not apply a different parked profile after the owner answers the earlier version', async () => {
+  const h = harness({ ...FLEET_REGIME });
+  await h.store.mutate(23, { framework: 'codex-cli', updatedBy: 'telegram:777' });
+  await h.store.parkAndRevert(23, 'spawn-failures', null);
+  const question = await h.surface.reapply({ topicKey: 23, principal: OPERATOR, origin: 'conversational' });
+  expect(question.parkedVersion).toBeTruthy();
+  await h.store.mutate(23, { framework: 'codex-cli', effort: 'high', updatedBy: 'telegram:777' });
+  await h.store.parkAndRevert(23, 'spawn-failures', null);
+  const before = h.store.get(23);
+  const result = await h.surface.reapply({ topicKey: 23, principal: OPERATOR, origin: 'propose-confirm',
+    confirmed: true, expectedParkedVersion: question.parkedVersion, discloseInReply: true });
+  expect(result.refusal?.reason).toBe('parked-profile-changed');
+  expect(h.store.get(23)).toEqual(before); expect(h.respawns).toEqual([]);
 });

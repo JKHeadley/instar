@@ -641,6 +641,13 @@ export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<v
 /** docs/specs/topic-name-replication.md: the adapter's publish seam (see setTopicNameReplicationHook). */
 export type TopicNameReplicationHook = (topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number }) => string | null;
 
+/** Trusted server command result; callback receives the actual delivered native echo, never a body assertion. */
+export interface TopicProfileCommandResult {
+  ok: boolean;
+  message: string;
+  onDelivery?: (messageId: number | null) => void;
+}
+
 export class TelegramAdapter implements MessagingAdapter {
   public selectivity: NotificationSelectivityGate | null = null;
   /** The mandatory origin dispatcher classifies local, relayed and recovery operations. */
@@ -863,7 +870,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * raw argument text plus the AUTHENTICATED sender uid (`msg.from.id`).
    */
   public onTopicProfileCommand: (
-    (topicId: number, argText: string, userId: number) => Promise<{ ok: boolean; message: string }>
+    (topicId: number, argText: string, userId: number) => Promise<TopicProfileCommandResult>
   ) | null = null;
 
   /**
@@ -4554,7 +4561,13 @@ export class TelegramAdapter implements MessagingAdapter {
       const argText = cmd === '/topic' ? '' : text.trim().slice('/topic '.length).trim();
       try {
         const result = await this.onTopicProfileCommand(topicId, argText, userId);
-        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, result.message)).catch(() => {});
+        let nativeMessageId: number | null = null;
+        try {
+          const sent = await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, result.message));
+          nativeMessageId = requireTelegramDelivery(sent).messageId;
+        } catch { /* The typed failure below cannot bind a question that was not delivered. */ }
+        try { result.onDelivery?.(nativeMessageId); }
+        catch { console.error('[topic-profile-command-receipt-failed]', JSON.stringify({ topicId, delivered: nativeMessageId !== null })); }
       } catch (err) {
         await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Topic profile change failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => {});
       }

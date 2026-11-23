@@ -14241,20 +14241,21 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(attempt.reason === 'send-budget' ? 429 : 409).json({ ok: false, reason: attempt.reason,
         message: attempt.reason === 'send-budget' ? 'The question is still available. Please wait before requesting another reminder.' : 'The change is different now. Ask for a fresh question.' }); return;
     }
-    // Suspend older bare recovery before the question can become visible.
-    ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
     try {
       const sent = await withNotificationEnvelope(stampProfileConfirmation(), async () => (ctx.telegram)!.sendToTopic(echoTopic, attempt.text));
       const delivered = requireTelegramDelivery(sent).messageId;
-      proposals.complete(String(echoTopic), attempt.request.id, attempt.attemptId, delivered);
-      const legacy = ctx.topicProfile.confirmSlots.peek(String(echoTopic));
-      if (legacy?.echoPlatformMessageId != null && legacy.echoPlatformMessageId < delivered) ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
-      res.json({ ok: true, requestId: attempt.request.id, targetTopicId: gate.key, echo: attempt.text,
+      attempt.onDelivery(delivered);
+      const active = proposals.get(String(echoTopic), attempt.request.id);
+      if (!active?.receipts.some(receipt => receipt.messageId === delivered)) {
+        res.status(409).json({ ok: false, delivered: true, reason: 'question-no-longer-active', requestId: attempt.request.id,
+          message: 'The question arrived after it stopped being available. I need to check the current settings before asking again.' });
+        return;
+      }
+      res.json({ ok: true, expiresAt: attempt.request.expiresAt, requestId: attempt.request.id, targetTopicId: gate.key, echo: attempt.text,
         reminder: !attempt.created, superseded: false, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
-      proposals.complete(String(echoTopic), attempt.request.id, attempt.attemptId, null);
-      ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
-      res.status(502).json({ ok: false, error: `Question delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
+      attempt.onDelivery(null);
+      res.status(502).json({ ok: false, reason: 'delivery-unconfirmed', requestId: attempt.request.id, error: 'I could not confirm that the question is ready to answer.' });
     }
 
   });

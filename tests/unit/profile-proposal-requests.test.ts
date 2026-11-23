@@ -1,4 +1,4 @@
-import { profileProposalConversationContext } from '../../src/core/handleProfileProposalReply.js';
+import { profileProposalConversationContext, profileProposalFailureContext } from '../../src/core/handleProfileProposalReply.js';
 import { describe, it, expect, vi } from 'vitest';
 import { ProfileProposalRequests } from '../../src/core/ProfileProposalRequests.js';
 const saved = { ok: true, reply: 'Settings saved.' };
@@ -29,10 +29,10 @@ describe('identified proposal controls', () => {
     expect(p.get('A', a.request.id)?.patch.framework).toBe('codex-cli');
   });
   it('reuses only identical consequences and epochs, without extending expiry', () => {
-    let now = 0; const p = new ProfileProposalRequests({ now: () => now, ttlMs: () => 100 });
-    const a = arm(p); now = 50; const reminder = arm(p); expect(reminder.request.id).toBe(a.request.id);
+    let now = 0; const p = new ProfileProposalRequests({ now: () => now, ttlMs: () => 1000 });
+    const a = arm(p); now = 500; const reminder = arm(p); expect(reminder.request.id).toBe(a.request.id);
     const moved = p.begin('A', 'B', a.request.patch, a.request.core, 'epoch-3'); expect(moved.ok && moved.request.id).not.toBe(a.request.id);
-    now = 101; expect(p.get('A', a.request.id)).toBeNull();
+    now = 1001; expect(p.get('A', a.request.id)).toBeNull();
   });
   it.each([true, false])('preserves a successful reminder if the first attempt fails (%s)', async firstFailsFirst => {
     const p = new ProfileProposalRequests(); const a = arm(p); const b = arm(p);
@@ -116,4 +116,115 @@ describe('server-owned question context for nonexact conversational replies', ()
       { currentEcho: () => 'Changed consequences' }, { eligible: () => { throw new Error('audience unreadable'); } }])
       expect(profileProposalConversationContext({ ...input, ...changed })).toBe('');
   });
+});
+
+
+describe('immutable human confirmation deadline', () => {
+  it('remains answerable after the old seven-minute failure and states the actual deadline', async () => {
+    let now = Date.UTC(2026, 10, 22, 22, 48, 47);
+    const p = new ProfileProposalRequests({ now: () => now });
+    const a = arm(p); p.complete('A', a.request.id, a.attemptId, 10);
+    expect(a.request.expiresAt - a.request.armedAt).toBe(86_400_000);
+    expect(a.text).toContain('2026-11-23'); expect(a.text).toContain('UTC');
+    now += 8 * 60_000;
+    expect((await p.reply('A', reply(11, 10), async () => saved)).result).toEqual(saved);
+  });
+  it('does not change an issued deadline on configuration reload or reminder', () => {
+    let now = 0; let ttl = 10_000;
+    const p = new ProfileProposalRequests({ now: () => now, ttlMs: () => ttl });
+    const a = arm(p); ttl = 1000; now = 2000;
+    const reminder = arm(p); expect(reminder.request.id).toBe(a.request.id);
+    expect(reminder.request.expiresAt).toBe(10_000);
+    now = 10_000; expect(p.get('A', a.request.id)).toBeNull();
+  });
+  it.each([0, -1, NaN, Infinity, Number.MAX_VALUE])('uses a safe default for invalid lifetime %j', ttl => {
+    const p = new ProfileProposalRequests({ now: () => 0, ttlMs: () => ttl });
+    expect(arm(p).request.expiresAt).toBe(86_400_000);
+  });
+});
+
+it('wakes a native reply for its receipt without waiting for an unrelated stalled send', async () => {
+  const p = new ProfileProposalRequests({ receiptWaitMs: 1000 }); const a = arm(p); arm(p, 'C');
+  const apply = vi.fn(async () => saved);
+  const outcome = p.reply('A', reply(12, 10), apply);
+  await Promise.resolve(); p.complete('A', a.request.id, a.attemptId, 10);
+  expect((await outcome).result).toEqual(saved);
+  expect(apply).toHaveBeenCalledTimes(1); expect(p.pending('A')).toBe(true);
+});
+
+it.each([true, false])('keeps a newer independent failure across older success callbacks (%s)', async failureFirst => {
+  const p = new ProfileProposalRequests(); const a = arm(p); const b = arm(p, 'C');
+  if (failureFirst) b.onDelivery(null);
+  a.onDelivery(10);
+  if (!failureFirst) b.onDelivery(null);
+  expect(p.failure('A')?.requestId).toBe(b.request.id);
+  expect(p.failure('A')).not.toHaveProperty('patch');
+  const apply = vi.fn(async () => saved);
+  expect((await p.reply('A', reply(11, 10), apply)).result).toEqual(saved);
+});
+
+it.each([true, false])('only a later verified same-request attempt recovers its failure (%s)', failureFirst => {
+  const p = new ProfileProposalRequests(); const a = arm(p); const reminder = arm(p);
+  if (failureFirst) a.onDelivery(null);
+  reminder.onDelivery(10);
+  if (!failureFirst) a.onDelivery(null);
+  expect(p.failure('A')).toBeNull();
+});
+
+it('records a delivered-but-expired callback after cleanup without granting new authority', async () => {
+  let now = 0; const audit = vi.fn();
+  const p = new ProfileProposalRequests({ now: () => now, ttlMs: () => 1000, audit });
+  const a = arm(p); now = 1000; expect(p.list('A')).toEqual([]);
+  a.onDelivery(10);
+  expect(audit).toHaveBeenCalledWith(expect.objectContaining({ type: 'proposal-delivered-inactive', reason: 'expired', messageId: 10 }));
+  const apply = vi.fn(async () => saved);
+  expect((await p.reply('A', reply(11, 10), apply)).matched).toBe(false);
+  expect(apply).not.toHaveBeenCalled();
+});
+
+
+it('caches durable settings separately when a later effect throws and never repeats that effect', async () => {
+  const p = new ProfileProposalRequests(); const a = arm(p); a.onDelivery(10);
+  const apply = vi.fn(async (_proposal, recordSaved) => {
+    recordSaved({ ok: true, settingsSaved: true, reply: 'The settings were saved.' });
+    throw new Error('callback failed after durable save');
+  });
+  const input = reply(11, 10);
+  const first = await p.reply('A', input, apply);
+  expect(first.result).toMatchObject({ ok: true, settingsSaved: true, effectFailure: 'post-save-callback', runtimeOutcome: 'unknown' });
+  expect(await p.reply('A', input, apply)).toEqual(first);
+  expect(apply).toHaveBeenCalledTimes(1);
+});
+
+
+it('supplies no target or request reference after final failed delivery, and no context to another owner', () => {
+  const p = new ProfileProposalRequests(); const a = arm(p); a.onDelivery(null);
+  expect(p.list('A')).toEqual([]);
+  const input = { requests: p, source: 'A', text: 'yes', forwarded: false, authenticatedOwner: () => true };
+  const context = profileProposalFailureContext(input);
+  expect(context).toContain('no-native-identification'); expect(context).toContain('did not start another change');
+  expect(context).not.toContain(a.request.id); expect(context).not.toContain('Use Codex');
+  expect(profileProposalFailureContext({ ...input, authenticatedOwner: () => false })).toBe('');
+  expect(profileProposalFailureContext({ ...input, replyTo: 50 })).toBe('');
+});
+
+it('drops removed-source diagnostics and does not recreate them from a late send', () => {
+  let exists = true;
+  const p = new ProfileProposalRequests({ sourceExists: () => exists });
+  const first = arm(p); first.onDelivery(null);
+  expect(p.failure('A')).not.toBeNull();
+  const late = arm(p, 'C');
+  exists = false;
+  expect(p.failure('A')).toBeNull();
+  late.onDelivery(null);
+  expect(p.failure('A')).toBeNull();
+});
+
+it('retains a delivered native receipt when the source registry cannot establish existence', async () => {
+  const p = new ProfileProposalRequests({ sourceExists: () => undefined });
+  const a = arm(p); a.onDelivery(431);
+  expect(p.get('A', a.request.id)?.receipts).toEqual([{ messageId: 431, text: a.text }]);
+  const apply = vi.fn(async () => saved);
+  expect((await p.reply('A', reply(432, 431), apply)).result).toEqual(saved);
+  expect(apply).toHaveBeenCalledTimes(1);
 });

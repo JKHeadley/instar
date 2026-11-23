@@ -140,9 +140,21 @@ export class ProfileDisplayConflictError extends Error {
   constructor() { super('Display settings changed; refresh before saving again.'); this.name = 'ProfileDisplayConflictError'; }
 }
 
+/** Exact version of the persisted parked record shown by a legacy recovery question. */
+export function parkedProfileVersion(parked: ParkedProfile | null): string | null {
+  return parked ? createHash('sha256').update(JSON.stringify(parked)).digest('hex') : null;
+}
+
 export interface MutateOptions {
   /** Internal synchronous confirmation fence, under the mutation lock. */
   beforeWrite?: () => void;
+  /** Build the immutable mutation plan from the same locked state as its confirmation. */
+  prepare?: () => {
+    patch: Partial<Omit<TopicProfile, 'updatedAt'>> & { updatedBy: string };
+    shadow?: IntendedProfileShadow['fields'];
+  };
+  /** Last synchronous guard immediately before publishing any candidate state. */
+  beforeCommit?: () => void;
   /** Confirmed mixed proposals persist live and preview fields in one flush. */
   shadow?: IntendedProfileShadow['fields'];
   /** Optional cosmetic compare-and-set, checked only while holding the topic lock. */
@@ -330,7 +342,7 @@ export class TopicProfileStore {
    */
   async mutate(
     topicKey: number | string,
-    patch: Partial<Omit<TopicProfile, 'updatedAt'>> & { updatedBy: string },
+    inputPatch: Partial<Omit<TopicProfile, 'updatedAt'>> & { updatedBy: string },
     opts: MutateOptions = {},
   ): Promise<MutateResult> {
     const key = String(topicKey);
@@ -338,7 +350,13 @@ export class TopicProfileStore {
       key,
       async () => {
         opts.beforeWrite?.();
-        const entry = this.entryFor(key);
+        const prepared = opts.prepare?.();
+        const patch = prepared?.patch ?? inputPatch;
+        const shadow = prepared ? prepared.shadow : opts.shadow;
+        // Validation and deadline checks must not publish a null husk for an absent topic.
+        const existing = this.topics[key];
+        const entry: TopicProfileEntry = existing ? deepCloneTopics({ entry: existing }).entry
+          : { current: null, previous: null, intendedProfile: null, parked: null, breakerCount: 0 };
         if (opts.expectedDisplayRevision !== undefined &&
           topicDisplayRevision(entry.current?.messageOriginDisplay) !== opts.expectedDisplayRevision) {
           throw new ProfileDisplayConflictError();
@@ -368,9 +386,11 @@ export class TopicProfileStore {
         if (exclusion) throw new ProfileValidationRefusal(exclusion);
 
         if (!changed) {
-          if (opts.shadow) {
-            entry.intendedProfile = { fields: { ...entry.intendedProfile?.fields, ...opts.shadow },
+          if (shadow) {
+            entry.intendedProfile = { fields: { ...entry.intendedProfile?.fields, ...shadow },
               recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
+            opts.beforeCommit?.();
+            this.topics[key] = entry;
             await this.flushDurably();
           }
           return { changed: false, entry, supersededParked: false };
@@ -402,9 +422,11 @@ export class TopicProfileStore {
         // An accepted LIVE write clears that topic's stale dry-run shadow
         // (§14 supersession discipline).
         if (!displayOnly && entry.intendedProfile) entry.intendedProfile = null;
-        if (opts.shadow) entry.intendedProfile = { fields: opts.shadow,
+        if (shadow) entry.intendedProfile = { fields: shadow,
           recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
 
+        opts.beforeCommit?.();
+        this.topics[key] = entry;
         await this.flushDurably();
         return { changed: true, entry, supersededParked };
       },

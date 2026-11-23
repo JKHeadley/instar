@@ -80,6 +80,7 @@
  * (classifyProfileChange, profilesEqual) is imported directly.
  */
 
+import { assertProfileRuntimeGuard, ProfileRuntimeOwnershipChangedError } from './ProfileRuntimeGuard.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -203,6 +204,7 @@ export interface OrchestratorSessionPort {
        *  that session's original spawn brief into a CONTINUATION respawn
        *  (the brief is not in the topic's chat history). */
       replacedSessionName?: string;
+      runtimeGuard?: () => boolean;
     },
   ): Promise<RespawnSpawnOutcome>;
 }
@@ -329,6 +331,7 @@ interface ArmedConfirm {
 }
 
 interface PendingSlot {
+  runtimeGuard?: () => boolean;
   timer: ReturnType<typeof setTimeout> | null;
   /** Live characteristics at burst start (net-unchanged + "was:" rendering). */
   preBurst: TopicProfile | null;
@@ -369,6 +372,7 @@ interface DurableSideState {
 }
 
 interface RespawnTask {
+  runtimeGuard?: () => boolean;
   topicKey: string;
   /** Breaker revert: live in every regime, immediate, no debounce. */
   breakerRevert: boolean;
@@ -762,7 +766,7 @@ export class TopicProfileOrchestrator {
    */
   onProfileWrite(
     topicKey: number | string,
-    info: { frameworkChanged: boolean; origin: string },
+    info: { frameworkChanged: boolean; origin: string; runtimeGuard?: () => boolean },
   ): void {
     const key = String(topicKey);
     const cfg = this.cfg();
@@ -776,13 +780,14 @@ export class TopicProfileOrchestrator {
       frameworkArm: info.frameworkChanged,
       preBurst,
       origin: info.origin,
+      runtimeGuard: info.runtimeGuard,
     });
   }
 
   private armRespawn(
     key: string,
     windowMs: number,
-    info: { frameworkArm: boolean; preBurst: TopicProfile | null; origin: string },
+    info: { frameworkArm: boolean; preBurst: TopicProfile | null; origin: string; runtimeGuard?: () => boolean },
   ): void {
     let slot = this.pendingSlots.get(key);
     if (!slot) {
@@ -799,6 +804,7 @@ export class TopicProfileOrchestrator {
       };
       this.pendingSlots.set(key, slot);
     }
+    slot.runtimeGuard = info.runtimeGuard;
     slot.changeCount += 1;
     slot.origins.add(info.origin);
     slot.frameworkArm = slot.frameworkArm || info.frameworkArm;
@@ -821,6 +827,7 @@ export class TopicProfileOrchestrator {
       topicKey: key,
       breakerRevert: false,
       switchNowOverride: slot?.switchNowOverride ?? false,
+      runtimeGuard: slot?.runtimeGuard,
       enqueuedAt: this.now(),
     });
   }
@@ -918,6 +925,11 @@ export class TopicProfileOrchestrator {
         LOCK_ACQUIRE_TIMEOUT_MS,
       );
     } catch (err) {
+      if (err instanceof ProfileRuntimeOwnershipChangedError) {
+        this.audit_({ type: 'respawn-skipped', topic: key, reason: 'ownership-changed', settingsSaved: true });
+        this.teardownSlot(key);
+        return;
+      }
       if (err instanceof ProfileLockTimeoutError) {
         this.audit_({ type: 'respawn-lock-timeout', topic: key });
         return;
@@ -929,6 +941,8 @@ export class TopicProfileOrchestrator {
   private async respawnPhase(task: RespawnTask): Promise<void> {
     const key = task.topicKey;
     const slot = this.pendingSlots.get(key);
+    const runtimeGuard = slot ? slot.runtimeGuard : task.runtimeGuard;
+    assertProfileRuntimeGuard(runtimeGuard);
 
     // Re-resolve from the cache AT THIS MOMENT (§8 dequeue-time resolution).
     const resolved = this.deps.resolveProfile(key);
@@ -995,6 +1009,7 @@ export class TopicProfileOrchestrator {
     // §7 in-flight row (Claude modelTier, confirmed-idle, canary passed).
     if (classification.swapMethod === 'in-flight') {
       const tier = resolved.modelTier ?? 'default';
+      assertProfileRuntimeGuard(runtimeGuard);
       const swap = await this.deps.inFlightSwap.swap(session.sessionName, tier);
       if (swap.status === 'swapped' || swap.status === 'noop') {
         this.recordApplied(key, resolvedToApplied(resolved));
@@ -1036,8 +1051,6 @@ export class TopicProfileOrchestrator {
     // ── kill → respawn ────────────────────────────────────────────────────
     // Any profile-triggered kill clears the topic's escalation marker and
     // releases its lease BEFORE expected-live is next computed (§8 round-5).
-    this.deps.escalation.clearMarkerAndReleaseLease(key);
-
     let method: SwapMethod = classification.swapMethod;
     let resumeId: string | undefined;
     let lossNote: string | null = null;
@@ -1079,6 +1092,8 @@ export class TopicProfileOrchestrator {
       }
     }
 
+    assertProfileRuntimeGuard(runtimeGuard);
+    this.deps.escalation.clearMarkerAndReleaseLease(key);
     let killed: boolean;
     if (fresh) {
       // Park BOTH resume stores' entries BEFORE the kill (park, not delete —
@@ -1109,10 +1124,12 @@ export class TopicProfileOrchestrator {
       return;
     }
 
+    assertProfileRuntimeGuard(runtimeGuard);
     const outcome = await this.deps.sessions.spawn(key, resolved, {
       method,
       resumeId,
       replacedSessionName: session.sessionName,
+      runtimeGuard,
     });
     if (outcome.ok) {
       const applied = outcome.applied ?? resolvedToApplied(resolved);
