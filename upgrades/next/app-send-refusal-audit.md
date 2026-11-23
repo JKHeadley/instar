@@ -1,0 +1,19 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The app chat preflight records a fixed-schema warning when the local serving-lease check refuses a new request. The warning names the server time and a subsequent read-only lease verdict, renewal age and lifetime. Diagnostic failure does not change the existing refusal. No message text, conversation/device/request identifier, credential or raw error is logged.
+
+## What to Tell Your User
+
+When an app message is refused because the computer cannot currently receive it, the server now records the lease condition it observed so the interruption can be investigated.
+
+## Summary of New Capabilities
+
+No new control or API. Server warning logs can show mobile-chat-not-serving records with bounded lease diagnostics.
+
+## Evidence
+
+Allocated focused tests passed: 9 unit, 18 signed HTTP and 1 real-lease production-construction lifecycle case. The first lifecycle attempt failed on a fixture key-format mismatch; that fixture-only correction was independently reviewed and rerun under a fresh allocation. Runtime source stayed unchanged. Complete coordinator verification remains required. No cause or recovery claim is made for the historical 11:29 interruption.
