@@ -9,6 +9,7 @@ import { WebSocket } from 'ws';
 import { EventEmitter } from 'node:events';
 import { sign } from '../ThreadlineCrypto.js';
 import { reportUnheardRelayError } from './relayErrorReport.js';
+import { isRelayChallengeNonce, reportRefusedChallenge } from './relayChallenge.js';
 import type {
   RelayClientConfig,
   AgentFingerprint,
@@ -194,7 +195,19 @@ export class RelayClient extends EventEmitter {
         try {
         switch (frame.type) {
           case 'challenge':
-            this.handleChallenge(frame.nonce);
+            if (!this.handleChallenge(frame.nonce)) {
+              // SEC-133: refused like a failed login. Settle connect(), back off (~32s, as for a
+              // rate-limited auth), close. Never an 'error' event: on the server path nothing
+              // listens for ThreadlineClient's 'error', and an unhandled one would exit the process.
+              const wasConnected = this.state === 'connected';
+              clearTimeout(connectTimeout);
+              this.state = 'disconnected';
+              this.reconnectAttempt = Math.max(this.reconnectAttempt, 5);
+              reject(new Error('Auth refused: the relay sent a login challenge that is not 32 random bytes'));
+              // A challenge after login: the close handler will no longer see 'connected', so say it here.
+              if (wasConnected) this.emit('disconnected', 'challenge-refused');
+              try { this.socket?.close(4000, 'challenge-refused'); } catch { /* @silent-fallback-ok — socket already closing */ }
+            }
             break;
 
           case 'auth_ok':
@@ -296,7 +309,14 @@ export class RelayClient extends EventEmitter {
     });
   }
 
-  private handleChallenge(nonce: string): void {
+  /** Signs and sends the auth answer. Returns false (and signs nothing) for a refused challenge. */
+  private handleChallenge(nonce: string): boolean {
+    // SEC-133: never sign relay-chosen bytes of any other shape (see relayChallenge.ts).
+    if (!isRelayChallengeNonce(nonce)) {
+      reportRefusedChallenge('relay', this.config.relayUrl);
+      this.emit('challenge-refused', { relayUrl: this.config.relayUrl });
+      return false;
+    }
     const nonceBuffer = Buffer.from(nonce, 'utf-8');
     const signature = sign(this.identity.privateKey, nonceBuffer);
 
@@ -313,6 +333,7 @@ export class RelayClient extends EventEmitter {
       },
       visibility: this.config.visibility,
     }));
+    return true;
   }
 
   private scheduleReconnect(): void {

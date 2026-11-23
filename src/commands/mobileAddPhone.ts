@@ -71,12 +71,13 @@ export async function addPhone(opts: AddPhoneOptions): Promise<void> {
     if (Date.now() > deadline) { await cancel(); console.error('The setup timed out. Run this again to add your phone.'); process.exitCode = 1; return; }
     const s = await call('GET', `/mobile/phone-setup/${setupId}`);
     if (s.status === 404) { finished = true; console.error(LOST_SETUP); process.exitCode = 1; return; }
-    if (s.json.state === 'ended') { console.error(`The setup ended (${String(s.json.endedReason ?? 'ended')}). Run this again to add your phone.`); process.exitCode = 1; return; }
+    if (s.json.state === 'ended') { console.error(s.json.endedReason === 'second-phone' && typeof s.json.say === 'string' ? s.json.say : `The setup ended (${String(s.json.endedReason ?? 'ended')}). Run this again to add your phone.`); process.exitCode = 1; return; }
     if (s.json.state === 'waiting-number') {
       const phone = (s.json.phone ?? {}) as Record<string, unknown>;
       console.log(`\nA phone is waiting: "${String(phone.name ?? 'unnamed')}" (the phone chose this name), key ${String(phone.key ?? 'unknown')}.`);
       console.log('If this is not the phone in your hand, press Ctrl+C.');
-      const number = process.stdin.isTTY ? await ask('Type the six digits your phone shows: ', false) : await firstLine();
+      if (typeof s.json.say === 'string') console.log(s.json.say);
+      const number = process.stdin.isTTY ? await ask('Type the six digits shown on your own phone: ', false) : await firstLine();
       if (!number) { console.error('No number was given. Run this again in a terminal.'); process.exitCode = 1; return; }
       const r = await call('POST', `/mobile/phone-setup/${setupId}/number`, { number });
       if (r.status === 200) { console.log('Right number. Your phone finishes by itself.'); break; }
@@ -91,7 +92,7 @@ export async function addPhone(opts: AddPhoneOptions): Promise<void> {
     const s = await call('GET', `/mobile/phone-setup/${setupId}`);
     if (s.status === 404) { finished = true; console.error(LOST_SETUP); process.exitCode = 1; return; }
     if (s.json.state === 'done') { finished = true; console.log('Your phone is added. It works on this network; it cannot approve risky actions yet.'); return; }
-    if (s.json.state === 'ended') { console.error(`The setup ended (${String(s.json.endedReason ?? 'ended')}).`); process.exitCode = 1; return; }
+    if (s.json.state === 'ended') { console.error(s.json.endedReason === 'second-phone' && typeof s.json.say === 'string' ? s.json.say : `The setup ended (${String(s.json.endedReason ?? 'ended')}).`); process.exitCode = 1; return; }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   // The phone never finished within its signing window: not added (GPT review 5: this used to exit 0).

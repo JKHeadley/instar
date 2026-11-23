@@ -110,6 +110,16 @@ export class WorktreeMonitor extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private stateFile: string;
   private lastReport: WorktreeReport | null = null;
+  /**
+   * Per-worktree results keyed by `<defaultBranchSha>:<head>` (fb-9f890bce-bd2). The scan
+   * started two git processes per worktree every 5 minutes (over 850 per scan on the
+   * Studio). A commit-count and changed-file list are pure functions of those two
+   * commits, so an unchanged pair is answered from here. Rebuilt each scan so entries
+   * for removed worktrees drop out.
+   */
+  private unmergedCache = new Map<string, WorktreeWithDiff | null>();
+  /** Commit timestamps by commit sha (a commit's time never changes). */
+  private commitTimeCache = new Map<string, number | null>();
   private announcedFile: string;
   private announced: Partial<Record<AlertKind, AnnouncedEntry>> = {};
   /** The scan in progress, shared by every caller until it settles (single-flight). */
@@ -335,15 +345,28 @@ export class WorktreeMonitor extends EventEmitter {
 
     // Get default branch for comparison
     const defaultBranch = await this.getDefaultBranch();
+    // One process per scan: the default branch's commit keys the per-worktree cache.
+    const defaultBranchSha = (await this.gitCommand(`rev-parse --verify --quiet ${defaultBranch}`)).trim() || undefined;
+    const previous = this.unmergedCache;
+    const seen = new Map<string, WorktreeWithDiff | null>();
 
     // Check each non-main worktree for unmerged work
     for (const wt of report.worktrees) {
       if (!wt.branch) continue;
 
-      const diff = await this.checkUnmergedWork(wt, defaultBranch);
+      const key = defaultBranchSha && wt.head ? `${defaultBranchSha}:${wt.head}` : null;
+      if (key && previous.has(key)) seen.set(key, previous.get(key)!);
+      this.unmergedCache = seen;
+      const diff = await this.checkUnmergedWork(wt, defaultBranch, defaultBranchSha);
       if (diff && diff.commitsAhead > 0) {
         report.withUnmergedWork.push(diff);
       }
+    }
+    // Entries for worktrees no longer present (or an older default-branch commit) drop out here.
+    this.unmergedCache = seen;
+    if (this.commitTimeCache.size > 4 * Math.max(64, report.worktrees.length)) {
+      const live = new Set(report.worktrees.map((w) => w.head).filter((h): h is string => !!h));
+      for (const k of [...this.commitTimeCache.keys()]) if (!live.has(k)) this.commitTimeCache.delete(k);
     }
 
     // Find orphan worktree branches (branches matching worktree-* pattern with no worktree)
@@ -405,7 +428,19 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Check how many commits a worktree branch has ahead of the default branch.
    */
-  async checkUnmergedWork(wt: Worktree, defaultBranch: string): Promise<WorktreeWithDiff | null> {
+  async checkUnmergedWork(wt: Worktree, defaultBranch: string, defaultBranchSha?: string): Promise<WorktreeWithDiff | null> {
+    if (!wt.branch) return null;
+    const key = defaultBranchSha && wt.head ? `${defaultBranchSha}:${wt.head}` : null;
+    if (key && this.unmergedCache.has(key)) {
+      const hit = this.unmergedCache.get(key)!;
+      return hit ? { ...hit, worktree: wt } : null;
+    }
+    const result = await this.computeUnmergedWork(wt, defaultBranch);
+    if (key) this.unmergedCache.set(key, result);
+    return result;
+  }
+
+  private async computeUnmergedWork(wt: Worktree, defaultBranch: string): Promise<WorktreeWithDiff | null> {
     if (!wt.branch) return null;
 
     // Count commits ahead
@@ -470,9 +505,14 @@ export class WorktreeMonitor extends EventEmitter {
    */
   async getWorktreeAge(wt: Worktree): Promise<number | null> {
     if (!wt.head) return null;
-    const timestamp = (await this.gitCommand(`show -s --format=%ct ${wt.head}`)).trim();
-    if (!timestamp) return null;
-    const commitTime = parseInt(timestamp, 10) * 1000;
+    let commitTime = this.commitTimeCache.get(wt.head);
+    if (commitTime === undefined) {
+      const timestamp = (await this.gitCommand(`show -s --format=%ct ${wt.head}`)).trim();
+      commitTime = timestamp ? parseInt(timestamp, 10) * 1000 : null;
+      // Only a real answer is cached; an empty read (timeout, missing object) is retried next time.
+      if (commitTime !== null) this.commitTimeCache.set(wt.head, commitTime);
+    }
+    if (commitTime === null) return null;
     return Date.now() - commitTime;
   }
 

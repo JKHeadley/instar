@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import {
-  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE, accountNotices,
+  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE, accountNotices, topWindow, usageTone,
   summarizeAccounts, accountCellState, repairCellView, REPAIR_RETRY_GRACE, usageWindows, accountEmail, kindWord,
   summarizeSpend, summarizeRecorded, summarizeLimits, summarizeConversations, windowOf, basisWord, modelWord, doorWord, routeStatusWord,
   summarizeResources, ownerOrBearer, singleFlight, rowKey,
@@ -32,10 +32,14 @@ describe('accounts', () => {
     expect(accountCellState({ status: 'needs-reauth' }, true)).toEqual({ state: 'working', label: 'signing in now' });
   });
 
-  it('usage windows: Claude and Codex readings, highest first; non-numbers dropped', () => {
-    expect(usageWindows({ fiveHour: { utilizationPct: 20, resetsAt: at(60) }, sevenDay: { utilizationPct: 80.4, resetsAt: at(600) } }))
-      .toEqual([{ label: 'weekly', pct: 80, resetsAt: at(600) }, { label: '5-hour', pct: 20, resetsAt: at(60) }]);
-    expect(usageWindows({ primary: { usedPercent: 50, resetsAtIso: at(30) }, secondary: { usedPercent: 'x' } })).toEqual([{ label: '5-hour', pct: 50, resetsAt: at(30) }]);
+  it('usage windows: Claude and Codex readings in a fixed order (5-hour, weekly, Fable weekly), never by percentage; non-numbers dropped', () => {
+    expect(usageWindows({ sevenDay: { utilizationPct: 80.4, resetsAt: at(600) }, fiveHour: { utilizationPct: 20, resetsAt: at(60) } }, NOW))
+      .toEqual([
+        { label: '5-hour', name: '5-hour', pct: 20, resetsAt: at(60), tone: null, rolledOver: false },
+        { label: 'weekly', name: 'Weekly', pct: 80, resetsAt: at(600), tone: 'attn', rolledOver: false },
+      ]);
+    expect(usageWindows({ primary: { usedPercent: 50, resetsAtIso: at(30) }, secondary: { usedPercent: 'x' } }, NOW))
+      .toEqual([{ label: '5-hour', name: '5-hour', pct: 50, resetsAt: at(30), tone: null, rolledOver: false }]);
     expect(usageWindows(null)).toEqual([]);
     expect(usageWindows({ fiveHour: { utilizationPct: Number.NaN } })).toEqual([]);
   });
@@ -92,6 +96,27 @@ describe('accounts', () => {
     expect(by.Grok.usageLine).toBe("Usage isn't readable for this kind of account.");
     expect(by.New.usageLine).toBe('No reading yet.');
     expect(by.Past.windows[0].resetsAt).toBeNull();
+  });
+
+  it('DF-0001: a limit that already reset keeps its figure but no colour, and never decides the account', () => {
+    const q = { fiveHour: { utilizationPct: 100, resetsAt: at(-5) }, sevenDay: { utilizationPct: 40, resetsAt: at(3000) }, measuredAt: at(-30) };
+    const a = summarizeAccounts(pool([row({ lastQuota: q })]), { now: NOW }).accounts[0];
+    expect(a.windows.map((w) => [w.label, w.pct, w.rolledOver, w.tone])).toEqual([['5-hour', 100, true, null], ['weekly', 40, false, null]]);
+    expect(a.usageLine).toBe('40% of weekly');
+    expect(a.tone).toBeNull();
+    expect(topWindow(a.windows)?.label).toBe('weekly');
+    expect(topWindow([])).toBeNull();
+    // The pool-wide "nearly out" notice ignores the reset limit too.
+    const notices = accountNotices([{ key: 'k', name: 'Work Max', kind: 'Claude', signIn: 'signed-in', windows: a.windows, machines: [{ name: 'Studio', isSelf: true, state: 'ok', label: 'signed in' }] }], { localUnreadable: false, partial: false });
+    expect(notices).toEqual([]);
+  });
+
+  it('DF-0001: colour follows the rounded figure shown (89.6% shows "90%" and is red), for a limit and the account', () => {
+    const a = summarizeAccounts(pool([row({ lastQuota: { sevenDay: { utilizationPct: 89.6, resetsAt: at(3000) }, measuredAt: at(-1) } })]), { now: NOW }).accounts[0];
+    expect(a.windows[0]).toMatchObject({ pct: 90, tone: 'bad' });
+    expect(a.tone).toBe('bad');
+    expect(usageTone(89.4)).toBe('attn');
+    expect(usageTone(100, true)).toBeNull();
   });
 
   it('sign-in rollup, ordering and in-use only with a local row', () => {
@@ -364,7 +389,7 @@ describe('spend', () => {
     ], storeError: 'caps store unreadable: /Users/x/caps.json' } }, { ok: true, data: { lifecycleState: 'enabled', enforcementReady: true, anyKeyFrozen: true, machineId: 'm_self', machineNickname: 'Studio' } }, (id) => (id === 'm_holder' ? 'Studio' : null));
     expect(l.routes).toEqual([
       // Designated to another machine: its committed figures are not this machine's to show.
-      { key: rowKey('route', 'or-key-REF'), name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: null, dailyCapUsd: 25, committedLifetimeUsd: null, lifetimeCapUsd: 60, heldBy: 'Studio', committedElsewhere: true },
+      { key: rowKey('route', 'or-key-REF'), name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: null, dailyCapUsd: 25, committedLifetimeUsd: null, lifetimeCapUsd: 60, committedMonthUsd: null, monthlyCapUsd: null, heldBy: 'Studio', committedElsewhere: true },
       expect.objectContaining({ name: 'Groq · Groq', status: 'Frozen', heldBy: 'another machine' }),
     ]);
     const here = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 3, committedLifetimeUsd: 40, meteredLeaseHolder: 'm_self' }, { keyRef: 'k2', provider: 'groq', door: 'groq', committedDayUsd: 1 }] } }, { ok: false, off: true }, () => null, ['single-machine', 'm_self']);

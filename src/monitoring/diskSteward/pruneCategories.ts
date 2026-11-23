@@ -155,12 +155,22 @@ export async function pruneNpmCache(seams: PruneSeams, opts: { dryRun: boolean; 
     if (rows === null) return result('npm-cache', { ...planned, skipped: 'process-list-unreadable' });
     if (npmBusy(rows) || npmCacheWriting(seams, cacache)) return result('npm-cache', { ...planned, skipped: 'npm-busy' });
   }
+  let error: string | undefined;
   try {
     await seams.run('npm', ['cache', 'clean', '--force', '--cache', root], opts.budgetMs);
   } catch (e) {
-    return result('npm-cache', { ...planned, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) });
+    error = (e instanceof Error ? e.message : String(e)).slice(0, 200);
   }
-  return result('npm-cache', { ...planned, removedItems: 1, bytesFreed: size });
+  // What was freed is measured, not inferred from npm's exit status: `npm cache
+  // clean` can delete nearly everything and still exit non-zero (fb-eecd4dde-608,
+  // 13.7 GB -> 0.34 GB recorded as 0). The breaker and the audit read this number.
+  const after = seams.lstat(cacache) ? await seams.sizeOf(cacache, Math.min(opts.budgetMs, 300_000)) : 0;
+  if (after === null) {
+    // Unmeasurable after: a clean exit keeps the old answer (all of it); an error claims nothing.
+    return result('npm-cache', error ? { ...planned, error } : { ...planned, removedItems: 1, bytesFreed: size });
+  }
+  const bytesFreed = Math.max(0, size - after);
+  return result('npm-cache', { ...planned, removedItems: bytesFreed > 0 ? 1 : 0, bytesFreed, ...(error ? { error } : {}) });
 }
 
 /** Xcode DerivedData: entries older than 24 h, contained, never while an Xcode build tool runs. */

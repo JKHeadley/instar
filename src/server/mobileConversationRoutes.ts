@@ -29,6 +29,8 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
@@ -70,6 +72,8 @@ import { isMessagePosition, isReaderKey, CATCH_UP_PAGE, accessRefOf, canonicalCo
 import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type ConversationListPinStore, type PinnedRef } from '../core/ConversationListPins.js';
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
+import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
+import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment,
@@ -97,6 +101,8 @@ export interface ConversationListRow {
   readUpTo?: { atMs: number; id: string } | null;
   /** Chief of Staff tree (docs/specs/chief-of-staff-topic.md §1.4): the parent conversation key; owner-role callers only. Older apps ignore it. */
   parentConversationKey?: string | null;
+  creationSource?: AppHierarchyFields['creationSource'];
+  hierarchyState?: AppHierarchyFields['hierarchyState'];
 }
 
 /** The unread fields of a row as the app receives them (§3.5). */
@@ -252,6 +258,12 @@ export interface MobileConversationRouteDeps {
    * where the feature is off. Served only to owner-role callers (a team or MSP phone sees neither field).
    */
   chiefOfStaff?: () => { pinnedKey: string | null; parents: Map<string, string | null> } | null;
+  /** Complete cached placement/card/registry view; absence is unknown, never an empty tree. */
+  creationHierarchySource?: () => CreationHierarchySource | null | undefined;
+  /** Optional extra permission-source version; default derives the actual current admitted device/person. */
+  creationAuthorizationVersion?: (req: Request) => string;
+  /** Focused tests may supply the same substantive projector they prime before reading. */
+  creationHierarchyProjection?: AppCreationHierarchyProjection;
   /** Chief of Staff §4: the owner's phone checks in; absent where the feature is off. */
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
@@ -419,6 +431,39 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   const sendRate = new Map<string, number[]>();
   const mutationRate = new Map<string, number[]>();
   const svc = deps.service;
+  const creationProjection = deps.creationHierarchyProjection ?? (svc ? new AppCreationHierarchyProjection(svc.store, () => deps.creationHierarchySource?.()) : null);
+  const ownerMetadata = (req: Request): boolean => {
+    const principal = principalOf(req);
+    return principal.kind === 'token' || (principal.kind === 'device' && devicePersonOf(req)?.role === 'owner');
+  };
+  const readableCreationRef = (req: Request, raw: string, capturedSource?: CreationHierarchySource | null): boolean => {
+    try {
+    const source = capturedSource === undefined ? deps.creationHierarchySource?.() : capturedSource;
+    let resolved = source?.resolveRef(raw) ?? null;
+    // Native App existence is directly verifiable even when Chief sources are unavailable.
+    const appKey = raw.startsWith('app:') ? raw.slice(4) : raw;
+    if (!resolved && isAppConversationKey(appKey) && svc?.liveConversation(appKey)) resolved = `app:${appKey}`;
+    if (!resolved && /^telegram:[1-9][0-9]*$/.test(raw) && deps.telegramTopics?.().some((t) => `telegram:${t.topicId}` === raw)) resolved = raw;
+    return !!resolved && deviceMayUse(deps.pairing, req, resolved);
+    } catch { return false; /* @silent-fallback-ok: identity failure suppresses parent metadata and exposes unplaced/unknown; it cannot grant access. */ }
+  };
+  const creationScope = (req: Request): CreationHierarchyScope => {
+    let source: CreationHierarchySource | null = null;
+    try { source = deps.creationHierarchySource?.() ?? null; } catch { /* @silent-fallback-ok: unavailable hierarchy is explicitly unknown in the response, never empty authority. */ }
+    const principal = principalOf(req);
+    const person = devicePersonOf(req);
+    const device = principal.kind === 'device' ? deps.pairing.devices.get(principal.deviceId) : null;
+    return {
+      key: principal.kind === 'token' ? 'bearer' : `device:${principal.deviceId}`,
+      source,
+      authorizationVersion: deps.creationAuthorizationVersion?.(req) ?? JSON.stringify([
+        principal.kind, person?.role, person?.userId, person?.tier, person?.grants,
+        device?.status, device?.role, device?.userId,
+      ]),
+      mayRead: (ref) => readableCreationRef(req, ref, source),
+    };
+  };
+
 
   /** Sends and conversation mutations keep separate buckets, so renames can never starve sends. */
   const rateIn = (bucket: Map<string, number[]>, deviceId: string): boolean => {
@@ -508,16 +553,33 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!validRequestId(res, body.requestId)) return;
     const title = cleanConversationTitle(body.title);
     if (!title) { res.status(400).json({ error: 'bad-title', detail: 'A title of 1-80 characters is required.' }); return; }
-    // The new UUID is chosen and written into the reservation BEFORE the store or registry is touched.
+    const hasParent = Object.prototype.hasOwnProperty.call(body, 'parentConversationKey');
+    const parent = body.parentConversationKey === null ? null : normalizeCreationParentRef(body.parentConversationKey);
+    if (hasParent && body.parentConversationKey !== null && parent === null) { res.status(400).json({ error: 'bad-parent' }); return; }
+    // Preserve old no-parent hashes. Resolve intent identity before checking current existence,
+    // so completed retries never rederive historical context from today's placement.
+    const hash = hasParent ? hashOf('create', title, 'parent', JSON.stringify(parent)) : hashOf('create', title);
+    const previous = svc!.deps.requests.lookup(deviceId, body.requestId as string, hash);
+    if (previous.kind === 'done') {
+      const child = (previous.body as { conversationKey?: unknown }).conversationKey;
+      if (typeof child === 'string' && (!svc!.liveConversation(child) || !deviceMayUse(deps.pairing, req, child))) {
+        res.status(404).json({ error: 'unknown-conversation' }); return;
+      }
+    }
+    if (answerLookup(res, previous)) return;
+    if (typeof parent === 'string' && !readableCreationRef(req, parent)) { res.status(404).json({ error: 'unknown-parent' }); return; }
     const conversationKey = newAppConversationKey();
-    // People and roles §3.4: a conversation an MSP phone creates is theirs (machine-namespaced).
     const creator = devicePersonOf(req);
     const ownerPerson = creator ? conversationOwnerFor(creator, deps.pairing.machineId()) : null;
-    mutation(res, deviceId, body.requestId, hashOf('create', title),
-      { op: 'create', conversationKey, title, ...(ownerPerson ? { ownerMachine: ownerPerson.machineId, ownerUser: ownerPerson.userId } : {}) },
+    const context: AppCreationContext = {
+      v: 1, source: { kind: 'person' },
+      parentConversationKey: hasParent ? parent : null, parentBasis: 'explicit',
+    };
+    mutation(res, deviceId, body.requestId as string, hash,
+      { op: 'create', conversationKey, title, creationContext: JSON.stringify(context), ...(ownerPerson ? { ownerMachine: ownerPerson.machineId, ownerUser: ownerPerson.userId } : {}) },
       () => {
         if (creator?.role === 'team' && creator.userId) deps.pairing.confineOwnConversation(conversationKey, creator.userId);
-        return svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson);
+        return svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson, context);
       });
   });
 
@@ -596,6 +658,22 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   /** The access ref the shared check takes for a canonical ref (Slack: the `slack:` grant). */
   const pinAccessRef = (ref: string): string => (ref.startsWith('slack:') ? 'slack:' : accessRefOf(ref));
 
+  router.get('/mobile/conversations/parent-preview', (req: Request, res: Response) => {
+    if (!readGate(req, res)) return;
+    if (!ownerMetadata(req)) { res.status(403).json({ error: 'owner-only' }); return; }
+    if ((req.query.cursor !== undefined && typeof req.query.cursor !== 'string')
+      || (req.query.limit !== undefined && (typeof req.query.limit !== 'string' || !/^[1-9][0-9]*$/.test(req.query.limit)))) {
+      res.status(400).json({ error: 'bad-preview-page' }); return;
+    }
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    const page = svc!.store.listConversations({ limit, cursor });
+    const scope = creationScope(req);
+    const rows = page.conversations.filter((c) => deviceMayUse(deps.pairing, req, c.conversationKey)).map((c) =>
+      creationProjection?.preview(c.conversationKey, scope) ?? { conversationRef: `app:${c.conversationKey}`, action: 'unresolved', reason: 'hierarchy-evidence-not-ready' });
+    res.json({ dryRun: true, canApply: false, rows, nextCursor: page.nextCursor });
+  });
+
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
@@ -654,7 +732,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // (no cursor), a separate `pinned` row; everyone else gets neither. A Bearer read is the operator's own.
     const cosView = (person === null || person.role === 'owner') ? (deps.chiefOfStaff?.() ?? null) : null;
     const rowKey = (r: ConversationListRow): string => (r.platform === 'app' ? `app:${String(r.id)}` : `${r.platform}:${String(r.id)}`);
-    const withTree = (rows: ConversationListRow[]): ConversationListRow[] => !cosView ? rows : rows.map((r) => (cosView.parents.has(rowKey(r)) ? { ...r, parentConversationKey: cosView.parents.get(rowKey(r)) ?? null } : r));
+    const scope = ownerMetadata(req) ? creationScope(req) : null;
+    const withTree = (rows: ConversationListRow[]): ConversationListRow[] => rows.map((r) => {
+      if (r.platform === 'app') {
+        const { parentConversationKey: _parent, creationSource: _source, hierarchyState: _state, ...ordinary } = r;
+        return scope && creationProjection ? { ...ordinary, ...creationProjection.fields(String(r.id), scope) } : ordinary;
+      }
+      return cosView?.parents.has(rowKey(r)) ? { ...r, parentConversationKey: cosView.parents.get(rowKey(r)) ?? null } : r;
+    });
     const pinnedOut = (rows: ConversationListRow[]): Record<string, unknown> => {
       if (!cosView || !cosView.pinnedKey || cursor !== null) return {};
       const inPage = rows.find((r) => rowKey(r) === cosView.pinnedKey);
@@ -911,17 +996,22 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
       deps.pairing.scanInbound(text);
     }
-    const removed = removeAuthorityTokens(text);
+    // SEC-164 §3.5: after the device signature is checked, live keys are masked before the authority
+    // tokens are removed, and their kinds join the signed redaction attestation, so the stored record
+    // holds only the masked text and still verifies (the raw body is not kept when anything is removed).
+    const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+    const credRemovedKinds = credMasked.outcome === 'masked' || credMasked.outcome === 'fallback' ? credMasked.kinds : [];
+    const removed = removeAuthorityTokens(credMasked.text);
     const delivered = removed.text;
 
     // Media preflight (§4.3): every named upload must be this device's finished upload for this
     // conversation, with exactly the signed fields. Transcripts and filenames get the caption's
     // treatment, so a dictated code or a named invite never reaches a session or the store.
-    const removedKinds = new Set<string>(removed.kinds);
+    const removedKinds = new Set<string>([...removed.kinds, ...credRemovedKinds]);
     let uploadIds: string[] = [];
     let stored: AppAttachment[] = [];
     if (signedFiles) {
-      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t) });
+      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t), maskCredentials: appCredentialScrubOn(deps.config) });
       if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
       uploadIds = pre.uploadIds;
       stored = pre.stored;
@@ -1237,7 +1327,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         if (e.kind === 'pin' && !svc!.store.getMessageEvent(key, about)) return false;
         return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
       }).map((e) => {
-        const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
+        const { origin: _origin, receipt: _receipt, ingestSeq: _seq, creationContext: _creationContext, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt; creationContext?: AppCreationContext };
         return {
           ...rest,
           ...(e.kind === 'message' || e.kind === 'media-message' ? (() => {
@@ -1397,3 +1487,13 @@ export function withTelegramMediaForDevice(
   });
 }
 
+
+/** SEC-164: `security.credentialScrub.enabled`, read live from the settings file; unreadable is off. */
+const appCredentialScrubReaders = new Map<string, () => boolean>();
+function appCredentialScrubOn(config: { projectDir?: string } | null | undefined): boolean {
+  const dir = config?.projectDir;
+  if (!dir) return false;
+  let reader = appCredentialScrubReaders.get(dir);
+  if (!reader) { reader = credentialScrubEnabledReader(dir); appCredentialScrubReaders.set(dir, reader); }
+  try { return reader(); } catch { return false; } // @silent-fallback-ok — an unreadable switch is off, as before
+}

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   A2ABridge,
   A2ABridgeRateLimiter,
+  ContextThreadMapper,
 } from '../../../../src/threadline/relay/A2ABridge.js';
 import { PresenceRegistry } from '../../../../src/threadline/relay/PresenceRegistry.js';
 import type { MessageEnvelope } from '../../../../src/threadline/relay/types.js';
@@ -338,6 +339,123 @@ describe('A2ABridge', () => {
       });
       await p2;
     });
+
+    const sendBody = (contextId: unknown) => JSON.stringify({
+      jsonrpc: '2.0', id: 'req', method: 'message/send',
+      params: { message: { role: 'user', parts: [{ type: 'text', text: 'msg' }] }, contextId },
+    });
+
+    it('SEC-134: the same contextId from a different caller does not join the first caller thread', async () => {
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('shared-ctx'), '10.0.0.1'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 50));
+      const p2 = bridge.handleRequest(mockReq('POST', sendBody('shared-ctx'), '10.0.0.2'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 50));
+      expect(sentEnvelopes).toHaveLength(2);
+      expect(sentEnvelopes[1].envelope.threadId).not.toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await Promise.all([p1, p2]);
+    });
+
+    const answer = (i: number) => bridge.handleAgentResponse({
+      from: sentEnvelopes[i].agentId, to: bridge.bridgeFingerprint,
+      threadId: sentEnvelopes[i].envelope.threadId, messageId: `r${i}`, timestamp: new Date().toISOString(),
+      nonce: '', ephemeralPubKey: '', salt: '', payload: Buffer.from('ok').toString('base64'), signature: '',
+    });
+
+    it('SEC-134: the same caller and contextId keep their thread; a different agent gets its own', async () => {
+      presence.register(
+        'b2c3d4e5f6070000',
+        Buffer.from('test-pub-key-32bytes-padded00001').toString('base64'),
+        { name: 'agent-two', framework: 'instar', capabilities: [], version: '1.0.0' },
+        'public',
+        'session-2',
+      );
+      const ps = [
+        bridge.handleRequest(mockReq('POST', sendBody('keep-ctx'), '10.0.0.5'), mockRes(), `/a2a/${AGENT_ID}/messages`),
+      ];
+      await new Promise(r => setTimeout(r, 30));
+      answer(0);
+      ps.push(bridge.handleRequest(mockReq('POST', sendBody('keep-ctx'), '10.0.0.5'), mockRes(), `/a2a/${AGENT_ID}/messages`));
+      await new Promise(r => setTimeout(r, 30));
+      ps.push(bridge.handleRequest(mockReq('POST', sendBody('keep-ctx'), '10.0.0.5'), mockRes(), '/a2a/b2c3d4e5f6070000/messages'));
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes).toHaveLength(3);
+      const meta = (i: number) => JSON.parse(Buffer.from(sentEnvelopes[i].envelope.payload, 'base64').toString()).metadata;
+      expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
+      expect(meta(1).isNewThread).toBe(false);
+      expect(sentEnvelopes[2].envelope.threadId).not.toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await Promise.all(ps);
+    });
+
+    it('SEC-134: a forwarded address that is not an IP falls back to the socket address', async () => {
+      const req = mockReq('POST', sendBody('xff-ctx'), '10.0.0.7');
+      (req.headers as Record<string, string>)['x-forwarded-for'] = 'x'.repeat(5000);
+      const p = bridge.handleRequest(req, mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      answer(0);
+      const req2 = mockReq('POST', sendBody('xff-ctx'), '10.0.0.7');
+      const p2 = bridge.handleRequest(req2, mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await Promise.all([p, p2]);
+    });
+
+    it('SEC-139: two hosts in one IPv6 /64 keep separate threads for the same contextId', async () => {
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('v6-ctx'), '2001:db8:0:1::5'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      const p2 = bridge.handleRequest(mockReq('POST', sendBody('v6-ctx'), '2001:db8:0:1::6'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes[1].envelope.threadId).not.toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await Promise.all([p1, p2]);
+    });
+
+    it('SEC-139: a second message in a thread whose reply is still awaited is refused, so a reply has one recipient', async () => {
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('busy-ctx'), '10.0.0.9'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      const res2 = mockRes();
+      await bridge.handleRequest(mockReq('POST', sendBody('busy-ctx'), '10.0.0.9'), res2, `/a2a/${AGENT_ID}/messages`);
+      expect((res2 as unknown as { getJson: () => { error: { code: number } } }).getJson().error.code).toBe(-32005);
+      expect(res2.writeHead).toHaveBeenCalledWith(409, expect.anything());
+      expect(sentEnvelopes).toHaveLength(1);
+      bridge.handleAgentResponse({
+        from: AGENT_ID, to: bridge.bridgeFingerprint,
+        threadId: sentEnvelopes[0].envelope.threadId, messageId: 'r', timestamp: new Date().toISOString(),
+        nonce: '', ephemeralPubKey: '', salt: '', payload: Buffer.from('ok').toString('base64'), signature: '',
+      });
+      await p1;
+      const p3 = bridge.handleRequest(mockReq('POST', sendBody('busy-ctx'), '10.0.0.9'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await new Promise(r => setTimeout(r, 30));
+      expect(sentEnvelopes).toHaveLength(2);
+      expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await p3;
+    });
+
+    it('SEC-139: a caller that disconnects frees its thread for an immediate retry', async () => {
+      const closers: Array<() => void> = [];
+      const res1 = Object.assign(mockRes(), { writableEnded: false, on: vi.fn((ev: string, cb: () => void) => { if (ev === 'close') closers.push(cb); }) });
+      const p1 = bridge.handleRequest(mockReq('POST', sendBody('drop-ctx'), '10.0.0.11'), res1 as never, `/a2a/${AGENT_ID}/messages`);
+      await vi.waitFor(() => expect(sentEnvelopes).toHaveLength(1));
+      closers.forEach((c) => c());
+      await p1;
+      const p2 = bridge.handleRequest(mockReq('POST', sendBody('drop-ctx'), '10.0.0.11'), mockRes(), `/a2a/${AGENT_ID}/messages`);
+      await vi.waitFor(() => expect(sentEnvelopes).toHaveLength(2));
+      expect(sentEnvelopes[1].envelope.threadId).toBe(sentEnvelopes[0].envelope.threadId);
+      bridge.destroy();
+      await p2;
+    });
+
+    it('SEC-134: refuses a contextId that is too long or not text', async () => {
+      for (const bad of ['x'.repeat(257), 42]) {
+        const res = mockRes();
+        await bridge.handleRequest(mockReq('POST', sendBody(bad)), res, `/a2a/${AGENT_ID}/messages`);
+        expect((res as unknown as { getJson: () => { error: { code: number } } }).getJson().error.code).toBe(-32602);
+      }
+      expect(sentEnvelopes).toHaveLength(0);
+    });
   });
 
   describe('Task management', () => {
@@ -505,5 +623,69 @@ describe('A2ABridgeRateLimiter', () => {
     expect(limiter.check('1.2.3.4').allowed).toBe(false);
     limiter.reset();
     expect(limiter.check('1.2.3.4').allowed).toBe(true);
+  });
+});
+
+describe('SEC-134: bridge state stays bounded', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('the rate limiter forgets a caller once its windows have passed', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-20T00:00:00Z'));
+    const limiter = new A2ABridgeRateLimiter();
+    for (let i = 0; i < 500; i++) { limiter.check(`10.0.${i >> 8}.${i & 255}`); limiter.record(`10.0.${i >> 8}.${i & 255}`); }
+    expect(limiter.size).toBe(1000);
+    vi.setSystemTime(new Date('2026-11-20T01:01:00Z'));
+    limiter.check('192.0.2.1');
+    expect(limiter.size).toBe(0);
+  });
+
+  it('the sweep never lifts a limit whose hour window is still active', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-20T00:00:00Z'));
+    const limiter = new A2ABridgeRateLimiter({ requestsPerMinutePerIP: 100, requestsPerHourPerIP: 2 });
+    limiter.record('203.0.113.9'); limiter.record('203.0.113.9');
+    expect(limiter.check('203.0.113.9').allowed).toBe(false);
+    vi.setSystemTime(new Date('2026-11-20T00:59:00Z'));
+    limiter.check('192.0.2.1'); // triggers a sweep
+    expect(limiter.check('203.0.113.9')).toEqual({ allowed: false, limitType: 'per_ip_hour' });
+  });
+
+  it('keeps at most MAX_KEYS keys however many addresses are used', () => {
+    const limiter = new A2ABridgeRateLimiter();
+    const n = A2ABridgeRateLimiter.MAX_KEYS / 2 + 500;
+    for (let i = 0; i < n; i++) limiter.record(`2001:db8::${i.toString(16)}`);
+    expect(limiter.size).toBeLessThanOrEqual(A2ABridgeRateLimiter.MAX_KEYS);
+  });
+
+  it('a check alone never creates a key', () => {
+    const limiter = new A2ABridgeRateLimiter();
+    for (let i = 0; i < 100; i++) limiter.check(`198.51.100.${i}`);
+    expect(limiter.size).toBe(0);
+  });
+
+  it('the context map keeps at most maxEntries, dropping the least recently used', () => {
+    const map = new ContextThreadMapper(3, 60_000);
+    const a = map.getOrCreateThreadId('s', 'a', 0).threadId;
+    map.getOrCreateThreadId('s', 'b', 1);
+    map.getOrCreateThreadId('s', 'c', 2);
+    expect(map.getOrCreateThreadId('s', 'a', 3)).toEqual({ threadId: a, isNew: false });
+    map.getOrCreateThreadId('s', 'd', 4);
+    expect(map.size).toBe(3);
+    expect(map.getOrCreateThreadId('s', 'b', 5).isNew).toBe(true);
+    expect(map.getOrCreateThreadId('s', 'a', 6)).toEqual({ threadId: a, isNew: false });
+  });
+
+  it('a mapping unused past its lifetime starts a new thread', () => {
+    const map = new ContextThreadMapper(10, 1_000);
+    const first = map.getOrCreateThreadId('s', 'ctx', 0).threadId;
+    expect(map.getOrCreateThreadId('s', 'ctx', 900).threadId).toBe(first);
+    expect(map.getOrCreateThreadId('s', 'ctx', 2_000).isNew).toBe(true);
+  });
+
+  it('a message without a contextId is not stored', () => {
+    const map = new ContextThreadMapper();
+    for (let i = 0; i < 50; i++) map.getOrCreateThreadId('s', undefined);
+    expect(map.size).toBe(0);
   });
 });

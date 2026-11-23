@@ -489,6 +489,17 @@ export class WhatsAppAdapter implements MessagingAdapter {
   // ── Inbound message handling ──────────────────────────────
 
   /** Called by backend when a message is received. */
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in an incoming message before it is logged, emitted or
+   * routed. Returns the text to use; null or a throw leaves it unchanged (fails toward delivery).
+   */
+  public inboundCredentialMasker: ((text: string) => string | null) | null = null;
+
+  private maskIncomingCredential(text: string): string {
+    if (!this.inboundCredentialMasker || typeof text !== 'string' || !text) return text;
+    try { return this.inboundCredentialMasker(text) ?? text; } catch { return text; } // @silent-fallback-ok — the masker reports its own failures
+  }
+
   async handleIncomingMessage(
     jid: string,
     messageId: string,
@@ -499,6 +510,8 @@ export class WhatsAppAdapter implements MessagingAdapter {
     participant?: string,
     mentionedJids?: string[],
   ): Promise<void> {
+    // SEC-164 §3.5: before the log, the event bus, the group path or the session see it.
+    text = this.maskIncomingCredential(text);
     // Dedup
     if (this.processedMessageIds.has(messageId)) return;
     this.processedMessageIds.add(messageId);

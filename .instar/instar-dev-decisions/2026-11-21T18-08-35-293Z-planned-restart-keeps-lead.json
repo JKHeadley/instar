@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-21T18:08:35.293Z",
+  "slug": "planned-restart-keeps-lead",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/LeaseContinuity.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/restartRequestSignal.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

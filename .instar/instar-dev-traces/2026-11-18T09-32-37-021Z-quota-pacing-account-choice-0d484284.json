@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "quota-pacing-account-choice",
+  "sessionId": "7a939728-f841-4924-ad99-4827adee98b7",
+  "timestamp": "2026-11-18T09:32:37.021Z",
+  "artifactPath": "upgrades/side-effects/quota-pacing-account-choice.md",
+  "artifactSha256": "328369b0896b5484d6eb098ffee93e1074ef343dec27fe3d7a49fcc1cf7aa104",
+  "specPath": "docs/specs/quota-pacing-account-choice.md",
+  "coveredFiles": [
+    "upgrades/side-effects/quota-pacing-account-choice.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "changes session placement inputs for every spawn on gated machines; dev-gated, revert restores",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

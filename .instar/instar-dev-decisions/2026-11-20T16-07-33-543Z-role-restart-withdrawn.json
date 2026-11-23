@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-20T16:07:33.543Z",
+  "slug": "role-restart-withdrawn",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/roleFollowRestart.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
