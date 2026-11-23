@@ -173,7 +173,7 @@ function boot(opts: { jev: JevLabel; refusal: string }) {
 
 describe('Codex device-limit tripwire — production wiring', () => {
   it('server.ts composes the tripwire through the shared wiring and hands its hooks to every consumer', () => {
-    expect(SERVER).toMatch(/codexDeviceLimit = buildCodexDeviceLimitWiring\(\{\s*pool: subscriptionPool,\s*ledger: subscriptionLoginLedger \?\? null,\s*quotaPoller,/);
+    expect(SERVER).toMatch(/codexDeviceLimit = buildCodexDeviceLimitWiring\(\{\s*pool: subscriptionPool,\s*windowAwareSelection,\s*ledger: subscriptionLoginLedger \?\? null,\s*quotaPoller,/);
     expect(SERVER).toContain('installCodexDeviceLimitWiring(codexDeviceLimit)');
     expect(SERVER).toMatch(/endRepairs: \(accountId\) => subscriptionReloginRuntimeRef\?\.endForDeviceLimit\(accountId\)/);
     expect(SERVER).toMatch(/return _quotaAwareScheduler\.onQuotaPressure\(args\)/);

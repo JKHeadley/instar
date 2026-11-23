@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "telegram-slack-change-feed",
+  "sessionId": "a01183aa-867a-48b5-aa18-09a423d849ed",
+  "timestamp": "2026-11-22T08:47:19.207Z",
+  "artifactPath": "upgrades/side-effects/telegram-slack-change-feed.md",
+  "artifactSha256": "47d95d60f856e8b8066dc360ba82ba6e0b1755dd3891c13504a420066de0b33b",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/telegram-slack-change-feed.eli16.md",
+    "docs/specs/telegram-slack-change-feed.md",
+    "src/data/awareness/chat-change-feed.md",
+    "src/server/changeFeed.ts",
+    "src/server/mobileSlackHolderProxy.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/mobile-slack-from-app.test.ts",
+    "tests/integration/telegram-change-feed.test.ts",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/mobile-slack-holder-proxy.test.ts",
+    "upgrades/next/telegram-slack-change-feed.md",
+    "upgrades/side-effects/telegram-slack-change-feed.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive optional read parameter on two existing history routes plus the web chat using it; no state, config, permission or protocol change; a revert fully undoes it",
+  "eli16Path": "docs/specs/telegram-slack-change-feed.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-slack-change-feed.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

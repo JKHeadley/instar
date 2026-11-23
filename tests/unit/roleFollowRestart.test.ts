@@ -23,21 +23,28 @@ describe('requestRoleRestart', () => {
   const dirs: string[] = [];
   afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/roleFollowRestart.test.ts:cleanup' }); });
 
-  it('stamps the time and writes a planned restart, and the stamp reads back across a restart', () => {
+  it('stamps the time and writes a planned restart, and the stamp reads back across a restart', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
     dirs.push(stateDir);
     expect(readLastRoleRestart(stateDir)).toBeNull();
-    requestRoleRestart({ stateDir, now: () => 5_000 }, true);
+    await requestRoleRestart({ stateDir, now: () => 5_000 }, true);
     expect(readLastRoleRestart(stateDir)).toBe(5_000);
     const flag = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf-8'));
     expect(flag).toMatchObject({ requestedBy: 'role-change', plannedRestart: true });
   });
-  it('a failed request leaves no stamp, so the retry is not held back', () => {
+  it('a failed request leaves no stamp, so the retry is not held back', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
     dirs.push(stateDir);
     fs.mkdirSync(path.join(stateDir, 'state'));
     fs.mkdirSync(path.join(stateDir, 'state', 'restart-requested.json')); // a directory: the rename must fail
-    expect(() => requestRoleRestart({ stateDir, now: () => 5_000 }, true)).toThrow();
+    await expect(requestRoleRestart({ stateDir, now: () => 5_000 }, true)).rejects.toThrow();
+    expect(readLastRoleRestart(stateDir)).toBeNull();
+  });
+  it('a request whose need went away while the lease was secured writes nothing', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
+    dirs.push(stateDir);
+    await requestRoleRestart({ stateDir, now: () => 5_000, stillNeeded: () => false }, true);
+    expect(fs.existsSync(path.join(stateDir, 'state', 'restart-requested.json'))).toBe(false);
     expect(readLastRoleRestart(stateDir)).toBeNull();
   });
   it('an unreadable stamp reads as none', () => {
@@ -55,9 +62,9 @@ describe('withdrawRoleRestart', () => {
   const flagOf = (d: string): string => path.join(d, 'state', 'restart-requested.json');
   afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/roleFollowRestart.test.ts:withdraw' }); });
 
-  it('a waiting role restart is withdrawn when the role is back to what it was at boot', () => {
+  it('a waiting role restart is withdrawn when the role is back to what it was at boot', async () => {
     const d = mk();
-    requestRoleRestart({ stateDir: d }, false);
+    await requestRoleRestart({ stateDir: d }, false);
     expect(fs.existsSync(flagOf(d))).toBe(true);
     expect(withdrawRoleRestart({ stateDir: d })).toBe(true);
     expect(fs.existsSync(flagOf(d))).toBe(false);
@@ -75,9 +82,9 @@ describe('withdrawRoleRestart', () => {
     expect(fs.readFileSync(flagOf(d), 'utf-8')).toBe(update);
   });
 
-  it('a role request written by another process is left alone', () => {
+  it('a role request written by another process is left alone', async () => {
     const d = mk();
-    requestRoleRestart({ stateDir: d }, true);
+    await requestRoleRestart({ stateDir: d }, true);
     expect(withdrawRoleRestart({ stateDir: d }, process.pid + 1)).toBe(false);
     expect(fs.existsSync(flagOf(d))).toBe(true);
   });

@@ -19,7 +19,7 @@ import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent } from './AppConversationStore.js';
 import type { ConversationOwner } from './MobilePeople.js';
-import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
+import { derivedEventId, isAppConversationKey, removeAuthorityTokens, removeAuthorityTokensAndKeys } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
 import { ledgerViewKey, verifyRecordedOrigin, loadMachineSigner, identityKeyLookup, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
@@ -49,6 +49,8 @@ export function availableLine(filePath: string, caption: string): string {
 }
 
 export interface AppConversationServiceDeps {
+  /** SEC-164 §3.5: read live; when true a server transcript has its live keys masked before it is stored. */
+  credentialScrubEnabled?: () => boolean;
   stateDir: string;
   machineId: () => string;
   /** This machine's verified name, so refusals and notices name it (never "this machine" or an id). */
@@ -179,9 +181,10 @@ const CUT_NOTE = ' … (transcript cut here; the audio file has the rest)';
  * (§4.3, §4.5.1): `scanInbound` first (so a dictated pending pairing code declines that pairing),
  * then exact-token removal. Text past the store's limit is cut with a note, never refused.
  */
-export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null): { text: string; kinds: string[] } {
+export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null, maskKeys = false): { text: string; kinds: string[] } {
   try { scan?.(text); } catch { /* @silent-fallback-ok — the scan only declines leaked pairings; token removal still runs */ }
-  const removed = removeAuthorityTokens(text);
+  // SEC-164 §3.5: with the switch on, live keys are masked too and their kinds join the attestation.
+  const removed = removeAuthorityTokensAndKeys(text, maskKeys);
   let out = removed.text;
   if (out.length > MAX_STORED_TEXT) out = out.slice(0, MAX_STORED_TEXT - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '') + CUT_NOTE;
   return { text: out, kinds: removed.kinds };
@@ -203,7 +206,8 @@ class TranscriptionCeilingTimeout extends Error { constructor() { super('the tra
  * can never carry a pairing invite or a desktop code anywhere (second-pass review, finding 2).
  */
 export function transcriptForDelivery(text: string): string {
-  return removeAuthorityTokens(text).text;
+  // SEC-164 §3.5: the read path also masks live keys, always; it only shows text and keeps nothing.
+  return removeAuthorityTokensAndKeys(text, true).text;
 }
 
 const MEDIA_SWEEP_MS = 60 * 60_000;
@@ -587,7 +591,9 @@ export class AppConversationService {
   /** Scrub, then store the transcript as its own unsigned event (§4.5.1). The session gets it either way. */
   private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, result: string | { text: string; provider: string }, late: boolean): VoiceOutcome {
     const raw = typeof result === 'string' ? result : result.text;
-    const scrubbed = scrubServerTranscript(raw, this.inboundScan);
+    let maskKeys = false;
+    try { maskKeys = this.deps.credentialScrubEnabled?.() === true; } catch { maskKeys = false; } // @silent-fallback-ok — unreadable switch is off
+    const scrubbed = scrubServerTranscript(raw, this.inboundScan, maskKeys);
     const machineId = this.deps.machineId();
     // The provider that produced THIS text (no shared "last provider" state, so concurrent transcripts can't swap labels).
     const provider = (typeof result === 'string' ? (this.deps.voiceProviderName?.() ?? 'server') : result.provider).toLowerCase();

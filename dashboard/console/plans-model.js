@@ -134,6 +134,14 @@ export function initiativeLine(i, now = Date.now()) {
   return bits.join(' · ');
 }
 
+/** ": <round name>" when the round has one, so the ask says what the OK is for (2026-11-20 dashboard audit). */
+export function roundNameSuffix(p, index) {
+  const r = Array.isArray(p && p.rounds) ? p.rounds[index] : null;
+  const name = r && typeof r.name === 'string' ? r.name.replace(/\s+/g, ' ').trim() : '';
+  if (!name) return '';
+  return `: ${name.length > 80 ? `${name.slice(0, 79).replace(/\s+\S*$/, '')}…` : name}`;
+}
+
 /** What a record waits for from the operator, or null when it does not. */
 export function needsYouWords(rec, detail) {
   if (!rec || !OPEN_STATUSES.has(rec.status)) return null;
@@ -141,7 +149,7 @@ export function needsYouWords(rec, detail) {
     const p = detail && detail.project ? detail.project : rec;
     if (projectNeedsOk(p)) {
       const cur = currentRoundIndex(p);
-      return cur === -1 ? 'Waiting for your OK' : `Waiting for your OK on round ${cur + 1}`;
+      return cur === -1 ? 'Waiting for your OK' : `Waiting for your OK on round ${cur + 1}${roundNameSuffix(p, cur)}`;
     }
   }
   if (rec.needsUser) return rec.needsUserReason ? `Waiting on you: ${rec.needsUserReason}` : 'Waiting on you';
