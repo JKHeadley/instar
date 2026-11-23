@@ -12,6 +12,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import express from 'express';
+import request from 'supertest';
+import { createRoutes } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const mockTmuxSessions = new Set<string>();
@@ -49,13 +52,16 @@ describe('codex spawn placement at the wall (integration)', () => {
   let state: StateManager;
   let pool: SubscriptionPool;
   let manager: SessionManager;
+  let config: SessionManagerConfig;
+  let resetAt: string;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-spawn-wall-'));
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
     state = new StateManager(path.join(dir, 'state'));
     pool = new SubscriptionPool({ stateDir: dir });
-    const config: SessionManagerConfig = {
+    resetAt = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    config = {
       tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude',
       projectDir: dir, maxSessions: 5, protectedSessions: [],
       completionPatterns: ['done'], framework: 'claude-code',
@@ -73,7 +79,7 @@ describe('codex spawn placement at the wall (integration)', () => {
     const home = path.join(dir, framework === 'codex-cli' ? `.codex-${id}` : `.claude-${id}`);
     fs.mkdirSync(home, { recursive: true });
     pool.addFixture({ id, nickname: id, provider: framework === 'codex-cli' ? 'openai' : 'anthropic', framework, configHome: home, email: `${id}@example.test` });
-    pool.update(id, { lastQuota: { sevenDay: { utilizationPct: weeklyPct, resetsAt: new Date(Date.now() + 2 * 86_400_000).toISOString() }, measuredAt: new Date().toISOString() } });
+    pool.update(id, { lastQuota: { sevenDay: { utilizationPct: weeklyPct, resetsAt: resetAt }, measuredAt: new Date().toISOString() } });
     return home;
   };
 
@@ -97,6 +103,30 @@ describe('codex spawn placement at the wall (integration)', () => {
     return ((call?.[1] as string[]) ?? []).find((a) => typeof a === 'string' && a.startsWith(`${key}=`));
   };
   const newSessionCalls = () => vi.mocked(execFileSync).mock.calls.filter((c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'new-session');
+
+  it('the real create-session HTTP path pins an interactive Codex session to the earliest weekly reset', async () => {
+    manager.stopMonitoring();
+    manager = new SessionManager({ ...config, framework: 'codex-cli' }, state);
+    const reserve = add('reserve', 9);
+    const soon = add('soon', 20);
+    pool.update('soon', { lastQuota: { sevenDay: { utilizationPct: 20, resetsAt: new Date(Date.now() + 86_400_000).toISOString() }, measuredAt: new Date().toISOString() } });
+    wire();
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes({
+      config: { authToken: 'test', stateDir: dir, port: 0, projectDir: dir, sessions: {} },
+      startTime: new Date(), sessionManager: manager, state, subscriptionPool: pool,
+    } as any));
+    vi.mocked(execFileSync).mockClear();
+    const res = await request(app).post('/sessions/create').set('Authorization', 'Bearer test')
+      .send({ name: 'interactive-reset-first', platform: 'headless' });
+    expect(res.status).toBe(201);
+    const record = state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === res.body.session);
+    expect(record?.framework).toBe('codex-cli');
+    expect(record?.subscriptionAccountId).toBe('soon');
+    expect(envArg('CODEX_HOME')).toBe(`CODEX_HOME=${soon}`);
+    expect(envArg('CODEX_HOME')).not.toBe(`CODEX_HOME=${reserve}`);
+  });
 
   it('the incident: a codex-cli spawn never launches on the 100% account; it runs under the coolest one and is tagged', async () => {
     add('codex-sagemindai', 100);
@@ -142,6 +172,20 @@ describe('codex spawn placement at the wall (integration)', () => {
     const session = await manager.spawnSession({ name: 'pinned', prompt: 'p', framework: 'codex-cli', accountPin: { accountId: 'pinned', configHome: pinned } });
     expect(session.subscriptionAccountId).toBe('pinned');
     expect(envArg('CODEX_HOME')).toBe(`CODEX_HOME=${pinned}`);
+  });
+
+  it('a local Codex model does not consult or inherit a paid-account placement even when the pool is walled', async () => {
+    add('a', 100);
+    add('b', 100);
+    wire();
+    vi.mocked(execFileSync).mockClear();
+    const session = await manager.spawnSession({
+      name: 'local', prompt: 'p', framework: 'codex-cli', codexLocalProvider: 'ollama', model: 'qwen3',
+    });
+    expect(session.subscriptionAccountId).toBeUndefined();
+    expect(envArg('CODEX_HOME')).toBeUndefined();
+    expect(newSessionCalls()).toHaveLength(1);
+    expect((newSessionCalls()[0][1] as string[]).join(' ')).toContain('--oss');
   });
 
   it('claude-code spawns never consult Codex placement', async () => {

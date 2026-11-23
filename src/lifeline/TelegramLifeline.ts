@@ -79,7 +79,9 @@ import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
 import { acquireLockFile, startLockHeartbeat } from './lifelineLock.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
-import { bootHoldStep, decidePollAction, hasRecent409, holdPollAtBoot, type PollOverride } from './pollDecision.js';
+import { bootHoldStep, decidePollAction, hasRecent409, holdPollAtBoot, resolvePollOverride, supportsLeasePollIntent } from './pollDecision.js';
+import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { recordRestartRequest } from '../core/restartRequestAttribution.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
@@ -513,46 +515,7 @@ export class TelegramLifeline {
       console.log(pc.yellow('  Server failed to start — lifeline will keep trying'));
     }
 
-    // Telegram poll ownership (standby-no-poll guard). Telegram allows exactly
-    // ONE getUpdates poller per bot token; a second machine that also polls
-    // causes a permanent 409-conflict war and nondeterministic delivery (the
-    // 2026-05-29 duplicate-poller incident). A standby machine sets
-    // multiMachine.telegramPolling:false so it runs the full server + joins the
-    // session pool (supervisor.start() above already ran) WITHOUT polling.
-    // DEFAULT (undefined) = poll, so every existing single-machine agent is
-    // unchanged — only a machine that explicitly opts out is suppressed. This is
-    // a per-machine LOCAL flag, so a credential-less standby can honor it.
-    const telegramPollingEnabled = shouldOwnTelegramPoll(this.projectConfig);
-    const mmPoll = this.projectConfig.multiMachine as { pollFollowsLease?: { enabled?: boolean; dryRun?: boolean }; telegramPolling?: boolean; pollOverride?: string } | undefined;
-    const holdForLease = holdPollAtBoot({
-      followsLeaseEnabled: resolveDevAgentGate(mmPoll?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean }),
-      dryRun: mmPoll?.pollFollowsLease?.dryRun,
-      telegramPolling: mmPoll?.telegramPolling,
-      pollOverride: mmPoll?.pollOverride,
-    });
-    if (holdForLease) {
-      // Poll-follows-lease is live: the lease decides, in reconcilePolling below.
-      this.polling = false;
-      this.bootPollHeldSinceMs = Date.now();
-      console.log(pc.yellow('  Telegram polling waiting for the lease (poll-follows-lease is live)'));
-    } else if (telegramPollingEnabled) {
-      // Flush stale Telegram connections before starting poll loop.
-      // After hard kills or sleep/wake, a previous long-poll connection may still be
-      // held by Telegram's servers, causing 409 Conflict errors for ~30s.
-      await this.flushStaleConnection();
-
-      // Start Telegram polling
-      this.polling = true;
-      this.poll();
-      console.log(pc.green('  Telegram polling active'));
-    } else {
-      // Standby: do NOT touch Telegram (no flush, no getUpdates) — the awake
-      // machine owns the single poll slot. Server supervision + queue replay +
-      // restart-signal handling all continue, so this machine is a full,
-      // reachable pool member that simply never polls.
-      this.polling = false;
-      console.log(pc.yellow('  Telegram polling SUPPRESSED (standby: multiMachine.telegramPolling=false) — server runs without owning the poll slot'));
-    }
+    await this.startPollingAtBoot();
 
     // Start periodic queue replay (in case server comes back between health checks)
     this.replayInterval = setInterval(() => {
@@ -733,6 +696,56 @@ export class TelegramLifeline {
     }
   }
 
+  /** Startup uses this same composition for single-machine and coordinated agents. */
+  private async startPollingAtBoot(): Promise<void> {
+    // Telegram poll ownership (standby-no-poll guard). Telegram allows exactly
+    // ONE getUpdates poller per bot token; a second machine that also polls
+    // causes a permanent 409-conflict war and nondeterministic delivery (the
+    // 2026-05-29 duplicate-poller incident). A standby machine sets
+    // multiMachine.telegramPolling:false so it runs the full server + joins the
+    // session pool (supervisor.start() above already ran) WITHOUT polling.
+    // DEFAULT (undefined) = poll, so every existing single-machine agent is
+    // unchanged — only a machine that explicitly opts out is suppressed. This is
+    // a per-machine LOCAL flag, so a credential-less standby can honor it.
+    const mmPoll = this.projectConfig.multiMachine;
+    const override = resolvePollOverride(mmPoll);
+    const telegramPollingEnabled = override === 'force-poll' || override !== 'force-mute' && shouldOwnTelegramPoll(this.projectConfig);
+    const holdForLease = holdPollAtBoot({
+      followsLeaseEnabled: this.leasePollIntentSupported() && resolveDevAgentGate(mmPoll?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean }),
+      dryRun: mmPoll?.pollFollowsLease?.dryRun,
+      telegramPolling: mmPoll?.telegramPolling,
+      pollOverride: mmPoll?.pollOverride,
+      leaseSelfHeal: mmPoll?.leaseSelfHeal,
+    });
+    if (override === 'force-poll' && mmPoll?.leaseSelfHeal?.leaseRole === 'observe-only') {
+      console.warn('[Lifeline] Explicit force-poll overrides the observe-only lease role on this machine.');
+    }
+    if (holdForLease) {
+      // Poll-follows-lease is live: the lease decides, in reconcilePolling below.
+      this.polling = false;
+      this.bootPollHeldSinceMs = Date.now();
+      console.log(pc.yellow('  Telegram polling waiting for the lease (poll-follows-lease is live)'));
+    } else if (telegramPollingEnabled) {
+      // Flush stale Telegram connections before starting poll loop.
+      // After hard kills or sleep/wake, a previous long-poll connection may still be
+      // held by Telegram's servers, causing 409 Conflict errors for ~30s.
+      await this.flushStaleConnection();
+
+      // Start Telegram polling
+      this.polling = true;
+      this.poll();
+      console.log(pc.green('  Telegram polling active'));
+    } else {
+      // Standby: do NOT touch Telegram (no flush, no getUpdates) — the awake
+      // machine owns the single poll slot. Server supervision + queue replay +
+      // restart-signal handling all continue, so this machine is a full,
+      // reachable pool member that simply never polls.
+      this.polling = false;
+      console.log(pc.yellow('  Telegram polling SUPPRESSED by this machine\'s mute or observe-only setting — server runs without owning the poll slot'));
+    }
+
+  }
+
   /**
    * Install the restart orchestrator and watchdog. Called from start().
    *
@@ -764,7 +777,14 @@ export class TelegramLifeline {
       },
       exitFn: (code) => process.exit(code),
       // Only restarts that really exit count toward the watchdog daily cap.
-      recordExit: () => markLatestRestartExited(this.projectConfig.stateDir),
+      recordExit: (outcome) => {
+        markLatestRestartExited(this.projectConfig.stateDir);
+        recordRestartRequest(this.projectConfig.stateDir, {
+          requestedBy: 'TelegramLifeline', reason: `The Telegram lifeline exited because ${outcome.reason}; the server outcome was ${outcome.serverOutcome}${outcome.overrideReason ? ` after ${outcome.overrideReason}` : ''}.`,
+          requestedAt: new Date().toISOString(), pid: process.pid,
+        }, 'lifeline', new Date(), { serverOutcome: outcome.serverOutcome });
+      },
+      observeServerStopped: () => this.supervisor.observeServerStopped(),
       // A stop request that arrived during a keep-server quiesce still stops the server.
       stopServer: () => this.supervisor.stop({ evenIfDetached: true }),
       isSupervised,
@@ -780,12 +800,7 @@ export class TelegramLifeline {
       },
     });
 
-    const onTrip = (result: TripResult) => {
-      this.initiateRestart('watchdog', result.primary ?? 'unknown', {
-        tripped: result.tripped,
-        snapshot: result.snapshot,
-      });
-    };
+    const onTrip = (result: TripResult) => this.restartForWatchdog(result);
 
     this.watchdog = new LifelineHealthWatchdog({
       thresholds: this.loadThresholdOverrides(),
@@ -995,10 +1010,17 @@ export class TelegramLifeline {
    * calls the orchestrator. Used by both the watchdog tick (bucket=watchdog)
    * and the version-skew handler (bucket=versionSkew).
    */
+  private restartForWatchdog(result: TripResult): void {
+    this.initiateRestart('watchdog', result.primary ?? 'unknown', {
+      tripped: result.tripped, snapshot: result.snapshot,
+    }, !result.tripped.includes('consecutiveFailures'));
+  }
+
   private initiateRestart(
     bucket: RestartBucket,
     reason: string,
     context?: Record<string, unknown>,
+    keepServer?: boolean,
   ): void {
     const outcome = readRateLimitState(this.projectConfig.stateDir);
     const dec = decideRateLimit(outcome, bucket);
@@ -1052,7 +1074,7 @@ export class TelegramLifeline {
       console.error('[Lifeline] initiateRestart called before orchestrator was installed');
       return;
     }
-    void this.orchestrator.requestRestart({ reason, bucket, context });
+    void this.orchestrator.requestRestart({ reason, bucket, context, keepServer });
   }
 
   // ── Stale Connection Flush ───────────────────────────────
@@ -1131,9 +1153,10 @@ export class TelegramLifeline {
       telegramPolling?: boolean;
       pollOverride?: string;
       developmentAgent?: boolean;
+      leaseSelfHeal?: { leaseRole?: string | null };
     }; developmentAgent?: boolean }).multiMachine;
     const enabled = resolveDevAgentGate(mm?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean });
-    if (!enabled) return; // static-flag behavior unchanged
+    if (!enabled || !this.leasePollIntentSupported()) return; // no coordinator intent producer
     const dryRun = mm?.pollFollowsLease?.dryRun !== false; // default DRY-RUN even on dev
 
     const stateDir = this.projectConfig.stateDir;
@@ -1145,9 +1168,7 @@ export class TelegramLifeline {
 
     // Operator override (LOCAL config floor; Phase-0 telegramPolling:false survives
     // as force-mute; force-poll needs the explicit pollOverride).
-    let override: PollOverride = null;
-    if (mm?.pollOverride === 'force-poll') override = 'force-poll';
-    else if (mm?.pollOverride === 'force-mute' || mm?.telegramPolling === false) override = 'force-mute';
+    const override = resolvePollOverride(mm);
 
     // START debounce bookkeeping (intent stably awake while not polling).
     const now = Date.now();
@@ -1171,8 +1192,15 @@ export class TelegramLifeline {
       const step = bootHoldStep({ heldSinceMs: this.bootPollHeldSinceMs, nowMs: now, intentShouldPoll });
       if (step === 'wait') return;
       if (step === 'expired') {
-        console.log('[Lifeline] [poll-follows-lease] no lease opinion after the boot hold, polling as a boot always did');
-        this.startPollAfterFlush(stateDir);
+        // The lifeline is the emergency /restart channel when the server cannot
+        // boot. Preserve its original bounded fallback for unmuted roles, never
+        // for observe-only/mute. This is emergency reachability, not a lease claim.
+        if (override === 'force-mute') return;
+        if (!this.bootPollWaitReported) {
+          this.bootPollWaitReported = true;
+          console.warn('[Lifeline] No lease opinion arrived during the boot wait; this unmuted lifeline is restoring emergency Telegram polling so /restart remains reachable. This does not prove sole poll ownership.');
+        }
+        this.startPollAfterFlush(stateDir, forcePoll, true);
         return;
       }
     }
@@ -1212,6 +1240,12 @@ export class TelegramLifeline {
     try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
   }
 
+  private bootPollWaitReported = false;
+
+  private leasePollIntentSupported(): boolean {
+    return supportsLeasePollIntent(new MachineIdentityManager(this.projectConfig.stateDir).hasIdentity(), this.projectConfig.multiMachine?.coordinationMode);
+  }
+
   private currentPollIntent(stateDir: string): boolean | null {
     const rec = readPollIntent(stateDir);
     return effectivePollIntent(rec, {
@@ -1226,14 +1260,20 @@ export class TelegramLifeline {
     this.pollStartPending = false;
   }
 
-  private startPollAfterFlush(stateDir: string, forcePoll = false): void {
+  private startPollAfterFlush(stateDir: string, forcePoll = false, emergencyBootFallback = false): void {
     if (this.pollStartPending || this.polling) return;
     this.pollStartPending = true;
     const gen = ++this.pollStartGen;
     void this.flushStaleConnection().then(() => {
       if (gen !== this.pollStartGen) return; // stopped or lost the lease meanwhile
       this.pollStartPending = false;
-      if (!forcePoll && this.currentPollIntent(stateDir) === false) return; // the flush can take a minute
+      const intent = this.currentPollIntent(stateDir); // the flush can take a minute
+      if (!forcePoll) {
+        // Ordinary starts need current positive intent. The original bounded boot
+        // fallback accepts unknown, but cannot override a fresh standby or mute.
+        if (resolvePollOverride(this.projectConfig.multiMachine) === 'force-mute') return;
+        if (intent !== true && (!emergencyBootFallback || intent === false)) return;
+      }
       this.bootPollHeldSinceMs = 0;
       this.polling = true;
       this.pollLoopId += 1;
@@ -1261,7 +1301,7 @@ export class TelegramLifeline {
         this.saveOffset();
       }
       // Success — reset backoff counters
-      if (this.consecutive409s > 0) this.conflict409StartedAt = null; // 0→... edge
+      this.conflict409StartedAt = null;
       this.consecutive409s = 0;
       this.consecutive429s = 0;
       this.pollBackoffMs = this.config.pollIntervalMs ?? 2000;
@@ -1307,6 +1347,7 @@ export class TelegramLifeline {
             });
             console.log('[Lifeline] Polling reclaimed successfully');
             this.consecutive409s = 0;
+            this.conflict409StartedAt = null;
             this.pollBackoffMs = this.config.pollIntervalMs ?? 2000;
           } catch {
             // Reclaim failed — continue backoff, will try again at next interval

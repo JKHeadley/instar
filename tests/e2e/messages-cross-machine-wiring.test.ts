@@ -40,8 +40,12 @@ describe('cross-machine relay wiring', () => {
     expect(mw).not.toMatch(/req\.path === '\/messages\/relay-machine'/);
   });
 
-  it('the sender posts to the shared path constant', () => {
-    expect(read('src/messaging/CrossMachineRelayQueue.ts')).toMatch(/\$\{RELAY_MACHINE_PATH\}/);
+  it('the sender selects the strict or legacy shared path for the envelope protocol', () => {
+    const relayQueue = read('src/messaging/CrossMachineRelayQueue.ts');
+    // Required-generation messages must keep their distinct endpoint so an older
+    // receiver or redirect cannot silently drop the receiving-session fence.
+    expect(relayQueue).toMatch(/\$\{envelope\.message\.to\.sessionGenerationRequired \? GENERATION_RELAY_MACHINE_PATH : RELAY_MACHINE_PATH\}/);
+    expect(relayQueue).toMatch(/envelope\.message\.to\.sessionGenerationRequired \? \{ redirect: 'manual' as const \} : \{\}/);
     expect(read('src/messaging/MessageRouter.ts')).not.toMatch(/\/messages\/relay-machine`/);
   });
 });

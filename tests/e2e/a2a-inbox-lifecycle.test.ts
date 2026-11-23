@@ -19,6 +19,22 @@ import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
+import { registerAgent } from '../../src/core/AgentRegistry.js';
+
+// SEC-154: /a2a/inbox only accepts a sender that is another agent registered on this machine.
+// Each suite registers its sender in a throwaway registry (never the developer's own).
+function useSandboxRegistry(): { dir: string; previous: string | undefined } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbox-registry-'));
+  const previous = process.env.INSTAR_TEST_REGISTRY_DIR;
+  process.env.INSTAR_TEST_REGISTRY_DIR = dir;
+  return { dir, previous };
+}
+function restoreRegistry(sb: { dir: string; previous: string | undefined } | undefined, op: string): void {
+  if (!sb) return;
+  if (sb.previous === undefined) delete process.env.INSTAR_TEST_REGISTRY_DIR;
+  else process.env.INSTAR_TEST_REGISTRY_DIR = sb.previous;
+  SafeFsExecutor.safeRmSync(sb.dir, { recursive: true, force: true, operation: op });
+}
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 
 function createMockSessionManager() {
@@ -75,9 +91,12 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
   let token: string;
   let recorder: ReturnType<typeof createRecordingAdapter>;
   const PROJECT = 'e2e-a2a-inbox';
+  let sandbox: ReturnType<typeof useSandboxRegistry> | undefined;
 
   beforeAll(async () => {
+    sandbox = useSandboxRegistry();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbox-e2e-'));
+    registerAgent(path.join(sandbox.dir, 'echo-agent'), 'echo', 49001, 'project-bound', process.pid);
     stateDir = path.join(tmpDir, '.instar');
     recorder = createRecordingAdapter();
     const config = buildConfig(tmpDir, stateDir, {
@@ -103,6 +122,7 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
     await server.stop();
     try { deleteAgentToken(PROJECT); } catch { /* best-effort */ }
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/a2a-inbox-lifecycle.test.ts' });
+    restoreRegistry(sandbox, 'tests/e2e/a2a-inbox-lifecycle.test.ts:registry');
   });
 
   it('mentee receiver wiring installed at boot (setAgentMessageHook fired)', () => {
@@ -128,7 +148,7 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
     const res = await request(app).post('/a2a/inbox')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        text: '[a2a:from=echo to=instar-codey role=mentor id=live-1 corr=live-1 ts=1 v=1]\nlive probe',
+        text: `[a2a:from=echo to=${PROJECT} role=mentor id=live-1 corr=live-1 ts=1 v=1]\n\nlive probe`,
         topicId: 458,
         senderAgent: 'echo',
         senderIsBot: true,
@@ -138,5 +158,29 @@ describe('/a2a/inbox E2E lifecycle (alive on production init path)', () => {
     expect(res.body).toMatchObject({ ok: true, agentMessage: true });
     const after = recorder.calls.filter((c) => c.method === 'dispatchAgentMessageHook').length;
     expect(after).toBe(before + 1);
+  });
+
+  it('/a2a/inbox refuses a sender that is not an agent registered on this machine (SEC-154)', async () => {
+    const before = recorder.calls.filter((c) => c.method === 'dispatchAgentMessageHook').length;
+    const res = await request(app).post('/a2a/inbox')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        text: `[a2a:from=stranger to=${PROJECT} role=mentor id=s-1 corr=s-1 ts=1 v=1]\n\nhi`,
+        topicId: 458, senderAgent: 'stranger', senderIsBot: true, senderBotId: '8781020500',
+      });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ reason: 'sender-not-a-local-agent' });
+    expect(recorder.calls.filter((c) => c.method === 'dispatchAgentMessageHook').length).toBe(before);
+  });
+
+  it('/a2a/inbox refuses a marker naming a different sender than the caller (SEC-154)', async () => {
+    const res = await request(app).post('/a2a/inbox')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        text: `[a2a:from=echo to=${PROJECT} role=mentor id=m-1 corr=m-1 ts=1 v=1]\n\nhi`,
+        topicId: 458, senderAgent: 'stranger', senderIsBot: true, senderBotId: '8781020500',
+      });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ reason: 'marker-principal-mismatch' });
   });
 });

@@ -608,7 +608,44 @@ const NEVER_EDITABLE_PREFIXES = [
   // is a machine-local operator surface, not a document to edit from a phone;
   // the conversational config path and a raw file edit remain.
   '.instar/config.json',
+  // SEC-144: the rest of what decides what runs. `.claude/settings*.json` hold the hook command
+  // lines; `.instar/hooks/` holds the hook scripts that actually run (`.claude/hooks/` above is the
+  // older location); `.instar/scripts/` holds the scripts sessions and jobs call; `.instar/jobs.json`
+  // and `.instar/jobs/user/` define scheduled jobs (the dashboard's schedule editor saves them through
+  // `POST /jobs/:slug/save`, which the same token can still use, so this is defence in depth); `.mcp.json` names the MCP
+  // servers sessions launch. Viewing them is unchanged.
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.instar/hooks/',
+  '.instar/scripts/',
+  '.instar/jobs.json',
+  '.instar/jobs/user/',
+  // A job's manifest (`execute`, `enabled`, `schedule`) decides what the scheduler runs, so it is
+  // fenced with the job body.
+  '.instar/jobs/schedule/',
+  '.mcp.json',
+  // Other frameworks' project config names the commands their MCP servers and hooks start; Husky
+  // hook files run through `sh` on every commit and push the agent makes.
+  '.codex/',
+  '.gemini/',
+  '.husky/',
+  // SEC-173: the repository's own git folder. What it holds decides what git runs, and the agent runs
+  // git all the time (the hourly sync, session commits). The entry also covers a worktree's `.git`
+  // pointer file and a nested copy's `.git/` through the nested match below. `.gitmodules` names
+  // submodule sources git fetches. Viewing them is unchanged.
+  '.git/',
+  '.gitmodules',
 ];
+
+/**
+ * SEC-173: a file with an execute bit is a script something may run, so the editor never saves one,
+ * wherever it sits. This closes the open-ended rest of the list above (a script outside the fenced
+ * folders, such as a worktree helper sessions call) without naming every place one can live.
+ * Windows has no execute bit, so the check applies only where the mode carries one.
+ */
+export function isExecutableFile(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32' && (mode & 0o111) !== 0;
+}
 
 /**
  * Exported for the round-14 bypass tests: the case-folding and resolved-path
@@ -625,13 +662,18 @@ export function isNeverEditable(relativePath: string): boolean {
   // lower-cases both sides; this list did not, and the entries it guards are
   // the ones whose invariant is "a PIN compromise must never result in
   // arbitrary code execution" (`.claude/hooks/`, `.claude/scripts/`).
-  const normalized = path.normalize(relativePath).toLowerCase();
+  // SEC-144: Windows separators are folded to `/` so the `/`-based entries hold on win32 too.
+  const normalized = path.normalize(relativePath).replace(/\\/g, '/').toLowerCase();
   // A never-served path is never-editable by construction (spec §3.5): the
   // serve-deny implies the edit-deny at every chokepoint that consults this.
   if (isNeverServed(normalized)) return true;
   return NEVER_EDITABLE_PREFIXES.some(prefix => {
     const p = prefix.toLowerCase();
-    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
+    // SEC-144: also match the same path inside a nested project root, such as a worktree under
+    // `.worktrees/<name>/`, whose sessions load that copy's hooks and settings.
+    const nested = `/${p}`;
+    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '')
+      || normalized.includes(nested) || normalized.endsWith(nested.replace(/\/$/, ''));
   });
 }
 
@@ -918,6 +960,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       // in the listing and refused on write.
       const editable =
         isEditable(requestedPath, config) &&
+        !isExecutableFile(stat.mode) &&
         !isNeverEditable(requestedPath) &&
         !(validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve));
 
@@ -1009,6 +1052,12 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
 
       if (stat.isDirectory()) {
         res.status(400).json({ error: 'Cannot write to a directory' });
+        return;
+      }
+
+      // SEC-173: never rewrite a script (the stat follows a symlink to its target).
+      if (isExecutableFile(stat.mode)) {
+        res.status(403).json({ error: 'Scripts cannot be edited from the file editor' });
         return;
       }
 

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-21T05:36:36.823Z",
+  "slug": "sibling-machine-reach",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the refresh timer is modeled as the Eternal Sentinel sibling-holdings-refresh in src/testing/selfActionRegistry.ts over the real nextSiblingAttemptAtMs decision; the ratchet drives a dead peer for 24h and 48h and asserts the 60s rate floor and restart posture, so an unbounded or accelerating refresh loop fails it"
+    }
+  },
+  "verdict": "blocked"
+}

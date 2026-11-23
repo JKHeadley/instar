@@ -15,8 +15,9 @@ import { registerOriginBot, requirePreparedOriginEgress } from './OriginBotEgres
 import { telegramFetch } from '../telegram-egress.js';
 import type { OriginStoreOptions } from './StoreTypes.js';
 import { callOriginNotice, listenOriginNotices, originCapacityClient } from './OriginNoticeIpc.js';
-import { OriginEgressCapacity, ORIGIN_CAPACITY_WINDOW_MS } from './OriginEgressCapacity.js';
-import type { OriginCapacityAuthority } from './OriginEgressCapacity.js';
+import { OriginEgressCapacity, ORIGIN_CAPACITY_WINDOW_MS, ORIGIN_LEASE_REFUSAL_REASONS } from './OriginEgressCapacity.js';
+import type { OriginCapacityAuthority, LeaseFreshness } from './OriginEgressCapacity.js';
+import { LEASE_LAPSE_FALLBACK_LIFETIME_MS, LEASE_LAPSE_RETRY_SCHEDULE_MS } from './OriginRetry.js';
 import { parseOriginJson } from './CanonicalOrigin.js';
 import type { TelegramOriginRecord } from './types.js';
 import type { OriginSendPolicyAuthority } from './OriginSendPolicy.js';
@@ -86,6 +87,19 @@ export interface TelegramOriginRuntimeOptions {
   noticeProcess?: { role: 'owner' | 'client'; socketPath: string };
   /** Independently refreshed credential-owner lease, not origin-store health. */
   ownsCapacityLease?: () => boolean;
+  /** lease-freshness-lapse-retry — the lease coordinator's one-snapshot verdict and renewal gap. When present it is
+   * the capacity's lease read (permission and reason from the same sample) and sizes the retry budget's lifetime.
+   * Absent on hosts without a lease coordinator (the Lifeline). */
+  leaseFreshness?: () => LeaseFreshness | null;
+  /** lease-freshness-lapse-retry — the never-silent send-hold record: `held` when a reply is refused at the boundary
+   * for the lease, `delivered` for every completed operation (the store matches by operation id). Assigned late by
+   * the server once never-silent is built; absent ⇒ nothing is recorded. Observability only, never a gate. */
+  sendHoldIncidents?: {
+    held: (input: { operationId: string; reason: string; chatId: string | null; topicId: string | null; heldAt: number; deadlineAt: number }) => void;
+    delivered: (input: { operationId: string; deliveredAt: number }) => void;
+  };
+  /** Test seam for the lease retry steps (defaults to LEASE_LAPSE_RETRY_SCHEDULE_MS). */
+  leaseLapseRetryScheduleMs?: ReadonlyArray<number>;
   /** a2a-single-agent-identity §4 — the serving lease. Feeds the service's
    * `lease-not-held` hold reason and the holder-side `submit` check. */
   holdsLease?: () => boolean;
@@ -178,6 +192,12 @@ export class TelegramOriginRuntime {
   private importingLegacy = false;
   private stopNoticeIpc?: () => Promise<void>;
   private remoteNotices = new Map<string, OutageNoticeState>();
+  /** lease-freshness-lapse-retry — the one armed retry episode (step index into the schedule), if any. */
+  #leaseRetry: { timer: ReturnType<typeof setTimeout>; step: number } | null = null;
+  /** Wall-clock times of the timer wakes in the current lifetime window (the rolling budget: four per lifetime). */
+  #leaseRetryWakes: number[] = [];
+  /** How many wakes a timer may spend per lease lifetime, whatever they observed. */
+  static readonly LEASE_RETRY_WAKES_PER_LIFETIME = 4;
   private constructor(readonly options: TelegramOriginRuntimeOptions, public store: OriginStore, public spool: OriginStore) {
     requirePreparedOriginEgress();
     if (options.noticeProcess?.role === 'client') {
@@ -190,7 +210,8 @@ export class TelegramOriginRuntime {
     else {
       this.capacity = this.capacityOwner = new OriginEgressCapacity({ ownerBootId: this.ownerBootId,
         accountIds: () => [options.bot, ...(options.additionalBots ?? [])].filter(bot => bot.token).map(bot => bot.accountId),
-        ownsLease: options.ownsCapacityLease ?? (() => !options.noticeProcess) });
+        ownsLease: options.ownsCapacityLease ?? (() => !options.noticeProcess),
+        leaseFreshness: options.leaseFreshness });
       this.capacityReadyAt = Date.now() + ORIGIN_CAPACITY_WINDOW_MS;
     }
     this.poolAudit = new OriginPoolAudit({ shardIds: () => [options.identity.originMachineId], readShard: (_, query) => this.store.listOrigins(query),
@@ -210,8 +231,18 @@ export class TelegramOriginRuntime {
       // native-conversation-forwarded-advisory item 7 — an answer to a handed-back reply, counted once.
       onAdvisoryAnswer: answer => this.countAdvisoryAnswer({ operationId: answer.originalId,
         kind: answer.settled === 'closed' ? 'refused' : answer.kind, handedBackAt: answer.handedBackAt }),
-      onHold: ({ operationId, reason, producerKind, operationKind, destination }) => {
-        if (producerKind === 'session' && operationKind === 'sendMessage' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
+      // lease-freshness-lapse-retry — every completed operation is reported; the never-silent store matches by id.
+      onDelivered: ({ operationId, deliveredAt }) => {
+        try { this.options.sendHoldIncidents?.delivered({ operationId, deliveredAt }); }
+        catch (error) { console.warn('[telegram-origin] send-hold record unavailable', error instanceof Error ? error.name : 'unknown-error'); }
+      },
+      onHold: ({ operationId, reason, producerKind, operationKind, destination, deadlineAt }) => {
+        const leaseRefusal = ORIGIN_LEASE_REFUSAL_REASONS.includes(reason);
+        if (leaseRefusal) this.noteLeaseRefusalHold({ operationId, reason, destination, deadlineAt });
+        // A lease refusal is expected to clear within seconds and must not post "a reply needs delivery attention"
+        // before any self-heal ran (Self-Heal Before Notify); a hold that persists is reported by the five-minute
+        // durable scan (record-only) and handed back at the §2(b) bound.
+        if (producerKind === 'session' && operationKind === 'sendMessage' && !leaseRefusal && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
           const uncertain = reason === 'transport-acceptance-unknown' || reason === 'response-without-correlated-receipt' || reason === 'partial-platform-receipt';
           // Only an originating conversational session's first send owns a live notice.
           // Recovery and holder-side mesh submissions can report the same old
@@ -823,6 +854,73 @@ export class TelegramOriginRuntime {
     }
     return folded;
   }
+  /** lease-freshness-lapse-retry — a reply was refused at the network boundary because this machine did not hold
+   * the lease. Record it (never-silent send holds, when wired) and arm the bounded retry episode. */
+  private noteLeaseRefusalHold(input: { operationId: string; reason: string; destination: { chatId: string | null; topicId: string | null }; deadlineAt?: number }): void {
+    try {
+      this.options.sendHoldIncidents?.held({ operationId: input.operationId, reason: input.reason, chatId: input.destination.chatId,
+        topicId: input.destination.topicId, heldAt: Date.now(), deadlineAt: input.deadlineAt ?? Date.now() });
+    } catch (error) { console.warn('[telegram-origin] send-hold record unavailable', error instanceof Error ? error.name : 'unknown-error'); }
+    this.armLeaseLapseRetry();
+  }
+  private leaseLifetimeMs(): number {
+    try { return this.options.leaseFreshness?.()?.ttlMs ?? LEASE_LAPSE_FALLBACK_LIFETIME_MS; }
+    catch { return LEASE_LAPSE_FALLBACK_LIFETIME_MS; }
+  }
+  private leaseRetrySchedule(): ReadonlyArray<number> {
+    const schedule = this.options.leaseLapseRetryScheduleMs;
+    return schedule && schedule.length ? schedule : LEASE_LAPSE_RETRY_SCHEDULE_MS;
+  }
+  /** One episode at a time; a new one starts only while wakes remain in the rolling per-lifetime budget. */
+  private armLeaseLapseRetry(): void {
+    if (this.closed || this.#leaseRetry) return;
+    const now = Date.now(), lifetime = this.leaseLifetimeMs();
+    this.#leaseRetryWakes = this.#leaseRetryWakes.filter(at => now - at < lifetime);
+    if (this.#leaseRetryWakes.length >= TelegramOriginRuntime.LEASE_RETRY_WAKES_PER_LIFETIME) return; // the sentinel pass carries it
+    this.scheduleLeaseRetryStep(0);
+  }
+  private scheduleLeaseRetryStep(step: number): void {
+    const schedule = this.leaseRetrySchedule();
+    const timer = setTimeout(() => { void this.leaseRetryWake(step); }, schedule[step]);
+    timer.unref?.();
+    this.#leaseRetry = { timer, step };
+  }
+  /** One wake: read the lease once; when held, run the pass (after any pass already running); the last step
+   * always ends the episode. Never sends anything itself. */
+  private async leaseRetryWake(step: number): Promise<void> {
+    if (this.closed) { this.#leaseRetry = null; return; }
+    const schedule = this.leaseRetrySchedule();
+    const now = Date.now(), lifetime = this.leaseLifetimeMs();
+    this.#leaseRetryWakes = [...this.#leaseRetryWakes.filter(at => now - at < lifetime), now];
+    let held = true;
+    try { held = this.options.holdsLease?.() ?? true; } catch { held = false; }
+    if (held) {
+      const deadline = Date.now() + 30_000;
+      while (this.recovering && Date.now() < deadline) {
+        await Promise.race([this.#passDone, new Promise(resolve => setTimeout(resolve, 1000))]);
+      }
+      if (this.closed) { this.#leaseRetry = null; return; }
+      try { await this.recoverHeld(); }
+      catch (error) { console.warn('[telegram-origin] lease retry pass held:', error instanceof Error ? error.message : 'unavailable'); }
+    }
+    if (this.closed) { this.#leaseRetry = null; return; }
+    const remaining = this.service.heldOperationIdsByReason(ORIGIN_LEASE_REFUSAL_REASONS).length;
+    const last = step >= schedule.length - 1;
+    if (remaining === 0 || last) {
+      this.#leaseRetry = null;
+      if (remaining > 0) {
+        const elapsed = schedule.slice(0, step + 1).reduce((sum, ms) => sum + ms, 0);
+        console.warn(held
+          ? `[telegram-origin] lease retry: ${remaining} lease-held reply(ies) remain after ${Math.round(elapsed / 1000)} s with the lease held; the regular recovery pass carries them`
+          : `[telegram-origin] lease retry: lease still not held after ${Math.round(elapsed / 1000)} s; the regular recovery pass takes over`);
+      }
+      return;
+    }
+    this.scheduleLeaseRetryStep(step + 1);
+  }
+  /** Test and health seam: the armed episode's step, or null. */
+  leaseRetryState(): { step: number } | null { return this.#leaseRetry ? { step: this.#leaseRetry.step } : null; }
+
   /** Called by the existing recovery scheduler, never by a second retry loop.
    * One bounded worker reopen per fifteen minutes; replay uses the original
    * operation, children, bytes, deadline, and claims rather than minting a send.
@@ -958,6 +1056,10 @@ export class TelegramOriginRuntime {
         // §2(b) — the age check at the send site, for a reply ever held for the lease or
         // imported from the startup queue: past the bound it is retired and handed back.
         if (await this.staleAtSendSite(operation)) continue;
+        // lease-freshness-lapse-retry — a reply refused at the boundary for the lease waits for the lease
+        // (the capacity would refuse it again): no store write, no review-ladder step, exactly like `lease-not-held`.
+        if (ORIGIN_LEASE_REFUSAL_REASONS.includes(this.service.heldReason(operation.record.operationId) ?? '')
+          && this.options.holdsLease && !this.options.holdsLease()) continue;
         // Pre-claim holds used to re-run paid review on every recovery tick.
         // Reserve in the same durable owner before entering either review or
         // transport. Memory-held candidates pass this gate too; a missing or
@@ -1259,6 +1361,7 @@ export class TelegramOriginRuntime {
     await this.service.notificationGate?.close?.();
     if (this.closed) return;
     this.closed = true; this.observer.stop(); this.notifier.close(); this.unregister();
+    if (this.#leaseRetry) { clearTimeout(this.#leaseRetry.timer); this.#leaseRetry = null; }
     this.capacityOwner?.close();
     const results = await Promise.allSettled([
       ...[...this.browsers.values()].map(browser => browser.executor.close()),

@@ -67,6 +67,24 @@ describe('accountRoom', () => {
 });
 
 describe('pickInternalCallAccount', () => {
+  it('uses the soonest fresh weekly reset before a roomier reserve account', () => {
+    const soon = acct('soon', 70, { lastQuota: {
+      measuredAt: new Date(NOW).toISOString(),
+      sevenDay: { utilizationPct: 70, resetsAt: '2026-11-08T00:00:00Z' },
+    } });
+    const reserve = acct('reserve', 9, { lastQuota: {
+      measuredAt: new Date(NOW).toISOString(),
+      sevenDay: { utilizationPct: 9, resetsAt: FUTURE },
+    } });
+    expect(pickInternalCallAccount([reserve, soon], 'codex-cli', NOW)?.accountId).toBe('soon');
+    expect(pickInternalCallAccount([reserve, { ...soon, lastQuota: {
+      ...soon.lastQuota, fiveHour: { utilizationPct: 100, resetsAt: FUTURE },
+    } }], 'codex-cli', NOW)?.accountId).toBe('reserve');
+    expect(pickInternalCallAccount([reserve, soon].map(a => ({ ...a,
+      framework: 'claude-code', provider: 'anthropic',
+    })) as SubscriptionAccount[], 'claude-code', NOW)?.accountId).toBe('reserve');
+  });
+
   it('THE POINT: the account with the most room wins, not the first or the ambient', () => {
     const pool = [acct('dawn', 100), acct('amrch', 90), acct('justin', 1), acct('adriana', 90)];
     expect(pickInternalCallAccount(pool, 'codex-cli', NOW)).toEqual({

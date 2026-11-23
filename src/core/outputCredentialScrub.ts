@@ -37,7 +37,11 @@ export function scrubOutputText(text: string): string {
 }
 
 /** Reads `security.credentialScrub.enabled` live from the settings file (dev-gated by default). */
-export function credentialScrubEnabledReader(projectDir: string): () => boolean {
+export function credentialScrubEnabledReader(projectDir: string | undefined | null): () => boolean {
+  // A context with no project folder (a minimal server built in a test, or a caller that has none) has no
+  // settings file to read, so the switch is off, exactly as for an unreadable file. Never throw at
+  // construction: a reader is built while routes and services are assembled, and a throw there breaks them all.
+  if (typeof projectDir !== 'string' || projectDir.length === 0) return () => false;
   const configPath = path.join(projectDir, '.instar', 'config.json');
   let cached: { at: number; value: boolean } | null = null;
   return () => {
