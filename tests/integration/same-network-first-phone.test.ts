@@ -13,7 +13,7 @@ import request from 'supertest';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { SameNetworkListener } from '../../src/server/sameNetworkListener.js';
-import { sameNetworkGate, homeAddressInUse } from '../../src/server/phoneSetupRoutes.js';
+import { sameNetworkGate, homeAddressInUse, NUMBER_SCREEN_SAY, SECOND_PHONE_SAY } from '../../src/server/phoneSetupRoutes.js';
 import type { NetworkObservation } from '../../src/core/SameNetworkNetwork.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { pinnedRequest, signedHeaders, PinMismatchError } from '../helpers/pinnedPhone.js';
@@ -208,6 +208,86 @@ describe('identity A4: the first phone over the same network', () => {
     expect(ctx.listener.listening()).toBe(false);
     await expect(phoneSigned(port, scanned, dev, String(r.json.deviceId), 'POST', '/mobile/device/activate-at-computer', { pinnedKeyHash: scanned.pin })).rejects.toThrow();
     expect(ctx.svc.devices.get(String(r.json.deviceId))!.status).not.toBe('active');
+  });
+
+  it('security review: a second phone on the same code ends the setup, turns the waiting phone away, and the computer says why', async () => {
+    const ctx = setup();
+    const s = await startSetup(ctx.app);
+    const scanned = parseV2(s.body.link);
+    const port = Number(scanned.host.split(':')[1]);
+    const first = makeDevice();
+    const r = await phoneRedeem(port, scanned, first);
+    expect(r.status).toBe(200);
+    // The number screen tells the owner to type only the number on their own phone.
+    const waiting = await bearer(request(ctx.app).get(`/mobile/phone-setup/${s.body.setupId}`));
+    expect(waiting.body.state).toBe('waiting-number');
+    expect(waiting.body.say).toBe(NUMBER_SCREEN_SAY);
+    const second = await phoneRedeem(port, scanned, makeDevice());
+    expect(second.status).toBe(403);
+    const view = await bearer(request(ctx.app).get(`/mobile/phone-setup/${s.body.setupId}`));
+    expect(view.body.state).toBe('ended');
+    expect(view.body.endedReason).toBe('second-phone');
+    expect(view.body.say).toBe(SECOND_PHONE_SAY);
+    expect(ctx.svc.devices.get(String(r.json.deviceId))!.status).toBe('declined');
+    // The right number no longer helps: the setup is over.
+    const typed = await bearer(request(ctx.app).post(`/mobile/phone-setup/${s.body.setupId}/number`)).send({ number: String(r.json.number) });
+    expect(typed.status).toBe(409);
+    expect(typed.body.detail).toBe(SECOND_PHONE_SAY);
+    for (let i = 0; i < 50 && ctx.listener.listening(); i++) await new Promise((x) => setTimeout(x, 20));
+    expect(ctx.listener.listening()).toBe(false);
+    expect(ctx.svc.devices.get(String(r.json.deviceId))!.status).not.toBe('active');
+  });
+
+  it('security review: a retry from the waiting phone itself is refused but does not end the setup', async () => {
+    const ctx = setup();
+    const s = await startSetup(ctx.app);
+    const scanned = parseV2(s.body.link);
+    const port = Number(scanned.host.split(':')[1]);
+    const first = makeDevice();
+    const r = await phoneRedeem(port, scanned, first);
+    expect(r.status).toBe(200);
+    expect((await phoneRedeem(port, scanned, first)).status).toBe(403);
+    const view = await bearer(request(ctx.app).get(`/mobile/phone-setup/${s.body.setupId}`));
+    expect(view.body.state).toBe('waiting-number');
+    expect(ctx.svc.devices.get(String(r.json.deviceId))!.status).toBe('pending');
+  });
+
+  it('security review: a second phone after the right number was typed still ends the setup before the phone signs in', async () => {
+    const ctx = setup();
+    const s = await startSetup(ctx.app);
+    const scanned = parseV2(s.body.link);
+    const port = Number(scanned.host.split(':')[1]);
+    const first = makeDevice();
+    const r = await phoneRedeem(port, scanned, first);
+    const deviceId = String(r.json.deviceId);
+    const typed = await bearer(request(ctx.app).post(`/mobile/phone-setup/${s.body.setupId}/number`)).send({ number: String(r.json.number) });
+    expect(typed.status).toBe(200);
+    expect((await phoneRedeem(port, scanned, makeDevice())).status).toBe(403);
+    expect(ctx.svc.devices.get(deviceId)!.status).toBe('declined');
+    // Signing in now lets nothing in (the listener may already be closed, which refuses too).
+    try {
+      const act = await phoneSigned(port, scanned, first, deviceId, 'POST', '/mobile/device/activate-at-computer', { pinnedKeyHash: scanned.pin });
+      expect(act.status).not.toBe(200);
+    } catch { /* the home address closed: nothing is reachable */ }
+    expect(ctx.svc.devices.get(deviceId)!.status).not.toBe('active');
+  });
+
+  it('security review: a first phone is refused when another of the agent\'s machines cannot be checked for its phones', async () => {
+    const ctx = setup();
+    fs.mkdirSync(path.join(ctx.dir, 'machines'), { recursive: true });
+    fs.writeFileSync(path.join(ctx.dir, 'machines', 'registry.json'), JSON.stringify({ version: 1, machines: {
+      m_self: { status: 'active', role: 'awake' }, m_other: { status: 'active', role: 'standby' },
+    } }));
+    const s = await startSetup(ctx.app);
+    expect(s.status).toBe(409);
+    expect(s.body.error).toBe('phone-check-incomplete');
+    expect(s.body.link).toBeUndefined();
+    expect(ctx.listener.listening()).toBe(false);
+    // A revoked machine is not asked.
+    fs.writeFileSync(path.join(ctx.dir, 'machines', 'registry.json'), JSON.stringify({ version: 1, machines: {
+      m_self: { status: 'active', role: 'awake' }, m_old: { status: 'revoked', role: 'standby', revokedAt: '2026-11-20T00:00:00Z' },
+    } }));
+    expect((await startSetup(ctx.app)).status).toBe(200);
   });
 
   it('a Telegram owner that appears during the setup ends it before the phone is let in', async () => {

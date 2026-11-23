@@ -309,7 +309,7 @@ describe('Console Home E2E (feature is alive)', () => {
     expect(page.ok).toBe(true);
     // The real needs-you initiative leads; the project waits for its first OK; the child folds under it.
     const needs = page.sections.needsYou.map((r: { id: string; needs: string }) => [r.id, r.needs]);
-    expect(needs).toEqual(expect.arrayContaining([['e2e-plan', 'Waiting on you: choose between two names'], ['e2e-project', 'Waiting for your OK on round 1']]));
+    expect(needs).toEqual(expect.arrayContaining([['e2e-plan', 'Waiting on you: choose between two names'], ['e2e-project', 'Waiting for your OK on round 1: Home']]));
     expect(page.sections.needsYou.find((r: { id: string }) => r.id === 'e2e-project')!.sub).toContain('round 1 of 2 · 0 of 1 piece merged');
     expect([...page.sections.inFlight, ...page.sections.needsYou].some((r: { id: string }) => r.id === 'e2e-piece')).toBe(false);
     // Blockers answered through the real ledger: an honest empty, never a fabricated "stuck".

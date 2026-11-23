@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
@@ -178,7 +179,8 @@ import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes, serveTopicIntentBriefing } from './topicIntentRoutes.js';
 import { createPromptContextRoutes } from './promptContextRoutes.js';
-import { SeedFetchLog } from '../monitoring/contextLayers/promptContext.js';
+import { computeOverallRework } from '../monitoring/contextBudgetMetrics.js';
+import { SeedFetchLog, reworkBaselineOf, type ReworkBaseline } from '../monitoring/contextLayers/promptContext.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
@@ -191,6 +193,7 @@ import { LlmQueue } from '../monitoring/LlmQueue.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
@@ -235,7 +238,9 @@ import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
 import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLiveWiring.js';
 import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
-import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
+import { createDocumentLinkRoutes, joinedComputerStanding, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
+import { computerStandingIn, computerHomeAt, renewDue } from '../core/TeamComputers.js';
+import { createDocumentJoinRoutes, joinedEndsAt, reconcileJoinedComputers } from './documentJoinRoutes.js';
 import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
 import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
 import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
@@ -340,6 +345,9 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { ServedAccountResolver, type ServedLedgerView } from '../monitoring/servedAccount.js';
+import { IdentityCheckLog } from '../monitoring/IdentityCheckLog.js';
+import { ServedSwitchHistory } from '../monitoring/servedAccountReport.js';
 import { UsagePoolPuller } from '../monitoring/UsagePoolPuller.js';
 import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
@@ -696,11 +704,11 @@ export class AgentServer {
    * Turn one team setting on here, from the owner's tap on any machine of this agent. Only ever on.
    * Restarts this machine (a supervised, planned restart) when what is running is not yet on.
    */
-  private applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
+  private async applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
     config: InstarConfig;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     sessionManager: { memoryPrivacyStatus?(): { enabled?: boolean } | null | undefined };
-  }, by: string): LocalApply {
+  }, by: string): Promise<LocalApply> {
     const live = options.liveConfig;
     if (!live?.get) throw new Error('team-switch-no-live-config');
     let changed = false;
@@ -726,7 +734,7 @@ export class AgentServer {
     }
     console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
     if (running && !changed) return { changed: false, restarting: false };
-    if (!this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`)) throw new Error('team-switch-restart-unavailable');
+    if (!(await this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`))) throw new Error('team-switch-restart-unavailable');
     return { changed, restarting: true };
   }
 
@@ -943,6 +951,8 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** sibling-machine-reach: stops the holdings cache's refresh timers on shutdown. */
+  private siblingHoldingsStop: (() => void) | null = null;
   /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
   private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
   private deliverA2aToMachine?: (input: {
@@ -998,6 +1008,7 @@ export class AgentServer {
   getTokenLedger(): TokenLedger | null { return this.tokenLedger; }
   private usageLedger: UsageLedger | null = null;
   private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private identityCheckLog: IdentityCheckLog | null = null;
   private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
   private usageRouteDeps: import('./usageRoutes.js').UsageRouteDeps | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
@@ -3059,7 +3070,27 @@ export class AgentServer {
           otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
         } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
         const subscriptionPool = options.subscriptionPool;
+        // quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): which account served each
+        // row. Dev-gated separately; the column migration runs regardless (additive, idempotent).
+        const servedStateDir = options.config.stateDir;
+        const servedEnabled = () => resolveDevAgentGate(options.config.usage?.ledger?.servedAccount, options.config);
+        const servedSwitch = new ServedSwitchHistory(servedStateDir);
+        servedSwitch.note(servedEnabled());
+        const identityChecks = new IdentityCheckLog({ stateDir: servedStateDir });
+        options.quotaPoller?.setIdentityCheckLog?.(identityChecks);
+        this.identityCheckLog = identityChecks;
+        const credLedger = options.subscriptionEmailBinding as unknown as ServedLedgerView | undefined;
+        const servedPoolAccounts = () => (subscriptionPool?.list() ?? []).map(a => ({
+          id: a.id, framework: a.framework, configHome: a.configHome, provider: a.provider, email: a.email ?? null,
+        }));
+        const servedResolver = new ServedAccountResolver({
+          pool: servedPoolAccounts,
+          ledger: () => (credLedger && typeof credLedger.getAssignment === 'function' ? credLedger : null),
+          checks: identityChecks,
+          pollIntervalMs: 15 * 60_000,
+        });
         const ledger = new UsageLedger({
+          servedAccount: { enabled: () => { const on = servedEnabled(); servedSwitch.note(on); return on; }, resolver: servedResolver },
           dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
           machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
           agentId: options.config.projectName ?? path.basename(projectDir),
@@ -3148,6 +3179,13 @@ export class AgentServer {
           },
           fromPeer: (machineId, route) => peerGet(machineId, route),
           bearerOk: () => true,
+          servedAccount: {
+            enabled: servedEnabled,
+            switchHistory: servedSwitch,
+            fanOut: { config: options.config, resolvePeerUrls: options.resolvePeerUrls, recordRopeResult: options.recordRopeResult } as import('./poolFanOut.js').FanOutCtx,
+            history: () => this.quotaPacingLedger ?? null,
+            poolAccounts: servedPoolAccounts,
+          },
         } as import('./usageRoutes.js').UsageRouteDeps;
         // The listing of every transcript file runs off the event loop (scanTickAsync):
         // done synchronously here it held the main thread for over a minute on a
@@ -3160,10 +3198,13 @@ export class AgentServer {
           onTick: (rep, tickMs) => {
             if (tickMs > 60_000) console.warn(`[instar] usage-ledger tick took ${Math.round(tickMs / 1000)} s (files read ${rep.filesRead}, pending ${rep.pending})`);
             featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending, tickMs } });
+            // Ladder evidence (feature-ladders.json → usage.ledger.servedAccount): attribution ran this hour.
+            if (servedEnabled()) featureEvidence.recordAtMostEvery('usage.ledger.servedAccount', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'served-attribution-tick', context: { rowsCounted: rep.rowsCounted } });
           },
           onError: (err) => { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
             featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+            if (servedEnabled()) featureEvidence.recordAtMostEvery('usage.ledger.servedAccount', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
           },
           onStuck: (skipped, runningMs) => {
             console.warn(`[instar] usage-ledger tick has been running ${Math.round(runningMs / 60000)} min; ${skipped} ticks skipped behind it`);
@@ -7258,6 +7299,8 @@ export class AgentServer {
           const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
+            // SEC-164 §3.5: a server transcript has its live keys masked before it is stored.
+            credentialScrubEnabled: credentialScrubEnabledReader(options.config.projectDir),
             confineStranded: () => { throw new Error('pairing-not-ready'); },
             documentNotes: (key: string) => this.documentNotesFor(`app:${key}`),
             stateDir: options.config.stateDir,
@@ -7279,7 +7322,7 @@ export class AgentServer {
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
             // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
             // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
-            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFileDetailed(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFileDetailed(filePath, { explicit: configuredVoiceProvider(options.config), channel: 'app', mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
             voiceProviderName: () => describeVoiceTranscription({ explicit: configuredVoiceProvider(options.config), cachedOnly: true }).active ?? undefined,
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
@@ -7418,6 +7461,9 @@ export class AgentServer {
       }
     }
     const routes = createRoutes(routeCtx);
+    this.attachWorkBoardRequestGate(options);
+    // sibling-machine-reach: the background holdings cache's timers stop with the server.
+    this.siblingHoldingsStop = () => (routes as unknown as { siblingHoldings?: { stop(): void } }).siblingHoldings?.stop();
     this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -7488,6 +7534,7 @@ export class AgentServer {
     const promptLayerFreshness = options.contextLayers && options.topicMemory
       ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
       : null;
+    let reworkMemo: { at: number; value: ReworkBaseline | null } | null = null;
     this.app.use(createPromptContextRoutes({
       stateDir: options.config.stateDir,
       shadowOn: () => !!options.contextLayers,
@@ -7500,6 +7547,16 @@ export class AgentServer {
       },
       messages: (topicId, limit) => (options.telegram ? options.telegram.getTopicHistory(topicId, limit) as unknown as Array<Record<string, unknown>> : null),
       seedFetches: promptSeedFetches,
+      // The measurement backend's rework rate (S13) is the delta comparison's baseline;
+      // synchronous SQLite reads, so one result is reused for 5 minutes.
+      rework: () => {
+        const at = Date.now();
+        if (reworkMemo && at - reworkMemo.at < 300_000) return reworkMemo.value;
+        const m = computeOverallRework(this.tokenLedger);
+        const value = m ? reworkBaselineOf(m) : null;
+        reworkMemo = { at, value };
+        return value;
+      },
     }));
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
@@ -7866,10 +7923,32 @@ export class AgentServer {
         isOwnHost: pageDeps.isOwnHost,
       }));
       setDocumentScopedSend((device, routePath, rawBody) => this.documentScopedSendOk(device, routePath, rawBody));
+      // A member's computer joining from the owner's team invite (docs/specs/member-browser-any-computer.md).
+      const joinDeps = {
+        config: () => options.config, pairing: () => this.mobilePairing ?? null,
+        machineId: () => this.meshSelfId ?? (options as { coordinator?: { identity?: { machineId?: string } | null } }).coordinator?.identity?.machineId ?? null,
+        writesBlockedBy: () => this.computerWritesBlockedBy(),
+        ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? '').trim(),
+        notice: {
+          raise: (key: string, title: string, text: string) => { void this.raiseReachNotice({ conditionKey: key, title, text }); },
+          close: (key: string) => { this.closeAgentNotice(key); },
+        },
+        addresses: () => this.computerAddresses(),
+      };
+      this.app.use(createDocumentJoinRoutes(joinDeps));
       // The linked-computer expiry sweep also runs whenever team phones are reconciled (§3.6a item 3).
       if (this.mobilePairing) {
         const svc = this.mobilePairing;
-        svc.linkedBrowserSweep = () => { if (isDocumentsEnabled(options.config)) sweepLinkedBrowsers(svc, Date.now()); };
+        // The pair page offers "Use this computer instead" only when computers can join here (§3.1 step 2).
+        svc.computersCanJoin = () => isDocumentsEnabled(options.config) && svc.browserOn();
+        svc.linkedBrowserSweep = () => {
+          if (!isDocumentsEnabled(options.config)) return;
+          sweepLinkedBrowsers(svc, Date.now());
+          // A joined computer's admission finished after a crash, and computers bound to this
+          // machine's own address taken over after a rebuild (§3.3.2, §3.5).
+          try { reconcileJoinedComputers(svc, joinDeps, Date.now()); } catch (err) { svc.reportTeamFault('Documents.joinReconcile', err); } // @silent-fallback-ok — reported; the next pass retries
+          try { this.adoptJoinedComputers(); } catch (err) { svc.reportTeamFault('Documents.joinAdopt', err); } // @silent-fallback-ok — reported; the next pass retries
+        };
       }
     }
     // Sync documents between machines whether or not phones are paired (owner-only documents replicate too).
@@ -7976,6 +8055,34 @@ export class AgentServer {
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
+        creationHierarchySource: () => {
+          const snapshot = options.chiefOfStaffLoop?.creationPlacementSnapshot();
+          const evidence = options.workBoard?.()?.creationEvidenceSnapshot();
+          const registry = options.conversationRegistry;
+          const telegramTopicIds = new Set(options.telegram?.getAllTopicMappings().map(m => m.topicId) ?? []);
+          const slackVisibleIds = new Set(slackBridge && slackOwnerUserId(options.config) ? slackListRows(slackBridge).map(row => row.id) : []);
+          return {
+            version: JSON.stringify([[...telegramTopicIds].sort((a, b) => a - b), [...slackVisibleIds].sort((a, b) => a - b), snapshot?.version ?? 'unavailable', evidence?.version ?? 'unavailable', evidence?.complete === true, registry?.creationIdentityVersion() ?? 'unavailable']),
+            complete: snapshot?.complete === true,
+            parents: snapshot?.parents ?? new Map<string, string | null>(),
+            confirmedProjects: snapshot?.confirmedProjects ?? new Set<string>(),
+            cardEvidence: evidence?.complete ? evidence.items : [],
+            resolveRef: (raw: string, originMachineId?: string): string | null => {
+              const app = /^(?:app:)?([0-9a-f]{8}-[0-9a-f-]{27})$/i.exec(raw);
+              if (app) return this.appConversations?.liveConversation(app[1].toLowerCase()) ? `app:${app[1].toLowerCase()}` : null;
+              const topic = /^telegram:([1-9]\d*)$/.exec(raw);
+              if (topic) return telegramTopicIds.has(Number(topic[1])) ? raw : null;
+              const alias = /^slack:([^:]+):(-\d+)$/.exec(raw);
+              if (alias) {
+                if (!originMachineId || alias[1] !== originMachineId || alias[1] !== this.appConversations?.deps.machineId()) return null;
+                const resolved = registry?.resolve(Number(alias[2]));
+                return resolved?.platform === 'slack' && slackVisibleIds.has(resolved.id) ? resolved.key : null;
+              }
+              const resolved = registry?.resolveByKey(raw);
+              return resolved?.platform === 'slack' && slackVisibleIds.has(resolved.id) ? resolved.key : null;
+            },
+          };
+        },
         // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
         chiefOfStaffCheckIn: options.chiefOfStaffLoop ? (principal: string) => options.chiefOfStaffLoop!.checkIn({ renewedVia: 'app', principal }) : undefined,
         chiefOfStaff: options.chiefOfStaffLoop ? () => {
@@ -9688,6 +9795,80 @@ export class AgentServer {
   }
 
   /**
+   * agent-work-cards-default §3: the request-to-card gate joins the Work Board runtime to the commitments, the durable
+   * message rows (Telegram log, app conversation events), the device registry and the team record. Every input the gate
+   * reads is a recorded fact on THIS machine; absent pieces leave the gate inert (a commitment then reads
+   * `cardPending` with a retryable reason, never a silent nothing).
+   */
+  private attachWorkBoardRequestGate(options: ConstructorParameters<typeof AgentServer>[0]): void {
+    const runtime = options.workBoard?.() ?? null;
+    const tracker = options.commitmentTracker ?? null;
+    const pairing = this.mobilePairing;
+    if (!runtime || !tracker || !pairing) return;
+    if (runtime.gate) return; // already attached (a test rig, or an earlier wiring): never overwrite its seams
+    const selfId = options.meshSelfId ?? 'local';
+    const telegram = options.telegram ?? null;
+    const appStore = options.appConversations?.store ?? null;
+    const cos = options.chiefOfStaffLoop ?? null;
+    const projectKeyFor = (candidates: string[]): string | null => {
+      let rows: Array<{ conversationKey: string }> = [];
+      try { rows = cos?.projectsSummary() ?? []; } catch { /* @silent-fallback-ok: an unreadable project list puts the card in General, which the agent can move */ rows = []; }
+      const keys = new Set(rows.map((r) => r.conversationKey));
+      return candidates.find((k) => keys.has(k)) ?? null;
+    };
+    const teamPeople = () => pairing.teamLog()?.state().people ?? new Map<string, { personKey: string; links: Record<string, string | number> }>();
+    runtime.attachRequestGate({
+      operatorConversation: (conversationKey) => {
+        const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+        if (tg) return telegram ? { ok: true, projectKey: projectKeyFor([conversationKey]) } : { ok: false };
+        if (conversationKey.startsWith('slack:')) return options.slack ? { ok: true, projectKey: projectKeyFor([conversationKey]) } : { ok: false };
+        // An app conversation that exists here (a card's own conversation links to its card inside the gate).
+        if (!appStore || !appStore.getConversation(conversationKey)) return { ok: false };
+        return { ok: true, projectKey: projectKeyFor([`app:${conversationKey}`, conversationKey]) };
+      },
+      telegramRow: telegram ? (topicId, messageId) => {
+        const r = telegram.findTopicMessage(topicId, messageId, Date.now() - 30 * 86_400_000);
+        return { entry: r.entry as never, ...(r.unreadable ? { unreadable: true } : {}), ...(r.budgetExceeded ? { budgetExceeded: true } : {}) };
+      } : undefined,
+      appRow: appStore ? (conversationKey, messageId) => {
+        const ev = appStore.getMessageEvent(conversationKey, messageId) as { kind?: string; role?: 'operator' | 'agent'; text?: string; origin?: { deviceId?: string }; senderRole?: 'owner' | 'msp' | 'team'; senderPerson?: { machineId: string; userId: string } } | null;
+        if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message') || !ev.role || typeof ev.text !== 'string') return null;
+        return { role: ev.role, text: ev.text, deviceId: ev.origin?.deviceId ?? null, senderRole: ev.senderRole, senderPerson: ev.senderPerson };
+      } : undefined,
+      deviceRecord: (deviceId) => {
+        const d = pairing.devices.get(deviceId);
+        return d ? { status: String(d.status), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}), ...(d.userId ? { userId: d.userId } : {}), ...(d.role ? { role: d.role } : {}) } : null;
+      },
+      telegramOwnerId: () => pairing.ownerIdentity().telegramOwnerId ?? telegram?.getOwnerUserId() ?? null,
+      teamPersonForTelegramId: (id) => {
+        for (const p of teamPeople().values()) for (const [k, v] of Object.entries(p.links ?? {})) if (/telegram/i.test(k) && String(v) === String(id)) return p.personKey;
+        return null;
+      },
+      slackOwnerId: () => pairing.ownerIdentity().slackOwnerUserId ?? null,
+      teamPersonForSlackId: (id) => {
+        for (const p of teamPeople().values()) for (const [k, v] of Object.entries(p.links ?? {})) if (/slack/i.test(k) && String(v) === id) return p.personKey;
+        return null;
+      },
+      commitments: {
+        list: () => {
+          const own = tracker.getAll().map((c) => ({ ...c, originMachineId: c.originMachineId ?? selfId }));
+          const replicas = (options.commitmentReplicaStore?.allReplicas() ?? []).flatMap((r) => r.records.map((c) => ({ ...c, originMachineId: c.originMachineId ?? r.ownerMachineId })));
+          return [...own, ...replicas] as never;
+        },
+        annotate: (id, patch) => { tracker.annotateCard(id, patch); },
+        supersedeSentinels: (conversationKey, userRequest, agentResponse, byId) => tracker.supersedeSentinelsFor(conversationKey, userRequest, agentResponse, byId),
+      },
+      teamKey: () => pairing.teamLog()?.state().ownerPersonKey ?? 'owner',
+      log: (event, detail) => {
+        console.log(`  [work-board] ${event} ${JSON.stringify(detail)}`);
+        // Maturation evidence (workBoard.agentWorkCards ladder): one `fired` per card the gate wrote, one `error` per refusal.
+        if (event === 'work-board-request-card-written') featureEvidence.record('workBoard.agentWorkCards', { kind: 'fired', reason: detail.backfill ? 'backfill' : 'gate' });
+        else if (event === 'work-board-request-card-refused') featureEvidence.record('workBoard.agentWorkCards', { kind: 'error', reason: String(detail.error ?? 'refused') });
+      },
+    });
+  }
+
+  /**
    * Initiate the server's EXISTING supervised restart — the same
    * `state/restart-requested.json` flag the auto-updater writes, which the
    * supervisor (launchd keepalive) and the ForegroundRestartWatcher already act
@@ -9698,12 +9879,16 @@ export class AgentServer {
    * `503` naming the reason and leaves the state unchanged rather than
    * reporting a restart that will never happen.
    */
-  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
+  private async requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): Promise<boolean> {
+    const requestedAt = new Date().toISOString();
+    // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+    // before the request is visible. Never throws; resolves at once when there is nothing to extend.
+    await announceRestartRequested({ requestedBy, reason, requestedAt });
     try {
       const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
       fs.mkdirSync(path.dirname(flagPath), { recursive: true });
       const data = {
-        requestedAt: new Date().toISOString(),
+        requestedAt,
         requestedBy,
         reason,
         plannedRestart: true, // maintenance, not a crash — the supervisor reads this
@@ -10340,6 +10525,7 @@ export class AgentServer {
 
   async stop(): Promise<void> {
     await this.stopGraphSourceInventory();
+    this.siblingHoldingsStop?.();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }
     if (this.documentPullTimer) clearInterval(this.documentPullTimer);
@@ -10494,6 +10680,7 @@ export class AgentServer {
       this.revertDetector = null;
     }
     if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    try { this.identityCheckLog?.flushAll(); } catch { /* @silent-fallback-ok: at worst the last 15 minutes of confirmations read as unconfirmed */ }
     this.usagePuller?.stop(); this.usagePuller = null;
     if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
@@ -11007,17 +11194,18 @@ export class AgentServer {
     const publicKey = localKey && deviceKeyHashOf(localKey) === keyHash ? localKey : act && act.keyHash === keyHash ? act.publicKey : null;
     if (!publicKey) return null;
     const link = prefix.browserLinks.get(keyHash);
-    const client: 'phone' | 'browser' = link || (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
+    const joined = prefix.computerLinks.get(keyHash);
+    const client: 'phone' | 'browser' = link || joined || (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
     const stood = deviceStoodAt(prefix, log.state(), { keyHash, deviceId, personKey, client }, (l) => {
       // The phone's signature over the link, checked as of the link (expiry was decided by the
       // machine that accepted the row; a revoked linking phone is ordered by the team rows above).
       const phone = this.documentLedgerActivation(l.linkedByDeviceId, l.linkedByKeyHash);
       return verifyBrowserLink(l, phone, phone ? prefix.bindings.get(phone.keyHash) ?? null : null, false, Date.parse(l.linkedAt));
-    });
+    }, (kh) => computerStandingIn(log.state(), kh, Date.now()) === null);
     if (!stood) return null;
     const role = prefix.people.get(personKey)?.role;
     const guest = !!role && tierOfRole(role as never) === 'guest';
-    const mayWrite = !guest && link?.scope !== 'documents-read';
+    const mayWrite = !guest && link?.scope !== 'documents-read' && joined?.scope !== 'documents-read';
     return { status: 'ok', publicKey, role: 'person', personKey, client, mayWrite };
   }
 
@@ -11043,7 +11231,13 @@ export class AgentServer {
     if (person && person.ok && person.role === 'owner') role = 'owner';
     else if (person && person.ok && person.role === 'team' && person.userId) { role = 'person'; personKey = person.userId; }
     else if (bound === 'owner' || bound === 'owner-browser') role = 'owner';
-    else if (bound && svc.teamLog()?.state().browserLinks.has(keyHash)) {
+    else if (bound && svc.teamLog()?.state().computerLinks.has(keyHash)) {
+      // A member's computer that joined from the owner's team invite (member-browser-any-computer §3.4):
+      // standing from the replicated rows and the key ledger, only while the browser switch is on.
+      const st = joinedComputerStanding(svc, keyHash, Date.now());
+      if (!st || st.deviceId !== deviceId || !svc.browserOn()) return { status: 'revoked' };
+      role = 'person'; personKey = st.personKey;
+    } else if (bound && svc.teamLog()?.state().browserLinks.has(keyHash)) {
       // A linked computer: only as strong as the phone that linked it, checked here (§3.6a), and
       // only while the browser switch is on.
       const linkRow = svc.teamLog()!.state().browserLinks.get(keyHash)!;
@@ -11053,7 +11247,7 @@ export class AgentServer {
     } else if (bound) { role = 'person'; personKey = bound; }
     // A browser approved only with the dashboard PIN can read but never write (§3.6); a guest's linked browser reads only.
     if (local?.scope && (!linkStillValid(local, svc, Date.now()) || !svc.browserOn())) return { status: 'revoked' };
-    const scope = local?.scope ?? svc.teamLog()?.state().browserLinks.get(keyHash)?.scope;
+    const scope = local?.scope ?? svc.teamLog()?.state().browserLinks.get(keyHash)?.scope ?? svc.teamLog()?.state().computerLinks.get(keyHash)?.scope;
     // A guest's computer reads only. Decided from the person's current tier as well as the row, so
     // no machine can widen a guest's computer by rewriting its scope.
     const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
@@ -11170,6 +11364,89 @@ export class AgentServer {
   }
 
   /** A peer heard from in the last 7 days that does not read decision rows yet, by name (§6). */
+  /**
+   * The machine that holds back every computer-* team-log row (member-browser-any-computer §5): one
+   * whose last heartbeat in the last week does not say it reads them. A machine silent for longer
+   * counts as retired; an unreadable machine list fails closed. Null when every machine reads them.
+   */
+  computerWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: computer rows wait until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.teamLogComputerRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** The agent's own document addresses, this machine's first (display only, §3.6). */
+  computerAddresses(): string[] {
+    const out = new Set<string>();
+    const own = this.mobilePairing?.pairingOrigin()?.origin;
+    if (own) out.add(own.toLowerCase());
+    const reg = this.docPoolRegistry;
+    try {
+      for (const c of reg?.getCapacities() ?? []) {
+        const o = c.seamlessnessFlags?.documentsOrigin;
+        if (typeof o === 'string' && /^https:\/\/[a-z0-9.-]{1,253}(?::\d{1,5})?$/.test(o)) out.add(o);
+      }
+    } catch { /* @silent-fallback-ok — display only: the list is just shorter */ }
+    return [...out];
+  }
+
+  /** Close an attention item this server raised with raiseReachNotice (member-browser-any-computer §3.3.4). */
+  private closeAgentNotice(conditionKey: string): void {
+    const id = `agent:${conditionKey}`;
+    try {
+      if (this.telegramAdapter) void this.telegramAdapter.updateAttentionStatus(id, 'DONE', { silent: true, closedBy: 'cause-cleared' });
+      else this.localAttention?.setStatus(id, 'DONE');
+    } catch { /* @silent-fallback-ok — best-effort; an open item says only that someone was waiting */ }
+  }
+
+  /**
+   * A joined computer's signed page request verified here (§3.5): this machine is its home, so it moves
+   * the computer's end forward once a quarter of the idle window has passed, and keeps its own record's
+   * end in step with the replicated rows. Nothing is written while the pool write gate is closed.
+   */
+  private joinedComputerUsed(deviceId: string): void {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    const d = svc?.devices.get(deviceId);
+    if (!svc || !log || !d || d.joinedVia !== 'team-invite' || d.status !== 'active' || !d.browserPublicKey) return;
+    const kh = deviceKeyHashOf(d.browserPublicKey);
+    const now = Date.now();
+    const due = renewDue(log.state(), kh, now);
+    if (due?.due && this.meshSelfId && computerHomeAt(log.state(), kh) === this.meshSelfId && !this.computerWritesBlockedBy()) {
+      log.appendMachineEvents([{ type: 'computer-renew', keyHash: kh, expiresAt: due.expiresAt }]);
+    }
+    const ends = joinedEndsAt(svc, d, now);
+    if (ends) svc.devices.setLinkExpiry(d.id, ends);
+  }
+
+  /**
+   * Take over joined computers bound to this machine's own address that it holds no record for, e.g.
+   * after a rebuild with a new machine identity (§3.5). Writes one computer-adopt per computer.
+   */
+  private adoptJoinedComputers(): void {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    if (!svc || !log || log.healthState() !== 'ok' || !this.meshSelfId || this.computerWritesBlockedBy()) return;
+    const now = Date.now();
+    for (const link of log.state().computerLinks.values()) {
+      if (link.unbound || !svc.redeemHostEligible(link.host)) continue;
+      if (svc.devices.get(link.deviceId) || svc.devices.list().some((d) => d.browserPublicKey === link.browserPublicKey)) continue;
+      const st = joinedComputerStanding(svc, link.keyHash, now);
+      if (!st) continue;
+      const rec = svc.devices.adoptJoinedComputer({ deviceId: link.deviceId, browserPublicKey: link.browserPublicKey, host: link.host, userId: link.boundTo, scope: link.scope, linkedAt: link.linkedAt, linkExpiresAt: new Date(st.expiresAt).toISOString(), idleDays: link.idleDays, endsBy: link.endsBy });
+      if (rec && computerHomeAt(log.state(), link.keyHash) !== this.meshSelfId) log.appendMachineEvents([{ type: 'computer-adopt', keyHash: link.keyHash, host: link.host }]);
+    }
+  }
+
   documentDecisionWritesBlockedBy(): string | null {
     const reg = this.docPoolRegistry;
     if (!reg) return null;
@@ -11318,6 +11595,13 @@ export class AgentServer {
           ? { ok: true, role: 'owner', userId: null, name: 'Owner', telegramUserId: null }
           : { ok: true, role: 'team', userId: k.personKey, name: standing!.name, telegramUserId: null, tier: standing!.tier };
         return { person: person as never, client: k.client, publicKey: k.publicKey, approvedVia: act.approvedVia ?? null, scope: svc.teamLog()?.state().browserLinks.get(act.keyHash)?.scope ?? null };
+      },
+      // member-browser-any-computer §3.5: a joined computer in use here is renewed by its home.
+      deviceUsed: (deviceId: string) => this.joinedComputerUsed(deviceId),
+      computerEndsAt: (deviceId: string) => {
+        const svc = this.mobilePairing;
+        const d = svc?.devices.get(deviceId);
+        return svc && d ? joinedEndsAt(svc, d, Date.now()) : null;
       },
       isOwnHost: (host: string) => {
         const svc = this.mobilePairing;

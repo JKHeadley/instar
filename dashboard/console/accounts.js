@@ -121,6 +121,8 @@ function openAccount(a, refresh) {
       el('span', { class: c.state === 'attn' ? 'dot attn' : c.state === 'ok' ? 'dot live' : 'dot unknown' }),
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
       el('span', { class: 'row-end' }));
+    // A machine that does not hold this account: a quiet Set up that starts a fresh sign-in there.
+    if (c.state === 'missing' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Set up', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Set up ${a.email || a.name} on ${c.machine}`, action: 'start', episodeId: null }, refresh) }));
     if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
     return r;
   }));

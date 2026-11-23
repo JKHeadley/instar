@@ -281,7 +281,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
     fs: {
       exists: (p) => fs.existsSync(p),
       mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
-      writeFile: (p, data) => { fs.writeFileSync(p, data); },
+      writeFile: (p, data, options) => { fs.writeFileSync(p, data, options); },
       readFile: (p) => { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
       size: (p) => { try { const st = fs.statSync(p); return st.isFile() ? st.size : null; } catch { return null; } }, // @silent-fallback-ok: absent or unreadable ⇒ no history
       mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),

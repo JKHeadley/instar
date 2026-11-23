@@ -27,6 +27,7 @@ import {
   PARITY_ROUTE_SLACK_MS,
   POOL_TRANSFER_TIMEOUT_MS,
   GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+  UPDATE_APPLY_TIMEOUT_MS,
 } from '../../src/server/middleware.js';
 import { GEMINI_API_MAX_TIMEOUT_MS } from '../../src/providers/metered/gemini-api/geminiApiTransport.js';
 import { CONFORMANCE_REVIEW_TIMEOUT_MS } from '../../src/core/reviewers/standards-conformance.js';
@@ -53,6 +54,16 @@ describe('request-timeout override map (production wiring)', () => {
 
   it('resolves /spec/conformance-check to the spec-review budget (the bug this fixed)', () => {
     expect(resolveRequestTimeout('/spec/conformance-check', DEFAULT_MS, overrides)).toBe(SPEC_REVIEW_TIMEOUT_MS);
+  });
+
+  it('resolves /updates/apply to the update-apply budget (npm install + native rebuild + validation run for minutes)', () => {
+    // Under the 30s default the middleware 408'd mid-install and the handler's real
+    // answer became a "Suppressed duplicate response send" (Echo Studio, 2026-11-21).
+    expect(resolveRequestTimeout('/updates/apply', DEFAULT_MS, overrides)).toBe(UPDATE_APPLY_TIMEOUT_MS);
+    expect(UPDATE_APPLY_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60_000);
+    // Sibling routes keep the default: the matcher is exact-or-child, never a bare prefix.
+    expect(resolveRequestTimeout('/updates/auto', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+    expect(resolveRequestTimeout('/updates/rollback', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
   });
 
   it('resolves /pool/transfer to the drain budget (WS1.2 — synchronous owner drain up to ~50s)', () => {

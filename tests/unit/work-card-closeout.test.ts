@@ -219,9 +219,10 @@ describe('whose turn, untouched first, and the conversation inside the card', ()
   });
   it('"Waiting on you" lists untouched cards first, then oldest first', () => {
     const t = makeService();
-    const a = t.svc.createCard(AGENT, { ...card, title: 'A' }); if (!a.ok) throw new Error('a');
+    // Asks (outward): an inward agent-work card is `not-started`, with the agent, never in "Waiting on you" (agent-work-cards-default §1).
+    const a = t.svc.createCard(AGENT, { ...card, outward: true, title: 'A' }); if (!a.ok) throw new Error('a');
     t.advance(1000);
-    const b = t.svc.createCard(AGENT, { ...card, title: 'B' }); if (!b.ok) throw new Error('b');
+    const b = t.svc.createCard(AGENT, { ...card, outward: true, title: 'B' }); if (!b.ok) throw new Error('b');
     t.advance(1000);
     t.svc.tap(OWNER, a.cardId, { action: 'hold' }); // A is started (held: still waiting on the owner)
     const board = boardJson(t.svc, VIEWER, () => true, name, { softOpenCards: 30 });
@@ -230,13 +231,13 @@ describe('whose turn, untouched first, and the conversation inside the card', ()
   });
   it('the soft cut still keeps the oldest waiting cards; untouched-first only orders what is shown', () => {
     const t = makeService();
-    const a = t.svc.createCard(AGENT, { ...card, title: 'Old started' }); if (!a.ok) throw new Error('a');
+    const a = t.svc.createCard(AGENT, { ...card, outward: true, title: 'Old started' }); if (!a.ok) throw new Error('a');
     t.advance(1000);
     t.svc.tap(OWNER, a.cardId, { action: 'hold' });
     t.advance(1000);
-    const b = t.svc.createCard(AGENT, { ...card, title: 'Newer untouched' }); if (!b.ok) throw new Error('b');
+    const b = t.svc.createCard(AGENT, { ...card, outward: true, title: 'Newer untouched' }); if (!b.ok) throw new Error('b');
     t.advance(1000);
-    const c = t.svc.createCard(AGENT, { ...card, title: 'Newest untouched' }); if (!c.ok) throw new Error('c');
+    const c = t.svc.createCard(AGENT, { ...card, outward: true, title: 'Newest untouched' }); if (!c.ok) throw new Error('c');
     const board = boardJson(t.svc, VIEWER, () => true, name, { softOpenCards: 2 });
     const waiting = (board.lanes as Array<{ lane: string; cards: Array<{ title: string }>; more?: number }>).find((l) => l.lane === 'waiting-on-you')!;
     expect(waiting.cards.map((x) => x.title)).toEqual(['Newer untouched', 'Old started']);

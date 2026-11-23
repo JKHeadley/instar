@@ -29,6 +29,7 @@ import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { isDocumentsEnabled } from './documentRoutes.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { hasForwardingHeaders, isLoopbackHost } from './mobileBrowserDevices.js';
+import { computerStandingIn, computersOf, computerLimitsFor, type ComputerStanding } from '../core/TeamComputers.js';
 
 export const LINK_NONCE_TTL_MS = 10 * 60_000;
 export const LINK_MAX_DAYS = 30;
@@ -121,6 +122,30 @@ function linksOf(svc: MobilePairingService, personKey: string, now: number) {
   return { all, live };
 }
 
+/** A person's joined computers (member-browser-any-computer §3.4): every one, and the ones that still count. */
+export function joinedOf(svc: MobilePairingService, personKey: string, now: number) {
+  const all = [...(svc.teamLog()?.state().computerLinks?.values() ?? [])].filter((l) => l.boundTo === personKey);
+  const live = all.filter((l) => !!joinedComputerStanding(svc, l.keyHash, now));
+  return { all, live };
+}
+
+/**
+ * The computer allowance for a person, both kinds together (§3.5): whether one more may be admitted
+ * now, from the replicated rows and the limits in force. Pending computers never count.
+ */
+export function computerAllowance(svc: MobilePairingService, personKey: string, now: number): { ok: true } | { ok: false; reason: 'browser-link-limit' | 'too-many-requests' } {
+  const state = svc.teamLog()?.state();
+  if (!state) return { ok: false, reason: 'too-many-requests' };
+  const limits = computerLimitsFor(state, personKey);
+  const counts = computersOf(state, personKey, now);
+  // Phone-linked computers also need their key not revoked in the ledger to count as live.
+  const linkedLive = linksOf(svc, personKey, now).live.length;
+  const joinedLive = joinedOf(svc, personKey, now).live.length;
+  if (linkedLive + joinedLive >= limits.maxPerPerson) return { ok: false, reason: 'browser-link-limit' };
+  if (counts.lastHour >= limits.maxNewPerHour) return { ok: false, reason: 'too-many-requests' };
+  return { ok: true };
+}
+
 /** A link's signed request body, parsed once (null when unreadable). */
 function linkBodyOf(l: { signed: { bodyB64: string } }): { browserPublicKey?: unknown; host?: unknown } | null {
   try { const v = JSON.parse(Buffer.from(l.signed.bodyB64, 'base64url').toString('utf8')) as unknown; return v && typeof v === 'object' ? v as { browserPublicKey?: unknown; host?: unknown } : null; } catch { return null; } // @silent-fallback-ok — unreadable names nothing
@@ -180,8 +205,27 @@ export function scopedSendTarget(text: unknown, routePath: string): { docId: str
   return conversation ? { docId: m[4], conversation } : null;
 }
 
+/**
+ * A joined computer as every machine sees it (member-browser-any-computer §3.4): standing in the
+ * replicated team log (not unbound, person on the team, before its end) and its key not revoked in
+ * the key ledger. Null when it doesn't count.
+ */
+export function joinedComputerStanding(svc: MobilePairingService, keyHash: string, now: number): ComputerStanding | null {
+  const state = svc.teamLog()?.state();
+  if (!state) return null;
+  const st = computerStandingIn(state, keyHash, now);
+  if (!st || svc.keyLedger?.keyRevoked(keyHash) || svc.keyLedger?.isRevoked(keyHash, st.deviceId)) return null;
+  return st;
+}
+
 /** Is this linked computer still in force? Expiry, and the linking phone still active and unrevoked. */
 export function linkStillValid(d: DeviceRecord, svc: MobilePairingService, now: number): boolean {
+  // A computer that joined from a team invite has no linking phone: its standing is the replicated one.
+  if (d.joinedVia === 'team-invite') {
+    if (d.status !== 'active' || !d.browserPublicKey) return false;
+    const st = joinedComputerStanding(svc, deviceKeyHashOf(d.browserPublicKey), now);
+    return !!st && st.deviceId === d.id && st.personKey === d.userId;
+  }
   if (d.status !== 'active' || !d.linkExpiresAt || Date.parse(d.linkExpiresAt) <= now) return false;
   const phone = d.linkedByDeviceId ? svc.devices.get(d.linkedByDeviceId) : null;
   if (!phone || phone.status !== 'active' || !phone.publicKey) return false;
@@ -215,6 +259,10 @@ export function sweepLinkedBrowsers(svc: MobilePairingService, now: number): num
   for (const d of svc.devices.list()) {
     if (!d.scope || d.status !== 'active') continue;
     const removed = !!d.userId && log.wasRemoved(d.userId) && !svc.teamStanding(d.userId);
+    // A joined computer whose end passed writes nothing (member-browser-any-computer §3.5): every
+    // machine judges expiry from the folded rows, and a later renew could still arrive. Only removal
+    // (or Forget, or the owner's removal through the agent) revokes it for good.
+    if (d.joinedVia === 'team-invite' && !removed) continue;
     if (linkStillValid(d, svc, now) && !removed) continue;
     try { forgetLinkedBrowser(svc, d, new Date(now).toISOString()); } catch (err) { svc.reportTeamFault('Documents.linkSweep', err); } // @silent-fallback-ok — reported; the registry revoke still ran, and the next sweep retries the rest
     n++;
@@ -326,9 +374,10 @@ export function createDocumentLinkRoutes(deps: DocumentLinkDeps): Router {
     // A key already bound anywhere (a phone, or a computer linked on another machine) is never re-linked.
     if (log.state().bindings.has(keyHash) || log.state().browserLinks.has(keyHash)) { res.status(409).json({ error: 'already-linked' }); return; }
     // Allowance, counted from the replicated links (forgotten ones still count for the hour).
-    const { all, live } = linksOf(svc, person.userId, t);
-    if (live.length >= LINK_MAX_PER_PERSON) { res.status(409).json({ error: 'browser-link-limit', detail: 'You already have 3 linked computers. Forget one in the app first.' }); return; }
-    if (all.filter((l) => t - Date.parse(l.linkedAt) < 3_600_000).length >= LINK_MAX_PER_HOUR) { res.status(429).json({ error: 'too-many-requests' }); return; }
+    // Both kinds of computer count together, against the replicated limits (member-browser-any-computer §3.5).
+    const allowance = computerAllowance(svc, person.userId, t);
+    if (!allowance.ok && allowance.reason === 'browser-link-limit') { res.status(409).json({ error: 'browser-link-limit', detail: 'You already use as many computers as your team allows. Forget one in the app first.' }); return; }
+    if (!allowance.ok) { res.status(429).json({ error: 'too-many-requests' }); return; }
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
     const signedHost = String((req as Request & { instarDeviceHost?: string }).instarDeviceHost ?? phone.host ?? '').toLowerCase();
     const timeMs = String(req.headers['x-instar-device-time'] ?? '');
@@ -367,7 +416,11 @@ export function createDocumentLinkRoutes(deps: DocumentLinkDeps): Router {
     if (!person.ok || !person.userId) { res.json({ browsers: [] }); return; }
     // From the replicated links, so a computer linked on a machine that is asleep is still listed.
     const { live } = linksOf(svc, person.userId, now());
-    res.json({ browsers: live.map((l) => { const body = linkBodyOf(l); const k = typeof body?.browserPublicKey === 'string' ? body.browserPublicKey : null; return { id: l.deviceId, host: typeof body?.host === 'string' ? body.host : null, fingerprint: k ? linkFingerprint(k) : null, linkedAt: l.linkedAt, expiresAt: l.expiresAt }; }) });
+    const joined = joinedOf(svc, person.userId, now()).live.map((l) => {
+      const st = joinedComputerStanding(svc, l.keyHash, now());
+      return { id: l.deviceId, host: l.host, fingerprint: linkFingerprint(l.browserPublicKey), linkedAt: l.linkedAt, expiresAt: st ? new Date(st.expiresAt).toISOString() : l.expiresAt, via: 'team-invite' as const };
+    });
+    res.json({ browsers: [...live.map((l) => { const body = linkBodyOf(l); const k = typeof body?.browserPublicKey === 'string' ? body.browserPublicKey : null; return { id: l.deviceId, host: typeof body?.host === 'string' ? body.host : null, fingerprint: k ? linkFingerprint(k) : null, linkedAt: l.linkedAt, expiresAt: l.expiresAt, via: 'person-phone' as const }; }), ...joined] });
   });
 
   router.post('/mobile/browsers/:id/forget', (req, res) => {
@@ -378,9 +431,10 @@ export function createDocumentLinkRoutes(deps: DocumentLinkDeps): Router {
     const person = svc.personOfDevice(phone);
     // Only that person's own linked computer, found in the replicated links on any machine; else 404.
     const link = person.ok && person.userId ? linksOf(svc, person.userId, now()).all.find((l) => l.deviceId === req.params.id && !l.unbound) : undefined;
-    const key = link ? linkedKeyOf(link) : null;
-    if (!link || !key) { res.status(404).json({ error: 'unknown-computer' }); return; }
-    forgetLinkedBrowser(svc, { id: link.deviceId, browserPublicKey: key }, new Date(now()).toISOString());
+    const joined = !link && person.ok && person.userId ? joinedOf(svc, person.userId, now()).all.find((l) => l.deviceId === req.params.id && !l.unbound) : undefined;
+    const key = link ? linkedKeyOf(link) : joined ? joined.browserPublicKey : null;
+    if ((!link && !joined) || !key) { res.status(404).json({ error: 'unknown-computer' }); return; }
+    forgetLinkedBrowser(svc, { id: (link ?? joined)!.deviceId, browserPublicKey: key }, new Date(now()).toISOString());
     res.json({ ok: true });
   });
 
