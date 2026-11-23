@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "local-history-store-content-plans",
+  "sessionId": "2d7f3894-f027-4c8b-b015-2c9311ec6ec0",
+  "timestamp": "2026-11-23T23:07:02.728Z",
+  "artifactPath": "upgrades/side-effects/local-history-store-content-plans.md",
+  "artifactSha256": "bb8cb7d4bb59cbca7dddb65815bfd22425808ec54fa5efe427dbd7adc0268545",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/local-history/store-content-write-plans.md",
+    "src/data/awareness/local-history-store-content-plans.md",
+    "src/import/ImportedHistoryStore.ts",
+    "tests/unit/imported-history-write-plan.test.ts",
+    "upgrades/next/local-history-store-content-plans.md",
+    "upgrades/side-effects/local-history-store-content-plans.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Private durable content plans; final audit wording records generated temporary metadata, with no source changes since the reviewed and tested checkpoint.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-history-native-contract-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}
