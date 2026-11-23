@@ -34,7 +34,7 @@ function mkConfig(): { config: InstarConfig; stateDir: string } {
   } as unknown as InstarConfig;
   return { config, stateDir };
 }
-const sm = () => ({ listRunningSessions: () => [], getSession: () => null }) as never;
+const sm = () => ({ listRunningSessions: () => [], getSession: () => null, getCachedRunningSessions: () => ({ count: 0, sessions: [] }) }) as never;
 
 afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/health-detail-authed-alive.test.ts' }); });
 
