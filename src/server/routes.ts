@@ -31991,9 +31991,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // FIRST; if that fails, nothing is consumed and the caller can retry. (A path that does
     // not exist deletes cleanly.) Synchronous from peek to consume, so nothing interleaves.
     const durableDeleted = (): boolean => {
-      if (!persistDrops) return true;
+      // Persistence controls new writes and fallback reads, never cleanup of a prior stored copy.
       try {
-        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).deleteIfStoreExists(`secretDrops.${token}`);
         return true;
       } catch (err) {
         // @silent-fallback-ok — not silent: reported below, and the route refuses the consume (503) so nothing is lost
