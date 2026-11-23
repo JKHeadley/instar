@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "design-feedback-manual-preview",
+  "sessionId": "081d8824-59d3-4d61-bb9b-a2a100a5f881",
+  "timestamp": "2026-11-23T16:10:41.394Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-manual-preview.md",
+  "artifactSha256": "c7a94db9edc923d14965437e945f2903e0a093d862779ad6dd6f7acab0d5535d",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "docs/design/manual-inspection.md",
+    "src/cli.ts",
+    "src/commands/designPolicy.ts",
+    "src/data/awareness/manual-design-policy-inspection.md",
+    "src/designGate/feedbackHistory.ts",
+    "src/designGate/gitInspection.ts",
+    "tests/e2e/design-policy-cli-lifecycle.test.ts",
+    "tests/integration/design-policy-git-inspection.test.ts",
+    "upgrades/next/design-feedback-manual-preview.md",
+    "upgrades/side-effects/design-feedback-manual-preview.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Optional manual source inspection composes existing reviewed helpers; it changes a CLI without activating gate or approval authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit manual invocation owns finite Git children under an existing deadline; no timer, self-trigger or retry controller is introduced."
+  }
+}
