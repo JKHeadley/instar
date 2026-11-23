@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:instar:evaluation:source-grounded-answer:v1",
+  "title": "Source-grounded final answer, version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "caseId", "status", "answer", "claims", "limitations"],
+  "properties": {
+    "version": {"const": 1},
+    "caseId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "status": {"enum": ["supported", "partial", "insufficient-evidence", "conflicting-evidence"]},
+    "answer": {"type": "string", "minLength": 1, "maxLength": 16000},
+    "claims": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["claimId", "text", "basis", "citations"],
+        "properties": {
+          "claimId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "basis": {"enum": ["explicit-source", "inference", "unresolved"]},
+          "citations": {
+            "type": "array", "maxItems": 32,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["sourceId", "start", "end"],
+              "properties": {
+                "sourceId": {"type": "string", "minLength": 1, "maxLength": 128},
+                "start": {"type": "integer", "minimum": 0},
+                "end": {"type": "integer", "minimum": 1}
+              }
+            }
+          }
+        },
+        "allOf": [{"if": {"properties": {"basis": {"const": "explicit-source"}}}, "then": {"properties": {"citations": {"minItems": 1}}}}]
+      }
+    },
+    "limitations": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "supported"}}}, "then": {"properties": {"claims": {"minItems": 1}}}},
+    {"if": {"properties": {"status": {"enum": ["partial", "insufficient-evidence", "conflicting-evidence"]}}}, "then": {"properties": {"limitations": {"minItems": 1}}}}
+  ]
+}
