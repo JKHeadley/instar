@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "quoted-replies-bounded-design",
+  "sessionId": "34774801-3fac-4096-8fd3-e616896853c0",
+  "timestamp": "2026-11-23T19:41:59.192Z",
+  "artifactPath": "upgrades/side-effects/quoted-replies-bounded-design.md",
+  "artifactSha256": "d81eacb1bff62f3dde6d529d6fcb6732893b80b62826d75690867c5460cf217e",
+  "coveredFiles": [
+    "docs/specs/conversation-replies-message-links.eli16.md",
+    "docs/specs/conversation-replies-message-links.md",
+    "docs/specs/reports/quoted-replies-boundary-matrix.md",
+    "docs/specs/reports/quoted-replies-bounded-decision-20261123.md",
+    "upgrades/next/quoted-replies-bounded-design.md",
+    "upgrades/side-effects/quoted-replies-bounded-design.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only bounded scope correction to an unimplemented draft; no runtime, installed files or executable authority changes. Tier2 feature implementation remains unapproved.",
+  "eli16Path": "docs/specs/conversation-replies-message-links.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quoted-replies-bounded-design.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}
