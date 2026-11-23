@@ -24,4 +24,25 @@ The sixteen cases were prepared in topic 141133 on 2026-11-23 and preserved from
 
 The protocol correction was recorded in the same topic after finding that the original proposed third arm used padding instead of no context. The governing eight-obligation article was approved by Justin in message 146917, with the scope addition delegated in message 146931; its implementation remains separately frozen for shared verification. This pack neither edits that candidate nor treats its pending verification as complete.
 
-The next implementation is an isolated fixture runner with enforced tool denial and a source-bound set of context-dependent cases. It requires its own review and applicable tests. Claude-specific trials remain blocked by the recorded account-use constraint and release verification; this pack makes no model calls and activates nothing.
+## Offline replay runner
+
+`scripts/evaluation/context_replay.py` now prepares the complete paired grid and grades imported JSON transcripts. It never calls a model. Run from the repository root:
+
+```bash
+python3 -I scripts/evaluation/context_replay.py prepare \
+  --inputs docs/evaluation/context-budget/relationship-maintenance/inputs.json \
+  --specification docs/evaluation/context-budget/relationship-maintenance/specification.example.json > /tmp/context-plan.json
+python3 -m unittest discover -s tests/context-replay -v
+```
+
+The example is explicitly synthetic and uses the proposed elapsed-time rubric. It is not an approved production prompt. Preparation accepts no labels argument. Each exported trial contains the exact mandatory instructions, question, fixed clock and scenario, plus its arm's context. The no-context arm retains mandatory instructions. Two or more repeats cover every arm. The full plan and its inputs are hashed; grading reconstructs the grid to detect omissions or altered evidence.
+
+For grading, provide `score --plan PLAN --labels LABELS --transcripts TRANSCRIPTS --costs COSTS`. A transcript is `{"planHash":"HASH","trials":[{"id":"stale-significant:0:none","actions":[{"kind":"fixture","id":"stale-significant"},{"kind":"final","answer":{"staleIds":["a"],"unavailableIds":[]}}]}]}` with one row for **every** exported trial. The fixture lookup is optional; the fixture is already in the trial payload. Only that scenario can be looked up. There is no execution adapter, tool callback, plugin loading, code evaluation or network client. Shell, filesystem, secret, network and message actions are recorded as refusals without dispatch. A refusal makes its trial fail even if its final answer is correct. Missing/duplicate trial rows reject grading; malformed action sequences remain failed rows in the complete report. Final answer identifiers compare as sets. Full-repeat disagreements and critical-case failures remain visible.
+
+This boundary confines **interpreted JSON actions**, not the trusted Python host or an external process. The host reads operator-selected input files and prints its report. It does not run or sandbox arbitrary model code. Do not add a live CLI adapter and assume these tests confine it. Plan hashes establish identity, not authenticity or blinded model execution. Operators who generate transcripts can see labels; this runner cannot prove they were withheld from an external answer producer. Imported provenance and costs are explicitly reported rather than independently attested.
+
+`costs.example.json` declares the shared unit and all cost components. Its zeros are placeholders for this offline example, never measured savings. Cost reporting separates qualification and serving, and combines them over the declared horizon. There is no statistical qualification or adoption decision: uncertainty is descriptive only, and `adoptionAuthorized` is always false. Cases solved by both no-context and full-context are excluded from the list of possible context-dependent cases.
+
+The seventeen standard-library checks cover validation, forbidden actions, complete-grid grading and the real command lifecycle. Three Vitest entry points include these same checks in the repository's unit, integration and end-to-end suites. These tests are for an offline command; there is no new HTTP endpoint or running agent feature. Input files and generated plans are bounded to four MiB; larger packs must be split before preparation. Exact runner bytes are hashed into the plan, and scoring requires the same runner version.
+
+Next comes a source-bound set of context-dependent cases and a separately verified, confined model-answering route. Claude-specific trials remain blocked by the recorded account-use constraint and release verification. This runner makes no model calls and activates nothing. Shared full-suite verification remains required before integration.
