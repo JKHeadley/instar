@@ -31,7 +31,7 @@ async function post(path, body, session) {
   } catch { return { status: 0, data: {} }; }
 }
 
-const UNLOCK = { title: 'Your PIN', explain: 'Attaching or removing a project app needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session' };
+const UNLOCK = { title: 'Your PIN', explain: 'Changing project priority or attaching or removing a project app needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session' };
 
 /** An owner tap: unlock first when there is no live operator session; a refused proof unlocks once more. */
 async function ownerPost(path, body) {
@@ -167,7 +167,7 @@ function projectRow(p, ctx) {
     el('span', { class: DOT[p.tone] || 'dot', 'aria-hidden': 'true' }),
     el('span', { class: 'project-text' },
       el('span', { class: 'project-title', text: p.title }),
-      el('span', { class: 'project-state', text: [p.stateWords, p.doneLine, p.cardsLine].filter(Boolean).join(' · ') }),
+      el('span', { class: 'project-state', text: [p.stateWords, `${p.priority === 'high' ? 'High' : p.priority === 'low' ? 'Low' : 'Normal'} priority`, p.doneLine, p.cardsLine].filter(Boolean).join(' · ') }),
       // The row says where it stands, folded: why it waits on you, why it stopped, or the latest report.
       (p.waitingLine || p.stoppedLine || p.reportLine) ? el('span', { class: 'project-report', text: p.waitingLine || p.stoppedLine || p.reportLine }) : null,
       v.headline ? summaryEl(v.headline, 'project-app-line') : null,
@@ -182,6 +182,7 @@ function projectRow(p, ctx) {
       // The opened row adds the report whenever it is not that line, so nothing the server said is lost or said twice.
       p.reportLine && p.reportLine !== (p.waitingLine || p.stoppedLine || p.reportLine) ? el('p', { class: 'card-line project-latest', text: `Latest report: ${p.reportLine}` }) : null,
       p.goal ? el('p', { class: 'project-goal', text: p.goal }) : null,
+      priorityControls(p),
       p.checksLine || p.checkNow ? checkNowRow(p) : null,
       p.phoneLine || p.finishWhy ? el('p', { class: 'need-sub project-phone', text: [p.phoneLine, p.finishWhy ? `Finish: ${p.finishWhy}` : null].filter(Boolean).join(' ') }) : null,
       v.has ? appsDetail(p, ctx) : null,
@@ -193,6 +194,29 @@ function projectRow(p, ctx) {
       p.chatHref ? el('p', {}, el('a', { class: 'link-btn', href: p.chatHref, text: 'Open the project conversation' })) : null));
   details.addEventListener('toggle', () => { if (details.open) openRows.add(p.key); else openRows.delete(p.key); });
   return details;
+}
+
+/** Explicit owner input; independent of the project's goal, checks and pause. */
+function priorityControls(p) {
+  const status = el('span', { class: 'need-sub', role: 'status' });
+  const buttons = ['high', 'normal', 'low'].map((value) => el('button', {
+    type: 'button', class: 'btn-quiet btn-inline', 'aria-pressed': String(value === p.priority),
+    text: value[0].toUpperCase() + value.slice(1),
+    onclick: async () => {
+      for (const button of buttons) button.disabled = true;
+      const result = await ownerPost(`/work/projects/${encodeURIComponent(p.key)}/priority`, { priority: value });
+      if (result.cancelled) status.textContent = 'Priority was not changed.';
+      else if (result.status === 200 && result.data?.ok) {
+        p.priority = value;
+        for (let i = 0; i < buttons.length; i++) buttons[i].setAttribute('aria-pressed', String(['high', 'normal', 'low'][i] === value));
+        status.textContent = `${value[0].toUpperCase() + value.slice(1)} priority saved. This records your preference; it does not interrupt work.`;
+        const wrap = status.closest('.projects-section'); if (wrap) void reloadSection(wrap);
+      } else status.textContent = 'The save could not be confirmed. Refresh before trying again.';
+      for (const button of buttons) button.disabled = false;
+    },
+  }));
+  return el('div', { class: 'sheet-block project-priority' }, el('p', { class: 'need-sub', text: 'Project priority' }),
+    el('div', { role: 'group', 'aria-label': 'Project priority' }, buttons), status);
 }
 
 /** When it was checked, when it is next checked, and Ask for an update (no PIN: it approves nothing, spec §3.2). */

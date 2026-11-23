@@ -112,7 +112,7 @@ describe('the section', () => {
     expect(body).toContain('Waiting for you to check');
     expect(body).toMatch(/Last checked .+ · next check /);
     expect(body).toContain('On your phone you can pause it and check the items only you can judge (each needs Face ID).');
-    expect([...s.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Ask for an update']); // no Pause / Finish here
+    expect([...s.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['High', 'Normal', 'Low', 'Ask for an update']); // Priority is owner-unlocked; no Pause / Finish here
     // Said once, nothing lost: the folded line is not repeated, and the report is added because it is not that line.
     expect(s.textContent.split('It needs you to check 1 item.').length - 1).toBe(1);
     expect(body).toContain('Latest report: Every automatic check passes; the items only you can judge are waiting for you.');

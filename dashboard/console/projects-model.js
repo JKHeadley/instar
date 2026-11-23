@@ -88,6 +88,7 @@ export function projectsView(data, now = Date.now()) {
     const state = String(p.state || 'unknown');
     const done = p.done && Number.isFinite(p.done.total) ? p.done : { items: [], met: 0, total: 0 };
     const row = {
+      priority: p.priority === 'high' || p.priority === 'low' ? p.priority : 'normal',
       key: String(p.key), title: verifiedDisplayName(p.title, p.key) || 'Project name unavailable', goal: String(p.goal || ''), state, stateWords: String(p.stateWords || ''), tone: TONE[state] || 'unknown',
       // Items nobody has checked yet are not "not done": say so instead of "0 of 3 done".
       doneLine: !done.total ? null : (done.items || []).every((i) => i.state !== 'pass' && i.state !== 'fail') ? `${done.total} to finish, not checked yet` : `${done.met} of ${done.total} done`,

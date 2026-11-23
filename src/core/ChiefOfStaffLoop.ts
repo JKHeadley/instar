@@ -19,6 +19,7 @@ import { CreationPlacementSnapshot, type CreationPlacementView } from './Creatio
 
 import crypto from 'node:crypto';
 import {
+  foldProjectPriorities, buildProjectPriorityPut, isProjectPriority, type ProjectPriority,
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
   buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
   type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
@@ -398,6 +399,7 @@ export interface PauseAskDeps {
 
 /** One project row's Chief of Staff facts (Work door read; work-door-project-rows §3.1). */
 export interface ProjectOverviewRow {
+  priority?: ProjectPriority;
   conversationKey: string; title: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; parked: boolean;
   doneDefinition: Array<{ id: string; text: string; kind: 'deterministic' | 'judgment'; certify?: 'owner-confirms' | 'agent-may-certify' }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
   pausedBy: { who: string; at: string; quote: string; messageRef: string } | null; lastNote: string | null;
@@ -630,6 +632,7 @@ export class ChiefOfStaffLoop {
       const at = String(d.at ?? ''); const prev = notes.get(d.conversationKey);
       if (!prev || at > prev.at) notes.set(d.conversationKey, { at, note: d.note, verdict: String((d as { verdict?: unknown }).verdict ?? '') });
     }
+    const priorities = foldProjectPriorities(union);
     return boundProjects(union).map((p) => {
       const cadenceHours = Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours);
       const ev = evidenceChange(checksBy.get(p.conversationKey) ?? []);
@@ -637,6 +640,7 @@ export class ChiefOfStaffLoop {
       const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: cadenceHours, maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, now, p.binding);
       const done = (Array.isArray(p.doneDefinition) ? p.doneDefinition : []).map((d: { id?: unknown; text?: unknown; kind?: unknown; certify?: unknown }) => ({ id: String(d.id ?? ''), text: String(d.text ?? ''), kind: d.kind === 'judgment' ? 'judgment' as const : 'deterministic' as const, ...(d.kind === 'judgment' ? { certify: d.certify === 'agent-may-certify' ? 'agent-may-certify' as const : 'owner-confirms' as const } : {}) })).filter((d) => d.id && d.text);
       return {
+        priority: priorities.get(p.conversationKey)?.priority ?? 'normal',
         conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems,
         pausedBy: ownerPause(p.binding as unknown as Record<string, unknown>) ?? ownerPause(p.binding.binding), lastNote: notes.get(p.conversationKey)?.note ?? null,
         nextCheckAt: st.nextCheckAt, breakerTripped: st.breakerTripped, restartsWithoutProgress: st.restartsWithoutProgress,
@@ -659,7 +663,7 @@ export class ChiefOfStaffLoop {
     const st = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(this.d.now()), p.binding);
     const checks = union.filter((e) => e.data.recordType === 'check-event' && e.data.conversationKey === conversationKey).map((e) => ({ at: e.data.at, verdict: e.data.verdict, evidenceIds: e.data.evidenceIds, progressSeen: e.data.progressSeen, note: e.data.note })).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 50);
     const intents = [...foldIntentState(union).values()].filter((s) => s.conversationKey === conversationKey).map((s) => ({ intentKey: s.intentKey, action: s.action, state: s.state, runId: s.runId, open: s.open }));
-    return { conversationKey, goal: p.goal, doneDefinition: p.doneDefinition, linked: p.linked, checkCadenceHours: p.checkCadenceHours, state: st, pausedBy: p.binding.pausedBy ?? null, checks, intents };
+    return { conversationKey, priority: foldProjectPriorities(union).get(conversationKey)?.priority ?? 'normal', goal: p.goal, doneDefinition: p.doneDefinition, linked: p.linked, checkCadenceHours: p.checkCadenceHours, state: st, pausedBy: p.binding.pausedBy ?? null, checks, intents };
   }
 
   /** §4: the derived operator lease (shared with the protocol's `operatorLeaseLive`). */
@@ -688,6 +692,25 @@ export class ChiefOfStaffLoop {
     if (parent !== null) this.d.journal.emit(input.conversationKey, buildTreePut(input.conversationKey, parent, parent === root ? 'project' : 'sub-topic'));
     this.dirty.add(input.conversationKey); // first check on the next tick
     return { ok: true, conversationKey: input.conversationKey };
+  }
+
+  /** The route has already verified a live owner session. Priority is a signal, not a scheduling grant. */
+  async setProjectPriority(conversationKey: string, priority: ProjectPriority): Promise<{ ok: true; priority: ProjectPriority } | { ok: false; reason: 'invalid-priority' | 'unknown-project' | 'write-refused' }> {
+    if (!isProjectPriority(priority)) return { ok: false, reason: 'invalid-priority' };
+    if (!this.d.journal.awaitDurable) return { ok: false, reason: 'write-refused' };
+    let union: UnionEntry[];
+    try {
+      const complete = this.d.journal.loadUnionComplete ? this.d.journal.loadUnionComplete() : this.d.journal.loadUnion();
+      if (!complete) return { ok: false, reason: 'write-refused' };
+      union = complete;
+    } catch { return { ok: false, reason: 'write-refused' }; }
+    if (!boundProjects(union).some((p) => p.conversationKey === conversationKey)) return { ok: false, reason: 'unknown-project' };
+    const result = this.d.journal.emit(`priority:${conversationKey}`, buildProjectPriorityPut({ conversationKey, priority, confirmedBy: 'owner', confirmedAt: new Date(this.d.now()).toISOString() }));
+    if (result.outcome !== 'emitted' && result.outcome !== 'accepted') return { ok: false, reason: 'write-refused' };
+    if (result.seq === undefined) return { ok: false, reason: 'write-refused' };
+    try { await this.d.journal.awaitDurable(result.seq); } catch { return { ok: false, reason: 'write-refused' }; }
+    this.memo = null;
+    return { ok: true, priority };
   }
 
   /** §4: an owner check-in from the app or the console (the route has already verified the owner principal / PIN). */
