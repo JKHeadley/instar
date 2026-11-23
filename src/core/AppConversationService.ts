@@ -1,3 +1,4 @@
+import { validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 /**
  * AppConversationService — the native app conversation core
  * (docs/specs/mobile-native-conversations.md, increment 1).
@@ -19,7 +20,7 @@ import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent } from './AppConversationStore.js';
 import type { ConversationOwner } from './MobilePeople.js';
-import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
+import { derivedEventId, isAppConversationKey, removeAuthorityTokens, removeAuthorityTokensAndKeys } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
 import { ledgerViewKey, verifyRecordedOrigin, loadMachineSigner, identityKeyLookup, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
@@ -49,6 +50,8 @@ export function availableLine(filePath: string, caption: string): string {
 }
 
 export interface AppConversationServiceDeps {
+  /** SEC-164 §3.5: read live; when true a server transcript has its live keys masked before it is stored. */
+  credentialScrubEnabled?: () => boolean;
   stateDir: string;
   machineId: () => string;
   /** This machine's verified name, so refusals and notices name it (never "this machine" or an id). */
@@ -179,9 +182,10 @@ const CUT_NOTE = ' … (transcript cut here; the audio file has the rest)';
  * (§4.3, §4.5.1): `scanInbound` first (so a dictated pending pairing code declines that pairing),
  * then exact-token removal. Text past the store's limit is cut with a note, never refused.
  */
-export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null): { text: string; kinds: string[] } {
+export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null, maskKeys = false): { text: string; kinds: string[] } {
   try { scan?.(text); } catch { /* @silent-fallback-ok — the scan only declines leaked pairings; token removal still runs */ }
-  const removed = removeAuthorityTokens(text);
+  // SEC-164 §3.5: with the switch on, live keys are masked too and their kinds join the attestation.
+  const removed = removeAuthorityTokensAndKeys(text, maskKeys);
   let out = removed.text;
   if (out.length > MAX_STORED_TEXT) out = out.slice(0, MAX_STORED_TEXT - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '') + CUT_NOTE;
   return { text: out, kinds: removed.kinds };
@@ -203,7 +207,8 @@ class TranscriptionCeilingTimeout extends Error { constructor() { super('the tra
  * can never carry a pairing invite or a desktop code anywhere (second-pass review, finding 2).
  */
 export function transcriptForDelivery(text: string): string {
-  return removeAuthorityTokens(text).text;
+  // SEC-164 §3.5: the read path also masks live keys, always; it only shows text and keeps nothing.
+  return removeAuthorityTokensAndKeys(text, true).text;
 }
 
 const MEDIA_SWEEP_MS = 60 * 60_000;
@@ -587,7 +592,9 @@ export class AppConversationService {
   /** Scrub, then store the transcript as its own unsigned event (§4.5.1). The session gets it either way. */
   private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, result: string | { text: string; provider: string }, late: boolean): VoiceOutcome {
     const raw = typeof result === 'string' ? result : result.text;
-    const scrubbed = scrubServerTranscript(raw, this.inboundScan);
+    let maskKeys = false;
+    try { maskKeys = this.deps.credentialScrubEnabled?.() === true; } catch { maskKeys = false; } // @silent-fallback-ok — unreadable switch is off
+    const scrubbed = scrubServerTranscript(raw, this.inboundScan, maskKeys);
     const machineId = this.deps.machineId();
     // The provider that produced THIS text (no shared "last provider" state, so concurrent transcripts can't swap labels).
     const provider = (typeof result === 'string' ? (this.deps.voiceProviderName?.() ?? 'server') : result.provider).toLowerCase();
@@ -1031,7 +1038,12 @@ export class AppConversationService {
       if (x.op === 'create') {
         const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
         if (x.ownerUser) this.deps.confineStranded?.(key, x.ownerUser, rec.deviceId);
-        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
+        let creationContext: AppCreationContext | null = null;
+        try { creationContext = x.creationContext ? validateAppCreationContext(JSON.parse(x.creationContext)) : null; }
+        catch (err) { this.deps.reportDegradation?.('AppConversations.creation-recovery', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok: invalid reservation becomes outcome-unknown below, never a guessed parent.
+
+        if (x.creationContext && !creationContext) { this.deps.requests.markUnknown(rec.deviceId, rec.requestId); continue; }
+        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner, creationContext ?? undefined);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {
         this.applyRename(rec.deviceId, rec.requestId, key, x.title);
@@ -1045,7 +1057,7 @@ export class AppConversationService {
 
   /** Create: alias first (a refusal leaves no store event), then the `created` event, then bind. */
   /** `ownerPerson`: the MSP phone's person that creates it (people and roles §3.4); null ⇒ the owner's. */
-  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null): { status: number; body: Record<string, unknown> } {
+  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null, creationContext?: AppCreationContext): { status: number; body: Record<string, unknown> } {
     const mint = this.deps.registry.mintAppAlias(conversationKey);
     if (!mint.ok) {
       if (mint.error === 'conversation-recording-disabled') {
@@ -1053,10 +1065,14 @@ export class AppConversationService {
       }
       return { status: 503, body: { error: 'conversation-unavailable', detail: 'The conversation could not be created on this machine. Try again.' } };
     }
-    this.store.append({
-      eventId: derivedEventId('cr', deviceId, requestId), kind: 'created', conversationKey, title,
+    const createEventId = derivedEventId('cr', deviceId, requestId);
+    // A crash after the durable created event but before request completion must not mint a new
+    // timestamp/base under that same event id and manufacture a metadata conflict on recovery.
+    if (!this.store.hasEvent(conversationKey, createEventId)) this.store.append({
+      eventId: createEventId, kind: 'created', conversationKey, title,
       at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
       ...(ownerPerson ? { ownerPerson } : {}),
+      ...(creationContext ? { creationContext } : {}),
     });
     if (this.deps.holdsLease()) {
       this.createdHere.add(conversationKey);

@@ -14,7 +14,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { type Application, type Request, type Response } from 'express';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { wslGatewayPeer } from '../core/wslLocalPeer.js';
 import { hasForwardingHeaders, verifyP256 } from './mobileBrowserDevices.js';
@@ -102,7 +103,7 @@ export function verifiedLocalBudgetKey(machineId: string | null | undefined, pin
 
 export interface LocalAccessDeps {
   /** identity-security-piece1g: the WSL gateway rule (a test seam; production reads /proc and the interfaces). */
-  wslGatewayPeer?: (socket: { remoteAddress?: string; localAddress?: string }) => boolean;
+  wslGatewayPeer?: (socket: Partial<Socket>) => boolean;
   stateDir: string;
   agentName: () => string;
   /** The resolved switch (dev-gated), read live. */
@@ -123,6 +124,7 @@ function requestHost(req: Request): string {
  * path in to relay through), from a loopback peer, with no forwarding header.
  */
 export function localPeer(req: Pick<Request, 'socket' | 'headers'>): boolean {
+  if (!mayBeLocalArrival(req)) return false;
   const la = req.socket.localAddress;
   if (la !== '127.0.0.1' && la !== '::ffff:127.0.0.1') return false;
   return isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>);
@@ -144,6 +146,7 @@ export class LocalAccessService {
    * default-route address with no forwarding header, rate-limited. Minting stays loopback-only.
    */
   redeemPeer(req: Pick<Request, 'socket' | 'headers'>): boolean {
+    if (!mayBeLocalArrival(req)) return false;
     if (localPeer(req)) return true;
     if (hasForwardingHeaders(req.headers as Record<string, unknown>)) return false;
     if (!(this.deps.wslGatewayPeer ?? wslGatewayPeer)(req.socket)) return false;

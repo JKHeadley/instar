@@ -20,6 +20,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { challengeSecretProof, exchangeText, useText } from '../../src/core/LocalAccessStore.js';
+import { markSameNetworkSocket } from '../../src/core/requestArrival.js';
 import { mintLink } from '../../src/commands/dashboardOpen.js';
 
 const PIN = '864209';
@@ -104,6 +105,14 @@ describe('local access link — E2E lifecycle (feature is alive)', () => {
     // the key material sits in a private directory
     expect(fs.statSync(path.join(stateDir, 'local-access')).mode & 0o777).toBe(0o700);
     expect(fs.statSync(path.join(stateDir, 'local-access', 'listener.key')).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses local-link requests on a real socket marked as a same-network arrival', async () => {
+    const { port } = await boot(true);
+    srv!.prependListener('connection', (socket) => { markSameNetworkSocket(socket); });
+    const page = await request(srv!).get('/local-access/v1/open').set('Host', `127.0.0.1:${port}`);
+    expect(page.status).toBe(404);
+    expect(page.body).toEqual({ error: 'not-found' });
   });
 
   it('on a fleet agent (gate dark): the routes answer 404 and the CLI says the link is off', async () => {

@@ -77,3 +77,19 @@ Revert. On non-WSL systems nothing changes.
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a`
 - **reason:** no self-triggered action. The `wslinfo` probe runs at most once every 10 minutes, on a local-access request.
+
+## Current-main and parent readiness refresh, 2026-11-23
+
+Tier2 maintenance under this existing approved spec. Fresh managed checkout identity-windows-local-link-144636 on echo/identity-piece1g-144636 at23e4cfaa1; canonicalorigin JKHeadley/instar, initialversion1950. Normalprepare initially lackedhusky because rootdependencytreewasabsent; preserved generatedcache underlocalstate, shared existingpr3406dependencies, reran normalprepare successfully. No hookoverride.
+
+Clean octopus merge of currentcanonicalmain ec9401e5bdf28ed5ab1ff13f88e0032cc7895fc6(release1989) and updatedlocalparent3406/77c60a0b297b354c05e0f1443c26fa24f30700a2. Five imported EOFblanklines trimmed for normaldiffchecking. No manualruntimeconflictresolution or new decision boundary. Preserve parentlocalaccessstore close/lifecycle registration and homeTLSfence, WSL positiveNATconfirmation/exactgateway/defaultinterface/cidrmatch/noForwardHeaders, independentloopbackbudget, gatewaycap, loopback-onlymint and one-timehighentropyshortexpiryproof.
+
+Existing over-block/under-block/layerfit/signal-versus-authority/interactions/external-surface/multi-machine/rollback assessment remains applicable. This branch remains held behind3406; currentlocalparent inclusion does not establish its remote merge or waive dependency. No production activation, credential exposure, browser ceremony or owner consent. Ordinary merge-revert is rollback; no state migration or runtime update. All PINcomposition/native/ownerphone/recovery holds unchanged.
+
+Verification: focusedWSL/localaccessunitboundaries,realHTTP local-access-link,productionlocal-access-link-alive andTypeScript. Simulated WSLnetworkprobes onthisMac are not nativeWindows/WSLexecution evidence; earlier nativeproof is historical only. Fulltest:allonlythroughputafterChiefpublication andretainedorderholds. One maintenance review, no new designrounds, one intendednormalcommit. Results andindependentreview responsefollowoncompletion.
+
+Reviewer caught a real readiness failure after the initial52focusedpass: main's three-case request-arrival ratchet rejected new address-only WSL sites (core/wslLocalPeer2,server/localAccessRoutes1). Added two behavioralregressions before fixing: home-listener requests must be refused before WSLnetworkprobe and even when the injectedgatewayseam saysyes. Both failed (11existingcasesstillpass); production sn:marker still blockedrealaddress matching, so this is explicit boundaryintegration rather than an observedremote bypass.
+
+Fix: bothredeemPeer andwslGatewayPeer ask existing mayBeLocalArrival before local acceptance or address/probe reads. Use Partial<Socket> for socketshape instead of inlinedaddressproperties, so declarations are not misclassified as uncheckedreads. No ratchetbaselineincrease/exemption; no detectorauthority or new policy. Home-listener requests remain categorically nonlocal as mainalreadyrequires. Existing WSLNAT/mainlistener path and loopbackbudgets are preserved. Tests,ratchet,HTTP,E2E,type rerun below.
+
+Final verification:45unit(including2newhome-listenerregressions and3existingarrivalratchet cases),9HTTP,3productionlifecycle andTypeScript passed;57focusedtotal. Independent reviewer /root/review_3428_main_readiness concurs with finalsource/regressions/artifact: both WSLentrypoints rejecthomearrival before probing/acceptinggatewayfacts, ratchetbaseline unchanged, originalNAT/proof/mint/budget/lifecycleguards intact. Full successor verification andnativeexecution remain separate requirements; all holds retained.

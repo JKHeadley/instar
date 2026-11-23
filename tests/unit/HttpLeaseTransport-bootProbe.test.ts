@@ -18,12 +18,13 @@ const NAMED: MeshEndpoint = { kind: 'cloudflare', url: 'https://studio.example.d
 const QUICK: MeshEndpoint = { kind: 'cloudflare', url: 'https://abc-def.trycloudflare.com' };
 const LAN: MeshEndpoint = { kind: 'lan', url: 'http://192.168.1.9:4042' };
 
-type Reply = { status: number; marker?: string | null; signed?: boolean } | 'throw';
+type Reply = { status: number; marker?: string | null; signed?: boolean } | 'throw' | { throwCode: string };
 
 function fetchWith(reply: (url: string) => Reply) {
   return (async (url: string, init?: RequestInit) => {
     const r = reply(url);
     if (r === 'throw') throw new Error('ECONNREFUSED');
+    if ('throwCode' in r) { const e = new TypeError('fetch failed'); (e as { cause?: unknown }).cause = Object.assign(new Error(r.throwCode), { code: r.throwCode }); throw e; }
     const headers = new Headers();
     if (r.marker) headers.set('X-Instar-Machine', r.marker);
     let body: unknown = { error: 'starting' };
@@ -107,10 +108,29 @@ describe('lease-pull probe classification', () => {
     await t.pullAllPeers();
     expect(lastAnswer(t)).toBe('unsigned');
   });
-  it('a legacy dial (no endpoint kind) counts only signed replies, so it is silence', async () => {
+  it('a legacy dial whose reply carries an identity ack bound to our request nonce is a signed answer (planned-restart-keeps-lead: a mesh-off pool no longer reads its answering peers as silent)', async () => {
     const { t } = transport([TS], () => ({ status: 200, marker: mark, signed: true }), { mesh: false });
     await t.pullAllPeers();
+    expect(lastAnswer(t)).toBe('signed');
+    expect(t.verifiedAnswers().get(PEER)).toMatchObject({ lease: null, round: 1 });
+    expect(t.currentPullRound()).toEqual({ round: 1, startedAtMs: 1_000 });
+  });
+  it('a legacy dial answered 2xx without a verifiable ack is still silence for the boot hold (the 2xx still confirms the pull as today)', async () => {
+    const { t } = transport([TS], () => ({ status: 200, marker: mark }), { mesh: false });
+    await t.pullAllPeers();
     expect(lastAnswer(t)).toBe('silent');
+    expect(t.verifiedAnswers().size).toBe(0);
+  });
+  it('probe listeners are told of every landed probe with its round, and a listener fault never breaks the pull', async () => {
+    const { t } = transport([TS], () => ({ status: 200, marker: mark, signed: true }));
+    const seen: Array<[string, string, number]> = [];
+    t.attachProbeListener(() => { throw new Error('listener fault'); });
+    const detach = t.attachProbeListener((p, a, r) => { seen.push([p, a, r]); });
+    await t.pullAllPeers();
+    expect(seen).toEqual([[PEER, 'signed', 1]]);
+    detach();
+    await t.pullAllPeers();
+    expect(seen).toHaveLength(1);
   });
   it('the best rope wins: one rope silent, the other answering unsigned', async () => {
     const { t } = transport([TS, NAMED], (url) => (url.startsWith(TS.url) ? 'throw' : { status: 503, marker: mark }));
@@ -129,5 +149,47 @@ describe('lease-pull probe classification', () => {
     for (let i = 0; i < 50; i++) { tick(5_000); await t.pullAllPeers(); }
     expect(t.probeHistory().get(PEER)!.probes.length).toBeLessThanOrEqual(32);
     expect(t.knownPeerIds()).toEqual([PEER]);
+  });
+});
+
+describe('why a probe was silent (planned-restart-keeps-lead §2: a refused dial is not a dead peer)', () => {
+  const lastProbe = (t: HttpLeaseTransport) => t.probeHistory().get(PEER)!.probes.at(-1)!;
+  it('every route failing on this machine\'s side (EHOSTUNREACH: macOS Local Network permission, no route) is silence WITH a cause', async () => {
+    const { t } = transport([LAN, TS], () => ({ throwCode: 'EHOSTUNREACH' }));
+    await t.pullAllPeers();
+    expect(lastProbe(t)).toMatchObject({ answer: 'silent', cause: 'local-refusal' });
+  });
+  it('EPERM, ENETUNREACH and a dual-stack AggregateError of them count the same; ECONNREFUSED (the far side answered) does not', async () => {
+    for (const code of ['EPERM', 'ENETUNREACH', 'ENETDOWN']) {
+      const { t } = transport([LAN], () => ({ throwCode: code }));
+      await t.pullAllPeers();
+      expect(lastProbe(t), code).toMatchObject({ answer: 'silent', cause: 'local-refusal' });
+    }
+    const { t: refused } = transport([LAN], () => 'throw'); // connection refused: a host that answered "no server here"
+    await refused.pullAllPeers();
+    expect(lastProbe(refused).answer).toBe('silent');
+    expect(lastProbe(refused).cause).toBeUndefined();
+  });
+  it('the LAN rope refused here while the Tailscale rope answers: a signed answer, no cause (every route is dialed)', async () => {
+    const { t } = transport([LAN, TS], (url) => (url.startsWith(LAN.url) ? { throwCode: 'EHOSTUNREACH' } : { status: 200, signed: true, marker: mark }));
+    await t.pullAllPeers();
+    expect(lastProbe(t)).toMatchObject({ answer: 'signed' });
+    expect(lastProbe(t).cause).toBeUndefined();
+  });
+  it('a LAN rope refused here while the tunnel edge answers 530 (origin dark): plain silence, because a byte came back', async () => {
+    const { t } = transport([LAN, QUICK], (url) => (url.startsWith(LAN.url) ? { throwCode: 'EHOSTUNREACH' } : { status: 530, marker: null }));
+    await t.pullAllPeers();
+    expect(lastProbe(t).answer).toBe('silent');
+    expect(lastProbe(t).cause).toBeUndefined();
+  });
+  it('the legacy single-url dial records the cause too', async () => {
+    const { t } = transport([LAN], () => ({ throwCode: 'EHOSTUNREACH' }), { mesh: false });
+    await t.pullAllPeers();
+    expect(lastProbe(t)).toMatchObject({ answer: 'silent', cause: 'local-refusal' });
+  });
+  it('a peer advertising nothing this machine may dial is silence with cause no-route', async () => {
+    const { t } = transport([{ kind: 'lan', url: 'http://8.8.8.8:4042' }], () => ({ status: 200, signed: true, marker: mark })); // not RFC1918: dropped by the resolver
+    await t.pullAllPeers();
+    expect(lastProbe(t)).toMatchObject({ answer: 'silent', cause: 'no-route' });
   });
 });

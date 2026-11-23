@@ -21,3 +21,9 @@ It works whether Windows reaches WSL through WSL's own forwarding or through a W
 ## Evidence
 
 - Unit: `tests/unit/identity-piece1g-wsl-local-link.test.ts`. Live socket check on a Windows + WSL machine.
+
+## Current-Main Readiness
+
+The Windows/WSL fallback now explicitly checks the listener that accepted the connection before considering network addresses. A request from the home-network phone listener can never count as a local dashboard link, including when a gateway probe reports success. Existing one-time proof, NAT checks and local-only link minting remain unchanged.
+
+Evidence: two new home-listener regressions failed before the correction;45unitchecks including the unchanged request-arrival ratchet,9HTTPchecks,3productionlifecyclechecks andTypeScript passed afterward. NativeWindows execution and sharedfullverification remain separate; the branch stays held behind the base local-link change.

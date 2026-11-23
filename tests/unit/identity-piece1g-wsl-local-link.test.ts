@@ -10,6 +10,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { arpMacFor, defaultRouteInterface, inCidr, natModeConfirmed, wslGatewayPeer, type WslNetProbe } from '../../src/core/wslLocalPeer.js';
 import { LocalAccessService, WSL_GATEWAY_PER_MINUTE } from '../../src/server/localAccessRoutes.js';
 import { runningUnderWsl } from '../../src/commands/dashboardOpen.js';
+import { markSameNetworkSocket } from '../../src/core/requestArrival.js';
+import type { Socket } from 'node:net';
 
 // Gateway 172.22.96.1 on eth0 (little-endian hex 0160 16AC = 01 60 16 AC).
 const ROUTE = 'Iface\tDestination\tGateway\tFlags\nlo\t0000007F\t00000000\t0001\neth0\t00000000\t016016AC\t0003\neth0\t006016AC\t00000000\t0001\n';
@@ -48,6 +50,13 @@ describe('NAT mode is confirmed positively', () => {
 });
 
 describe('the gateway peer rule', () => {
+  it('refuses the home listener before probing WSL network facts', () => {
+    const socket = { ...GW };
+    markSameNetworkSocket(socket as Socket);
+    const isWsl = vi.fn(() => true);
+    expect(wslGatewayPeer(socket, probe({ isWsl }))).toBe(false);
+    expect(isWsl).not.toHaveBeenCalled();
+  });
   it('accepts the exact gateway on WSL\'s own default-route address', () => {
     expect(wslGatewayPeer(GW, probe())).toBe(true);
     expect(wslGatewayPeer({ remoteAddress: '::ffff:172.22.96.1', localAddress: '::ffff:172.22.96.135' }, probe())).toBe(true);
@@ -63,6 +72,12 @@ describe('the gateway peer rule', () => {
 });
 
 describe('the route guard', () => {
+  it('never accepts a home-listener request even when the gateway seam says yes', () => {
+    const socket = { ...GW };
+    markSameNetworkSocket(socket as Socket);
+    const s = new LocalAccessService({ enabled: () => true, wslGatewayPeer: () => true } as never);
+    expect(s.redeemPeer({ socket, headers: {} } as never)).toBe(false);
+  });
   function service(gateway: boolean): LocalAccessService {
     let t = 1_000_000;
     return new LocalAccessService({ enabled: () => true, wslGatewayPeer: () => gateway, now: () => t++ } as never);

@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "pr3406-job-launch-test-race",
+  "sessionId": "da999158-c831-478d-be06-9a4da92854f8",
+  "timestamp": "2026-11-22T02:55:12.626Z",
+  "artifactPath": "upgrades/side-effects/pr3406-job-launch-test-race.md",
+  "artifactSha256": "bec322a025a3f6707a1ef946ad87028dd9ad7f3cb9d5d4df3e27f28045f37bd7",
+  "specPath": "docs/specs/job-launch-intent-record.md",
+  "coveredFiles": [
+    "tests/e2e/job-launch-lifecycle.test.ts",
+    "upgrades/side-effects/pr3406-job-launch-test-race.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

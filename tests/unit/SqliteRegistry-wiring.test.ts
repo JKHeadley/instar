@@ -24,6 +24,7 @@ import {
   __resetSqliteRegistryForTests,
 } from '../../src/core/SqliteRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { LocalAccessStore } from '../../src/core/LocalAccessStore.js';
 import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
@@ -38,6 +39,7 @@ const SRC = path.join(REPO_ROOT, 'src');
 const LONG_LIVED_STORES = [
   'src/core/GraphWitnessService.ts',
   'src/core/StopGateDb.ts',
+  'src/core/LocalAccessStore.ts',
   'src/core/FeatureRegistry.ts',
   'src/providers/uxConfirm/PreferenceStore.ts',
   'src/threadline/SpawnLedger.ts',
@@ -188,6 +190,20 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
     expect(service.membershipProof(fixture.membership.agentId,1)).toEqual(fixture.membership);service.close();expect(sqliteRegistrySize()).toBe(0);
     const reopened=fixture.open();expect(sqliteRegistrySize()).toBe(1);closeAllSqlite();expect(sqliteRegistrySize()).toBe(0);
     expect(()=>reopened.membershipProof(fixture.membership.agentId,1)).toThrow();reopened.close();expect(sqliteRegistrySize()).toBe(0);
+  });
+
+  it('LocalAccessStore registers, unregisters on close, and closes at process teardown', () => {
+    const options = { dir: path.join(tmp, 'local-access'), agentName: 'test-agent' };
+    const store = new LocalAccessStore(options);
+    expect(sqliteRegistrySize()).toBe(1);
+    store.close();
+    expect(sqliteRegistrySize()).toBe(0);
+    const reopened = new LocalAccessStore(options);
+    expect(sqliteRegistrySize()).toBe(1);
+    closeAllSqlite();
+    expect(sqliteRegistrySize()).toBe(0);
+    expect(() => reopened.counts()).toThrow();
+    reopened.close();
   });
 
   it('StopGateDb registers on construct', () => {

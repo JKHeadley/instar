@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "app-first-owner-approvals",
+  "sessionId": "2489beca-6bce-4817-b1fb-9ba4ff1d41b2",
+  "timestamp": "2026-11-23T09:09:39.049Z",
+  "artifactPath": "upgrades/side-effects/app-first-owner-approvals.md",
+  "artifactSha256": "bf638ea8201cb7bec1791688ab6ebd6973c69a4c769e3ba7ba80f320983f45af",
+  "coveredFiles": [
+    "tests/e2e/dashboard-read-markers-alive.test.ts",
+    "upgrades/side-effects/app-first-owner-approvals.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test-only request timestamp and response-boundary repair; real production authentication remains unchanged.",
+  "eli16Path": "docs/specs/app-first-owner-approvals.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-first-owner-approvals.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

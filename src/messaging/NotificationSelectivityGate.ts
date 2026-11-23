@@ -184,9 +184,10 @@ export class NotificationSelectivityGate {
     if (category === 'pairing-outcome') {
       return envelope?.inboundMessageId ? result('deliver', 'requested-follow-up') : result('record', 'unanchored-follow-up');
     }
-    // Owner decision (cos-owner-decision-delivery): a button only the owner can answer is a decision,
-    // not a report. Stamped only in-process by TelegramAdapter.sendOfferList; no producer or request
-    // maps to it. A per-topic budget keeps a looping sender from flooding the owner.
+    // Owner decision (cos-owner-decision-delivery): an offer or armed exact-change confirmation
+    // needs a human answer, not a quiet report. Only trusted in-process sends stamp this category
+    // (sendOfferList or the profile-confirmation producer); request metadata cannot mint it.
+    // A per-topic budget keeps a looping sender from flooding the owner.
     if (category === 'owner-decision') {
       return this.budget(`owner-decision:${topicId}`, 10) ? result('deliver', 'owner-decision') : result('record', 'owner-decision-budget');
     }

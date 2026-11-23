@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
+import type { Socket } from 'node:net';
+import { mayBeLocalArrival } from './requestArrival.js';
 import { defaultGatewayFromProcRoute } from './desktopTransport.js';
 
 export interface WslNetProbe {
@@ -74,15 +76,16 @@ export function natModeConfirmed(probe: WslNetProbe, gateway: string): boolean {
 }
 
 /** The socket facts that decide the gateway rule (headers and origin are the caller's). */
-export function wslGatewayPeer(socket: { remoteAddress?: string; localAddress?: string }, probe: WslNetProbe = defaultWslNetProbe()): boolean {
+export function wslGatewayPeer(socket: Partial<Socket>, probe: WslNetProbe = defaultWslNetProbe()): boolean {
   try {
+    if (!mayBeLocalArrival({ socket })) return false;
+    const local = strip(socket.localAddress);
     if (!probe.isWsl()) return false;
     const table = probe.routeTable();
     const gateway = defaultGatewayFromProcRoute(table);
     const iface = defaultRouteInterface(table);
     if (!gateway || !iface) return false;
     if (strip(socket.remoteAddress) !== gateway) return false;
-    const local = strip(socket.localAddress);
     const own = probe.ifaceV4(iface).find((a) => a.address === local);
     if (!own || !inCidr(gateway, own.cidr)) return false;
     return natModeConfirmed(probe, gateway);

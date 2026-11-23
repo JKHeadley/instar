@@ -237,8 +237,10 @@ sleep 120
   }, 30_000);
 
   it('the spawned process really received --effort low', async () => {
-    const seen = await until(async () => (fs.existsSync(argvLog) && fs.readFileSync(argvLog, 'utf-8').includes('--launch--') ? true : undefined), 15_000);
-    expect(seen, 'mock claude was never launched').toBe(true);
+    // The mock writes its marker and argv through one shell printf, but a reader
+    // can still see the marker before the later arguments reach the file.
+    const seen = await until(async () => (fs.existsSync(argvLog) && fs.readFileSync(argvLog, 'utf-8').includes('--effort\nlow\n') ? true : undefined), 15_000);
+    expect(seen, 'mock claude was never launched with --effort low').toBe(true);
     const argv = fs.readFileSync(argvLog, 'utf-8').split('\n');
     const at = argv.flatMap((a, i) => (a === '--effort' ? [i] : []));
     expect(at, 'mock claude was not launched with exactly one --effort').toHaveLength(1);

@@ -41,6 +41,8 @@ export function mountOwnerRecordRoutes(router: Router, get: () => OwnerRecordRou
       pinned: d.store.pinned(),
       seenMarker: d.store.seenMarker(),
       enrolledMarker: marker.kind,
+      // Piece 2c: the fence in force, each peer's build state, and readiness against this machine's build.
+      fence: sync ? (sync as { fence?: unknown }).fence ?? null : null,
       peers: sync,
       // An unknown hold that never resolves: say what clears it (§4).
       ...(gate.act === 'hold' && gate.enrolment === 'unknown' && silent.length > 0

@@ -778,7 +778,8 @@
       "transport": "none",
       "paths": [
         "state/lease-local.json",
-        "state/registry-liveness.json"
+        "state/registry-liveness.json",
+        "state/lease-continuity.json"
       ],
       "grandfathered": false
     },
@@ -936,7 +937,8 @@
         "state/boot-id",
         "state/auto-updater.json",
         "state/slept-marker.json",
-        "state/lifeline-restart-requested.json"
+        "state/lifeline-restart-requested.json",
+        "state/restart-budget.json"
       ],
       "grandfathered": false
     },

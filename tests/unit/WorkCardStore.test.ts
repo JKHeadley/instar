@@ -321,7 +321,8 @@ describe('status and lanes', () => {
     expect(laneFor(s, true, f, 'justin')).toBe('waiting-on-you');
   });
   it('a non-owner sees a needs-approval card under Waiting on others', () => {
-    const f = fold([rec('created', { by: AGENT, ...baseCard })]);
+    // An ask (outward): an inward agent-work card is `not-started`, with the agent (agent-work-cards-default §1).
+    const f = fold([rec('created', { by: AGENT, ...baseCard, outward: true })]);
     const s = deriveStatus(f, { pendingOrParked: false, parked: false }, T0, 24);
     expect(laneFor(s, false, f, 'adriana')).toBe('waiting-on-others');
   });
