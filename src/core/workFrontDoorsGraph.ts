@@ -28,11 +28,11 @@ export interface BoardCardsReader {
  * proposed list. Done, archived and removed cards drop off; a card with no project, or a project key with no
  * graph ref, is left out.
  */
-export function cardPlacementsFromBoard(board: BoardCardsReader, telegramChatId: string): Array<{ card: ConversationRef; project: ConversationRef }> {
+export function cardPlacementsFromBoard(board: BoardCardsReader, telegramChatId: string, mayPresent: (conversationKey: string) => boolean = () => true): Array<{ card: ConversationRef; project: ConversationRef }> {
   const out: Array<{ card: ConversationRef; project: ConversationRef }> = [];
   for (const id of board.cardIds()) {
     const v = board.view(id);
-    if (!v || !v.card.created || !v.card.projectKey) continue;
+    if (!v || !v.card.created || !v.card.projectKey || !mayPresent(v.card.conversationKey)) continue;
     if (v.status === 'done' || v.status === 'archived' || v.status === 'removed') continue;
     const project = cosConversationRef(v.card.projectKey, telegramChatId);
     if (!project) continue;

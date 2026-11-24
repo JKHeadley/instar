@@ -338,8 +338,10 @@ describe('a linked computer — privilege boundaries on a real server', () => {
     const n = await request(app).post('/docs/_link/nonce').set('Host', HOST).set('X-Instar-Request', '1').send({ browserPublicKey: comp2.publicKey });
     const r = await owner('POST', '/mobile/browsers/link', { browserPublicKey: comp2.publicKey, nonce: n.body.nonce, machineId: n.body.machineId, host: HOST, expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
     expect(r.status).toBe(403);
-    expect(r.body.error).toBe('member-phone-required');
-    expect((await owner('POST', '/mobile/browsers/link/lookup', { nonce: n.body.nonce, browserPublicKey: comp2.publicKey })).body.error).toBe('member-phone-required');
+    expect(r.body).toMatchObject({ error: 'member-phone-required', detail: expect.stringContaining('browser approval') });
+    const preview = await owner('POST', '/mobile/browsers/link/lookup', { nonce: n.body.nonce, browserPublicKey: comp2.publicKey });
+    expect(preview.status).toBe(403);
+    expect(preview.body).toMatchObject({ error: 'member-phone-required', detail: expect.stringContaining('browser approval') });
   });
 
   it('a member lowered to guest: the computer loses its writes and its send', async () => {

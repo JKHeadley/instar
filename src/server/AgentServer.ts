@@ -1,4 +1,5 @@
 import { readRecovery, recordStop } from '../core/approverRecovery.js';
+import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
@@ -241,6 +242,7 @@ import { documentDecisionRootOf } from './documentDecisionRoot.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
+import { createAgentLinkRoutes } from './agentLinkRoutes.js';
 import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
 import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLiveWiring.js';
 import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
@@ -2571,6 +2573,10 @@ export class AgentServer {
       telegramOwnerPresent: () => (options.telegram ? !!options.telegram.getOwnerUserId?.() : standIn?.ownerChatPresent() === true),
       // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
       readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
+      // Permanent agent links (docs/specs/permanent-agent-links.md): off unless `agentLinks.enabled` is true, read live.
+      agentLinksEnabled: () => (options.liveConfig?.get
+        ? options.liveConfig.get<unknown>('agentLinks.enabled', false)
+        : (options.config as { agentLinks?: { enabled?: unknown } }).agentLinks?.enabled) === true,
       // People and roles: the Telegram owner id decides which registry profile is the owner.
       telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
       // The same namespace the app conversation store stamps (people and roles §5).
@@ -2807,6 +2813,7 @@ export class AgentServer {
           nonceStore: coord.managers.nonceStore,
           securityLog: coord.managers.securityLog,
           localMachineId: coord.identity!.machineId,
+          localSigningKeyPem: options.localSigningKeyPem || undefined,
         },
         localMachineId: coord.identity!.machineId,
         localSigningKeyPem: options.localSigningKeyPem ?? '',
@@ -7524,6 +7531,17 @@ export class AgentServer {
         svc.start();
         this.appConversations = svc;
         routeCtx.appConversations = svc;
+        if (options.workBoard) {
+          // Late-bound real board classification also covers replicas and already-created empty card chats.
+          svc.store.hiddenConversationKeys = () => {
+            const board = options.workBoard?.();
+            if (!board) {
+              if (!workBoardEnabled(options.config)) return new Set<string>();
+              throw new Error('work-card-visibility-unavailable');
+            }
+            return board.hiddenConversationKeys();
+          };
+        }
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'AppConversations', primary: 'native app conversations', fallback: 'the app conversation routes answer 503',
@@ -8023,6 +8041,20 @@ export class AgentServer {
     this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
     // Old-link guarantee backstop (§3.9b): the viewer itself refuses new pages while documents replace them.
     options.viewer?.setNewViewGuard?.(() => this.documentsReplaceViews());
+    // Permanent agent links: the agent-facing link builder (docs/specs/permanent-agent-links.md §2b; Bearer).
+    this.app.use(createAgentLinkRoutes({
+      stateDir: options.config.stateDir,
+      enabled: () => (options.liveConfig?.get
+        ? options.liveConfig.get<unknown>('agentLinks.enabled', false)
+        : (options.config as { agentLinks?: { enabled?: unknown } }).agentLinks?.enabled) === true,
+      splitMachines: () => {
+        const h = this.agentIdentityRuntime?.coherence.health();
+        if (!h || !h.selfDisk) return [];
+        return Object.values(h.siblingsPublish)
+          .filter((s) => s.status === 'observed' && s.fingerprint !== null && s.fingerprint !== h.selfDisk)
+          .map((s) => s.nickname);
+      },
+    }));
     // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
     this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
     // gemini-payg-metered-lane: POST /intelligence/gemini, /intelligence/gemini/review,
@@ -8570,7 +8602,12 @@ export class AgentServer {
     // work-front-doors stage 2b (spec §3.2): each open card's conversation and its project's conversation, so a
     // project's page shows the card as proposed until the card-record graph authority exists. Read-only.
     const graphTelegramChatId=():string=>String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'');
-    const graphCardPlacements=()=>{const svc=options.workBoard?.()?.svc;return svc?cardPlacementsFromBoard(svc,graphTelegramChatId()):[];};
+    const graphMayPresent=(ref:import('../core/conversationGraph.js').NodeRef)=>{
+      if(ref.kind!=='conversation'||ref.platform!=='app')return true;
+      if(options.workBoard){const board=options.workBoard();if(!board){if(!workBoardEnabled(options.config))return true;throw new Error('work-card-visibility-unavailable');}return !board.hiddenConversationKeys().has(ref.conversationKey);}
+      return !this.appConversations?.store.isHiddenConversation(ref.conversationKey);
+    };
+    const graphCardPlacements=()=>{const board=options.workBoard?.();if(!board)return [];const hidden=board.hiddenConversationKeys();return cardPlacementsFromBoard(board.svc,graphTelegramChatId(),ck=>!hidden.has(ck));};
     const graphSuggestions={intelligence:options.intelligence??null,evidence:(ref:import('../core/conversationGraph.js').ConversationRef)=>{
       if(ref.platform!=='telegram')return{project:null,text:''};
       const id=ref.topicId;
@@ -8595,7 +8632,7 @@ export class AgentServer {
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,mayPresent:graphMayPresent,
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -8606,7 +8643,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,mayPresent:graphMayPresent,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},

@@ -1,7 +1,7 @@
 /** Default-off production composition. Enabling this surface is a release
  * action after increment-A acceptance; readiness is still checked per read.
  * Storage initialization alone never mounts a public graph route. */
-import {Router} from 'express';
+import {Router, type Request, type Response, type NextFunction} from 'express';
 import {SecretStore} from '../core/SecretStore.js';
 import type {MachineIdentityManager} from '../core/MachineIdentity.js';
 import type {ScopeVerifier} from '../core/ScopeVerifier.js';
@@ -76,6 +76,7 @@ export function createConversationGraphSurface(options:{
  readEnabled?:boolean;correctionsEnabled?:boolean;identity:MachineIdentityManager;
  scope:ScopeVerifier|null;telegramChatId:string;pairing:MobilePairingService|null;
  verifyDashboardOwner(token:string|undefined):boolean;
+ mayPresent?(ref:import('../core/conversationGraph.js').NodeRef):boolean;
  /** Live operator policy; absence preserves the older admitted-only adapter. */
  dashboardPolicy?:()=>ConversationGraphOwnerPolicySnapshot|null;initializeDashboardPolicy?:()=>void;forceFileKey?:boolean;
  history?:Pick<ConversationGraphHistoryDeps,'selfMachineId'|'localBaseUrl'|'peers'|'authToken'|'agentId'|'peerHostAllowlist'|'recordRopeResult'>;
@@ -144,5 +145,9 @@ export function createConversationGraphSurface(options:{
   // Owner changes are off here: the confirm answers a lasting refusal, never "try again".
   options.groupProjects.confirmHolder.confirm=null;options.groupProjects.confirmHolder.off=true;
  }
+ router.use((error:unknown,_req:Request,res:Response,next:NextFunction)=>{
+  if(error instanceof Error&&error.message==='work-card-visibility-unavailable'){res.status(503).json({code:'work-card-visibility-unavailable'});return;}
+  next(error);
+ });
  return router;
 }
