@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "slug": "work-discovery-read",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T04:58:34.846Z",
+  "artifactPath": "upgrades/side-effects/work-discovery-read.md",
+  "artifactSha256": "7bafd2a886bb606dc82e679073a9741b3f5158afa5e0836174fadf562f52aced",
+  "specPath": "docs/specs/canonical-records-and-work-discovery.md",
+  "coveredFiles": [
+    "src/data/awareness/work-discovery-read.md",
+    "src/server/AgentServer.ts",
+    "src/server/chiefOfStaffPrSearchRoutes.ts",
+    "src/server/mobileConversationSearchRoutes.ts",
+    "src/server/routes.ts",
+    "src/server/workDiscoveryRoutes.ts",
+    "tests/e2e/work-discovery-alive.test.ts",
+    "tests/integration/work-discovery-routes.test.ts",
+    "tests/unit/conversation-search.test.ts",
+    "tests/unit/work-discovery-query.test.ts",
+    "upgrades/next/work-discovery-read.md",
+    "upgrades/side-effects/work-discovery-read.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This owner-private read crosses provider and source visibility boundaries and uses current dashboard and native source authorization.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/canonical-records-and-work-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

@@ -137,16 +137,16 @@ function hitFrom(base: Omit<ConversationSearchHit, 'snippet' | 'marks' | 'rank'>
  */
 export function searchLocal(
   deps: ConversationSearchRouteDeps,
-  q: { terms: string[]; limit: number; only: string | null },
+  q: { terms: string[]; limit: number; only: string | null; nativeUserLeadsOnly?: boolean },
   access: { may: (accessKey: string) => boolean; mayReadApp: (key: string, m: Parameters<MobilePairingService['mayReadStored']>[2]) => boolean },
 ): LocalSearchResult {
   const out: ConversationSearchHit[] = [];
   const unsearched: SearchPlatform[] = [];
   let capped = false;
-  const { terms, only } = q;
+  const { terms, only, nativeUserLeadsOnly } = q;
   if (terms.length === 0) return { results: [], capped, unsearched };
   const self = deps.machineId();
-  const want = (p: SearchPlatform) => !only || only.startsWith(`${p}:`);
+  const want = (p: SearchPlatform) => (!nativeUserLeadsOnly || p === 'app') && (!only || only.startsWith(`${p}:`));
 
   // App conversations: the store, newest first, bounded.
   const svc = deps.service;
@@ -167,15 +167,20 @@ export function searchLocal(
     }
     let scanned = 0;
     const perConversation = only ? APP_SCAN_TOTAL : APP_SCAN_PER_CONVERSATION;
-    for (const { key, title } of keys) {
+    for (const { key, title: listedTitle } of keys) {
       if (!access.may(key)) continue;
+      const current = nativeUserLeadsOnly ? svc.liveConversation(key) : null;
+      if (nativeUserLeadsOnly && !current) continue;
+      const title = current ? current.title : listedTitle;
       if (scanned >= APP_SCAN_TOTAL) { capped = true; break; }
       let before: string | null = null;
       let here = 0;
       for (;;) {
+        // Reads the original native event bytes, not a search projection.
         const page = svc.store.browseMessages(key, before, 100);
         for (const m of page.messages) {
           if (!access.mayReadApp(key, m)) continue;
+          if (nativeUserLeadsOnly && (m.role !== 'operator' || m.systemSource || !POSITION_ID_RE.test(m.eventId))) continue;
           const text = typeof m.text === 'string' ? m.text : '';
           const found = termMarks(text, terms);
           if (!found.all) continue;
