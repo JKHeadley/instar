@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "work-board-approval-writer-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-24T22:51:43.279Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-writer-wip.md",
+  "artifactSha256": "d098f73082345362a45275e7872a36f3dd9ba4a88be9517a7a8a3607313a4df0",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "docs/specs/owner-work-board-slips-first-slice.eli16.md",
+    "docs/specs/owner-work-board-slips-first-slice.md",
+    "docs/specs/reports/owner-work-board-slips-first-slice-convergence.md",
+    "src/core/WorkBoardApprovalWriter.ts",
+    "tests/unit/work-board-approval-writer.test.ts",
+    "upgrades/side-effects/work-board-approval-writer-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Work Board mutation authority and exact owner consent",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/owner-work-board-slips-first-slice-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  }
+}
