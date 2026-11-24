@@ -2471,9 +2471,9 @@ describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
   });
   it('valid counts pass through; invalid ones are dropped', async () => {
     const s = setup({ views: { 1: view() } });
-    s.svc.setLaneShards(() => ({ integration: 1, e2e: 7 }));
+    s.svc.setLaneShards(() => ({ integration: 5, e2e: 5 }));
     await s.svc.request(1);
-    expect(inputOf(s).laneShards).toEqual({ integration: 1 });
+    expect(inputOf(s).laneShards).toEqual({ integration: 5 });
   });
   it('a per-machine unit worker count passes through when 1..12; anything else is dropped', async () => {
     const s = setup({ views: { 1: view() } });

@@ -1693,6 +1693,12 @@ describe('runVerify — lane shard counts from the run input (monitoring.localVe
     expect(vitestCalls(f)).toHaveLength(4);
     expect(vitestCalls(f).filter((c) => c.args.includes('vitest.integration.config.ts')).every((c) => !c.args.some((a) => a.startsWith('--shard=')))).toBe(true);
   });
+  it('runs five integration processes when explicitly configured', async () => {
+    const f = fake();
+    const r = await runVerify(input({ laneShards: { integration: 5 } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(vitestCalls(f).filter((c) => c.args.includes('vitest.integration.config.ts'))).toHaveLength(5);
+  });
   it('out-of-range or non-integer counts fall back to the defaults', async () => {
     const f = fake();
     await runVerify(input({ laneShards: { integration: 9, e2e: 1.5 } }), f.seams);
