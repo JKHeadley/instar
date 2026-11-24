@@ -5,3 +5,9 @@ The benchmark uses two independent judge slots to assess whether an answer meets
 The prototype records disagreement and keeps a critical failure visible when the second result is missing. Evidence that the judges finished before either saw the other's findings is reported separately. All of this is exercised with invented cases.
 
 This branch is a checkpoint for review. It has no connection to live agents, model calls or rollout decisions. The prototype now checks receipts against the trial, comparison arm, repeat and slots scheduled in the frozen plan. Before the benchmark can rely on the outputs, an integrating host still needs to prove where its records came from and apply this check to its verified plan. The focused test suite checks the mechanics. Complete repository verification remains pending.
+
+## Read-only check with the real validator
+
+A synthetic cross-worktree check combined this prototype at `65ef00f5` with the separate offline validator candidate at `e32c94417`. It exercised the frozen plan, scheduled judge receipts, a timeout retry, exact output binding, actual structural validation, consensus and disclosure timing. The intact case kept the disputed critical result visible. Withholding a cited source was rejected by both the plan check and the real validator. Wrong-slot output was rejected while the intact judge's critical finding remained visible. Early disclosure was recorded separately as an independence breach.
+
+This check ran against two clean worktrees with an invented fixture. The branch's composed automated test still uses a validator stub. A durable integration test can use the real validator once both candidates share an integration base. Live receipt authority and model delivery require their own evidence.
