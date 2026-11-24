@@ -360,6 +360,24 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
     res.json(svc.peerStatus());
   });
 
+  router.get('/local-verify/trial-receipts', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const id = req.query.coordinator;
+    if (typeof id !== 'string' || !id || id.length > 200) { res.status(400).json({ error: 'invalid coordinator' }); return; }
+    const ids = typeof req.query.ids === 'string' ? req.query.ids.split(',') : [];
+    if (!ids.length || ids.length > 8 || !ids.every(attempt => ATTEMPT_ID_RE.test(attempt))) {
+      res.status(400).json({ error: 'invalid attempt IDs' }); return;
+    }
+    res.json(svc.trialReceiptsFor(id, ids));
+  });
+  router.post('/local-verify/trial-receipts/ack', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const ok = svc.acknowledgeTrialReceipt(req.body);
+    res.status(ok ? 200 : 409).json({ok});
+  });
+
   router.get('/local-verify/peer-result', (req: Request, res: Response) => {
     const svc = peerGate(res);
     if (!svc) return;
@@ -369,6 +387,18 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
       return;
     }
     res.json(svc.peerResult(id));
+  });
+
+  router.post('/local-verify/peer-trial-lease', (req: Request, res: Response) => {
+    const svc = peerGate(res);
+    if (!svc) return;
+    const b = req.body;
+    if (!b || !ATTEMPT_ID_RE.test(b.attemptId) || typeof b.coordinatorMachineId !== 'string'
+      || !Number.isSafeInteger(b.leaseEpoch) || (b.nonce !== undefined && !ATTEMPT_ID_RE.test(b.nonce))) {
+      res.status(400).json({ reason: 'invalid-request' }); return;
+    }
+    const nonce = svc.trialLease(b.attemptId, b.coordinatorMachineId, b.leaseEpoch, b.nonce);
+    res.status(nonce ? 200 : 409).json({ nonce });
   });
 
   router.post('/local-verify/peer-cancel', (req: Request, res: Response) => {

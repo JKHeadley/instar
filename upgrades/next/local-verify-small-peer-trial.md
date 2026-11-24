@@ -1,0 +1,11 @@
+## What Changed
+
+A calibrated Mac with limited memory can help test one pull request at a time. The coordinator and the Mac must both enable the same trial policy. The Mac measures available memory before starting, monitors the test workers and stops the job when its measured floor is reached. Each attempt reports its duration, peak observed worker memory and minimum available host memory.
+
+## What to Tell Your User
+
+The trial starts disabled. Your usual machine-wide limits still protect other work. The test coordinator can use the trial after an operator calibrates and enables it on a specific Mac.
+
+## Summary of New Capabilities
+
+Review the small peer's signed attempt receipt to distinguish a normal verdict from an attempt interrupted by memory pressure.

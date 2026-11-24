@@ -10,6 +10,7 @@
  * running server's install, never from the PR being verified.
  */
 
+import { parseSmallPeerTrialPolicy } from './smallPeerMemory.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,6 +45,8 @@ export interface LocalVerifyConfigBlock {
   postStatuses?: boolean;
   /** This machine may run verifies a coordinator hands it (spec local-verify-capacity.md Part D). Default off. */
   peer?: { enabled?: boolean };
+  /** Explicitly calibrated verification-only policy for one small peer. Omit to disable. */
+  smallPeerTrial?: import('./smallPeerMemory.js').SmallPeerTrialPolicy;
   /** Coordinator: hand `main` verifies to peers while main is healthy (default false; docs/specs/local-verify-main-on-peer.md). Read live. */
   mainOnPeers?: boolean;
   /**
@@ -557,7 +560,8 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       if (b.enabled === false) return null;
       if (typeof b.verifierVersion !== 'string' || typeof b.policyHash !== 'string' || typeof b.slotBusy !== 'boolean') return null;
       const hint = (b as { signerKeyHash?: unknown }).signerKeyHash;
-      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy,
+      const trial = parseSmallPeerTrialPolicy(b.smallPeerTrial);
+      return { ...(trial ? { smallPeerTrial: trial } : {}), inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy,
         ...(typeof hint === 'string' && /^[0-9a-f]{64}$/.test(hint) ? { signerKeyHash: hint } : {}) };
     },
     async run(peer, req) {
@@ -589,6 +593,20 @@ export function makePeerClient(authToken: string, agentId: string, fetchImpl: ty
       }
       return null;
     },
+    async trialReceipts(peer, coordinator, attemptIds) {
+      const r = await call(`${peer.url}/local-verify/trial-receipts?coordinator=${encodeURIComponent(coordinator)}&ids=${encodeURIComponent(attemptIds.join(','))}`, { method: 'GET' });
+      return r?.status === 200 && Array.isArray(r.body) ? r.body.slice(0, 8) : [];
+    },
+    async acknowledgeTrial(peer, ack) {
+      const r = await call(`${peer.url}/local-verify/trial-receipts/ack`, { method: 'POST', body: JSON.stringify(ack) });
+      return r?.status === 200 && (r.body as {ok?: unknown} | null)?.ok === true;
+    },
+    async trialLease(peer, request) {
+      const r = await call(`${peer.url}/local-verify/peer-trial-lease`, { method: 'POST', body: JSON.stringify(request) });
+      if (r?.status !== 200) return null;
+      const b = r.body as { nonce?: unknown } | null;
+      return typeof b?.nonce === 'string' && /^[a-f0-9]{32}$/.test(b.nonce) ? b.nonce : null;
+    },
     async cancel(peer, attemptId) {
       await call(`${peer.url}/local-verify/peer-cancel`, { method: 'POST', body: JSON.stringify({ attemptId }) });
     },
@@ -613,6 +631,7 @@ export function wireLocalVerifyPeers(
   const signer = o.stateDir ? loadMachineSigner(o.stateDir) : null;
   svc.setPeerWiring({
     signer,
+    smallPeerTrial: () => o.liveConfig.get<unknown>('monitoring.localVerify.smallPeerTrial', null),
     keyLookupFactory: o.stateDir ? () => identityKeyLookup(o.stateDir!) : null,
     ...(o.peerFit ? { peerFit: o.peerFit } : {}),
     peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,

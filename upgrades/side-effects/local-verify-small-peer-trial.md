@@ -1,0 +1,33 @@
+# Side-effects review for memory-bounded peer verification
+
+The coordinator may dispatch one normal PR to an explicitly named Mac below the ordinary heavy-work size floor. Dispatch still requires measured CPU headroom, matching verifier and policy, a pinned signing key and the coordinator lease. The peer repeats admission after asynchronous reads and binds the exact reduced worker configuration to the immutable request. Main and arbitration stay outside this exception.
+
+The peer measures native Darwin available memory and native pressure. It fences the trial runner in a dedicated launchd resource coalition. An independent watchdog measures all coalition members and cancels on unavailable or low memory. The server checks the timestamp of each completed valid observation. Losing either supervisor results in cleanup, and startup reconciliation keeps the slot occupied until the job is removed and the coalition is empty. The physical calibration observed a detached worker after it reparented to PID 1. These observations cannot guarantee the host reserve between samples.
+
+The dispatcher and the dedicated runtime write attempt-scoped records on their own disks. Cleanup sends signals only to kernel-identified members of the recorded trial coalition with verified identity. A receipt from a capacity interruption cannot supply a passing verdict. Roll back by removing the optional setting on the coordinator and the peer. A Mac previously designated for the trial retains its small-peer restriction on direct requests. Deleting or recalibrating a quarantine marker requires owner review of the receipt.
+
+Chief holds publication and rollout custody. The physical fixtures were isolated. A real release, Mini activation, and the first three PR receipts are still pending.
+
+## Over-block and under-block
+
+Strict version, worker-count and collector checks can leave an apparently idle host unavailable. A missing metric or loss of the verifier lease interrupts an attempt. The job runs under the same Darwin account as the existing peer verifier. The resource coalition covers detached and reparented descendants of the job. Other applications still compete for host memory between samples.
+
+## Placement and authority
+
+The machine-wide placement floor stays authoritative outside the single named verification peer. The coordinator authorizes the signed request. Native memory measurements inform a local refusal or cancellation. A separate signed capacity receipt carries observations through restarts. The normal result signature, current lease and status projection rules govern a successful verdict.
+
+## Restart and external surfaces
+
+The peer stores a unique launchd label before starting the waiting prelude and records its boot and resource-coalition identities before permitting work. Cleanup unregisters the label and verifies the coalition has drained. A receiver retains an immutable attempt-bound receipt. Redelivery repeats signed acknowledgement without creating another verdict. An interrupted provisional completion becomes a capacity interruption during recovery. Settings on both machines must match. The setting and ordinary verifier status are the operator controls.
+
+## Rollback and remaining exposure
+
+Remove the setting on both machines to cancel active trial work and stop new admissions. Retain receipts and the managed-peer marker. Unavailability of both the verifier and its watchdog can delay cleanup until recovery. Sampling and shutdown measurements bound behavior seen during calibration. Unrelated host-wide memory bursts and prolonged scheduler starvation can exceed that envelope.
+
+## Independent review
+
+The named reviewer /root/mini_trial/design_review examined dispatch, scope ownership, receipt finalization and restart. Findings included asynchronous slot races, detached workers, stale heartbeats, direct admission before persistent enrollment, publishing a provisional result before cancellation settled, and recovery after server loss. The findings drove implementation changes and regression checks.
+
+## Class-Closure Declaration
+
+The unbounded-self-action guard is registered as small-peer-trial-admission. The convergence test exercises the real memory predicate under sustained pressure. Admission refuses each attempted start. Recovery requires consecutive healthy samples, and the existing per-entry remote attempt budget bounds a PR that exhausts capacity after admission.

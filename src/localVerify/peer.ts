@@ -11,6 +11,7 @@
  * dispatched under. Everything else is refused and the entry stays in the coordinator's queue.
  */
 
+import { parseSmallPeerTrialPolicy, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
 import type { MachineSignature } from '../core/AppRecordSignatures.js';
 import { ATTEMPT_ID_RE, MAIN_VERIFY_PR, isValidSha, validateRecord, type LocalVerifyRecord } from './record.js';
 import type { FailureDetail, IsolationInput } from './orchestrator.js';
@@ -19,6 +20,8 @@ import { parseLikelyFailingWire, type FirstPartGroup, type LikelyFailingWire } f
 
 /** The coordinator's durable reservation of one queue entry for one peer attempt. */
 export interface RemoteMarker {
+  /** Capacity and completed receipts both bind this trial dispatch. */
+  trialReceiptExpected?: true;
   machineId: string;
   attemptId: string;
   leaseEpoch: number | null;
@@ -75,6 +78,7 @@ export interface DispatchedInputs {
 
 /** The body of `POST /local-verify/peer-run`. */
 export interface PeerRunRequest extends DispatchedInputs {
+  smallPeerTrial?: SmallPeerTrialPolicy;
   attemptId: string;
   coordinatorMachineId: string;
   leaseEpoch: number | null;
@@ -222,6 +226,7 @@ export function judgePeerAttempt(input: {
 
 /** What the coordinator knows about one peer from `GET /local-verify/peer-status`. */
 export interface PeerStatus {
+  smallPeerTrial?: SmallPeerTrialPolicy;
   inFlight: { attemptId: string; pr: number } | null;
   verifierVersion: string;
   policyHash: string;
@@ -239,10 +244,13 @@ export interface PeerTarget {
 
 /** The coordinator's narrow HTTP seam to its peers (Bearer auth lives in the implementation). */
 export interface PeerClient {
+  trialReceipts?(peer: PeerTarget, coordinator: string, attemptIds: string[]): Promise<import('./smallPeerReceipts.js').TrialPacket[]>;
+  acknowledgeTrial?(peer: PeerTarget, ack: import('./smallPeerReceipts.js').TrialAck): Promise<boolean>;
   status(peer: PeerTarget): Promise<PeerStatus | null>;
   run(peer: PeerTarget, req: PeerRunRequest): Promise<PeerRunAnswer | null>;
   result(peer: PeerTarget, attemptId: string): Promise<PeerResult | null>;
   cancel(peer: PeerTarget, attemptId: string): Promise<void>;
+  trialLease?(peer: PeerTarget, request: { attemptId: string; coordinatorMachineId: string; leaseEpoch: number; nonce?: string }): Promise<string | null>;
 }
 
 export const PEER_LIMITS = Object.freeze({
@@ -317,7 +325,8 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   const b = body as Record<string, unknown>;
   const keys = ['attemptId', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'coordinatorMachineId', 'leaseEpoch'];
   const extra = Object.keys(b).filter((k) => !keys.includes(k));
-  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind' && k !== 'likelyFailing' && k !== 'firstPartGroup')) return null;
+  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable' && k !== 'kind' && k !== 'likelyFailing' && k !== 'firstPartGroup' && k !== 'smallPeerTrial')) return null;
+  if (b.smallPeerTrial !== undefined && (b.kind !== undefined || !parseSmallPeerTrialPolicy(b.smallPeerTrial))) return null;
   // The likely-failing field is bounded and strict: a malformed one refuses the whole request.
   if (b.likelyFailing !== undefined && parseLikelyFailingWire(b.likelyFailing) === null) return null;
   if (b.firstPartGroup !== undefined && b.firstPartGroup !== 'with' && b.firstPartGroup !== 'without') return null;
