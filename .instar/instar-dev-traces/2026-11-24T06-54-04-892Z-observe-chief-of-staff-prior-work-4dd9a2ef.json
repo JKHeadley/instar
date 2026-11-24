@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "observe-chief-of-staff-prior-work",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T06:54:04.892Z",
+  "artifactPath": "upgrades/side-effects/observe-chief-of-staff-prior-work.md",
+  "artifactSha256": "22a6502e23bf46a36a040ef68758ef098cf7f0f056de3653852010ffa3e09c97",
+  "specPath": "docs/specs/check-existing-work-before-dispatch.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffPrSearch.ts",
+    "src/core/ChiefOfStaffPriorWorkObservation.ts",
+    "src/core/types.ts",
+    "src/data/awareness/chief-of-staff-prior-work-observation.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/e2e/work-discovery-alive.test.ts",
+    "tests/integration/chief-of-staff-prior-work-ingress.test.ts",
+    "tests/unit/chief-of-staff-pr-search.test.ts",
+    "tests/unit/chief-of-staff-prior-work-observation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Integrates an approved owner-only advisory observation with the approved bounded public inventory. The installed service path requires exact warm-enrollment and shared cache verification.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

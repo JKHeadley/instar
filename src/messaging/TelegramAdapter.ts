@@ -6815,6 +6815,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Handle text messages
     if (!msg.text) return;
+    const raw = msg as unknown as Record<string, unknown>;
+    const isForwarded = !!(raw.forward_origin || raw.forward_from || raw.forward_date);
 
     // native-conversation-base §3c item 1: a path tag a person typed is inert from here on —
     // before the text is forwarded, queued or logged. Commands are unaffected.
@@ -6822,9 +6824,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const desktopApproval = this.consumeDesktopApproval({
       text, topicId: numericTopicId, senderUid: String(msg.from.id), trusted: true,
-      forwarded: !!((msg as unknown as Record<string, unknown>).forward_origin
-        || (msg as unknown as Record<string, unknown>).forward_from
-        || (msg as unknown as Record<string, unknown>).forward_date),
+      forwarded: isForwarded,
     });
     if (desktopApproval.matched) {
       await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(numericTopicId, desktopApproval.approved
@@ -6857,22 +6857,17 @@ export class TelegramAdapter implements MessagingAdapter {
         // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
         // ANY profile-ingress recognition — carry the platform forward
         // metadata so the server-side parse can reject it deterministically.
-        ...(((msg as unknown as Record<string, unknown>).forward_origin
-          || (msg as unknown as Record<string, unknown>).forward_from
-          || (msg as unknown as Record<string, unknown>).forward_date)
-          ? { forwarded: true }
-          : {}),
+        ...(isForwarded ? { forwarded: true } : {}),
+        // Only this verified poller text path establishes direct plain-text
+        // provenance. Media transcription and relay envelopes cannot infer it.
+        telegramDirectPlainText: !isForwarded && !raw.sender_chat && !raw.via_bot && !raw.is_automatic_forward
+          && (msg.from as { is_bot?: boolean }).is_bot !== true,
       },
     };
 
     // BIAS-TO-ACTION-SPEC D10: detect the platform forward markers and persist
     // an EXPLICIT forwarded boolean (false on a genuine row, NOT omitted) so the
     // standing-authorization resolver can prove non-forwarded provenance.
-    const isForwarded = !!(
-      (msg as unknown as Record<string, unknown>).forward_origin
-      || (msg as unknown as Record<string, unknown>).forward_from
-      || (msg as unknown as Record<string, unknown>).forward_date
-    );
     // Log the message (including sender identity for multi-user topics)
     this.appendToLog({
       messageId: msg.message_id,

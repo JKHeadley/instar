@@ -26,6 +26,8 @@ import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { CHIEF_OF_STAFF_KIND_REGISTRATION, CHIEF_OF_STAFF_RECORD_KIND, CHIEF_OF_STAFF_STORE_KEY, buildBindingPut, type UnionEntry } from '../../src/core/ChiefOfStaffStore.js';
 import { ChiefOfStaffLoop, CHIEF_OF_STAFF_LOOP_DEFAULTS } from '../../src/core/ChiefOfStaffLoop.js';
+import { ChiefOfStaffPrSearch } from '../../src/core/ChiefOfStaffPrSearch.js';
+import { ChiefOfStaffPriorWorkObservation } from '../../src/core/ChiefOfStaffPriorWorkObservation.js';
 
 const AUTH = 'test-e2e-cos';
 const CK = 'telegram:141014';
@@ -86,7 +88,8 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     journal.flush();
 
     config.developmentAgent = true;
-    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), chiefOfStaffLoop: loop });
+    const chiefOfStaffPrSearch = new ChiefOfStaffPrSearch({ readToken: () => 'e2e-fixture' });
+    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), chiefOfStaffLoop: loop, chiefOfStaffPrSearch });
     await server.start();
     try {
       const r = await request(server.getApp()).get('/chief-of-staff').set(auth());
@@ -134,7 +137,20 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       });
       vi.stubGlobal('fetch', github);
       try {
+        const report = vi.fn();
+        const observer = new ChiefOfStaffPriorWorkObservation({
+          enabled: () => true, chiefOfStaffTopic: () => 141014, owner: () => 9,
+          lookup: chiefOfStaffPrSearch, report,
+        });
+        observer.observe({
+          topicId: 141014, senderId: 9, text: 'Where are the permanent instar.sh addresses?',
+          replay: false, agentAuthored: false,
+        });
+        await vi.waitFor(() => expect(report.mock.calls).toEqual([['matched']]));
+        const networkCalls = github.mock.calls.filter(([url]) => url === 'https://api.github.com/graphql').length;
+        expect(networkCalls).toBe(4);
         const priorWork = await request(server.getApp()).get('/chief-of-staff/pr-search?q=instar.sh').set(auth()).expect(200);
+        expect(github.mock.calls.filter(([url]) => url === 'https://api.github.com/graphql')).toHaveLength(networkCalls);
         expect(priorWork.body).toMatchObject({
           coverage: { open: { status: 'fresh' }, merged: { status: 'fresh' } },
           matchCount: 1,

@@ -1042,6 +1042,7 @@ export class AgentServer {
   private moneyConstructionFailure: string | null = null;
   /** When THIS process's config snapshot was taken, so a config-derived claim is never shown without its age (MLE-1). */
   private readonly workDiscoveryPrSearch: ChiefOfStaffPrSearch;
+  private readonly namedPublicPrWarmupHome: boolean;
   private readonly publicPrWarmup: Parameters<ChiefOfStaffPrSearch['start']>[0];
   private publicPrLifecycle = 0;
   private publicPrWarmConfigWatch: (() => () => void) | null = null;
@@ -3024,6 +3025,7 @@ export class AgentServer {
     const namedWarmHome = typeof configuredWarmHome === 'string' && path.isAbsolute(configuredWarmHome)
       && path.resolve(configuredWarmHome) === installedStateHome
       && !!options.meshSelfId && configuredWarmMachine === options.meshSelfId;
+    this.namedPublicPrWarmupHome = namedWarmHome;
     const warmPaused = () => options.liveConfig?.get?.('workDiscovery.publicPrWarmupPaused', options.config.workDiscovery?.publicPrWarmupPaused)
       ?? options.config.workDiscovery?.publicPrWarmupPaused;
     const ownsWarmHome = () => options.singleInstanceLock?.revalidate() === true;
@@ -11924,6 +11926,14 @@ export class AgentServer {
       this.queuePaceLedger = null;
       this.queuePaceTuner = null;
     }
+  }
+
+  /** Read-only signal after verified owner delivery, using the same inventory as Work. */
+  async searchPublicPrsAfterOwnerDelivery(query: string) {
+    if (!this.server?.listening) throw new Error('Prior work inventory is not ready');
+    return this.namedPublicPrWarmupHome
+      ? this.workDiscoveryPrSearch.searchWarm(query)
+      : this.workDiscoveryPrSearch.search(query);
   }
 
   getApp(): Express {

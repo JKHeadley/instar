@@ -284,8 +284,13 @@ export class ChiefOfStaffPrSearch {
     return this.lookup(query, undefined, 0, true, waitSignal);
   }
 
-  private async lookup(query: string, scope: PrState | undefined, offset: number, allowTermFallback: boolean, waitSignal?: AbortSignal) {
+  async searchWarm(query: string) {
+    return this.lookup(query, undefined, 0, false, undefined, true);
+  }
+
+  private async lookup(query: string, scope: PrState | undefined, offset: number, allowTermFallback: boolean, waitSignal?: AbortSignal, requireWarm = false) {
     const warm = this.isWarmEnrolled();
+    if (requireWarm && !warm) throw new Error('Prior work inventory is not ready');
     const token = this.currentToken();
     const generation = this.credentialGeneration;
     if (token && !waitSignal?.aborted) {

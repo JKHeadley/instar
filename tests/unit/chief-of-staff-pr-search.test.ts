@@ -39,6 +39,14 @@ function page(nodes: ReturnType<typeof row>[], next: string | null = null) {
 }
 
 describe('Chief of Staff pull request lookup', () => {
+  it('does not turn a required warm read into an on-demand refresh', async () => {
+    const readToken = vi.fn(() => 'fixture');
+    const fetchPage = vi.fn(async () => page([]));
+    const lookup = new ChiefOfStaffPrSearch({ readToken, fetchPage });
+    await expect(lookup.searchWarm('#3342')).rejects.toThrow('not ready');
+    expect(readToken).not.toHaveBeenCalled();
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
   it('paces complete retained observations and drops both scopes on observed denial', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
     vi.setSystemTime(now);

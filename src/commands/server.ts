@@ -1,3 +1,4 @@
+import { ChiefOfStaffPriorWorkObservation } from '../core/ChiefOfStaffPriorWorkObservation.js';
 import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapshot.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
@@ -3100,6 +3101,7 @@ export function wireTelegramRouting(
     stateDir: string;
   } | null,
   poolHistoryAccess?: { port: number; authToken: string },
+  priorWorkObservation?: ChiefOfStaffPriorWorkObservation,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -3709,6 +3711,17 @@ export function wireTelegramRouting(
         }
         // Track for stall detection
         telegram.trackMessageInjection(topicId, targetSession, text);
+        // Only successful existing-session deliveries on the verified owner
+        // pipeline are in this shadow slice. Queued and mesh ingress do not
+        // inherit proof merely because their sender envelope carries a user ID.
+        if (injected && inboundMessageId != null && msg.metadata?.telegramDirectPlainText === true
+          && inboundMedia?.length === 0 && msg.metadata?.senderUnverified !== true
+          && msg.metadata?.viaLifeline !== true && msg.metadata?.viaMobileDevice !== true
+          && msg.metadata?.teamPhone !== true && msg.metadata?.forwarded !== true) {
+          priorWorkObservation?.observe({
+            topicId, senderId: telegramUserId, text, replay: isReplay, agentAuthored: !!signedByAgent,
+          });
+        }
       } else {
         if (generationlessCodex) {
           console.warn(`[telegram→session] Codex session "${targetSession}" never established a rollout generation — replacing stale incarnation for topic ${topicId}`);
@@ -9957,6 +9970,21 @@ export async function startServer(options: StartOptions): Promise<void> {
       coordinatorAwake: coordinator.isAwake,
       lifelineOwnsPolling: Boolean(lifelineOwnsPolling),
     });
+    const priorWorkObservation = new ChiefOfStaffPriorWorkObservation({
+      enabled: () => config.developmentAgent === true
+        && liveConfig.get('chiefOfStaff.enabled', config.chiefOfStaff?.enabled) !== false
+        && liveConfig.get('chiefOfStaff.observePriorWork', config.chiefOfStaff?.observePriorWork) === true,
+      chiefOfStaffTopic: () => _cosOwnerOnlyTopicId?.() ?? null,
+      owner: () => telegram?.getVerifiedOwner(),
+      lookup: {
+        search: async query => {
+          if (!_agentServerRef) throw new Error('Prior work inventory is not ready');
+          return _agentServerRef.searchPublicPrsAfterOwnerDelivery(query);
+        },
+      },
+      report: outcome => console.log(`  [chief-of-staff-pr-observation] ${outcome}`),
+    });
+
     if (telegramTopology?.mode === 'send-only' && telegramConfig) {
       // Send-only mode: no polling, but sendToTopic() works for session replies
       telegram = new TelegramAdapter(
@@ -10094,7 +10122,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
         () => resolveHubClassifierDeps(config, _sharedIntelligence),
-        { port: config.port, authToken: config.authToken ?? '' });
+        { port: config.port, authToken: config.authToken ?? '' }, priorWorkObservation);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
       wireTopicRenameLabel(telegram);
@@ -10241,7 +10269,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
         () => resolveHubClassifierDeps(config, _sharedIntelligence),
-        { port: config.port, authToken: config.authToken ?? '' });
+        { port: config.port, authToken: config.authToken ?? '' }, priorWorkObservation);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
