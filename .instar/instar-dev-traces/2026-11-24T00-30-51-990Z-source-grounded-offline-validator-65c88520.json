@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "source-grounded-offline-validator",
+  "sessionId": "998f9cdd-58f3-4659-9992-913b0a93fc1f",
+  "timestamp": "2026-11-24T00:30:51.990Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-offline-validator.md",
+  "artifactSha256": "13a0880162f94f0e55535c20ad84077554f776975775dc752422c83d0e8700aa",
+  "coveredFiles": [
+    "docs/evaluation/context-budget/source-grounded-answer/offline-validator.md",
+    "package-lock.json",
+    "package.json",
+    "scripts/evaluation/source_grounded_validate.mjs",
+    "tests/e2e/source-grounded-validation.test.ts",
+    "tests/fixtures/source-grounded-capture.ts",
+    "tests/integration/source-grounded-validation.test.ts",
+    "tests/unit/source-grounded-validation.test.ts",
+    "upgrades/next/source-grounded-offline-validator.md",
+    "upgrades/side-effects/source-grounded-offline-validator.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible internal offline validator of supplied data; no authenticated authority, production consumers, API, installed files, external actions or live model route. Qualification always false; full suite remains shared verification.",
+  "eli16Path": "docs/evaluation/context-budget/source-grounded-answer/offline-validator.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-offline-validator.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
