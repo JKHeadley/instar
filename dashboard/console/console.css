@@ -34,7 +34,7 @@
   --text: var(--slate-200);
   --text-strong: var(--slate-100);
   --text-muted: var(--slate-400);
-  --text-faint: var(--slate-500);
+  --text-faint: #8191a7;
   --accent: var(--teal-400);
   --accent-strong: var(--teal-300);
   --accent-wash: rgb(75 168 170 / 0.10);
@@ -77,10 +77,10 @@
   --hairline-strong: rgb(148 163 184 / 0.8);
   --text: var(--slate-700);
   --text-strong: var(--slate-900);
-  --text-muted: var(--slate-500);
-  --text-faint: var(--slate-400);
-  --accent: var(--teal-600);
-  --accent-strong: #2c7476;
+  --text-muted: var(--slate-600);
+  --text-faint: #57677d;
+  --accent: #2c7476;
+  --accent-strong: #205e60;
   --accent-wash: rgb(58 143 145 / 0.08);
   --accent-glow: 0 10px 40px rgb(58 143 145 / 0.12);
   --attn: #b45309;

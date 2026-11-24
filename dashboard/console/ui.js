@@ -100,32 +100,69 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
 
 /** 3. Detail sheet: bottom sheet on a phone, side panel on desktop. */
 let openSheet = null;
+const SHEET_CONTROLS = 'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]';
+
+function sheetControls(panel) {
+  const visible = [...panel.querySelectorAll(SHEET_CONTROLS)].filter(node =>
+    !node.matches(':disabled, input[type="hidden"]') &&
+    !node.closest('[hidden], [inert]') &&
+    (node.tabIndex >= 0 || !node.hasAttribute('tabindex') && node.matches('summary:first-of-type, [contenteditable="true"]')) &&
+    node.getClientRects().length > 0 && getComputedStyle(node).visibility === 'visible');
+  return visible.filter(node => !node.matches('input[type="radio"]:not(:checked)') || !node.name ||
+    !visible.some(other => other.matches('input[type="radio"]:checked') && other.name === node.name && other.form === node.form));
+}
+
 export function sheet({ title, onClose }, ...content) {
   closeSheet();
+  const opener = document.activeElement;
   const priorOverflow = document.documentElement.style.overflow;
   document.documentElement.style.overflow = 'hidden';
-  const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+  const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, tabindex: '-1' },
     el('div', { class: 'sheet-grab', 'aria-hidden': 'true' }),
     el('div', { class: 'sheet-head' }, el('h2', { class: 'sheet-title', text: title }),
       el('button', { class: 'chip icon-btn sheet-close', type: 'button', 'aria-label': 'Close', text: '×', onclick: () => closeSheet() })),
     el('div', { class: 'sheet-body' }, content));
   const scrim = el('div', { class: 'scrim', onclick: () => closeSheet() });
   const root = el('div', { class: 'sheet-root' }, scrim, panel);
+  const background = [...document.body.children].filter(node => !node.hasAttribute('inert'));
+  for (const node of background) node.setAttribute('inert', '');
   document.body.append(root);
-  const onKey = (e) => { if (e.key === 'Escape') closeSheet(); };
+  const onKey = (e) => {
+    if (e.defaultPrevented) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSheet();
+    } else if (e.key === 'Tab') {
+      const controls = sheetControls(panel);
+      const active = document.activeElement;
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (!first || !controls.includes(active) || active === (e.shiftKey ? first : last)) {
+        e.preventDefault();
+        ((e.shiftKey ? last : first) || panel).focus({ preventScroll: true });
+      }
+    }
+  };
+  const onFocus = (e) => {
+    if (!panel.contains(e.target)) (sheetControls(panel)[0] || panel).focus({ preventScroll: true });
+  };
   document.addEventListener('keydown', onKey);
-  openSheet = { root, onClose, onKey, priorOverflow };
+  document.addEventListener('focusin', onFocus);
+  openSheet = { root, onClose, onKey, onFocus, priorOverflow, background, opener };
   requestAnimationFrame(() => root.classList.add('open'));
   panel.querySelector('.sheet-close').focus({ preventScroll: true });
   return panel;
 }
 export function closeSheet() {
   if (!openSheet) return;
-  const { root, onClose, onKey, priorOverflow } = openSheet;
+  const { root, onClose, onKey, onFocus, priorOverflow, background, opener } = openSheet;
   openSheet = null;
   document.documentElement.style.overflow = priorOverflow;
   document.removeEventListener('keydown', onKey);
+  document.removeEventListener('focusin', onFocus);
   root.remove();
+  for (const node of background) node.removeAttribute('inert');
+  if (opener?.isConnected && !opener.closest('[inert]')) opener.focus({ preventScroll: true });
   if (onClose) onClose();
 }
 export function sheetIsOpen() { return Boolean(openSheet); }
