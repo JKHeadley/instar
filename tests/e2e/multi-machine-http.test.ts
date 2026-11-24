@@ -18,12 +18,12 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { MultiMachineCoordinator } from '../../src/core/MultiMachineCoordinator.js';
-import { MachineIdentityManager, generateMachineId, generateSigningKeyPair, generateEncryptionKeyPair, sign } from '../../src/core/MachineIdentity.js';
+import { MachineIdentityManager, generateMachineId, generateSigningKeyPair, generateEncryptionKeyPair, sign, verify } from '../../src/core/MachineIdentity.js';
 import { HandoffWireTransport } from '../../src/core/HandoffWireTransport.js';
 import type { HandoffAck } from '../../src/core/HandoffSentinel.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
-import { signRequest } from '../../src/server/machineAuth.js';
+import { signRequest, machineAuthV2Message, machineAuthRejectMessage, v2SignatureHash } from '../../src/server/machineAuth.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
@@ -291,6 +291,43 @@ describe('Multi-Machine HTTP E2E', () => {
     expect(resp.ok).toBe(true);
     const body = await resp.json() as { status: string };
     expect(body.status).toBe('acknowledged');
+  });
+
+  // SEC-147 stage 1: a binding signature names the route and the receiving machine.
+  function withBinding(body: unknown, method: string, p: string, recipient: string) {
+    const h = signRequest(envB.machineId, envB.signingKeys.privateKey, body) as unknown as Record<string, string>;
+    const bodyHash = crypto.createHash('sha256').update(JSON.stringify(body) || '').digest('hex');
+    return { ...h, 'X-Signature-V2': sign(machineAuthV2Message({
+      machineId: h['X-Machine-Id'], timestamp: h['X-Timestamp'], nonce: h['X-Nonce'], sequence: h['X-Sequence'],
+      bodyHash, method, path: p, recipientMachineId: recipient,
+    }), envB.signingKeys.privateKey) };
+  }
+
+  it('accepts a binding signature for this route and this machine (SEC-147 stage 1)', async () => {
+    const heartbeat = { holder: envB.machineId, role: 'standby', timestamp: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() };
+    const resp = await fetch(`${baseA}/api/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...withBinding(heartbeat, 'POST', '/api/heartbeat', envA.machineId) },
+      body: JSON.stringify(heartbeat),
+    });
+    expect(resp.ok).toBe(true);
+  });
+
+  it('refuses a binding signed for another route, with a rejection the receiver signs (SEC-147 stage 1)', async () => {
+    const heartbeat = { holder: envB.machineId, role: 'standby', timestamp: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() };
+    const headers = withBinding(heartbeat, 'POST', '/api/handoff/yield', envA.machineId);
+    const resp = await fetch(`${baseA}/api/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(heartbeat),
+    });
+    expect(resp.status).toBe(403);
+    expect(((await resp.json()) as { error: string }).error).toBe('binding-mismatch');
+    const raw = resp.headers.get('x-machine-auth-reject') ?? '';
+    const dot = raw.indexOf('.');
+    expect(raw.slice(0, dot)).toBe(envA.machineId);
+    const bodyHash = crypto.createHash('sha256').update(JSON.stringify(heartbeat)).digest('hex');
+    expect(verify(machineAuthRejectMessage(envA.machineId, headers['X-Nonce'], bodyHash, v2SignatureHash(headers['X-Signature-V2'])), raw.slice(dot + 1), envA.signingKeys.publicKey)).toBe(true);
   });
 
   // ── Pairing ─────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ export default defineConfig(withTestRunnerBound('integration', {
     // The test-runner semaphore globalSetup is PREPENDED by withTestRunnerBound
     // so setup() acquires BEFORE the dist build and teardown() releases after
     // it (globalSetup teardown runs in reverse — spec §2.2).
-    globalSetup: ['tests/setup/build-dist.globalSetup.ts'],
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/real-embedding-model.globalSetup.ts'],
     // Integration tests spawn shipped scripts and framework-shaped sessions;
     // strip ambient live-agent routing/auth variables before each file.
     setupFiles: ['./tests/vitest-setup.ts'],

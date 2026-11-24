@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "sec135-approval-link-guess-bound",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T20:21:02.209Z",
+  "artifactPath": "upgrades/side-effects/sec135-approval-link-guess-bound.md",
+  "artifactSha256": "0724fdba49be9ee9b031aa961542280594fa9fed91b0f9f6d44c18e06330b3f3",
+  "specPath": "docs/specs/sec135-approval-link-guess-bound.md",
+  "coveredFiles": [
+    "src/core/PinAttemptStore.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/data/awareness/approval-link-guess-bound.md",
+    "src/data/feature-ladders.json",
+    "src/data/state-coherence-registry.json",
+    "src/recommended/confirmStats.ts",
+    "src/recommended/confirmTokens.ts",
+    "src/server/AgentServer.ts",
+    "src/server/middleware.ts",
+    "src/server/publicPinHook.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security fix on the dashboard PIN boundary (a guessed PIN grants owner authority): auth-sensitive, so the full chain with a converged, owner-approved spec applies even though it ships dev-gated.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -118,6 +118,9 @@ A card for every decision, answer or sign-off the agent needs from a person. Off
 | POST | `/work-board/settings` | The owner's limits and the approval `policy`, with the dashboard `pin`. `{ preview: true, policy }` says how many waiting cards would start. |
 | GET | `/work-board/graduation` | The pilot's measurement from the card records, and which day-7 / day-14 records are due. |
 | POST | `/work-board/graduation/pass` | Write each due graduation record (the lease holder only). |
+| POST | `/work-board/cards/:id/notes` | `{ text }`: a progress note from the agent (Bearer) or the scoped session bound to the card's conversation or to the conversation that recorded the request. It lands in the card's conversation at once; `503 rate-limited` means nothing was written, write it again. A `not-started` card refuses it. |
+| POST | `/work-board/not-started/approve` | Owner, with the dashboard `pin`: `{ cards: [{ id, materialHash, titleHash }] }` approves each shown not-started internal card, one signed tap each; per-card results, `stale-card` for a card that changed. |
+| POST | `/work-board/not-started/approve-and-widen` | Owner, with the dashboard `pin`: the same approvals, then the `board-policy` trust request is raised with the record it rests on; the response says where to answer it or why it could not be raised. |
 | GET | `/mobile/work-board` | The cards a paired phone's person may see. |
 | POST | `/mobile/work-board/cards/:id/tap` | A tap from the owner's phone, signed with Face ID over the exact action line. |
 
@@ -1158,6 +1161,9 @@ Verified per-topic operator binding (Know Your Principal). The operator is estab
 - `GET /trust/elevations`
 - `GET /trust/summary`
 - `POST /trust/grant`
+- `POST /trust/requests` — open the person's approval request for a raise (the card goes to their own direct chat or paired device)
+- `GET /trust/requests` — open and past approval requests
+- `DELETE /trust/requests/:id` — withdraw a request the agent raised that no person has answered; its code approves nothing after that, and the same change cannot be asked again until the card would have expired. A `board-policy` request cannot be withdrawn.
 
 ## /tunnel
 - `GET /tunnel`

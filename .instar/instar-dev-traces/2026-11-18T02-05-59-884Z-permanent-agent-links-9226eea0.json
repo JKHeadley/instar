@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "permanent-agent-links",
+  "sessionId": "7f26f3fc-9cf3-44af-8f5b-4f4d5a4631a6",
+  "timestamp": "2026-11-18T02:05:59.884Z",
+  "artifactPath": "upgrades/side-effects/permanent-agent-links.md",
+  "artifactSha256": "0b2b6d9237fcf3f81bb5485b9ec77a677cad5ac4db31e2e558d976269abb12a3",
+  "specPath": "docs/specs/permanent-agent-links.md",
+  "coveredFiles": [
+    "docs/specs/permanent-agent-links.md",
+    "site/public/a/index.html",
+    "site/src/pages/a.astro",
+    "tests/unit/agent-links.test.ts",
+    "upgrades/side-effects/permanent-agent-links.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Same change: /a moves to a plain static file because the deployed preview showed the site build injecting a prefetch script into Astro pages.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}

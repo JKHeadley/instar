@@ -1,5 +1,7 @@
 import { renderGlance } from '../glance.js';
 import { el, setKids, pageHead, section, note, askPin, operatorSession, arrivalScroll } from './ui.js';
+import { plainReferenceText } from './display-identity.js';
+import { topicNameMap } from './topic-names.js';
 
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { Authorization: `Bearer ${localStorage.getItem('instar_token') || ''}`,
@@ -28,7 +30,13 @@ export async function renderNotifications(main, ctx, view) {
   try {
     const query = new URLSearchParams({ scope: 'pool', unread: String(notificationView.unread) });
     if (notificationView.cursors) query.set('cursors', JSON.stringify(notificationView.cursors));
-    const [status, feed] = await Promise.all([request('/notifications/selectivity?scope=pool'), request('/notifications/quiet?' + query)]);
+    const [status, feed, topics, pool] = await Promise.all([request('/notifications/selectivity?scope=pool'), request('/notifications/quiet?' + query),
+      // Names for the conversations and machines a notice mentions; a failed read only means the plain fallback words.
+      request('/telegram/topics?scope=pool').then((data) => ({ ok: true, data }), () => null),
+      request('/pool').then((data) => data, () => null)]);
+    const topicNames = topicNameMap(topics);
+    const machineNames = Object.fromEntries((Array.isArray(pool?.machines) ? pool.machines : [])
+      .filter((m) => m && typeof m.machineId === 'string' && typeof m.nickname === 'string').map((m) => [m.machineId, m.nickname]));
     const refresh = () => renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
     const filter = el('input', { type: 'checkbox', 'aria-label': 'Only unread notices' }); filter.checked = notificationView.unread;
     filter.addEventListener('change', () => renderNotifications(main, ctx, { unread: filter.checked, cursors: undefined }));
@@ -41,7 +49,8 @@ export async function renderNotifications(main, ctx, view) {
     for (const item of feed.items) {
       const row = el('article', { class: 'need-card' },
         el('strong', { text: status.categories.find(c => c.id === item.category)?.description || 'Automated notice' }),
-        el('p', { text: item.text }), el('small', { text: `${item.count} occurrence${item.count === 1 ? '' : 's'} · ${new Date(item.updatedAt).toLocaleString()}` }));
+        // Names, not ids: conversation and machine ids read as their names (or plain words); the full text stays on hover.
+        el('p', { text: plainReferenceText(item.text, { topicNames, machineNames }), title: item.text }), el('small', { text: `${item.count} occurrence${item.count === 1 ? '' : 's'} · ${new Date(item.updatedAt).toLocaleString()}` }));
       row.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Mark read', onclick: async () => {
         try { await request(`/notifications/quiet/${encodeURIComponent(item.id)}?machineId=${encodeURIComponent(item.machineId)}`, { method: 'PATCH', body: '{}' }); await refresh(); }
         catch (error) { feedback.textContent = error.message; }

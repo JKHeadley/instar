@@ -74,9 +74,11 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     expect(src).toContain("ctx.appConversations?.liveConversation(key.slice('app:'.length))");
     expect(read('src/server/AgentServer.ts')).toContain('workBoard: options.workBoard ?? null,');
   });
-  it('the session guard names exactly the two card routes a scoped session may reach', () => {
+  it('the session guard names exactly the three card routes a scoped session may reach', () => {
     const rows = MEMORY_SESSION_ROUTES.filter((r) => String(r.pattern).includes('work-board'));
-    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST']);
+    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST', 'POST']);
+    // agent-work-cards-default §2: progress notes from the session doing the work.
+    expect(rows.some((r) => r.method === 'POST' && r.pattern.test('/work-board/cards/wc_0123456789abcdef/notes'))).toBe(true);
     expect(rows.some((r) => r.pattern.test('/work-board'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards/wc_0123456789abcdef/tap'))).toBe(false);
@@ -192,7 +194,7 @@ describe('Work Board wiring — 2. FUNCTIONAL', () => {
     expect(validateAppEvent({ ...base, role: 'agent' })).not.toBeNull();
   });
 
-  it('archived-card conversations leave the list before paging, and everything shows when the card store cannot be read', () => {
+  it('archived-card conversations leave the list before paging, and an unreadable classification is an honest failed read', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-list-'));
     try {
       const store = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' } as never);
@@ -206,7 +208,7 @@ describe('Work Board wiring — 2. FUNCTIONAL', () => {
       expect(page2.conversations.map((c) => c.canonicalKey)).toEqual([`app:${keys[0]}`]);
       expect(page2.nextCursor).toBeNull();
       store.hiddenConversationKeys = () => { throw new Error('card store unreadable'); };
-      expect(store.listConversations({ limit: 10 }).conversations).toHaveLength(5);
+      expect(() => store.listConversations({ limit: 10 })).toThrow('work-card-visibility-unavailable');
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/work-board-wiring.test.ts' }); }
   });
 

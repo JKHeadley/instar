@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "hook-reporter-event-delivery",
+  "sessionId": "ed0490ec-e85a-408e-9278-415fdf09ede4",
+  "timestamp": "2026-11-22T02:18:35.486Z",
+  "artifactPath": "upgrades/side-effects/hook-reporter-event-delivery.md",
+  "artifactSha256": "53c0d5e6a13f26f69ce9c80a49e7bd7a182743dd867c1d1c012dd3de0fd505ea",
+  "specPath": "docs/specs/hook-reporter-event-delivery.md",
+  "coveredFiles": [
+    "docs/specs/hook-reporter-event-delivery.eli16.md",
+    "docs/specs/hook-reporter-event-delivery.md",
+    "docs/specs/reports/hook-reporter-event-delivery-convergence.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/NativeHookEvents.ts",
+    "src/server/routes.ts",
+    "tests/integration/command-hook-reporter.test.ts",
+    "tests/unit/command-hook-reporter-fields.test.ts",
+    "tests/unit/native-hook-events-consumers.test.ts",
+    "upgrades/next/hook-reporter-event-delivery.md",
+    "upgrades/side-effects/hook-reporter-event-delivery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Restores event delivery on every agent's default hook path, waking existing consumers (subagent tracking, compaction Trigger 1, pre-compaction flush where enabled); review held to the Tier 2 cap",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/hook-reporter-event-delivery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

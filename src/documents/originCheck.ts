@@ -90,10 +90,20 @@ export function deviceStoodAt(
   at: TeamAccessState, now: TeamAccessState,
   d: { keyHash: string; deviceId: string; personKey: string; client: 'phone' | 'browser' },
   linkSigned: (link: NonNullable<ReturnType<TeamAccessState['browserLinks']['get']>>) => boolean,
+  /** member-browser-any-computer §3.5: has this joined computer ended now (its end passed, by the folded rows)? */
+  joinedEndedNow?: (keyHash: string) => boolean,
 ): boolean {
   if (!at.on || !at.people.has(d.personKey) || at.bindings.get(d.keyHash) !== d.personKey) return false;
   const removedSince = !now.people.has(d.personKey);
-  if (d.client === 'phone') return !at.browserLinks.has(d.keyHash) && removedSince;
+  if (d.client === 'phone') return !at.browserLinks.has(d.keyHash) && !at.computerLinks?.has(d.keyHash) && removedSince;
+  // A joined computer stood when its binding was in force under that prefix; it is witnessed gone by a
+  // removal, a Forget (unbind), or its end passing. Expiry writes no row, so the end is read from the
+  // folded rows rather than from an unbind (member-browser-any-computer §3.4, §3.5).
+  const joined = at.computerLinks?.get(d.keyHash);
+  if (joined) {
+    if (joined.unbound || joined.deviceId !== d.deviceId || joined.boundTo !== d.personKey) return false;
+    return removedSince || !!now.computerLinks?.get(d.keyHash)?.unbound || (joinedEndedNow?.(d.keyHash) ?? false);
+  }
   const link = at.browserLinks.get(d.keyHash);
   if (!link || link.unbound || link.deviceId !== d.deviceId || link.boundTo !== d.personKey) return false;
   if (at.bindings.get(link.linkedByKeyHash) !== d.personKey || !linkSigned(link)) return false;

@@ -32,13 +32,14 @@
  * Machine-local BY DESIGN under the single-holder model; the per-entry `author`
  * field is the Phase-3 cross-machine-merge seam (recorded, not yet trusted).
  *
- * canonical-migration-producer: threadline-inbound-canonical-store@4
+ * canonical-migration-producer: threadline-inbound-canonical-store@5
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { isSafeFileId } from '../core/safeFileId.js';
 import {
   DIGEST_VERSION,
   EMPTY_SET_ACCUM,
@@ -207,19 +208,27 @@ export class ThreadLog {
 
   // ── Paths ──────────────────────────────────────────────────────
 
+  // SEC-127: every path built from a thread id goes through plainId(), so the
+  // write side (append, meta, rotation, delete) is confined like the read side.
+  // A refused id throws; ThreadMessageRecorder.record turns that into an
+  // observable 'append-failed', never a write outside the threads dir.
+  private plainId(threadId: string): string {
+    if (!isSafeFileId(threadId)) throw new Error('unsafe thread id: not a plain file name');
+    return threadId;
+  }
   private logPath(threadId: string): string {
-    return path.join(this.dir, `${threadId}.log.jsonl`);
+    return path.join(this.dir, `${this.plainId(threadId)}.log.jsonl`);
   }
   private metaPath(threadId: string): string {
-    return path.join(this.dir, `${threadId}.meta.json`);
+    return path.join(this.dir, `${this.plainId(threadId)}.meta.json`);
   }
   private archivePath(threadId: string, segment: number): string {
-    return path.join(this.archiveDir, `${threadId}.${segment}.log.jsonl`);
+    return path.join(this.archiveDir, `${this.plainId(threadId)}.${segment}.log.jsonl`);
   }
 
   /** Confirm a resolved log path is inside the threads dir (traversal defense, FD-7). */
   isPathConfined(threadId: string): boolean {
-    if (!THREAD_ID_RE.test(threadId)) return false;
+    if (!THREAD_ID_RE.test(threadId) || !isSafeFileId(threadId)) return false;
     const resolved = path.resolve(this.logPath(threadId));
     const root = path.resolve(this.dir) + path.sep;
     return resolved.startsWith(root);

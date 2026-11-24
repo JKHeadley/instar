@@ -96,13 +96,18 @@ describe('dashboard read markers — production wiring', () => {
     expect(setup.status).toBe(201);
     const browserId = setup.body.deviceId as string;
 
-    const signed = (dev: ReturnType<typeof makeDevice>, id: string) => (method: 'GET' | 'POST', p: string, body?: unknown) => {
-      const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-      const time = String(Date.now() + Math.floor(Math.random() * 1000));
-      const sig = dev.sign(canonicalString(id, HOST, method, p, time, raw));
-      const q = method === 'GET' ? request(app).get(p) : request(app).post(p).set('Content-Type', 'application/json');
-      q.set('Host', HOST).set('X-Instar-Device', id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
-      return raw ? q.send(raw.toString()) : q;
+    const signed = (dev: ReturnType<typeof makeDevice>, id: string) => {
+      let lastTime = 0;
+      return (method: 'GET' | 'POST', p: string, body?: unknown) => {
+        const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+        // Repeated reads must have distinct canonical requests for the real replay guard.
+        lastTime = Math.max(Date.now(), lastTime + 1);
+        const time = String(lastTime);
+        const sig = dev.sign(canonicalString(id, HOST, method, p, time, raw));
+        const q = method === 'GET' ? request(app).get(p) : request(app).post(p).set('Content-Type', 'application/json');
+        q.set('Host', HOST).set('X-Instar-Device', id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+        return raw ? q.send(raw.toString()) : q;
+      };
     };
     const asPhone = signed(phone, phoneId);
     const asBrowser = signed(browser, browserId);
@@ -119,7 +124,12 @@ describe('dashboard read markers — production wiring', () => {
     const reply = await auth(request(app).post('/app/session-reply')).set('X-Instar-Bind-Token', token).send({ conversationId: alias, text: 'Yes: the report is ready.' });
     expect(reply.status).toBe(200);
 
-    const phoneRow = async () => ((await asPhone('GET', '/mobile/conversations')).body.conversations as Array<Record<string, unknown>>).find((r) => r.id === key)!;
+    const phoneRow = async () => {
+      const response = await asPhone('GET', '/mobile/conversations');
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.conversations).toEqual(expect.any(Array));
+      return (response.body.conversations as Array<Record<string, unknown>>).find((r) => r.id === key)!;
+    };
     expect(await phoneRow()).toMatchObject({ hasUnread: true, unreadCount: 1 });
 
     // The browser reads the conversation and reports the newest message read (what the page sends).

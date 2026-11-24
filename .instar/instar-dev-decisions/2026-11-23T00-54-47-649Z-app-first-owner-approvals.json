@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-23T00:54:47.649Z",
+  "slug": "app-first-owner-approvals",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

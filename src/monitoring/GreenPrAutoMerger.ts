@@ -175,6 +175,8 @@ export interface GreenPrAutoMergerDeps {
   leaseEpoch(): number;
   /** The single oldest-first GraphQL list call. Throws → tick-failed canary. */
   listOpenPrs(): Promise<PrSummary[]>;
+  /** One current authenticated-author open/main candidate; exact handoffs never depend on discovery limits. */
+  refetchHandoffPr?(pr: number): Promise<PrSummary | null>;
   /** Which code-owned files this PR's diff touches (enumerated to exhaustion). */
   codeOwnedPaths(pr: PrSummary): Promise<CodeOwnedPathsVerdict>;
   /**
@@ -702,24 +704,36 @@ export class GreenPrAutoMerger extends EventEmitter {
     const epoch = safeNum(() => this.deps.leaseEpoch());
     const isWarmup = state.lastActingEpoch !== epoch;
 
+    const exactHandoffRead = !!opts.handoff && !!this.deps.refetchHandoffPr;
     let candidates: PrSummary[];
     try {
-      candidates = await this.deps.listOpenPrs();
-      state.lastSuccessfulListAt = this.deps.now();
+      if (opts.handoff && this.deps.refetchHandoffPr) {
+        const target = await this.deps.refetchHandoffPr(opts.handoff.pr);
+        candidates = target && target.number === opts.handoff.pr ? [target] : [];
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-read', pr: opts.handoff.pr, found: candidates.length === 1 });
+      } else {
+        candidates = await this.deps.listOpenPrs();
+        state.lastSuccessfulListAt = this.deps.now();
+      }
       state.breaker = feedBreaker(state.breaker, 'reset', this.deps.now(), this.breakerCfg());
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       // Tick-failed canary (L5(b)): a failed/unparseable list call feeds the breaker.
       state.breaker = feedBreaker(state.breaker, 'tick-failed', this.deps.now(), this.breakerCfg());
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: 'list', detail: String((e as Error)?.message).slice(0, 200) });
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: opts.handoff && this.deps.refetchHandoffPr ? 'handoff-read' : 'list', detail: String((e as Error)?.message).slice(0, 200) });
       this.deps.saveState(state);
-      return { acted: false, reason: 'list-failed' };
+      return { acted: false, reason: opts.handoff && this.deps.refetchHandoffPr ? 'handoff-read-failed' : 'list-failed' };
     }
 
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
     const { eligible, snapshotEntries } = await this.gather(candidates, state, floor);
-    state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
-    const namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
-    this.observeNotAgentOwned(candidates, state);
+    // A direct target is not a discovery snapshot: its absent neighbors were not
+    // re-read, so it cannot clear their ownership/red alerts or refresh list state.
+    let namespaceMismatch = false;
+    if (!exactHandoffRead) {
+      state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
+      namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
+      this.observeNotAgentOwned(candidates, state);
+    }
 
     // Red-PR watchdog (red-pr-watchdog): surface my own PRs stuck RED past the
     // threshold. Runs on every acting/warm-up tick that got a fresh PR list —
@@ -727,7 +741,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // attention (mutations here are persisted by the saveState below, whichever
     // branch returns). Placed AFTER the merge-candidate gather so a stuck-red PR
     // is surfaced even on a lease-flap warm-up tenure.
-    this.redPrWatchdogPass(candidates, state);
+    if (!exactHandoffRead) this.redPrWatchdogPass(candidates, state);
 
     if (isWarmup) {
       // Seed hold memory + snapshot + reap any orphan; begin merges next tick.
