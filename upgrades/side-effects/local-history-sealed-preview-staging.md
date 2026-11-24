@@ -8,7 +8,7 @@ A competing reader returns busy and can retry before the original deadline. Writ
 
 ## Under-block
 
-Preview can become stale as the destination changes. Copy admission would need fresh validation and durable scoped write permits. The internal copy-intent inspector checks binding and does not consume a challenge, create a permit or copy data. Expired-row retirement remains subject to the existing review and is not implemented here.
+Preview can become stale as the destination changes. Replay validates the sealed receipt and prepared index. It returns the original observation and does not rehash each normalized payload. A future apply worker needs to verify all payload digests and EOF before its first mutation permit. Copy admission would need fresh validation and durable scoped write permits. The internal copy-intent inspector checks binding and does not consume a challenge, create a permit or copy data. Expired-row retirement remains subject to the existing review and is not implemented here.
 
 ## Abstraction fit and interactions
 
@@ -33,3 +33,7 @@ The unbounded-self-action class does not apply. An explicit preview request runs
 ## Independent Review
 
 The independent reviewer concurred with the exact split, with disclosures for existing status expiry, charged failed allocations and retained bookkeeping. Those disclosures appear above. The reviewer did not run tests.
+
+## Reader memory-monitoring evidence
+
+The sealed receipt preserves the fixed reader’s sampled or unavailable status independently of the parser status recorded by project. Replay validates the finite status value and returns the original observation. This adds no memory-control policy or route.

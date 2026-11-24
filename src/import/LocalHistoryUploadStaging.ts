@@ -42,12 +42,14 @@ interface Row {
 interface Plan { manifest: LocalHistoryManifest; files: Array<{ fileId: string; allocation: string }> }
 interface PreparedFile extends LocalHistoryParseReceipt { fileId: string; allocation: string }
 interface PreparedPlan { version: 1; parserContractVersion: 1; operationId: string; fingerprint: string; files: PreparedFile[] }
+type PreparedPreviewRead = Awaited<ReturnType<typeof runLocalHistoryPreparedReadJob>>;
 interface PreviewReceipt {
   previewId: string;
   machineId: string;
   expiresAt: number;
   confirmation: { challenge: string; action: 'copy-selected-history' };
   preview: LocalHistoryPreparedPreview;
+  readerRssProtection: PreparedPreviewRead['rssProtection'];
   projects: ReturnType<typeof summarizeLocalHistoryPreviewProjects>;
 }
 export interface LocalHistoryUploadStatus {
@@ -507,7 +509,7 @@ export class LocalHistoryUploadStaging {
    * The preparation custody slot prevents cancellation/recovery from disposing
    * artifact bytes until the actual fixed reader process has closed.
    */
-  async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string): Promise<LocalHistoryPreparedPreview> {
+  async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string): Promise<PreparedPreviewRead> {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
     if (this.verification || this.preparation) refuse('busy');
@@ -515,7 +517,7 @@ export class LocalHistoryUploadStaging {
     const prepared = this.prepared(row), plan = this.plan(row), ownerUserId = this.owner(deviceCopy).ownerUserId;
     const authorized = () => { try { return this.owned(row.id, deviceCopy).phase === 'prepared'; } catch { return false; } };
     const check = () => { if (!authorized()) refuse('unavailable'); };
-    let result: LocalHistoryPreparedPreview | undefined, writerBusy = false, leased = false;
+    let result: PreparedPreviewRead | undefined, writerBusy = false, leased = false;
     const done = Promise.resolve().then(async () => {
       check();
       const receipt = await runLocalHistoryPreparedReadJob({
@@ -539,7 +541,7 @@ export class LocalHistoryUploadStaging {
           }
         }.bind(this),
       });
-      check(); result = receipt.preview;
+      check(); result = receipt;
     }).catch(error => {
       writerBusy = error instanceof LocalHistoryPreparedReadRefused
         && error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
@@ -563,14 +565,14 @@ export class LocalHistoryUploadStaging {
     if (row.phase !== 'prepared') refuse('conflict');
     const existing = this.readPublishedPreview(row);
     if (existing) return existing;
-    const preview = await this.readPreparedPreview(deviceCopy, operationId);
+    const { preview, rssProtection: readerRssProtection } = await this.readPreparedPreview(deviceCopy, operationId);
     const current = this.owned(operationId, deviceCopy);
     if (current.phase !== 'prepared' || this.db.prepare('SELECT 1 FROM upload_previews WHERE id = ?').get(row.id)) refuse('conflict');
     const prepared = this.prepared(current).files;
     const receipt = {
       previewId: crypto.randomBytes(16).toString('hex'), machineId: this.issuer.machineId, expiresAt: current.deadline,
       confirmation: { challenge: crypto.randomBytes(32).toString('base64'), action: 'copy-selected-history' as const },
-      preview, projects: summarizeLocalHistoryPreviewProjects(preview.files, prepared),
+      preview, readerRssProtection, projects: summarizeLocalHistoryPreviewProjects(preview.files, prepared),
     };
     const bytes = Buffer.from(JSON.stringify({ version: 1, operationId: row.id, issuerHash: row.issuerHash,
       ownerHash: row.ownerHash, deviceHash: row.deviceHash, boot: row.boot, fingerprint: row.fingerprint,
@@ -621,6 +623,9 @@ export class LocalHistoryUploadStaging {
     return { requestId: intent.applyRequestId, fingerprint: digest(['copy-selected-history', row.id, row.issuerHash,
       row.ownerHash, row.deviceHash, row.boot, row.fingerprint, receipt.previewId, receipt.confirmation.challenge, intent.applyRequestId]) };
   }
+  // Replay returns the original sealed receipt. Reading its prepared index
+  // does not reread normalized payloads. Copy admission needs a full artifact
+  // digest and EOF check before its first mutation permit.
   private readPublishedPreview(row: Row): PreviewReceipt | undefined {
     const record = this.db.prepare('SELECT allocation,sha256 FROM upload_previews WHERE id = ?').get(row.id) as
       { allocation: string; sha256: string } | undefined;
@@ -643,6 +648,7 @@ export class LocalHistoryUploadStaging {
         || value.ownerHash !== row.ownerHash || value.deviceHash !== row.deviceHash || value.boot !== row.boot
         || value.fingerprint !== row.fingerprint || JSON.stringify(value.prepared) !== JSON.stringify(prepared)
         || !id(receipt?.previewId) || receipt.machineId !== this.issuer.machineId || receipt.expiresAt !== row.deadline
+        || !['sampled', 'unavailable'].includes(receipt.readerRssProtection)
         || receipt.confirmation?.action !== 'copy-selected-history'
         || !/^[A-Za-z0-9+/]{43}=$/.test(receipt.confirmation.challenge)) refuse('unavailable');
       return receipt;

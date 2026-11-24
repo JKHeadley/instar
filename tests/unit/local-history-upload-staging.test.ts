@@ -127,13 +127,15 @@ it('prepares both source kinds through real children and retires raw files witho
       } finally { bytes.fill(0); }
     }
     expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
-    const preview = await f.stage.readPreparedPreview(device, grant.operationId);
+    const { preview, rssProtection } = await f.stage.readPreparedPreview(device, grant.operationId);
+    expect(['sampled', 'unavailable']).toContain(rssProtection);
     expect(preview.files.map(file => file.source)).toEqual(['codex', 'claude-code']);
     expect(preview.messages).toBe(2); expect(preview.newMessages).toBe(2);
     expect(JSON.stringify(preview)).not.toContain('synthetic codex text');
     expect(JSON.stringify(preview)).not.toContain('synthetic claude text');
     expect(f.stage.status(device, grant.operationId).expiresAt).toBe(status.expiresAt);
     expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 0 });
+    const reader = vi.spyOn(f.stage, 'readPreparedPreview');
     const pendingCandidate = f.stage.publishPreparedPreview(device, grant.operationId);
     const [first, concurrent] = await Promise.allSettled([
       pendingCandidate,
@@ -143,6 +145,7 @@ it('prepares both source kinds through real children and retires raw files witho
     if (first.status === 'rejected') throw first.reason;
     const candidate = first.value;
     expect(candidate.preview).toEqual(preview);
+    expect(candidate.readerRssProtection).toBe((await reader.mock.results[0].value).rssProtection);
     expect(candidate.projects).toEqual(preview.files.map(file => expect.objectContaining({
       source: file.source, projectPath: file.projectPath, files: 1, messages: 1, newMessages: 1, existingMessages: 0,
     })));
