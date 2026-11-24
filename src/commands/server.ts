@@ -7915,6 +7915,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let stageBOwnerEpochForConversation = (_conversationId: string): number => 0;
     console.log(pc.dim(`  Codex session lifecycle Stage B: ${stageBActivation.reason}`));
     const sessionManager = new SessionManager(sessionManagerConfig, state, {
+      frameworkDefaultModels: () => config.sessions?.frameworkDefaultModels,
       bindTerminateAuthority: (authority) => { boundTerminateAuthority = authority; },
       tmuxAsyncEnabled: _tmuxAsyncEnabled,
       degradedTmuxGuard,

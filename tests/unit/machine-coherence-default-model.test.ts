@@ -78,4 +78,17 @@ describe('defaultModel.<framework> manifest rows', () => {
     ]);
     expect(rows.filter((r) => r.key.startsWith('defaultModel.'))).toEqual([]);
   });
+
+  it('compares policy intent when an exact Codex pin currently matches the moving selector', () => {
+    const makeConfig = (model: string) => ({ sessions: { frameworkDefaultModels: { 'codex-cli': model } } });
+    const moving = makeConfig('latest:sol');
+    const compare = () => computeDivergentRows([
+      { machineId: 'm_studio', advert: advert(moving) },
+      { machineId: 'm_mama', advert: advert({}) },
+    ]).find(result => result.key === 'defaultModel.codex-cli');
+
+    expect(compare()).toBeUndefined();
+    moving.sessions.frameworkDefaultModels['codex-cli'] = 'gpt-6.2-sol';
+    expect(compare()?.valueClasses).toEqual({ m_studio: 'gpt-6-2-sol', m_mama: 'latest-sol' });
+  });
 });

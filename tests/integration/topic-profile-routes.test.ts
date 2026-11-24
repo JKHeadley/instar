@@ -43,7 +43,7 @@ interface Bundle {
   disclosures: Array<{ topic: string; text: string }>;
 }
 
-function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean } = {}): Bundle {
+function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean; codexDefault?: string } = {}): Bundle {
   const store = new TopicProfileStore({
     stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'),
     legacyFrameworksPath: path.join(stateDir, 'state', 'topic-frameworks.json'),
@@ -54,10 +54,11 @@ function buildBundle(regime: ProfileWriteRegime, opts: { boundOperator?: boolean
     defaultFramework: () => 'claude-code',
     configTopicFrameworks: () => ({}),
     configProfileDefaults: () => ({}),
-    frameworkDefaultModels: () => ({}),
+    frameworkDefaultModels: () => opts.codexDefault ? { 'codex-cli': opts.codexDefault } : {},
     tierEscalationConfig: () => undefined,
     localModelBinding: () => null,
-    frameworkBinaryPath: () => null,
+    frameworkBinaryPath: (framework) => framework === 'codex-cli' ? process.execPath : null,
+    codexModelSupported: () => true,
   });
   const respawns: string[] = [];
   const disclosures: Array<{ topic: string; text: string }> = [];
@@ -163,6 +164,21 @@ describe('GET /topic-profile/:topicId', () => {
     expect(res.body.pin.framework).toBe('codex-cli');
     expect(res.body.pin.updatedBy).toBe('telegram:777');
     expect(res.body.breakerCount).toBe(0);
+  });
+
+  it('returns the resolved family default and preserves an explicit topic model', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { codexDefault: 'latest:sol' });
+    await bundle.store.mutate(23, { framework: 'codex-cli', updatedBy: 'telegram:777' });
+    const app = buildApp(bundle);
+
+    const inherited = await request(app).get('/topic-profile/23');
+    expect(inherited.status).toBe(200);
+    expect(inherited.body.resolved.model).toBe('gpt-6.2-sol');
+
+    await bundle.store.mutate(23, { model: 'gpt-6.1-sol', updatedBy: 'telegram:777' });
+    const pinned = await request(app).get('/topic-profile/23');
+    expect(pinned.status).toBe(200);
+    expect(pinned.body.resolved.model).toBe('gpt-6.1-sol');
   });
 
   it('503 when the profile bundle is not wired (feature-is-alive boundary)', async () => {
