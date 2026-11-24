@@ -17,7 +17,7 @@ function panel(options = {}) {
     version: 1, status: 'partial',
     candidates: [
       { kind: 'conversation', ref: `app:${APP}`, messageId: 'source-event', title: 'Earlier private discussion', snippet: '<img src=x onerror="boom()"> text' },
-      { kind: 'pull-request', repository: 'JKHeadley/instar', number: 3342, state: 'OPEN', title: 'Earlier review', url: 'javascript:boom()' },
+      { kind: 'pull-request', repository: 'JKHeadley/instar', number: 3342, state: 'OPEN', matchedBy: 'all-terms', title: 'Earlier review', url: 'javascript:boom()' },
       { kind: 'pull-request', repository: 'unknown/private', number: 9, title: 'Rejected repo link' },
       { kind: 'conversation', ref: `app:${APP}`, messageId: 'javascript: alert(1)', title: 'Rejected position' },
     ],
@@ -48,6 +48,7 @@ describe('private Work search panel', () => {
     expect(child.querySelector('img')).toBeNull();
     expect(child.textContent).not.toContain('Rejected repo link');
     expect(child.textContent).toContain('Open when checked');
+    expect(child.textContent).toContain('Matched all search terms across pull request fields.');
     expect(child.textContent).toContain('Could not verify coverage');
     expect(child.textContent).toContain('Older results');
     expect(dom.window.location.href).not.toContain('prior');

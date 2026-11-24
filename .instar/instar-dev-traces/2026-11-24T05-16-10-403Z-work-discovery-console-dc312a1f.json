@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "work-discovery-console",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:16:10.403Z",
+  "artifactPath": "upgrades/side-effects/work-discovery-console.md",
+  "artifactSha256": "d0dad033159f8ad18a79ede71d956c77f75cc184b8f7c71ab6023c4d80db83f0",
+  "specPath": "docs/specs/canonical-records-and-work-discovery.md",
+  "coveredFiles": [
+    "dashboard/console/work-discovery.js",
+    "src/core/ChiefOfStaffPrSearch.ts",
+    "src/data/awareness/work-discovery-read.md",
+    "src/server/workDiscoveryRoutes.ts",
+    "tests/integration/work-discovery-routes.test.ts",
+    "tests/unit/console-work-discovery.test.ts",
+    "upgrades/next/work-discovery-console.md",
+    "upgrades/side-effects/work-discovery-console.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Work-only retrieval changes ranking across an existing bounded public inventory. Separate protected admission and unchanged legacy consumer behavior.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": null
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/canonical-records-and-work-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

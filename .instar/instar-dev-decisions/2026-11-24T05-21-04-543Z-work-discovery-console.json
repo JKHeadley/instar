@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T05:21:04.543Z",
+  "slug": "work-discovery-console",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 78,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffPrSearch.ts",
+      "src/data/awareness/work-discovery-read.md",
+      "src/server/workDiscoveryRoutes.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
