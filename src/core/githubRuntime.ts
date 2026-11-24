@@ -253,6 +253,9 @@ export interface FetchGitHubGraphqlOptions {
   fetchImpl?: typeof globalThis.fetch;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  signal?: AbortSignal;
+  rejectRedirects?: boolean;
+  observeRateLimit?(waitMs: number): void;
 }
 
 export class GitHubGraphqlResponseError extends Error {
@@ -318,6 +321,7 @@ async function readBoundedGraphqlJson(response: Response, maxBytes: number): Pro
 /** Direct GitHub GraphQL call with a bounded, non-secret error surface. */
 export async function fetchGitHubGraphql<T>(options: FetchGitHubGraphqlOptions): Promise<T> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
   const response = await fetchImpl('https://api.github.com/graphql', {
     method: 'POST',
     headers: {
@@ -328,8 +332,12 @@ export async function fetchGitHubGraphql<T>(options: FetchGitHubGraphqlOptions):
       'X-GitHub-Api-Version': '2022-11-28',
     },
     body: JSON.stringify({ query: options.query, variables: options.variables ?? {} }),
-    signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+    ...(options.rejectRedirects ? { redirect: 'error' } : {}),
+    signal: options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal,
   });
+  if (response.headers.get('x-ratelimit-remaining') === '0') {
+    options.observeRateLimit?.(githubRateLimitWait(response) ?? 60_000);
+  }
   if (!response.ok) {
     const message = `github-graphql-http-${response.status}`;
     if (response.status === 429 || response.status === 403 && isGitHubThrottledResponse(response)) {

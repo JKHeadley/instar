@@ -5091,7 +5091,7 @@ export async function startServer(options: StartOptions): Promise<void> {
   // Solves the "Written But Not Re-Read" class of bugs — sessions modify
   // config.json but the server process never picks up the changes.
   const liveConfig = new LiveConfig(config.stateDir, {
-    watchPaths: ['updates.autoApply', 'sessions.maxSessions', 'monitoring'],
+    watchPaths: ['updates.autoApply', 'sessions.maxSessions', 'monitoring', 'workDiscovery.publicPrWarmupPaused'],
   });
   liveConfig.start();
 

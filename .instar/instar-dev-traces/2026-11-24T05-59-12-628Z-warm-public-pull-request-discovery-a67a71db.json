@@ -1,0 +1,61 @@
+{
+  "version": 3,
+  "slug": "warm-public-pull-request-discovery",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:59:12.628Z",
+  "artifactPath": "upgrades/side-effects/warm-public-pull-request-discovery.md",
+  "artifactSha256": "4e9f75de12468dbc4c996444e258a76d213bd45b2c82fad42f54525ac89ae59d",
+  "specPath": "docs/specs/warm-public-pull-request-discovery.md",
+  "coveredFiles": [
+    "docs/specs/reports/warm-public-pull-request-discovery-convergence.md",
+    "docs/specs/warm-public-pull-request-discovery.eli16.md",
+    "docs/specs/warm-public-pull-request-discovery.md",
+    "src/commands/server.ts",
+    "src/core/BackupManager.ts",
+    "src/core/ChiefOfStaffPrSearch.ts",
+    "src/core/PublicPrWarmupBudget.ts",
+    "src/core/githubRuntime.ts",
+    "src/core/types.ts",
+    "src/data/state-coherence-registry.json",
+    "src/server/AgentServer.ts",
+    "src/server/chiefOfStaffPrSearchRoutes.ts",
+    "src/server/middleware.ts",
+    "src/server/workDiscoveryRoutes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/work-discovery-alive.test.ts",
+    "tests/integration/work-discovery-routes.test.ts",
+    "tests/unit/BackupManager-never-backup.test.ts",
+    "tests/unit/chief-of-staff-pr-search.test.ts",
+    "upgrades/next/warm-public-pull-request-discovery.md",
+    "upgrades/side-effects/warm-public-pull-request-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "One bounded opt-in public read flight with durable per-installation quota, lifecycle and authorization checks, no dispatch changes.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": null
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/warm-public-pull-request-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The startup and timer retry edge must reserve each autonomous scan at least 15 seconds after the last durable attempt, including after reconstruction. The ratchet drives the shared rolling reservation function under sustained pressure. The settling brake and steady-state bound are eight attempts and 300 pages in a rolling hour. The provider also limits each scan to one flight, 20 seconds, and 100 pages per scope. An exhausted, invalid, or orphaned budget denies more work until its applicable window clears or the required recovery is completed."
+    }
+  }
+}

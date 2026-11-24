@@ -1,12 +1,12 @@
 // A1's first slice: lookup on the authenticated private Work boundary.
 import { Router, type Request, type Response } from 'express';
-import type { ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
+import { PR_INVENTORY_LOOKUP_BUDGET_MS, type ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
 import { MAX_QUERY_CHARS, searchTerms } from '../core/conversationKeywordSearch.js';
 import { isConversationSearchEnabled, searchLocal, type ConversationSearchRouteDeps, type SearchPlatform } from './mobileConversationSearchRoutes.js';
 import { personOfReaderKey } from './mobilePairingRoutes.js';
+import { waitForPrInventory } from './chiefOfStaffPrSearchRoutes.js';
 
 const PROVIDER_LIMIT = 20;
-const LOOKUP_BUDGET_MS = 5_000; // Same interactive budget as conversation search over the machine pool.
 const FUTURE_SOURCES = ['gitRefs', 'specs', 'decisions', 'documents', 'projects', 'cards', 'commitments', 'jobs'] as const;
 const SOURCES = ['conversations', 'pullRequests'] as const;
 type Source = typeof SOURCES[number];
@@ -17,7 +17,7 @@ export interface WorkDiscoveryDependencies {
   mayReadPrivateWork(req: Request, res: Response): boolean;
   conversationSource(): ConversationSearchRouteDeps | null;
   configuredMessaging(platform: 'telegram' | 'slack'): boolean;
-  pullRequestSource: Pick<ChiefOfStaffPrSearch, 'searchForWork'>;
+  pullRequestSource: Pick<ChiefOfStaffPrSearch, 'searchForWork'> & Partial<Pick<ChiefOfStaffPrSearch, 'isWarmEnrolled' | 'isObservationCurrent'>>;
   budgetMs?: number;
 }
 
@@ -76,18 +76,15 @@ function conversations(deps: WorkDiscoveryDependencies, query: string, included:
   }
 }
 
-async function pullRequests(deps: WorkDiscoveryDependencies, query: string, included: boolean) {
+async function pullRequests(deps: WorkDiscoveryDependencies, query: string, included: boolean, enteredAt: number, res: Response) {
   const scope = { repository: 'public Instar' } as const;
-  const unavailable = () => ({ hits: [], coverage: { ...scope, status: 'unavailable' } });
-  if (!included) return { hits: [], coverage: { ...scope, status: 'unsearched' } };
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unavailable = () => ({ hits: [], coverage: { ...scope, status: 'unavailable' }, revision: null });
+  if (!included) return { hits: [], coverage: { ...scope, status: 'unsearched' }, revision: null };
   try {
     // The shared PR provider refreshes its allowlisted corpus with a fixed
     // GraphQL request. The caller's phrase is used only for local matching.
-    const result = await Promise.race([
-      deps.pullRequestSource.searchForWork(query),
-      new Promise<null>(resolve => { timer = setTimeout(resolve, deps.budgetMs ?? LOOKUP_BUDGET_MS, null); }),
-    ]);
+    const budgetMs = deps.budgetMs ?? (deps.pullRequestSource.isWarmEnrolled?.() ? PR_INVENTORY_LOOKUP_BUDGET_MS : 5_000);
+    const result = await waitForPrInventory(signal => deps.pullRequestSource.searchForWork(query, signal), enteredAt + budgetMs, res);
     if (!result || result.knownMatchCount === null) return unavailable();
     const statuses = [result.coverage.open.status, result.coverage.merged.status];
     const truncated = result.nextOffset !== null;
@@ -100,17 +97,17 @@ async function pullRequests(deps: WorkDiscoveryDependencies, query: string, incl
         retainedObservation: pr.priorComplete, matchedBy: pr.matchedBy,
       })),
       coverage: { ...scope, method: result.matchKind, status, truncated, open: result.coverage.open, merged: result.coverage.merged },
+      revision: result.revision,
     };
   } catch {
     return unavailable();
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 export function createWorkDiscoveryRouter(deps: WorkDiscoveryDependencies): Router {
   const router = Router();
   router.post('/work/discover', async (req, res) => {
+    const enteredAt = Date.now();
     res.set('Cache-Control', 'no-store');
     if (!deps.mayReadPrivateWork(req, res)) {
       res.status(403).json({ error: 'private-work-session-required' });
@@ -125,7 +122,7 @@ export function createWorkDiscoveryRouter(deps: WorkDiscoveryDependencies): Rout
       res.status(400).json({ error: 'invalid-work-discovery-query' });
       return;
     }
-    const pulls = await pullRequests(deps, input.query, input.sources.has('pullRequests'));
+    const pulls = await pullRequests(deps, input.query, input.sources.has('pullRequests'), enteredAt, res);
     if (res.headersSent || res.destroyed) return;
     if (!deps.mayReadPrivateWork(req, res)) {
       res.status(403).json({ error: 'private-work-session-required' });
@@ -138,12 +135,15 @@ export function createWorkDiscoveryRouter(deps: WorkDiscoveryDependencies): Rout
     // Capture private rows only after the asynchronous public source. Current source
     // checks, row capture, and JSON serialization share one synchronous boundary.
     const local = conversations(deps, input.query, input.sources.has('conversations'));
-    const available = [local.coverage.status, pulls.coverage.status].some(status => status !== 'unavailable' && status !== 'unsearched');
+    const currentPulls = pulls.revision && deps.pullRequestSource.isObservationCurrent?.(pulls.revision, input.query) === false
+      ? { hits: [], coverage: { repository: 'public Instar', status: 'unavailable' } }
+      : pulls;
+    const available = [local.coverage.status, currentPulls.coverage.status].some(status => status !== 'unavailable' && status !== 'unsearched');
     res.status(available ? 200 : 503).json({
       version: 1, status: available ? 'partial' : 'unavailable', observedAt: new Date().toISOString(),
-      candidates: [...local.hits, ...pulls.hits],
+      candidates: [...local.hits, ...currentPulls.hits],
       coverage: {
-        conversations: local.coverage, pullRequests: pulls.coverage,
+        conversations: local.coverage, pullRequests: currentPulls.coverage,
         ...Object.fromEntries(FUTURE_SOURCES.map(source => [source, { status: 'unsearched' }])),
       },
     });
