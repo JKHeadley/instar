@@ -25,3 +25,5 @@ Each critical finding needs its own host-issued identity before an adjudication 
 The offline composition selects each retry once and uses that same selection to bind the output and check disclosure timing. An earlier attempt cannot stand in for a missing selected output.
 
 Each judge slot’s retry limit now comes from the verified plan. A more permissive limit supplied with attempt records has no effect. The repeatable check also calls the composed flow with the real validator.
+
+A rerun also has to match the original case, submission, comparison arm and repeat. Reusing an affected run ID does not make an unrelated benchmark result count.
