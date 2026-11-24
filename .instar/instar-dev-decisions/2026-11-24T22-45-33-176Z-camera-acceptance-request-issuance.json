@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-24T22:45:33.176Z",
+  "slug": "camera-acceptance-request-issuance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceRequests.ts",
+      "src/core/CameraOwnerAcceptance.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-request-issuance",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-24T22:44:58.401Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-request-issuance.md",
+  "artifactSha256": "dea9dad38df0dec0fb9fc397e59bad7e791c3a7ceca4149c229f2ec3ac5e2a68",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceRequests.ts",
+    "src/core/CameraOwnerAcceptance.ts",
+    "tests/unit/camera-acceptance-requests.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Request issuance checks the assigned verifier and a durable journal transaction. This checkpoint has no live route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

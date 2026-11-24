@@ -94,11 +94,11 @@ export interface CameraAcceptanceReceipt {
 }
 
 /** Fold a complete, authority-verified receipt stream for the Camera pilot. */
-export function cameraDeliveryDecision(
+export function foldCameraReceipts(
   requirement: CameraAcceptanceRequirement,
   receipts: readonly CameraAcceptanceReceipt[] | null,
-): CameraDecision {
-  if (!receipts || !requirement.verifier || requirement.builders.includes(requirement.verifier)) return 'pending';
+): { decision: CameraDecision } | null {
+  if (!receipts || !requirement.verifier || requirement.builders.includes(requirement.verifier)) return null;
 
   const current = receipts.filter(receipt => receipt.revision === requirement.revision);
   const bySequence = new Map<number, CameraAcceptanceReceipt>();
@@ -106,15 +106,22 @@ export function cameraDeliveryDecision(
     if (receipt.candidate !== requirement.candidate
       || receipt.verifier !== requirement.verifier
       || !Number.isSafeInteger(receipt.sequence)
-      || receipt.sequence < 1) return 'pending';
+      || receipt.sequence < 1) return null;
     const previous = bySequence.get(receipt.sequence);
-    if (previous && previous.decision !== receipt.decision) return 'pending';
+    if (previous && previous.decision !== receipt.decision) return null;
     bySequence.set(receipt.sequence, receipt);
   }
 
   // Internal sequence gaps hold delivery. The caller must verify coverage through the authoritative head.
   for (let sequence = 1; sequence <= bySequence.size; sequence++) {
-    if (!bySequence.has(sequence)) return 'pending';
+    if (!bySequence.has(sequence)) return null;
   }
-  return bySequence.get(bySequence.size)?.decision ?? 'pending';
+  return { decision: bySequence.get(bySequence.size)?.decision ?? 'pending' };
+}
+
+export function cameraDeliveryDecision(
+  requirement: CameraAcceptanceRequirement,
+  receipts: readonly CameraAcceptanceReceipt[] | null,
+): CameraDecision {
+  return foldCameraReceipts(requirement, receipts)?.decision ?? 'pending';
 }

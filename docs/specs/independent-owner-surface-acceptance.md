@@ -74,7 +74,7 @@ The first implementation is limited to the Camera computer-link acceptance line.
 - **fleet:** Keep enrollment limited to the single Camera milestone. Broader enrollment belongs to the separately reviewed completion stage.
 - **graduation criterion:** An independent verifier records a Pass for all four real-phone trials and a restart preserves the exact result. A real wrong-candidate or stale request stays held.
 - **dark-window:** Review within 28 days of the prototype merge. If the pilot has no verified Pass, keep it dark and record why on the draft.
-- **ladder:** One registered development-agent pilot. Broader use requires a separate reviewed stage.
+- **ladder:** not applicable: this Camera-only checkpoint belongs to a single development-agent pilot. Broader use requires a separate reviewed stage.
 
 ## Open questions
 
