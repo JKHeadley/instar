@@ -910,14 +910,64 @@ describe('runVerify — e2e shards', () => {
 });
 
 describe('runVerify — retention of failed worktrees', () => {
-  it('preserves the failed verdict if evidence capture throws', async () => {
+  it.each([false, true])('preserves the failed verdict when capture throws and logger failure is %s', async (loggerThrows) => {
     const spy = vi.spyOn(FailureEvidence.prototype, 'capture').mockImplementation(() => { throw new Error('capture failed'); });
     try {
       const f = fake({ laneStatuses: { unit: ['failed'] } });
+      const log = f.seams.log;
+      f.seams.log = (event) => {
+        log(event);
+        if (loggerThrows && event.event === 'failure-evidence-capture-failed') throw new Error('logger failed');
+      };
       const r = await runVerify(input(), f.seams);
       expect(r.kind === 'record' && r.record.outcome).toBe('failure');
       expect(f.logs).toContainEqual({ event: 'failure-evidence-capture-failed' });
     } finally { spy.mockRestore(); }
+  });
+
+  it('keeps raw process stderr and suite context after failure cleanup', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const result = await exec(command, args, opts);
+      if (command.endsWith('vitest') && args.includes('vitest.config.ts')) {
+        const out = args.find(a => a.startsWith('--outputFile='))!.slice('--outputFile='.length);
+        f.files.set(out, JSON.stringify({ testResults: [{ name: path.join(P.runDir, 'tests/unit/a.test.ts'), status: 'failed', message: '', failureMessage: 'HookInitializationError: model setup did not finish', assertionResults: [] }] }));
+        return { ...result, status: 1, stderr: 'NativeSetupError: model acquisition stalled before initialization' };
+      }
+      return result;
+    };
+    const result = await runVerify(input(), f.seams);
+    expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    const evidence = JSON.parse(f.files.get(path.join(P.runDir, '.local-verify-failures.json'))!);
+    expect(evidence.diagnostics ?? []).toContainEqual(expect.objectContaining({ kind: 'process', step: 'unit', stderr: expect.stringContaining('NativeSetupError') }));
+    expect(evidence.diagnostics ?? []).toContainEqual(expect.objectContaining({ kind: 'report', step: 'unit', text: expect.stringContaining('HookInitializationError') }));
+    expect(f.removed).toContain(P.reportsDir);
+  });
+
+  it('keeps raw reporter counts and messages before deleting lane reports', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, unhandled: { unit: 1 } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const result = await exec(command, args, opts);
+      if (command.endsWith('vitest') && args.includes('vitest.config.ts') && opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE) {
+        f.files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE, JSON.stringify({ v: 1, unhandledErrors: 1, messages: ['UnhandledError: session disposed early'] }));
+      }
+      return result;
+    };
+    const result = await runVerify(input(), f.seams);
+    expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    const evidence = JSON.parse(f.files.get(path.join(P.runDir, '.local-verify-failures.json'))!);
+    expect(evidence.diagnostics ?? []).toContainEqual(expect.objectContaining({ kind: 'reporter', step: 'unit', state: 'present', unhandledErrors: 1, text: expect.stringContaining('session disposed early') }));
+    expect(f.removed).toContain(P.reportsDir);
+  });
+
+  it('keeps raw missing reporter state as unknown rather than zero', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, noReporter: true });
+    const result = await runVerify(input(), f.seams);
+    expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    const evidence = JSON.parse(f.files.get(path.join(P.runDir, '.local-verify-failures.json'))!);
+    expect(evidence.diagnostics ?? []).toContainEqual(expect.objectContaining({ kind: 'reporter', step: 'unit', state: 'unavailable', unhandledErrors: null }));
   });
 
   it('keeps assertion details after temporary lane reports are removed', async () => {

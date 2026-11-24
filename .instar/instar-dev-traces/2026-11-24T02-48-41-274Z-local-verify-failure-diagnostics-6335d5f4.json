@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "local-verify-failure-diagnostics",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T02:48:41.274Z",
+  "artifactPath": "upgrades/side-effects/local-verify-failure-diagnostics.md",
+  "artifactSha256": "8f7127786790dbcf4abbdc800d041f73eec936daf416059d869f946b500ca3e9",
+  "coveredFiles": [
+    "docs/specs/local-verify-failure-diagnostics.eli16.md",
+    "src/data/awareness/local-verify-failure-diagnostics.md",
+    "src/localVerify/failureEvidence.ts",
+    "src/localVerify/orchestrator.ts",
+    "tests/e2e/local-verify-failure-diagnostics-alive.test.ts",
+    "tests/helpers/verificationDiagnosticsFixture.ts",
+    "tests/integration/local-verify-failure-diagnostics.test.ts",
+    "tests/unit/localVerify/failureEvidence.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/local-verify-failure-diagnostics.md",
+    "upgrades/side-effects/local-verify-failure-diagnostics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds bounded observations to the existing private failure file, preserving verdicts, admission and retention.",
+  "eli16Path": "docs/specs/local-verify-failure-diagnostics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-failure-diagnostics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,4 @@
+---
+title: Verification Failure Diagnostics
+---
+When local verification fails, inspect `.local-verify-failures.json` in its retained failed checkout before requesting another run. It contains the original assertion summary plus bounded process, failed-suite and unhandled-reporter diagnostics captured before temporary reports are deleted. Reporter evidence distinguishes a known zero from missing, malformed or unavailable data; missing evidence does not prove an error occurred. Cuts and omissions are disclosed. Recognized credential formats are masked, but the capsule remains private diagnostic material and may contain other sensitive test context. Do not paste it wholesale into messages or logs. Normal retention follows the existing three failed-checkout cohort; the diagnostic data never decides the verification verdict.
