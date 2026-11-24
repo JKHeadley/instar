@@ -47,7 +47,7 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; token: string; resolve: (x: { status: number | null; signal: string | null }) => void; intentAtSpawn: InFlightIntent | null }
 
-function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number; liveOperatorGhLogin?: () => string | null; watermark?: Record<string, unknown> } = {}) {
+function setup(opts: { beforePrView?: () => Promise<void>; views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number; liveOperatorGhLogin?: () => string | null; watermark?: Record<string, unknown> } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
@@ -78,7 +78,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const intentPath = path.join(stateDir, 'state', 'local-verify', 'inflight.json');
 
   const seams: LocalVerifyServiceSeams = {
-    prView: async (pr) => views[pr] ?? null,
+    prView: async (pr) => { if (opts.beforePrView) await opts.beforePrView(); return views[pr] ?? null; },
     isPrOpen: async (pr) => (pr in open ? open[pr] : true),
     spawnRun: (a) => {
       const p = ++pid;
@@ -1332,6 +1332,79 @@ describe('durable queue', () => {
     await s2.svc.tick();
     await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
+  });
+
+  it('priority admission rechecks a stored success only after its base moves', async () => {
+    const views = { 1: view() };
+    const s = setup({ views });
+    s.svc.setQueueControlsEnabled(() => true);
+    await s.svc.request(1);
+    await s.finish(0, ok(record()));
+    const front = () => s.svc.operatorFront({ pr: 1, by: 'throughput', reason: 'recover verdict after lease change' });
+    expect(await front()).toMatchObject({ ok: true, status: 'recorded' });
+    views[1] = view({ baseRefOid: sha('c') });
+    expect(await s.svc.request(1)).toMatchObject({ ok: true, status: 'recorded' });
+    expect(await front()).toMatchObject({ ok: true, status: 'admitted' });
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    expect(await front()).toMatchObject({ ok: true, status: 'running' });
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('restores a queued replacement after restart without reusing the old-base verdict', async () => {
+    const views = { 1: view() };
+    const first = setup({ views });
+    first.svc.setQueueControlsEnabled(() => true);
+    await first.svc.request(1);
+    await first.finish(0, ok(record()));
+    views[1] = view({ baseRefOid: sha('c') });
+    first.setHolders([999]);
+    await first.svc.operatorFront({ pr: 1, by: 'throughput', reason: 'replace prior-base run' });
+    expect(first.svc.snapshot().queue).toHaveLength(1);
+    await first.svc.operatorHold({ pr: 1, by: 'throughput', reason: 'pause replacement' });
+    expect(first.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    await first.svc.operatorRelease({ pr: 1, by: 'throughput' });
+
+    const restarted = setup({ stateDir: first.stateDir, views });
+    restarted.setHolders([999]);
+    restarted.svc.setQueueControlsEnabled(() => true);
+    await restarted.svc.boot();
+    expect(restarted.svc.snapshot().queue).toEqual([expect.objectContaining({ pr: 1, baseSha: sha('c') })]);
+    expect(restarted.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+  });
+
+  it('preserves a changed-base front placed while the PR is already held', async () => {
+    const views = { 1: view() };
+    const s = setup({ views });
+    s.svc.setQueueControlsEnabled(() => true);
+    await s.svc.request(1);
+    await s.finish(0, ok(record()));
+    views[1] = view({ baseRefOid: sha('c') });
+    s.setHolders([999]);
+    await s.svc.operatorHold({ pr: 1, by: 'throughput', reason: 'pause' });
+    expect(await s.svc.operatorFront({ pr: 1, by: 'throughput', reason: 'new base' })).toMatchObject({ status: 'held' });
+    expect(await s.svc.operatorRelease({ pr: 1, by: 'throughput' })).toMatchObject({ placed: 'queue' });
+    expect(s.svc.snapshot().queue).toEqual([expect.objectContaining({ pr: 1, baseSha: sha('c') })]);
+  });
+
+  it('withdraws an explicit replacement when unfront runs during the PR lookup', async () => {
+    const views = { 1: view() };
+    let delay: Promise<void> | undefined;
+    const s = setup({ views, beforePrView: async () => { await delay; } });
+    s.svc.setQueueControlsEnabled(() => true);
+    await s.svc.request(1);
+    await s.finish(0, ok(record()));
+    views[1] = view({ baseRefOid: sha('c') });
+    let resume!: () => void;
+    delay = new Promise<void>((resolve) => { resume = resolve; });
+    const pending = s.svc.operatorFront({ pr: 1, by: 'throughput', reason: 'new base' });
+    await s.flush();
+    expect(s.svc.operatorUnfront({ pr: 1, by: 'throughput' })).toMatchObject({ ok: true });
+    resume();
+    expect(await pending).toMatchObject({ status: 'recorded' });
+    expect(s.spawned).toHaveLength(1);
+    expect(s.svc.snapshot().queue).toHaveLength(0);
   });
 
   it('a restored entry already recorded green is not re-queued', async () => {

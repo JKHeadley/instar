@@ -1285,7 +1285,17 @@ export class LocalVerifyService {
   // ---- read surface ----
 
   getRecord(pr: number, headSha: string, baseRefName: string): LocalVerifyRecord | null {
-    try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
+    try {
+      const record = this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null;
+      if (record?.outcome === 'success') {
+        const differentBase = (e: Pick<QueueEntry, 'headSha' | 'baseRefName' | 'baseSha'>) =>
+          e.headSha === headSha && e.baseRefName === baseRefName && e.baseSha !== record.baseSha;
+        const replaces = (e: QueueEntry) => e.pr === pr && differentBase(e);
+        const held = this.operator.get(pr)?.hold?.entry;
+        if ((held && differentBase(held)) || (this.inFlight && replaces(this.inFlight.entry)) || this.queue.some(replaces)) return null;
+      }
+      return record;
+    } catch { return null; }
   }
 
   snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']>; waiting: Array<Waiter & { live: boolean }>; operator?: OperatorQueueView; preflight: { mode: 'off' | 'observe' | 'enforce'; replayStoreReady: boolean; replays: Array<{ pr: number; headSha: string; baseRefName: string; state: PreflightReplay['state']; admissionAttempts: number; executionAttempts: number; blockedReason?: string }> }; likelyFailingFirst: ReturnType<LocalVerifyService['likelyFailingFirstStatus']> } {
@@ -1472,9 +1482,10 @@ export class LocalVerifyService {
       }
       const open = await this.seams.isPrOpen(e.pr).catch(() => null);
       const view = open === false ? null : await this.seams.prView(e.pr).catch(() => null);
+      const recorded = this.getRecord(e.pr, e.headSha, e.baseRefName);
       const why = open === false ? 'closed'
         : view && (view.headRefOid !== e.headSha || view.baseRefName !== e.baseRefName) ? 'head-or-base-moved'
-          : this.getRecord(e.pr, e.headSha, e.baseRefName)?.outcome === 'success' ? 'already-recorded' : null;
+          : recorded?.outcome === 'success' && recorded.baseSha === e.baseSha ? 'already-recorded' : null;
       if (why) {
         drops[why]++;
         this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: why });
@@ -1909,7 +1920,12 @@ export class LocalVerifyService {
     // a capacity refusal — full queue or an older waiter's place — must not spend the PR's one re-run).
     let spendRerun: (() => void) | null = null;
     if (existing) {
-      if (existing.outcome === 'success') return this.recordedAnswer(pr, existing);
+      if (existing.outcome === 'success') {
+        // The mark is read after the asynchronous PR/base lookup: an intervening unfront
+        // withdraws the request, and a front placed during a hold survives until release.
+        const frontOnNewBase = opts.operator && this.queueControlsOn() && this.operator.get(pr)?.front && existing.baseSha !== baseSha;
+        if (!frontOnNewBase) return this.recordedAnswer(pr, existing);
+      }
       if (existing.outcome === 'failure') {
         const tried = this.failureReruns.get(key) ?? new Set<string>();
         const newBase = existing.baseSha !== baseSha && !tried.has(baseSha);
