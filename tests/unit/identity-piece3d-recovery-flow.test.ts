@@ -31,7 +31,7 @@ afterEach(() => {
   vi.useRealTimers();
   for (const s of services.splice(0)) s.stop();
   for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/identity-piece3d-recovery-flow.test.ts' });
-  resetOwnerRecordWiringForTests(); resetApproverClaimForTests(); resetApproverGrantForTests(); resetApproverStateCacheForTests(); resetApproverRecoveryForTests(); resetRecoveryCacheForTests(); setRecoveryChat(null);
+  resetOwnerRecordWiringForTests(); resetApproverClaimForTests(); resetApproverGrantForTests(); resetApproverStateCacheForTests(); resetApproverRecoveryForTests(); resetRecoveryCacheForTests();
 });
 
 function setup() {
@@ -45,7 +45,7 @@ function setup() {
   wireOwnerRecordStore(config, new MachineIdentityManager(dir));
   migrateApprovers(svc, { now: Date.now(), earliestPeerMigration: null, allPeersAnswered: false, singleMachine: true });
   setOwnerRecordRecoveryHooks(recoveryHooksFor(svc));
-  setRecoveryChat(async (text, buttons) => { dms.push({ text, buttons }); return ++msgId; });
+  setRecoveryChat(svc, async (text, buttons) => { dms.push({ text, buttons }); return ++msgId; });
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(svc)));

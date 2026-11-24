@@ -44,6 +44,10 @@ Piece 3d of the approved identity and security design (topic 144636): recovery t
 - **Provisional until settled.** The one approver reader and 2b ingest treat the recovered key as approving nothing until every machine at the start has accepted it, with no stop anywhere. The lost keys named at the start are retired one clean sync round after settling (umbrella §4.5a).
 - **Decision facts travel in each machine's signed pull request.** 3a's retired-key list now comes only from signed facts, except from a machine without the new guard (a mixed rollout, where retiring only removes rights).
 
+## Disposable-agent coverage after the owner-chat merge
+
+An explicitly configured disposable agent uses the merged simulated owner chat to exercise the same recovery command, callbacks and accepted-notice handling as the Telegram path. The existing owner-chat eligibility checks still gate the simulated routes. The shutoff handler cancels a pending first-approver claim and stops a waiting or ready recovery in that disposable agent. The integration test checks both outcomes and verifies that the candidate remains unable to approve during the wait and after shutoff. The real private-chat, app and physical-phone release gates still apply.
+
 ## Decision-point inventory
 
 - Recovery start.

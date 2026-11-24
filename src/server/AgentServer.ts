@@ -1,3 +1,4 @@
+import { readRecovery, recordStop } from '../core/approverRecovery.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
@@ -10,7 +11,7 @@ import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { isApproverRevokeNonce, takeApproverRevokeTap } from './mobileApproverRevoke.js';
 import { setOwnerRecordApproverHooks, setOwnerRecordRecoveryHooks } from '../core/ownerRecordWiring.js';
 import { approverRecoveryTap, approverResetCommand, recoveryHooksFor, recoveryTick, setRecoveryChat } from './mobileApproverRecovery.js';
-import { approverClaimLive, declineApproverClaimTap, isApproverClaimNonce, unvouchedOwnerDevices } from './mobileApproverClaim.js';
+import { approverClaimDeviceId, dropApproverClaimFor, approverClaimLive, declineApproverClaimTap, isApproverClaimNonce, unvouchedOwnerDevices } from './mobileApproverClaim.js';
 import { approverPresenceKey, ensureApproverMigration, setKeptDevicesNotice, mayApprove, mergeRetiredKeys, readApproverState, retiredKeyHashes, tightenApproverCutoff, verifyApproverPresence } from './mobileApprover.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
@@ -265,6 +266,9 @@ import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, sl
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { SameNetworkListener } from './sameNetworkListener.js';
 import { sameNetworkGate, homeAddressInUse } from './phoneSetupRoutes.js';
+import { ThrowawayOwnerChat, standInEverUsed } from './throwawayOwnerChat.js';
+import { mountThrowawayOwnerChatRoutes } from './throwawayOwnerChatRoutes.js';
+import type { OwnerChatSurface } from '../messaging/ownerChatTap.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
 import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
@@ -571,6 +575,8 @@ export class AgentServer {
   private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  /** The stand-in owner chat for a throwaway agent with no owner (docs/specs/throwaway-owner-chat.md); null on every other agent. */
+  throwawayOwnerChat: ThrowawayOwnerChat | null = null;
   /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
   readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
@@ -2507,6 +2513,17 @@ export class AgentServer {
       res.json({ stepUpToken: proof.token, stepUpExpiresAt: proof.expiresAt });
     });
 
+    // The stand-in owner chat (docs/specs/throwaway-owner-chat.md): built only for a home that asked
+    // for it or ran it before; live only while its four conditions hold. Never assigned to options.telegram.
+    const standIn = this.config.stateDir && this.config.projectDir ? ThrowawayOwnerChat.forBoot({
+      projectDir: this.config.projectDir,
+      stateDir: this.config.stateDir,
+      adapterStarted: () => !!(options.telegram || options.slack || options.whatsapp || options.imessage),
+      log: (line) => console.log(line),
+    }) : null;
+    this.throwawayOwnerChat = standIn;
+    // The owner's private chat the approval flows use: Telegram when configured, else a live stand-in.
+    const ownerChat = (): OwnerChatSurface | null => options.telegram ?? (standIn && !standIn.isOff() ? standIn : null);
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
@@ -2542,14 +2559,16 @@ export class AgentServer {
       // A new browser's owner notice (dashboard-conversations-browser-device §4.2 step 10).
       raiseBrowserNotice: (item, opts) => this.raiseBrowserNotice(item, opts),
       ownerDM: async (text, declineData, approveData) => {
-        if (!options.telegram) return null;
-        return options.telegram.sendOwnerDMWithButton(text, [
+        const chat = ownerChat();
+        if (!chat) return null;
+        return chat.sendOwnerDMWithButton(text, [
           ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
           ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
         ], { reportHeld: true });
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
-      telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // The throwaway stand-in counts as an owner chat while live; it has no owner user id (telegramOwnerId stays Telegram's).
+      telegramOwnerPresent: () => (options.telegram ? !!options.telegram.getOwnerUserId?.() : standIn?.ownerChatPresent() === true),
       // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
       readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
       // People and roles: the Telegram owner id decides which registry profile is the owner.
@@ -2630,7 +2649,14 @@ export class AgentServer {
       // identity-security piece 3d: recovery decisions for the store and sync, and its tick (notices, ready, ends).
       setOwnerRecordRecoveryHooks(recoveryHooksFor(mp));
       // Recovery messages carry their own button labels ("Start", "Never mind", "Stop it"); null = not accepted.
-      if (options.telegram) { const tg = options.telegram; setRecoveryChat(async (text, buttons) => { const id = await tg.sendOwnerDMWithButton(text, buttons.length ? buttons : null); return typeof id === 'number' && id > 0 ? id : null; }); }
+      if (options.telegram || standIn?.builtLive) {
+        setRecoveryChat(mp, async (text, buttons) => {
+          const chat = ownerChat();
+          if (!chat) return null;
+          const id = await chat.sendOwnerDMWithButton(text, buttons.length ? buttons : null);
+          return typeof id === 'number' && id > 0 ? id : null;
+        });
+      }
       if (!process.env.VITEST) { const recoveryTimer = setInterval(() => { void recoveryTick(mp).catch(() => undefined); }, 5 * 60_000); recoveryTimer.unref?.(); }
       setOwnerRecordApproverHooks({
         approverFacts: () => ({ unvouched: unvouchedOwnerDevices(mp).length, migratedAt: readApproverState(mp.deps.stateDir).migration?.at ?? null, retired: retiredKeyHashes(mp.deps.stateDir) }),
@@ -2710,10 +2736,12 @@ export class AgentServer {
         }),
       });
       mp.push.start();
-      if (options.telegram) {
+      // Every owner-chat surface present gets the same Approve/Decline handlers: the adapter, and the
+      // throwaway stand-in whether live or shut off (its shut-off sweep presses Decline through them).
+      for (const chat of [options.telegram, standIn].filter((c): c is NonNullable<typeof c> => !!c) as OwnerChatSurface[]) {
         // The tap's wording follows the device's kind (dashboard-conversations-browser-device §4.7),
         // read before the nonce is consumed.
-        options.telegram.mobileDeclineHandler = (nonce) => {
+        chat.mobileDeclineHandler = (nonce) => {
           // identity-security piece 3a §3: "This wasn't me" on a first-approver code ends that claim.
           if (isApproverClaimNonce(nonce)) return { result: 'declined' as const, text: declineApproverClaimTap(nonce).text };
           // identity-security piece 3a §6: Decline on "remove an approving device" keeps it.
@@ -2723,7 +2751,7 @@ export class AgentServer {
           const client = mp.nonceClient(nonce);
           return { result: mp.declineByNonce(nonce), client };
         };
-        options.telegram.mobileApproveHandler = (nonce) => {
+        chat.mobileApproveHandler = (nonce) => {
           // identity-security piece 3d: Start on a recovery card, or Stop it on a notice.
           { const t = approverRecoveryTap(mp, nonce, true); if (t.handled) return { outcome: 'other' as const, text: t.text }; }
           // identity-security piece 3a §6: Approve on "remove an approving device" removes it (ledger row first).
@@ -2741,11 +2769,29 @@ export class AgentServer {
           return outcome === 'approved' ? { outcome, text: '', client }
             : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? (client === 'browser' ? 'This browser setup has already ended.' : 'This pairing has already ended.') : APPROVE_REFUSAL[outcome].detail, client };
         };
+      }
+      if (options.telegram) {
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
-        // identity-security piece 3d: recovery when every approving device is lost, started from the private chat.
-        options.telegram.approverResetHandler = (args) => approverResetCommand(mp, args);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
+      if (options.telegram) options.telegram.approverResetHandler = (args) => approverResetCommand(mp, args);
+      if (standIn) {
+        standIn.approverResetHandler = (args) => approverResetCommand(mp, args);
+        standIn.onShutOff('approver-claim', () => {
+          const deviceId = approverClaimDeviceId();
+          if (deviceId) dropApproverClaimFor(deviceId);
+        });
+        standIn.onShutOff('recovery', () => {
+          const { home } = readRecovery(mp.deps.stateDir);
+          if (home && (home.state === 'waiting' || home.state === 'ready')) {
+            recordStop(mp.deps.stateDir, {
+              recoveryId: home.recoveryId, at: Date.now(), by: 'stand-in-off', kind: 'chat', lock: false,
+            });
+          }
+        });
+      }
+      // A stand-in that is off (refused at boot after an earlier build, or shut off) ends what it carried, now that its handlers are wired.
+      standIn?.finishShutOff();
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -2935,6 +2981,8 @@ export class AgentServer {
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
       };
+      // A throwaway home that ran the stand-in owner chat is never paired with another machine (throwaway-owner-chat §2.4).
+      machineRouteContext.pairBlocked = () => ((this.config.stateDir && standInEverUsed(this.config.stateDir)) || (this.throwawayOwnerChat && !this.throwawayOwnerChat.isOff()) ? 'stand-in-owner-chat-used' : null);
       machineRouteContext.teamJoinBlocked = (enforcement) => {
         if (enforcement >= TEAM_ENFORCEMENT_VERSION) return false;
         if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
@@ -6776,6 +6824,12 @@ export class AgentServer {
       accountFollowMePeerViews: options.accountFollowMePeerViews,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      manualBalanceForecasts: async () => {
+        if (!this.quotaPacingLedger || !options.subscriptionPool || !isQuotaPacingEnabled(options.config)) return null;
+        const local = await buildLocalSummaries(this.quotaPacingLedger, options.subscriptionPool,
+          { machineId: this.meshSelfId ?? 'local', pollIntervalMs: 15 * 60_000, now: Date.now() });
+        return local.summaries;
+      },
       proactiveSwapMonitor: options.proactiveSwapMonitor,
       usageWallRescue: options.usageWallRescue,
       inUseAccountResolver: options.inUseAccountResolver,
@@ -8373,6 +8427,8 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      // The stand-in owner chat's test routes: mounted only when it passed its conditions at this boot.
+      if (this.throwawayOwnerChat?.builtLive) mountThrowawayOwnerChatRoutes(this.app, this.throwawayOwnerChat, { authToken: () => configRef.authToken, port: () => this.config.port });
       // Organization pack (docs/specs/org-pack-and-join.md): bearer preparation, owner-device acts.
       {
         const pairing = this.mobilePairing;

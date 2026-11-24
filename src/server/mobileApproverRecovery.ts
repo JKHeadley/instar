@@ -39,10 +39,11 @@ const told = new Set<string>();
 
 /** The owner's private chat, with our own button labels (null: no message id, i.e. not accepted). Set by the server. */
 type ChatSend = (text: string, buttons: Array<{ text: string; data: string }>) => Promise<number | null>;
-let chatSend: ChatSend | null = null;
-export function setRecoveryChat(fn: ChatSend | null): void { chatSend = fn; }
+const recoveryChats = new WeakMap<MobilePairingService, ChatSend>();
+export function setRecoveryChat(svc: MobilePairingService, send: ChatSend): void { recoveryChats.set(svc, send); }
 async function chat(svc: MobilePairingService, text: string, buttons: Array<{ text: string; data: string }> = []): Promise<number | null> {
-  if (chatSend) return chatSend(text, buttons);
+  const send = recoveryChats.get(svc);
+  if (send) return send(text, buttons);
   return (await svc.deps.ownerDM?.(text, buttons[0]?.data ?? `md:d:${crypto.randomBytes(12).toString('hex')}`)) ?? null;
 }
 

@@ -70,6 +70,7 @@ import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFil
 import { topicRef } from './shared/topicRef.js';
 import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
 import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
+import { approveTapResult, declineTapResult } from './ownerChatTap.js';
 import { learningOwnerId } from '../core/ownerWords.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
@@ -1322,20 +1323,17 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
-    const browser = r.client === 'browser';
-    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
-    if (r.outcome === 'approved') {
-      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
-      // and once the phone is active any such code finishes it. Only the buttons go.
-      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+    // The visible result is shared with the throwaway stand-in owner chat (src/messaging/ownerChatTap.ts).
+    const shown = approveTapResult(r);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.approved) {
+      if (shown.removeButtons && typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
         // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
       });
       // A validated owner tap and consumed pairing nonce establish this reply; scope its
       // capability to the existing owner-DM funnel without altering any topic's waiting state.
-      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
-        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
-        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
-      ));
+      const confirmation = shown.confirmation ?? '';
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(confirmation));
       return 'approved';
     }
     return r.outcome === 'ended' ? 'unknown' : 'held';
@@ -1358,18 +1356,10 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    const r = typeof raw === 'string' ? raw : raw.result;
-    const browser = typeof raw !== 'string' && raw.client === 'browser';
-    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
-    // way is answered "already approved", never as declined.
-    // identity-security piece 3a §6: a handler that isn't about pairing gives its own words.
-    const own = typeof raw !== 'string' && typeof raw.text === 'string' ? raw.text : null;
-    const toast = own ?? (r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
-      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
-      : 'This pairing has already ended.');
-    await this.answerCallback(t.callbackQueryId, toast);
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, own ?? (browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.'));
-    return r === 'declined' ? 'declined' : 'unknown';
+    const shown = declineTapResult(raw);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.replaceText) await this.closeOwnerPairingMessage(owner, t.messageId, shown.replaceText);
+    return shown.declined ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
