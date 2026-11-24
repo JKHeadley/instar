@@ -33,6 +33,9 @@ it('plans exact UTF8 content and the whole manifest replacement under the actual
     expect(JSON.stringify(plan)).not.toContain('café');
     const expected = Buffer.byteLength(JSON.stringify(conv.messages[0]) + '\n') + Buffer.byteLength(conv.overflow[0].text);
     expect(plan.contentBytes).toBe(expected);
+    expect(plan.allocationInput).toEqual({ kind: 'conversation',
+      appendBytes: expected - Buffer.byteLength(conv.overflow[0].text),
+      attachmentBytes: [Buffer.byteLength(conv.overflow[0].text)] });
     expect(store.executeWritePlan(plan, expected)).toEqual({ added: 1, isNew: true });
     expect(fs.statSync(conversation).size + fileBytes(path.join(store.dir, 'attachments'))).toBe(expected);
     const manifest = flush(store);

@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
@@ -19,6 +20,7 @@ import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSour
 import { isExportSource } from './exportParsers.js';
 import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
+import { assertLocalHistoryStoreTemporaryAllocator, type LocalHistoryStoreTemporaryAllocator } from './LocalHistoryStoreTemporaryRun.js';
 import { inspectLocalClaimBudgetSource, planLocalClaimBudget, enforceLocalClaimBudget, type LocalHistoryClaimBudget } from './LocalHistoryClaimBudget.js';
 import { createLocalSourceClaim, localSourceDestination, parseLocalSourceClaim, type LocalSourceClaim, type LocalSourceIdentity } from './LocalSourceIdentity.js';
 
@@ -60,7 +62,15 @@ interface Manifest {
 export interface ImportedHistoryWritePlan {
   readonly kind: 'conversation' | 'manifest' | 'source-claim';
   readonly contentBytes: number;
+  readonly allocationInput: ImportedHistoryAllocationInput;
 }
+/** Sizes only. The parent still needs a measured filesystem policy to turn
+ * these inputs into a reservation. Existing attachments can be counted
+ * conservatively as new allocations. */
+export type ImportedHistoryAllocationInput =
+  | Readonly<{ kind: 'conversation'; appendBytes: number; attachmentBytes: readonly number[] }>
+  | Readonly<{ kind: 'manifest'; replacementBytes: number }>
+  | Readonly<{ kind: 'source-claim'; databaseCeilingBytes: number; journalBytes: number }>;
 interface PreparedConversation {
   ref: string;
   file: string;
@@ -96,7 +106,12 @@ export class ImportWriteCleanupPending extends Error {
   }
 }
 
-function writeOwnedTemporary(file: string, data: string, publication: 'replace' | 'first'): void {
+function writeOwnedTemporary(file: string, data: string, publication: 'replace' | 'first', allocator?: LocalHistoryStoreTemporaryAllocator): void {
+  if (allocator) {
+    const allocation = allocator.allocate(file, publication);
+    try { allocation.write(data); allocation.publish(); } finally { allocation.close(); }
+    return;
+  }
   const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
   let fd: number | undefined = fs.openSync(tmp, 'wx', 0o600);
   let identity: fs.BigIntStats | undefined;
@@ -140,8 +155,8 @@ function writeOwnedTemporary(file: string, data: string, publication: 'replace' 
   }
 }
 
-function writeAtomic(file: string, data: string): void { writeOwnedTemporary(file, data, 'replace'); }
-function writeNewAttachment(file: string, text: string): void { writeOwnedTemporary(file, text, 'first'); }
+function writeAtomic(file: string, data: string, allocator?: LocalHistoryStoreTemporaryAllocator): void { writeOwnedTemporary(file, data, 'replace', allocator); }
+function writeNewAttachment(file: string, text: string, allocator?: LocalHistoryStoreTemporaryAllocator): void { writeOwnedTemporary(file, text, 'first', allocator); }
 
 export class ImportWriterBusy extends Error {
   constructor() { super('An import is already running.'); }
@@ -154,12 +169,17 @@ export class ImportedHistoryStore {
   private writing = false;
   private writerLease: Database.Database | null = null;
   private localDirty = false;
+  private readonly temporaryAllocator: LocalHistoryStoreTemporaryAllocator | undefined;
+  private readonly plannedWritesOnly: boolean;
   private writeRevision = 0;
   private pendingWrite: { token: ImportedHistoryWritePlan; lease: Database.Database; revision: number;
     prepared: PreparedWrite; snapshots: Map<string, string> } | null = null;
   private readonly activeLocalClaims = new Map<string, Readonly<LocalSourceClaim>>();
 
-  constructor(stateDir: string, options: { existingOnly?: boolean } = {}) {
+  constructor(stateDir: string, options: { existingOnly?: boolean; temporaryAllocator?: LocalHistoryStoreTemporaryAllocator; plannedWritesOnly?: boolean } = {}) {
+    this.plannedWritesOnly = options.plannedWritesOnly === true;
+    if (this.plannedWritesOnly || options.temporaryAllocator) assertLocalHistoryStoreTemporaryAllocator(options.temporaryAllocator, stateDir);
+    this.temporaryAllocator = options.temporaryAllocator;
     this.dir = path.join(stateDir, IMPORTED_HISTORY_DIRNAME);
     for (const directory of [this.dir, path.join(this.dir, 'conversations'), path.join(this.dir, 'attachments')]) {
       if (!options.existingOnly) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -264,7 +284,7 @@ export class ImportedHistoryStore {
   }
 
   private saveManifest(): void {
-    writeAtomic(path.join(this.dir, 'manifest.json'), JSON.stringify(this.manifest));
+    writeAtomic(path.join(this.dir, 'manifest.json'), JSON.stringify(this.manifest), this.temporaryAllocator);
   }
 
   private convPath(file: string): string {
@@ -357,6 +377,7 @@ export class ImportedHistoryStore {
   /** Claim the ACTUAL destination under the real writer before first append.
    * Durable provenance is independent of an ephemeral preview/copy approval. */
   assertOrClaimLocalSource(identity: LocalSourceIdentity): Readonly<LocalSourceClaim> {
+    if (this.plannedWritesOnly) throw new Error('local-source-planned-write-required');
     if (!this.hasLocalWriter()) throw new Error('local-source-writer-required');
     this.invalidateWritePlan();
     const proposed = createLocalSourceClaim(identity);
@@ -375,6 +396,24 @@ export class ImportedHistoryStore {
     });
     this.activeLocalClaims.set(ref, claim);
     return claim;
+  }
+
+  /** Read-only destination truth for the fixed preview/apply child under the real writer.
+   * Includes complete records written before a lost manifest, matching actual append idempotency. */
+  inspectLocalDestination(identity: LocalSourceIdentity): { claim: Readonly<LocalSourceClaim> | null; destinationId: string;
+    knownMessageKeys: ReadonlySet<string>; fingerprint: string } {
+    if (!this.hasLocalWriter()) throw new Error('local-source-writer-required');
+    const expected = createLocalSourceClaim(identity);
+    inspectLocalClaimBudgetSource(path.join(this.dir, 'source-claims.sqlite'));
+    const claim = this.readLocalSourceClaim(expected);
+    if (claim && JSON.stringify(claim) !== JSON.stringify(expected)) throw new Error('local-source-reconciliation-required');
+    const ref = importedRef(expected.source, expected.destinationId), keys = new Set<string>();
+    for (const message of this.readMessagesByFile(fileFor(ref), true)) {
+      if (typeof message?.key !== 'string' || !message.key) throw new Error('unknown-source-identity');
+      keys.add(message.key);
+    }
+    return { claim, destinationId: expected.destinationId, knownMessageKeys: keys,
+      fingerprint: crypto.createHash('sha256').update(JSON.stringify([claim, [...keys].sort()])).digest('hex') };
   }
 
   /**
@@ -453,7 +492,7 @@ export class ImportedHistoryStore {
         fs.appendFileSync(fd, prepared.append);
       } finally { fs.closeSync(fd); }
     }
-    for (const attachment of prepared.attachments) writeNewAttachment(attachment.file, attachment.text);
+    for (const attachment of prepared.attachments) writeNewAttachment(attachment.file, attachment.text, this.temporaryAllocator);
     this.manifest.conversations[prepared.ref] = prepared.summary;
     if (prepared.dirty) this.dirty = true;
     if (prepared.local && this.dirty) this.localDirty = true;
@@ -461,6 +500,7 @@ export class ImportedHistoryStore {
   }
 
   addConversation(conv: ImportedConversation): { added: number; isNew: boolean } {
+    if (this.plannedWritesOnly) throw new Error('local-source-planned-write-required');
     this.invalidateWritePlan();
     return this.executeConversation(this.prepareConversation(conv));
   }
@@ -499,8 +539,26 @@ export class ImportedHistoryStore {
   private publishWritePlan(prepared: PreparedWrite, contentBytes: number, snapshots: Map<string, string>): ImportedHistoryWritePlan {
     if (!this.hasLocalWriter()) throw new Error('import-write-plan-writer-required');
     if (!Number.isSafeInteger(contentBytes) || contentBytes < 0) throw new Error('import-write-plan-capacity');
+    let allocationInput: ImportedHistoryAllocationInput;
+    switch (prepared.kind) {
+      case 'conversation':
+        allocationInput = Object.freeze({ kind: prepared.kind, appendBytes: Buffer.byteLength(prepared.conversation.append),
+          attachmentBytes: Object.freeze(prepared.conversation.attachments.map(item => Buffer.byteLength(item.text))) });
+        break;
+      case 'manifest':
+        allocationInput = Object.freeze({ kind: prepared.kind, replacementBytes: contentBytes });
+        break;
+      case 'source-claim': {
+        const { pageSize, maxPageCount, journalBytes } = prepared.budget;
+        const databaseCeilingBytes = prepared.existing ? 0 : pageSize * maxPageCount;
+        if (!Number.isSafeInteger(databaseCeilingBytes)) throw new Error('import-write-plan-capacity');
+        allocationInput = Object.freeze({ kind: prepared.kind, databaseCeilingBytes,
+          journalBytes: prepared.existing ? 0 : journalBytes });
+        break;
+      }
+    }
     this.invalidateWritePlan();
-    const token = Object.freeze({ kind: prepared.kind, contentBytes });
+    const token = Object.freeze({ kind: prepared.kind, contentBytes, allocationInput });
     this.pendingWrite = { token, lease: this.writerLease!, revision: this.writeRevision, prepared, snapshots };
     return token;
   }
@@ -581,13 +639,14 @@ export class ImportedHistoryStore {
       return admitted;
     }
     if (pending.prepared.text !== null) {
-      writeAtomic(path.join(this.dir, 'manifest.json'), pending.prepared.text);
+      writeAtomic(path.join(this.dir, 'manifest.json'), pending.prepared.text, this.temporaryAllocator);
       this.dirty = false; this.localDirty = false;
     }
   }
 
   /** Saves the manifest when anything changed. */
   flush(): void {
+    if (this.plannedWritesOnly) throw new Error('local-source-planned-write-required');
     this.invalidateWritePlan();
     if (!this.dirty) return;
     if (this.localDirty && !this.hasLocalWriter()) throw new Error('local-source-writer-required');
@@ -598,6 +657,7 @@ export class ImportedHistoryStore {
   }
 
   addProject(p: ImportedProject): boolean {
+    if (this.plannedWritesOnly) throw new Error('local-source-planned-write-required');
     this.invalidateWritePlan();
     if (this.writing && !this.hasLocalWriter()) throw new Error('import-writer-lease-lost');
     const ref = importedRef(p.from, p.originalId);
@@ -621,17 +681,49 @@ export class ImportedHistoryStore {
     return Object.values(this.manifest.projects).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  private readMessagesByFile(file: string): ImportedMessage[] {
+  private readMessagesByFile(file: string, protectedRead = false): ImportedMessage[] {
     let raw = '';
-    try { raw = fs.readFileSync(this.convPath(file), 'utf-8'); }
-    catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw err;
+    let fd: number | undefined;
+    let parentBefore: fs.BigIntStats | undefined;
+    try {
+      if (protectedRead) {
+        const directory = path.join(this.dir, 'conversations');
+        verifyPrivateImportDirectory(directory);
+        parentBefore = fs.lstatSync(directory, { bigint: true });
+        fd = fs.openSync(this.convPath(file), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        const before = this.writeFileState(fd);
+        const opened = fs.fstatSync(fd, { bigint: true });
+        const bytes = fs.readFileSync(fd);
+        try { raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+        finally { bytes.fill(0); }
+        if (this.writeFileState(fd) !== before) throw new Error('import-read-file-changed');
+        verifyPrivateImportDirectory(directory);
+        const parentAfter = fs.lstatSync(directory, { bigint: true });
+        const named = fs.lstatSync(this.convPath(file), { bigint: true });
+        if (parentBefore.dev !== parentAfter.dev || parentBefore.ino !== parentAfter.ino
+          || !named.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) throw new Error('import-read-file-changed');
+      } else raw = fs.readFileSync(this.convPath(file), 'utf-8');
     }
+    catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && (!protectedRead || fd === undefined)) {
+        if (protectedRead) {
+          const directory = path.join(this.dir, 'conversations');
+          verifyPrivateImportDirectory(directory);
+          const parentAfter = fs.lstatSync(directory, { bigint: true });
+          if (!parentBefore || parentBefore.dev !== parentAfter.dev || parentBefore.ino !== parentAfter.ino) throw new Error('import-read-file-changed');
+        }
+        return [];
+      }
+      throw err;
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
     const out: ImportedMessage[] = [];
-    for (const line of raw.split('\n')) {
+    const lines = raw.split('\n');
+    for (const [index, line] of lines.entries()) {
       if (!line) continue;
-      try { out.push(JSON.parse(line) as ImportedMessage); } catch { /* @silent-fallback-ok: a torn last line from a crash mid-append is skipped */ }
+      try { out.push(JSON.parse(line) as ImportedMessage); } catch {
+        if (protectedRead && index !== lines.length - 1) throw new Error('import-read-file-damaged');
+        /* @silent-fallback-ok: legacy reads skip malformed rows; protected reads skip only a torn unterminated final line. */
+      }
     }
     return out;
   }
