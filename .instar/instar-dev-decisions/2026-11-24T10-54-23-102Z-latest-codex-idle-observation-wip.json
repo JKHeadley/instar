@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-24T10:54:23.102Z",
+  "slug": "latest-codex-idle-observation-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 486,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/IdleModelObservation.ts",
+      "src/core/IdleNativeProcessCache.ts",
+      "src/core/IdleNativeProcessSampler.ts",
+      "src/core/TopicProfileStore.ts",
+      "src/native/process-identity/macos/InstarProcessIdentity.c"
+    ],
+    "addedLines": 485,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

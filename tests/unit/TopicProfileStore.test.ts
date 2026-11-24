@@ -12,7 +12,7 @@
  * §10.4 parked-pin supersession by a new operator pin.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -142,6 +142,42 @@ describe('TopicProfileStore — mutate field-merge', () => {
 });
 
 describe('TopicProfileStore — durability precedes acknowledgment (§5.1)', () => {
+  it('reads only committed model policy before and after an atomic write', async () => {
+    const store = newStore();
+    expect(store.readCommittedModelPolicy(1)).toBeNull();
+    await store.mutate(1, { model: 'opus', updatedBy: 'op:1' });
+    await store.mutate(2, { model: 'sonnet', updatedBy: 'op:1' });
+    const original = store.readCommittedModelPolicy(1);
+    const other = store.readCommittedModelPolicy(2);
+
+    let enteredRename!: () => void;
+    const waiting = new Promise<void>(resolve => { enteredRename = resolve; });
+    let releaseRename!: () => void;
+    const held = new Promise<void>(resolve => { releaseRename = resolve; });
+    const rename = fs.promises.rename.bind(fs.promises);
+    const stub = vi.spyOn(fs.promises, 'rename').mockImplementationOnce(async (from, to) => {
+      enteredRename();
+      await held;
+      await rename(from, to);
+    });
+
+    const update = store.mutate(1, { model: 'sonnet', updatedBy: 'op:1' });
+    try {
+      await waiting;
+      expect(store.resolve(1)?.model).toBe('sonnet');
+      expect(store.readCommittedModelPolicy(1)).toEqual(original);
+      expect(store.readCommittedModelPolicy(2)).toEqual(other);
+    } finally {
+      releaseRename();
+      await update;
+      stub.mockRestore();
+    }
+    expect(store.readCommittedModelPolicy(1)?.model).toBe('sonnet');
+    expect(store.readCommittedModelPolicy(1)?.revision).not.toBe(original?.revision);
+    expect(store.readCommittedModelPolicy(2)).toEqual(other);
+    expect(newStore().readCommittedModelPolicy(1)).toEqual(store.readCommittedModelPolicy(1));
+  });
+
   it('a failed flush REFUSES the write and rolls back the cache', async () => {
     const store = newStore();
     await store.mutate(1, { model: 'opus', updatedBy: 'op:1' });
@@ -155,6 +191,7 @@ describe('TopicProfileStore — durability precedes acknowledgment (§5.1)', () 
       ).rejects.toBeInstanceOf(FlushRefusedError);
       // Rollback: the refused pin is ABSENT from resolution.
       expect(store.resolve(1)?.model).toBe('opus');
+      expect(store.readCommittedModelPolicy(1)?.model).toBe('opus');
     } finally {
       fs.chmodSync(stateDir, 0o700);
     }
