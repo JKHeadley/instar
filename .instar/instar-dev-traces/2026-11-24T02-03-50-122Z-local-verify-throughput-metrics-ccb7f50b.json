@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "local-verify-throughput-metrics",
+  "sessionId": "b9dbb2bd-d987-47b2-a538-5de71ea42e15",
+  "timestamp": "2026-11-24T02:03:50.122Z",
+  "artifactPath": "upgrades/side-effects/local-verify-throughput-metrics.md",
+  "artifactSha256": "206001ecf4ae8ff7048387c76723eba859e412d9ca46fd2851cddceb8368f0ab",
+  "coveredFiles": [
+    "docs/specs/local-verify-throughput-metrics.eli16.md",
+    "scripts/local-verify-throughput-report.mjs",
+    "src/data/awareness/local-verify-throughput-metrics.md",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/record.ts",
+    "src/localVerify/throughputMetrics.ts",
+    "tests/e2e/local-verify-throughput-metrics-alive.test.ts",
+    "tests/helpers/local-verify-metrics-fixture.ts",
+    "tests/integration/local-verify-throughput-metrics.test.ts",
+    "tests/unit/local-verify-throughput-metrics.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/local-verify-throughput-metrics.md",
+    "upgrades/side-effects/local-verify-throughput-metrics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible bounded observation only: no admission, cap, priority, selection, verdict, trust or merge authority change. All telemetry and audit errors fail open. Critical pipeline surfaces received independent exact-byte source and artifact review.",
+  "eli16Path": "docs/specs/local-verify-throughput-metrics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-throughput-metrics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

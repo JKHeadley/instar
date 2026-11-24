@@ -25,7 +25,7 @@ import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js'
 /** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
 export const PROGRESS_MAX_BYTES = 64 * 1024;
 import {
-  decideIsolationRerun, evaluateRun, importRelatedEligibility, parseVitestJson, passedByName, withoutNames,
+  decideIsolationRerun, evaluateRun, measureInventoryCoverage, importRelatedEligibility, parseVitestJson, passedByName, withoutNames,
   type FileCounts, type FlakyOnMainFile, type FlakyOnMainTest, type ImportRelatedRefusal, type LaneRunInput, type LaneTotals, type ParsedLaneReport,
 } from './laneReport.js';
 import { boundedTail } from '../core/boundedInput.js';
@@ -496,6 +496,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let rerunBudget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
   const reporter = seams.unhandledErrorsReporter?.() ?? null;
   let changedForIsolation: Set<string> | null = null;
+  let inventoryCoverage: LocalVerifyRecord['inventoryCoverage'];
   let outcome: LocalVerifyRecord['outcome'] = 'success';
   let errorStep: string | undefined;
 
@@ -997,6 +998,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     if (st.status !== 0) throw new RunError('porcelain', st.stderr.trim().slice(0, 200));
     const dirty = st.stdout.trim().length > 0;
 
+    inventoryCoverage = measureInventoryCoverage(inventory, laneRuns);
     const ev = evaluateRun(inventory, laneRuns);
     evaluationReasons = ev.reasons;
     failures = Object.entries(ev.perFile)
@@ -1055,7 +1057,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const lanes = laneTotals(laneRuns);
   const record: LocalVerifyRecord = {
     repo: input.repo, pr: input.pr, headSha: input.headSha, baseSha: input.baseSha, baseRefName: input.baseRefName,
-    mergeTree, lanes, nodeVersion: input.nodeVersion, machineId: input.machineId,
+    mergeTree, lanes, ...(inventoryCoverage ? { inventoryCoverage } : {}), nodeVersion: input.nodeVersion, machineId: input.machineId,
     startedAt: new Date(startedAtMs).toISOString(), finishedAt: new Date(seams.now()).toISOString(),
     outcome, ...flags, verifierVersion: input.verifierVersion, policyHash: input.policyHash,
   };

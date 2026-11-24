@@ -375,6 +375,20 @@ describe('helpers', () => {
 });
 
 describe('runVerify — happy path', () => {
+  it('records complete coverage from the actual inventory, but an equal-count wrong file is incomplete', async () => {
+    const full = await runVerify(input(), fake().seams);
+    expect(full.kind === 'record' && full.record.inventoryCoverage).toEqual({ expectedFiles: 3, reportedFiles: 3, complete: true });
+    const fixture = fake({ laneFiles: { unit: { 'tests/unit/unexpected.test.ts': ['passed'] } } });
+    const realGitBoundary = fixture.seams.git;
+    fixture.seams.git = async (args, opts) => {
+      const result = await realGitBoundary(args, opts);
+      // The shared fake normally adds report paths to its tree. Keep the real inventory fixed here.
+      return args[0] === 'ls-tree' ? { ...result, stdout: result.stdout.split('\n').filter((p) => p !== 'tests/unit/unexpected.test.ts').join('\n') } : result;
+    };
+    const wrong = await runVerify(input(), fixture.seams);
+    expect(wrong.kind === 'record' && wrong.record.inventoryCoverage).toEqual({ expectedFiles: 3, reportedFiles: 3, complete: false });
+  });
+
   it('logs one timed step event per process step (the Acceptance measurement reads them)', async () => {
     const f = fake();
     await runVerify(input(), f.seams);
@@ -1539,6 +1553,7 @@ describe('runVerify — fail-fast across lanes (PR verifies)', () => {
     expect(r.reasons[0]).toMatch(/^lane-failed:unit/);
     expect(r.reasons).toContain('lane-stopped-early:integration');
     expect(r.reasons).toContain('lane-stopped-early:e2e');
+    expect(r.record.inventoryCoverage?.complete).toBe(false);
     expect(r.reasons.some((x) => x.startsWith('file-not-run:'))).toBe(false);
     expect(f.logs.some((l) => l.event === 'lanes-stop' && l.after === 'unit')).toBe(true);
   });

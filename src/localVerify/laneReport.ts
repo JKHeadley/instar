@@ -236,6 +236,15 @@ export interface LaneRunInput {
   cutShort?: boolean;
 }
 
+/** Observation only: exact file identity and stopped-lane flags, independent of assertion verdict. */
+export function measureInventoryCoverage(inventory: Inventory, runs: readonly LaneRunInput[]): { expectedFiles: number; reportedFiles: number; complete: boolean } {
+  const expected = new Set(inventory.files.map((f) => `${f.lane}:${f.path}`));
+  const reported = new Set(runs.flatMap((r) => [...(r.report?.files.keys() ?? [])].map((file) => `${r.lane}:${file}`)));
+  return { expectedFiles: expected.size, reportedFiles: reported.size,
+    complete: inventory.errors.length === 0 && expected.size > 0 && expected.size === reported.size
+      && [...expected].every((file) => reported.has(file)) && runs.every((r) => !r.stoppedEarly && !r.cutShort) };
+}
+
 export interface LaneTotals {
   name: LaneName;
   gating: boolean;
