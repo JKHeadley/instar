@@ -3,6 +3,7 @@ title: "Independent Acceptance for Owner-Facing Work"
 slug: "independent-owner-surface-acceptance"
 author: "echo"
 tier: 2
+parent-principle: "Operator-Surface Quality"
 approved: true
 approved-by: "Chief of Staff, Camera-only scope, handoff fd27e9cb-bf06-4571-a7d8-603b9ca40bd4"
 eli16-overview: "docs/specs/independent-owner-surface-acceptance.eli16.md"
