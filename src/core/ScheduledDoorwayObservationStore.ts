@@ -251,9 +251,14 @@ export class ScheduledDoorwayObservationStore {
   }
 
   /** A run that never opened its store has no admissions. Corruption still throws. */
-  readStartedDoors(runId: string): ScheduledDoorwayStart[] | null {
+  readStartedDoors(runId: string, requireKnownDoors = false): ScheduledDoorwayStart[] | null {
     const run = this.readRun(runId);
     if (!run) return null;
+    if (requireKnownDoors) {
+      const known = new Set([...this.doorIds].map(id => this.doorFile(id)));
+      const files = fs.readdirSync(this.runDirectory(runId));
+      if (files.some(file => file.startsWith('door-') && !known.has(file))) invalid('historical-door-unknown');
+    }
     const started: ScheduledDoorwayStart[] = [];
     for (const doorId of this.doorIds) {
       const raw = this.readRunArtifact(runId, this.doorFile(doorId));
@@ -309,7 +314,7 @@ export class ScheduledDoorwayObservationStore {
   }
 
   private readRun(runId: string): ScheduledDoorwayRun | null {
-    const run = this.readRunArtifact(runId, 'run.json');
+    const run = this.readRunArtifact(runId, 'run.json', true);
     if (run === null) return null;
     if (!isRecord(run) || run.schemaVersion !== 1 || run.runId !== runId || run.machineId !== this.machineId
       || typeof run.startedAt !== 'string') invalid('run-mismatch');
@@ -317,7 +322,7 @@ export class ScheduledDoorwayObservationStore {
     return { schemaVersion: 1, runId, machineId: this.machineId, startedAt: run.startedAt };
   }
 
-  private readRunArtifact(runId: string, filename: string): unknown {
+  private readRunArtifact(runId: string, filename: string, requiredInExistingDirectory = false): unknown {
     const directory = this.runDirectory(runId);
     try {
       for (const dir of [this.stateDir, path.dirname(this.root), this.root, directory]) {
@@ -327,7 +332,9 @@ export class ScheduledDoorwayObservationStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
-    return readRecord(path.join(directory, filename));
+    const record = readRecord(path.join(directory, filename));
+    if (record === null && requiredInExistingDirectory) invalid('run-record-missing');
+    return record;
   }
 
   private runDirectory(runId: string): string {

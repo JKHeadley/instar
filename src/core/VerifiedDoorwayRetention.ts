@@ -19,8 +19,8 @@ function localRuns(machineId: string, ledger: Snapshot): Map<string, JobRun> | n
   return runs;
 }
 
-function admissionDoors(run: JobRun, machineId: string, store: Artifacts): string[] {
-  const starts = store.readStartedDoors(run.runId) ?? [];
+function admissionDoors(run: JobRun, machineId: string, store: Artifacts, requireKnownDoors = false): string[] {
+  const starts = store.readStartedDoors(run.runId, requireKnownDoors) ?? [];
   const start = Date.parse(run.startedAt);
   const end = run.completedAt ? Date.parse(run.completedAt) : Infinity;
   return starts.map(row => {
@@ -72,7 +72,7 @@ export function selectDoorwayRetentionReferences(
       }
     }
     try {
-      for (const doorId of admissionDoors(run, machineId, store)) {
+      for (const doorId of admissionDoors(run, machineId, store, true)) {
         if (!admissions.has(doorId)) admissions.set(doorId, run.runId);
       }
     } catch {

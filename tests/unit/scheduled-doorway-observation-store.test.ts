@@ -77,6 +77,20 @@ describe('ScheduledDoorwayObservationStore', () => {
     expect(fs.readFileSync(cursor, 'utf8')).toBe('{broken');
   });
 
+  it('distinguishes a pre-admission run from a directory missing its run record', () => {
+    expect(store.readStartedDoors(A)).toBeNull();
+    admit(A);
+    SafeFsExecutor.safeUnlinkSync(artifact(A, 'run.json'), { operation: 'simulate lost doorway run record' });
+    expect(() => open().readStartedDoors(A)).toThrow('run-record-missing');
+  });
+
+  it('refuses strict retention reads when a historical doorway is absent from the catalog', () => {
+    admit(A, BETA);
+    const narrower = new ScheduledDoorwayObservationStore(dir, MACHINE, [ALPHA], () => Date.parse(DONE));
+    expect(narrower.readStartedDoors(A)).toEqual([]);
+    expect(() => narrower.readStartedDoors(A, true)).toThrow('historical-door-unknown');
+  });
+
   it('reads exact staged evidence after reopen without modifying the pending legacy baseline', () => {
     fs.mkdirSync(path.join(dir, 'state'));
     const manualPath = path.join(dir, 'state', 'doorway-scan.json');

@@ -91,3 +91,9 @@ The verifier checks supplied cursor references against a complete local ledger s
 The initial selector reads a complete local ledger snapshot before any pruning. It keeps the latest attested observation and admission for each doorway, plus the bounded diagnostic window, even if a selected observation predates that window. It declines to publish a reference set for missing committed evidence, ambiguous timestamps, future runs, or pending runs outside the diagnostic window. This selector is suitable for the first cursor only while all historical artifacts remain available. Production must provide an authoritative snapshot under the canonical writer lock. Cursor advancement and reader coordination still precede cleanup.
 
 Independent review concurred for intact inputs. Before cleanup, distinguish a missing pre-admission run from a damaged run directory and establish coverage of historical doorway IDs.
+
+## Admission directory integrity
+
+A run directory without its required record now reports damaged evidence. A run with no directory still represents no recorded admissions. Initial cursor selection also checks admission filenames against its supplied doorway catalog and rejects unknown historical entries instead of silently dropping them. Ordinary registry reads still project the current catalog. The checks perform no deletions. Production must still supply the complete historical catalog and hold writer custody during selection.
+
+Independent review concurred with the integrity checks and the separation from cleanup.

@@ -157,6 +157,14 @@ describe('scheduled doorway evidence reconciliation', () => {
     }, store, Date.now())).toBeNull();
   });
 
+  it('refuses the initial cursor when an admission directory lost its run record', () => {
+    const runId = newer('failure', undefined, true);
+    const runRecord = path.join(dir, 'state', 'doorway-scan-scheduled-runs', runId, 'run.json');
+    SafeFsExecutor.safeUnlinkSync(runRecord, { operation: 'simulate lost doorway run record' });
+    const snapshot = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
+    expect(selectDoorwayRetentionReferences('local-test', snapshot, store, Date.now())).toBeNull();
+  });
+
   it('refuses the initial cursor when an attested observation cannot be reopened', () => {
     committed();
     const snapshot = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
