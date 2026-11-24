@@ -9,7 +9,7 @@ const RUN_ID = /^doorway-scan-[a-z0-9]{1,24}-[a-z0-9]{1,24}$/;
 const ID = /^[A-Za-z0-9._/:-]{1,80}$/;
 const MACHINE = /^[A-Za-z0-9._:-]{1,120}$/;
 const MAX_DOORS = 200;
-const MAX_DIAGNOSTIC_RUNS = 16;
+export const SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT = 16;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const MAX_ARTIFACT_BYTES = 64 * 1024;
 const MAX_CURSOR_BYTES = 128 * 1024;
@@ -199,7 +199,7 @@ export class ScheduledDoorwayObservationStore {
       || typeof raw.generation !== 'number' || !Number.isSafeInteger(raw.generation) || raw.generation < 1
       || !Array.isArray(raw.observations) || raw.observations.length > MAX_DOORS
       || !Array.isArray(raw.admissions) || raw.admissions.length > MAX_DOORS
-      || !Array.isArray(raw.diagnosticRunIds) || raw.diagnosticRunIds.length > MAX_DIAGNOSTIC_RUNS) {
+      || !Array.isArray(raw.diagnosticRunIds) || raw.diagnosticRunIds.length > SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT) {
       invalid('retention-cursor-invalid');
     }
     const references = (rows: unknown[]) => {

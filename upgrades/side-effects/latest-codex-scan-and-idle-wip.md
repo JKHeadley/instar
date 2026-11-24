@@ -85,3 +85,9 @@ Independent review concurred with the advisory cursor after confirming all write
 ## Exact cursor reference verification
 
 The verifier checks supplied cursor references against a complete local ledger snapshot. Observation references must match the digest and doorway in a committed artifact. Admission references must match the exact run and its recorded doorway start. Diagnostic references must name local, trusted runs of the packaged scan. The verifier checks the supplied references. The caller still owns selection of the complete reference set, custody of the ledger snapshot, and coordination with readers and writers. No production caller or cleanup action is introduced.
+
+## Initial cursor reference selection
+
+The initial selector reads a complete local ledger snapshot before any pruning. It keeps the latest attested observation and admission for each doorway, plus the bounded diagnostic window, even if a selected observation predates that window. It declines to publish a reference set for missing committed evidence, ambiguous timestamps, future runs, or pending runs outside the diagnostic window. This selector is suitable for the first cursor only while all historical artifacts remain available. Production must provide an authoritative snapshot under the canonical writer lock. Cursor advancement and reader coordination still precede cleanup.
+
+Independent review concurred for intact inputs. Before cleanup, distinguish a missing pre-admission run from a damaged run directory and establish coverage of historical doorway IDs.

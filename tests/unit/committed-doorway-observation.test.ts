@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
+import { selectDoorwayRetentionReferences, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ScheduledDoorwayObservationStore } from '../../src/core/ScheduledDoorwayObservationStore.js';
@@ -131,6 +131,41 @@ describe('scheduled doorway evidence reconciliation', () => {
     expect(verify(references, { ...snapshot, runs: snapshot.runs.map(run => ({ ...run, machineId: 'foreign' })) })).toBe(false);
   });
 
+  it('selects an older observation outside the diagnostic window and the latest admission', () => {
+    const source = committed();
+    for (let offset = 1; offset <= 17; offset += 1) {
+      vi.setSystemTime(Date.parse(TIME) + offset * 1000);
+      newer('failure');
+    }
+    vi.setSystemTime(Date.parse(TIME) + 18000);
+    const pending = newer(undefined, undefined, true);
+    const snapshot = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
+    const select = (now = Date.now()) => selectDoorwayRetentionReferences('local-test', snapshot, store, now);
+    const references = select();
+    expect(references).toMatchObject({
+      observations: [{ doorId: 'alpha', runId: source }],
+      admissions: [{ doorId: 'alpha', runId: pending }],
+    });
+    expect(references?.diagnosticRunIds).toHaveLength(16);
+    expect(references?.diagnosticRunIds).not.toContain(source);
+    expect(references && verifyDoorwayRetentionReferences('local-test', references, snapshot, store)).toBe(true);
+    expect(select(Date.now() - 1)).toBeNull();
+
+    const oldPending = { ...snapshot.runs[0], runId: 'doorway-scan-old-1', startedAt: '2026-11-24T16:59:59.000Z' };
+    expect(selectDoorwayRetentionReferences('local-test', {
+      complete: true, runs: [...snapshot.runs, oldPending],
+    }, store, Date.now())).toBeNull();
+  });
+
+  it('refuses the initial cursor when an attested observation cannot be reopened', () => {
+    committed();
+    const snapshot = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
+    expect(selectDoorwayRetentionReferences('local-test', snapshot, {
+      readStaged: () => null,
+      readStartedDoors: id => store.readStartedDoors(id),
+    }, Date.now())).toBeNull();
+  });
+
   it('retains a past observation and exposes a newer interrupted admission after restart', () => {
     const prior = committed();
     vi.setSystemTime(Date.parse(TIME) + 1000);
@@ -210,6 +245,8 @@ describe('scheduled doorway evidence reconciliation', () => {
   it('leaves conflicting same-time runs and future evidence unknown in either input order', () => {
     committed();
     newer('failure', undefined, true);
+    const tied = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
+    expect(selectDoorwayRetentionReferences('local-test', tied, store, Date.now())).toBeNull();
     expect(read().doors.alpha).toMatchObject({ freshness: 'unknown', reachable: null });
     expect(read(Date.now(), cadence, true)).toEqual(read());
     expect(read(Date.now() - 1)).toMatchObject({

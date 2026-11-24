@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-24T18:50:14.900Z",
+  "slug": "latest-codex-scan-and-idle-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ScheduledDoorwayObservationStore.ts",
+      "src/core/VerifiedDoorwayRetention.ts"
+    ],
+    "addedLines": 89,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

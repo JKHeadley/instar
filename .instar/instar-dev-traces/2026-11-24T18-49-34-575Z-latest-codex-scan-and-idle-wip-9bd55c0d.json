@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T18:49:34.575Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "50b0be47dc4d5126f314a55ed2bbc85d6c9bef6a9db0f7e1ba2db4e1175e7136",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/ScheduledDoorwayObservationStore.ts",
+    "src/core/VerifiedDoorwayRetention.ts",
+    "tests/unit/committed-doorway-observation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Initial cursor reference selection preserves historical observation and admission custody without pruning.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
