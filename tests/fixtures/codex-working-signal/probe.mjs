@@ -3,7 +3,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { mkdtemp, stat, realpath, writeFile, readFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import WebSocket from 'ws';
 import { tmpdir } from 'node:os';
 import { startCodexWorkingLaunch } from '../../../dist/core/CodexWorkingLaunch.js';
 import { CodexWorkingProtocol } from '../../../dist/core/CodexWorkingProtocol.js';
@@ -31,6 +32,64 @@ let resumedThread;
 let confirmedThread;
 const stopReceipt = join(root, 'stop-count');
 const fixturePrompt = 'Return CANARY_OK without tools.';
+function fixtureHookTrust(reply, hookConfig) {
+  const entries = reply.result?.data;
+  if (!Array.isArray(entries) || entries.length !== 1 || entries[0].errors?.length !== 0) return undefined;
+  const hooks = entries[0].hooks?.filter(hook => hook.sourcePath === hookConfig);
+  if (hooks?.length !== 1 || typeof hooks[0].currentHash !== 'string' || hooks[0].enabled !== true) return undefined;
+  return hooks[0].trustStatus;
+}
+
+async function readLoadedHookTrust(hookConfig, threadId, expected) {
+  if (!threadId || !relay) throw Error('The fixture has no confirmed managed thread');
+  const backendSocket = join(dirname(new URL(relay.remote).pathname), 'backend.sock');
+  const client = new WebSocket('ws+unix://' + backendSocket + ':/', {
+    maxPayload: 128 * 1024,
+    handshakeTimeout: 2000,
+    perMessageDeflate: false,
+  });
+  const trust = await new Promise((resolve, reject) => {
+    let settled = false;
+    function finish(error, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      client.terminate();
+      if (error) reject(error);
+      else resolve(value);
+    }
+    const timer = setTimeout(() => finish(Error('Loaded thread hook query timed out')), 3000);
+    const send = message => client.send(JSON.stringify(message), error => {
+      if (error) finish(error);
+    });
+    client.on('error', error => finish(error));
+    client.on('close', () => finish(Error('Loaded thread hook query closed early')));
+    client.once('open', () => {
+      send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'instar-loaded-hook-fixture', version: '1.0.0' } } });
+    });
+    client.on('message', payload => {
+      try {
+        const reply = JSON.parse(payload.toString());
+        if (reply.id === 1 && !reply.error) {
+          send({ method: 'initialized', params: {} });
+          send({ id: 2, method: 'hooks/list', params: { threadId } });
+        } else if (reply.id === 2) {
+          if (!reply.error) finish(null, fixtureHookTrust(reply, hookConfig));
+          else if (reply.error.code === -32600 && reply.error.message === 'thread not found: ' + threadId) {
+            finish(null, 'not-loaded');
+          } else {
+            finish(Error('Native loaded thread hook query refused with code ' + reply.error.code));
+          }
+        }
+      } catch (error) {
+        finish(error);
+      }
+    });
+  });
+  if (trust !== expected) throw Error('Expected loaded thread hook trust ' + expected + ', got ' + trust);
+  console.log('Native hooks/list reported loaded thread hook ' + trust);
+}
+
 async function readNativeHookTrust(hookConfig, expected) {
   const task = run('codex', ['app-server', '--stdio'], { cwd: root, env, timeout: 4000, maxBuffer: 128 * 1024 });
   const { stdout, stdin } = task.child;
@@ -51,13 +110,7 @@ async function readNativeHookTrust(hookConfig, expected) {
       send({ method: 'initialized', params: {} });
       send({ id: 2, method: 'hooks/list', params: { cwds: [root] } });
     } else if (reply.id === 2) {
-      const results = reply.result?.data;
-      if (Array.isArray(results) && results.length === 1 && results[0].errors?.length === 0) {
-        const hooks = results[0].hooks?.filter(hook => hook.sourcePath === hookConfig);
-        if (hooks?.length === 1 && typeof hooks[0].currentHash === 'string') {
-          trust = hooks[0].trustStatus;
-        }
-      }
+      trust = fixtureHookTrust(reply, hookConfig);
       stdin.end();
     }
   });
@@ -143,7 +196,7 @@ try {
     };
   }
 
-  async function exercise(manualTrust, expectReview = false) {
+  async function exercise(manualTrust, expectReview = false, expectedLoadedTrust) {
     const requestBaseline = provider.models.length;
     let resolvePane;
     const panePid = new Promise(resolve => { resolvePane = resolve; });
@@ -176,6 +229,7 @@ try {
         if (!sawPrompt) await new Promise(resolve => setTimeout(resolve, 100));
       }
       if (!sawPrompt) throw Error('Expected fixture-only manual hook approval prompt');
+      await readLoadedHookTrust(hookConfig, confirmedThread, 'not-loaded');
       if (expectReview) {
         const hookReceipt = await stat(stopReceipt).catch(error => {
           if (error.code === 'ENOENT') return null;
@@ -216,6 +270,7 @@ try {
       console.log('Disposable pane:', pane?.stdout?.trim().slice(-1700));
       return false;
     }
+    if (expectedLoadedTrust) await readLoadedHookTrust(hookConfig, confirmedThread, expectedLoadedTrust);
     return true;
   }
 
@@ -246,7 +301,7 @@ try {
       console.log('Reopening the same thread with unchanged fixture hook approval');
     }
     await readNativeHookTrust(hookConfig, changedHookRestart ? 'modified' : 'trusted');
-    if (!await exercise(false, changedHookRestart)) process.exitCode = 1;
+    if (!await exercise(false, changedHookRestart, changedHookRestart ? undefined : 'trusted')) process.exitCode = 1;
   }
 
 } finally {
