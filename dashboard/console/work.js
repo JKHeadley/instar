@@ -11,6 +11,7 @@
 import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, markNeed, askPin } from './ui.js';
 import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
+import { workDiscoveryPanel } from './work-discovery.js';
 import {
   LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, machineWords, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
@@ -27,10 +28,10 @@ const workRenders = new WeakMap();
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
 /** POST with the bearer token; the full refusal body comes back so a stale card can say why. */
-async function send(path, body) {
+async function send(path, body, signal) {
   const headers = { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' };
   try {
-    const r = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
+    const r = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body), signal });
     return { status: r.status, data: await r.json().catch(() => ({})) };
   } catch { return { status: 0, data: {} }; }
 }
@@ -70,17 +71,19 @@ export async function renderWork(main, ctx) {
   const page = donePageFrom(query);
   // Projects (work-front-doors stage 2a) are read alongside the board; a failed read is named, never empty.
   const [r, pr] = await Promise.all([get(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : get('/work/projects')]);
+  if (workRenders.get(main) !== run || ctx.isCurrent?.() === false) return;
+  const discovery = workDiscoveryPanel({ send, sessionToken: bearer, isCurrent: ctx.isCurrent, onDispose: ctx.onDispose });
   // "Open project" from the conversation list arrives as ?project=<key>: that project's row opens.
   const openKey = (() => { try { return new URLSearchParams(query).get('project'); } catch { return null; } })();
   const projects = pr ? projectsSection(pr.ok ? pr.data : null, { openKey }) : null;
   if (!r.ok) {
     setKids(main, isOff(r)
-      ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }), projects)
-      : el('div', {}, cantTell(`The work board could not be read: ${r.reason || 'no answer'}.`), projects));
+      ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }), discovery, projects)
+      : el('div', {}, cantTell(`The work board could not be read: ${r.reason || 'no answer'}.`), discovery, projects));
     return;
   }
   const board = readBoard(r.data);
-  if (!board.ok) { setKids(main, cantTell('The work board answered, but not in a shape this page can read, so it cannot say what is waiting on you.')); return; }
+  if (!board.ok) { setKids(main, cantTell('The work board answered, but not in a shape this page can read, so it cannot say what is waiting on you.'), discovery); return; }
 
   const waiting = board.lanes['waiting-on-you'];
   // My board (work-board-my-board): the cards that need the reader, each once under its most pressing reason, then
@@ -118,6 +121,7 @@ export async function renderWork(main, ctx) {
     head,
     lead,
     notes,
+    discovery,
     // Projects come right after what is waiting on you (a page leads with the need), before the other lanes.
     projects,
     laneSection(LANES[1], notMine(board.lanes['with-agent'].cards), refresh),
