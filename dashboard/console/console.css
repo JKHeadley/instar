@@ -356,11 +356,14 @@ details.more[open] summary .chev { transform: rotate(90deg); }
   border-radius: var(--r-md); padding: 0 0 0 .4em;
 }
 .pin-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-wash); }
+/* min-height, not height: a two-line label grows the button instead of spilling out of it. */
 .btn-primary {
-  margin-top: var(--s-4); width: 100%; height: 48px; border: 0; border-radius: var(--r-md);
+  margin-top: var(--s-4); width: 100%; min-height: 48px; border: 0; border-radius: var(--r-md);
   background: linear-gradient(180deg, var(--teal-400), var(--teal-500)); color: #062022;
-  font-weight: 700; font-size: 15px; cursor: pointer; transition: filter var(--dur) var(--ease);
+  font-weight: 700; font-size: 15px; line-height: 1.25; cursor: pointer; transition: filter var(--dur) var(--ease);
 }
+/* A link styled as the primary button centres its label the way a <button> does (it sat top-left, 2026-11-20 audit). */
+a.btn-primary { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; padding: 10px 16px; box-sizing: border-box; }
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
 .unlock-error { min-height: 20px; margin-top: var(--s-3); color: var(--bad); font-size: 13px; }
@@ -1768,3 +1771,10 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* A long approval inbox stays within the screen; all received actions remain reachable. */
+.needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }
+.needs-group-heading { margin: 0; padding: 10px 14px 4px; font-size: 12px; font-weight: 650; color: var(--text-muted); }
+.needs-groups .needs-rows { border: 0; }
+.needs-group + .needs-group { border-top: 1px solid var(--hairline); }
+.needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

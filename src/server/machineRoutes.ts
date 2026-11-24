@@ -17,6 +17,8 @@ import { generationProofId } from '../messaging/peerMessageTarget.js';
  */
 
 import { operatorError } from '../core/storageMachineName.js';
+import { belowFence } from '../core/identityBuildFence.js';
+import { ownerRecordFence } from '../core/ownerRecordWiring.js';
 import type { TelegramHandoverPeople } from '../core/telegramPairHandover.js';
 import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
 import { Router, type Request, type Response } from 'express';
@@ -75,6 +77,8 @@ export interface MachineRouteContext {
   /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
   /** A joiner on this version would not understand the team here. */
   teamJoinBlocked?: (enforcement: number) => boolean;
+  /** A reason this agent home may never be paired with another machine (a throwaway that ran the stand-in owner chat), or null. */
+  pairBlocked?: () => string | null;
   /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
   teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number> };
   /**
@@ -667,6 +671,11 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl, endpoints } = req.body ?? {};
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const joining = (req.body as { teamEnforcement?: unknown } | undefined)?.teamEnforcement;
+    const blocked = ctx.pairBlocked?.() ?? null;
+    if (blocked) {
+      res.status(409).json({ error: blocked, detail: 'This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.' });
+      return;
+    }
     if (ctx.teamJoinBlocked?.(typeof joining === 'number' ? joining : 0)) {
       res.status(409).json({ error: 'team-needs-newer-build', detail: 'This agent has team members, and this machine is on a build that does not understand them. Update it, then join again.' });
       return;
@@ -735,6 +744,18 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       });
       res.status(403).json({ error: result.reason ?? 'Invalid pairing code' });
       return;
+    }
+
+    // identity-security piece 2c §4: after enrolment, a joiner below the minimum build is refused, naming the
+    // build it needs. An older joiner sends no build at all, so it is refused too. Nothing applies before enrolment.
+    if (ctx.stateDir) {
+      const fence = ownerRecordFence(ctx.stateDir);
+      const below = belowFence((req.body as { instarVersion?: unknown } | undefined)?.instarVersion, fence);
+      if (below.refused) {
+        ctx.securityLog.append({ event: 'pairing_rejected', machineId: machineIdentity.machineId, machineName: machineIdentity.name, reason: 'below-minimum-build', ip });
+        res.status(409).json({ error: 'below-minimum-build', needed: below.needed, message: `This machine runs an older version of Instar. Update it to ${below.needed} or newer, then join again.` });
+        return;
+      }
     }
 
     // Code valid → register the joiner as standby, persist its public keys (so

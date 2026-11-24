@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "document-computer-link-owner-refusal",
+  "sessionId": "98b2a4db-db72-4f38-bc3a-4087791d97bf",
+  "timestamp": "2026-11-24T04:06:20.977Z",
+  "artifactPath": "upgrades/side-effects/document-computer-link-owner-refusal.md",
+  "artifactSha256": "cda904fdac3c0d0f4bc8d4f6454bbc2bfa36cc2f9617fdfa73224f42f91c4d72",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T04-03-53-644Z-document-computer-link-owner-refusal.json",
+    ".instar/instar-dev-decisions/2026-11-24T04-04-59-705Z-document-computer-link-owner-refusal.json",
+    ".instar/instar-dev-decisions/2026-11-24T04-05-43-843Z-document-computer-link-owner-refusal.json",
+    ".instar/instar-dev-traces/2026-11-24T04-03-07-395Z-document-computer-link-owner-refusal-be4e001d.json",
+    ".instar/instar-dev-traces/2026-11-24T04-05-06-468Z-document-computer-link-owner-refusal-dc78ff30.json",
+    "dashboard/docs/doc-page-model.js",
+    "docs/specs/document-computer-link-owner-refusal.eli16.md",
+    "src/server/documentLinkRoutes.ts",
+    "tests/e2e/documents-link-boundaries.test.ts",
+    "tests/integration/documents-link.test.ts",
+    "tests/unit/documents-link-words.test.ts",
+    "upgrades/next/document-computer-link-owner-refusal.md",
+    "upgrades/side-effects/document-computer-link-owner-refusal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing refusal and navigation copy only. No new permission, storage mutation, or public link format.",
+  "eli16Path": "docs/specs/document-computer-link-owner-refusal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/document-computer-link-owner-refusal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

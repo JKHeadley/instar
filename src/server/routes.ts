@@ -1,3 +1,5 @@
+import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
+import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
@@ -149,6 +151,7 @@ import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../c
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
+import { mountChiefOfStaffPrSearch } from './chiefOfStaffPrSearchRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -418,6 +421,7 @@ import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, registerVoiceUnreadableListener, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
+import { findUnresolvedSecrets } from '../recommended/reoffers.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
 import { namedTunnelBlock, realCloudflareApi, restoredTunnelBlock, tunnelSettingsFrom, withoutToken, type TunnelSettings } from '../recommended/cloudflareDomain.js';
 import {
@@ -834,6 +838,7 @@ import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { boundCommandReporterPayload } from '../monitoring/NativeHookEvents.js';
 import { dispatchHookEvent, type HookEventDispatchDeps } from './hookEventDispatch.js';
 import type { WorktreeMonitor } from '../monitoring/WorktreeMonitor.js';
 import type { SubagentTracker } from '../monitoring/SubagentTracker.js';
@@ -897,6 +902,7 @@ import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
+import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
 import { DISPATCH_ORIGIN_KEYS } from '../config/bearerConfigWrite.js';
 import { cleanTitle as cleanDispatchTitle } from '../core/DispatchManager.js';
 
@@ -1496,6 +1502,8 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** Local, identity-partitioned forecasts; absent/off refuses explicit manual balance. */
+  manualBalanceForecasts?: () => Promise<import('../monitoring/quotaPacing.js').LoginSummary[] | null>;
   /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
    *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
   proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
@@ -1914,6 +1922,8 @@ export interface RouteContext {
   pinShare?: import('../core/PinShare.js').PinShareProvider | null;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefusedHere?: (req: import('express').Request) => boolean;
+  /** SEC-135: sign-in's public PIN limits as one hook (context + one synchronous verifier). Absent in bare test contexts. */
+  publicPin?: import('./publicPinHook.js').PublicPinHook | null;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
   providerCostReportStore?: import('../monitoring/ProviderCostReportStore.js').ProviderCostReportStore | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
@@ -3378,8 +3388,13 @@ export function createRoutes(ctx: RouteContext): Router {
     displayName: workBoardName,
     appendLine: async (conversationKey, lineId, text) => { ctx.workBoard?.()?.appendLine(conversationKey, lineId, text); },
     ensureConversation: async (cardId) => { ctx.workBoard?.()?.ensureConversation(cardId); },
+    conversationAvailable: (cardId) => ctx.workBoard?.()?.conversationAvailable(cardId) ?? false,
     removeConversation: async (conversationKey) => { ctx.workBoard?.()?.removeConversation(conversationKey); },
-    behind: () => ctx.workBoard?.()?.behind() ?? null,
+    // The behind machine's nickname rides along so the page names it instead of printing its id.
+    behind: () => {
+      const b = ctx.workBoard?.()?.behind() ?? null;
+      return b ? { ...b, machineName: ctx.machinePoolRegistry?.getCapacity(b.machineId)?.nickname ?? null } : null;
+    },
     lastWrittenOn: (v) => ctx.workBoard?.()?.lastWrittenOn(v) ?? null,
     repliedAfterQuestion: (v) => ctx.workBoard?.()?.repliedAfterQuestion(v) ?? false,
     brokenAttachments: (v) => ctx.workBoard?.()?.brokenAttachments(v) ?? [],
@@ -8087,7 +8102,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '');
     // Consumers read these as paths on the unsandboxed server. A scoped session supplies none of them.
     if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd']) delete (payload as Record<string, unknown>)[field];
-    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
+    // Native-path bounds + the payload's instar session id (2026-11-21).
+    const sid = boundCommandReporterPayload(payload as Record<string, unknown>, instarSid);
+    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, sid);
     if (!stored) {
       res.status(500).json(storageErrorResponse({ error: 'Failed to store event' }, ctx.config.stateDir));
       return;
@@ -10174,6 +10191,12 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
     }
+  });
+  mountChiefOfStaffPrSearch(router, {
+    ownerToken: () => ctx.config.authToken,
+    enabled: () => ctx.config.developmentAgent === true && !!ctx.chiefOfStaffLoop
+      && (ctx.liveConfig?.get<boolean | undefined>('chiefOfStaff.enabled', ctx.config.chiefOfStaff?.enabled) !== false),
+    stateDir: ctx.config.stateDir,
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -15033,8 +15056,18 @@ export function createRoutes(ctx: RouteContext): Router {
   /** session-conversation-for-every-session §2.1: a create in flight, so a concurrent repeat waits for it. */
   const appCreateInFlight = new Map<string, { hash: string; answer: Promise<{ status: number; body: Record<string, unknown> }> }>();
   /** One create request's identity: its name and its engine pick. */
-  const appCreateHash = (a: { title: string; framework?: unknown; model?: unknown }): string =>
-    createHash('sha256').update(`dashboard-create\u0000${a.title}\u0000${typeof a.framework === 'string' ? a.framework : ''}\u0000${typeof a.model === 'string' ? a.model : ''}`).digest('hex');
+  const appCreateHash = (a: { title: string; framework?: unknown; model?: unknown; hasParent?: boolean; parentConversationKey?: string | null }): string =>
+    createHash('sha256').update(`dashboard-create\u0000${a.title}\u0000${typeof a.framework === 'string' ? a.framework : ''}\u0000${typeof a.model === 'string' ? a.model : ''}${a.hasParent ? `\u0000parent:${JSON.stringify(a.parentConversationKey)}` : ''}`).digest('hex');
+
+  // /sessions/create keeps its existing agent/dashboard admission. Resolve a real readable parent
+  // using existing recorded conversations; a namespaced string alone is not existence evidence.
+  const appSessionParentExists = (svc: NonNullable<RouteContext['appConversations']>, ref: string): boolean => {
+    if (ref.startsWith('app:')) return !!svc.liveConversation(ref.slice(4));
+    const resolved = ctx.conversationRegistry?.resolveByKey(ref);
+    if (resolved) return true;
+    const topic = /^telegram:(\d+)$/.exec(ref);
+    return !!topic && !!ctx.telegram?.getAllTopicMappings().some((m) => m.topicId === Number(topic[1]));
+  };
 
   /**
    * session-conversation-for-every-session §2.1 steps 3–6: the conversation (durably keyed by the
@@ -15044,7 +15077,7 @@ export function createRoutes(ctx: RouteContext): Router {
   async function createAppSession(
     svc: NonNullable<RouteContext['appConversations']>,
     tp: NonNullable<RouteContext['topicProfile']>,
-    a: { rid: string; title: string; served: boolean; hasPreference: boolean; framework: unknown; model: unknown },
+    a: { rid: string; title: string; served: boolean; hasPreference: boolean; framework: unknown; model: unknown; hasParent: boolean; parentConversationKey?: string | null },
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const DEVICE = 'dashboard';
     // The request is its name and engine pick: the same id with either changed is a different request.
@@ -15059,6 +15092,9 @@ export function createRoutes(ctx: RouteContext): Router {
         const b = prior.body as { error?: string; detail?: string };
         return { status: prior.status, body: { ok: false, code: b.error ?? 'conversation-unavailable', error: b.detail ?? 'The conversation could not be created on this machine. Try again.' } };
       }
+      if (!svc.liveConversation(key)) {
+        return { status: 409, body: { ok: false, code: 'conversation-unavailable', error: 'The original conversation is no longer available. Create a new session instead.' } };
+      }
       conversationKey = key; resumed = true;
     } else if (prior.kind === 'in-progress') {
       return { status: 202, body: { ok: true, state: 'in-progress', message: `"${a.title}" is still being created. Check the sessions list in a moment.` } };
@@ -15067,13 +15103,18 @@ export function createRoutes(ctx: RouteContext): Router {
     } else if (prior.kind === 'request-id-reused') {
       return { status: 409, body: { ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' } };
     } else {
+      // Parent authorization applies only to the first reservation. Retried historical intent is not a new grant.
+      if (a.parentConversationKey && !appSessionParentExists(svc, a.parentConversationKey)) {
+        return { status: 400, body: { ok: false, code: 'parent-unavailable', error: 'The parent conversation is not available to this session.' } };
+      }
+      const creationContext: AppCreationContext = { v: 1, source: { kind: 'session', requestId: a.rid }, ...(a.hasParent ? { parentConversationKey: a.parentConversationKey ?? null, parentBasis: 'explicit' as const } : {}) };
       // Step 3 — the conversation, as the phone's create route makes one (the key is in the reservation first).
       conversationKey = newAppConversationKey();
-      const r = requests.reserve(DEVICE, a.rid, hash, 0, { op: 'create', conversationKey, title: a.title });
+      const r = requests.reserve(DEVICE, a.rid, hash, 0, { op: 'create', conversationKey, title: a.title, creationContext: JSON.stringify(creationContext) });
       if (r.kind === 'full') return { status: 429, body: { ok: false, code: 'too-many-requests', error: 'Too many sessions are being created right now. Try again in a moment.' } };
       if (r.kind !== 'reserved') return createAppSession(svc, tp, a);
       let created: { status: number; body: Record<string, unknown> };
-      try { created = svc.applyCreate(DEVICE, a.rid, conversationKey, a.title, null); } catch (err) {
+      try { created = svc.applyCreate(DEVICE, a.rid, conversationKey, a.title, null, creationContext); } catch (err) {
         requests.markUnknown(DEVICE, a.rid);
         svc.deps.reportDegradation?.('AppConversations.mutation', err instanceof Error ? err.message : String(err));
         return { status: 409, body: { ok: false, code: 'outcome-unknown', error: `"${a.title}" may or may not have been created. Check your app conversations before trying again.` } };
@@ -15335,7 +15376,12 @@ export function createRoutes(ctx: RouteContext): Router {
       // 'dashboard'): a retry, even after a restart, finds the first create and resumes it; a create cut off
       // mid-way is finished at boot by `recoverStranded`. A concurrent repeat waits for the one in flight.
       const rid = typeof body.requestId === 'string' && requestIdAgeOk(body.requestId, Date.now()) ? body.requestId : `${Date.now()}-${randomUUID()}`;
-      const want = { title, framework: body.framework, model: body.model };
+      const hasParent = Object.hasOwn(body, 'parentConversationKey');
+      const parentConversationKey = body.parentConversationKey === null ? null : normalizeCreationParentRef(body.parentConversationKey);
+      if (hasParent && body.parentConversationKey !== null && !parentConversationKey) {
+        res.status(400).json({ ok: false, code: 'invalid-parent', error: 'Choose a valid parent conversation.' }); return;
+      }
+      const want = { title, framework: body.framework, model: body.model, hasParent, parentConversationKey };
       const inFlight = appCreateInFlight.get(rid);
       if (inFlight) {
         if (inFlight.hash !== appCreateHash(want)) { res.status(409).json({ ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' }); return; }
@@ -15345,7 +15391,7 @@ export function createRoutes(ctx: RouteContext): Router {
       appCreateInFlight.set(rid, { hash: appCreateHash(want), answer: new Promise((r) => { settle = r; }) });
       let outcome: { status: number; body: Record<string, unknown> } = { status: 500, body: { ok: false, error: 'The session could not be created. Try again.' } };
       try {
-        outcome = await createAppSession(svc, tp, { rid, title, served, hasPreference, framework: body.framework, model: body.model });
+        outcome = await createAppSession(svc, tp, { rid, served, hasPreference, ...want });
       } catch (err) { // @silent-fallback-ok — answered in words; the request record says what landed
         outcome = { status: 500, body: { ok: false, error: `The session could not be created: ${operatorError(err, res.app?.locals?.stateDir)}. Try again.` } };
       } finally {
@@ -17338,6 +17384,12 @@ export function createRoutes(ctx: RouteContext): Router {
   const publicCapPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
     pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, maxAttemptsLive: () => ctx.pinShare?.share() ?? GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
   const PIN_ALERT_ONLY_KEY = '__pin_alert_only__';
+  // SEC-135: one switch, dev-gated (live on a development agent, dark on the fleet). Off = piece 1c exactly.
+  const approvalLinksOn = (): boolean => resolveDevAgentGate(
+    ctx.liveConfig?.get<boolean | undefined>('security.approvalLinks.enabled', undefined)
+      ?? (ctx.config as { security?: { approvalLinks?: { enabled?: boolean } } }).security?.approvalLinks?.enabled,
+    ctx.config,
+  );
   function checkPublicPin(req: import('express').Request, res: import('express').Response, requestKey?: string): boolean {
     if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
     if (!requestKey) return publicCapPinCheck(req, res);
@@ -18812,6 +18864,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
     existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
     reoffersEnabled: () => !!ctx.config.recommendedServices?.reoffers?.enabled,
+    unresolvedSecrets: () => findUnresolvedSecrets(ctx.config),
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;
@@ -18951,6 +19004,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Reachable with no bearer token: refused on an insecure connection, and limited per live
     // confirm token (checked live before this call), so strangers cannot use it up (piece 1c).
     checkConfirmPin: (req, res) => checkPublicPin(req, res, `recsvc:${String(req.params.id ?? '')}:${String(((req.body ?? {}) as { token?: unknown }).token ?? '')}`),
+    // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md): with the switch on, a confirm answer goes
+    // through sign-in's own public limits via the shared verifier; null (switch off, or no hook) keeps
+    // checkConfirmPin above exactly as before. The per-request key is the same key piece 1c already charges.
+    verifyConfirmPin: (req) => {
+      if (!approvalLinksOn() || !ctx.publicPin) return null;
+      const requestKey = `req:${createHash('sha256').update(`recsvc:${String(req.params.id ?? '')}:${String(((req.body ?? {}) as { token?: unknown }).token ?? '')}`).digest('hex').slice(0, 32)}`;
+      return ctx.publicPin.verify(req, ((req.body ?? {}) as { pin?: unknown }).pin, { requestKey, alertKey: PIN_ALERT_ONLY_KEY });
+    },
+    // An owner open: the page's own header (a cross-origin page cannot send it: see the CORS list in
+    // middleware.ts) AND a valid remembered-browser marker or the machine itself. Never identity.
+    ownerOpen: (req) => {
+      if (!approvalLinksOn() || !ctx.publicPin) return false;
+      if (req.headers['x-instar-request'] !== '1') return false;
+      const c = ctx.publicPin.context(req);
+      return !!c.markerId || c.isLocalDirect;
+    },
+    approvalLinksEnabled: () => approvalLinksOn() && !!ctx.publicPin,
     owner: () => { const uid = callbackApprover(); return uid === undefined ? null : String(uid); },
     recordApproval: (subject, evidenceRef) => {
       if (!ctx.approvalLedger) throw new Error('approval ledger unavailable');
@@ -31989,9 +32059,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // FIRST; if that fails, nothing is consumed and the caller can retry. (A path that does
     // not exist deletes cleanly.) Synchronous from peek to consume, so nothing interleaves.
     const durableDeleted = (): boolean => {
-      if (!persistDrops) return true;
+      // Persistence controls new writes and fallback reads, never cleanup of a prior stored copy.
       try {
-        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).deleteIfStoreExists(`secretDrops.${token}`);
         return true;
       } catch (err) {
         // @silent-fallback-ok — not silent: reported below, and the route refuses the consume (503) so nothing is lost
@@ -38750,7 +38820,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!change) return res.status(400).json({ error: 'invalid-change', message: 'change must be one of: {kind:"trust-grant",service,operation,level} | {kind:"autonomy-profile",from,to} | {kind:"config-patch",patch} | {kind:"slack-role",slackUserId,displayName,role,mode} | {kind:"board-policy",policy} | {kind:"trust-recovery",incidentId}' });
     const r = await ctx.trustAccountPath.propose(change);
     const status = r.status === 'sent' || r.status === 'awaiting-acceptance' ? 202
-      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'too-large' ? 409
+      : r.status === 'not-a-raise' || r.status === 'no-approver' || r.status === 'not-holder' || r.status === 'too-large' ? 409
       : r.status === 'too-many-open' ? 429 : 503;
     // The approval code is for the person's card only; the agent never needs it.
     const { code: _code, ...body } = r as typeof r & { code?: string };
@@ -38774,21 +38844,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ requestId: id, status: 'withdrawn', cardTold: r.cardTold, message: 'Withdrawn. A reply with its code approves nothing now, and the same change cannot be asked again until the card would have expired.' });
   });
 
-  router.get('/trust/requests', (_req, res) => {
+  router.get('/trust/requests', async (_req, res) => {
     if (!ctx.trustAccountPath) return res.status(503).json({ error: 'trust-account-path-unavailable' });
     // A consumed request carries its result (applied / not-applied / unknown) and the disclosure of how it was approved.
     const results = new Map(ctx.trustAccountPath.service.deviceListing().map((d) => [d.requestId, d]));
-    const rows = ctx.trustAccountPath.store.allRequests().map((r) => {
+    // SEC-141: only requests whose change matches their hash, with text rebuilt from the change (the listing's).
+    const svc = ctx.trustAccountPath.service;
+    const rows = ctx.trustAccountPath.store.allRequests().flatMap((r) => {
+      const summary = svc.derivedSummary(r);
+      return summary ? [{ r, summary }] : [];
+    }).map(({ r, summary }) => {
       const d = results.get(r.requestId);
       return {
-        requestId: r.requestId, status: r.status, adapter: r.adapter, summary: r.summary, expiresAt: r.expiresAt,
+        requestId: r.requestId, status: r.status, adapter: r.adapter, changeKind: r.change?.kind ?? null, summary, expiresAt: r.expiresAt,
         delivered: r.adapter === 'device' ? true : !!r.cardMessageId,
         ...(d && d.status !== 'open' ? { result: d.status } : {}),
         ...(d?.disclosure ? { disclosure: d.disclosure } : {}),
         ...(d?.message ? { message: d.message } : {}),
       };
     });
-    res.json({ requests: rows, store: ctx.trustAccountPath.store.sinkDescription });
+    res.json({ requests: rows, approvalDelivery: await ctx.trustAccountPath.service.approvalDelivery(), store: ctx.trustAccountPath.store.sinkDescription });
   });
 
   // Withdrawing an acceptance is a narrowing: it stops new approvals and keeps committed grants.
@@ -39412,6 +39487,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             + 'pays, or admit a session lane that spends against an unmetered pool. Set them in '
             + '.instar/config.json (or via the '
             + 'per-framework env lever) so the change is an operator act on the machine.',
+        });
+        return;
+      }
+    }
+
+    // ── ORIGIN AND ROUTING FENCE (SEC-151): the public address, the relay addresses, what a
+    // peer-started session may touch, and which framework runs. The config file only.
+    {
+      const fencedPaths = operatorOnlyPathsInPatch(patch);
+      if (fencedPaths.length > 0) {
+        res.status(400).json({
+          error: `${fencedPaths.join(', ')} ${fencedPaths.length === 1 ? 'is' : 'are'} not patchable via the API — `
+            + 'these decide where the agent is reachable or connects, what a peer-started session may do, or which '
+            + 'framework runs. Set them in .instar/config.json so the change is an operator act on the machine.',
+          fenced: fencedPaths,
         });
         return;
       }
@@ -43912,17 +44002,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // surface). Resumes `sessionName` on another eligible account, preserving the
   // conversation via --resume. Body: { sessionName, exhaustedAccountId }.
   // POST (not GET) so it never collides with GET /subscription-pool/:id.
+  const manualQuotaBalance = ctx.quotaAwareScheduler && ctx.subscriptionPool && typeof ctx.config.stateDir === 'string' ? new ManualQuotaBalance({
+    stateDir: ctx.config.stateDir, accounts: () => ctx.subscriptionPool!.list(),
+    sessions: () => ctx.state.listSessions(),
+    forecasts: () => ctx.manualBalanceForecasts?.() ?? Promise.resolve(null),
+    softThreshold: () => ctx.config.subscriptionPool?.swapSoftThresholdPct ?? 90,
+    execute: (intent) => ctx.quotaAwareScheduler!.onQuotaPressure({ sessionName: intent.sessionName,
+      exhaustedAccountId: intent.sourceId, manualBalanceTarget: intent.targetId,
+      manualBalanceSourceCurrent: intent.sourceCurrent, nowMs: Date.now() }),
+  }) : null;
   router.post('/subscription-pool/swap', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/swap'), async (req, res) => {
     if (!ctx.quotaAwareScheduler) {
       res.json({ enabled: false, swapped: false, reason: 'scheduler not configured' });
       return;
     }
-    const { sessionName, exhaustedAccountId } = req.body ?? {};
-    if (!sessionName || !exhaustedAccountId) {
+    const { sessionName, exhaustedAccountId, balanceUnusedQuota } = req.body ?? {};
+    if (balanceUnusedQuota !== undefined && typeof balanceUnusedQuota !== 'boolean') {
+      res.status(400).json({ error: 'balanceUnusedQuota must be boolean' }); return;
+    }
+    if (typeof sessionName !== 'string' || typeof exhaustedAccountId !== 'string' || !sessionName || !exhaustedAccountId) {
       res.status(400).json({ error: 'sessionName and exhaustedAccountId are required' });
       return;
     }
     try {
+      if (balanceUnusedQuota === true) {
+        const result = manualQuotaBalance ? await manualQuotaBalance.balance(sessionName, exhaustedAccountId)
+          : { swapped: false, toAccountId: null, reason: 'manual-balance-unavailable' };
+        res.json({ enabled: true, ...result }); return;
+      }
       const result = await ctx.quotaAwareScheduler.onQuotaPressure({
         sessionName,
         exhaustedAccountId,

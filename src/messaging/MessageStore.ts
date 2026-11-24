@@ -32,6 +32,7 @@ import type {
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { isSafeFileId, MAX_FILE_ID_BYTES } from '../core/safeFileId.js';
 
 const DIRS = ['store', 'index', 'dead-letter', 'pending', 'threads', 'threads/archive', 'drop', 'outbound'];
 
@@ -51,6 +52,7 @@ export class MessageStore implements IMessageStore {
 
   async save(envelope: MessageEnvelope): Promise<void> {
     const filePath = this.messageFilePath(envelope.message.id);
+    if (!filePath) throw new Error('unsafe message id: refusing to store a message whose id is not a plain file name');
 
     // Deduplication — if the message already exists, skip
     if (fs.existsSync(filePath)) {
@@ -68,6 +70,7 @@ export class MessageStore implements IMessageStore {
 
   async get(messageId: string): Promise<MessageEnvelope | null> {
     const filePath = this.messageFilePath(messageId);
+    if (!filePath) return null;
     try {
       const data = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(data) as MessageEnvelope;
@@ -169,7 +172,7 @@ export class MessageStore implements IMessageStore {
 
   async updateDelivery(messageId: string, delivery: DeliveryState): Promise<void> {
     const filePath = this.messageFilePath(messageId);
-    if (!fs.existsSync(filePath)) {
+    if (!filePath || !fs.existsSync(filePath)) {
       throw new Error(`Message not found: ${messageId}`);
     }
 
@@ -203,7 +206,7 @@ export class MessageStore implements IMessageStore {
       const chunk = messageIds.slice(i, i + chunkSize);
       for (const id of chunk) {
         const filePath = this.messageFilePath(id);
-        if (!fs.existsSync(filePath)) continue;
+        if (!filePath || !fs.existsSync(filePath)) continue;
 
         let envelope: MessageEnvelope;
         try {
@@ -247,7 +250,7 @@ export class MessageStore implements IMessageStore {
    */
   async updateEnvelope(envelope: MessageEnvelope): Promise<void> {
     const filePath = this.messageFilePath(envelope.message.id);
-    if (!fs.existsSync(filePath)) {
+    if (!filePath || !fs.existsSync(filePath)) {
       throw new Error(`Message not found: ${envelope.message.id}`);
     }
 
@@ -318,7 +321,7 @@ export class MessageStore implements IMessageStore {
 
   async deadLetter(messageId: string, reason: string): Promise<void> {
     const srcPath = this.messageFilePath(messageId);
-    if (!fs.existsSync(srcPath)) {
+    if (!srcPath || !fs.existsSync(srcPath)) {
       return;
     }
 
@@ -384,11 +387,13 @@ export class MessageStore implements IMessageStore {
   }
 
   async exists(messageId: string): Promise<boolean> {
-    return fs.existsSync(this.messageFilePath(messageId));
+    const filePath = this.messageFilePath(messageId);
+    return filePath !== null && fs.existsSync(filePath);
   }
 
   /** messages-reach-renamed-sessions §D.2: a message id that already reached dead-letter. */
   async isDeadLettered(messageId: string): Promise<boolean> {
+    if (!isSafeFileId(messageId)) return false; // SEC-127: ids are only ever plain file names
     return fs.existsSync(path.join(this.basePath, 'dead-letter', `${messageId}.json`));
   }
 
@@ -400,6 +405,7 @@ export class MessageStore implements IMessageStore {
    */
   async saveIfAbsent(envelope: MessageEnvelope): Promise<boolean> {
     const filePath = this.messageFilePath(envelope.message.id);
+    if (!filePath) throw new Error('unsafe message id: refusing to store a message whose id is not a plain file name');
     const tmpPath = `${filePath}.${process.pid}.${Date.now()}.claim`;
     fs.writeFileSync(tmpPath, JSON.stringify(envelope, null, 2));
     try {
@@ -417,19 +423,21 @@ export class MessageStore implements IMessageStore {
   // ── Thread Management ──────────────────────────────────────────
 
   async saveThread(thread: MessageThread): Promise<void> {
-    const filePath = path.join(this.basePath, 'threads', `${thread.id}.json`);
+    const filePath = this.threadFilePath(thread.id, false);
+    if (!filePath) throw new Error('unsafe thread id: refusing to store a thread whose id is not a plain file name');
     const tmpPath = `${filePath}.tmp.${process.pid}`;
     fs.writeFileSync(tmpPath, JSON.stringify(thread, null, 2));
     fs.renameSync(tmpPath, filePath);
   }
 
   async getThread(threadId: string): Promise<MessageThread | null> {
-    const filePath = path.join(this.basePath, 'threads', `${threadId}.json`);
+    const filePath = this.threadFilePath(threadId, false);
+    const archivePath = this.threadFilePath(threadId, true);
+    if (!filePath || !archivePath) return null;
     try {
       const data = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(data) as MessageThread;
     } catch { // @silent-fallback-ok — thread file not found, check archive
-      const archivePath = path.join(this.basePath, 'threads', 'archive', `${threadId}.json`);
       try {
         const data = fs.readFileSync(archivePath, 'utf-8');
         return JSON.parse(data) as MessageThread;
@@ -464,10 +472,10 @@ export class MessageStore implements IMessageStore {
   }
 
   async archiveThread(threadId: string): Promise<void> {
-    const srcPath = path.join(this.basePath, 'threads', `${threadId}.json`);
-    if (!fs.existsSync(srcPath)) return;
+    const srcPath = this.threadFilePath(threadId, false);
+    const destPath = this.threadFilePath(threadId, true);
+    if (!srcPath || !destPath || !fs.existsSync(srcPath)) return;
 
-    const destPath = path.join(this.basePath, 'threads', 'archive', `${threadId}.json`);
     fs.renameSync(srcPath, destPath);
   }
 
@@ -549,8 +557,20 @@ export class MessageStore implements IMessageStore {
 
   // ── Private Helpers ──────────────────────────────────────────────
 
-  private messageFilePath(messageId: string): string {
+  /** SEC-127: see src/core/safeFileId.ts. */
+  static readonly MAX_FILE_ID_BYTES = MAX_FILE_ID_BYTES;
+  static isSafeFileId(id: unknown): id is string { return isSafeFileId(id); }
+
+  private messageFilePath(messageId: string): string | null {
+    if (!MessageStore.isSafeFileId(messageId)) return null;
     return path.join(this.basePath, 'store', `${messageId}.json`);
+  }
+
+  private threadFilePath(threadId: string, archived: boolean): string | null {
+    if (!MessageStore.isSafeFileId(threadId)) return null;
+    return archived
+      ? path.join(this.basePath, 'threads', 'archive', `${threadId}.json`)
+      : path.join(this.basePath, 'threads', `${threadId}.json`);
   }
 
   private async getThreadStats(): Promise<{ active: number; resolved: number; stale: number }> {

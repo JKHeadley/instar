@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T03:13:09.253Z",
+  "slug": "merge-line-exact-handoff",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 80,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/monitoring/greenPrOpenPrList.ts"
+    ],
+    "addedLines": 65,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

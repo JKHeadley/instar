@@ -86,6 +86,23 @@ describe('internal Codex calls run on the account with the most room (real pool,
     pool.update('justin', { lastQuota: { sevenDay: { utilizationPct: 1, resetsAt: FUTURE } } });
   });
 
+  it('passes the soonest-reset home to the actual child, then moves on when it is full', async () => {
+    const measuredAt = new Date().toISOString();
+    const soon = new Date(Date.now() + 3600_000).toISOString();
+    setInternalCodexAccountSource(() => pickInternalCallAccount(pool.list(), 'codex-cli'));
+    try {
+      pool.update('amrch', { lastQuota: { measuredAt, sevenDay: { utilizationPct: 70, resetsAt: soon } } });
+      pool.update('justin', { lastQuota: { measuredAt, sevenDay: { utilizationPct: 1, resetsAt: FUTURE } } });
+      await provider().evaluate('use expiring allowance');
+      expect(fs.readFileSync(record, 'utf8')).toBe(path.join(dir, '.codex-amrch'));
+      pool.update('amrch', { lastQuota: { measuredAt, sevenDay: { utilizationPct: 100, resetsAt: soon } } });
+      await provider().evaluate('continue on an account with room');
+      expect(fs.readFileSync(record, 'utf8')).toBe(path.join(dir, '.codex-justin'));
+    } finally {
+      pool.update('amrch', { lastQuota: { sevenDay: { utilizationPct: 90, resetsAt: FUTURE } } });
+    }
+  });
+
   it('switched off (no source) ⇒ the ambient login, exactly as before', async () => {
     await provider().evaluate('off?');
     expect(fs.readFileSync(record, 'utf8')).toBe('');

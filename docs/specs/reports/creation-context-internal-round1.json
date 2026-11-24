@@ -1,0 +1,36 @@
+{
+  "model": "authoring-session model inherited; exact runtime id not exposed; no claim of Claude-family execution",
+  "security": [
+    "effective combined tree/fallback cycles"
+  ],
+  "scalability": [
+    "complete view must be cached non-flushing off HTTP",
+    "mutable project snapshot creates same-event-ID divergence"
+  ],
+  "adversarial": [
+    "immutable canonical card-created snapshot",
+    "self/ancestor cycle handling",
+    "legacy reservation/hash compatibility",
+    "conflicting source/project candidates unresolved"
+  ],
+  "integration": [
+    "durable Slack identity vs machine-local locator normalization"
+  ],
+  "decisionCompleteness": {
+    "frontloadedDecisions": 14,
+    "cheapTags": 0,
+    "contestedThenCleared": 0,
+    "design": [
+      "durable parent identity domain"
+    ]
+  },
+  "lessonsAware": {
+    "design": [
+      "native live-user proof required before card closure"
+    ],
+    "experienceFit": "Justin wants generated chats nested/unplaced, not merely extra API fields; server and native completion evidence stay distinct",
+    "fixedLimits": "no new numerical behavioral quotas; inherited protocol bounds and enums"
+  },
+  "externalReviewableHash": "a0bbe66d663c20a369711a8308b65076eb98bc966af4f70c971e4ca5e3ee3256",
+  "resolution": "Revised draft addresses all listed DESIGN issues; requires round2 review, not yet converged."
+}

@@ -15,44 +15,25 @@
  * 9. rememberWithEmbedding() makes embedding immediately searchable
  */
 
-import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SemanticMemory } from '../../src/memory/SemanticMemory.js';
 import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
+import { createRealEmbeddingProvider } from '../helpers/realEmbeddingProvider.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Shared State ─────────────────────────────────────────────────
 
 let sharedProvider: EmbeddingProvider;
-// True only once the embedding model has actually loaded. The model is fetched
-// from the HuggingFace hub on first init; when the hub is unreachable or
-// rate-limited (a transient, ENVIRONMENTAL failure — not a code regression),
-// we must NOT hard-fail the entire integration suite. The beforeEach guard in
-// the describe below skips these model-dependent tests cleanly when this stays
-// false. Normal runs (model reachable/cached) are completely unchanged.
-let providerReady = false;
-
 beforeAll(async () => {
-  try {
-    sharedProvider = new EmbeddingProvider();
-    await sharedProvider.initialize();
-    await sharedProvider.loadVecModule();
-    providerReady = true;
-  } catch (err) {
-    providerReady = false;
-    // Loud, unmistakable signal so a persistent skip is visible in CI logs and
-    // can't be mistaken for "all green". This is the only failure mode that
-    // skips — a reachable model always runs the full assertions.
-    console.error(
-      '[hybrid-search] SKIPPING SUITE — embedding provider failed to initialize ' +
-      '(environmental, e.g. HuggingFace hub unreachable/rate-limited). This is NOT ' +
-      'a code failure; hybrid-search coverage is suspended until the model is ' +
-      'reachable again. Error: ' + ((err as Error)?.message ?? String(err)),
-    );
-  }
+  sharedProvider = createRealEmbeddingProvider();
+  await sharedProvider.initialize();
+  await sharedProvider.loadVecModule();
 }, 120_000);
+
+afterAll(async () => { await sharedProvider?.dispose(); });
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -115,13 +96,6 @@ const now = new Date().toISOString();
 
 describe('Hybrid Search Integration', () => {
   let setup: TestSetup;
-
-  // Runs outer-first, before any nested data-setup beforeEach, so a skip is
-  // raised before those hooks try (and fail) to build a provider-backed memory.
-  // ctx.skip() throws the vitest skip signal — never wrap it in try/catch.
-  beforeEach((ctx) => {
-    if (!providerReady) ctx.skip();
-  });
 
   afterEach(() => {
     setup?.cleanup();
