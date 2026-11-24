@@ -57,11 +57,24 @@ describe('witness current-actuation recovery protocol', () => {
     expect(adoption.ownerAuthorization).toBeNull(); expect(adoption.membershipChain).toHaveLength(1);
     expect(verifyAdoptionCertificate(adoption, request.packet, f.membership, pem(f.owner.publicKey), pem(f.witness.publicKey))).toBe(true);
     expect(f.service.adoptPending(request.packet.agentId, { currentLease: actuation.lease, originalCurrentLease: actuation.originalLease, revalidations: [validation] })[0]).toEqual(adoption);
-    const certificate = f.service.commit(request.packet.agentId, request.packet.idempotencyKey, actuation.lease, actuation.originalLease,
-      [sourceReceipt(f, request.packet, 0, 2), sourceReceipt(f, request.packet, 1, 2)]);
+    // The original writer had a successful prepare. Resume it with its old
+    // signed receipts after failover, before the successor can certify anything.
+    f.service.close();
+    const reopened = f.open();
+    services.push(reopened);
+    const { agentId, idempotencyKey } = request.packet;
+    const pending = reopened.operation(agentId, idempotencyKey);
+    expect(pending).toMatchObject({ state: 'prepared', certificate: null });
+    const oldReceipts = [f.receipt(request.packet, 0), f.receipt(request.packet, 1)];
+    expect(() => reopened.commit(agentId, idempotencyKey, request.lease, request.originalLease, oldReceipts))
+      .toThrow('writer-fenced');
+    expect(reopened.operation(agentId, idempotencyKey)).toEqual(pending);
+
+    const newReceipts = [sourceReceipt(f, request.packet, 0, 2), sourceReceipt(f, request.packet, 1, 2)];
+    const certificate = reopened.commit(agentId, idempotencyKey, actuation.lease, actuation.originalLease, newReceipts);
     expect(verifyCommitCertificate(certificate, request.packet, f.membership, pem(f.witness.publicKey), pem(f.owner.publicKey))).toBe(true);
-    expect(canonicalHash(f.service.operation(request.packet.agentId, request.packet.idempotencyKey)!.packet)).toBe(originalHash);
-    expect(() => f.service.commit(request.packet.agentId, request.packet.idempotencyKey, request.lease, request.originalLease, [])).toThrow('writer-fenced');
+    expect(canonicalHash(reopened.operation(agentId, idempotencyKey)!.packet)).toBe(originalHash);
+    expect(reopened.commit(agentId, idempotencyKey, actuation.lease, actuation.originalLease, newReceipts)).toEqual(certificate);
   });
   it('keeps immutable certificates free of key envelopes and purges actual rewrap sidecar across erase/checkpoint/restart',()=>{
     const f=fixture(),r=f.prepareRequest();f.service.prepare(r);const current=f.leaseFor(1,2),validation=revalidation(f,r,current,1);
