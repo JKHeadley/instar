@@ -421,6 +421,7 @@ import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, registerLocalTranscriptionEnabled, registerVoiceUnreadableListener, localTranscriptionEnabledFromConfig, describeVoiceTranscription, configuredVoiceProvider, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
+import { findUnresolvedSecrets } from '../recommended/reoffers.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
 import { namedTunnelBlock, realCloudflareApi, restoredTunnelBlock, tunnelSettingsFrom, withoutToken, type TunnelSettings } from '../recommended/cloudflareDomain.js';
 import {
@@ -18853,6 +18854,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
     existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
     reoffersEnabled: () => !!ctx.config.recommendedServices?.reoffers?.enabled,
+    unresolvedSecrets: () => findUnresolvedSecrets(ctx.config),
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;
