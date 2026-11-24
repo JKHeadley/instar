@@ -42,7 +42,10 @@ export function evaluateJudgeFlow(input, expected, ledgers, observations, disclo
   const criticalSignals = consensus.criticalFailures.map(finding => {
     const { trialId, arm, repeat, slotId, attemptId, rawHash } = schedule.slots[finding.slot];
     const id = createHash('sha256')
-      .update(JSON.stringify([trialId, arm, repeat, slotId, attemptId, rawHash, finding.criterionId]))
+      .update(JSON.stringify([
+        'source-grounded-critical-v1', input.planHash, trialId, arm, repeat,
+        slotId, attemptId, rawHash, finding.criterionId,
+      ]))
       .digest('hex');
     return { ...finding, id };
   });

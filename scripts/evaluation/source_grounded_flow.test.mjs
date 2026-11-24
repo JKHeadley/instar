@@ -149,3 +149,22 @@ test('a resolution for one judge attempt cannot resolve the other judge’s crit
     { ...expected, ordinal: 4 }, validate);
   assert.deepEqual(reordered.criticalSignals, result.criticalSignals);
 });
+
+test('an adjudication for an earlier plan cannot resolve a finding under a new rubric', () => {
+  const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
+  const ledger = receipts.map(receipt => ({ slotId: receipt.slotId, attempts: [{ ...receipt, ordinal: 0 }] }));
+  const disclosure = { ...expected, ordinal: 4 };
+  const original = evaluateJudgeFlow(input, expected, ledger, observations, disclosure, validate);
+  const revisedRubric = Buffer.from('revised synthetic rubric');
+  const revisedPlan = { ...JSON.parse(planBytes), rubricHash: sha(revisedRubric) };
+  const revisedBytes = Buffer.from(JSON.stringify(revisedPlan));
+  const revised = evaluateJudgeFlow({
+    ...input, planBytes: revisedBytes, planHash: sha(revisedBytes), rubricBytes: revisedRubric,
+  }, expected, ledger, observations, disclosure, validate);
+  assert.equal(original.criticalSignals.length, 1);
+  assert.equal(revised.criticalSignals.length, 1);
+  assert.notEqual(original.criticalSignals[0].id, revised.criticalSignals[0].id);
+  assert.equal(summarizeCriticalResolutions(revised.criticalSignals, [{
+    id: 'old-resolution', signalId: original.criticalSignals[0].id, resolution: 'judge-error',
+  }])[0].resolution, 'unresolved');
+});
