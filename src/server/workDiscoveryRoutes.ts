@@ -17,7 +17,7 @@ export interface WorkDiscoveryDependencies {
   mayReadPrivateWork(req: Request, res: Response): boolean;
   conversationSource(): ConversationSearchRouteDeps | null;
   configuredMessaging(platform: 'telegram' | 'slack'): boolean;
-  pullRequestSource: Pick<ChiefOfStaffPrSearch, 'search'>;
+  pullRequestSource: Pick<ChiefOfStaffPrSearch, 'searchForWork'>;
   budgetMs?: number;
 }
 
@@ -77,7 +77,7 @@ function conversations(deps: WorkDiscoveryDependencies, query: string, included:
 }
 
 async function pullRequests(deps: WorkDiscoveryDependencies, query: string, included: boolean) {
-  const scope = { repository: 'public Instar', method: 'literal' } as const;
+  const scope = { repository: 'public Instar' } as const;
   const unavailable = () => ({ hits: [], coverage: { ...scope, status: 'unavailable' } });
   if (!included) return { hits: [], coverage: { ...scope, status: 'unsearched' } };
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -85,7 +85,7 @@ async function pullRequests(deps: WorkDiscoveryDependencies, query: string, incl
     // The shared PR provider refreshes its allowlisted corpus with a fixed
     // GraphQL request. The caller's phrase is used only for local matching.
     const result = await Promise.race([
-      deps.pullRequestSource.search(query),
+      deps.pullRequestSource.searchForWork(query),
       new Promise<null>(resolve => { timer = setTimeout(resolve, deps.budgetMs ?? LOOKUP_BUDGET_MS, null); }),
     ]);
     if (!result || result.knownMatchCount === null) return unavailable();
@@ -97,9 +97,9 @@ async function pullRequests(deps: WorkDiscoveryDependencies, query: string, incl
       hits: result.items.map(pr => ({
         kind: 'pull-request' as const, repository: result.repository, number: pr.number, title: pr.title,
         url: pr.url, state: pr.state, headRefName: pr.headRefName, observedAt: pr.observedAt,
-        retainedObservation: pr.priorComplete, matchedBy: 'literal' as const,
+        retainedObservation: pr.priorComplete, matchedBy: pr.matchedBy,
       })),
-      coverage: { ...scope, status, truncated, open: result.coverage.open, merged: result.coverage.merged },
+      coverage: { ...scope, method: result.matchKind, status, truncated, open: result.coverage.open, merged: result.coverage.merged },
     };
   } catch {
     return unavailable();

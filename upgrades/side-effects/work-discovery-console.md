@@ -11,3 +11,9 @@
 ## 6b. Operator-surface quality
 
 The form leads with the search field and Search button. Result rows name a conversation or pull request, with readable snippets and evidence links. Coverage stays in an expandable section. No raw request, internal identity, or debugging state is primary content. The panel only reads work and contains no destructive action. It uses the console's existing narrow-screen input and stacked list patterns with plain labels and accessible status updates. The focused DOM and actual served-form tests cover the interaction. The release canary still needs the ordinary owner-facing channel.
+
+## Natural-language pull-request lookup
+
+Work also checks all meaningful terms when a page has room after literal matches. Each result identifies the method that found it. The lookup reads the existing bounded public inventory in memory and sends no user terms to GitHub. The existing Chief of Staff lookup stays literal. The ordinary five-second Work deadline can return unavailable while an inventory refresh finishes. A retry can use the completed scan.
+
+A fixture with a newer verbatim match and an older all-term match retained both in that order. An isolated Work HTTP canary with the real public GitHub provider returned the permanent agent-links PR for the original question. A first cold scan took about nine seconds with a longer test budget. An ordinary-budget rehearsal returned unavailable on the cold request and found the PR on retry. These checks used local fixture admission. An actual owner-channel answer and assignment remain release evidence.

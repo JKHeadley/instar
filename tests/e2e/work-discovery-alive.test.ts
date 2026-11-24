@@ -118,6 +118,12 @@ describe('work discovery production route', () => {
       coverage: { conversations: { status: 'fresh', peers: 'unsearched' }, specs: { status: 'unsearched' } },
     });
     expect(found.text).not.toContain('stale approval');
+    const earlierWork = await request(app).post(PATH).set(owner).send({
+      query: 'instar.sh addresses for agents', sources: ['pullRequests'],
+    }).expect(200);
+    expect(earlierWork.body.candidates).toEqual([
+      expect.objectContaining({ kind: 'pull-request', number: 3342, matchedBy: 'all-terms' }),
+    ]);
     expect(github).toHaveBeenCalledTimes(4);
     expect(JSON.stringify(github.mock.calls)).not.toContain('instar.sh');
     await request(app).post('/dashboard/session/revoke').set(owner).send({}).expect(200);

@@ -32,6 +32,7 @@ function answerLink(row) {
       el('a', { class: 'link-btn', text: typeof row.title === 'string' && row.title ? row.title : `Pull request #${row.number}`,
         href: `https://github.com/${PR_REPO}/pull/${row.number}` }),
       el('p', { class: 'need-sub', text: `Pull request #${row.number} · ${state}` }),
+      row.matchedBy === 'all-terms' ? el('p', { class: 'need-sub', text: 'Matched all search terms across pull request fields.' }) : null,
     );
   }
   return null;

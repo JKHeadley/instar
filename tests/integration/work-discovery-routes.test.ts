@@ -10,15 +10,19 @@ const WORK = '/work/discover';
 const OWNER = { Authorization: 'Bearer dst_owner' };
 const SECRET_QUERY = randomUUID();
 
-function harness(options: { budgetMs?: number; hold?: Promise<void> } = {}) {
+function harness(options: { budgetMs?: number; hold?: Promise<void>; includeLaterLiteral?: boolean } = {}) {
   let active = true;
   const fetchPage = vi.fn(async (_token: string, state: string) => {
     await options.hold;
     const nodes = state === 'OPEN' ? [{
-      number: 3342, title: 'Permanent agent links', body: 'Design for instar.sh',
+      number: 3342, title: 'Permanent agent links', body: 'Design for instar.sh and a permanent address for each agent',
       headRefName: 'topic/links', baseRefName: 'main', state: 'OPEN' as const,
       updatedAt: '2026-11-23T00:00:00.000Z', mergedAt: null,
     }] : [];
+    if (state === 'OPEN' && options.includeLaterLiteral) nodes.push({
+      ...nodes[0], number: 9000, body: 'Question quoted in a later work log: instar.sh addresses for agents',
+      updatedAt: '2026-11-24T00:00:00.000Z',
+    });
     return { repository: { pullRequests: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } };
   });
   const readConversations = vi.fn(() => null);
@@ -38,15 +42,16 @@ function harness(options: { budgetMs?: number; hold?: Promise<void> } = {}) {
     } : null,
     undefined, token => token === 'dst_owner' && active,
   ));
+  const pullRequestSource = new ChiefOfStaffPrSearch({ readToken: () => 'fixture', fetchPage });
   app.use(createWorkDiscoveryRouter({
     enabled: () => true,
     mayReadPrivateWork: (_req, res) => active && res.locals.dashboardScopedSession === true,
     conversationSource: readConversations,
     configuredMessaging: () => false,
-    pullRequestSource: new ChiefOfStaffPrSearch({ readToken: () => 'fixture', fetchPage }),
+    pullRequestSource,
     budgetMs: options.budgetMs,
   }));
-  return { app, fetchPage, readConversations, revoke: () => { active = false; } };
+  return { app, fetchPage, readConversations, pullRequestSource, revoke: () => { active = false; } };
 }
 
 describe('work discovery HTTP boundary', () => {
@@ -70,6 +75,40 @@ describe('work discovery HTTP boundary', () => {
     expect(JSON.stringify(fetchPage.mock.calls)).not.toContain('instar.sh');
     expect(JSON.stringify(fetchPage.mock.calls)).not.toContain(SECRET_QUERY);
     expect(miss.text).not.toContain(SECRET_QUERY);
+  });
+
+  it('finds all meaningful terms in public PR fields on cold and warm Work queries', async () => {
+    const { app, fetchPage, pullRequestSource } = harness();
+    const query = 'instar.sh addresses for agents';
+    for (let retry = 0; retry < 2; retry++) {
+      const result = await request(app).post(WORK).set(OWNER).send({ query }).expect(200);
+      expect(result.body).toMatchObject({
+        candidates: [{ kind: 'pull-request', number: 3342, matchedBy: 'all-terms' }],
+        coverage: { pullRequests: { status: 'fresh', method: 'all-terms' } },
+      });
+      expect(result.text).not.toContain(query);
+    }
+    await expect(pullRequestSource.search(query)).resolves.toMatchObject({ matchKind: 'literal', items: [] });
+    for (const miss of ['instar.sh addresses for widgets', 'instar.sh addresses for agents #9999', 'instar.shx addresses for agents']) {
+      const result = await request(app).post(WORK).set(OWNER).send({ query: miss }).expect(200);
+      expect(result.body.candidates).toEqual([]);
+    }
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(fetchPage.mock.calls)).not.toMatch(/instar\.sh|addresses|agents/);
+  });
+
+  it('ranks a later literal match first and still finds the earlier term match', async () => {
+    const { app, pullRequestSource } = harness({ includeLaterLiteral: true });
+    const query = 'instar.sh addresses for agents';
+    const response = await request(app).post(WORK).set(OWNER).send({ query }).expect(200);
+    expect(response.body).toMatchObject({
+      candidates: [{ number: 9000, matchedBy: 'literal' }, { number: 3342, matchedBy: 'all-terms' }],
+      coverage: { pullRequests: { method: 'literal-and-all-terms' } },
+    });
+    const legacy = await pullRequestSource.search(query);
+    expect(legacy.matchKind).toBe('literal');
+    expect(legacy.items.map(item => item.number)).toEqual([9000]);
+    expect(legacy.items[0]).not.toHaveProperty('matchedBy');
   });
 
   it('rejects untrusted and masquerading requests before touching providers', async () => {
