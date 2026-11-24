@@ -40,5 +40,10 @@
       "iterations": 6,
       "verified": true
     }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This server cadence samples the local scheduler as a read-only watcher. It cannot start a job, repair state or initiate an action."
   }
 }
