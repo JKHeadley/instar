@@ -56,3 +56,9 @@ A downgrade must disable legacy deletion and drain the worker before reverting t
 Restart the monotonic idle interval on the latest recorded activity or exit, including activity between scans. Eligibility requires 24 monotonic hours from that reset as well as trusted merge age. Record managed HEAD changes in the same durable activity stream. When an entry point can change HEAD outside that stream and coverage cannot be established, hold. Test a forward clock jump after an exit and an A→B→A change between scans.
 
 Exclude an ignored file only when generation provenance identifies that exact file as reproducible from tracked inputs. Directory names alone do not prove rebuildability. Archive ambiguous files, including manually maintained files inside build directories. Test a mixed-output directory and verify recovery of its manually maintained file.
+
+Serialize enrollment with the legacy worker's final removal decision. Drain an in-flight legacy pass before accepting custody, then require every removal to recheck current custody under the same lock. Test a legacy pass paused after classification while enrollment is requested.
+
+Hold a checkout with assume-unchanged or skip-worktree index entries until independent verification establishes that its tracked working bytes match HEAD. Ordinary Git status alone is insufficient. Include a fixture with an edited file hidden by an index flag.
+
+On an opt-in host, durable recording failure blocks admission to the enrolled checkout until the event store recovers. Surface the reason and keep other checkouts available. Test re-admission after recovery and measure blocked admissions during the pilot before expanding enrollment.
