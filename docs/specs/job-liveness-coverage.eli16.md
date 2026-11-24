@@ -9,3 +9,5 @@ The first release focuses on what the current server can observe since it starte
 The observer does not launch, retry, pause, or change jobs, and it sends no alerts. Rollout checks the real screen with a stalled scheduled callback, a healthy run, and a manual run so the owner can verify what the screen can prove.
 
 A job runs a repeated check. A finite project has a finish, such as replacing a full drive. A standing project holds an ongoing responsibility such as Machine Stewardship. Its checks can be jobs, and an accepted follow-up can be a finite project. A successful review does not mean the drive is healthy.
+
+In the first implementation, the Jobs detail shows when it checked, what it saw around the scheduled time, and when the next occurrence is expected. It keeps those observations separate from the last recorded run. The first version can establish this only for the current machine.

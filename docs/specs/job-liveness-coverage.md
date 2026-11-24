@@ -23,7 +23,7 @@ The Jobs surface can report that a job is enabled and give its most recent run w
 
 ## Which record to use
 
-A **job** has a definition for repeatable scheduled execution. It exists independently of the outcomes a project owns. A **finite project** makes progress toward an accepted and verifiable finish, such as moving a service to another disk. A **standing project** owns a recurring responsibility with review windows and designated follow-up, such as Machine Stewardship. Its disk health checks are jobs. A substantial repair can become a finite project. Marking a review complete does not close the standing responsibility or establish that health is good. This taxonomy informs the status surface and existing guidance. Creating or migrating those project modes, job definitions, and stewardship defaults requires their own reviewed write design.
+A **job** has a definition for repeatable scheduled execution. It exists independently of the outcomes a project owns. A **finite project** makes progress toward an accepted and verifiable finish, such as moving a service to another disk. A **standing project** owns a recurring responsibility with review windows and named responsibility for what happens after each review, such as Machine Stewardship. Its disk health checks are jobs. A substantial repair can become a finite project. Marking a review complete does not close the standing responsibility or establish that health is good. This taxonomy informs the status surface and existing guidance. Creating or migrating those project modes, job definitions, and stewardship defaults requires their own reviewed write design.
 
 ## Frontloaded decisions
 
@@ -59,7 +59,7 @@ B1 writes only local volatile observation data. Name the Structure beats Willpow
 - Eligibility and exact evidence join — invariant; basis: enumerable-domain; evidence: generation, authorized placement, native occurrence and trigger establish schedule membership. Similar slug and time cannot establish identity.
 - Due and observed progress — invariant; basis: enumerable-domain; evidence: the witnessed instant, applicable existing grace and continuous registered-Cron observation distinguish exact progress from an unproven past event.
 - Evidence visibility — invariant; basis: irreversible-consequence; evidence: an unauthorized response can expose private job information that cannot be recalled. Reuse Jobs authorization and a controlled field projection.
-- Observer capacity and fallback — judgment-candidate. The existing server job-health policy allocates read work within measured budgets. Allowed outcomes are refresh, defer rows or serve stale/unavailable. On weak evidence fall back to unknown. This does not affect execution.
+- Observer capacity and fallback — judgment-candidate. The existing server job-health policy allocates read work within measured budgets. Allowed outcomes are refresh, postpone observation for some rows or serve stale/unavailable. On weak evidence fall back to unknown. This does not affect execution.
 
 ## Multi-machine posture
 

@@ -111,3 +111,5 @@ These are specification findings. The supplied material contains no runtime meas
 ## Convergence verdict
 
 Converged at the six-round cap for the read-only local-first design. The remaining external findings are detection precision, read-only peer rollout and success-ceiling evidence. None authorizes an unproven result or any scheduler effect. Before enabling a scope, prove its stated late-callback, freshness, and authority controls.
+
+Implementation checkout editorial note. The taxonomy and observer budget use alternate wording for routine responsibilities and delayed samples after the deferral scanner matched those phrases. The meanings are unchanged. Round hashes refer to the reviewed snapshots.

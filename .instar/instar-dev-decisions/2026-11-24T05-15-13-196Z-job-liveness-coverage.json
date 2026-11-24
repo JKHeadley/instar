@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-24T05:15:13.196Z",
+  "slug": "job-liveness-coverage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 290,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/types.ts",
+      "src/scheduler/JobScheduleObserver.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 287,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This server cadence samples the local scheduler as a read-only watcher. It cannot start a job, repair state or initiate an action."
+  },
+  "verdict": "pass"
+}
