@@ -9,7 +9,7 @@ const sha = raw => createHash('sha256').update(raw).digest('hex');
 const capture = { submissionId: 'shared', answerRaw: 'captured answer' };
 const criteria = [{ id: 'critical', critical: true }];
 const inputs = ['fail', 'pass'].map((verdict, index) => ({
-  trialId: 'trial', slotId: `slot-${index}`, attemptId: `attempt-${index}`, family: `family-${index}`,
+  trialId: 'trial', arm: 'full', repeat: 0, slotId: `slot-${index}`, attemptId: `attempt-${index}`, family: `family-${index}`,
   raw: JSON.stringify({ submissionId: 'shared', criteria: [{ criterionId: 'critical', verdict }] }),
 }));
 const receipts = inputs.map(({ raw, ...ids }) => ({
@@ -55,4 +55,13 @@ test('a selected timeout retry enters the original slot exactly once', () => {
   const result = summarizeJudgeConsensus(criteria, slots.map(slot => slot.findings));
   assert.deepEqual(result.criteria, [{ criterionId: 'critical', verdict: 'disputed' }]);
   assert.deepEqual(result.criticalFailures, [{ criterionId: 'critical', slot: 0 }]);
+});
+
+test('rejects exact output bytes recorded for a different arm or repeat', () => {
+  for (const change of [{ arm: 'reduced' }, { repeat: 1 }]) {
+    const slots = bindJudgeSlots(capture, receipts, [{ ...inputs[0], ...change }, inputs[1]], validate);
+    assert.deepEqual(slots.map(slot => slot.state), ['binding-mismatch', 'bound']);
+    assert.throws(() => bindJudgeSlots(capture, [{ ...receipts[0], ...change }, receipts[1]], inputs, validate),
+      TypeError);
+  }
 });

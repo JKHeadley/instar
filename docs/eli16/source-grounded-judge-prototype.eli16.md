@@ -31,3 +31,5 @@ A rerun also has to match the original case, submission, comparison arm and repe
 The report distinguishes an empty scheduled slot from a selected attempt whose output is missing. A rejected or missing output does not erase the other judge’s critical finding.
 
 Schedule checks begin with the verified plan bytes. Callers cannot pass a separately parsed plan in place of those bytes.
+
+Matching output bytes are insufficient when the captured output belongs to a different comparison arm or repeat. The binder checks both fields before accepting a judge result.

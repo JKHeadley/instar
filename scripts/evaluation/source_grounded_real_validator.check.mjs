@@ -89,6 +89,11 @@ const rejected = evaluateJudgeFlow({ ...verifiedPlan, capture: input }, identity
 assert.deepEqual(rejected.bindingStates, ['bound', 'binding-mismatch']);
 assert.equal(rejected.independence, 'unknown');
 
+const wrongRepeat = evaluateJudgeFlow({ ...verifiedPlan, capture: input }, identity, ledgers,
+  [observations[0], { ...observations[1], repeat: 1 }], disclosure, validateCapture);
+assert.deepEqual(wrongRepeat.bindingStates, ['bound', 'binding-mismatch']);
+assert.equal(wrongRepeat.independence, 'unknown');
+
 const lostOutput = evaluateJudgeFlow({ ...verifiedPlan, capture: input }, identity, ledgers,
   [observations[0]], disclosure, validateCapture);
 assert.deepEqual(lostOutput.bindingStates, ['bound', 'output-missing']);

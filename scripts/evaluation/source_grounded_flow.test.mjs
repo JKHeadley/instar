@@ -24,7 +24,7 @@ const planBytes = Buffer.from(JSON.stringify({
   availableSourceIds: capture.availableSourceIds, rubricHash: sha(rubricBytes),
 }));
 const observations = ['fail', 'pass'].map((verdict, index) => ({
-  trialId: 'trial', slotId: 'slot-' + index, attemptId: 'attempt-' + index,
+  ...expected, slotId: 'slot-' + index, attemptId: 'attempt-' + index,
   family: 'family-' + index,
   raw: JSON.stringify({ submissionId: capture.submissionId, criteria: [{ criterionId: 'critical', verdict }] }),
 }));
