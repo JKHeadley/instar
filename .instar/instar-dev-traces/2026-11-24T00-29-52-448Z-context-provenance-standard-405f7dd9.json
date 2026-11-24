@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "context-provenance-standard",
+  "sessionId": "998f9cdd-58f3-4659-9992-913b0a93fc1f",
+  "timestamp": "2026-11-24T00:29:52.448Z",
+  "artifactPath": "upgrades/side-effects/context-provenance-standard.md",
+  "artifactSha256": "02e1ae7f7a74df35b5414cf90b0788f23c4bca615bd34bd8132e6be18019e62d",
+  "coveredFiles": [
+    "docs/evaluation/context-budget/source-grounded-answer/provenance-standard.eli16.md",
+    "docs/evaluation/context-budget/source-grounded-answer/provenance-standard.md",
+    "upgrades/side-effects/context-provenance-standard.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three public documentation files only; reversible by revert, no runtime policy, private evidence or authority changes.",
+  "eli16Path": "docs/evaluation/context-budget/source-grounded-answer/provenance-standard.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/context-provenance-standard.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-document-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
