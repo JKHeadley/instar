@@ -11,7 +11,6 @@ import {
   checkGitVersion,
   sandboxAgentMd,
   connectViaGit,
-  registerConnectedAgent,
 } from '../../src/core/AgentConnector.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -309,38 +308,50 @@ describe('connectViaGit', () => {
 
 // ── registerConnectedAgent ──────────────────────────────────────────
 
-describe('registerConnectedAgent', () => {
-  // REGISTRY_PATH is resolved at module load time from process.env.HOME,
-  // so we must work with the real path. We back up and restore the actual file.
-  const registryPath = path.join(
-    process.env.HOME || process.env.USERPROFILE || '/tmp',
-    '.instar',
-    'registry.json',
-  );
-  let originalContent: string | null = null;
+// The production writer binds its registry path when the module is evaluated.
+// Isolate that evaluation only; the runner and subsequent calls keep their home.
+async function loadPrivateRegistryWriter(home: string) {
+  const originalHome = process.env.HOME;
+  const originalProfile = process.env.USERPROFILE;
+  vi.resetModules();
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return (await import('../../src/core/AgentConnector.js')).registerConnectedAgent;
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalProfile;
+    // Only the returned function retains this private module graph. Later
+    // imports must evaluate against their own environment, not this fixture.
+    vi.resetModules();
+  }
+}
 
-  beforeEach(() => {
-    // Back up existing registry if present
-    if (fs.existsSync(registryPath)) {
-      originalContent = fs.readFileSync(registryPath, 'utf-8');
-    } else {
-      originalContent = null;
-    }
-    // Remove to start clean
-    try { SafeFsExecutor.safeUnlinkSync(registryPath, { operation: 'tests/unit/agent-connector.test.ts:332' }); } catch { /* no file */ }
+describe('registerConnectedAgent', () => {
+  let privateHome: string;
+  let registryPath: string;
+  let registerConnectedAgent: Awaited<ReturnType<typeof loadPrivateRegistryWriter>>;
+
+  beforeEach(async () => {
+    privateHome = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-connected-registry-'));
+    registryPath = path.join(privateHome, '.instar', 'registry.json');
+    const originalHome = process.env.HOME;
+    const originalProfile = process.env.USERPROFILE;
+    registerConnectedAgent = await loadPrivateRegistryWriter(privateHome);
+    expect(process.env.HOME).toBe(originalHome);
+    expect(process.env.USERPROFILE).toBe(originalProfile);
   });
 
   afterEach(() => {
-    // Restore original registry
-    if (originalContent !== null) {
-      fs.mkdirSync(path.dirname(registryPath), { recursive: true });
-      fs.writeFileSync(registryPath, originalContent);
-    } else {
-      try { SafeFsExecutor.safeUnlinkSync(registryPath, { operation: 'tests/unit/agent-connector.test.ts:342' }); } catch { /* no file */ }
-    }
+    SafeFsExecutor.safeRmSync(privateHome, {
+      recursive: true, force: true,
+      operation: 'tests/unit/agent-connector.test.ts:private-registry-cleanup',
+    });
   });
 
-  // Use unique paths per test to avoid collisions with real entries
+  // Agent paths are registry values; no directories are created at these paths.
   const testPath = (suffix: string) => `/tmp/instar-test-agent-${Date.now()}-${suffix}`;
 
   it('creates a registry entry', () => {
@@ -386,6 +397,32 @@ describe('registerConnectedAgent', () => {
     expect(entryB).toBeDefined();
     expect(entryA.name).toBe('agent-a');
     expect(entryB.name).toBe('agent-b');
+  });
+
+  it('keeps two module-bound registries independent after restoring the runner environment', async () => {
+    const otherHome = path.join(privateHome, 'other-home');
+    const originalHome = process.env.HOME;
+    const originalProfile = process.env.USERPROFILE;
+    const otherWriter = await loadPrivateRegistryWriter(otherHome);
+    expect(process.env.HOME).toBe(originalHome);
+    expect(process.env.USERPROFILE).toBe(originalProfile);
+
+    const firstPath = testPath('first-private');
+    const secondPath = testPath('second-private');
+    registerConnectedAgent('first-private', firstPath, 8080);
+    otherWriter('second-private', secondPath, 9090);
+    registerConnectedAgent('first-updated', firstPath, 8080);
+
+    const first = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+    const second = JSON.parse(fs.readFileSync(path.join(otherHome, '.instar', 'registry.json'), 'utf-8'));
+    expect(first.version).toBe(1);
+    expect(second.version).toBe(1);
+    expect(first.entries).toHaveLength(1);
+    expect(second.entries).toHaveLength(1);
+    expect(first.entries[0]).toMatchObject({ name: 'first-updated', path: firstPath, port: 8080 });
+    expect(second.entries[0]).toMatchObject({ name: 'second-private', path: secondPath, port: 9090 });
+    expect(first.entries.some((entry: { path: string }) => entry.path === secondPath)).toBe(false);
+    expect(second.entries.some((entry: { path: string }) => entry.path === firstPath)).toBe(false);
   });
 
   it('sets lastHeartbeat as ISO string', () => {
