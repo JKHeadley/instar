@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "job-liveness-coverage",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:12:37.318Z",
+  "artifactPath": "upgrades/side-effects/job-liveness-coverage.md",
+  "artifactSha256": "9005cb822e7e91804de8c9fed3fd330f04019418f155730cbec33d367393d7ee",
+  "specPath": "docs/specs/job-liveness-coverage.md",
+  "coveredFiles": [
+    "dashboard/console/schedule-model.js",
+    "docs/specs/job-liveness-coverage.md",
+    "docs/specs/reports/job-liveness-coverage-convergence.md",
+    "src/core/types.ts",
+    "src/scheduler/JobScheduleObserver.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/job-schedule-observation-lifecycle.test.ts",
+    "tests/integration/job-schedule-observation-routes.test.ts",
+    "tests/unit/job-schedule-observer.test.ts",
+    "upgrades/next/job-liveness-coverage.md",
+    "upgrades/side-effects/job-liveness-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Authenticated read-only scheduler observations exercised through Croner and the shipped Jobs view. No dispatch or peer authority changes.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": null
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-liveness-coverage-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

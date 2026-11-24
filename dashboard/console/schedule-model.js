@@ -154,7 +154,7 @@ export function entryStatus(e, now = Date.now(), medians = {}) {
     return { kind: 'running', tone: failures ? 'bad' : null, words: [forS !== null ? `running for ${spell(forS)}` : 'running', failWords].filter(Boolean).join(' · '), runningFor: forS, failures };
   }
   const next = Date.parse(s.nextScheduled);
-  const late = e.local && Number.isFinite(next) && now - next > LATE_GRACE_MS;
+  const late = !e.job.scheduleCoverage && e.local && Number.isFinite(next) && now - next > LATE_GRACE_MS;
   const lateWords = late ? `past its recorded next-run time by ${spell((now - next) / 1000)}, not running` : null;
   // warning-path: row
   if (failures) return { kind: 'failing', tone: 'bad', words: [failWords, lateWords].filter(Boolean).join(' · '), failures, late };
@@ -165,8 +165,8 @@ export function entryStatus(e, now = Date.now(), medians = {}) {
   return { kind: 'ok', tone: null, words: next > now ? `next ${until(next, now)}` : 'due now', next, failures };
 }
 
-function lastRunWords(s, now) {
-  if (!s || !s.lastRun) return 'never ran';
+function lastRunWords(s, now, coverage) {
+  if (!s || !s.lastRun) return coverage ? 'no last run recorded' : 'never ran';
   const a = ago(s.lastRun, now);
   if (s.lastResult === 'pending') return `started ${a}`;
   const mark = s.lastResult === 'success' ? ' ✓' : s.lastResult ? ' ✕' : '';
@@ -186,11 +186,13 @@ export function jobRow(entries, now = Date.now(), medians = {}) {
   const sched = scheduleWords(job.schedule);
   const where = grouped ? ` on ${worst.entry.machine}` : '';
   let sub;
-  if (needsLook) sub = `${worst.status.words}${where} · ${lastRunWords(worst.entry.state, now)}`;
+  if (needsLook) sub = `${worst.status.words}${where} · ${lastRunWords(worst.entry.state, now, worst.entry.job.scheduleCoverage)}`;
   else if (kind === 'running') sub = `${worst.status.words}${where} · ${sched}`;
   else if (kind === 'off') sub = `${sched} · off${grouped ? ` on ${machines.join(' and ')}` : ''}`;
   else if (kind === 'elsewhere') sub = `${sched} · ${worst.status.words}`;
-  else sub = `${sched} · ${lastRunWords(worst.entry.state, now)}${grouped ? ` · on ${machines.join(' and ')}` : ''}`;
+  else sub = `${sched} · ${lastRunWords(worst.entry.state, now, worst.entry.job.scheduleCoverage)}${grouped ? ` · on ${machines.join(' and ')}` : ''}`;
+  const coverage = !grouped && scheduleCoverageWords(worst.entry.job.scheduleCoverage, now);
+  if (coverage) sub += ` · ${coverage}`;
   const nexts = statuses.map((x) => x.status.next).filter((t) => Number.isFinite(t) && t > now);
   const nextAt = nexts.length ? Math.min(...nexts) : null;
   const lasts = sorted.map((e) => Date.parse(e.state && e.state.lastRun)).filter(Number.isFinite);
@@ -375,7 +377,7 @@ export function storySentence(entry, status, now = Date.now(), lastRun = null) {
   else if (s.lastRun) {
     const took = lastRun && Number(lastRun.durationSeconds) > 0 ? ` took ${spell(lastRun.durationSeconds)} and` : '';
     bits.push(`Last run ${ago(s.lastRun, now)}${took} ${resultWord(s.lastResult)}${status.failures > 1 ? `, the ${ordinal(status.failures)} failure in a row` : ''}.`);
-  } else bits.push('It has not run yet.');
+  } else bits.push(entry.job.scheduleCoverage ? 'No last run is recorded.' : 'It has not run yet.');
   if (entry.enabled && entry.local && status.kind !== 'running' && status.kind !== 'running-long') {
     const next = Date.parse(s.nextScheduled);
     if (!Number.isFinite(next)) bits.push('Next run unknown.');
@@ -386,10 +388,44 @@ export function storySentence(entry, status, now = Date.now(), lastRun = null) {
   return bits.join(' ');
 }
 
+export function scheduleCoverageWords(coverage, now = Date.now()) {
+  if (!coverage) return '';
+  const due = Date.parse(coverage.dueAt);
+  const observed = Date.parse(coverage.observedAt);
+  const dated = (text) => Number.isFinite(observed) ? `${text} Last checked ${whenWords(observed, now)}.` : text;
+  if (coverage.state === 'stale') return dated('Schedule observation is out of date.');
+  if (coverage.state === 'unavailable') return dated('Schedule coverage is unknown.');
+  if (coverage.state === 'paused') return dated('Schedule observation is paused.');
+  if (coverage.state === 'upcoming') return dated('The observer sees an upcoming scheduled time.');
+  if (coverage.state === 'no-callback-observed' && Number.isFinite(observed) && Number.isFinite(due)) {
+    return `No scheduled callback observed by ${whenWords(observed, now)} for the occurrence due ${whenWords(due, now)}.`;
+  }
+  if (coverage.state === 'due-unknown') {
+    const occurrence = Number.isFinite(due) ? `The schedule came due ${whenWords(due, now)}.` : 'The schedule came due.';
+    return dated(`${occurrence} The available records do not establish what happened.`);
+  }
+  return '';
+}
+
 /** Story lines for one machine's entry (identifiers stay in Details). */
 export function storyLines(entry, status, now = Date.now()) {
   const s = entry.state || {};
   const lines = [{ label: 'State', text: status.words }];
+  const coverage = entry.job.scheduleCoverage;
+  const current = scheduleCoverageWords(coverage, now);
+  if (current) lines.push({ label: 'Schedule coverage', text: current });
+  const nextDue = Date.parse(coverage?.nextDueAt);
+  if (Number.isFinite(nextDue)) lines.push({ label: 'Next scheduled time observed', text: whenWords(nextDue, now) });
+  const previous = scheduleCoverageWords(coverage?.previousWitness, now);
+  if (previous) lines.push({ label: 'Previous schedule observation', text: previous });
+  const from = Date.parse(coverage?.callbackEntered?.from);
+  const through = Date.parse(coverage?.callbackEntered?.through);
+  if (Number.isFinite(from) && Number.isFinite(through)) {
+    lines.push({
+      label: 'Callback entry',
+      text: `A scheduled callback entered between ${whenWords(from, now)} and ${whenWords(through, now)}. Its scheduled time is unknown.`,
+    });
+  }
   if (s.lastRun) lines.push({ label: 'Last run', text: `${whenWords(Date.parse(s.lastRun), now)} (${ago(s.lastRun, now)}) · ${resultWord(s.lastResult)}` });
   if (s.lastError) lines.push({ label: 'Last error', text: String(s.lastError) });
   if (entry.enabled && entry.local) {

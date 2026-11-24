@@ -15,6 +15,7 @@ import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } fro
 import { readJobDeclaredFailure, readJobDeclaredSkip } from './jobDeclaredFailure.js';
 import { jobGateReceiptPath, readJobGateReceipt, consumeJobGateReceipt, restoreJobGateReceipt } from './JobGateReceipt.js';
 import { Cron } from 'croner';
+import type { JobScheduleRegistration } from './JobScheduleObserver.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
@@ -204,6 +205,8 @@ export class JobScheduler {
    *  away so a recurrence is reported again. */
   private reportedLoadProblems = new Set<string>();
   private cronTasks: Map<string, Cron> = new Map();
+  private readonly scheduleEntries = new Map<string, { job: JobDefinition; entries: number }>();
+  private scheduleGeneration = 0;
   private queue: QueuedJob[] = [];
   private running = false;
   private promotionCatchUpPending = false;
@@ -382,6 +385,7 @@ export class JobScheduler {
   private jobRouteEvidence: ((job: JobDefinition) => JobRouteEvidence) | null = null;
 
   setPromotionLeaseProvider(provider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null): void {
+    if (this.promotionLeaseProvider !== provider) this.scheduleGeneration++;
     this.promotionLeaseProvider = provider;
   }
 
@@ -450,6 +454,8 @@ export class JobScheduler {
       task.stop();
     }
     this.cronTasks.clear();
+    this.scheduleEntries.clear();
+    this.scheduleGeneration++;
 
     const enabledJobs = this.jobs.filter(j => j.enabled);
 
@@ -465,7 +471,9 @@ export class JobScheduler {
 
     for (const job of scopedJobs) {
       try {
+        const registration = { job, entries: 0 };
         const task = new Cron(job.schedule, async () => {
+          registration.entries++;
           if (this.promotionCatchUpPending) {
             this.blockedCronDuringPromotion.add(job.slug);
             return; // the promotion sweep owns admission until it finishes
@@ -484,6 +492,7 @@ export class JobScheduler {
           }
         });
         this.cronTasks.set(job.slug, task);
+        this.scheduleEntries.set(job.slug, registration);
 
         // Stamp when this job STARTED EXISTING, once. The startup missed-job
         // sweep needs it to tell "brand-new, its window simply hasn't come yet"
@@ -801,6 +810,7 @@ export class JobScheduler {
   }
 
   setMachineIdentity(machineId: string, machineName: string): void {
+    if (this.machineId !== machineId || this.machineName !== machineName) this.scheduleGeneration++;
     this.machineId = machineId;
     this.machineName = machineName;
     this.runHistory.setMachineId(machineId);
@@ -928,6 +938,8 @@ export class JobScheduler {
       task.stop();
     }
     this.cronTasks.clear();
+    this.scheduleEntries.clear();
+    this.scheduleGeneration++;
     if (this.missedJobStartupTimer) {
       clearTimeout(this.missedJobStartupTimer);
       this.missedJobStartupTimer = null;
@@ -1551,6 +1563,7 @@ export class JobScheduler {
    * Pause — cron tasks keep ticking but triggers are skipped.
    */
   pause(): void {
+    if (!this.paused) this.scheduleGeneration++;
     this.paused = true;
   }
 
@@ -1568,6 +1581,7 @@ export class JobScheduler {
    * Resume — triggers start executing again.
    */
   resume(): void {
+    if (this.paused) this.scheduleGeneration++;
     this.paused = false;
     if (this.failureAlertDeliveryActive) this.activateFailureAlertDelivery();
     this.processQueue();
@@ -1626,6 +1640,25 @@ export class JobScheduler {
   isJobLocal(slug: string): boolean {
     const job = this.jobs.find(j => j.slug === slug);
     return job ? this.isJobScopedToThisMachine(job) : false;
+  }
+
+  /** Observation of the production registration, independent of execution history. */
+  getScheduleRegistration(slug: string, requireLease = false): JobScheduleRegistration | null {
+    if (!this.running || this.paused || this.state.readOnly || this.promotionCatchUpPending || !this.machineId) return null;
+    const registration = this.scheduleEntries.get(slug);
+    if (!registration || !this.isJobScopedToThisMachine(registration.job)) return null;
+    // The live lease provider may read its durable store. A local-only
+    // observation cannot certify continuous lease eligibility from it.
+    if (requireLease || this.promotionLeaseProvider) return null;
+    return {
+      schedule: registration.job.schedule,
+      generation: `${this.scheduleGeneration}:${this.machineId}:local`,
+      entries: registration.entries,
+    };
+  }
+
+  isScheduleObservationPaused(): boolean {
+    return this.paused;
   }
 
   /**
