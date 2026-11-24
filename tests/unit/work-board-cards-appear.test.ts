@@ -141,8 +141,13 @@ describe('what a writer may put on a card', () => {
   });
   it('route writes by the agent need a recommendation and why-you; a person\'s do not; an edit cannot clear them', () => {
     const t = makeService();
-    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x' }, null)).toMatchObject({ error: 'recommendation-required' });
-    expect(t.svc.askFieldsRefusal(AGENT, { recommendation: 'y' }, null)).toMatchObject({ error: 'why-you-required' });
+    // An ASK (outward, a person carrier, or an owner-confirms item) needs both fields; an inward agent-work card asks
+    // nothing and needs neither (agent-work-cards-default §1, amending §2 here).
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', outward: true }, null)).toMatchObject({ error: 'recommendation-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { recommendation: 'y', outward: true }, null)).toMatchObject({ error: 'why-you-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', doneWhen: [{ id: 'd', text: 'Justin confirms' }] }, null)).toMatchObject({ error: 'recommendation-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', carrier: { personKey: 'justin' } }, null)).toMatchObject({ error: 'recommendation-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', outward: false, doneWhen: [{ id: 'd', text: 'Done', certify: 'agent-may-certify' }] }, null)).toBeNull();
     expect(t.svc.askFieldsRefusal(AGENT, ASK, null)).toBeNull();
     expect(t.svc.askFieldsRefusal(OWNER, {}, null)).toBeNull();
     const r = t.svc.createCard(AGENT, yours); if (!r.ok) throw new Error(r.error);

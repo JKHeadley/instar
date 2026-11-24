@@ -88,12 +88,13 @@ function makeHarness(over: {
 
   const killSession = vi.fn().mockReturnValue(true);
   const respawner = vi.fn(async () => 'new-tmux');
+  const liveSessions = [{ id: 'state-1', tmuxSession: 'echo-build', subscriptionAccountId: 'acct-a' }];
   const refresh = new SessionRefresh({
     sessionManager: { killSession } as unknown as SessionManager,
     state: {
       listSessions: vi
         .fn()
-        .mockReturnValue([{ id: 'state-1', tmuxSession: 'echo-build', subscriptionAccountId: 'acct-a' }]),
+        .mockReturnValue(liveSessions),
     } as unknown as StateManager,
     telegram: { getTopicForSession: vi.fn().mockReturnValue(42) } as unknown as TelegramAdapter,
     topicResumeMap: { findUuidForSession: vi.fn(), save: vi.fn(), remove: vi.fn() } as unknown as TopicResumeMap,
@@ -103,7 +104,7 @@ function makeHarness(over: {
     clock,
   });
 
-  return { refresh, respawner, killSession, probe, recordProceeded, recordInteractiveRefusal, wait, advance };
+  return { refresh, respawner, killSession, probe, recordProceeded, recordInteractiveRefusal, wait, advance, liveSessions };
 }
 
 describe('SessionRefresh work gate (§4.2)', () => {
@@ -290,5 +291,17 @@ describe('SessionRefresh work gate (§4.2)', () => {
       expect(busy!.subagentLeg).toBe('absent');
       expect(busy!.subagents).toBeUndefined();
     });
+  });
+});
+
+describe('manual balance final consistency veto', () => {
+  it('source changes during the awaited work probe: no kill and no rate budget consumed', async () => {
+    const h = makeHarness({ probes: [idleProbe()], rateLimit: { maxPerWindow: 1, windowMs: 60_000 } });
+    h.probe.mockImplementationOnce(async () => { h.liveSessions[0].subscriptionAccountId = 'acct-b'; return idleProbe(); });
+    const r = await h.refresh.refreshSession({ sessionName: 'echo-build', callerClass: 'interactive-refresh', beforeKill: () => h.liveSessions[0].subscriptionAccountId === 'acct-a' });
+    expect(r).toMatchObject({ ok: false, code: 'refresh_intent_changed' });
+    expect(h.killSession).not.toHaveBeenCalled(); expect(h.respawner).not.toHaveBeenCalled();
+    expect((await h.refresh.refreshSession({ sessionName: 'echo-build', callerClass: 'interactive-refresh', beforeKill: () => h.liveSessions[0].subscriptionAccountId === 'acct-b' })).ok).toBe(true);
+    expect(h.killSession).toHaveBeenCalledOnce();
   });
 });

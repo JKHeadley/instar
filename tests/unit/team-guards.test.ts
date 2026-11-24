@@ -385,7 +385,7 @@ describe('what a confined session feeds agent-wide', () => {
   });
   it('a team member\'s words are kept out of the owner\'s learned corrections', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
-    expect(src.includes('const ownersWords = isOwnersOwnWords(entry, telegram?.getVerifiedOwner());')).toBe(true);
+    expect(src.includes('const ownersWords = isOwnersOwnWords(entry, telegram?.getLearningOwner());')).toBe(true);
     expect(/const verdict = ownersWords && entry\.text/.test(src)).toBe(true);
     expect(src.includes('fromUser: ownersWords,')).toBe(true);
     expect(isOwnersOwnWords({ fromUser: true, teamPhone: true, telegramUserId: 111 }, 111)).toBe(false);

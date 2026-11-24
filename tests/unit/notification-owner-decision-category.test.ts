@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
-import { withNotificationEnvelope } from '../../src/messaging/notificationStampers.js';
+import { notificationStamper, withNotificationEnvelope } from '../../src/messaging/notificationStampers.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { CONVERSATION_CATEGORIES, PROTECTED_DELIVERY_CATEGORIES, categoryForProducer, isNotificationCategory } from '../../src/messaging/notificationCategories.js';
 
@@ -38,6 +38,14 @@ describe('owner-decision category', () => {
     const { gate } = setup();
     expect(gate.decide(141385, { origin: 'automated', category: 'uncategorized', sourceContext: 'telegram-server' })).toMatchObject({ decision: 'record', reason: 'quiet-default' });
     expect(gate.decide(141385, { origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' })).toMatchObject({ decision: 'deliver', reason: 'owner-decision' });
+  });
+
+  it('the profile confirmation producer gets bounded owner-decision delivery without reply authority', () => {
+    const { gate } = setup();
+    const envelope = notificationStamper('src/server/routes.ts', 'profile-confirmation')();
+    expect(envelope).toMatchObject({ origin: 'automated', category: 'owner-decision' });
+    expect(gate.decide(42, envelope)).toMatchObject({ decision: 'deliver', reason: 'owner-decision' });
+    expect(() => notificationStamper('src/commands/server.ts', 'profile-confirmation')).toThrow('Unregistered');
   });
 
   it('caps a looping sender at 10 decisions per topic per 10 minutes, per topic', () => {

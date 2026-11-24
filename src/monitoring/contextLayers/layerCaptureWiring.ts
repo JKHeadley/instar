@@ -42,7 +42,7 @@ export interface LayerCaptureWiring {
   anchorLedger: AnchorLedger | null;
   /** Pass to `createLlmExtractFn` as its usage observer: provider-reported tokens per trigger (§11). */
   onExtractUsage(input: { message: { id: string } }, usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }): void;
-  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus' | 'onLayerOutcome' | 'anchorLedger'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
+  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus' | 'onLayerOutcome' | 'anchorLedger'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[]; lockWindows?: (topicId: number) => ReadonlyArray<{ fromEntry?: string; toEntry?: string; closedAt?: number }> }): { ticker: LayerTicker; stop(): void };
   /**
    * S7: build (and by default start) the backfill lane over U and the ledger;
    * null without them. The lane checks its switch on every tick.
@@ -214,6 +214,7 @@ export function wireLayerCapture(o: {
         budget: o.layers.budget,
         baseMs: opts.baseMs,
         liveSecrets: opts.liveSecrets,
+        ...(opts.lockWindows ? { lockWindows: opts.lockWindows } : {}),
         ingest: async (s, digest) => {
           const r = await captureTick(deps, s.topicId, digest.text);
           if (r.status === 'skipped-shed') return 'shed';

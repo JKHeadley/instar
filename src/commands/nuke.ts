@@ -15,14 +15,14 @@
  *
  * Then, in order: remove the auto-start entry, stop the server by its recorded
  * id, list sessions again and stop the in-home ones by id (each confirmed with
- * `has-session`), push the git backup (unchanged), back up secrets,
+ * `has-session`), push existing Git commits, back up secrets,
  * unregister, delete. Every step's outcome is collected; any failure is
  * printed with its path and the command exits non-zero instead of claiming
  * removal.
  *
  * Safety:
  *   - Requires explicit confirmation (unless --yes)
- *   - Pushes to git remote before deletion (preserves cloud backup)
+ *   - Pushes existing commits to the configured git remote before deletion
  *   - Shows exactly what will be removed before proceeding
  */
 
@@ -50,24 +50,31 @@ interface NukeHereOptions {
   alsoStop?: string[];
 }
 
-const PROJECT_LOCAL_ALWAYS_REMOVE = [
-  '.instar',
-  '.claude',
-  '.codex',
-  '.mcp.json',
-  'instar.config.json',
+const PROJECT_LOCAL_KEEP = [
+  'CLAUDE.md', 'AGENTS.md', 'GEMINI.md', '.gitignore',
+  '.claude', '.codex', '.mcp.json', 'instar.config.json',
 ];
 
-const PROJECT_LOCAL_IDENTITY_SHADOWS = [
-  'CLAUDE.md',
-  'AGENTS.md',
-  'GEMINI.md',
-  // .gitignore goes through the same classifier: instar's init writes a
-  // fresh .gitignore listing per-machine state paths, but a project may
-  // already have one tracked at HEAD. Same rule applies (tracked-clean
-  // keep, tracked-modified restore, untracked delete).
-  '.gitignore',
-];
+const KEPT_NOTICE = 'Kept project files may still hold Instar instructions or hooks. Your agent can review these files read-only and propose removals for you to approve.';
+
+/** Inspect only the named entries, including dangling links; never their targets. */
+function keptProjectPaths(dir: string): string[] {
+  return PROJECT_LOCAL_KEEP.flatMap(rel => {
+    try {
+      fs.lstatSync(path.join(dir, rel));
+      return [rel];
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT'
+        ? [] : [`${rel} (presence unknown; left untouched)`];
+    }
+  });
+}
+
+function printKeptPaths(kept: string[]): void {
+  console.log('  Kept project paths:');
+  for (const rel of kept) console.log(`  - ${rel}`);
+  console.log(pc.yellow(`  ${KEPT_NOTICE}`));
+}
 
 // ── Refusals and results ────────────────────────────────────────────
 
@@ -1044,13 +1051,26 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
 
   if (hasGit && hasRemote) {
     console.log();
-    console.log(`  ${pc.green('~')} Git remote backup will be ${pc.bold('preserved')} (we'll push before deleting)`);
+    console.log('  Existing commits will be pushed before deleting.');
   } else if (hasGit && !hasRemote) {
     console.log();
     console.log(pc.yellow(`  ! Local git repo exists but has NO remote — data will be permanently lost`));
   }
 
   console.log();
+
+  console.log(pc.yellow('  Only already committed changes can be pushed. Uncommitted changes are NOT in the backup and will be deleted with the agent folder. Commits outside the configured push can also be lost.'));
+  if (hasGit) {
+    try {
+      const status = SafeGitExecutor.readSync(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=normal'], {
+        cwd: agentDir, encoding: 'utf-8', stdio: 'pipe',
+        operation: 'src/commands/nuke.ts:status-before-confirmation',
+      }).trim();
+      if (status) console.log(pc.yellow('  Uncommitted changes are present.'));
+    } catch {
+      console.log(pc.yellow('  Could not check for uncommitted changes'));
+    }
+  }
 
   // Confirm
   if (!options.skipConfirm) {
@@ -1079,25 +1099,16 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
     return;
   }
 
-  // Step 3: Push to git remote (preserve cloud backup) — unchanged.
+  // Step 3: Push only existing commits, with the existing nonfatal policy.
+  let pushNotice: string | undefined;
   if (hasGit && hasRemote) {
     try {
-      // Stage and commit any uncommitted changes
-      SafeGitExecutor.execSync(['add', '-A'], { cwd: agentDir, stdio: 'pipe', operation: 'src/commands/nuke.ts:143' });
-      const status = SafeGitExecutor.readSync(['status', '--porcelain'], { cwd: agentDir,
-        encoding: 'utf-8',
-        stdio: 'pipe', operation: 'src/commands/nuke.ts:145' }).trim();
-
-      if (status) {
-        SafeGitExecutor.execSync(['commit', '-m', 'final backup before nuke'], { cwd: agentDir,
-          stdio: 'pipe', operation: 'src/commands/nuke.ts:153' });
-      }
-
       SafeGitExecutor.execSync(['push'], { cwd: agentDir, stdio: 'pipe', timeout: 30_000, operation: 'src/commands/nuke.ts:160' });
-      console.log(`  ${pc.green('✓')} Pushed final backup to remote`);
+      pushNotice = 'Git push succeeded. Uncommitted changes are NOT in the backup.';
     } catch {
-      console.log(pc.yellow('  Could not push final backup (remote may be unavailable)'));
+      pushNotice = 'Could not push existing commits. Uncommitted changes are NOT in the backup.';
     }
+    console.log(`  ${pushNotice}`);
   }
 
   // Step 4: Back up secrets before deletion
@@ -1123,10 +1134,7 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
 
   console.log();
   console.log(pc.green(`  Agent "${name}" has been removed.`));
-  if (hasGit && hasRemote) {
-    console.log(pc.dim('  Your cloud backup is still available on GitHub.'));
-    console.log(pc.dim(`  To restore: git clone <repo-url> ${agentDir} && instar server start ${name}`));
-  }
+  if (pushNotice) console.log(pc.dim(`  ${pushNotice}`));
   console.log();
 }
 
@@ -1135,7 +1143,7 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
  *
  * Sibling of nukeAgent for project-bound installs (the result of
  * `npx instar setup` inside a project directory). See
- * `specs/dev-infrastructure/nuke-here.md` for the full design.
+ * `docs/specs/nuke-c-min.md` for the project-file keep policy.
  */
 export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
   const dir = path.resolve(options.dir || process.cwd());
@@ -1164,51 +1172,12 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
     // @silent-fallback-ok: fall back to basename, as before.
   }
 
-  const isGitRepo = fs.existsSync(path.join(dir, '.git'));
-
-  const presentAlwaysRemove = PROJECT_LOCAL_ALWAYS_REMOVE.filter(rel =>
-    fs.existsSync(path.join(dir, rel)),
-  );
-  const presentShadows = PROJECT_LOCAL_IDENTITY_SHADOWS.filter(rel =>
-    fs.existsSync(path.join(dir, rel)),
-  );
-
-  // Decide shadow disposition up front so the plan can show it.
-  const shadowDispositions: Array<{ file: string; action: 'keep' | 'restore' | 'delete' }> = [];
-  for (const rel of presentShadows) {
-    shadowDispositions.push({ file: rel, action: classifyShadowFile(dir, rel, isGitRepo) });
-  }
-
-  // The full delete plan, with each delete's real flags, in execution order.
-  //
-  // Order matters: SafeFsExecutor + SafeGitExecutor both write to
-  // .instar/audit/destructive-ops.jsonl on every operation. If .instar
-  // is deleted first, every subsequent destructive op recreates
-  // .instar/audit/ to log its entry, leaving a ghost .instar directory
-  // behind. So: identity-shadow files first, non-.instar always-remove
-  // paths second, .instar LAST with audit logging suppressed for that op.
-  const deletes: PlannedDelete[] = [];
-  for (const { file, action } of shadowDispositions) {
-    if (action !== 'delete') continue;
-    deletes.push({
-      target: path.join(dir, file), label: file, recursive: false, force: true,
-      operation: 'src/commands/nuke.ts:nukeHere-delete-shadow',
-    });
-  }
-  for (const rel of presentAlwaysRemove.filter(r => r !== '.instar')) {
-    deletes.push({
-      target: path.join(dir, rel), label: rel, recursive: true, force: true,
-      operation: 'src/commands/nuke.ts:nukeHere-delete-always',
-    });
-  }
-  if (presentAlwaysRemove.includes('.instar')) {
-    // .instar IS the audit log location, so a final audit-write would
-    // recreate the directory being deleted.
-    deletes.push({
-      target: path.join(dir, '.instar'), label: '.instar', recursive: true, force: true,
-      operation: 'src/commands/nuke.ts:nukeHere-delete-dot-instar', suppressAudit: true,
-    });
-  }
+  const kept = keptProjectPaths(dir);
+  // .instar is the audit location; suppress the write that would recreate it.
+  const deletes: PlannedDelete[] = [{
+    target: stateDir, label: '.instar', recursive: true, force: true,
+    operation: 'src/commands/nuke.ts:nukeHere-delete-dot-instar', suppressAudit: true,
+  }];
 
   let plan: TeardownPlan;
   try {
@@ -1225,18 +1194,8 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
   console.log(`  Directory: ${pc.dim(dir)}`);
   console.log();
   console.log('  Artifacts to remove:');
-  for (const rel of presentAlwaysRemove) {
-    console.log(`  ${pc.red('x')} ${rel}`);
-  }
-  for (const { file, action } of shadowDispositions) {
-    if (action === 'delete') {
-      console.log(`  ${pc.red('x')} ${file} ${pc.dim('(created by instar)')}`);
-    } else if (action === 'restore') {
-      console.log(`  ${pc.yellow('~')} ${file} ${pc.dim('(restoring to git HEAD)')}`);
-    } else {
-      console.log(`  ${pc.dim('-')} ${file} ${pc.dim('(pre-existing, kept)')}`);
-    }
-  }
+  console.log(`  ${pc.red('x')} .instar`);
+  printKeptPaths(kept);
   printPlanSessions(plan);
   console.log(`  ${pc.red('x')} Agent registry entry (if any)`);
   console.log(`  ${pc.green('~')} Secrets backed up (auto-restored on next setup)`);
@@ -1264,6 +1223,7 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
 
   // 1-2. Auto-start entry, then the server and sessions.
   if (!stopEverything(plan, result)) {
+    printKeptPaths(kept);
     reportFailures(result, `instar in "${projectName}"`);
     return;
   }
@@ -1274,33 +1234,18 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
   // 4. Unregister from agent registry
   unregisterStep(dir, result);
 
-  // 5. Filesystem teardown: restores and keeps, then the planned deletes in order.
-  for (const { file, action } of shadowDispositions) {
-    if (action === 'keep') {
-      console.log(`  ${pc.dim('-')} Kept ${file} (pre-existing)`);
-    } else if (action === 'restore') {
-      try {
-        SafeGitExecutor.execSync(['checkout', 'HEAD', '--', file], {
-          cwd: dir,
-          stdio: 'pipe',
-          operation: 'src/commands/nuke.ts:nukeHere-restore-shadow',
-        });
-        result.done.push(`Restored ${file} to git HEAD`);
-        console.log(`  ${pc.green('↺')} Restored ${file} to git HEAD`);
-      } catch (err) {
-        result.failures.push({ step: 'restore', target: path.join(dir, file), detail: errText(err) });
-      }
-    }
-  }
+  // 5. Delete only the checked project state folder.
   for (const d of deletes) runDelete(d, result);
 
   if (result.failures.length > 0) {
+    printKeptPaths(kept);
     reportFailures(result, `instar in "${projectName}"`);
     return;
   }
 
   console.log();
   console.log(pc.green(`  instar has been removed from "${projectName}".`));
+  printKeptPaths(kept);
   console.log(pc.dim('  Run `npx instar` to reinstall.'));
   console.log();
 }
@@ -1320,48 +1265,6 @@ export function isInstarSourceRepo(dir: string): boolean {
     return false;
   }
   return fs.existsSync(path.join(dir, 'src', 'cli.ts'));
-}
-
-/**
- * Classifies an identity-shadow file (CLAUDE.md / AGENTS.md / GEMINI.md)
- * for `nuke --here` disposition:
- *   - 'keep'    — tracked by git at HEAD with no working-tree diff (pre-existing)
- *   - 'restore' — tracked by git at HEAD with a diff (instar modified)
- *   - 'delete'  — not tracked, or not in a git repo (instar created)
- *
- * Exported for unit testing.
- */
-export function classifyShadowFile(
-  dir: string,
-  relPath: string,
-  isGitRepo: boolean,
-): 'keep' | 'restore' | 'delete' {
-  if (!isGitRepo) return 'delete';
-  let tracked = false;
-  try {
-    SafeGitExecutor.readSync(['ls-files', '--error-unmatch', relPath], {
-      cwd: dir,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-      operation: 'src/commands/nuke.ts:classifyShadowFile-ls',
-    });
-    tracked = true;
-  } catch {
-    tracked = false;
-  }
-  if (!tracked) return 'delete';
-  let dirty = '';
-  try {
-    dirty = SafeGitExecutor.readSync(['status', '--porcelain', relPath], {
-      cwd: dir,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-      operation: 'src/commands/nuke.ts:classifyShadowFile-status',
-    }).trim();
-  } catch {
-    return 'restore';
-  }
-  return dirty ? 'restore' : 'keep';
 }
 
 function hasGitRemote(dir: string): boolean {

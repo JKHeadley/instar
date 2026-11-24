@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { buildFoldCoordinator } from '../../src/monitoring/foldCoordinatorBoot.js';
 import { listClearSeedPointers } from '../../src/monitoring/clearSeedPointer.js';
 import { PendingInjectStore } from '../../src/core/PendingInjectStore.js';
+import { listStagedFoldPackets } from '../../src/monitoring/foldPacket.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const OP = 'tests/e2e/fold-coordinator-crash-lifecycle.test.ts';
@@ -38,6 +39,7 @@ import path from 'node:path';
 import { buildFoldCoordinator } from ${JSON.stringify(path.join(ROOT, 'src/monitoring/foldCoordinatorBoot.ts'))};
 import { writeClearSeedPointer, contextLayersRoot } from ${JSON.stringify(path.join(ROOT, 'src/monitoring/clearSeedPointer.ts'))};
 import { PendingInjectStore } from ${JSON.stringify(path.join(ROOT, 'src/core/PendingInjectStore.ts'))};
+import { stagedFoldDir } from ${JSON.stringify(path.join(ROOT, 'src/monitoring/foldPacket.ts'))};
 const [stateDir, target] = process.argv.slice(-2);
 const { coordinator } = buildFoldCoordinator({
   stateDir, runningTopicSessions: () => [{ topicKey: '${TOPIC}' }], poolPlacementLive: () => false,
@@ -52,6 +54,10 @@ const packet = path.join(dir, rec.foldId + '.packet.md');
 fs.writeFileSync(packet, 'packet');
 writeClearSeedPointer(stateDir, { instarSessionId: 'inst_e2e', claudeSessionId: 'c', foldId: rec.foldId, packetFile: packet, leaseExpiresAt: Date.now() + 600000, topicKey: '${TOPIC}' });
 new PendingInjectStore(path.join(stateDir, 'state')).record({ tmuxSession: 'echo-${TOPIC}', initialMessage: 'probe', fold: { foldId: rec.foldId, topicKey: '${TOPIC}' } });
+const sdir = stagedFoldDir(stateDir, '${TOPIC}');
+fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
+fs.writeFileSync(path.join(sdir, rec.foldId + '.txt'), 'staged packet', { mode: 0o600 });
+fs.writeFileSync(path.join(sdir, rec.foldId + '.json'), '{}', { mode: 0o600 });
 const path_ = { locked: [], staged: ['snapshotted', 'staged'], replacing: ['snapshotted', 'staged', 'replacing'] }[target];
 for (const to of path_) {
   const r = coordinator.transition(rec.topicKey, rec.foldId, { state: rec.state, seq: rec.seq, generation: rec.generation }, to);
@@ -83,17 +89,18 @@ describe('FoldCoordinator across a real process crash', () => {
   const carriers = (stateDir: string) => ({
     clearSeed: listClearSeedPointers(stateDir).length,
     inject: new PendingInjectStore(path.join(stateDir, 'state')).list().records.filter((x) => x.fold).length,
+    staged: listStagedFoldPackets(stateDir).length,
   });
 
   for (const target of ['locked', 'staged'] as const) {
     it(`crash at ${target} ⇒ aborted at boot, carriers and lock freed`, () => {
       const { stateDir, foldId, state } = crashAt(target);
       expect(state).toBe(target);
-      expect(carriers(stateDir)).toEqual({ clearSeed: 1, inject: 1 });
+      expect(carriers(stateDir)).toEqual({ clearSeed: 1, inject: 1, staged: 1 });
       const c = boot(stateDir);
       const swept = c.recoverPendingFolds();
       expect(swept.aborted.map((x) => [x.foldId, x.state])).toEqual([[foldId, 'aborted']]);
-      expect(carriers(stateDir)).toEqual({ clearSeed: 0, inject: 0 });
+      expect(carriers(stateDir)).toEqual({ clearSeed: 0, inject: 0, staged: 0 });
       expect(c.begin(TOPIC).ok).toBe(true);
     }, 120_000);
   }
@@ -103,7 +110,7 @@ describe('FoldCoordinator across a real process crash', () => {
     const c = boot(stateDir);
     const swept = c.recoverPendingFolds();
     expect(swept.quarantined.map((x) => [x.foldId, x.state, x.role])).toEqual([[foldId, 'quarantined', 'sentinel']]);
-    expect(carriers(stateDir)).toEqual({ clearSeed: 1, inject: 1 });
+    expect(carriers(stateDir)).toEqual({ clearSeed: 1, inject: 1, staged: 1 });
     expect(c.begin(TOPIC)).toEqual({ ok: false, reason: 'fold-in-progress' });
   }, 120_000);
 

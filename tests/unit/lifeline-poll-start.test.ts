@@ -8,7 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { TelegramLifeline } from '../../src/lifeline/TelegramLifeline.js';
 import { BOOT_POLL_HOLD_MAX_MS, RECENT_409_WINDOW_MS } from '../../src/lifeline/pollDecision.js';
-import { writePollIntent } from '../../src/core/pollIntent.js';
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { pollIntentPath, writePollIntent } from '../../src/core/pollIntent.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type Rig = {
@@ -20,7 +21,10 @@ type Rig = {
 let dir: string; let flushes: Array<() => void>; let polls: number;
 const tick = () => new Promise<void>((r) => setImmediate(r));
 const intent = (shouldPoll: boolean) => writePollIntent(dir, { shouldPoll, leaseEpoch: 1, role: shouldPoll ? 'awake' : 'standby', serverPid: process.pid, bootId: 'b', ts: Date.now() });
-const noIntent = () => SafeFsExecutor.safeRmSync(path.join(dir, 'state'), { recursive: true, force: true, operation: 'tests/unit/lifeline-poll-start.test.ts:noIntent' });
+const noIntent = () => {
+  const file = pollIntentPath(dir);
+  if (fs.existsSync(file)) SafeFsExecutor.safeUnlinkSync(file, { operation: 'tests/unit/lifeline-poll-start.test.ts:noIntent' });
+};
 function rig(heldSince: number): Rig {
   const l = Object.create(TelegramLifeline.prototype) as Rig;
   Object.assign(l, {
@@ -34,12 +38,15 @@ function rig(heldSince: number): Rig {
 }
 const advance = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'poll-start-'));
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
   flushes = []; polls = 0;
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(1_800_000_000_000);
+  // This rig exercises a coordinated machine, not a single-machine agent with
+  // leftover flags. Supply the real canonical identity that production reads.
+  await new MachineIdentityManager(dir).generateIdentity({ name: 'Poll start fixture', role: 'standby' });
 });
 afterEach(() => {
   vi.useRealTimers();

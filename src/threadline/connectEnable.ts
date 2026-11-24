@@ -33,6 +33,7 @@
  */
 
 import fs from 'node:fs';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { processCommandLine, processStartMs } from '../core/processIdentity.js';
@@ -322,13 +323,19 @@ export function writeConnectRestartRequest(stateDir: string, now = Date.now(), p
       requestedAt: new Date(now).toISOString(),
       requestedBy: CONNECT_ENABLE_REQUESTED_BY,
       reason: 'agent network and pairing switched on at the operator\'s request',
+    };
+    // planned-restart-keeps-lead §1 step 1: announce first (the holder's window renewal is signed and
+    // persisted synchronously), then publish at once.
+    void announceRestartRequested({ requestedBy: flag.requestedBy, reason: flag.reason, requestedAt: flag.requestedAt });
+    const body = {
+      ...flag,
       plannedRestart: true,
       expiresAt: new Date(now + 60 * 60_000).toISOString(),
       pid,
     };
     const flagPath = flagPathFor(stateDir);
     const tmp = `${flagPath}.${pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(flag, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
     fs.renameSync(tmp, flagPath);
     // The restart is queued from here on, so report it as queued even if the cooldown
     // record cannot be written (the only cost is a missing cooldown, logged).
