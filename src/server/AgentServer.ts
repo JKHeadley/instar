@@ -2293,7 +2293,8 @@ export class AgentServer {
       if (admission.ok) return true;
       if (admission.limit === 'local') {
         res.status(429).json({
-          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.'
+            + (this.localAccess && !this.localAccess.unavailableReason() ? ` At this computer, ask your agent to open the dashboard for you, or run ${this.localAccess.launcherPath()}.` : ''),
           retryAfterSeconds: admission.retryAfterSeconds,
         });
       } else if (admission.limit === 'throttle') {
