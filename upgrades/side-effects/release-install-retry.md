@@ -35,3 +35,11 @@ Revert the workflow change. No data migration, credential changes or local machi
 
 ## Verification and independent review
 Five focused tests passed. Tests parse the actual workflow and execute its Bash block under -e -o pipefail, covering success on attempts one, two and three, exhausted failure and final status preservation, plus wiring before build and unchanged publication. Independent reviewer retry_review concurred and separately exercised all four behavior cases. Complete Local Verify is required before merging.
+
+## Second-pass review
+
+**Reviewer:** /root/publisher_review
+
+**Independent read of the artifact: concur**
+
+The independent reviewer read the retry workflow and its bound side-effects artifact at 4af7df73541abd5506441fc182dfbe79b74ab45a. The review confirmed that the Linux dependency install makes at most three attempts, waits 15 and 30 seconds between failures, and returns the final status if installation still fails. Persistent failure stops the job before build or publication. The reviewer checked the five tests against the workflow shell and inspected the artifact hash. The publication command, permissions, credentials and concurrency configuration are unchanged. The reviewer did not rerun the tests.
