@@ -1,0 +1,47 @@
+/** One-shot historical baseline characterization; archived outside discovery after execution. */
+import { afterAll, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { AppConversationStore, validateAppEvent } from '../../src/core/AppConversationStore.js';
+import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+const roots: string[] = [];
+const tmp = () => { const p = fs.mkdtempSync(path.join(os.tmpdir(), 'quoted-baseline-')); roots.push(p); return p; };
+afterAll(() => { for (const p of roots) SafeFsExecutor.safeRmSync(p, {recursive:true,force:true,operation:'tests/unit/quoted-replies-baseline-probe.test.ts'}); });
+const key = '2f0c8a3e-1b2c-4d5e-8f90-1234567890ab';
+const base = { kind:'message', eventId:'reply-event', conversationKey:key, messageId:'reply-public', role:'operator', text:'Visible reply text', at:'2026-11-23T20:00:00.000Z', machineId:'m1' };
+const reference = {conversationKey:`app:${key}`,eventId:'original-event',messageId:'original-public'};
+const receipt = {v:3,conversationKey:`app:${key}`,eventId:base.eventId,messageId:base.messageId,replyTo:reference,machineId:'m1',signerKeyHash:'a'.repeat(64),sig:'opaque-signature'};
+describe('historical quoted-reply baseline characterization, not feature acceptance', () => {
+  it('demonstrates that the current old codec loses all quote markers and demotes an unknown receipt version', () => {
+    const normalized = validateAppEvent({...base,replyTo:reference,receipt}) as unknown as Record<string,unknown>;
+    expect(normalized.text).toBe(base.text);
+    expect(normalized).not.toHaveProperty('replyTo');
+    expect(normalized.receipt).toEqual({machineId:'m1',signerKeyHash:'a'.repeat(64),sig:'opaque-signature'});
+  });
+  it('does not enrich an already stored base when a later duplicate carries the quote', () => {
+    const dir = tmp(); const store = new AppConversationStore({stateDir:dir,machineId:()=> 'm1'});
+    try {
+      expect(store.ingestReplicated(base)?.appended).toBe(true);
+      expect(store.ingestReplicated({...base,replyTo:reference,receipt})?.appended).toBe(false);
+      const stored = store.getEvent(key,base.eventId);
+      expect(stored).not.toHaveProperty('replyTo');
+      expect(stored).not.toHaveProperty('receipt');
+    } finally { store.close(); }
+    const reopened = new AppConversationStore({stateDir:dir,machineId:()=> 'm1'});
+    try { expect(reopened.getEvent(key,base.eventId)).not.toHaveProperty('replyTo'); } finally { reopened.close(); }
+  });
+  it('retains fixed opaque reservation metadata on restart without claiming the message text can be reconstructed', () => {
+    const dir = tmp(); const now = Date.now(); const id=`${now}-12345678-1234-4123-8123-123456789abc`;
+    const before = new MobileChatRequestStore(dir,()=>now);
+    const extra={op:'send',conversationKey:key,messageId:base.messageId,replyReference:JSON.stringify(reference),replyReceipt:JSON.stringify(receipt)};
+    expect(before.reserve('device-original',id,'operation-hash',0,extra).kind).toBe('reserved');
+    const after = new MobileChatRequestStore(dir,()=>now);
+    expect(after.lookup('device-original',id,'operation-hash').kind).toBe('outcome-unknown');
+    expect(after.get('device-original',id)?.extra).toEqual(extra);
+    expect(after.reserve('device-original',id,'operation-hash',0,extra).kind).toBe('outcome-unknown');
+    expect(after.lookup('device-original',id,'changed-operation-hash').kind).toBe('request-id-reused');
+    expect(fs.readFileSync(path.join(dir,'state','mobile-chat-requests.json'),'utf8')).not.toContain(base.text);
+  });
+});

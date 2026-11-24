@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "quoted-replies-foundation-proof",
+  "sessionId": "34774801-3fac-4096-8fd3-e616896853c0",
+  "timestamp": "2026-11-24T00:28:00.415Z",
+  "artifactPath": "upgrades/side-effects/quoted-replies-foundation-proof.md",
+  "artifactSha256": "290c6c891f8b539cb513afc24ff049d98dad8acad4514c2234cd2da2324962ee",
+  "coveredFiles": [
+    "docs/specs/reports/quoted-replies-baseline-probe-20261123.fixture.txt",
+    "docs/specs/reports/quoted-replies-foundation-closure-20261123.md",
+    "docs/specs/reports/quoted-replies-foundation-proof-20261123.json",
+    "upgrades/side-effects/quoted-replies-foundation-proof.eli16.md",
+    "upgrades/side-effects/quoted-replies-foundation-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible documentation and archived historical proof only. No source, installed hooks, protocol or authorization changes; the full quoted-reply spec remains draft and the separate navigation prerequisite is not copied or claimed verified.",
+  "eli16Path": "upgrades/side-effects/quoted-replies-foundation-proof.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quoted-replies-foundation-proof.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
