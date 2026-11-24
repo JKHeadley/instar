@@ -1,19 +1,19 @@
-# Job definition comparison foundation
+# Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
 
 ## What Changed
 
-Instar has an internal, bounded reader for evidence that a future Jobs migration preview can use. It compares local legacy and manifest inputs with the production validators. It leaves the effective result unknown when unchecked inputs could override it.
+An enrolled disposable agent can show a private, serving-machine-only job migration preview. It uses the configured local catalog, keeps distinct definitions visible, and marks uncertain selection and ownership explicitly.
 
 ## What to Tell Your User
 
-The preview is still being built. This update adds no Jobs action and changes no scheduled job.
-
-## Evidence
-
-Focused checks cover actual loader selections, suppressed definitions, conflicting manifest names, byte limits and cancellation. The internal reader has no active endpoint.
+In the disposable test, you can open Jobs, select **Preview job migration**, and unlock to see the local definitions. The preview shows what the file loader could verify and which questions still need evidence. Opening it leaves jobs and schedules alone.
 
 ## Summary of New Capabilities
 
-No new user-facing capability. The reader prepares evidence for a future private Jobs preview.
+The Jobs preview uses the existing private console unlock. Continue with **Next page** as long as the observed catalog has not changed. The first test covers local source inventory and leaves live scheduler state and other machines unchecked.
+
+## Evidence
+
+Twenty-nine focused tests covered native browser interaction, private HTTP authorization, pagination at 251 definitions, changed-snapshot refusal and a production AgentServer fixture. Seventy-seven adjacent loader tests also passed. Qualification beyond the disposable reader is pending.

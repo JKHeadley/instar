@@ -3945,6 +3945,8 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /** Read-only definition preview for explicitly enrolled disposable evaluation. */
+  jobDefinitionPreview?: { enabled?: boolean };
   /**
    * Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md).
    * `POST /internal/telegram-forward` and `/internal/telegram-callback` require

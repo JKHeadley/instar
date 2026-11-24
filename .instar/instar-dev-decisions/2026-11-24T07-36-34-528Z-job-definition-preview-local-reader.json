@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-24T07:36:34.528Z",
+  "slug": "job-definition-preview-local-reader",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 476,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/types.ts",
+      "src/data/awareness/job-definition-preview.md",
+      "src/scheduler/JobDefinitionPreview.ts",
+      "src/scheduler/JobDefinitionPreviewCursor.ts",
+      "src/scheduler/JobDefinitionPreviewWorker.ts",
+      "src/scheduler/JobDefinitionPreviewWorker.worker.ts",
+      "src/server/AgentServer.ts",
+      "src/server/jobDefinitionPreviewRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 451,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

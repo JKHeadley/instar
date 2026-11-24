@@ -1349,6 +1349,7 @@ export interface RouteContext {
   config: InstarConfig;
   /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
   verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
+  jobDefinitionPreviewAvailable?: (req: ExpressRequest, res: ExpressResponse) => boolean;
   /** SEC-002b: verify a dst_ scoped dashboard session token for SSE/WS auth (returns false when the
    *  feature is dark). Mirrors the authMiddleware dst_ branch for the streaming surfaces. */
   dashboardScopedSessionVerify?: (token: string | undefined) => boolean;
@@ -21514,7 +21515,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    *
    * Dashboard Issues-card consumes the returned `findings` array.
    */
-  router.get('/jobs/reconcile', async (_req, res) => {
+  router.get('/jobs/reconcile', async (req, res) => {
     try {
       const stateDir = ctx.config.stateDir;
       if (!stateDir) {
@@ -21523,7 +21524,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       const { reconcileAgentMdTree } = await import('../scheduler/AgentMdReconcile.js');
       const report = reconcileAgentMdTree({ stateDir });
-      res.json(report);
+      res.json(ctx.jobDefinitionPreviewAvailable?.(req, res) === true
+        ? { ...report, previewAvailable: true } : report);
     } catch (err) {
       res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }

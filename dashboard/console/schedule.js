@@ -13,6 +13,7 @@ import {
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, noteLinked, cantTell, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { jobDefinitionPreview } from './job-definition-preview.js';
 
 const EYEBROW = 'Work · Schedule';
 const JOB_KEYS = ['slug', 'schedule', 'model', 'priority', 'supervision', 'tags', 'machines', 'origin', 'manifestVersion', 'lockTrust', 'expectedDurationMinutes', 'gate', 'topicId'];
@@ -22,6 +23,7 @@ const filter = { origin: null, sort: 'status', q: '' };   // kept across refresh
 const dismissed = new Set();                               // setup issues dismissed until reload
 let last = null;                                           // the last data read, repainted on a chip tap
 const live = { source: null, state: 'off', since: null };  // the SSE stream
+const scheduleRenders = new WeakMap();
 
 function token() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 /** A write with the bearer token; returns { status, data } so the model can read the server's answer. */
@@ -35,23 +37,33 @@ async function send(method, path, body) {
 
 export async function renderSchedule(main, ctx) {
   const { get } = ctx;
+  scheduleRenders.get(main)?.preview?.dispose();
+  const run = {};
+  scheduleRenders.set(main, run);
+  ctx.onDispose?.(() => run.preview?.dispose());
+  const initialToken = token();
+  const isCurrent = () => scheduleRenders.get(main) === run && ctx.isCurrent?.() !== false && token() === initialToken;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the schedule' })));
   const [local, pool, machines, history, migration, reconcile] = await Promise.all([
     get('/jobs'), get('/jobs?scope=pool', 8000), get('/pool'), get('/jobs/history?limit=500'), get('/jobs/migration-status'), get('/jobs/reconcile'),
   ]);
+  if (!isCurrent()) return;
+  run.preview = reconcile.ok && reconcile.data?.previewAvailable === true
+    ? jobDefinitionPreview({ sessionToken: token, isCurrent })
+    : null;
   const ms = machines.ok && Array.isArray(machines.data && machines.data.machines) ? machines.data.machines : [];
   const names = Object.fromEntries(ms.map((m) => [m.machineId, verifiedDisplayName(m.nickname, m.machineId) || 'another machine']));
   const selfMachineId = machines.ok && machines.data ? machines.data.selfMachineId : null;
-  last = { res: { local, pool, history, migration, reconcile }, names, poolMachines: ms, selfMachineId, main, ctx };
+  last = { res: { local, pool, history, migration, reconcile }, names, poolMachines: ms, selfMachineId, main, ctx, preview: run.preview?.node };
   connectLive();
   paint();
 }
 
 function paint() {
-  const { res, names, poolMachines, selfMachineId, main, ctx } = last;
+  const { res, names, poolMachines, selfMachineId, main, ctx, preview } = last;
   const page = buildSchedulePage(res, Date.now(), { names, poolMachines, selfMachineId, filter, dismissed });
   const refresh = () => renderSchedule(main, ctx);
-  if (!page.ok) { setKids(main, el('div', { class: 'schedule-page' }, pageHead({ eyebrow: EYEBROW, headline: 'Schedule', tone: 'muted' }), cantTell(page.reason), setupSection(page.setup || { items: [], notes: [], count: 0 }, refresh), legacyLink())); return; }
+  if (!page.ok) { setKids(main, el('div', { class: 'schedule-page' }, pageHead({ eyebrow: EYEBROW, headline: 'Schedule', tone: 'muted' }), cantTell(page.reason), preview, setupSection(page.setup || { items: [], notes: [], count: 0 }, refresh), legacyLink())); return; }
   const { sections: s, counts: n } = page;
   const open = (r) => openJob(r, { get: ctx.get, refresh });
 
@@ -75,7 +87,7 @@ function paint() {
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     liveNote(),
     page.notes.map((t) => noteLinked(t)),
-    el('div', { class: 'page-sections' }, needs, coming, every, setupSection(page.setup, refresh)),
+    el('div', { class: 'page-sections' }, needs, coming, every, preview, setupSection(page.setup, refresh)),
     legacyLink(),
   ));
   // A fact or an old link lands on its section; ?job= opens a sheet.

@@ -3,12 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { readLocalJobDefinitionPreview } from '../../src/scheduler/JobDefinitionPreview.js';
+import { readLocalJobDefinitionPreview, readLocalJobDefinitionPreviewSnapshot } from '../../src/scheduler/JobDefinitionPreview.js';
 import { loadJobsDetailed } from '../../src/scheduler/JobLoader.js';
 
 const fsHooks = vi.hoisted(() => ({
   failedRead: null as ((file: string) => boolean) | null,
   afterStat: null as ((file: string) => void) | null,
+  reverseNames: false,
 }));
 vi.mock('node:fs/promises', async importOriginal => {
   const real = await importOriginal<typeof import('node:fs/promises')>();
@@ -25,6 +26,14 @@ vi.mock('node:fs/promises', async importOriginal => {
       try { return await real.lstat(...args); }
       finally { fsHooks.afterStat?.(String(args[0])); }
     },
+    opendir: async (...args: Parameters<typeof real.opendir>) => {
+      const dir = await real.opendir(...args);
+      if (!fsHooks.reverseNames) return dir;
+      const entries = [];
+      for (let entry = await dir.read(); entry; entry = await dir.read()) entries.push(entry);
+      Object.defineProperty(dir, 'read', { value: async () => entries.pop() ?? null });
+      return dir;
+    },
   };
 });
 
@@ -40,14 +49,16 @@ async function fixture(rows: unknown[]) {
   const jobsFile = path.join(root, 'custom-catalog.json');
   await fs.writeFile(jobsFile, JSON.stringify(rows));
   const read = () => readLocalJobDefinitionPreview(jobsFile, new AbortController().signal);
+  const snapshot = () => readLocalJobDefinitionPreviewSnapshot(jobsFile, new AbortController().signal);
   const schedules = path.join(root, 'jobs', 'schedule');
   const journal = path.join(root, 'state', 'job-portable-import-journal.json');
-  return { root, jobsFile, read, schedules, journal };
+  return { root, jobsFile, read, snapshot, schedules, journal };
 }
 
 afterEach(() => {
   fsHooks.failedRead = null;
   fsHooks.afterStat = null;
+  fsHooks.reverseNames = false;
   for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'job-preview-test-cleanup' });
 });
 
@@ -103,6 +114,93 @@ describe('local job definition preview evidence', () => {
     expect(cancelled).toMatchObject({
       rows: [], coverage: { legacy: 'unchecked', 'portable-journal': 'unchecked', 'manifest-inventory': 'unchecked' },
     });
+  });
+
+  it('retains every ordered occurrence past the original cap and strips coordinates in the compatibility reader', async () => {
+    const f = await fixture(Array.from({ length: 253 }, (_unused, index) => definition(index === 252 ? 'TIED' : 'tied')));
+    await fs.mkdir(f.schedules, { recursive: true });
+    await fs.writeFile(path.join(f.schedules, 'zzz.json'), '{}');
+    await fs.writeFile(path.join(f.schedules, 'aaa.json'), '{}');
+    const first = await f.snapshot();
+    expect(first).toMatchObject({ complete: true, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(first.rows).toHaveLength(255);
+    expect(first.rows.slice(0, 2).map(row => row.occurrence)).toEqual([
+      { source: 'manifest', relativePath: 'jobs/schedule/aaa.json', ordinal: 0 },
+      { source: 'manifest', relativePath: 'jobs/schedule/zzz.json', ordinal: 0 },
+    ]);
+    expect(first.rows.slice(250).map(row => row.occurrence)).toEqual(
+      [248, 249, 250, 251, 252].map(ordinal => ({ source: 'legacy', ordinal })),
+    );
+    fsHooks.reverseNames = true;
+    expect(await f.snapshot()).toEqual(first);
+    expect(JSON.stringify(await f.read())).not.toMatch(/relativePath|ordinal|fingerprint|aaa\.json/);
+  });
+
+  it('agrees with loader occurrence and suppression decisions while withholding unverified manifest winners', async () => {
+    const variants = [
+      definition('same', '10 * * * *'),
+      { ...definition('same', '15 * * * *'), enabled: false },
+      definition('held'),
+      definition('switchable', '20 * * * *'),
+    ];
+    const f = await fixture(variants);
+    await fs.mkdir(path.dirname(f.journal));
+    await fs.writeFile(f.journal, JSON.stringify({ version: 1, jobs: { held: { state: 'pending' } } }));
+    await fs.mkdir(f.schedules, { recursive: true });
+    await fs.writeFile(path.join(f.schedules, 'held.json'), JSON.stringify({
+      ...definition('held'), origin: 'user',
+    }));
+    const manifestFile = path.join(f.schedules, 'switchable.json');
+    await fs.writeFile(manifestFile, JSON.stringify({
+      ...definition('switchable'), origin: 'user', execute: { type: 'agentmd' },
+    }));
+    const selected = () => loadJobsDetailed(f.jobsFile, { quiet: true }).jobs.map(({ slug, schedule, enabled, execute }) => [slug, schedule, enabled, execute.type]);
+    expect(selected()).toEqual([
+      ['same', '10 * * * *', true, 'prompt'],
+      ['same', '15 * * * *', false, 'prompt'],
+      ['switchable', '20 * * * *', true, 'prompt'],
+    ]);
+    const before = await f.snapshot();
+    expect(before.complete).toBe(true);
+    expect(before.rows.filter(row => row.disposition === 'loader-effective').map(row => row.occurrence)).toEqual(
+      [0, 1].map(ordinal => ({ source: 'legacy', ordinal })),
+    );
+    expect(before.rows).toContainEqual(expect.objectContaining({ slug: 'held', source: 'legacy', disposition: 'suppressed' }));
+    expect(before.rows.filter(row => row.slug === 'switchable').map(row => row.disposition)).toEqual(['unknown', 'unknown']);
+
+    const body = path.join(f.root, 'jobs', 'user', 'switchable.md');
+    await fs.mkdir(path.dirname(body));
+    await fs.writeFile(body, '---\nname: Native agent job\ndescription: Private definition\n---\nPrivate body.\n');
+    expect(selected()).toEqual([
+      ['same', '10 * * * *', true, 'prompt'],
+      ['same', '15 * * * *', false, 'prompt'],
+      ['switchable', '0 * * * *', true, 'agentmd'],
+    ]);
+    const after = await f.snapshot();
+    expect(after.complete).toBe(true);
+    expect(after.rows).toEqual(before.rows);
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+
+    await fs.writeFile(f.journal, JSON.stringify({ version: 1, jobs: { held: { state: 'revoked', root: 'fixture-import' } } }));
+    expect(selected().map(([slug]) => slug)).not.toContain('held');
+    const revoked = await f.snapshot();
+    expect(revoked.rows).toEqual(after.rows);
+    expect(revoked.fingerprint).not.toBe(after.fingerprint);
+  });
+
+  it('distinguishes an absent journal from portable ownership lookup on a present journal', async () => {
+    const f = await fixture([definition('constructor')]);
+    const selected = () => loadJobsDetailed(f.jobsFile, { quiet: true }).jobs.map(row => row.slug);
+    expect(selected()).toEqual(['constructor']);
+    expect((await f.snapshot()).rows[0]?.disposition).toBe('loader-effective');
+    await fs.mkdir(path.dirname(f.journal));
+    await fs.writeFile(f.journal, JSON.stringify({ version: 1, jobs: {} }));
+    expect(selected()).toEqual([]);
+    expect((await f.snapshot()).rows[0]).toMatchObject({ disposition: 'suppressed', reason: 'portable-owned' });
+    await fs.writeFile(f.journal, '{');
+    expect(selected()).toEqual([]);
+    expect(await f.snapshot()).toMatchObject({ complete: false, fingerprint: null,
+      rows: [{ disposition: 'suppressed', reason: 'portable-invalid' }] });
   });
 
   it('charges failed reads against the aggregate budget before reaching the next large input', async () => {
