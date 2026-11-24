@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "spec-related-work-preflight",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-24T21:25:30.992Z",
+  "artifactPath": "upgrades/side-effects/spec-related-work-preflight.md",
+  "artifactSha256": "0837ecd6219b6c87d4a6a7d9e0894116a232af068b3711cba9ecf8573fadb680",
+  "specPath": "docs/specs/spec-related-work-preflight.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This adjusts existing installed skill migration to preserve partial local edits.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

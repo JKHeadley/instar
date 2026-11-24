@@ -64,3 +64,5 @@ The independent reviewers challenged index consistency, stale review digests, mi
 ## Evidence pointers
 
 See stamp writer tests, the real pre-commit fixture and the existing installed migration test.
+
+The installed-skill test also checks that a partial local reviewer edit survives the updater. The follow-up holds the related-work insertion when it finds unmatched experience-review markers.

@@ -3554,6 +3554,13 @@ export class PostUpdateMigrator {
           if (skillRoot === '.instar') return;
           continue;
         }
+        const experienceStart = current.split('<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->').length - 1;
+        const experienceEnd = current.split('<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->').length - 1;
+        if (relatedWork && (experienceStart !== experienceEnd || experienceStart > 1)) {
+          result.skipped.push(`${label}: existing experience lens is incomplete — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
         const markers = current.split(marker).length - 1;
         let next = current;
         if (!(markers === 1 && current.includes(block))) {
