@@ -1,0 +1,976 @@
+--- a/dashboard/console/chats.js
++++ b/dashboard/console/chats.js
+@@ -47,6 +47,9 @@
+ const TOKEN_KEY = 'instar_token';
+ const POLL_LOCK = 'instar-chat-poll';
+ const CHANNEL = 'instar-chat';
++const LIST_PAGE_SIZE = 50;
++const LIST_WINDOW_LIMIT = 200;
++const FOLLOWER_LIST_REFRESH_MS = 60000;
+ const OWN_KEY = 'instar_chat_own:';
+ const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.';
+ // The hierarchy is read again at most this often (the list itself refreshes every 30 s).
+@@ -95,6 +98,13 @@
+     this.pendingSnapshot = null;
+     this.rows = [];
+     this.meta = { nextCursor: null, failed: [] };
++    this.listRequest = null;
++    this.listHasLoaded = false;
++    this.listError = null;
++    this.listRevision = 0;
++    this.listDepth = LIST_PAGE_SIZE;
++    this.followerListRefreshAt = -Infinity;
++    this.listFeatureOff = false;
+     this.view = null;           // the open conversation
+     this.tabId = (globalThis.crypto && globalThis.crypto.randomUUID) ? globalThis.crypto.randomUUID() : String(Math.random());
+     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
+@@ -364,13 +374,16 @@
+   }
+
+   // ── a refused signed call (§4.6) ──
+-  async handle401() {
+-    const d = await this.device.checkAfter401();
+-    if (!this.live) return 'gone';
++  async handle401(signal) {
++    const owner = this.pageEl;
++    const current = () => this.live && !signal?.aborted && this.pageEl === owner;
++    const d = await this.device.checkAfter401({ signal });
++    if (!current() || d.show === 'cancelled') return 'gone';
+     if (d.deleted) { this.clearUnfinished(); this.teardownApp(); this.paintSetup(DELETED_REASON[d.show] || DELETED_REASON.removed); return 'gone'; }
+     if (d.show === 'elsewhere') {
++      const old = d.machineId ? await readRecord(d.machineId).catch(() => null) : null;
++      if (!current()) return 'gone';
+       this.teardownApp();
+-      const old = d.machineId ? await readRecord(d.machineId).catch(() => null) : null;
+       const replace = old && old.status === 'active' && old.keyPair ? { record: old } : null;
+       const nick = this.status && this.status.nickname ? this.status.nickname : 'this machine';
+       this.paintSetup(`This browser was set up on ${d.nickname || 'another machine'}; this address is now served by ${nick}.`, { replace });
+@@ -391,9 +404,11 @@
+   /** A signed JSON call with the 401 rule and the 5-retry backoff for a transient refusal. */
+   async call(method, path, opts = {}) {
+     for (;;) {
++      if (!this.live || method === 'GET' && opts.signal?.aborted) return { ok: false, gone: true };
+       const r = await this.device.call(method, path, opts);
++      if (method === 'GET' && opts.signal?.aborted) return { ...r, gone: true };
+       if (r.status !== 401) { if (r.ok) this.retries401 = 0; return r; }
+-      const what = await this.handle401();
++      const what = await this.handle401(method === 'GET' ? opts.signal : undefined);
+       if (what !== 'retry') return { ...r, gone: true };
+       await new Promise((res) => this.later(res, 500 * 2 ** this.retries401));
+       if (!this.live) return { ...r, gone: true };
+@@ -406,9 +421,12 @@
+     const record = this.device.record;
+     this.ownIds = loadOwn(record && record.deviceId);
+     const skew = this.device.clock.skewMinutes();
+-    this.listEl = el('div', { class: 'chat-rows', role: 'list' });
++    this.listEl = el('div', { class: 'chat-rows', role: 'list', tabindex: '-1' });
+     this.moreBtn = el('button', { class: 'btn-quiet chat-more', type: 'button', text: 'Show more', hidden: true });
+     this.moreBtn.addEventListener('click', () => this.loadList(true));
++    this.listStatusEl = el('p', { class: 'card-line chat-muted chat-list-status', role: 'status', hidden: true });
++    this.listRetryEl = el('button', { class: 'btn-quiet chat-list-retry', type: 'button', text: 'Try again', hidden: true });
++    this.listRetryEl.addEventListener('click', () => { if (this.listError) void this.loadList(this.listError.more); });
+     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
+     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
+     // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
+@@ -417,7 +435,8 @@
+     this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
+     this.pendingEl = el('section', { class: 'chat-pending', 'aria-label': 'Saved messages', hidden: true });
+     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
+-    newBtn.addEventListener('click', () => this.newConversation());
++    this.newBtn = newBtn;
++    newBtn.addEventListener('click', () => { if (!this.listFeatureOff) this.newConversation(); });
+     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
+     forget.addEventListener('click', () => this.forgetBrowser());
+     this.viewEl = el('div', { class: 'chat-view' }, el('p', { class: 'chat-pick', text: 'Pick a conversation.' }));
+@@ -427,7 +446,7 @@
+         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
+         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
+         el('div', { class: 'chat-list-actions' }, newBtn, forget),
+-        this.pendingEl, this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
++        this.pendingEl, this.viewToggleEl, this.listPinNoteEl, this.listStatusEl, this.listRetryEl, this.listEl, this.moreBtn, this.failedEl),
+       this.viewEl);
+     setKids(this.main, this.pageEl);
+     this.startPolling();
+@@ -436,31 +455,124 @@
+     void this.ensureOutbox().catch((error) => { this.outboxError = error; this.paintPendingSends(); });
+   }
+   teardownApp() {
++    this.listRequest?.controller?.abort();
+     this.releaseLeadership();
+     if (this.view) this.closeView();
+     this.pageEl = null;
++    this.listRequest = null;
++    this.listError = null;
++    this.listHasLoaded = false;
++    this.listFeatureOff = false;
+   }
+   ctxQuery() { const h = location.hash; const i = h.indexOf('?'); return i < 0 ? '' : h.slice(i + 1); }
+
+-  async loadList(more) {
+-    const cursor = more && this.meta.nextCursor ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : '';
+-    this.spent();
+-    const r = await this.call('GET', `/mobile/conversations?scope=pool&limit=50${cursor}`);
+-    if (!this.live || r.gone) return;
+-    if (r.ok) this.applyList(r.data, more);
+-    else if (!more && !this.rows.length) setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: r.status === 503 ? OFF_TEXT : 'Couldn\'t load the conversations right now.' }));
+-  }
+-  applyList(data, more) {
++  listReadable(data) {
++    return Array.isArray(data?.conversations) && listRows(data).length === data.conversations.length
++      && (data.nextCursor == null || typeof data.nextCursor === 'string' && data.nextCursor.length > 0);
++  }
++  listLimit() {
++    return this.listDepth > LIST_WINDOW_LIMIT ? LIST_PAGE_SIZE : this.listDepth;
++  }
++  listPath(more = false, limit = more ? LIST_PAGE_SIZE : this.listLimit()) {
++    return `/mobile/conversations?scope=pool&limit=${limit}${more ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : ''}`;
++  }
++  paintListReadState() {
++    if (!this.listStatusEl) return;
++    const request = this.listRequest;
++    const error = this.listError;
++    const hasRows = this.rows.length > 0 || (this.listPins?.length || 0) > 0;
++    let text = '';
++    if (error) text = error.partial ? 'The list could only be checked in part. Your last loaded list is still shown.' : error.off ? OFF_TEXT + (hasRows ? ' The last loaded list is still shown.' : '') : error.unreadable ? 'The conversation list could not be read. Try again.'
++      : error.more ? 'More conversations could not be loaded. Try again.'
++        : hasRows ? 'The list could not be refreshed. Your conversations are still shown.' : 'Conversations could not be loaded. Try again.';
++    else if (request) text = this.listFeatureOff ? 'Checking whether conversations are available…' : request.waiting ? 'Taking longer than usual to load conversations. The agent may be busy.'
++      : request.more ? 'Loading more conversations…' : this.listHasLoaded ? 'Refreshing conversations…' : 'Loading conversations…';
++    this.listStatusEl.textContent = text;
++    this.listStatusEl.hidden = !text;
++    this.listRetryEl.hidden = !error && !request?.retry;
++    this.listRetryEl.textContent = request?.retry ? 'Trying again…' : 'Try again';
++    this.listRetryEl.disabled = Boolean(request);
++    this.moreBtn.disabled = Boolean(request) || this.listFeatureOff;
++    this.newBtn.disabled = this.listFeatureOff;
++    if (error && !hasRows) setKids(this.listEl);
++    this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
++    this.listEl.setAttribute('aria-busy', String(Boolean(request)));
++  }
++  loadList(more, background = false) {
++    if (!this.live || !this.listEl?.isConnected) return Promise.resolve({ gone: true });
++    if (more && !this.meta.nextCursor) return Promise.resolve({ gone: true });
++    const owner = this.listEl;
++    const limit = more ? LIST_PAGE_SIZE : this.listLimit();
++    const path = this.listPath(more, limit);
++    // Initial open, retry and scheduled refresh share one signed read. Different pages wait their turn.
++    if (this.listRequest) return this.listRequest.path === path ? this.listRequest.promise
++      : this.listRequest.promise.then(() => this.listEl === owner && owner.isConnected ? this.loadList(more, background) : { gone: true });
++    const request = { path, more, owner: this.listEl, revision: this.listRevision, waiting: false, retry: Boolean(this.listError), retryFocused: document.activeElement === this.listRetryEl, promise: null };
++    this.listRequest = request;
++    this.listError = null;
++    this.paintListReadState();
++    const slow = this.later(() => {
++      if (this.listRequest === request && request.owner.isConnected) { request.waiting = true; this.paintListReadState(); }
++    }, 10000);
++    const controller = this.abortable();
++    request.controller = controller;
++    let deadline;
++    const timeout = new Promise(resolve => {
++      deadline = this.later(() => { controller.abort(); resolve({ ok: false, status: 0, timedOut: true }); }, 20000);
++    });
++    request.promise = (async () => {
++      let result;
++      try {
++        if (!background) this.spent();
++        try { result = await Promise.race([this.call('GET', path, { signal: controller.signal }), timeout]); } catch { result = { ok: false, status: 0 }; }
++        if (!this.live || result.gone || this.listEl !== request.owner || !request.owner.isConnected) return { ...result, gone: true };
++        if (this.listRevision !== request.revision) { result = { ...result, stale: true }; return result; }
++        if (result.ok && !this.listReadable(result.data)) result = { ...result, ok: false, status: 0, unreadable: true };
++        if (result.ok) {
++          result = { ...result, listLimit: limit };
++          this.applyList(result.data, more, limit);
++        } else if (this.listRevision === request.revision) {
++          this.listError = { more, unreadable: result.unreadable, off: result.status === 503 && result.data?.error === 'native-conversations-off' };
++          if (this.listError.off) { this.listFeatureOff = true; this.paintList(); }
++        }
++        return result;
++      } finally {
++        clearTimeout(slow); this.timers.delete(slow);
++        clearTimeout(deadline); this.timers.delete(deadline); this.aborts.delete(controller);
++        if (this.listRequest === request) {
++          this.listRequest = null;
++          if (this.live && request.owner.isConnected) {
++            const restoreFocus = request.retryFocused && (document.activeElement === this.listRetryEl || document.activeElement === document.body);
++            this.paintListReadState();
++            if (restoreFocus && result?.ok && !result.stale && !this.listError) (this.listEl.querySelector('.chat-row') || this.listEl).focus();
++          }
++        }
++      }
++    })();
++    return request.promise;
++  }
++  applyList(data, more, limit = LIST_PAGE_SIZE) {
++    if (!this.listReadable(data)) { this.listError = { more, unreadable: true }; this.paintListReadState(); return; }
++    const meta = listMeta(data);
++    if (limit > LIST_PAGE_SIZE && (data.listCoverageComplete !== true || meta.failed.length)) {
++      this.listError = { more, partial: true };
++      this.meta = { ...this.meta, failed: meta.failed };
++      this.paintList();
++      this.paintListReadState();
++      return;
++    }
++    this.listHasLoaded = true; this.listError = null; this.listFeatureOff = false; this.listRevision++;
+     const rows = listRows(data);
+     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
+     // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
+     if (!more) this.listPins = listPinnedRows(data);
+-    if (more) { this.pagedMore = true; this.rows = mergeListPages(this.rows, rows); }
+-    // A refresh of the first page replaces it; pages the operator opened with "Show more" are kept below.
+-    else this.rows = this.pagedMore ? mergeListPages(rows, this.rows) : rows;
+-    const meta = listMeta(data);
+-    this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
++    if (more) this.listDepth += LIST_PAGE_SIZE;
++    // For depths beyond the server's limit, keep the older rows and their cursor.
++    const firstPageOnly = !more && limit < this.listDepth;
++    this.rows = more ? mergeListPages(this.rows, rows) : firstPageOnly ? mergeListPages(rows, this.rows) : rows;
++    this.meta = firstPageOnly ? { ...meta, nextCursor: this.meta.nextCursor } : meta;
+     this.paintList();
++    this.paintListReadState();
+     if (!more) void this.loadHierarchy();
+   }
+
+@@ -514,6 +626,8 @@
+   }
+   paintList() {
+     if (!this.listEl) return;
++    const active = document.activeElement;
++    const focusedHref = this.listEl.contains(active) && active.matches?.('.chat-row') ? active.getAttribute('href') : null;
+     const open = this.view ? refString(this.view.ref) : '';
+     if (this.view && this.view.titleEl) {
+       const row = this.rows.find((r) => r.key === open);
+@@ -525,12 +639,16 @@
+       this.viewToggleEl.hidden = !this.hierarchy;
+       for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
+     }
+-    if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
++    if (!this.rows.length && !(this.listPins?.length)) {
++      const text = !this.listHasLoaded || this.listFeatureOff ? '' : this.meta.nextCursor ? 'No conversations on this page. More pages are available.'
++        : this.meta.failed.length ? 'No conversations found on the machines that answered.' : 'No conversations yet. Use New conversation to start one.';
++      setKids(this.listEl, text ? el('p', { class: 'card-line chat-muted', text }) : null);
++    }
+     else {
+       const pinsOn = Array.isArray(this.listPins);
+       const { pinned, rest } = splitPinned(this.rows, pinsOn ? this.listPins : []);
+       const rowEl = (r, isPinned) => {
+-        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem' },
++        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem', ...(this.listFeatureOff ? { 'aria-disabled': 'true', tabindex: '-1' } : {}), onclick: event => { if (this.listFeatureOff) event.preventDefault(); } },
+           el('span', { class: 'chat-row-main' },
+             el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: r.title }), el('span', { class: `chat-kind chat-kind-${r.kind}`, text: r.kindLabel })),
+             el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
+@@ -539,7 +657,7 @@
+             // The conversation on screen is being read (and reported read, which clears the count on the phone too): no badge for it.
+             r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null));
+         if (!pinsOn || !listPinRefOf(r)) return link;
+-        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
++        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', disabled: this.listFeatureOff, text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
+         btn.addEventListener('click', () => this.setListPin(r, !isPinned, btn));
+         return el('div', { class: 'chat-row-wrap' }, link, btn);
+       };
+@@ -592,10 +710,15 @@
+       } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+       setKids(this.listEl, kids);
+     }
+-    this.moreBtn.hidden = !this.meta.nextCursor;
++    this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
+     const failed = this.meta.failed || [];
+     this.failedEl.hidden = failed.length === 0;
+-    this.failedEl.textContent = failed.length ? `Not shown: conversations on ${failed.map((f) => f.machineId).join(', ')} (that machine did not answer).` : '';
++    const machines = failed.map((f) => f.machineId).join(', ');
++    this.failedEl.textContent = !machines ? '' : this.listError?.partial ? `Could not refresh conversations on ${machines}.` : `Not shown: conversations on ${machines} (that machine did not answer).`;
++    if (focusedHref) {
++      const target = [...this.listEl.querySelectorAll('.chat-row')].find(row => row.getAttribute('href') === focusedHref && row.getAttribute('aria-disabled') !== 'true');
++      (target || this.listEl).focus({ preventScroll: true });
++    }
+   }
+
+   /** Pin or unpin a whole conversation for this person (conversation-list-pins), then refresh the first page. */
+@@ -676,6 +799,7 @@
+     this.view = null;
+     if (!v) return;
+     v.live = false;
++    if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
+     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
+     this.revokeBlobs();
+     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
+@@ -698,6 +822,11 @@
+       menu.append(rename, del);
+     }
+     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
++    v.historyWords = el('p', { class: 'card-line chat-muted' });
++    v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
++    v.historyRetry.addEventListener('click', () => this.loadFirst(v));
++    v.historyNotice = el('div', { class: 'chat-history-state', role: 'status' }, v.historyWords, v.historyRetry);
++    v.msgs.append(v.historyNotice);
+     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
+     v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
+     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
+@@ -714,7 +843,7 @@
+       v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
+     this.pageEl.classList.add('has-open');
+     this.paintList();
+-    this.loadFirst(v);
++    this.loadFirst(v, { recoverUnfinished: true });
+     this.loadAppStrip(v);
+     this.announce();
+   }
+@@ -770,21 +899,71 @@
+     return (row) => Boolean(row && ((rec && row.originDeviceId && row.originDeviceId === rec.deviceId) || (row.messageId && this.ownIds.has(String(row.messageId)))));
+   }
+
+-  async loadFirst(v) {
++  async loadFirst(v, { recoverUnfinished = false } = {}) {
++    if (!this.live || !v.live || this.view !== v || v.historyPending) return;
++    v.historyPending = true;
++    v.historyError = null;
++    v.historyWaiting = false;
++    this.paintHistoryState(v);
++    v.historyWaitTimer = this.later(() => {
++      if (!v.live || this.view !== v || !v.historyPending) return;
++      v.historyWaiting = true;
++      this.paintHistoryState(v);
++    }, 10_000);
+     this.spent();
+-    const r = await this.call('GET', this.historyPath(v, { pool: true }));
+-    if (!v.live || r.gone) return;
+-    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
+-    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
+-    this.applyHistory(v, r.data, { replace: true });
+-    this.resumeUnfinished(v);
+-    this.scrollToEnd(v, true);
+-    v.historyReady = true;
+-    this.findSource(v);
++    try {
++      const r = await this.readHistory(v, this.historyPath(v, { pool: true }));
++      if (!this.live || !v.live || this.view !== v || r.gone) return;
++      if (!r.ok) {
++        v.sourceNotice.hidden = true;
++        v.historyError = r.status === 404 ? 'This conversation is not here any more.' : 'Couldn\'t load this conversation right now.';
++        return;
++      }
++      v.historyReady = true;
++      this.applyHistory(v, r.data, { replace: true });
++      // Preserve the existing open-time recovery; a history retry never resumes a send.
++      if (recoverUnfinished) this.resumeUnfinished(v);
++      this.scrollToEnd(v, true);
++      this.findSource(v);
++    } catch {
++      // A failed history read changes only its explanation, never messages or a draft.
++      if (this.live && v.live && this.view === v) v.historyError = 'Couldn\'t load this conversation right now.';
++    } finally {
++      v.historyPending = false;
++      clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer);
++      v.historyWaitTimer = null;
++      if (this.live && v.live && this.view === v) this.paintHistoryState(v);
++    }
++  }
++
++  /** Initial, retry, focus and scheduled reads of one view/path share one signed request. */
++  readHistory(v, path) {
++    if (!v.historyReads) v.historyReads = new Map();
++    const current = v.historyReads.get(path);
++    if (current) return current;
++    const pending = this.call('GET', path).finally(() => {
++      if (v.historyReads.get(path) === pending) v.historyReads.delete(path);
++    });
++    v.historyReads.set(path, pending);
++    return pending;
++  }
++
++  paintHistoryState(v) {
++    if (!v.historyNotice) return;
++    const hasMessages = v.list.length > 0;
++    v.historyNotice.hidden = hasMessages && !v.historyError;
++    v.historyRetry.hidden = v.historyPending || (!v.historyError && hasMessages);
++    v.historyRetry.disabled = Boolean(v.historyPending);
++    if (v.historyError) v.historyWords.textContent = hasMessages
++      ? 'Couldn\'t refresh this conversation. Messages already loaded are still shown.' : v.historyError;
++    else if (v.historyPending) v.historyWords.textContent = v.historyWaiting
++      ? 'Waiting for the agent to return this conversation\'s messages. Your draft is unchanged.' : 'Loading messages…';
++    else v.historyWords.textContent = 'No messages were returned for this conversation. Try again to check its history.';
+   }
+
+   applyHistory(v, data, { replace = false, earlier = false } = {}) {
+     if (!data) return;
++    v.historyError = null;
+     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
+     const pins = pinsFrom(data);
+     if (pins) this.setPins(v, pins);
+@@ -857,6 +1036,7 @@
+       }
+       prev = n;
+     }
++    this.paintHistoryState(v);
+     if (atEnd) this.scrollToEnd(v);
+   }
+   scrollToEnd(v, force) {
+@@ -1590,7 +1770,7 @@
+   }
+
+   taskPath(task) {
+-    if (task.mode === 'list') return '/mobile/conversations?scope=pool&limit=50';
++    if (task.mode === 'list') return this.listPath();
+     const ref = parseConversationRef(task.ref);
+     if (task.mode === 'events') { const c = this.cursors.get(task.ref); return `/mobile/chat/app/${encodeURIComponent(ref.id)}/events?limit=100${c ? `&cursor=${encodeURIComponent(c)}` : ''}`; }
+     const v = { ref };
+@@ -1601,15 +1781,23 @@
+   }
+
+   async runTask(task) {
++    const listOwner = task.mode === 'list' ? this.listEl : null;
+     const t0 = now();
+-    this.scheduler.start(task, t0);
++    const sharedListRead = task.mode === 'list' && this.listRequest?.path === this.taskPath(task);
++    this.scheduler.start(task, t0, { spend: !sharedListRead });
+     // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
+     const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
+     let r;
+-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
+-    if (!this.live) return;
++    try {
++      const path = this.taskPath(task);
++      const v = this.view;
++      r = task.mode === 'list' ? await this.loadList(false, true)
++        : v?.live && task.ref === refString(v.ref) ? await this.readHistory(v, path) : await this.call('GET', path);
++    } catch { r = { ok: false, status: 0 }; }
++    if (!this.live || task.mode === 'list' && this.listEl !== listOwner) return;
+     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
+     if (r.gone) return;
++    if (r.stale) { this.post({ type: 'result', backoff: this.scheduler.snapshot(), union: this.union }); this.loop(); return; }
+     if (task.mode === 'events' && r.status === 404) {
+       (this.fallbacks || (this.fallbacks = new Set())).add(task.ref);
+       this.scheduler.fallBack(task.ref, now());
+@@ -1620,6 +1808,11 @@
+     }
+     if (r.ok) {
+       const msg = { type: 'result', mode: task.mode, ref: task.ref, data: r.data, backoff: this.scheduler.snapshot(), union: this.union };
++      if (task.mode === 'list' && r.listLimit > LIST_PAGE_SIZE) {
++        // Tabs opened before this update treat every "list" result as a first page.
++        msg.mode = 'list-window';
++        msg.listLimit = r.listLimit;
++      }
+       if (task.mode === 'newest') {
+         const page = rebuildQuickPage(previous, r.data);
+         this.rememberQuickPage(task.ref, page.cache);
+@@ -1634,7 +1827,7 @@
+         if (Array.isArray(r.data.events) && r.data.events.length >= 100) this.scheduler.bump(task.ref, now());
+       }
+       this.post(msg);
+-      this.applyResult(msg);
++      if (task.mode !== 'list') this.applyResult(msg);
+     } else this.post({ type: 'result', backoff: this.scheduler.snapshot(), union: this.union });
+     this.loop();
+   }
+@@ -1645,7 +1838,16 @@
+     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
+     if (m.resetQuickPage && m.ref) this.rememberQuickPage(m.ref, null);
+     if (!m.mode || !m.data) return;
+-    if (m.mode === 'list') { this.applyList(m.data, false); return; }
++    if (m.mode === 'list' || m.mode === 'list-window') {
++      if (!this.listEl?.isConnected || this.listRequest?.more) return;
++      const limit = m.mode === 'list' ? LIST_PAGE_SIZE : m.listLimit;
++      if (limit === this.listLimit()) this.applyList(m.data, false, limit);
++      else if (!this.listRequest && document.visibilityState === 'visible' && now() - this.followerListRefreshAt >= FOLLOWER_LIST_REFRESH_MS) {
++        this.followerListRefreshAt = now();
++        void this.loadList(false);
++      }
++      return;
++    }
+     // Broadcasts carry full reconstructed pages. Even an unfocused tab/new leader learns rows
+     // and hashes together, never an unseen hash that would suppress a missing message.
+     if (m.mode === 'newest' && m.ref && m.quickFullPage) {
+@@ -1665,11 +1867,11 @@
+
+   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
+   async pollNow(v) {
+-    if (!v || !v.live) return;
++    if (!v || !v.live || v.historyPending) return;
+     const ref = refString(v.ref);
+     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
+     this.spent();
+-    const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
++    const r = await this.readHistory(v, this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
+     if (r.ok && v.live) this.applyHistory(v, r.data);
+   }
+ }
+--- a/dashboard/console/browser-device.js
++++ b/dashboard/console/browser-device.js
+@@ -352,11 +352,11 @@
+    * After a 401 from a signed call: ask the status route and delete this machine's key only on a
+    * definite answer. Returns the decision (keyDecision) plus `deleted`.
+    */
+-  async function checkAfter401() {
++  async function checkAfter401({ signal } = {}) {
+     if (!record) return { action: 'keep', show: 'unknown' };
+     const captured = record;
+     const st = await status(captured.keyHash);
+-    if (!sameDeviceIdentity(record, captured)) return { action: 'keep', show: 'unknown' };
++    if (signal?.aborted || record !== captured) return { action: 'keep', show: 'cancelled' };
+     if (!st.ok) return { action: 'keep', show: st.off ? 'off' : 'unknown' };
+     const d = keyDecision(st.data, captured);
+     if (d.action === 'delete') {
+--- a/dashboard/console/chats-model.js
++++ b/dashboard/console/chats-model.js
+@@ -501,7 +501,7 @@
+   function spend(nowMs) { prune(nowMs); window.push(nowMs); }
+   function canSpend(nowMs) { prune(nowMs); return window.length < budget; }
+
+-  function start(task, nowMs) { inFlight = task.id; window.push(nowMs); }
++  function start(task, nowMs, { spend: countRead = true } = {}) { inFlight = task.id; if (countRead) window.push(nowMs); }
+
+   /** outcome: { status, retryAfterMs? } */
+   function finish(task, nowMs, outcome = {}) {
+--- a/tests/unit/console-chats-page.test.ts
++++ b/tests/unit/console-chats-page.test.ts
+@@ -205,12 +205,12 @@
+   globalThis.BroadcastChannel = class extends RealBroadcastChannel { constructor(name: string) { super(name); pageChannels.add(this); } } as typeof BroadcastChannel;
+ }
+
+-async function boot(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash = '#/work/chats', idb = fakeIndexedDB()) {
++async function boot(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash = '#/work/chats', idb = fakeIndexedDB(), follower = false) {
+   const generation = ++bootGeneration;
+-  return bootContext.run(generation, () => bootPage(handler, hash, idb));
++  return bootContext.run(generation, () => bootPage(handler, hash, idb, follower));
+ }
+
+-async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>) {
++async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>, follower: boolean) {
+   disposePage();
+   dom?.window.close();
+   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
+@@ -218,7 +218,9 @@
+   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
+   g.IDBKeyRange = idb.keyRange;
+   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+-  Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: serializedLocks() });
++  const locks = serializedLocks();
++  if (follower) void locks.request('instar-chat-poll', () => new Promise(() => {}));
++  Object.defineProperty(dom.window.navigator, 'locks', { configurable: true, value: locks });
+   g.requestAnimationFrame = (cb: FrameRequestCallback) => setTimeout(cb, 0);
+   dom.window.localStorage.setItem('instar_token', 'tok');
+   calls = [];
+@@ -479,8 +481,10 @@
+       return prev(url, init);
+     };
+     dom.window.dispatchEvent(new dom.window.Event('focus'));
+-    // A list refresh (the leader's 30 s refresh in real use; here the list's own Show more, which reloads it).
+-    (doc.querySelector('button.chat-more') as HTMLButtonElement).click();
++    // The visible retry reloads the failed first page.
++    const retry = doc.querySelector('button.chat-list-retry') as HTMLButtonElement;
++    expect(retry.hidden).toBe(false);
++    retry.click();
+     for (let i = 0; i < 60 && doc.querySelector('.chat-title')?.textContent !== 'Plans for Saturday'; i++) await flush(100);
+     expect(doc.querySelector('.chat-title')?.textContent).toBe('Plans for Saturday');
+   }, 15_000);
+@@ -1276,3 +1280,124 @@
+     expect(idb.stores.get('device')!.get('m1')?.keyHash).toBe(replacement.keyHash);
+   });
+ });
++
++describe('interactive chat history explanations', () => {
++  async function openHistory(history: (call: Call) => Promise<{ status: number; body?: unknown }> | { status: number; body?: unknown }, follower = false) {
++    const idb = fakeIndexedDB();
++    const bd = await import('../../dashboard/console/browser-device.js');
++    const { keyPair, publicKey } = await bd.generateDeviceKey();
++    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
++    return boot(c => {
++      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
++      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
++      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return history(c);
++      if (c.url.includes('/events')) return { status: 200, body: { events: [], cursor: 'c1' } };
++      return undefined;
++    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb, follower);
++  }
++
++  it('explains a pending first read, names the wait after ten seconds, then explains an empty result', async () => {
++    let finish!: (value: { status: number; body: unknown }) => void;
++    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
++    let reads = 0;
++    const { doc } = await openHistory(() => { reads++; return pending; });
++    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('Loading messages');
++    window.dispatchEvent(new dom.window.Event('focus'));
++    window.dispatchEvent(new dom.window.Event('focus'));
++    await flush(100);
++    expect(reads).toBe(1);
++    await flush(10_100);
++    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('Waiting for the agent to return this conversation');
++    finish({ status: 200, body: { messages: [], nextBefore: null } });
++    await flush(100);
++    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('No messages were returned');
++    expect(doc.querySelector('.chat-history-state')?.textContent).not.toContain('Loading');
++  }, 20_000);
++
++  it('explains successful empty history without claiming a populated conversation has no history', async () => {
++    const { doc } = await openHistory(() => ({ status: 200, body: { messages: [], nextBefore: null } }));
++    expect(doc.querySelector('.chat-messages')?.textContent).toContain('No messages were returned');
++    expect(doc.querySelector('.chat-history-retry')).not.toBeNull();
++    expect(calls.some(c => c.method === 'POST' && /mobile\/chat.*$/.test(c.url))).toBe(false);
++  });
++
++  it('retries a failed history read once without changing typed text or sending a message', async () => {
++    let reads = 0;
++    let finish!: (value: { status: number; body: unknown }) => void;
++    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
++    const { doc } = await openHistory(() => ++reads === 1 ? { status: 503 } : pending);
++    const retry = doc.querySelector('.chat-history-retry') as HTMLButtonElement;
++    expect(retry).not.toBeNull();
++    const compose = doc.querySelector('.chat-compose') as HTMLTextAreaElement;
++    compose.value = 'Keep this draft';
++    sessionStorage.setItem('instar_chat_unfinished', JSON.stringify([{ ref: `app:${UUID}`, requestId: `${Date.now()}-unfinished`, deviceId: 'dev-b1234567', machineId: 'm1', text: 'Earlier unfinished send', uploads: [], firstSentAt: Date.now() }]));
++    retry.click(); retry.click();
++    await flush(100);
++    expect(reads).toBe(2);
++    expect(compose.value).toBe('Keep this draft');
++    finish({ status: 200, body: { messages: [{ eventId: 'e1', messageId: 'm1', role: 'agent', text: 'Saved history', at: new Date().toISOString() }], nextBefore: null } });
++    await flush(100);
++    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Saved history');
++    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
++    expect(compose.value).toBe('Keep this draft');
++    expect(calls.some(c => c.method === 'POST' && /mobile\/chat.*$/.test(c.url))).toBe(false);
++  });
++
++  it('keeps messages received from another tab visible while the first history read is pending or empty', async () => {
++    let finish!: (value: { status: number; body: unknown }) => void;
++    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
++    const { doc } = await openHistory(() => pending);
++    const otherTab = new BroadcastChannel('instar-chat');
++    otherTab.postMessage({ type: 'result', mode: 'events', ref: `app:${UUID}`, data: { events: [{ kind: 'message', eventId: 'live-e1', messageId: 'live-m1', role: 'agent', text: 'Already received', at: new Date().toISOString() }] } });
++    await flush(100);
++    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Already received');
++    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
++    finish({ status: 200, body: { messages: [], nextBefore: null } });
++    await flush(100);
++    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Already received');
++    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
++    otherTab.close();
++  });
++
++  it('clears a failed-history notice when a successful background history read recovers', async () => {
++    const { doc } = await openHistory(() => ({ status: 503 }));
++    expect(doc.querySelector('.chat-history-state')?.textContent).toContain("Couldn't load");
++    const otherTab = new BroadcastChannel('instar-chat');
++    otherTab.postMessage({ type: 'result', mode: 'pool', ref: `app:${UUID}`, data: { messages: [{ eventId: 'recovered', messageId: 'recovered', role: 'agent', text: 'Recovered messages', at: new Date().toISOString() }], nextBefore: null } });
++    await flush(100);
++    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Recovered messages');
++    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
++    otherTab.close();
++  });
++
++  it('shares a follower focus read that starts before the retry, without a second signed history request', async () => {
++    let reads = 0;
++    let finish!: (value: { status: number; body: unknown }) => void;
++    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
++    const { doc } = await openHistory(() => ++reads === 1 ? { status: 503 } : pending, true);
++    window.dispatchEvent(new dom.window.Event('focus'));
++    await flush(100);
++    expect(reads).toBe(2);
++    (doc.querySelector('.chat-history-retry') as HTMLButtonElement).click();
++    window.dispatchEvent(new dom.window.Event('focus'));
++    await flush(100);
++    expect(reads).toBe(2);
++    finish({ status: 200, body: { messages: [{ eventId: 'shared', messageId: 'shared', role: 'agent', text: 'One shared history result', at: new Date().toISOString() }], nextBefore: null } });
++    await flush(100);
++    expect(doc.querySelector('.chat-messages')?.textContent).toContain('One shared history result');
++    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
++  });
++
++  it('does not apply an old pending history result after leaving the conversation', async () => {
++    let finish!: (value: { status: number; body: unknown }) => void;
++    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
++    const { doc } = await openHistory(() => pending);
++    location.hash = '#/work/chats';
++    window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
++    await flush(100);
++    finish({ status: 200, body: { messages: [{ eventId: 'old', messageId: 'old', role: 'agent', text: 'Old conversation response', at: new Date().toISOString() }] } });
++    await flush(100);
++    expect(doc.querySelector('.chat-view')?.textContent).not.toContain('Old conversation response');
++    expect(doc.querySelector('.chat-history-state')).toBeNull();
++  });
++});
+--- /dev/null
++++ b/tests/unit/console-chat-list-states.test.ts
+@@ -0,0 +1,284 @@
++// @ts-nocheck — browser-native modules; test the shipped interactive renderer.
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { JSDOM } from 'jsdom';
++let dom, page;
++const calls=[];
++const row={id:'11111111-1111-4111-8111-111111111111',platform:'app',title:'My conversation',lastActivity:'2026-11-23T20:00:00Z',lastPreview:'A saved message'};
++const ok=(conversations=[],nextCursor=null)=>({ok:true,status:200,data:{conversations,nextCursor}});
++function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
++async function boot(handler, configure){
++ vi.useFakeTimers();vi.resetModules();calls.length=0;
++ dom=new JSDOM('<!doctype html><body><main></main></body>',{url:'http://localhost/dashboard/console/#/work/chats',pretendToBeVisual:true});
++ for(const key of ['window','document','location','history','localStorage','sessionStorage'])vi.stubGlobal(key,dom.window[key]);
++ vi.stubGlobal('navigator',{locks:{request:async()=>undefined}});
++ vi.stubGlobal('BroadcastChannel',class {postMessage(){}close(){}});
++ vi.stubGlobal('requestAnimationFrame',f=>setTimeout(f,0));
++ vi.stubGlobal('fetch',vi.fn(async()=>({ok:false,status:404,json:async()=>({})})));
++ const device={record:{machineId:'m1',deviceId:'fixture-device',status:'active'},clock:{skewMinutes:()=>0},
++  status:async()=>({ok:true,data:{machineId:'m1'}}),load:async()=>device.record,
++  call:vi.fn(async(method,path,opts)=>{calls.push({method,path,opts});return path.startsWith('/mobile/conversations?')?handler(path):{ok:false,status:404,data:{}};})};
++ const module=await import('../../dashboard/console/browser-device.js');vi.spyOn(module,'createBrowserDevice').mockReturnValue(device);
++ const {renderChats}=await import('../../dashboard/console/chats.js');
++ const main=document.querySelector('main');page=renderChats(main,{get:async()=>({ok:false,status:404})});configure?.(page);
++ await vi.advanceTimersByTimeAsync(1);return {main,page,device};
++}
++afterEach(()=>{page?.dispose();dom?.window.close();vi.restoreAllMocks();vi.unstubAllGlobals();vi.useRealTimers();});
++describe('Interactive Conversations list read states',()=>{
++ it('shows an immediate loading state and explains a ten-second wait without claiming emptiness',async()=>{
++  const wait=deferred();const {main}=await boot(()=>wait.promise);
++  expect(main.textContent).toContain('Loading conversations');
++  expect(main.textContent).not.toContain('No conversations yet');
++  await vi.advanceTimersByTimeAsync(10000);
++  expect(main.textContent).toContain('Taking longer');
++  wait.resolve(ok());await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).toContain('No conversations yet');
++  expect(main.textContent).not.toContain('Taking longer');
++ });
++ it('offers retry after an unavailable read and does not call a generic503 switched off',async()=>{
++  let fail=true;const {main}=await boot(()=>fail?{ok:false,status:503,data:{error:'work-card-visibility-unavailable'}}:ok([row]));
++  expect(main.textContent).not.toContain('switched off');
++  const retry=main.querySelector('.chat-list-retry');expect(retry).toBeTruthy();expect(retry.hidden).toBe(false);
++  fail=false;retry.click();await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).toContain(row.title);expect(retry.hidden).toBe(true);
++  expect(calls.every(c=>c.method==='GET')).toBe(true);
++ });
++ it('uses switched-off wording only for the explicit feature-off response',async()=>{
++  const {main}=await boot(()=>({ok:false,status:503,data:{error:'native-conversations-off'}}));
++  expect(main.textContent).toContain('switched off');
++  expect(main.querySelector('.chat-list-retry')?.hidden).toBe(false);
++ });
++ it('distinguishes an empty filtered page from an empty entire list and follows its cursor',async()=>{
++  const {main}=await boot(path=>path.includes('cursor=')?ok([row]):ok([],'older-page'));
++  expect(main.textContent).not.toContain('No conversations yet');
++  expect(main.textContent).toContain('More pages are available');
++  main.querySelector('.chat-more').click();await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).toContain(row.title);
++  expect(calls.some(c=>c.path.includes('cursor=older-page'))).toBe(true);
++ });
++ it('retains visible conversations on refresh failure and makes the failed read recoverable',async()=>{
++  let answer=ok([row]);const {main,page}=await boot(()=>answer);
++  answer={ok:false,status:500,data:{}};await page.loadList(false);
++  expect(main.querySelector('.chat-row-title')?.textContent).toBe(row.title);
++  expect(main.querySelector('.chat-list-retry')?.hidden).toBe(false);
++ });
++ it('does not call malformed success or unanswered machines an empty entire list',async()=>{
++  const {main}=await boot(()=>({ok:true,status:200,data:{unexpected:true}}));
++  expect(main.textContent).not.toContain('No conversations yet');
++  expect(main.querySelector('.chat-list-retry')?.hidden).toBe(false);
++ });
++ it('ignores a delayed list response after the page is disposed',async()=>{
++  const wait=deferred();const {main,page}=await boot(()=>wait.promise);
++  page.dispose();main.replaceChildren(document.createTextNode('Another page'));
++  wait.resolve(ok([row]));await vi.advanceTimersByTimeAsync(11000);
++  expect(main.textContent).toBe('Another page');
++ });
++ it('reports an unanswered source as incomplete, not as an empty whole list',async()=>{
++  const {main}=await boot(()=>({ok:true,status:200,data:{conversations:[],nextCursor:null,pool:{failed:[{machineId:'m2',reason:'deadline'}]}}}));
++  expect(main.textContent).not.toContain('No conversations yet');
++  expect(main.textContent).toContain('machines that answered');
++  expect(main.textContent).toContain('did not answer');
++ });
++ it('retries the failed next page without losing rows, pins or its cursor',async()=>{
++  let fail=true;
++  const first={...ok([row],'older-page'),data:{...ok([row],'older-page').data,pinnedRefs:[{ref:'app:'+row.id,atMs:1}],pinnedRows:[row]}};
++  const next={...row,id:'22222222-2222-4222-8222-222222222222',title:'Older conversation'};
++  const {main,page}=await boot(path=>path.includes('cursor=')?(fail?{ok:false,status:500,data:{}}:ok([next])):first);
++  await page.loadList(true);
++  expect(main.textContent).toContain(row.title);expect(page.meta.nextCursor).toBe('older-page');expect(page.listPins).toHaveLength(1);
++  fail=false;main.querySelector('.chat-list-retry').click();await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).toContain(next.title);expect(page.listPins).toHaveLength(1);
++  expect(calls.filter(c=>c.path.includes('cursor=older-page'))).toHaveLength(2);
++ });
++ it('shares an initial manual and scheduled list GET and accounts for each actual read once',async()=>{
++  const wait=deferred();const {createScheduler}=await import('../../dashboard/console/chats-model.js');
++  const {page}=await boot(()=>wait.promise,p=>{p.leader=true;p.scheduler=createScheduler({budget:10});});
++  const joined=page.loadList(false);const scheduled=page.runTask(page.scheduler.tasks().find(t=>t.mode==='list'));
++  expect(calls.filter(c=>c.path.startsWith('/mobile/conversations?'))).toHaveLength(1);
++  wait.resolve(ok([row]));await vi.advanceTimersByTimeAsync(1);await Promise.all([joined,scheduled]);
++  expect(page.scheduler.readsInLastMinute(Date.now())).toBe(calls.filter(c=>c.method==='GET').length);
++ });
++ it('keeps a newer broadcast when an older successful list read finishes',async()=>{
++  const wait=deferred();const {main,page}=await boot(()=>wait.promise);
++  const newer={...row,title:'Newer title from another tab'};
++  page.onMessage({type:'result',mode:'list',data:ok([newer]).data});
++  wait.resolve(ok([row]));await vi.advanceTimersByTimeAsync(1);
++  expect(main.querySelector('.chat-row-title').textContent).toBe(newer.title);
++ });
++ it('does not run an old queued read against a rebuilt list',async()=>{
++  const more=deferred();let fresh=false;
++  const {main,page}=await boot(path=>path.includes('cursor=')?more.promise:ok([{...row,title:fresh?'New page':'Old page'}],'older-page'));
++  const running=page.loadList(true);const queued=page.loadList(false,true);
++  page.teardownApp();expect(calls.find(c=>c.path.includes('cursor=')).opts.signal.aborted).toBe(true);fresh=true;page.openApp();await vi.advanceTimersByTimeAsync(1);
++  more.resolve(ok([{...row,title:'Late old page'}]));await vi.advanceTimersByTimeAsync(1);await Promise.all([running,queued]);
++  expect(main.textContent).toContain('New page');expect(main.textContent).not.toContain('Late old page');
++  expect(calls.filter(c=>c.path.startsWith('/mobile/conversations?'))).toHaveLength(3);
++ });
++ it('turns an indefinitely pending read into a retryable failure and ignores its late result',async()=>{
++  const wait=deferred();let retry=false;const {main}=await boot(()=>retry?ok([row]):wait.promise);
++  await vi.advanceTimersByTimeAsync(20001);
++  const button=main.querySelector('.chat-list-retry');expect(button.hidden).toBe(false);expect(button.disabled).toBe(false);
++  expect(calls[0].opts.signal.aborted).toBe(true);
++  retry=true;button.click();await vi.advanceTimersByTimeAsync(1);
++  wait.resolve(ok([{...row,title:'Too late'}]));await vi.advanceTimersByTimeAsync(1);
++  expect(main.querySelector('.chat-row-title').textContent).toBe(row.title);
++ });
++ it('keeps retry visible while busy and gives focus to the recovered list',async()=>{
++  let answer={ok:false,status:500,data:{}};const wait=deferred();const {main}=await boot(()=>answer);
++  const retry=main.querySelector('.chat-list-retry');retry.focus();answer=wait.promise;retry.click();
++  expect(retry.hidden).toBe(false);expect(retry.disabled).toBe(true);
++  wait.resolve(ok([row]));await vi.advanceTimersByTimeAsync(1);
++  expect(retry.hidden).toBe(true);expect(document.activeElement).toBe(main.querySelector('.chat-row'));
++ });
++ it('does not leave an old empty assertion after a refresh fails',async()=>{
++  let answer=ok();const {main,page}=await boot(()=>answer);expect(main.textContent).toContain('No conversations yet');
++  answer={ok:false,status:500,data:{}};await page.loadList(false);
++  expect(main.textContent).not.toContain('No conversations yet');expect(main.querySelector('.chat-list-retry').hidden).toBe(false);
++ });
++ it('retains and labels cached rows as unavailable after an explicit feature-off read',async()=>{
++  let answer=ok([row],'older-page');const {main,page}=await boot(()=>answer);
++  answer={ok:false,status:503,data:{error:'native-conversations-off'}};await page.loadList(false);
++  expect(main.textContent).toContain('last loaded list');expect(main.querySelector('.chat-row').getAttribute('aria-disabled')).toBe('true');
++  expect(main.querySelector('.chat-new').disabled).toBe(true);expect(main.querySelector('.chat-more').hidden).toBe(true);
++  answer=ok([row]);main.querySelector('.chat-list-retry').click();await vi.advanceTimersByTimeAsync(1);
++  expect(main.querySelector('.chat-new').disabled).toBe(false);expect(main.querySelector('.chat-row').hasAttribute('aria-disabled')).toBe(false);
++ });
++ it('treats unreadable polling as failure and preserves 429 Retry-After timing',async()=>{
++  let answer=ok([row]);const {page}=await boot(()=>answer);
++  page.scheduler.setConversations([],Date.now());const task=page.scheduler.tasks().find(t=>t.mode==='list');const finish=vi.spyOn(page.scheduler,'finish');
++  answer={ok:true,status:200,data:{unexpected:true}};await page.runTask(task);
++  expect(finish.mock.calls.at(-1)[2].status).toBe(0);
++  answer={ok:false,status:429,retryAfterMs:45000,data:{}};await page.runTask(task);
++  expect(page.scheduler.snapshot().find(t=>t.id==='list').notBefore).toBe(Date.now()+45000);
++ });
++
++ it('shows a known pinned conversation on an otherwise empty page and retains it on failure',async()=>{
++  let answer={ok:true,status:200,data:{conversations:[],nextCursor:'older-page',pinnedRefs:[{ref:'app:'+row.id,atMs:1}],pinnedRows:[row]}};
++  const {main,page}=await boot(()=>answer);
++  expect(main.querySelector('.chat-row-title').textContent).toBe(row.title);
++  expect(main.textContent).not.toContain('No conversations yet');
++  answer={ok:false,status:500,data:{}};await page.loadList(false);
++  expect(main.querySelector('.chat-row-title').textContent).toBe(row.title);
++  expect(main.textContent).toContain('Your conversations are still shown');
++ });
++
++ it('does not let an obsolete 401 status check tear down a recovered list',async()=>{
++  const status=deferred();let first=true;
++  const {main,device}=await boot(()=>first?{ok:false,status:401,data:{}}:ok([row]),p=>{
++    p.device.checkAfter401=()=>status.promise;
++  });
++  await vi.advanceTimersByTimeAsync(20001);first=false;
++  main.querySelector('.chat-list-retry').click();await vi.advanceTimersByTimeAsync(1);
++  status.resolve({deleted:true,show:'removed'});await vi.advanceTimersByTimeAsync(1);
++  expect(main.querySelector('.chat-row-title').textContent).toBe(row.title);
++  expect(main.textContent).not.toContain('Set up this browser');
++ });
++
++ it('still explains an authoritative elsewhere status after the record lookup',async()=>{
++  const {main}=await boot(()=>({ok:false,status:401,data:{}}),p=>{
++    p.device.checkAfter401=async()=>({show:'elsewhere',machineId:'other-machine',nickname:'Sample other computer'});
++  });
++  expect(main.textContent).toContain('Sample other computer');
++  expect(main.textContent).toContain('Set up this browser');
++ });
++
++ it('aborts a slow401 check on teardown before reopening the list',async()=>{
++  const status=deferred();let first=true;
++  const {main,page}=await boot(()=>first?{ok:false,status:401,data:{}}:ok([row]),p=>{p.device.checkAfter401=()=>status.promise;});
++  const old=calls.find(c=>c.path.startsWith('/mobile/conversations?'));
++  page.teardownApp();expect(old.opts.signal.aborted).toBe(true);first=false;page.openApp();await vi.advanceTimersByTimeAsync(1);
++  status.resolve({deleted:true,show:'removed'});await vi.advanceTimersByTimeAsync(1);
++  expect(main.querySelector('.chat-row-title').textContent).toBe(row.title);
++ });
++
++});
++
++const previous = {...row,id:'22222222-2222-4222-8222-222222222222',title:'Answered agent question'};
++const keep = {...row,id:'33333333-3333-4333-8333-333333333333',title:'An older conversation'};
++const snapshot = (rows, cursor, failed=[]) => ({...ok(rows,cursor),data:{...ok(rows,cursor).data,listCoverageComplete:failed.length===0,pool:{failed}}});
++async function openOlder(main) {
++  main.querySelector('.chat-more').click();
++  await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).toContain(previous.title);
++}
++it('refreshes the loaded window and uses its new continuation',async()=>{
++  const {main,page}=await boot(path=>{
++    if(path.includes('cursor=older')) return snapshot([previous,keep],'old-tail');
++    if(path.includes('limit=100')) return snapshot([row,keep],'new-tail');
++    if(path.includes('cursor=new-tail')) return snapshot([]);
++    return snapshot([row],'older');
++  });
++  await openOlder(main);
++  await page.loadList(false);
++  expect(main.textContent).not.toContain(previous.title);
++  expect(main.textContent).toContain(keep.title);
++  await page.loadList(true);
++  expect(calls.at(-1).path).toContain('cursor=new-tail');
++  expect(main.querySelector('.chat-more').hidden).toBe(true);
++});
++it('keeps rows and the cursor when the wider response is partial',async()=>{
++  const {main,page}=await boot(path=>{
++    if(path.includes('cursor=older')) return snapshot([previous,keep],'old-tail');
++    if(path.includes('limit=100')) return snapshot([row],null,[{machineId:'Fixture Mac'}]);
++    return snapshot([row],'older');
++  });
++  await openOlder(main);
++  await page.loadList(false);
++  expect(main.textContent).toContain(previous.title);
++  expect(main.textContent).toContain(keep.title);
++  expect(main.textContent).toContain('Fixture Mac');
++  expect(page.meta.nextCursor).toBe('old-tail');
++});
++it('refreshes at its own depth when another tab used a different limit',async()=>{
++  const {main,page}=await boot(path=>path.includes('limit=100')?snapshot([row,keep]):path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
++  await openOlder(main);
++  page.applyResult({mode:'list',listLimit:50,data:snapshot([row],'older').data});
++  await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).not.toContain(previous.title);
++  expect(main.textContent).toContain(keep.title);
++  expect(calls.filter(c=>c.path.includes('limit=100'))).toHaveLength(1);
++});
++it('uses a matching broadcast without another signed list read', async()=>{
++  const {main,page}=await boot(path=>path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
++  await openOlder(main);
++  const count=calls.filter(c=>c.path.startsWith('/mobile/conversations?')).length;
++  page.applyResult({mode:'list-window',listLimit:100,data:snapshot([row,keep]).data});
++  expect(main.textContent).not.toContain(previous.title);
++  expect(main.textContent).toContain(keep.title);
++  expect(calls.filter(c=>c.path.startsWith('/mobile/conversations?'))).toHaveLength(count);
++});
++it('does not put widened rows into a tab that never opened them',async()=>{
++  const {main,page}=await boot(()=>snapshot([row],'older'));
++  page.applyResult({mode:'list-window',listLimit:100,data:snapshot([row,keep]).data});
++  await vi.advanceTimersByTimeAsync(1);
++  expect(main.textContent).not.toContain(keep.title);
++  expect(page.meta.nextCursor).toBe('older');
++  expect(calls.filter(c=>c.path.includes('limit=100'))).toHaveLength(0);
++});
++it('keeps the matching broadcast when the earlier read finishes',async()=>{
++  const pending=deferred();
++  const {main,page}=await boot(path=>path.includes('limit=100')?pending.promise:path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
++  await openOlder(main);
++  const refresh=page.loadList(false);
++  page.applyResult({mode:'list-window',listLimit:100,data:snapshot([row,keep]).data});
++  expect(main.textContent).toContain(keep.title);
++  pending.resolve(snapshot([row,previous]));
++  await refresh;
++  expect(main.textContent).not.toContain(previous.title);
++});
++it('retains a loaded window when a widened response lacks coverage metadata',async()=>{
++  const {main,page}=await boot(path=>path.includes('limit=100')?ok([row],null):path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
++  await openOlder(main);
++  await page.loadList(false);
++  expect(main.textContent).toContain(previous.title);
++  expect(main.textContent).toContain('Your last loaded list is still shown');
++});
++it('sends widened results using a mode that older dashboard tabs ignore', async () => {
++  const {main,page}=await boot(path=>path.includes('limit=100')?snapshot([row,keep]):path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
++  await openOlder(main);
++  const send = vi.spyOn(page, 'post');
++  page.scheduler.setConversations([], Date.now());
++  const task = page.scheduler.tasks().find(task => task.mode === 'list');
++  await page.runTask(task);
++  expect(send).toHaveBeenCalledWith(expect.objectContaining({mode:'list-window',listLimit:100}));
++  expect(send).not.toHaveBeenCalledWith(expect.objectContaining({mode:'list'}));
++});
