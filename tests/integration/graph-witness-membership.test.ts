@@ -58,8 +58,16 @@ async function fixture(replacement=false,certified=false){
 }
 describe('witness membership activation over real source staging',()=>{
  it('requires every new member durable source transfer before owner-authorized activation',async()=>{
-  const {f,stage,options,verification,witness}=await fixture();
+  const {f,stage,options,witness,witnessOptions,added}=await fixture();
+  let activeWitness = witness;
   try {
+   const record = stage.records[0];
+   const oldWriter = await ConversationGraphReplication.open(f.options(await directory()));
+   const oldPeer = await ConversationGraphReplication.open(f.options(await directory(), 'sleeper'));
+   const oldReceipts = [
+    (await oldWriter.appendLocal(record)).receipt,
+    await oldPeer.receive(record, 'writer'),
+   ];
    const addedReceipt=await new ConversationGraphReplicationTransfer(options).stage(stage);
    const survivorReceipt=await new ConversationGraphReplicationTransfer({...options,directory:await directory(),machineId:'sleeper',memberPrivateKey:f.members[1].signing.privateKey,memberSealingPrivateKey:f.members[1].sealing.privateKey}).stage(stage);
    const request={newMembership:stage.newMembership,authorization:stage.authorization,currentLease:stage.currentLease,originalCurrentLease:stage.originalCurrentLease,
@@ -72,8 +80,32 @@ describe('witness membership activation over real source staging',()=>{
    expect(response.adoptions[0].operationHash).toBe(canonicalHash(stage.records[0].packet));
    expect(witness.recoverPending('echo',request)).toEqual(response);
    expect(witness.inventory('echo','b'.repeat(43)).membershipEpoch).toBe(2);
-   expect(()=>witness.prepare({packet:stage.records[0].packet,packetSignature:stage.records[0].packetSignature,encryptedSourceBundle:stage.records[0].encryptedSourceBundle!,lease:f.lease,originalLease:f.originalLease})).toThrow();
-  } finally {witness.close();}
+   expect(()=>witness.prepare({packet:record.packet,packetSignature:record.packetSignature,encryptedSourceBundle:record.encryptedSourceBundle!,lease:f.lease,originalLease:f.originalLease})).toThrow();
+
+   witness.close();
+   activeWitness = new GraphWitnessService(witnessOptions);
+   const key = record.packet.idempotencyKey;
+   const pending = activeWitness.operation('echo', key);
+   expect(pending).toMatchObject({ state: 'prepared', certificate: null });
+   const priorTip = activeWitness.inventory('echo', 'c'.repeat(43)).manifest.highestCertifiedSequence;
+   expect(() => activeWitness.commit('echo', key, f.lease, f.originalLease, oldReceipts)).toThrow('lease-proof-invalid');
+   expect(activeWitness.operation('echo', key)).toEqual(pending);
+   expect(activeWitness.inventory('echo', 'd'.repeat(43)).manifest.highestCertifiedSequence).toBe(priorTip);
+
+   const survivorStore = await ConversationGraphReplication.open({
+    ...f.options(await directory(), 'sleeper'), installedMembership: stage.newMembership,
+   });
+   const addedStore = await ConversationGraphReplication.open({
+    ...f.options(await directory()), machineId: 'added', memberPrivateKey: added.signing.privateKey,
+    memberSealingPrivateKey: added.sealing.privateKey, installedMembership: stage.newMembership,
+   });
+   const adopted = { ...record, adoption: response.adoptions[0], rewrap: stage.rewraps[0].rewrap };
+   const receipts = await Promise.all([survivorStore.receive(adopted, 'writer'), addedStore.receive(adopted, 'writer')]);
+   const certificate = activeWitness.commit('echo', key, stage.currentLease, stage.originalCurrentLease, receipts);
+   expect(certificate.membershipEpoch).toBe(2);
+   expect(certificate.sourceSequence).toBe(record.packet.sourceSequence);
+   expect(activeWitness.commit('echo', key, stage.currentLease, stage.originalCurrentLease, receipts)).toEqual(certificate);
+  } finally {activeWitness.close();}
  });
  it('durably resumes bounded recovery upload over actual HTTP and rejects incomplete or changed chunks before activation',async()=>{
   const {f,stage,options,witness,witnessOptions}=await fixture();
