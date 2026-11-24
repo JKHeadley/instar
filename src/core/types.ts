@@ -4206,7 +4206,7 @@ export interface InstarConfig {
    * Maintenance jobs config (docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §D6).
    * `doorwayScan` tunes the recurring doorway-scan job. NOTE `enabled` is DELIBERATELY
    * omitted from the seeded defaults and default-absent: whether the scan RUNS is governed
-   * by the job-manifest `enabled` flag (seeded true); `maintenance.doorwayScan.enabled` is a
+   * by the job-manifest `enabled` flag (seeded false); `maintenance.doorwayScan.enabled` is a
    * master kill-switch with DENY-WINS semantics (the scan runs iff the job manifest is enabled
    * AND `config.enabled !== false`). A seeded `false` would make `false !== false` false and
    * permanently block the scan even after the job is enabled — the round-2/round-5 bug — so the
@@ -4222,7 +4222,7 @@ export interface InstarConfig {
       packagedExecution?: boolean;
       /** 'free-probes' (default; zero metered spend) | '+liveness' | '+web-verify' (manual-only). */
       scope?: string;
-      /** Cron expression; default '0 4 * * 1' (weekly). */
+      /** Cron expression for new jobs, default '0 4 * * *' (daily). */
       cadence?: string;
       /** Alert digest topic id; null → the default alerts/hub attention surface. */
       digestTopicId?: number | null;

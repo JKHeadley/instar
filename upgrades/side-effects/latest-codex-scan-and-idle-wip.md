@@ -51,3 +51,9 @@ Independent checkpoint review concurred after a regression test confirmed that c
 ## Shared bounded history checkpoint
 
 Both authenticated HTTP reads use the scheduler's machine-scoped window of up to 16 relevant run rows. Skips, legacy rows and other machines cannot displace local evidence. A timestamp tie at the window boundary is withheld and reported as truncated. Admission records that conflict with the ledger make potentially affected readings unknown. The doorway response exposes scheduled history alongside the manual response. The capability response uses only current scheduled observations when that history is selected. Missing machine identity in the opted-in profile yields unavailable evidence. The ledger and artifact files are unchanged by reads. Safe pruning, observation history beyond the window, signed-release execution, and delivery parity remain separate release work.
+
+## Installer checkpoint
+
+New doorway jobs use 04:00 local time and remain disabled. Existing valid doorway manifests keep their schedule, enabled value, disable marker, and existing script or agent-message runner. A malformed or unsupported manifest stays available for operator review and is reported by the existing install result. The shared installer serves new installs and updates. The change does not alter the operator's master switch, probe execution, or delivery. Cadence and enablement remain local to the existing schedule control. Reverting the template changes the default for future installs, and previously saved schedules retain their values.
+
+Independent checkpoint review concurred after confirming the existing awareness and prober drafts are outside the installer checkpoint.

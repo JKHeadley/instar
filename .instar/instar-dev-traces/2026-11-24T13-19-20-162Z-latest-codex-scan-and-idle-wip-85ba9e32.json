@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T13:19:20.162Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "a5fdb043f763b2a3f5ca0c9103a2ec12875969a8e62fa5f7622c25330e5d607b",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/config/ConfigDefaults.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates/jobs/instar/doorway-scan.md",
+    "src/scheduler/InstallBuiltinJobs.ts",
+    "src/server/CapabilityIndex.ts",
+    "tests/unit/doorway-scan-job-template.test.ts",
+    "tests/unit/scheduler/InstallBuiltinJobs.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The shared installer writes local job manifests for new installs and updates and preserves existing execution choices.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
