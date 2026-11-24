@@ -4,7 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit,
+import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit, recordLocalHistoryFirstPermitObservation,
   type LocalHistoryFirstPermit } from '../../src/import/LocalHistoryFirstPermit.js';
 import { privateImportDatabasePath } from '../../src/import/privateImportState.js';
 
@@ -113,6 +113,51 @@ it('refuses a same-shaped STRICT table lacking the operation primary key', () =>
   db.exec('ALTER TABLE local_history_first_permits RENAME TO retained_fixture');
   db.exec(sql.replace('operationId TEXT PRIMARY KEY NOT NULL', 'operationId TEXT NOT NULL'));
   expect(() => recordInTransaction(db)).toThrow('first-permit-schema');
+  expect(phase(db)).toEqual({ phase: 'prepared' });
+  expect(records(db)).toEqual([]);
+});
+
+it('retains stop and an exact late acknowledgement across reopen without changing the issued slot', () => {
+  const { db, filename } = fixture();
+  const acknowledgement = { kind: 'acknowledge', digest: 'e'.repeat(64) } as const;
+  expect(() => recordLocalHistoryFirstPermitObservation(db, draft, acknowledgement)).toThrow('first-permit-database');
+  expect(recordInTransaction(db)).toBe('recorded');
+  const observe = db.transaction((observation: Parameters<typeof recordLocalHistoryFirstPermitObservation>[2]) =>
+    recordLocalHistoryFirstPermitObservation(db, draft, observation));
+  expect(observe.immediate({ kind: 'stop' })).toEqual({ stopRequested: true, acknowledgementDigest: null });
+  expect(observe.immediate(acknowledgement)).toEqual({ stopRequested: true, acknowledgementDigest: acknowledgement.digest });
+  db.close();
+  const reopened = new Database(filename); connections.push(reopened);
+  reopened.pragma('synchronous = FULL');
+  expect(reopened.transaction(() => recordLocalHistoryFirstPermitObservation(reopened, draft, acknowledgement)).immediate())
+    .toEqual({ stopRequested: true, acknowledgementDigest: acknowledgement.digest });
+  expect(() => reopened.transaction(() => recordLocalHistoryFirstPermitObservation(reopened, draft, {
+    kind: 'acknowledge', digest: 'f'.repeat(64),
+  })).immediate()).toThrow('first-permit-conflict');
+  expect(records(reopened)).toEqual([draft]);
+  expect(phase(reopened)).toEqual({ phase: 'applying' });
+});
+
+it('refuses wrong bindings and rolls back a matching observation with its outer transaction', () => {
+  const { db } = fixture();
+  const progress = () => db.prepare('SELECT * FROM local_history_first_permit_progress').all();
+  expect(recordInTransaction(db)).toBe('recorded');
+  expect(() => db.transaction(() => recordLocalHistoryFirstPermitObservation(db, { ...draft, runId: 'f'.repeat(32) }, {
+    kind: 'stop',
+  })).immediate()).toThrow('first-permit-conflict');
+  expect(() => db.transaction(() => {
+    recordLocalHistoryFirstPermitObservation(db, draft, { kind: 'stop' });
+    expect(progress()).toHaveLength(1);
+    throw new Error('synthetic outer rollback');
+  }).immediate()).toThrow('synthetic outer rollback');
+  expect(progress()).toEqual([]);
+  expect(records(db)).toEqual([draft]);
+});
+
+it('refuses to inherit a matching-operation progress row with no original slot', () => {
+  const { db } = fixture();
+  db.prepare('INSERT INTO local_history_first_permit_progress VALUES (?, ?, ?)').run(draft.operationId, 1, 'd'.repeat(64));
+  expect(() => recordInTransaction(db)).toThrow('first-permit-conflict');
   expect(phase(db)).toEqual({ phase: 'prepared' });
   expect(records(db)).toEqual([]);
 });

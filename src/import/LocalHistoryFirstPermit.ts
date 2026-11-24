@@ -6,6 +6,7 @@ import { privateImportDatabasePath } from './privateImportState.js';
 
 const MAX_ROWS = 1024;
 const TABLE = 'local_history_first_permits';
+const PROGRESS = 'local_history_first_permit_progress';
 const fields = [
   'operationId', 'previewId', 'applyRequestId', 'intentFingerprint', 'generation', 'runId', 'reservationId',
   'previewAllocation', 'previewSha256', 'uploadFingerprint', 'deadline', 'permitId', 'fileIndex', 'destinationBinding',
@@ -70,6 +71,18 @@ function validateSchema(db: Database.Database): void {
     || column.type !== (['deadline', 'fileIndex', 'plannedBytes'].includes(column.name) ? 'INTEGER' : 'TEXT'))) refuse('schema');
 }
 
+function validateProgressSchema(db: Database.Database): void {
+  const table = db.prepare('SELECT strict FROM pragma_table_list WHERE schema = ? AND name = ?').get('main', PROGRESS) as
+    { strict: number } | undefined;
+  const columns = db.prepare(`PRAGMA main.table_info(${PROGRESS})`).all() as
+    Array<{ name: string; type: string; pk: number; notnull: number; dflt_value: unknown }>;
+  const expected = [['operationId', 'TEXT', 1, 1], ['stopRequested', 'INTEGER', 0, 1], ['acknowledgementDigest', 'TEXT', 0, 0]];
+  if (table?.strict !== 1 || columns.length !== expected.length || columns.some((column, index) => {
+    const [name, type, pk, required] = expected[index];
+    return column.name !== name || column.type !== type || column.pk !== pk || column.notnull !== required || column.dflt_value !== null;
+  })) refuse('schema');
+}
+
 export function initializeLocalHistoryFirstPermits(db: Database.Database): void {
   jobsConnection(db, false);
   db.exec(`CREATE TABLE IF NOT EXISTS main.${TABLE} (
@@ -83,6 +96,12 @@ export function initializeLocalHistoryFirstPermits(db: Database.Database): void 
     planDigest TEXT NOT NULL, plannedBytes INTEGER NOT NULL CHECK(plannedBytes > 0)
   ) STRICT`);
   validateSchema(db);
+  db.exec(`CREATE TABLE IF NOT EXISTS main.${PROGRESS} (
+    operationId TEXT PRIMARY KEY NOT NULL,
+    stopRequested INTEGER NOT NULL CHECK(stopRequested IN (0, 1)),
+    acknowledgementDigest TEXT CHECK(acknowledgementDigest IS NULL OR length(acknowledgementDigest) = 64)
+  ) STRICT`);
+  validateProgressSchema(db);
 }
 
 /** Startup-only bounded inventory. A legacy connection may have no permit table. */
@@ -114,6 +133,12 @@ export function recordLocalHistoryFirstPermit(db: Database.Database, input: Loca
         || existing.intentFingerprint !== record.intentFingerprint) refuse('conflict');
       return 'already-recorded' as const;
     }
+    const progress = db.prepare('SELECT type FROM main.sqlite_schema WHERE name = ?').get(PROGRESS) as { type: string } | undefined;
+    if (progress) {
+      if (progress.type !== 'table') refuse('schema');
+      validateProgressSchema(db);
+      if (db.prepare(`SELECT 1 FROM main.${PROGRESS} WHERE operationId = ?`).get(record.operationId)) refuse('conflict');
+    }
     const { count } = db.prepare(`SELECT COUNT(*) AS count FROM main.${TABLE}`).get() as { count: number };
     if (!Number.isSafeInteger(count) || count >= MAX_ROWS) refuse('capacity');
     const tag = 'r-' + record.generation + '-' + record.operationId;
@@ -126,4 +151,40 @@ export function recordLocalHistoryFirstPermit(db: Database.Database, input: Loca
     db.prepare(`INSERT INTO main.${TABLE} (${fields.join(', ')}) VALUES (${fields.map(field => '@' + field).join(', ')})`).run(record);
     return 'recorded' as const;
   })();
+}
+
+type FirstPermitBinding = Pick<LocalHistoryFirstPermit, 'operationId' | 'permitId' | 'runId' | 'generation'>;
+type FirstPermitObservation = { kind: 'stop' } | { kind: 'acknowledge'; digest: string };
+
+/** Observations for the exact already-issued slot. The actual coordinator
+ * must establish child/message custody before recording an acknowledgement.
+ * These facts do not clear the retained slot or authorize another permit. */
+export function recordLocalHistoryFirstPermitObservation(db: Database.Database, binding: FirstPermitBinding,
+  observation: FirstPermitObservation): { stopRequested: boolean; acknowledgementDigest: string | null } {
+  jobsConnection(db, true);
+  validateSchema(db);
+  validateProgressSchema(db);
+  const { operationId, permitId, runId, generation } = binding;
+  const kind = observation.kind;
+  const observedDigest = kind === 'acknowledge' ? observation.digest : null;
+  if (![operationId, permitId, runId].every(value => hex(value, 32)) || !hex(generation, 64)
+    || (kind !== 'stop' && (kind !== 'acknowledge' || !hex(observedDigest, 64)))) refuse('invalid');
+  const slot = db.prepare(`SELECT * FROM main.${TABLE} WHERE operationId = ?`).get(operationId) as LocalHistoryFirstPermit | undefined;
+  if (!slot || slot.permitId !== permitId || slot.runId !== runId || slot.generation !== generation) refuse('conflict');
+  validate(slot);
+
+  const previous = db.prepare(`SELECT stopRequested, acknowledgementDigest FROM main.${PROGRESS} WHERE operationId = ?`)
+    .get(operationId) as { stopRequested: number; acknowledgementDigest: string | null } | undefined;
+  if (previous && (previous.stopRequested !== 0 && previous.stopRequested !== 1
+    || previous.acknowledgementDigest !== null && !hex(previous.acknowledgementDigest, 64))) refuse('invalid');
+  const priorDigest = previous?.acknowledgementDigest ?? null;
+  if (priorDigest && observedDigest && priorDigest !== observedDigest) refuse('conflict');
+  const stopRequested = kind === 'stop' || previous?.stopRequested === 1;
+  const acknowledgementDigest = priorDigest ?? observedDigest;
+  if (!previous || previous.stopRequested !== Number(stopRequested) || previous.acknowledgementDigest !== acknowledgementDigest) {
+    db.prepare(`INSERT INTO main.${PROGRESS} (operationId, stopRequested, acknowledgementDigest) VALUES (?, ?, ?)
+      ON CONFLICT(operationId) DO UPDATE SET stopRequested = excluded.stopRequested,
+        acknowledgementDigest = excluded.acknowledgementDigest`).run(operationId, Number(stopRequested), acknowledgementDigest);
+  }
+  return { stopRequested, acknowledgementDigest };
 }
