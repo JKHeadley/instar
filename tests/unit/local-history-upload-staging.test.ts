@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import net from 'node:net';
-import { fork, type ChildProcess } from 'node:child_process';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { performance as monotonicClock } from 'node:perf_hooks';
@@ -15,6 +15,7 @@ import { LOCAL_HISTORY_PLAINTEXT_BYTES } from '../../src/import/LocalHistoryChan
 import { SafeFsExecutor } from '../../dist/core/SafeFsExecutor.js';
 import { DegradationReporter } from '../../dist/monitoring/DegradationReporter.js';
 import { ImportedHistoryStore } from '../../dist/import/ImportedHistoryStore.js';
+import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit } from '../../dist/import/LocalHistoryFirstPermit.js';
 import { registerLocalHistoryStoreTemporaryRun } from '../../dist/import/LocalHistoryStoreTemporaryRun.js';
 
 const roots: string[] = [], stages: LocalHistoryUploadStaging[] = [];
@@ -558,6 +559,87 @@ it('refuses old-tag recovery when the temporary registry lacks its primary key',
     }
     expect(() => setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' })).toThrow('upload-unavailable');
     expect(ledger.inspect(allocation)).toMatchObject({ planned: 123, state: 'active' });
+  } finally { db.close(); ledger.close(); }
+});
+
+it('quarantines a committed first permit across repeated restarts without releasing its reservation', async () => {
+  const f = setup();
+  const bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const selected = f.stage.admit(device, f.manifest([bytes]));
+  upload(f.stage, selected.operationId, 'file-0', bytes);
+  f.stage.complete(device, selected.operationId);
+  await until(() => f.stage.status(device, selected.operationId).phase === 'verified');
+  f.stage.prepare(device, selected.operationId);
+  await until(() => f.stage.status(device, selected.operationId).phase === 'prepared');
+  const receipt = await f.stage.publishPreparedPreview(device, selected.operationId);
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  db.pragma('synchronous = FULL');
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const childClosed = once(child, 'close');
+  try {
+    const run = registerLocalHistoryStoreTemporaryRun(db, f.stage['custody'], selected);
+    await once(child, 'spawn');
+    const token = await run.registerChild(child);
+    const { tag, fingerprint } = db.prepare('SELECT tag, fingerprint FROM upload_operations WHERE id = ?').get(selected.operationId) as { tag: string; fingerprint: string };
+    const index = db.prepare('SELECT allocation, sha256 FROM upload_previews WHERE id = ?').get(selected.operationId) as { allocation: string; sha256: string };
+    const reservationId = ledger.create(tag, 123);
+    const unrelatedTag = 'r-' + token.generation + '-' + '0'.repeat(32);
+    const unrelated = ledger.create(unrelatedTag, 456);
+    const intent = f.stage.inspectCopyIntent(device, selected.operationId, {
+      previewId: receipt.previewId, machineId: receipt.machineId, bootId: issuer.bootId,
+      confirmationChallenge: receipt.confirmation.challenge, applyRequestId: '1'.repeat(32),
+    });
+    initializeLocalHistoryFirstPermits(db);
+    db.transaction(() => {
+      expect(recordLocalHistoryFirstPermit(db, {
+        operationId: selected.operationId, previewId: receipt.previewId, applyRequestId: intent.requestId,
+        intentFingerprint: intent.fingerprint, generation: token.generation, runId: run.runId, reservationId,
+        previewAllocation: index.allocation, previewSha256: index.sha256, uploadFingerprint: fingerprint,
+        deadline: receipt.expiresAt, permitId: '2'.repeat(32), fileIndex: 0,
+        destinationBinding: '3'.repeat(64), mutationKind: 'claim', planDigest: '4'.repeat(64), plannedBytes: 123,
+      })).toBe('recorded');
+    }).immediate();
+    // No IPC permit is sent. Disk state cannot distinguish this from a
+    // delivered permit whose acknowledgement was lost.
+    child.kill();
+    await childClosed;
+    await f.stage.stop();
+    const firstRestart = setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' });
+    expect(firstRestart.stage.status(device, selected.operationId)).toMatchObject({ phase: 'interrupted', files: [] });
+    expect(ledger.inspect(unrelated)).toMatchObject({ planned: 0, state: 'disposed' });
+    expect(ledger.inspect(reservationId)).toMatchObject({ planned: 123, state: 'active' });
+    expect(fs.existsSync(path.join(f.stateDir, 'imported-history', '.local-history-temporary', run.runId))).toBe(false);
+    await firstRestart.stage.stop();
+
+    const next = setup({ stateDir: f.stateDir, boot: 'synthetic-third-boot' });
+    expect(next.stage.cancel(device, selected.operationId).phase).toBe('interrupted');
+    expect(next.stage['disposeTag'](tag)).toBe(false);
+    expect(ledger.inspect(reservationId)).toMatchObject({ planned: 123, state: 'active' });
+    expect(db.prepare('SELECT permitId FROM local_history_first_permits').all()).toEqual([{ permitId: '2'.repeat(32) }]);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await childClosed;
+    db.close();
+    ledger.close();
+  }
+});
+
+it('refuses startup disposal when an applying operation has no durable permit slot', async () => {
+  const f = setup();
+  const selected = f.stage.admit(device, f.manifest([Buffer.from('synthetic selected bytes')]));
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    db.prepare("UPDATE upload_operations SET phase = 'applying' WHERE id = ?").run(selected.operationId);
+    const { tag } = db.prepare('SELECT tag FROM upload_operations WHERE id = ?').get(selected.operationId) as { tag: string };
+    const reservation = ledger.create(tag, 123);
+    await f.stage.stop();
+    expect(() => setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' })).toThrow('upload-unavailable');
+    expect(ledger.inspect(reservation)).toMatchObject({ planned: 123, state: 'active' });
   } finally { db.close(); ledger.close(); }
 });
 

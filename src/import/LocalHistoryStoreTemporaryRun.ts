@@ -159,6 +159,14 @@ export function validateLocalHistoryTemporaryRunInventory(db: Database.Database)
   temporaryRunInventory(db);
 }
 
+/** Bind a persisted first slot to a namespace that had a registered child. */
+export function validateLocalHistoryFirstPermitRun(db: Database.Database, runId: string, tag: string): void {
+  parentDatabase(db);
+  if (!existingTemporaryRunRegistry(db)) refuse('unavailable');
+  const value = row(db, runId);
+  if (value.tag !== tag || value.childPid === null || value.state === 'registered') refuse('unavailable');
+}
+
 /** The ledger retains a tag while any typed namespace remains unresolved. */
 export function hasUnsettledLocalHistoryTemporaryRun(db: Database.Database, tag: string): boolean {
   const stateDir = parentDatabase(db);

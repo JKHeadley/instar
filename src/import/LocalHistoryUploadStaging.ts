@@ -11,8 +11,9 @@ import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
 import { acquireLocalHistoryStoreTemporaryAdmission, hasUnsettledLocalHistoryTemporaryRun,
-  initializeLocalHistoryStoreTemporaryRuns, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
+  initializeLocalHistoryStoreTemporaryRuns, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryFirstPermitRun, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
+import { readLocalHistoryFirstPermitInventory } from './LocalHistoryFirstPermit.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
 import { parseLocalHistoryManifest, type LocalHistoryManifest } from './LocalHistoryManifest.js';
 import { LOCAL_HISTORY_PLAINTEXT_BYTES } from './LocalHistoryChannel.js';
@@ -36,7 +37,7 @@ export interface LocalHistoryUploadStagingDeps {
   disk?: () => LocalHistoryDiskMeasurement;
   parserPolicy?: { heapMiB: number; deadlineMs: number; rssBytes: number };
 }
-type Phase = 'uploading' | 'verifying' | 'verified' | 'preparing' | 'prepared' | 'cancelled' | 'expired' | 'interrupted' | 'conflicted';
+type Phase = 'uploading' | 'verifying' | 'verified' | 'preparing' | 'prepared' | 'applying' | 'cancelled' | 'expired' | 'interrupted' | 'conflicted';
 interface Row {
   id: string; requestKey: string; ownerHash: string; deviceHash: string; issuerHash: string;
   boot: string; fingerprint: string; tag: string; plan: string; planHash: string; created: number; deadline: number; phase: Phase;
@@ -90,6 +91,7 @@ export class LocalHistoryUploadStaging {
   private readonly challengeTicks = new Map<string, number>();
   private readonly reportedCleanup = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly unsettledPermitTags = new Set<string>();
   private readonly cleanups = new Map<string, ReturnType<typeof setTimeout>[]>();
   private verification: { id: string; done: Promise<void> } | undefined;
   private preparation: { id: string; tag: string; done: Promise<void> } | undefined;
@@ -135,6 +137,7 @@ export class LocalHistoryUploadStaging {
       initializeLocalHistoryStoreTemporaryRuns(db);
       const recovery = settleOldLocalHistoryTemporaryRuns(db, custody, () => this.metadataRoom());
       for (const tag of recovery.settledTags) {
+        if (this.unsettledPermitTags.has(tag)) continue;
         if (this.disposeTag(tag)) this.clearCleanup(tag);
         else if (!this.cleanups.has(tag)) this.scheduleCleanup(tag);
       }
@@ -209,7 +212,7 @@ export class LocalHistoryUploadStaging {
     if (![row.requestKey, row.ownerHash, row.deviceHash, row.issuerHash, row.fingerprint, row.planHash].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))
       || !opaque(row.boot) || !id(row.plan) || typeof row.tag !== 'string' || !/^r-[a-f0-9]{64}-[a-f0-9]{32}$/.test(row.tag) || !row.tag.endsWith('-' + row.id)
       || !Number.isSafeInteger(row.created) || row.created < 0 || !Number.isSafeInteger(row.deadline) || row.deadline <= row.created
-      || !['uploading', 'verifying', 'verified', 'preparing', 'prepared', 'cancelled', 'expired', 'interrupted', 'conflicted'].includes(row.phase)) refuse('unavailable');
+      || !['uploading', 'verifying', 'verified', 'preparing', 'prepared', 'applying', 'cancelled', 'expired', 'interrupted', 'conflicted'].includes(row.phase)) refuse('unavailable');
     return { ...row, phase: this.invalidated.get(row.id) ?? row.phase };
   }
   private owned(operationId: string, device: LocalHistoryAuthenticatedDevice): Row {
@@ -735,7 +738,7 @@ export class LocalHistoryUploadStaging {
     catch { /* live memory denies authority; durable generation remains charged */ }
   }
   private disposeTag(tag: string): boolean {
-    if (this.preparation?.tag === tag) return false;
+    if (this.preparation?.tag === tag || this.unsettledPermitTags.has(tag)) return false;
     let disposed = true;
     let allocations: ReturnType<LocalHistoryDiskLedger['list']>;
     try {
@@ -781,6 +784,34 @@ export class LocalHistoryUploadStaging {
     }, Math.max(0, Math.min(delay, 2_147_483_647)));
     timer.unref(); this.timers.set(operationId, timer);
   }
+  private quarantineFirstPermits(operations: readonly Row[], allocations: ReturnType<LocalHistoryDiskLedger['inventory']>): void {
+    const operationsById = new Map(operations.map(row => [row.id, row]));
+    const allocationsById = new Map(allocations.map(row => [row.id, row]));
+    const slots = new Map(readLocalHistoryFirstPermitInventory(this.db).map(row => [row.operationId, row]));
+    const preview = this.db.prepare('SELECT 1 FROM sqlite_schema WHERE type = ? AND name = ?').get('table', 'upload_previews')
+      ? this.db.prepare('SELECT allocation, sha256 FROM upload_previews WHERE id = ?') : undefined;
+    for (const slot of slots.values()) {
+      const row = operationsById.get(slot.operationId);
+      const tag = 'r-' + slot.generation + '-' + slot.operationId;
+      const index = preview?.get(slot.operationId) as { allocation: string; sha256: string } | undefined;
+      const allocation = allocationsById.get(slot.reservationId);
+      if (!row || !['applying', 'interrupted'].includes(row.phase) || row.tag !== tag
+        || row.fingerprint !== slot.uploadFingerprint || row.deadline !== slot.deadline
+        || slot.generation === this.custody.custody.generation
+        || index?.allocation !== slot.previewAllocation || index.sha256 !== slot.previewSha256
+        || allocation?.operation !== tag || allocation.state !== 'active' || allocation.written !== 0
+        || allocation.planned < slot.plannedBytes) refuse('unavailable');
+      validateLocalHistoryFirstPermitRun(this.db, slot.runId, tag);
+    }
+    for (const row of operations) {
+      if (row.phase === 'applying' && !slots.has(row.id)) refuse('unavailable');
+    }
+    for (const { operationId } of slots.values()) {
+      const row = operationsById.get(operationId)!;
+      this.unsettledPermitTags.add(row.tag);
+      if (row.phase === 'applying') this.invalidated.set(row.id, 'interrupted');
+    }
+  }
   private recover(): void {
     // Exclusive custody was acquired before a fresh generation was published.
     // Old parents and shared child holders are therefore gone; unknown tags do
@@ -794,10 +825,13 @@ export class LocalHistoryUploadStaging {
     const inventory = this.ledger.inventory();
     const old = new Set(inventory.map(row => row.operation).filter(tag => /^r-[a-f0-9]{64}-[a-f0-9]{32}$/.test(tag)
       && !tag.startsWith('r-' + this.custody.custody.generation + '-')));
-    const operations = this.db.prepare('SELECT id FROM upload_operations LIMIT ?').all(MAX_ROWS) as {id: string}[];
-    for (const operation of operations) this.row(operation.id);
-    for (const tag of old) if (!this.disposeTag(tag)) this.scheduleCleanup(tag);
-    for (const operation of operations) { const row = this.row(operation.id); if (live(row.phase)) this.invalidate(row, 'interrupted'); }
+    const operations = (this.db.prepare('SELECT id FROM upload_operations LIMIT ?').all(MAX_ROWS) as { id: string }[])
+      .map(operation => this.row(operation.id));
+    this.quarantineFirstPermits(operations, inventory);
+    for (const tag of old) {
+      if (!this.unsettledPermitTags.has(tag) && !this.disposeTag(tag)) this.scheduleCleanup(tag);
+    }
+    for (const row of operations) if (live(row.phase)) this.invalidate(row, 'interrupted');
   }
   private report(feature: 'cleanup' | 'lifecycle', reason: string): void {
     try {

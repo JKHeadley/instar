@@ -85,6 +85,19 @@ export function initializeLocalHistoryFirstPermits(db: Database.Database): void 
   validateSchema(db);
 }
 
+/** Startup-only bounded inventory. A legacy connection may have no permit table. */
+export function readLocalHistoryFirstPermitInventory(db: Database.Database): LocalHistoryFirstPermit[] {
+  jobsConnection(db, false);
+  const entry = db.prepare('SELECT type FROM main.sqlite_schema WHERE name = ?').get(TABLE) as { type: string } | undefined;
+  if (!entry) return [];
+  if (entry.type !== 'table') refuse('schema');
+  validateSchema(db);
+  const records = db.prepare(`SELECT * FROM main.${TABLE} LIMIT ?`).all(MAX_ROWS + 1) as LocalHistoryFirstPermit[];
+  if (records.length > MAX_ROWS) refuse('capacity');
+  for (const record of records) validate(record);
+  return records;
+}
+
 /** The caller holds its jobs transaction. A nested savepoint prevents a partial
  * consume if the caller catches a write error and later commits. This function
  * never commits that outer transaction or authorizes delivery. */
