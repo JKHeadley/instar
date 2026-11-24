@@ -25,7 +25,7 @@ export const CREDENTIAL_PATTERNS = [
   { kind: 'google-api-key', regex: /\bAIza[A-Za-z0-9_-]{35}/ },
   { kind: 'slack-token', regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
   { kind: 'aws-access-key', regex: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/ },
-  { kind: 'telegram-bot-token', regex: /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/ },
+  { kind: 'telegram-bot-token', regex: /(?:\bbot|\b)\d{6,12}:[A-Za-z0-9_-]{30,}/ },
   { kind: 'pem-private-key', regex: /-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,8192}?-----END[A-Z ]*PRIVATE KEY-----/ },
   { kind: 'url-embedded-credential', regex: /([a-z][a-z0-9+.-]{0,63}:\/\/)[^/\s:@]+:[^/\s@]+@/ },
 ];

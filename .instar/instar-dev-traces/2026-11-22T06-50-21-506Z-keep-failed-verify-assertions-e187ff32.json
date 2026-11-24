@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "keep-failed-verify-assertions",
+  "sessionId": "1f8f1eef-9aae-4b54-82e0-4f42c80d8806",
+  "timestamp": "2026-11-22T06:50:21.506Z",
+  "artifactPath": "upgrades/side-effects/keep-failed-verify-assertions.md",
+  "artifactSha256": "96fcf4fc42ee62f0111161b1427c80e2af93fa5f26654391edba1ed940ae32c4",
+  "coveredFiles": [
+    "docs/specs/keep-failed-verify-assertions.eli16.md",
+    "src/data/awareness/failed-verification-evidence.md",
+    "src/localVerify/failureEvidence.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "tests/unit/localVerify/failureEvidence.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/keep-failed-verify-assertions.md",
+    "upgrades/side-effects/keep-failed-verify-assertions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible diagnostic retention fix. Metadata refreshed after packaging correction; no authority or verdict changes.",
+  "eli16Path": "docs/specs/keep-failed-verify-assertions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/keep-failed-verify-assertions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

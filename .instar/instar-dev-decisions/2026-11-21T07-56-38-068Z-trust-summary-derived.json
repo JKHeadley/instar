@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-21T07:56:38.068Z",
+  "slug": "trust-summary-derived",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 69,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/trustJourney/TrustJourneyStore.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

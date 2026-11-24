@@ -47,6 +47,10 @@ const TEXT_FIELDS = [
   'priorityReason',
   'reopenReason',
   'shadowDecision',
+  // agent-work-cards-default §3: the owner's whole request text travels redacted like every free-text field.
+  'requestText',
+  'recommendation',
+  'whyYou',
 ] as const;
 
 // ── Wire shapes ─────────────────────────────────────────────────────
@@ -184,8 +188,14 @@ export function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitm
   const evidenceOk = ev === undefined || (typeof ev === 'object' && ev !== null
     && ['commitment', 'file', 'commit', 'pr', 'message', 'other'].includes(String(ev.kind))
     && typeof ev.ref === 'string' && ev.ref.length <= 300);
-  if (owner === row.owner && blockedOn === row.blockedOn && priorityOk && closedByOk && lengthsOk && evidenceOk) return row;
+  // agent-work-cards-default §3: the request text is clamped at the card store's `need` ceiling (64,000) and the
+  // milestones list at the done-item bound, so a peer cannot ship a row the card store would refuse.
+  const requestOk = (typeof r.requestText !== 'string' || r.requestText.length <= REQUEST_TEXT_MAX)
+    && (r.milestones === undefined || (Array.isArray(r.milestones) && r.milestones.length <= 256 && r.milestones.every((m) => typeof m === 'string' && m.length <= 8000)));
+  if (owner === row.owner && blockedOn === row.blockedOn && priorityOk && closedByOk && lengthsOk && evidenceOk && requestOk) return row;
   const out: Record<string, unknown> = { ...row, owner, blockedOn };
+  if (typeof out.requestText === 'string' && (out.requestText as string).length > REQUEST_TEXT_MAX) { delete out.requestText; delete out.requestTextHash; out.sourceVerified = false; out.sourceUnverifiedReason = 'request-too-long'; }
+  if (out.milestones !== undefined && !(Array.isArray(out.milestones) && out.milestones.length <= 256 && (out.milestones as unknown[]).every((m) => typeof m === 'string' && m.length <= 8000))) delete out.milestones;
   if (!priorityOk) delete out.priority;
   if (!closedByOk) delete out.closedBy;
   if (typeof out.priorityReason === 'string') out.priorityReason = (out.priorityReason as string).slice(0, 200);
@@ -195,6 +205,8 @@ export function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitm
   return out as unknown as ReplicatedCommitment;
 }
 const PRIORITY_VALUES = new Set(['high', 'normal', 'low']);
+/** `SCHEMA_MAX.need` of the work-card store (kept in step by tests/unit/agent-work-cards-store.test.ts). */
+const REQUEST_TEXT_MAX = 64_000;
 
 // ── Receive side (§3.2) ─────────────────────────────────────────────
 

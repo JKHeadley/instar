@@ -23,7 +23,7 @@
  *    never inside a synchronous per-message CAS (FD-2).
  */
 
-// canonical-migration-producer: threadline-inbound-canonical-store@4
+// canonical-migration-producer: threadline-inbound-canonical-store@5
 
 import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';

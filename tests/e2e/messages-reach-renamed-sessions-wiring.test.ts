@@ -17,6 +17,7 @@ const retryBlock = src.slice(src.indexOf('const retryManager = new DeliveryRetry
 describe('messages-reach-renamed-sessions wiring', () => {
   it('the router resolves over real session records and the topic registry', () => {
     expect(routerBlock).toMatch(/resolveSession: \(target: string, asOf: number\) => resolveSessionTarget\(target, \{/);
+    expect(routerBlock).toMatch(/refusalAuditPath: path\.join\(config\.stateDir, '\.\.', 'logs', 'message-delivery-refusals\.jsonl'\)/);
     expect(routerBlock).toMatch(/sessions: state\.listSessions\(\)/);
     expect(routerBlock).toMatch(/sessionNameForTopic: \(topicId\) => sessionManager\.sessionNameForTopic\(topicId\)/);
     expect(routerBlock).toMatch(/reg\.isEnforcing\(reg\.getByTopic\(topicId\)\)/);
@@ -29,6 +30,8 @@ describe('messages-reach-renamed-sessions wiring', () => {
     // Dead letters go through the router, which reports a remote-origin failure back to its
     // machine and hands a local one to onDeliveryFailure (the sender notifier, asserted above).
     expect(retryBlock).toMatch(/onDeadLetter: \(envelope, reason\) => \{ messageRouter\.reportTerminalFailure\(envelope, reason\); \}/);
+    // relay-asof-holder-skew: a holderPending envelope is re-resolved by the router, never typed by name.
+    expect(retryBlock).toMatch(/redeliverUnresolved: \(envelope, claim\) => messageRouter\.redeliverSameAgentLocal\(envelope, claim\)/);
   });
 
   it('the retry manager is scoped to local envelopes and checks the pinned session id', () => {
