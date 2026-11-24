@@ -45531,6 +45531,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         body,
         options,
       );
+      // Honest outcome (messages-send-cross-machine-honest): a cross-machine
+      // send that could not leave this machine is a failure, not a 201. The body
+      // carries failureReason + a plain-language notice the session can relay.
+      if (result.phase === 'failed' && result.delivered === false) {
+        res.status(502).json({ ...result, error: result.failureReason ?? 'delivery failed' });
+        return;
+      }
       res.status(201).json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Send failed' });
