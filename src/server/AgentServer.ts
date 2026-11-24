@@ -6714,6 +6714,12 @@ export class AgentServer {
       accountFollowMePeerViews: options.accountFollowMePeerViews,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      manualBalanceForecasts: async () => {
+        if (!this.quotaPacingLedger || !options.subscriptionPool || !isQuotaPacingEnabled(options.config)) return null;
+        const local = await buildLocalSummaries(this.quotaPacingLedger, options.subscriptionPool,
+          { machineId: this.meshSelfId ?? 'local', pollIntervalMs: 15 * 60_000, now: Date.now() });
+        return local.summaries;
+      },
       proactiveSwapMonitor: options.proactiveSwapMonitor,
       usageWallRescue: options.usageWallRescue,
       inUseAccountResolver: options.inUseAccountResolver,
