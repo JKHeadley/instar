@@ -1,4 +1,6 @@
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { PairingOutcomeWatches, type SendResult as OutcomeSendResult, type OperationResult as OutcomeOperationResult } from '../core/PairingOutcomeWatches.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
@@ -37,15 +39,19 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response, type Application } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
+import { arrivalOf } from '../core/requestArrival.js';
+import { PhoneSetupStore, mountPhoneSetupRoutes, ACTIVATE_AT_COMPUTER_PATH } from './phoneSetupRoutes.js';
+import type { SameNetworkListener } from './sameNetworkListener.js';
 import {
   PairingCodeStore, NONCE_PATTERN, buildPairLink, cleanText, codeTtlMs, pingAnswer, stableOrigin, DEVICE_MINT_TTL_MS,
   type MobilePairingConfig,
 } from '../core/MobilePairing.js';
 import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { parseNonce, proofTranscript, readLinkIdentity, signProof } from '../core/AgentLinks.js';
 import {
   ConfirmationCodes, DeviceRegistry, displayCode, type ApprovedVia, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
-  type DeviceRecord, type DeviceStatus, deviceKeyOf, isBrowserDevice, keyHashOf,
+  type DeviceRecord, type DeviceStatus, admittedAtComputer, deviceKeyOf, isBrowserDevice, keyHashOf,
 } from '../core/MobileDeviceKeys.js';
 import { mirrorPrefix, requestDeviceClient } from '../core/deviceClientWording.js';
 import {
@@ -54,6 +60,8 @@ import {
 } from './mobileBrowserDevices.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { ownMachineId } from '../core/localOwnerTicket.js';
 import type { RouteContext } from './routes.js';
 import { MobileOwnNames, normalizeRequestHost, type TailscaleExec } from '../core/MobileOwnNames.js';
 import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
@@ -145,6 +153,8 @@ export interface MobilePairingDeps {
    * stamps on its events (`meshSelfId ?? coordinator id ?? 'local'`). Absent ⇒ `selfMachineId`.
    */
   peopleMachineId?: () => string;
+  /** Permanent agent links (docs/specs/permanent-agent-links.md): `agentLinks.enabled`, read live per request. Absent ⇒ off. */
+  agentLinksEnabled?: () => boolean;
   /** This agent's own identity key, for vouching for its owner's phones (mobile-pairing-introducer §3.2). */
   readIdentity?: () => { publicKey: Buffer; privateKey: Buffer } | null;
   /**
@@ -221,6 +231,56 @@ async function fetchPoolDevices(ctx: PoolCtx): Promise<{ rows: Array<Record<stri
     }
   }));
   return { rows, failed };
+}
+
+/**
+ * Owner phones paired on the agent's OTHER machines, for the "first phone only" rule of home pairing
+ * (security review of home pairing, 2026-11-21). Device records stay on the machine that paired them,
+ * so this machine's own registry cannot answer alone. Every active machine in the registry is asked
+ * live; any one that has no address, is refused by the address guard, does not answer, or answers
+ * something unreadable is named in `unchecked`, and the caller refuses: a first phone is never set up
+ * when the agent cannot tell whether it already has one. A peer row counts unless it is plainly not an
+ * owner phone (a browser, a team or MSP person's phone, or the app enrolled on that machine's own
+ * computer); a peer too old to say so counts, so an old peer fails closed.
+ */
+export async function ownerPhonesOnOtherMachines(ctx: PoolCtx | null, stateDir: string, selfMachineId: string | null): Promise<{ count: number; unchecked: string[] }> {
+  const unchecked: string[] = [];
+  let count = 0;
+  let active: string[];
+  try {
+    active = new MachineIdentityManager(stateDir).getActiveMachines().map((m) => m.machineId).filter((id) => id !== selfMachineId);
+  } catch { // @silent-fallback-ok — not silent: an unreadable machine registry refuses the setup through `unchecked`
+    return { count: 0, unchecked: ['machine-registry-unreadable'] };
+  }
+  if (active.length === 0) return { count: 0, unchecked };
+  if (!selfMachineId) return { count: 0, unchecked: ['this-machine-id-unknown'] };
+  const peers = ctx?.resolvePeerUrls?.() ?? [];
+  const allow = (ctx?.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+  await Promise.all(active.slice(0, 16).map(async (machineId) => {
+    const p = peers.find((x) => x.machineId === machineId);
+    if (!ctx || !p || !isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { unchecked.push(machineId); return; }
+    try {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/mobile/devices', {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+      });
+      if (!r.ok) { unchecked.push(machineId); return; }
+      const text = await r.text();
+      if (Buffer.byteLength(text) > MAX_PEER_BYTES) { unchecked.push(machineId); return; }
+      const body = JSON.parse(text) as { devices?: unknown };
+      if (!Array.isArray(body.devices)) { unchecked.push(machineId); return; }
+      for (const raw of body.devices) {
+        if (!raw || typeof raw !== 'object') continue;
+        const d = raw as Record<string, unknown>;
+        if (d.status !== 'active' || d.client === 'browser' || d.localInstall === true) continue;
+        if (d.role === 'team' || d.role === 'msp') continue;
+        count += 1;
+      }
+    } catch { // @silent-fallback-ok — not silent: the machine is named in `unchecked` and the setup is refused
+      unchecked.push(machineId);
+    }
+  }));
+  if (active.length > 16) unchecked.push(...active.slice(16));
+  return { count, unchecked };
 }
 
 export function isMobilePairingEnabled(config: InstarConfig): boolean {
@@ -335,12 +395,20 @@ export class MobilePairingService {
   push: MobilePushService | null = null;
   /** Peer resolution for the push fan-out, set once the route context exists. */
   pushPoolCtx: PoolCtx | null = null;
+  /** Owner phones on the agent's other machines, asked live (see ownerPhonesOnOtherMachines). */
+  ownerPhonesElsewhere(): Promise<{ count: number; unchecked: string[] }> {
+    return ownerPhonesOnOtherMachines(this.pushPoolCtx, this.deps.stateDir, this.deps.selfMachineId ?? ownMachineId(this.deps.stateDir));
+  }
   /** Browser devices (dashboard-conversations-browser-device): activation, effects, recovery. */
   readonly browser: BrowserDeviceController;
   /** Pairing outcome watches (docs/specs/mobile-pairing-outcome-notice.md); null when not wired. */
   readonly outcomes: PairingOutcomeWatches | null;
   /** Codes live in this process only, so a new process voids every link (§3.2 codeEpoch). */
   readonly bootId = crypto.randomUUID();
+  /** The same-network listener (identity A4), set by AgentServer; null where it is not built. */
+  sameNetwork: SameNetworkListener | null = null;
+  /** Phone setups started at the agent's own computer (identity A4), in this process only. */
+  readonly phoneSetups = new PhoneSetupStore();
 
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
@@ -595,8 +663,14 @@ export class MobilePairingService {
     const origin = `https://${chosen.host}`;
     const m = this.codes.mint(codeTtlMs(this.deps.config.mobilePairing), cleanText(label), this.deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind }, { userId: personKey, role: 'team' });
     if (!m.ok) return { ok: false, status: 429, error: m.reason };
-    return { ok: true, link: buildPairLink(origin, m.code, this.deps.config.projectName), expiresAt: new Date(m.expiresAt).toISOString() };
+    const link = buildPairLink(origin, m.code, this.deps.config.projectName);
+    // member-browser-any-computer §3.1 step 2: the pair page offers "Use this computer instead" only
+    // when this agent can take computers (documents and the browser switch both on).
+    return { ok: true, link: this.computersCanJoin?.() ? `${link}&j=1` : link, expiresAt: new Date(m.expiresAt).toISOString() };
   }
+
+  /** Set by the server: can a member's computer join from a team invite here? (§3.1 step 2) */
+  computersCanJoin: (() => boolean) | null = null;
 
   /**
    * A conversation a team person creates is theirs, and confined from its first moment: its audience
@@ -797,7 +871,7 @@ export class MobilePairingService {
   private chatRequestStoreError = false;
   chatRequests(): MobileChatRequestStore | null {
     if (this.chatRequestStore || this.chatRequestStoreError) return this.chatRequestStore;
-    try { this.chatRequestStore = new MobileChatRequestStore(this.deps.stateDir); } catch (err) {
+    try { this.chatRequestStore = new MobileChatRequestStore(this.deps.stateDir); } catch (err) { // @silent-fallback-ok — reported on the next line through deps.reportDegradation (pre-existing; tagged when lines above it moved it out of the scanner's window)
       this.chatRequestStoreError = true;
       this.deps.reportDegradation?.('MobileChat.requestStore', err);
     }
@@ -922,7 +996,7 @@ export class MobilePairingService {
   noteActivated(deviceId: string): void { this.contestOthers(deviceId); }
 
   /** Can a tap approve this phone, as far as its own row goes? */
-  approvable(d: DeviceRecord): boolean { return (d.role === undefined || d.role === 'owner') && !this.contested.has(d.id); }
+  approvable(d: DeviceRecord): boolean { return (d.role === undefined || d.role === 'owner') && !admittedAtComputer(d) && !this.contested.has(d.id); }
 
   /** Phones waiting on this machine. */
   waitingPhones(): DeviceRecord[] {
@@ -949,6 +1023,8 @@ export class MobilePairingService {
     const waiting = this.waitingPhones();
     const d = waiting.find((x) => x.id === deviceId);
     if (!d) return 'ended';
+    // Identity A4: a phone set up at the computer is let in only by the number typed there.
+    if (admittedAtComputer(d)) return 'code-only';
     // An MSP's phone is not in the owner's hand: handing over the code is what binds it to that person.
     if (d.role !== undefined && d.role !== 'owner') return 'code-only';
     if (this.contested.has(deviceId)) return 'contested';
@@ -1058,6 +1134,8 @@ export class MobilePairingService {
 
   /** What a waiting phone is told (spec §3.5); nothing when the feature is off. */
   waitingFields(d: DeviceRecord): Record<string, unknown> {
+    // Identity A4: the only way in is the number at the agent's computer.
+    if (admittedAtComputer(d)) return { confirmWith: ['computer'], fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null };
     if (!isPairingApproveEnabled(this.deps.config)) return {};
     // Only ways that can work now, easiest first (mobile-pairing-introducer §3.4).
     const introducers = this.introducers();
@@ -1252,8 +1330,15 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     // §3.2 step 1 (before the code is taken, so a stray request cannot burn a real link): the
     // request arrived over local TLS on a host a link can currently be redeemed on. Step 3 below
     // then requires it to be the very host the code was minted for.
-    const reqHost = normalizeRequestHost(req.headers.host);
-    const eligible = svc.redeemHostEligible(reqHost);
+    // Identity A4: on the same-network listener the listener itself is the address (its socket was
+    // marked when accepted, and TLS ran on the agent's own certificate), so the Host header is not
+    // read there; the only eligible host is the listener's own `<name>.local:<port>`. A same-network
+    // code is never redeemable on the main listener (step 3 below refuses its kind there).
+    const sameNetworkArrival = arrivalOf(req) === 'same-network';
+    const reqHost = sameNetworkArrival ? (svc.sameNetwork?.listening() ? svc.sameNetwork.host() : null) : normalizeRequestHost(req.headers.host);
+    const eligible: { kind: 'cloudflare' | 'tailscale' | 'same-network' } | null = sameNetworkArrival
+      ? (reqHost ? { kind: 'same-network' } : null)
+      : svc.redeemHostEligible(reqHost);
     if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !eligible) {
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-secure-address', 60_000, { kind: 'held', reason: 'redeem refused: not-secure-address' });
       res.status(403).json({ error: 'Pairing only works over this agent\'s secure address.' });
@@ -1262,11 +1347,41 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const body = (req.body ?? {}) as Record<string, unknown>;
     const publicKey = typeof body.devicePublicKey === 'string' ? body.devicePublicKey : '';
     if (!parseDevicePublicKey(publicKey)) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|bad-device-key', 60_000, { kind: 'held', reason: 'redeem refused: bad-device-key' }); res.status(400).json({ error: 'A valid device public key is required.' }); return; }
+    // Identity A4 point 7: the phone checked the certificate before it spoke, and says what it pinned.
+    // A hash that is not this listener's own certificate's stops here, before the code is taken.
+    if (sameNetworkArrival && (typeof body.pinnedKeyHash !== 'string' || body.pinnedKeyHash !== svc.sameNetwork?.spkiHash())) {
+      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-this-computer', 60_000, { kind: 'held', reason: 'redeem refused: pinned hash is not this computer\'s' });
+      res.status(400).json({ error: 'not-this-computer', detail: 'This is not your agent\'s computer.' });
+      return;
+    }
+    // A link made at the agent's own computer (identity A4) names its own approval: the number typed
+    // at that computer when the agent has no Telegram owner. Every same-network link is one of these.
+    const atComputer = svc.phoneSetups.byCode(body.code);
+    if ((sameNetworkArrival && !atComputer) || (atComputer && atComputer.state !== 'waiting-phone')) {
+      // A link made at the computer is spent the moment its first phone redeems it; a second phone
+      // waits for nothing (A4: "Someone photographs the QR code and scans it first").
+      if (atComputer) {
+        svc.noteLinkReused(body.code, publicKey);
+        // Security review of home pairing (2026-11-21): a second phone means the code got out, so the
+        // whole setup ends and the phone already waiting is turned away; the computer says why.
+        // A retry from the waiting phone itself (same key, its first reply lost) is refused but ends nothing.
+        if (atComputer.keyHash !== keyHashOf(publicKey) && svc.phoneSetups.secondPhone(atComputer.id)) featureEvidence.record('mobilePairing', { kind: 'held', reason: 'a second phone used a setup code: setup cancelled, waiting phone turned away' });
+      }
+      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|setup-link-used', 60_000, { kind: 'held', reason: 'redeem refused: a link made at the computer was already used' });
+      res.status(403).json({ error: 'That link has expired or was already used.' });
+      return;
+    }
     // Which way the confirmation code reaches the operator (mobile-native-conversations §4.4):
     // the Telegram owner's private chat (needs the serving lease: the code travels through the
     // lease holder's adapter), or — with no Telegram owner — the dashboard, shown only to a PIN
     // session, which needs no lease.
-    const approval = svc.approvalPath();
+    let approval: 'telegram' | 'dashboard' | 'computer' | null = atComputer && atComputer.approval === 'computer' && atComputer.state === 'waiting-phone' ? 'computer' : svc.approvalPath();
+    // A4: the dashboard path is never offered on a same-network link. A setup started for the
+    // Telegram path whose owner is gone by now ends here; the owner starts again at the computer.
+    if (sameNetworkArrival && approval !== 'computer' && approval !== 'telegram') {
+      if (atComputer) svc.phoneSetups.end(atComputer.id, 'telegram-owner-gone');
+      approval = null;
+    }
     if (!approval || (approval === 'telegram' && !svc.holdsLease())) {
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|approval-unavailable', 60_000, { kind: 'held', reason: 'redeem refused: approval-unavailable' });
       res.status(409).json({ error: 'approval-unavailable', detail: 'This agent cannot send you the confirmation code right now (no Telegram owner chat on this machine).' });
@@ -1296,6 +1411,8 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     // (minted before this change, in this process) keeps the old rule: the eligible host.
     if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
       featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
+      // The code is spent: a setup made at the computer for it ends, so its screen does not wait for nothing.
+      if (atComputer) svc.phoneSetups.end(atComputer.id, 'code-used-elsewhere');
       svc.outcomes?.markOutcome(r.watchId, 'ended');
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
@@ -1311,6 +1428,8 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
       created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner',
+        ...(sameNetworkArrival ? { addressKind: 'same-network' as const, pinnedKeyHash: body.pinnedKeyHash as string } : {}),
+        ...(approval === 'computer' ? { admission: 'at-computer' as const } : {}),
         ...(r.watchId ? { outcomeWatchId: r.watchId } : {}),
         // mac-qr-pairing §4: display-only, untrusted like deviceName; the Mac app says so, a key-bound code implies it.
         ...(r.boundKey || body.deviceKind === 'computer' ? { deviceKind: 'computer' as const } : {}) });
@@ -1330,6 +1449,23 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     }
     const device = created.device;
     svc.noteLinkTaken(body.code as string, device);
+    if (approval === 'computer' && atComputer) {
+      // Identity A4 step 3: the phone waits; the agent issues its number, which the owner types at
+      // the computer. No code is issued, so the chat and dashboard paths cannot confirm this phone.
+      const number = svc.phoneSetups.attachPhone(atComputer.id, device, keyHashOf(publicKey));
+      if (!number) {
+        try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } // @silent-fallback-ok — reported; the pending device expires on its own
+        res.status(403).json({ error: 'That link has expired or was already used.' });
+        return;
+      }
+      featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: waiting for the number at the computer', context: { deviceId: device.id, approval: 'computer', routeKind: eligible.kind } });
+      // No approval push: an owner device cannot let this phone in (approvable() is false for it).
+      res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'computer', number,
+        say: 'Type this number on your agent\'s computer.', activatePath: ACTIVATE_AT_COMPUTER_PATH, ...svc.waitingFields(device) });
+      return;
+    }
+    // A setup made at the computer for the Telegram path: the confirmation now goes to the private chat.
+    if (atComputer) svc.phoneSetups.sentToChat(atComputer.id, device.id);
     // mobile-pairing-word-code §3.2: only an app that asks for it gets a WORD-NNNN code; builds
     // already on phones send digits only, so everything else keeps today's 6-digit code.
     const codeFormat: CodeFormat = Array.isArray(body.codeFormats) && body.codeFormats.length <= 8 && body.codeFormats.includes('word') ? 'word' : 'digits';
@@ -1411,6 +1547,65 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
 }
 
 /**
+ * The redeem steps every route that takes a pairing code shares (member-browser-any-computer §3.3.1):
+ * the request arrived over this agent's own secure address, on a host a link can be redeemed on.
+ * Checked before the code is touched, so a stray request never burns a real link.
+ */
+export function redeemArrival(svc: MobilePairingService, req: Request):
+  { ok: true; reqHost: string; eligible: NonNullable<ReturnType<MobilePairingService['redeemHostEligible']>> } | { ok: false; status: number; body: Record<string, unknown> } {
+  // Identity A4: the same-network listener serves only phone setups made at the agent's own
+  // computer; its Host header is never read, so a join never redeems there.
+  if (arrivalOf(req) === 'same-network') {
+    featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-secure-address', 60_000, { kind: 'held', reason: 'redeem refused: same-network arrival on a shared redeem route' });
+    return { ok: false, status: 403, body: { error: 'Pairing only works over this agent\'s secure address.' } };
+  }
+  const reqHost = normalizeRequestHost(req.headers.host);
+  const eligible = svc.redeemHostEligible(reqHost);
+  if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !eligible || !reqHost) {
+    featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-secure-address', 60_000, { kind: 'held', reason: 'redeem refused: not-secure-address' });
+    return { ok: false, status: 403, body: { error: 'Pairing only works over this agent\'s secure address.' } };
+  }
+  return { ok: true, reqHost, eligible };
+}
+
+/**
+ * Take a pairing code: the pause check, take-and-delete (synchronous, before any async work), the
+ * failure count, the second-key reuse signal, the bound-origin and bound-key checks. Shared by the
+ * phone redeem and the computer join (member-browser-any-computer §3.3.1).
+ */
+export function takePairingCode(
+  svc: MobilePairingService, code: unknown, publicKey: string, token: string, reqHost: string,
+  eligible: NonNullable<ReturnType<MobilePairingService['redeemHostEligible']>>,
+): { ok: true; r: Extract<ReturnType<PairingCodeStore['redeem']>, { ok: true }> } | { ok: false; status: number; body: Record<string, unknown> } {
+  if (svc.devices.pairingPaused()) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|pairing-paused', 60_000, { kind: 'held', reason: 'redeem refused: pairing-paused' }); return { ok: false, status: 429, body: { error: 'pairing-paused' } }; }
+  const r = svc.codes.redeem(code, token);
+  if (!r.ok) {
+    // mobile-pairing-approve §4: the same link from a second key proves it got out.
+    svc.noteLinkReused(code, publicKey);
+    featureEvidence.recordAtMostEvery('mobilePairing', `redeem|${r.reason}`, 60_000, { kind: 'held', reason: `redeem refused: ${r.reason}` });
+    if (r.reason === 'too-many-attempts') return { ok: false, status: 429, body: { error: 'too-many-attempts' } };
+    return { ok: false, status: 403, body: { error: 'That link has expired or was already used.' } };
+  }
+  // Pairing outcome notice §3.2: a device used the link (same synchronous block as the take).
+  svc.outcomes?.markTaken(r.watchId);
+  // §3.2 step 3: an honest device sends to the link's own origin. A code with no bound origin
+  // (minted before this change, in this process) keeps the old rule: the eligible host.
+  if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
+    featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
+    svc.outcomes?.markOutcome(r.watchId, 'ended');
+    return { ok: false, status: 403, body: { error: 'That link has expired or was already used.' } };
+  }
+  // mac-qr-pairing §4: a code minted for one computer registers only that computer's key. The
+  // code is already taken, so a copied link is spent; the real computer scans a fresh QR.
+  if (r.boundKey && r.boundKey !== publicKey) {
+    featureEvidence.record('mobilePairing', { kind: 'held', reason: 'redeem refused: wrong-device', context: { routeKind: eligible.kind } });
+    svc.outcomes?.markOutcome(r.watchId, 'ended');
+    return { ok: false, status: 400, body: { error: 'wrong-device', detail: 'This pairing code was made for a different computer. Scan a new code.' } };
+  }
+  return { ok: true, r };
+}
+
+/**
  * The owner's private approval message, delivered within 10 s or not at all (shared by phone
  * redeem and browser setup). Resolves to the Telegram message id, or null when not delivered.
  */
@@ -1462,7 +1657,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       const t = deps.config.tunnel as { type?: string; hostname?: string } | undefined;
       const detail = t?.type === 'named' && !t.hostname
         ? 'The named tunnel has no configured hostname, and this machine has no Tailscale HTTPS name served by `tailscale serve`.'
-        : 'The phone app needs a permanent address on this machine: a running Cloudflare named tunnel, or this machine\'s Tailscale HTTPS name served by `tailscale serve`.';
+        : 'The phone app needs a permanent address on this machine: a running Cloudflare named tunnel, or this machine\'s Tailscale HTTPS name served by `tailscale serve`. Or add the phone at home, at the agent\'s own computer ("Add your phone", then "At home only").';
       res.status(409).json({ error: 'stable-address-required', detail });
       return;
     }
@@ -1543,7 +1738,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!operatorOnly(req, res)) return;
     // A waiting phone may now be told "tap Approve on the pairing page" (mobile-pairing-introducer §3.4).
     svc.notePairingPageSeen();
-    const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
+    // A team device's code (a member's phone or computer) anchors that person's device: it is shown
+    // only on the owner's phone, in People (GET /mobile/team/invites/:personKey), never to a PIN
+    // session, because the agent itself can read the PIN (member-browser-any-computer §3.3.7).
+    const approvals = svc.dashboardApprovals().filter(({ device }) => device.role !== 'team').map(({ device, code, expiresAt }) => ({
       deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null, ...personFields(device, svc),
       // Display form for both formats (mobile-pairing-word-code §3.4): `KITE-4172` or `123 456`.
       code: displayCode(code), codeFormat: /^\d{6}$/.test(code) ? 'digits' : 'word', pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
@@ -1574,6 +1772,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!operatorOnly(req, res)) return;
     const id = String(req.params.id);
     if (!svc.isDashboardPending(id)) { res.status(404).json({ error: 'not-pending' }); return; }
+    // Never a member's waiting device: the PIN session can neither see nor decline it (§3.3.7).
+    if (svc.devices.get(id)?.role === 'team') { res.status(404).json({ error: 'not-pending' }); return; }
     svc.confirm.drop(id);
     svc.dropDashboardCode(id);
     let outcome: string = 'declined';
@@ -1591,11 +1791,41 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const p = principalOf(req);
     if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
     const machineId = deps.selfMachineId ?? null;
+    // Identity A4: a phone paired at home has exactly one address, the one it pinned.
+    const me = svc.devices.get(p.deviceId);
+    if (me?.addressKind === 'same-network') {
+      res.json({ machineId, version: 0, routes: me.host ? [{ kind: 'same-network', origin: `https://${me.host}`, pinnedKeyHash: me.pinnedKeyHash ?? null, firstVerifiedAt: me.approvedAt ?? me.pairedAt, lastProbeOk: null, lastProbeAt: null }] : [] });
+      return;
+    }
     if (svc.ownNames) { res.json({ machineId, version: svc.ownNames.version, routes: svc.ownNames.routes() }); return; }
     // Multi-route off: only the host this phone paired with.
     const d = svc.devices.get(p.deviceId);
     const routes = d?.host ? [{ kind: 'cloudflare', origin: `https://${d.host}`, firstVerifiedAt: d.approvedAt ?? d.pairedAt, lastProbeOk: null, lastProbeAt: null }] : [];
     res.json({ machineId, version: 0, routes });
+  });
+
+  // Permanent agent links (docs/specs/permanent-agent-links.md §2a; device-signed, active only, every
+  // person role). Proves this agent holds the key its link id names, bound to this device, the host the
+  // device signed for, and the app's own nonce. Never mints, repairs or rewrites an identity. Fixed
+  // check order: off → nonce → verified host → identity → sign.
+  router.get('/mobile/agent-link/identity', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+    const evidence = (outcome: string, kind: 'fired' | 'held' | 'error'): void => {
+      featureEvidence.recordAtMostEvery('agentLinks', `identity|${outcome}|${p.deviceId}`, 60_000, { kind, reason: `agent-link identity: ${outcome}`, context: { outcome } });
+    };
+    if (!(deps.agentLinksEnabled?.() ?? false)) { evidence('off', 'held'); res.status(404).json({ error: 'agent-links-off' }); return; }
+    const nonce = parseNonce(req.query.nonce);
+    if (!nonce) { evidence('bad-nonce', 'held'); res.status(400).json({ error: 'bad-nonce' }); return; }
+    const host = String((req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost ?? '');
+    if (!host) { evidence('no-verified-host', 'error'); res.status(409).json({ error: 'no-verified-host' }); return; }
+    const id = readLinkIdentity(deps.stateDir);
+    if (!id.ok) { evidence(id.error, 'error'); res.status(409).json({ error: id.error }); return; }
+    const proof = signProof(id.privateKey, proofTranscript(id.canonicalId, p.deviceId, host, nonce));
+    evidence('served', 'fired');
+    res.json({ v: 1, canonicalId: id.canonicalId, publicKey: id.publicKey.toString('base64'), proof: proof.toString('base64') });
   });
 
   // Device's own status (device-signed; any non-revoked status).
@@ -1612,6 +1842,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
       ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
       ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
+      // Identity A4: a phone let in at the computer cannot approve yet (piece 3b), as its activation answered.
+      ...(admittedAtComputer(d) ? { canApprove: false } : {}),
       // A browser's setup page (dashboard-conversations-browser-device §4.2): its kind, fingerprint and window.
       ...(isBrowserDevice(d) ? { client: 'browser', fingerprint: d.fingerprint ?? null, ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}), ...(d.setupState ? { setupState: d.setupState } : {}), ...(d.activating ? { approving: true } : {}) } : {}),
       // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
@@ -1717,8 +1949,13 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
     const d = svc.devices.get(p.deviceId);
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
+    // A member's computer that joined from a team invite confirms only on its own page's route,
+    // before any code is read or attempt counted (member-browser-any-computer §3.3.2).
+    if (d.joinedVia === 'team-invite') { res.status(409).json({ error: 'use-join-page', detail: 'Finish setting up this computer on its own page.' }); return; }
     if (d.status === 'active') { res.json({ status: 'active' }); return; }
     if (d.status !== 'pending') { res.status(409).json({ error: d.status }); return; }
+    // Identity A4: a phone set up at the computer is let in only by the number typed there.
+    if (admittedAtComputer(d)) { res.status(409).json({ error: 'confirm-at-computer', detail: 'Type the number on your phone at the agent\'s computer.' }); return; }
     // A dashboard-path device (§4.4) needs no lease: its code never travelled through Telegram.
     const viaDashboard = svc.isDashboardPending(d.id);
     const approvedVia = viaDashboard ? 'dashboard-pin' as const : 'telegram-dm' as const;
@@ -1793,6 +2030,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.status(403).json({ error: 'wrong-code' });
   });
 
+  // "Add your phone" at the agent's own computer, and the waiting phone's activation (identity A4).
+  mountPhoneSetupRoutes(router, svc, { pinAttemptStore: () => (poolCtx as { pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null } | undefined)?.pinAttemptStore ?? null });
+
   // Console sign-in from an owner phone (docs/specs/mobile-console-device-signin.md).
   mountConsoleTicketDeviceRoutes(router, svc);
 
@@ -1821,7 +2061,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (p.kind === 'device' && p.deviceId !== id) {
       const requester = svc.devices.get(p.deviceId);
       const person = devicePersonOf(req);
-      if (!requester || requester.status !== 'active' || !person || person.role !== 'owner') {
+      // Identity A4: a phone let in at the computer cannot approve, and removing other devices is an owner act too.
+      if (!requester || requester.status !== 'active' || !person || person.role !== 'owner' || admittedAtComputer(requester)) {
         res.status(403).json({ error: 'owner-phone-required', detail: 'Only the owner\'s phone can remove another phone.' });
         return;
       }
@@ -2075,10 +2316,15 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let delivered = text;
     let removedKinds: string[] = [];
     let credentialShaped = false;
+    let appCredKinds: string[] = [];
     if (svc.nativeOn) {
-      const removed = removeAuthorityTokens(text);
+      // SEC-164 §3.5: live keys are masked first (superseding the earlier flag-only rule for storage,
+      // Chief of Staff d2060363); their kinds join the signed redaction attestation.
+      const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+      const removed = removeAuthorityTokens(credMasked.text);
       delivered = removed.text;
-      removedKinds = removed.kinds;
+      appCredKinds = credMasked.outcome === 'masked' || credMasked.outcome === 'fallback' ? credMasked.kinds : [];
+      removedKinds = [...removed.kinds, ...appCredKinds];
       credentialShaped = detectOutboundCredential(text).detected;
     } else {
       if (PairingInviteTelegram.carriesInvite(text) || /^\/desktop(?:\s|$)/i.test(text)) { res.status(422).json({ error: 'not-from-the-app' }); return; }
@@ -2116,7 +2362,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       for (const k of resent.origin?.redaction?.kinds ?? []) if (!removedKinds.includes(k)) removedKinds = [...removedKinds, k];
       credentialShaped = detectOutboundCredential([text, ...signedFiles!.map((a) => a.transcript ?? '')].join('\n')).detected;
     } else if (signedFiles && app) {
-      const pre = preflightMediaAttachments(app, { deviceId: p.deviceId, conversationRef: storeKey, messageId: storeMessageId, files: signedFiles, scanInbound: (x) => svc.scanInbound(x) });
+      const pre = preflightMediaAttachments(app, { deviceId: p.deviceId, conversationRef: storeKey, messageId: storeMessageId, files: signedFiles, scanInbound: (x) => svc.scanInbound(x), maskCredentials: appCredentialScrubOn(deps.config) });
       if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
       uploadIds = pre.uploadIds;
       stored = pre.stored;
@@ -2203,6 +2449,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       body: {
         topicId, text: delivered, media, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         ...(sender.role === 'owner' ? { fromUserId: ownerId } : {}), fromFirstName: senderName, forwarded: false,
+        // SEC-164 §4.5: the text was masked above, so the inbound core is told, and sends the notice.
+        ...(appCredKinds.length > 0 ? { credentialRemovedKinds: appCredKinds } : {}),
       },
     };
     try {
@@ -2336,6 +2584,8 @@ function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobileP
     ...(isBrowserDevice(d) ? { client: 'browser', lastSeenAt: d.lastSeenAt ?? null, ...(svc && !svc.browserOn() ? { switchedOff: true } : {}) } : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),
+    // The app enrolled on that machine's own computer: not an owner phone for another machine's first-phone rule.
+    ...(d.localBinding ? { localInstall: true } : {}),
     machine,
   };
 }
@@ -2387,6 +2637,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  ['GET', /^\/mobile\/conversations\/parent-preview$/.source],
   // Keyword search over conversations (conversation-search): the same visibility as the list.
   ['GET', /^\/mobile\/conversations\/search$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
@@ -2426,6 +2677,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
 const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/health$/, 'guest'],
   ['GET', /^\/mobile\/routes$/, 'guest'],
+  ['GET', /^\/mobile\/agent-link\/identity$/, 'guest'],
   ['GET', /^\/mobile\/device$/, 'guest'],
   ['POST', /^\/mobile\/device\/confirm$/, 'guest'],
   ['POST', /^\/mobile\/device\/push$/, 'guest'],
@@ -2518,6 +2770,13 @@ export function deviceRouteTakesBody(method: string, reqPath: string): boolean {
   return !!rule && rule.body !== 'none';
 }
 
+/** Beyond the browser routes, what a phone let in at the computer may sign (identity A4). */
+const AT_COMPUTER_EXTRA_ROUTES: ReadonlyArray<[string, RegExp]> = [
+  ['GET', /^\/mobile\/routes$/],
+  ['POST', /^\/mobile\/device\/push$/],
+  ['POST', /^\/mobile\/device\/activate-at-computer$/],
+];
+
 export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   const rules: DeviceRule[] = [
@@ -2537,10 +2796,20 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}\/destinations$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    // The phone tree (work-front-doors stage 2; hierarchy v3 §7.4): owner only, like roots and nodes. A member keeps the flat list.
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/tree$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/(pending|changes\/[a-z0-9_.:%-]{8,480})$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
     { method: 'POST', re: /^\/mobile\/conversation-graph\/forget-header\/(discover|ensure)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/mobile\/conversation-graph\/erasures\/[A-Za-z0-9_-]{8,160}$/, statuses: active, ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'POST', re: /^\/mobile\/conversation-graph\/(changes|preview|undo|forget-header)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    // Conversation groups from the phone (docs/specs/conversation-groups-phone.md): suggestions, one-call Accept,
+    // Reject, and the "make this group a project" draft. Owner phones only; the graph routes re-check the owner.
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/suggestions$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/suggestions\/refresh$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    // Accept is called again while it answers `working` (retryAfterMs 3000): its own bucket, so that never starves other graph changes.
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/suggestions\/sg-[0-9a-f]{20}\/accept$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-accept' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/suggestions\/sg-[0-9a-f]{20}\/reject$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}\/project-draft$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'POST', re: /^\/mobile\/conversation-graph\/changes\/(?:(graph-event|header-op)(:|%3a)[a-z0-9_-]{8,80}|queued(:|%3a)owner-change(:|%3a)[a-f0-9]{64})\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/health$/, statuses: active },
     { method: 'GET', re: /^\/attention$/, statuses: active },
@@ -2551,8 +2820,12 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/telegram\/topics\/[^/]+\/messages$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/routes$/, statuses: active },
+    // Permanent agent links §2a: the identity proof, at pairing and on each routes refresh.
+    { method: 'GET', re: /^\/mobile\/agent-link\/identity$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
     { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']), unassignedOk: true },
+    // Identity A4: the waiting phone signs its own activation, carrying the hash it pinned.
+    { method: 'POST', re: /^\/mobile\/device\/activate-at-computer$/, statuses: new Set(['pending', 'active']), body: 'json', ownBucket: 60, bucket: 'activate-at-computer' },
     // Every POST, PATCH and DELETE below is idempotent through MobileChatRequestStore (requestId).
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
@@ -2587,6 +2860,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/decision\/delivered$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'doc-open' },
     // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
     { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
+    // Parent preview is read-only owner evidence, independent of graph release readiness.
+    { method: 'GET', re: /^\/mobile\/conversations\/parent-preview$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
@@ -2620,12 +2895,16 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/team\/activity$/, statuses: active, body: 'none', ownerOnly: true },
     // Chief of Staff §4: the owner's phone checks in (renews the operator lease); owner phones only.
     { method: 'POST', re: /^\/mobile\/chief-of-staff\/check-in$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    // "Make this group a project": the owner's Face ID confirm of one draft (conversation-groups-phone §3).
+    { method: 'POST', re: /^\/mobile\/work\/projects\/drafts\/gpd-[0-9a-f]{20}\/confirm$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'GET', re: /^\/mobile\/team\/requests$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/team\/requests\/[^/]{1,128}\/decline$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'GET', re: /^\/mobile\/team\/invites\/[^/]{1,128}$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
+    // member-browser-any-computer §3.3.6: the owner's phone removes a member's computer from People.
+    { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}\/computers\/[^/]{1,128}\/forget$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone|switches\/turn-on)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
@@ -2731,6 +3010,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/work\/projects\/check$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'projects-checks' },
     { method: 'POST', re: /^\/mobile\/work\/projects\/(pause|done-item|finish)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
+    // Work cards from the owner's phone (docs/specs/phone-work-cards.md): one card (the board read's bucket), and
+    // "Make a card" from a message (Face ID over `work-card-create`, the taps' bucket). Not in TEAM_ROUTE_TIERS: owner only.
+    { method: 'GET', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
+    { method: 'POST', re: /^\/mobile\/work-board\/cards$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
     { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
@@ -2836,6 +3119,8 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       const d = svc.devices.get(id);
       // A browser has no notification token: the branch refuses it (dashboard-conversations-browser-device §4.4).
       if (d && (isBrowserDevice(d) || d.localBinding)) return refuse(403, 'notify-token-not-allowed');
+      // Identity A4: a phone paired on the same-network address is answered only on that listener (whose gate refuses notify tokens).
+      if (d && d.addressKind === 'same-network') return refuse(403, 'notify-token-not-allowed');
       const h = crypto.createHash('sha256').update(notifyToken).digest();
       const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
       if (!d || d.status !== 'active' || !stored || stored.length !== h.length || !crypto.timingSafeEqual(stored, h)) return refuse(401, 'device-unauthorized');
@@ -2876,7 +3161,17 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // loopback peer with no forwarding header, in both multi-route modes.
     const peek = typeof id === 'string' ? svc.devices.get(id) : null;
     const browserDevice = !!peek && isBrowserDevice(peek);
-    if (peek?.localBinding) {
+    // Identity A4: a phone paired on the same-network address signs only on that listener, and that
+    // listener accepts no other device; neither falls through to another branch.
+    const sameNetworkArrival = arrivalOf(req) === 'same-network';
+    if (sameNetworkArrival || peek?.addressKind === 'same-network') {
+      const own = svc.sameNetwork?.listening() ? svc.sameNetwork.host() : null;
+      if (!sameNetworkArrival || !peek || peek.addressKind !== 'same-network' || !own || peek.host !== own || peek.localBinding || browserDevice) {
+        featureEvidence.recordAtMostEvery('mobilePairing.sameNetwork', `signature-refused|${sameNetworkArrival}`, 60_000, { kind: 'held', reason: sameNetworkArrival ? 'refused on the same-network listener: not a phone paired there' : 'refused: a same-network phone off its listener' });
+        return refuse(401, 'device-unauthorized');
+      }
+      host = peek.host;
+    } else if (peek?.localBinding) {
       // The Mac app that created this agent on this Mac (mac-app-creates-agent §A): its own branch,
       // in both multi-route modes, and never a fall-through to the stored host.
       if (!localBindingOk(peek, req, svc.deps.selfMachineId)) return refuse(401, 'device-unauthorized');
@@ -2916,7 +3211,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       },
       rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
     );
-    if (!v.ok && host) {
+    if (!v.ok && host && peek?.addressKind !== 'same-network') {
       featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `signature-refused|${v.reason}|${host}`, 60_000, { kind: v.reason === 'rate-limited' ? 'held' : 'error', reason: `signature refused on an own name: ${v.reason}`, context: { signatureReason: v.reason, host, routeKind: svc.ownNames?.listed().find((n) => n.host === host)?.kind ?? 'unknown' } });
     }
     if (!v.ok && browserDevice && (v.reason === 'stale' || v.reason === 'replay' || v.reason === 'rate-limited')) {
@@ -2925,6 +3220,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
     // A browser may call only the routes named for it (§4.4); checked after the signature, before the person check.
     if (browserDevice && !rule.browser) return refuse(403, 'browser-device-not-allowed');
+    // Identity A4: a phone let in by the number at the agent's computer is an owner phone for
+    // conversations only until piece 3b gives it the mark. It may use what a browser device may use
+    // (status, self-removal, conversations, media), plus its push registration, its route list and its
+    // own activation; every other owner route (org acts, grants, approvals, admin) is refused.
+    if (admittedAtComputer(peek) && !rule.browser && !AT_COMPUTER_EXTRA_ROUTES.some(([m, re]) => m === req.method && re.test(pathNorm))) {
+      return refuse(403, 'cannot-approve-yet');
+    }
     // A member's linked computer (instar-document-viewer §3.6a) is scoped to documents: its page reads
     // and writes never come through here, and the one route it may use is the Send template for the
     // opened document into that document's own conversation (a guest's computer: nothing).
@@ -2979,7 +3281,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // The Host the signature was checked against (multi-route: one of this machine's own names;
     // otherwise the paired host). Signed records store THIS host, never the paired one.
     (req as unknown as { instarDeviceHost: string }).instarDeviceHost = host ?? svc.devices.get(v.deviceId)?.host ?? '';
-    if (host) {
+    if (host && rec?.addressKind !== 'same-network') {
       // Per request by nature: one row a device and route an hour, carrying how many it stands for.
       featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `accepted|${v.deviceId}|${host}`, 60 * 60 * 1000, { kind: 'fired', reason: 'signature accepted on an own name', context: { deviceId: v.deviceId, host, routeKind: svc.ownNames?.listed().find((n) => n.host === host)?.kind ?? 'unknown', pairedHost: rec?.host === host } });
     }
@@ -3105,4 +3407,14 @@ export function deviceAdmittedAt(req: Request): number | null {
 /** Private-view links carry a token-derived signature; a device never receives one. */
 export function stripViewSignatures<T>(value: T): T {
   return JSON.parse(JSON.stringify(value).replace(/([?&]sig=)[0-9a-fA-F]{16,}/g, '$1removed')) as T;
+}
+
+/** SEC-164: `security.credentialScrub.enabled`, read live from the settings file; unreadable is off. */
+const appCredentialScrubReaders = new Map<string, () => boolean>();
+function appCredentialScrubOn(config: { projectDir?: string } | null | undefined): boolean {
+  const dir = config?.projectDir;
+  if (!dir) return false;
+  let reader = appCredentialScrubReaders.get(dir);
+  if (!reader) { reader = credentialScrubEnabledReader(dir); appCredentialScrubReaders.set(dir, reader); }
+  try { return reader(); } catch { return false; } // @silent-fallback-ok — an unreadable switch is off, as before
 }

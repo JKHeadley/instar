@@ -11,6 +11,7 @@ import { answerBodyParseError } from './bodyBudget.js';
 import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { arrivalOf, isSameNetworkPublicRoute, mayBeLocalArrival } from '../core/requestArrival.js';
 
 const guardedResponses = new WeakSet<Response>();
 const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
@@ -85,6 +86,10 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md §3): X-Instar-Request must NEVER be added
+  // to this list. A recommended-services confirm GET counts as an owner open only when it carries
+  // X-Instar-Request: 1, and the reason a page on another origin cannot send it is that its preflight
+  // fails here. tests/unit/sec135-owner-open-cors.test.ts pins this.
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
@@ -263,6 +268,22 @@ export function authMiddleware(
   dashboardStepUpOk?: (req: Request) => boolean,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Identity A4: a request that arrived on the same-network (home) listener is judged here, FIRST and
+    // on its own terms, whatever else is configured (no agent token included): the pairing redeem and
+    // ping pass unsigned (they carry their own one-time code); anything else needs a verified device
+    // signature. The listener's gate only matches the route list; this is where the signature is required.
+    if (arrivalOf(req) === 'same-network') {
+      if (req.headers['x-instar-device'] === undefined) {
+        if (isSameNetworkPublicRoute(req.method, req.path)) { next(); return; }
+        res.status(404).json({ error: 'not-found' });
+        return;
+      }
+      if (!deviceAuth || req.path.startsWith('/internal/')) { res.status(404).json({ error: 'not-found' }); return; }
+      const verdict = deviceAuth(req, res);
+      if (verdict === 'ok') { next(); return; }
+      if (verdict !== 'refused') res.status(401).json({ error: 'device-unauthorized' });
+      return;
+    }
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
     // no-token-configured skip (so an install with no agent token still protects
     // it) and before the agent-id check (a mismatched id cannot change the
@@ -393,7 +414,6 @@ export function authMiddleware(
     // so the inbox route enforces `verifyAgentToken` in its handler.
     if (
       req.path === '/messages/relay-agent'
-      || req.path === '/messages/relay-machine'
       || req.path === '/a2a/inbox'
       || req.path === '/a2a/apprenticeship/cycles'
     ) {
@@ -459,7 +479,7 @@ export function authMiddleware(
     // internal paths to the LAN should not succeed).
     if (req.path.startsWith('/internal/')) {
       const remote = req.socket.remoteAddress;
-      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      if (!mayBeLocalArrival(req) || (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1')) {
         res.status(403).json({ error: 'Internal routes are localhost-only' });
         return;
       }
@@ -714,6 +734,8 @@ export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
  * degrades fail-open (advisory empty report) instead of erroring at the client.
  */
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
+/** POST /topic/import re-sequences every affected topic (topic-history-import spec); the default 30 s answers 408 mid-merge. */
+export const TOPIC_IMPORT_TIMEOUT_MS = 300_000;
 
 /**
  * Extended budget for the cutover-readiness parity-pass trigger
@@ -739,6 +761,20 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
  * review concern #1). 75s clears the 50s remote cap + slack with margin.
  */
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
+
+/**
+ * Route budget (ms) for the Gemini pay-per-use calls (gemini-payg-metered-lane §1, §6, §8):
+ * `/intelligence/gemini` (second opinion), `/intelligence/gemini/review` and
+ * `/routing-spend/release-proof`. A paid Gemini call may take up to the transport's
+ * GEMINI_API_MAX_TIMEOUT_MS (900 s, scaled to the reserved output), and a machine that is
+ * not the spender FORWARDS and waits for the holder's answer up to that plus 60 s. Under
+ * the 30 s default the caller got a 408 while the call kept running (and, on the holder,
+ * kept being paid for), and a forwarded call to a dead holder answered 408 instead of the
+ * honest `holder-unreachable` — found by the user-role live test's holder-death drill.
+ * Kept literal here (no provider import in the middleware); a test pins it above
+ * GEMINI_API_MAX_TIMEOUT_MS + 60 s.
+ */
+export const GEMINI_PAYG_ROUTE_TIMEOUT_MS = 990_000;
 
 /**
  * The phone's session controls (docs/specs/mobile-native-session-controls.md) wait on a dashboard route
@@ -860,6 +896,15 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
 export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
 
 /**
+ * POST /updates/apply awaits the whole install: up to three npm install (120 s) +
+ * native rebuild (60 s) attempts with 5 s and 15 s pauses, candidate validation,
+ * and the post-update migration. Under the 30 s default the middleware answered
+ * 408 while the handler kept going, and the handler's real answer was then a
+ * "Suppressed duplicate response send" (Echo Studio, 2026-11-21).
+ */
+export const UPDATE_APPLY_TIMEOUT_MS = 15 * 60_000;
+
+/**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
  * server actually wires — never a hand-rolled copy that could pass while the
@@ -896,6 +941,8 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
     '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/updates/apply': UPDATE_APPLY_TIMEOUT_MS,
+    '/topic/import': TOPIC_IMPORT_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
     // The import dry-run does the same full live source fetch as a parity pass
@@ -907,6 +954,8 @@ export function buildRequestTimeoutOverrides(opts?: {
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    '/intelligence/gemini': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+    '/routing-spend/release-proof': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
     '/mobile/sessions/move': MOBILE_SESSION_MOVE_TIMEOUT_MS,
     '/mobile/sessions/door': MOBILE_SESSION_ACTION_TIMEOUT_MS,
     '/mobile/sessions/close': MOBILE_SESSION_ACTION_TIMEOUT_MS,
@@ -1013,6 +1062,10 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  */
 export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
 
+/** SEC-124: path prefixes (lowercase) of the pre-auth capability pages given anti-framing,
+ * no-store and no-referrer headers by `dashboardSecurityHeaders`. */
+export const PRE_AUTH_PAGE_PREFIXES: readonly string[] = ['/mcp/approve/', '/memory-privacy/fix/', '/secrets/drop/'];
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
   // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
   // headers must too (dashboard-console-default-and-pair-page round 2).
@@ -1023,6 +1076,19 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   if (p === '/view' || p.startsWith('/view/')) {
     res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
     res.header('X-Content-Type-Options', 'nosniff');
+  }
+  // SEC-124: pages reachable WITHOUT the bearer that act on a capability carried in the
+  // URL (an approval request id, a one-time repair token, a Secret Drop token) and/or ask
+  // for the dashboard PIN. They must not be framed by another site (a click-jacked
+  // Approve), cached, or leak their URL through a Referer header. Only framing, caching
+  // and referrer are restricted: these pages keep their own inline script and style.
+  if (PRE_AUTH_PAGE_PREFIXES.some((prefix) => p.startsWith(prefix))) {
+    res.header('X-Frame-Options', 'DENY');
+    res.header('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.header('Pragma', 'no-cache');
+    res.header('Referrer-Policy', 'no-referrer');
   }
   if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
@@ -1128,6 +1194,10 @@ export function DOC_PAGE_PATH(method: string, p: string): boolean {
   // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).
   if (method === 'POST' && p === '/docs/_link/status') return true;
   if (method === 'POST' && p === '/docs/_link/nonce') return true;
+  // A member's computer joining from a team invite, and any computer forgetting itself
+  // (member-browser-any-computer §3.3): self-authenticating, in documentJoinRoutes.ts.
+  if (method === 'GET' && (p === '/docs/_join' || p === '/docs/_join/addresses')) return true;
+  if (method === 'POST' && (p === '/docs/_join/redeem' || p === '/docs/_join/confirm' || p === '/docs/_link/forget-self')) return true;
   if (method === 'GET') return DOC_PAGE_GET.test(p);
   if (method === 'POST') return DOC_PAGE_POST.test(p);
   return false;

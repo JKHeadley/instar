@@ -58,7 +58,7 @@ Today the proposal is posted in, and confirmed in, the destination conversation 
 - **The owner's "yes" in A** applies exactly the armed change to B, with the owner as the principal (`crossTopicConfirm`).
 - **The audit** names A (`authorizedBy: owner-confirmed-in:<A>`).
 - **The yes can only answer the proposal.** A is a busy conversation, so any message the agent sends into A after the proposal disarms it. The owner's next "yes" could be answering that message instead, so the agent proposes again if it still wants the change. The proposal names the other conversation ("Proposed change for the conversation "<B>" (not this one):"), with quotes and line breaks stripped from the name, and says so when it replaces an earlier proposal.
-- **Fields.** A cross-conversation yes may change only everyday run settings: model, model tier, thinking mode and effort. Framework, escalation override and message-origin display can carry more weight, and keep today's rule: they are confirmed in that conversation itself (400 otherwise).
+- **Fields.** A cross-conversation yes may change the engine (framework), model, model tier, thinking mode and effort. HTTP and the write surface share `CROSS_TOPIC_FIELDS`; escalation override and message-origin display still require confirmation in that conversation itself (400 otherwise). The owner-framework-confirmation repair was authorized by Chief07621898 and clarified by7f93807c: retain the existing exact-change echo and typed yes, without adding an inline button.
 
 No model decides authority and no logged message is cited. The authority is the owner's live yes to the exact change they were shown.
 
@@ -73,7 +73,7 @@ A refusal at arm time is a 422, and nothing is armed. When the owner asked in A 
 
 **The switch.** `confirmIn` ships behind the umbrella's per-piece switch, `security.crossTopicConfirm.enabled`, on the development-agent gate: live on a development agent, dark on the fleet until graduation (registered in `devGatedFeatures.ts`). The switch is re-read when the yes arrives, so turning it off between the proposal and the yes stops the write.
 
-**Unchanged.** Without `confirmIn`, the propose lane works exactly as today. The ordinary write route is unchanged too: an agent-token write to an unbound topic is still refused.
+**Delivery.** An armed exact-change proposal uses the registered in-process `profile-confirmation` producer and the existing bounded `owner-decision` category, so Quiet by Default delivers it in its addressed conversation. A failed or quiet delivery disarms the unseen slot. Without `confirmIn`, the proposal remains in its own conversation with the same confirmation rules. The ordinary write route is unchanged too: an agent-token write to an unbound topic is still refused.
 
 ### 2. A new conversation records which message the agent linked it to
 

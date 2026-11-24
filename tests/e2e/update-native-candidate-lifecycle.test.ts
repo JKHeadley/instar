@@ -27,7 +27,9 @@ describe('failed native update through the production server', () => {
 
     const state = new StateManager(stateDir);
     vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: runningVersion, latestVersion: targetVersion, updateAvailable: true, checkedAt: new Date().toISOString() });
-    vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+    // Only npm is faked, at the npm seam (npmExec runs npm under the runtime node, so the exec
+    // helper's args no longer start with the npm subcommand); the node probes stay real.
+    vi.spyOn(checker as any, 'npmExec').mockImplementation(async (args: string[]) => {
       if (args[0] === 'install') {
         const candidate = path.join(args[args.indexOf('--prefix') + 1], 'node_modules', 'instar');
         fs.mkdirSync(candidate, { recursive: true });

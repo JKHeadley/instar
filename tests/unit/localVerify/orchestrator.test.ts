@@ -1,3 +1,4 @@
+import { FailureEvidence } from '../../../src/localVerify/failureEvidence.js';
 // safe-git-allow: test fixture setup — builds a throwaway repo for the directory-rename regression.
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 import { execFileSync } from 'node:child_process';
@@ -915,6 +916,42 @@ describe('runVerify — e2e shards', () => {
 });
 
 describe('runVerify — retention of failed worktrees', () => {
+  it('preserves the failed verdict if evidence capture throws', async () => {
+    const spy = vi.spyOn(FailureEvidence.prototype, 'capture').mockImplementation(() => { throw new Error('capture failed'); });
+    try {
+      const f = fake({ laneStatuses: { unit: ['failed'] } });
+      const r = await runVerify(input(), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+      expect(f.logs).toContainEqual({ event: 'failure-evidence-capture-failed' });
+    } finally { spy.mockRestore(); }
+  });
+
+  it('keeps assertion details after temporary lane reports are removed', async () => {
+    const f = fake({ laneStatuses: { integration: ['failed'] }, rerun: { 'tests/integration/b.test.ts': ['failed'] } });
+    const write = f.seams.fs.writeFile;
+    const modes: unknown[] = [];
+    f.seams.fs.writeFile = (p, data, mode) => { if (p.endsWith('.local-verify-failures.json')) modes.push(mode); write(p, data); };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    const artifact = f.files.get(path.join(P.runDir, '.local-verify-failures.json'));
+    expect(JSON.parse(artifact!).failures).toContainEqual(expect.objectContaining({ file: 'tests/integration/b.test.ts', message: 'boom' }));
+    expect(modes).toEqual([{ mode: 0o600, flag: 'wx' }]);
+    expect(f.removed).toContain(P.reportsDir);
+  });
+  it('keeps a failed verdict when diagnostic storage fails', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] } });
+    const write = f.seams.fs.writeFile;
+    f.seams.fs.writeFile = (p, data) => { if (p.endsWith('.local-verify-failures.json')) throw new Error('disk full'); write(p, data); };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'failure-evidence-write-failed' }));
+  });
+  it('does not retain diagnostic output for a successful run', async () => {
+    const f = fake();
+    await runVerify(input(), f.seams);
+    expect(f.files.has(path.join(P.runDir, '.local-verify-failures.json'))).toBe(false);
+  });
+
   it('keeps at most three failed-run worktrees', async () => {
     const f = fake({ laneStatuses: { unit: ['failed'] } });
     const heads = ['1', '2', '3', '4'].map((c) => c.repeat(40));

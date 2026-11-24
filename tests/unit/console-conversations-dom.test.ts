@@ -50,7 +50,7 @@ describe('native console Conversations', () => {
     const f = await boot('#/work/conversations?view=suggestions', async (url) => {
       calls.push(url);
       if (url.endsWith('/conversation-graph/suggestions')) return { body: { state: 'ready', items: [{ id: 'sg-0123456789abcdef0123', title: 'Project one', reason: '', frontDoor: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: 5 }, members: [{ ref: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: 5 }, title: 'Five' }] }] } };
-      if (url.endsWith('/start')) { await startGate; return { status: 404, body: {} }; }
+      if (url.endsWith('/accept')) { await startGate; return { status: 404, body: {} }; }
       return { status: 404, body: {} };
     }, ctx);
     expect(ctx.selfRefreshing).toHaveBeenCalled();
@@ -70,31 +70,15 @@ describe('native console Conversations', () => {
   const tgRef = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId });
   const project = (n: number) => ({ id: `sg-0123456789abcdef012${n}`, title: `Project ${n}`, reason: '', frontDoor: tgRef(n), members: [{ ref: tgRef(n), title: `Conversation ${n}` }] });
   const effortFor = (n: number) => ({ kind: 'effort', id: `effort-000${n}` });
-  /** A server where every owner change commits at once, except what `override` answers itself. */
+  /** A server whose one-call Accept groups each project at once, except what `override` answers itself. */
   function acceptServer(projects: number[], override: (url: string, body: any) => any = () => null) {
-    const placed = new Set<number>(); const frontDoors = new Set<number>(); const accepted: number[] = [];
+    const accepted: number[] = [];
     const handler = async (url: string, options: any = {}) => {
       const body = options.body ? JSON.parse(options.body) : undefined;
       const special = await override(url, body); if (special) return special;
       if (url.endsWith('/conversation-graph/suggestions')) return { body: { state: 'ready', items: projects.map(project) } };
       const n = Number(url.match(/sg-0123456789abcdef012(\d)/)?.[1]);
-      if (url.endsWith('/start')) return { body: { createRequestId: `suggestion-create-000${n}` } };
-      if (url.endsWith('/accepted')) { accepted.push(n); return { body: { ok: true } }; }
-      if (url.endsWith('/conversation-graph/preview')) return { body: { eligible: true } };
-      if (url.endsWith('/conversation-graph/changes')) {
-        const c = body.change;
-        if (c.kind === 'create-effort') return { body: { state: 'committed', effort: effortFor(Number(body.requestId.at(-1))) } };
-        if (c.kind === 'set-primary-placement') placed.add(c.subject.topicId);
-        if (c.kind === 'set-front-door') frontDoors.add(c.conversation.topicId);
-        return { body: { state: 'committed' } };
-      }
-      if (url.includes('/conversation-graph/nodes/')) {
-        const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
-        const n2 = ref.kind === 'effort' ? Number(ref.id.at(-1)) : ref.topicId;
-        return { body: { partial: false, node: { ref, title: 'x', ...(ref.kind === 'effort' && frontDoors.has(n2) ? { frontDoor: tgRef(n2) } : {}) },
-          path: ref.kind === 'conversation' && placed.has(n2) ? [{ ref: effortFor(n2), title: 'x' }] : [], children: { items: [], nextCursor: null },
-          correction: { moveEligible: true, replacesPlacementEventIds: [], ...(ref.kind === 'effort' ? { headerVersion: 0, headerForgotten: false, replacesFrontDoorEventIds: [] } : {}) } } };
-      }
+      if (url.endsWith('/accept')) { accepted.push(n); return { body: { id: project(n).id, state: 'accepted', group: effortFor(n), moved: 1, skipped: 0, placedElsewhere: false } }; }
       return { status: 404, body: {} };
     };
     return { handler, accepted };
@@ -106,7 +90,7 @@ describe('native console Conversations', () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     const server = acceptServer([1, 2, 3], async (url) => {
-      if (url.endsWith('sg-0123456789abcdef0122/start')) { await gate; return { status: 404, body: {} }; }
+      if (url.endsWith('sg-0123456789abcdef0122/accept')) { await gate; return { status: 404, body: {} }; }
       return null;
     });
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
@@ -118,7 +102,7 @@ describe('native console Conversations', () => {
     // Held on project 2: the button is disabled, and the line beside it says what is running.
     expect(all.disabled).toBe(true);
     expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
-    expect(progressLine(f.main)).toContain('Creating the group');
+    expect(progressLine(f.main)).toContain('Starting…');
     release();
     for (let i = 0; i < 40; i++) await flush();
     expect(server.accepted).toEqual([1, 3]); // project 3 was not held up by project 2
@@ -129,9 +113,8 @@ describe('native console Conversations', () => {
   });
 
   it('Accept all shows what a slow change is waiting for, and stops with words when changes are not being confirmed', async () => {
-    const pending = { status: 202, body: { state: 'saved-pending', waitingMachines: [{ name: 'Laptop' }] } };
-    const server = acceptServer([1, 2, 3], (url, body) => (url.endsWith('/conversation-graph/changes') && body.change.kind === 'create-effort')
-      || /\/conversation-graph\/changes\/suggestion-create/.test(url) ? pending : null);
+    const pending = { status: 202, body: { state: 'working', step: 'creating', text: 'Creating the group… Saved here. Waiting for Laptop to confirm.', waitingMachines: [{ machineId: 'm_laptop', name: 'Laptop' }], agentNotAnswering: false, retryAfterMs: 2500 } };
+    const server = acceptServer([1, 2, 3], (url) => url.endsWith('/accept') ? pending : null);
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
     const all = allButton(f.main);
     vi.useFakeTimers();
@@ -303,15 +286,26 @@ describe('native console Conversations', () => {
     expect(suggestionsUnavailable({ status: 500, data: {} }, 0)).toEqual({ text: 'Suggestions could not be loaded. Nothing is lost. Tap Try again.', retryInMs: 0 });
   });
 
+  it('when the server hands the decision back, the card offers Accept again AND Reject; a closed one leaves the card', async () => {
+    const server = acceptServer([1, 2], (url) => {
+      if (/sg-0123456789abcdef0121\/accept$/.test(url)) return { status: 409, body: { id: 'x', state: 'refused', step: 'naming', code: 'group-not-found', text: 'The group cannot be found on this machine right now. Tap Accept again later, or Reject to drop this suggestion.' } };
+      if (/sg-0123456789abcdef0122\/accept$/.test(url)) return { status: 409, body: { id: 'y', state: 'refused', step: 'moving', code: 'group-gone', text: 'The group for this suggestion was removed, so this suggestion is closed. Nothing else was changed.' } };
+      return null;
+    });
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    for (let i = 0; i < 10; i++) await flush();
+    const cardButtons = (label: RegExp) => [...f.main.querySelectorAll('button')].filter((b) => label.test(b.textContent || '')) as HTMLButtonElement[];
+    for (const b of cardButtons(/^Accept$/)) b.click();
+    for (let i = 0; i < 30; i++) await flush();
+    expect(cardButtons(/^Accept again$/)).toHaveLength(1);
+    expect(cardButtons(/^Reject$/).some((b) => !b.disabled)).toBe(true);
+    expect(f.main.textContent).toContain('this suggestion is closed');
+  });
+
   it('a project the agent does not answer for is a wait with plain words, never "no longer available"', async () => {
     // Real two-machine run (accept-all round 2): with the M5 frozen, the Studio's requests timed out and the
     // cards said "This suggestion is no longer available" — untrue, nothing was refused.
-    const silentFor = (url: string) => {
-      if (/sg-0123456789abcdef012[23]\/start$/.test(url)) return true;
-      if (!url.includes('/conversation-graph/nodes/')) return false;
-      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
-      return ref.kind === 'conversation' && (ref.topicId === 2 || ref.topicId === 3);
-    };
+    const silentFor = (url: string) => /sg-0123456789abcdef012[23]\/accept$/.test(url);
     const server = acceptServer([1, 2, 3], (url) => silentFor(url) ? { status: 408, body: {} } : null);
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
     allButton(f.main).click();
@@ -326,12 +320,7 @@ describe('native console Conversations', () => {
   });
 
   it('three projects in a row without an answer stop Accept all with plain words', async () => {
-    const silentFor = (url: string) => {
-      if (/sg-0123456789abcdef012[234]\/start$/.test(url)) return true;
-      if (!url.includes('/conversation-graph/nodes/')) return false;
-      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
-      return ref.kind === 'conversation' && ref.topicId >= 2 && ref.topicId <= 4;
-    };
+    const silentFor = (url: string) => /sg-0123456789abcdef012[234]\/accept$/.test(url);
     const server = acceptServer([1, 2, 3, 4, 5], (url) => silentFor(url) ? { status: 408, body: {} } : null);
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
     allButton(f.main).click();

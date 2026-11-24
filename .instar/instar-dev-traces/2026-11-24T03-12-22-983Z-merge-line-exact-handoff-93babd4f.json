@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "merge-line-exact-handoff",
+  "sessionId": "b9dbb2bd-d987-47b2-a538-5de71ea42e15",
+  "timestamp": "2026-11-24T03:12:22.983Z",
+  "artifactPath": "upgrades/side-effects/merge-line-exact-handoff.md",
+  "artifactSha256": "ac8cbd4c13d3d182b5e21412c9e761d66011d9e7492576aa47e162b8daae8acb",
+  "coveredFiles": [
+    "docs/specs/merge-line-exact-handoff.eli16.md",
+    "docs/specs/merge-line-exact-handoff.md",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/greenPrAutomergeWiring.ts",
+    "src/monitoring/greenPrOpenPrList.ts",
+    "tests/e2e/merge-line-exact-handoff-alive.test.ts",
+    "tests/helpers/merge-line-exact-handoff-fixture.ts",
+    "tests/integration/merge-line-exact-handoff.test.ts",
+    "tests/unit/green-pr-local-floor.test.ts",
+    "tests/unit/green-pr-open-pr-list.test.ts",
+    "upgrades/next/merge-line-exact-handoff.md",
+    "upgrades/side-effects/merge-line-exact-handoff.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible exact-target read repair; critical merge pipeline risk floor acknowledged and independently reviewed, existing author/hold/record/safe-merge authority unchanged.",
+  "eli16Path": "docs/specs/merge-line-exact-handoff.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/merge-line-exact-handoff.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

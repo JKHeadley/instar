@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-notice-only-when-used",
+  "sessionId": "5ecf8774-2123-4ab5-a07a-2df99a1cce0f",
+  "timestamp": "2026-11-21T05:25:53.740Z",
+  "artifactPath": "upgrades/side-effects/desktop-notice-only-when-used.md",
+  "artifactSha256": "e38361dcf718776434c5299366ef07bb34cd9851bba93a0e83a5f74c7e12125f",
+  "coveredFiles": [
+    "docs/specs/desktop-notice-only-when-used.eli16.md",
+    "src/core/DesktopAccessAudit.ts",
+    "src/core/DesktopHelperPermissionNotice.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/DesktopAccessAudit.test.ts",
+    "tests/unit/DesktopHelperPermissionNotice.test.ts",
+    "upgrades/next/desktop-notice-only-when-used.md",
+    "upgrades/side-effects/desktop-notice-only-when-used.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows one notifier; 3 source files ~45 LOC; a revert fully undoes it; no state, config or route change",
+  "eli16Path": "docs/specs/desktop-notice-only-when-used.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-notice-only-when-used.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

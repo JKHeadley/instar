@@ -601,6 +601,22 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'The long-term view (H3) rebuilt from a bounded selection of chunk and range summaries (context-budget §6, §6.5), and the topic summary table\'s single writer. A derived layer; it decides nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade it.',
   },
   {
+    decisionPoint: 'fold-audit',
+    component: 'FoldAudit',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Checks a session handoff note in a practice fold (context-budget §7.4). It can decline a practice fold or trigger one fixed-text send-back to the session; its free-text questions are never forwarded. Each fold writes a counts-only row.',
+  },
+  {
+    decisionPoint: 'fold-probe',
+    component: 'FoldProbe',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Writes and grades the held-out quiz of a practice fold (context-budget §10). Its grades are the measurement and decide nothing live; each fold writes a counts-only row.',
+  },
+  {
     decisionPoint: 'session-activity-digest',
     component: 'SessionActivitySentinel',
     status: 'pending:backlog:decision-quality-enrolment',

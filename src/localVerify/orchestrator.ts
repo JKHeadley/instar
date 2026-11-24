@@ -18,6 +18,7 @@
 
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { FailureEvidence, FAILURE_EVIDENCE_FILE } from './failureEvidence.js';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
 import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
 
@@ -83,7 +84,7 @@ export interface GitCallOpts {
 export interface OrchestratorFs {
   exists(p: string): boolean;
   mkdirp(p: string): void;
-  writeFile(p: string, data: string): void;
+  writeFile(p: string, data: string, options?: { mode: number; flag: 'wx' }): void;
   /** null when absent or unreadable. */
   readFile(p: string): string | null;
   /** Size in bytes, null when absent or unreadable. Absent seam ⇒ the duration history is never read. */
@@ -438,6 +439,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const interruptedReruns = new Set<string>();
   const startedFirstParts = new Set<LaneName>();
   const observedFailures = new Map<string, FileFailure>();
+  const failureEvidence = new FailureEvidence();
+  const captureFailures = (lane: LaneName, report: ParsedLaneReport) => {
+    try { failureEvidence.capture(lane, report); }
+    catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
+  };
   const detail: ObservationDetail = { incomplete: true, completedLanes: [], firstPartFiles: {}, failures: [], failuresTotal: 0 };
   let evidenceIncomplete = false;
   const collectEvidence = (collect: () => void) => {
@@ -911,6 +917,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             }
           }
         }
+        if (report) captureFailures(lane.name, report);
         collectEvidence(() => {
           if (report) for (const [file, counts] of report.files) if (counts.failed > 0) observedFailures.set(file, {
             file, lane: lane.name, firstPart: firstParts.get(lane.name)?.files.includes(file) ?? false,
@@ -1031,7 +1038,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           if (!part.report || !report) { report = null; continue; }
           for (const [f, c] of part.report.files) {
             // Every lane's files are recorded, unit included (docs/specs/local-verify-borrowed-unit-slices.md, A):
-            // planShards only ever reads a lane's own files, so unit entries never change a slow lane's plan.
+            // planShards only ever reads a lane's own files, and a unit first part is sized by file count
+            // alone (firstPart.ts: unit is not a timed lane), so unit entries change no plan and no first part
+            // while the history stays under its caps (20,000 files, 2 MB: about 5,600 files and 0.3 MB with
+            // the unit lane in, 2026-11-19). Past 20,000 files the oldest-inserted entries go first, whatever
+            // their lane; a history file over 2 MB is not read at all for that run (`durations-ignored`).
             if (typeof c.ms === 'number') observed[f] = c.ms;
             if (report.files.has(f)) {
               seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
@@ -1049,6 +1060,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const nonZero = codes.find((x) => typeof x === 'number' && x !== 0);
         return nonZero !== undefined ? nonZero : codes.some((x) => x === null) ? null : 0;
       };
+      /** Whether any file of this lane was re-run alone (marks the unit wall-factor row, below). */
+      let reran = false;
       const combineUnhandled = (counts: ReadonlyArray<number | null>): number | null => (counts.some((x) => x === null) ? null : counts.reduce<number>((n, x) => n + (x as number), 0));
       /**
        * Isolation re-run: a lane (or one part of it) whose only problem is 1..3 failed files re-runs
@@ -1072,6 +1085,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         });
         if (decision.reason === 'eligible' && decision.rerun.length > 0 && report) {
           rerunBudget -= decision.rerun.length; // an import-related file counts as one file, whatever its number of runs
+          reran = true;
           const threePass = new Map(decision.threePass.map((f) => [f, classed.importRelated.get(f)!]));
           const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal, threePass, part ? `${lane.name}-${part}` : lane.name);
           // The exit code is cleared only when the failed files explain it: they all passed alone
@@ -1085,15 +1099,19 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const seconds = () => Math.round((seams.now() - t) / 1000);
       /**
        * Same spec, A: how far the unit lane's wall time is from its file time spread over the workers
-       * (1.22 on the Studio, 11-18). Later slice and lane projections scale by it.
+       * (1.22 on the Studio, 11-18). Later slice and lane projections scale by it. Written once, for a
+       * unit lane that ran to its end with a readable report. Two marks say when a row is not a clean
+       * sample, so a reader can leave it out: `firstPart` (the lane used a first part, whose own run is
+       * inside the wall time) and `reran` (files were re-run alone: the wall time holds those re-runs,
+       * and the report holds a re-run file's solo time in place of its time in the lane).
        */
-      const noteUnitWallFactor = (report: ParsedLaneReport | null): void => {
+      const noteUnitWallFactor = (report: ParsedLaneReport | null, firstPartUsed: boolean): void => {
         if (lane.name !== 'unit' || !report || unitWorkers === null) return;
         const laneMs = seams.now() - t;
         let fileMs = 0;
         for (const c of report.files.values()) if (typeof c.ms === 'number') fileMs += c.ms;
         const ideal = fileMs / unitWorkers;
-        if (ideal > 0) seams.log({ event: 'unit-wall-factor', workers: unitWorkers, fileSeconds: Math.round(fileMs / 1000), laneSeconds: Math.round(laneMs / 1000), factor: Math.round((laneMs / ideal) * 100) / 100 });
+        if (ideal > 0) seams.log({ event: 'unit-wall-factor', workers: unitWorkers, fileSeconds: Math.round(fileMs / 1000), laneSeconds: Math.round(laneMs / 1000), factor: Math.round((laneMs / ideal) * 100) / 100, ...(firstPartUsed ? { firstPart: true } : {}), ...(reran ? { reran: true } : {}) });
       };
 
       if (!first) {
@@ -1113,7 +1131,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           seams.log({ event: 'lanes-stop', after: lane.name });
           stopLanes.abort();
         }
-        noteUnitWallFactor(report);
+        noteUnitWallFactor(report, false);
         return { lane: lane.name, report, seconds: seconds(), exitCode };
       }
 
@@ -1148,7 +1166,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
       seams.log({ event: 'first-part', lane: lane.name, files: first.files.length, ms: note.ms, failedFinally: firstFinal, endedHere: false });
       // The whole lane fitted in its first part: the lane is completed from that one report.
-      if (restFiles.length === 0) { noteUnitWallFactor(firstReport); return { lane: lane.name, report: firstReport, seconds: seconds(), exitCode: firstExit }; }
+      if (restFiles.length === 0) { noteUnitWallFactor(firstReport, true); return { lane: lane.name, report: firstReport, seconds: seconds(), exitCode: firstExit }; }
       if (stopLanes.signal.aborted) {
         seams.log({ event: 'lane-stopped-early', lane: lane.name, part: 'rest' });
         return cutShort();
@@ -1180,7 +1198,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         seams.log({ event: 'lanes-stop', after: lane.name });
         stopLanes.abort();
       }
-      noteUnitWallFactor(report);
+      noteUnitWallFactor(report, true);
       return { lane: lane.name, report, seconds: seconds(), exitCode };
     }
 
@@ -1454,6 +1472,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         let again: ParsedLaneReport | null = null;
         const text = r.deadlineKilled ? null : seams.fs.readFile(out);
         if (text != null) { try { again = parseVitestJson(text, p.runDir, { solo: true }); } catch { again = null; } }
+        if (again) captureFailures(lane, again);
         const c = again?.files.get(file);
         const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(seams.fs.readFile(errs));
         // The pass rule every solo run has always had: nothing failed, something passed, exit 0, no unhandled error.
@@ -1672,6 +1691,17 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (worktreeCreated) {
         if (failed) {
           kept = p.runDir;
+          // Processes have stopped. Replace only this diagnostic, never follow a
+          // pre-existing symlink, and never let a diagnostic failure change the verdict.
+          const evidencePath = path.join(p.runDir, FAILURE_EVIDENCE_FILE);
+          try {
+            await seams.fs.removeTree(evidencePath);
+            const evidence = failureEvidence.serialize();
+            seams.fs.writeFile(evidencePath, evidence, { mode: 0o600, flag: 'wx' });
+            seams.log({ event: 'failure-evidence-kept', path: evidencePath, bytes: Buffer.byteLength(evidence) });
+          } catch {
+            seams.log({ event: 'failure-evidence-write-failed', path: evidencePath });
+          }
           await keepFailed(seams, p);
         } else {
           await removeWorktree(seams, p, p.runDir);

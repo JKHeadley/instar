@@ -18,7 +18,7 @@
   "population": "src/templates/**/*.{sh,js,mjs}",
   "censusRef": "docs/audits/phase-b/f10-triage.md",
   "seededAt": "2026-08-06",
-  "blockingCeiling": 12,
+  "blockingCeiling": 13,
   "blocking": [
     {
       "path": "src/templates/hooks/build-stop-hook.sh",
@@ -67,6 +67,10 @@
     {
       "path": "src/templates/scripts/whatsapp-reply.sh",
       "decision": "blocks send on server tone-gate denial"
+    },
+    {
+      "path": "src/templates/scripts/secret-get.mjs",
+      "decision": "refuses metered (pay-per-use) vault names, exit 3, before vault resolution (gemini-payg-metered-lane §4.2; secrets ruled exception, Rule 86). The name list is pinned to src/core/meteredSecrets.ts METERED_SECRET_NAMES by a template-drift test."
     }
   ],
   "nonBlocking": [
@@ -186,11 +190,6 @@
       "reason": "Re-declared 2026-11-17 (secret-drop-self-mint-hardening + secret-drops-machine-local): supports safe #N field selection and reports/retries refused consume. No message or session blocking authority; browser handoff refusal stays scoped to the requested operation."
     },
     {
-      "path": "src/templates/scripts/secret-get.mjs",
-      "sha256": "7525d0bfb60d452ec60fa6f1e929655a2d022efa5c0906811ac595c77365c2ea",
-      "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
-    },
-    {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",
       "sha256": "a2f6cbbcbbfca746b279718013e277cda8bd8a63eefced1c1b1b03b297a3c84b",
       "reason": "machine-self-maintenance Part B: writes this agent's browser-instance ledger for the helpers that call it; refuses only a directory outside the profiles folder and gates no message, session or agent action"
@@ -234,6 +233,11 @@
       "path": "src/templates/helper/instar-helper-progress-reporter.mjs",
       "sha256": "69b2a1c2c267fd876e0841ff8ced00611ecfc81b7876841b171bda1a6df5c4de",
       "reason": "local-verify-borrowed-slices-count E (progress): a root-owned vitest reporter inside the borrowed helper's sandbox; it only writes one line per finished test file to the slice's standard error and decides nothing; what a progress line is worth (provisional until the slice's last signed answer repeats it, a contradiction withheld) is authored in TypeScript (helperProtocol.ts, HelperService.ts); it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/secret-set.mjs",
+      "sha256": "2e0bf076e0fad233561642b4562ebe2e49bdf899e2457746255180b305c5594e",
+      "reason": "Added 2026-11-20 (gemini-payg-metered-lane §4 no-echo transfer target, found missing by the user-role live test): refuses only its own malformed invocation (no key path, a value on argv, a credential-shaped key path, a terminal on stdin, an empty value). No message, session or money blocking authority; it writes one vault entry from stdin."
     }
   ]
 }
