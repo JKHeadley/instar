@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,4 +56,16 @@ it('refuses trailing bytes after a valid artifact without returning a partial pr
 it('refuses a provenance mismatch before returning a preview', async () => {
   const { input, bytes } = fixture(); input.descriptors[0].expectedSessionId = 'different-session';
   await expect(readLocalHistoryPreparedPreview(input, body(bytes))).rejects.toThrow();
+});
+
+it('waits for final EOF before planning a first claim', async () => {
+  const { input, bytes } = fixture();
+  const store = new ImportedHistoryStore(input.stateDir);
+  const plan = vi.spyOn(ImportedHistoryStore.prototype, 'planSourceClaimWrite');
+  try {
+    await expect(readLocalHistoryPreparedPreview({ ...input, includeFirstClaimPlan: true },
+      body(Buffer.concat([bytes, Buffer.from('x')])))).rejects.toThrow();
+    expect(plan).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
+  } finally { plan.mockRestore(); }
 });

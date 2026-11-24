@@ -6,6 +6,7 @@ import path from 'node:path';
 import { acquireLocalHistoryChild } from '../../dist/import/LocalHistoryChildCustody.js';
 import { runLocalHistoryPreparedReadJob, type LocalHistoryPreparedReadJobOptions } from '../../dist/import/LocalHistoryPreparedReadJob.js';
 import { parseLocalSessionLines } from '../../src/import/localSessionParsers.js';
+import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, {
@@ -69,5 +70,28 @@ it('uses a deadline to abort an input producer that honors cancellation', async 
     await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
   };
   await expect(runLocalHistoryPreparedReadJob(f.opts)).rejects.toThrow('local-history-preview-timeout');
+  expect(f.released()).toBe(1);
+});
+
+it('calculates first-claim allocation sizes in the fixed child for an existing destination', async () => {
+  const f = fixture();
+  const store = new ImportedHistoryStore(f.opts.input.stateDir);
+  f.opts.input.includeFirstClaimPlan = true;
+  const result = await runLocalHistoryPreparedReadJob(f.opts);
+  const plan = result.preview.firstClaimPlan!;
+  expect(plan.fileId).toBe('one');
+  expect(plan.contentBytes).toBeGreaterThan(0);
+  expect(plan.databaseCeilingBytes).toBeGreaterThan(0);
+  expect(plan.journalBytes).toBeGreaterThan(0);
+  expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
+  expect(fs.readdirSync(path.join(store.dir, 'conversations'))).toEqual([]);
+  expect(f.released()).toBe(1);
+});
+
+it('refuses first-claim planning if the destination store does not exist', async () => {
+  const f = fixture();
+  f.opts.input.includeFirstClaimPlan = true;
+  await expect(runLocalHistoryPreparedReadJob(f.opts)).rejects.toThrow('local-history-preview');
+  expect(fs.existsSync(path.join(f.opts.input.stateDir, 'imported-history'))).toBe(false);
   expect(f.released()).toBe(1);
 });

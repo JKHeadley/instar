@@ -23,9 +23,19 @@ export class LocalHistoryPreparedReadRefused extends Error { cleanupPending = fa
 function validPreview(value: unknown, input: LocalHistoryPreparedPreviewInput): value is LocalHistoryPreparedPreview {
   if (!value || typeof value !== 'object') return false;
   const result = value as LocalHistoryPreparedPreview;
-  if (Object.keys(result).sort().join(',') !== 'files,messages,newMessages'
+  const expectedKeys = input.includeFirstClaimPlan ? 'files,firstClaimPlan,messages,newMessages' : 'files,messages,newMessages';
+  if (Object.keys(result).sort().join(',') !== expectedKeys
     || !Array.isArray(result.files) || result.files.length !== input.descriptors.length
     || Buffer.byteLength(JSON.stringify(result)) > CHUNK_BYTES) return false;
+  if (input.includeFirstClaimPlan) {
+    const plan = result.firstClaimPlan;
+    if (!plan || typeof plan !== 'object'
+      || Object.keys(plan).sort().join(',') !== 'contentBytes,databaseCeilingBytes,fileId,journalBytes'
+      || plan.fileId !== input.descriptors[0].fileId
+      || ![plan.contentBytes, plan.databaseCeilingBytes, plan.journalBytes].every(n => Number.isSafeInteger(n) && n >= 0)
+      || !Number.isSafeInteger(plan.databaseCeilingBytes + plan.journalBytes)
+      || plan.contentBytes > plan.databaseCeilingBytes + plan.journalBytes) return false;
+  }
   let messages = 0, fresh = 0;
   for (const [index, file] of result.files.entries()) {
     if (!file || typeof file !== 'object'
@@ -53,6 +63,7 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
   const opts = { ...value, input };
   if (![opts.heapMiB, opts.perFileDeadlineMs, opts.rssBytes, input?.maxArtifactBytes].every(n => Number.isSafeInteger(n) && n > 0)
     || ![opts.acquireChild, opts.authorized, opts.chunks].every(fn => typeof fn === 'function')
+    || (input.includeFirstClaimPlan !== undefined && input.includeFirstClaimPlan !== true)
     || !Array.isArray(input.descriptors) || !input.descriptors.length || input.descriptors.length > 1024) {
     throw new LocalHistoryPreparedReadRefused('local-history-preview-policy');
   }

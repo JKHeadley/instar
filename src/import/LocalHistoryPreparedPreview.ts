@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { ImportedHistoryStore } from './ImportedHistoryStore.js';
+import type { LocalSourceIdentity } from './LocalSourceIdentity.js';
 import { visitPreparedArtifacts, type LocalHistoryPreparedArtifactDescriptor } from './LocalHistoryPreparedArtifacts.js';
 
 export interface LocalHistoryPreparedPreviewInput {
@@ -13,6 +14,7 @@ export interface LocalHistoryPreparedPreviewInput {
   ownerUserId: string;
   descriptors: readonly LocalHistoryPreparedArtifactDescriptor[];
   maxArtifactBytes: number;
+  includeFirstClaimPlan?: true;
 }
 export interface LocalHistoryPreparedPreviewFile {
   fileId: string;
@@ -27,6 +29,12 @@ export interface LocalHistoryPreparedPreview {
   files: LocalHistoryPreparedPreviewFile[];
   messages: number;
   newMessages: number;
+  firstClaimPlan?: {
+    fileId: string;
+    contentBytes: number;
+    databaseCeilingBytes: number;
+    journalBytes: number;
+  };
 }
 
 export async function readLocalHistoryPreparedPreview(input: LocalHistoryPreparedPreviewInput,
@@ -42,13 +50,17 @@ export async function readLocalHistoryPreparedPreview(input: LocalHistoryPrepare
     // ENOENT inside a present store is not an absent store.
     if (fs.existsSync(path.join(input.stateDir, 'imported-history'))) throw error;
   }
+  if (input.includeFirstClaimPlan && !store) throw new Error('local-history-claim-plan-existing-store-required');
   const read = async () => {
+    let firstIdentity: LocalSourceIdentity | undefined;
     const result: LocalHistoryPreparedPreview = { files: [], messages: 0, newMessages: 0 };
     await visitPreparedArtifacts(body, input.descriptors, { maxArtifactBytes: input.maxArtifactBytes,
       onArtifactStart: (_descriptor, index) => onArtifactStart?.(index) }, (descriptor, proposal) => {
-      const destination = store?.inspectLocalDestination({ ownerUserId: input.ownerUserId, source: descriptor.source,
+      const identity: LocalSourceIdentity = { ownerUserId: input.ownerUserId, source: descriptor.source,
         originalId: proposal.conversation.originalId, projectPath: proposal.projectPath,
-        representation: proposal.representation, parserContractVersion: 1 });
+        representation: proposal.representation, parserContractVersion: 1 };
+      if (input.includeFirstClaimPlan) firstIdentity ??= identity;
+      const destination = store?.inspectLocalDestination(identity);
       const messages = proposal.conversation.messages.length;
       const newMessages = destination ? proposal.conversation.messages.reduce((total, message) =>
         total + (destination.knownMessageKeys.has(message.key) ? 0 : 1), 0) : messages;
@@ -59,6 +71,18 @@ export async function readLocalHistoryPreparedPreview(input: LocalHistoryPrepare
       if (!Number.isSafeInteger(result.messages) || !Number.isSafeInteger(result.newMessages)
         || Buffer.byteLength(JSON.stringify(result)) > CHUNK_BYTES) throw new Error('local-history-preview-capacity');
     });
+    if (input.includeFirstClaimPlan) {
+      if (!store || !firstIdentity) throw new Error('local-history-claim-plan-existing-store-required');
+      const plan = store.planSourceClaimWrite(firstIdentity);
+      if (plan.allocationInput.kind !== 'source-claim') throw new Error('local-history-claim-plan-kind');
+      result.firstClaimPlan = {
+        fileId: result.files[0].fileId,
+        contentBytes: plan.contentBytes,
+        databaseCeilingBytes: plan.allocationInput.databaseCeilingBytes,
+        journalBytes: plan.allocationInput.journalBytes,
+      };
+      if (Buffer.byteLength(JSON.stringify(result)) > CHUNK_BYTES) throw new Error('local-history-preview-capacity');
+    }
     return result;
   };
   return store ? store.withWriter(read) : read();

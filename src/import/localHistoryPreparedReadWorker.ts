@@ -21,8 +21,9 @@ async function run(): Promise<void> {
   await send({ kind: 'ready' });
   const { header, body } = await localHistoryWorkerInput(process.stdin);
   if (!header || typeof header !== 'object' || Array.isArray(header)
-    || Object.keys(header).length !== 4
-    || Object.keys(header).some(key => !['stateDir', 'ownerUserId', 'descriptors', 'maxArtifactBytes'].includes(key))
+    || !['stateDir', 'ownerUserId', 'descriptors', 'maxArtifactBytes'].every(key => Object.hasOwn(header, key))
+    || Object.keys(header).some(key => !['stateDir', 'ownerUserId', 'descriptors', 'maxArtifactBytes', 'includeFirstClaimPlan'].includes(key))
+    || (Object.hasOwn(header, 'includeFirstClaimPlan') && (header as LocalHistoryPreparedPreviewInput).includeFirstClaimPlan !== true)
     || (header as LocalHistoryPreparedPreviewInput).stateDir !== token.stateDir) throw new Error('local-history-preview-header');
   const result = await readLocalHistoryPreparedPreview(header as LocalHistoryPreparedPreviewInput, body,
     index => { if (!process.connected) throw new Error('local-history-no-parent'); process.send!({ kind: 'file', index }); });
