@@ -562,7 +562,7 @@ it('refuses old-tag recovery when the temporary registry lacks its primary key',
   } finally { db.close(); ledger.close(); }
 });
 
-it.each(['cancel', 'shutdown', 'registration-failure'] as const)('holds registered copy custody through close after %s', async action => {
+it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-change'] as const)('holds registered copy custody through close after %s', async action => {
   const f = setup();
   const bytes = Buffer.from([
     { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
@@ -577,6 +577,10 @@ it.each(['cancel', 'shutdown', 'registration-failure'] as const)('holds register
   const receipt = await f.stage.publishPreparedPreview(device, selected.operationId);
   const intent = { previewId: receipt.previewId, machineId: receipt.machineId, bootId: issuer.bootId,
     confirmationChallenge: receipt.confirmation.challenge, applyRequestId: '1'.repeat(32) };
+  if (action !== 'missing-store') {
+    const store = new ImportedHistoryStore(f.stateDir);
+    fs.mkdirSync(path.join(store.dir, '.local-history-temporary'), { mode: 0o700 });
+  }
   const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
   const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
   const child = spawn(process.execPath, ['-e',
@@ -599,7 +603,17 @@ it.each(['cancel', 'shutdown', 'registration-failure'] as const)('holds register
       db.exec(`CREATE TRIGGER fixture_refuse_binding BEFORE UPDATE OF state ON local_history_store_temporary_runs
         WHEN NEW.state = 'active' BEGIN SELECT RAISE(ABORT, 'fixture refusal'); END;`);
     }
-    const work = Promise.allSettled([f.stage.holdPreparedCopyChild(device, selected.operationId, intent, child)]);
+    const before = ledger.list(tag);
+    const work = Promise.allSettled([f.stage.holdPreparedCopyChild(device, selected.operationId, intent, child, {
+      bootstrapBytes: 513, ceiling: 1024,
+    })]);
+    if (action === 'missing-store') {
+      const [result] = await work;
+      expect(result.status).toBe('rejected');
+      expect(ledger.list(tag)).toEqual(before);
+      expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+      return;
+    }
     const state = db.prepare('SELECT state FROM local_history_store_temporary_runs');
     await until(() => (state.get() as { state: string } | undefined)?.state === (action === 'registration-failure' ? 'registered' : 'active'));
     await expect(f.stage.readPreparedPreview(device, selected.operationId)).rejects.toThrow('upload-busy');
@@ -607,7 +621,14 @@ it.each(['cancel', 'shutdown', 'registration-failure'] as const)('holds register
     const stopping = action === 'shutdown' ? f.stage.stop() : undefined;
     expect(f.stage['disposeTag'](tag)).toBe(false);
     expect(ledger.list(tag).some(row => row.state === 'sealed')).toBe(true);
+    const reservation = ledger.list(tag).find(row => row.planned === 513 && row.written === 0)!;
+    expect(reservation.state).toBe('active');
     expect(() => process.kill(child.pid!, 0)).not.toThrow();
+    if (action === 'pin-change') {
+      const store = path.join(f.stateDir, 'imported-history');
+      fs.renameSync(path.join(store, 'attachments'), path.join(store, 'replaced-attachments'));
+      fs.mkdirSync(path.join(store, 'attachments'), { mode: 0o700 });
+    }
     if (action !== 'registration-failure') child.kill('SIGKILL');
     await closed;
     if (action === 'registration-failure') {
@@ -617,9 +638,12 @@ it.each(['cancel', 'shutdown', 'registration-failure'] as const)('holds register
     }
     const [result] = await work;
     await stopping;
-    expect(result.status).toBe(action === 'registration-failure' ? 'rejected' : 'fulfilled');
+    expect(result.status).toBe(['registration-failure', 'pin-change'].includes(action) ? 'rejected' : 'fulfilled');
     expect(state.get()).toEqual({ state: 'disposed' });
-    expect(ledger.list(tag).every(row => row.state === 'disposed')).toBe(action !== 'registration-failure');
+    expect(ledger.inspect(reservation.id)).toMatchObject(action === 'pin-change'
+      ? { planned: 513, state: 'active' } : { planned: 0, state: 'disposed' });
+    if (action === 'pin-change') expect(f.stage['disposeTag'](tag)).toBe(false);
+    expect(ledger.list(tag).every(row => row.state === 'disposed')).toBe(action === 'cancel' || action === 'shutdown');
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await closed;

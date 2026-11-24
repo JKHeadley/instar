@@ -243,6 +243,15 @@ export class LocalHistoryDiskLedger {
     return Object.freeze({
       allocationId,
       grow: (bytes: number) => this.growCopyRunReservation(operation, allocationId, revalidate, bytes, ceiling),
+      releaseAfterSettlement: () => this.disposeAllocation(allocationId, row => {
+        revalidate();
+        if (row.operation !== operation || row.written !== 0) throw new Error('local-history-disk-copy-reservation');
+        if (row.state !== 'disposed') {
+          const stat = fs.lstatSync(this.file(allocationId));
+          this.validate(stat, row);
+          if (stat.size !== 0) throw new Error('local-history-disk-copy-reservation');
+        }
+      }),
     });
   }
 
@@ -371,13 +380,20 @@ export class LocalHistoryDiskLedger {
   }
 
   dispose(id: string): void {
+    this.disposeAllocation(id);
+  }
+
+  private disposeAllocation(id: string, validateReservation?: (row: Row) => void): void {
     this.transaction(() => {
       const row = this.row(id);
+      validateReservation?.(row);
       if (row.state !== 'disposed') this.db.prepare("UPDATE allocations SET state = 'cleanup-pending' WHERE id = ?").run(id);
     });
     try {
       this.transaction(() => {
-        const row = this.row(id); if (row.state === 'disposed') return;
+        const row = this.row(id);
+        validateReservation?.(row);
+        if (row.state === 'disposed') return;
         try {
           const stat = fs.lstatSync(this.file(id));
           this.validate(stat, row, row.dev === null && row.ino === null && stat.size === 0);

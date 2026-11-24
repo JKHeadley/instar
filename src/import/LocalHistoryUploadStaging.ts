@@ -12,7 +12,7 @@ import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
 import { acquireLocalHistoryStoreTemporaryAdmission, hasUnsettledLocalHistoryTemporaryRun,
-  initializeLocalHistoryStoreTemporaryRuns, registerLocalHistoryStoreTemporaryRun, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryFirstPermitRun, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
+  initializeLocalHistoryStoreTemporaryRuns, localHistoryCopyDestinationDirectories, registerLocalHistoryStoreTemporaryRun, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryFirstPermitRun, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
 import { readLocalHistoryFirstPermitInventory } from './LocalHistoryFirstPermit.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
@@ -93,6 +93,7 @@ export class LocalHistoryUploadStaging {
   private readonly reportedCleanup = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly unsettledPermitTags = new Set<string>();
+  private readonly unsettledCopyReservationTags = new Set<string>();
   private readonly cleanups = new Map<string, ReturnType<typeof setTimeout>[]>();
   private verification: { id: string; done: Promise<void> } | undefined;
   private activeChildWork: { id: string; tag: string; done: Promise<void>; stop?: () => void } | undefined;
@@ -617,11 +618,15 @@ export class LocalHistoryUploadStaging {
    * or authorizing any mutation. Admission failures before custody transfer
    * leave the child with its original caller. */
   async holdPreparedCopyChild(device: LocalHistoryAuthenticatedDevice, operationId: string, intent: unknown,
-    child: ChildProcess): Promise<void> {
+    child: ChildProcess, budget: Readonly<{ bootstrapBytes: number; ceiling: number }>): Promise<void> {
     const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
     this.bindCopyIntent(deviceCopy, operationId, intent);
     if (this.verification || this.activeChildWork) refuse('busy');
     const row = this.owned(operationId, deviceCopy);
+    const { bootstrapBytes, ceiling } = budget;
+    if (!Number.isSafeInteger(bootstrapBytes) || !Number.isSafeInteger(ceiling) || bootstrapBytes <= 0 || bootstrapBytes > ceiling) {
+      refuse('invalid');
+    }
     if (!(child instanceof ChildProcess) || !child.pid || !child.spawnfile
       || child.exitCode !== null || child.signalCode !== null) refuse('invalid');
 
@@ -643,20 +648,39 @@ export class LocalHistoryUploadStaging {
     });
     const done = Promise.resolve().then(async () => {
       let run: ReturnType<typeof registerLocalHistoryStoreTemporaryRun> | undefined;
+      let pin: ReturnType<LocalHistoryDiskLedger['pinCopyVolume']> | undefined;
+      let reservation: ReturnType<LocalHistoryDiskLedger['createCopyRunReservation']> | undefined;
+      let reservationMayExist = false;
       try {
         if (closed || this.owned(operationId, deviceCopy).phase !== 'prepared') refuse('unavailable');
         this.metadataRoom();
-        run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, { operationId });
+        pin = this.ledger.pinCopyVolume(localHistoryCopyDestinationDirectories(this.deps.stateDir));
+        reservationMayExist = true;
+        reservation = this.ledger.createCopyRunReservation(this.custody, operationId, pin, bootstrapBytes, ceiling);
+        pin.revalidate();
+        run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, { operationId, existingDirectoriesOnly: true });
+        pin.revalidate();
         await run.registerChild(child);
-      } catch {
+      } catch (error) {
+        if (!reservation && error instanceof Error
+          && ['local-history-disk-capacity', 'local-history-disk-record-capacity'].includes(error.message)) reservationMayExist = false;
         failed = true;
         stop();
       }
       await childClosed;
       child.off('error', onError);
-      if (run) {
-        try { run.cleanupAfterChild(); }
-        catch { failed = true; this.report('cleanup', 'registered-namespace-cleanup-pending'); }
+      try {
+        if (run && pin && reservation) {
+          run.cleanupAfterChild();
+          reservation.releaseAfterSettlement();
+          reservationMayExist = false;
+        }
+      } catch {
+        failed = true;
+        this.report('cleanup', 'registered-namespace-cleanup-pending');
+      } finally {
+        if (reservationMayExist) this.unsettledCopyReservationTags.add(row.tag);
+        try { pin?.close(); } catch { failed = true; }
       }
     }).finally(() => {
       if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
@@ -796,7 +820,8 @@ export class LocalHistoryUploadStaging {
     catch { /* live memory denies authority; durable generation remains charged */ }
   }
   private disposeTag(tag: string): boolean {
-    if (this.activeChildWork?.tag === tag || this.unsettledPermitTags.has(tag)) return false;
+    if (this.activeChildWork?.tag === tag || this.unsettledPermitTags.has(tag)
+      || this.unsettledCopyReservationTags.has(tag)) return false;
     let disposed = true;
     let allocations: ReturnType<LocalHistoryDiskLedger['list']>;
     try {

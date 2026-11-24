@@ -211,6 +211,11 @@ function paths(stateDir: string, runId: string) {
   const root = path.join(store, TEMP_ROOT);
   return { store, root, directory: path.join(root, runId) };
 }
+/** Canonical directories for the existing-store copy reservation path. */
+export function localHistoryCopyDestinationDirectories(stateDir: string): readonly string[] {
+  const { store, root } = paths(stateDir, '');
+  return [store, path.join(store, 'conversations'), path.join(store, 'attachments'), root];
+}
 function checkDirectory(stateDir: string, value: RunRow, pinnedRoot?: fs.Stats): ReturnType<typeof paths> {
   const names = paths(stateDir, value.runId);
   const store = privateDirectory(names.store), root = privateDirectory(names.root), directory = privateDirectory(names.directory);
@@ -257,7 +262,7 @@ export interface LocalHistoryStoreTemporaryParentRun {
 }
 
 export function registerLocalHistoryStoreTemporaryRun(db: Database.Database, lease: LocalHistoryChildAdmission,
-  selected: { operationId: string }): LocalHistoryStoreTemporaryParentRun {
+  selected: { operationId: string; existingDirectoriesOnly?: boolean }): LocalHistoryStoreTemporaryParentRun {
   const brand = current(lease), stateDir = parentDatabase(db, brand.stateDir);
   const operationId = selected?.operationId;
   if (!hex(operationId, 32)) refuse('invalid');
@@ -267,9 +272,12 @@ export function registerLocalHistoryStoreTemporaryRun(db: Database.Database, lea
     if (!number(count) || count >= MAX_RUNS) refuse('capacity');
     const actual = operation(db, operationId, 'r-' + brand.generation + '-' + operationId);
     const names = paths(stateDir, runId);
-    fs.mkdirSync(names.store, { recursive: true, mode: 0o700 });
+    if (!selected.existingDirectoriesOnly) fs.mkdirSync(names.store, { recursive: true, mode: 0o700 });
     const store = privateDirectory(names.store);
-    try { fs.mkdirSync(names.root, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (!selected.existingDirectoriesOnly) {
+      try { fs.mkdirSync(names.root, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    }
     if (privateDirectory(names.root).dev !== store.dev) refuse('unavailable');
     if (boundedNames(names.root).length >= MAX_RUNS) refuse('capacity');
     fs.mkdirSync(names.directory, { mode: 0o700 });
