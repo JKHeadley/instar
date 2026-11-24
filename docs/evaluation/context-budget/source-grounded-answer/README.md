@@ -2,6 +2,8 @@
 
 This is a proposed data contract, not an implemented evaluator or a live model route. It extends beyond relationship arithmetic without encoding any private holdout answers. The relationship runner remains unchanged and cannot consume this contract yet. No qualification, savings or activation follows from a schema-valid answer.
 
+The corresponding proposed judge output is in `judge.schema.json`. `judging-protocol.md` defines its inputs, criterion completeness, authority checks, judge-error handling and preserved disagreement. These files specify future implementation requirements; they do not implement a judge or score the private cases.
+
 `answer.schema.json` defines the final answer only. The answering process receives a case identifier, question, only the immutable source records assigned to that arm and its selected context. It never receives reference labels, grading criteria, expected decision codes or other arms' outputs. The host supplies trial identity, model and route, source and context hashes, repeat number, cost and timing outside the answer. A model cannot self-assert those facts or grant authority through an answer field.
 
 Each source record has a host-assigned identifier, original text, text SHA-256, original timestamp, speaker identity and independently established provenance. An agent's proposal is not operator approval. A later message supersedes an earlier one only where its authority and scope support that interpretation. The future host must define and review an evidence standard for provenance; copied speaker metadata alone is not authentication. Those judgments belong to the reviewer; a timestamp alone cannot decide them.

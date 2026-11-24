@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "status": "design-reviewed-no-runtime-validation",
+  "reviewerSession": "/root/source_authority_review",
+  "separation": "separate session, same model family; no cross-model or qualification claim",
+  "scope": [
+    "judge schema",
+    "judging protocol",
+    "answer contract context"
+  ],
+  "privateCasesReread": false,
+  "initialFindings": [
+    "grade every semantic answer field",
+    "preserve critical signal and define separate adjudication and eligibility",
+    "bound raw judge parsing and reject duplicate keys/non-finite values",
+    "define exact source identifiers and Unicode spans",
+    "restrict empty evidence arrays"
+  ],
+  "resolution": "Reviewer confirmed all findings resolved and no remaining design blockers.",
+  "reviewedFiles": {
+    "answer.schema.json": "7aa27478bd7deb2b80f287698323f1c34211d794b2c530d85d7aebc94dfe8448",
+    "judge.schema.json": "a354615f7ad9bc83de1a0cc3f8f3b99fe8a59b16c94f9ea4f38fd9d8472410d5",
+    "judging-protocol.md": "dab58135c9feef437775dc6558cde701e89ff17e24fa47aa0b178f615dc95b42"
+  },
+  "acceptanceCases": "validation-cases.md contains subsequent generic design examples, not executed tests or additional independent review.",
+  "checks": {
+    "jsonParses": true,
+    "fullJsonSchemaValidatorRun": false,
+    "runtimeTestsRun": false
+  },
+  "qualification": false
+}
