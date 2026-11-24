@@ -24,3 +24,9 @@ test('a resolution cannot be reused for a different critical finding', () => {
   assert.deepEqual(summarize([signal, other], [receipt('judge-error')]).map(item => item.resolution),
     ['judge-error', 'unresolved']);
 });
+
+test('rejects absent or duplicate signal identities before applying a resolution', () => {
+  const malformed = { id: 'receipt', resolution: 'judge-error' };
+  assert.throws(() => summarize([{ criterionId: 'critical', slot: 0 }], [malformed]), TypeError);
+  assert.throws(() => summarize([signal, { ...signal, slot: 1 }], [receipt('judge-error')]), TypeError);
+});

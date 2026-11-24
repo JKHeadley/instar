@@ -19,3 +19,5 @@ When a reference is defective, the prototype checks that its replacement has a n
 To repeat the check, run `node scripts/evaluation/source_grounded_real_validator.check.mjs PATH_TO_VALIDATOR_WORKTREE` from the judge branch. Use the trusted local validator checkout at `e32c94417` with its locked dependencies installed. The command imports the validator code and its authored fixture from that explicit path. It uses Node with TypeScript type stripping available. This is a focused cross-worktree check.
 
 A missing judge receipt leaves its original slot empty. The other judge’s critical finding remains visible even though the pair is incomplete.
+
+Each critical finding needs its own host-issued identity before an adjudication can be recorded. This prevents one receipt from resolving two findings that share a criterion.
