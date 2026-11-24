@@ -14,7 +14,7 @@
  *     (hands off — does NOT permanently wedge the agent out).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
@@ -23,6 +23,7 @@ import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
 import {
   configureHostSpawnSemaphore,
+  getHostSpawnSemaphore,
   _resetHostSpawnSemaphoreForTest,
 } from '../../src/core/hostSpawnSemaphore.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
@@ -41,12 +42,18 @@ async function listen(app: express.Express): Promise<TestServer> {
 
 describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
   let server: TestServer;
+  let fixtureHome: string;
+  let homeSpy: { mockRestore(): void };
 
   beforeEach(async () => {
+    fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-lifecycle-home-'));
+    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
     _resetHostSpawnSemaphoreForTest();
     // Mirror the production boot wiring: server.ts injects the config-resolved
     // spawnCap. With no operator override, the default cap (8) holds.
     configureHostSpawnSemaphore({});
+    expect(getHostSpawnSemaphore().status().holdersPath)
+      .toBe(path.join(fixtureHome, '.instar', 'host-spawn-holders.json'));
     const app = express();
     app.use(express.json());
     const ctx: any = { config: { authToken: 'test', stateDir: '/tmp/.instar', port: 0 }, startTime: new Date() };
@@ -55,8 +62,16 @@ describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
   });
 
   afterEach(async () => {
-    _resetHostSpawnSemaphoreForTest();
-    await server?.close();
+    try {
+      await server?.close();
+    } finally {
+      _resetHostSpawnSemaphoreForTest();
+      homeSpy?.mockRestore();
+      SafeFsExecutor.safeRmSync(fixtureHome, {
+        recursive: true, force: true,
+        operation: 'tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts:home-cleanup',
+      });
+    }
   });
 
   it('FEATURE IS ALIVE: GET /spawn-limiter returns 200 (not 503/404) with the default cap on', async () => {

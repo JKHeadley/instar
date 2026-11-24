@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "fake-provider-host-state-isolation",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T02:48:12.811Z",
+  "artifactPath": "upgrades/side-effects/fake-provider-host-state-isolation.md",
+  "artifactSha256": "809ceddc7abcaf157a42440bdb0b15713efa02d8d56acdac01e194121c8cad3e",
+  "coveredFiles": [
+    "docs/specs/fake-provider-host-state-isolation.eli16.md",
+    "tests/e2e/provider-substrate-live-wiring.test.ts",
+    "tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts",
+    "tests/integration/spawn-cap.test.ts",
+    "upgrades/next/fake-provider-host-state-isolation.md",
+    "upgrades/side-effects/fake-provider-host-state-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three simulated test fixtures isolate their host accounting using temporary directories. All three focused test tiers passed and the independent reviewer concurred.",
+  "eli16Path": "docs/specs/fake-provider-host-state-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fake-provider-host-state-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
