@@ -29,7 +29,10 @@ try {
   await tmux(isolated, 'new-session', '-d', '-s', 'private-candidate', 'sleep', '25');
   assert.deepEqual(await names(isolated), ['private-candidate']);
   assert.deepEqual((await names(ordinary)).sort(), ['ordinary', 'promoted']);
-  await assert.rejects(tmux(ordinary, 'move-window', '-s', 'private-candidate:0', '-t', 'ordinary:'));
+  await assert.rejects(
+    tmux(ordinary, 'move-window', '-s', 'private-candidate:0', '-t', 'ordinary:'),
+    { stderr: /^can't find (?:window|session): private-candidate(?::0)?\n$/ },
+  );
   assert.deepEqual(await names(isolated), ['private-candidate']);
   assert.deepEqual((await names(ordinary)).sort(), ['ordinary', 'promoted']);
 
