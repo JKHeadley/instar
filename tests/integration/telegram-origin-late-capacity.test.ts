@@ -122,9 +122,25 @@ it('preserves a received consume refusal when caller closure happens during its 
   expect(await wrapped.consumeExplained!({ accountId: '123', ownerBootId: 'owner', nonce: 'one', expiresAt: Date.now() + 250 })).toBe(refusal);
 });
 it('retains received owner success when the caller close fence prevents network start', async () => {
+  const h = await lateCapacityHttpHarness(worker, false); closes.push(h.close);
   let closed = false;
-  const client: OriginCapacityAuthority = { reserve: async () => null, consume: async () => true,
-    consumeExplained: async () => { closed = true; return { consumed: true, refusal: null }; } };
-  expect(await wrapOriginCapacityClient(client, () => closed).consumeExplained!({ accountId: '123', ownerBootId: 'owner', nonce: 'one', expiresAt: Date.now() + 250 }))
-    .toMatchObject({ consumed: false, refusal: null, explanation: 'invalid', observedOwnerVerdict: 'consumed' });
+  const client: OriginCapacityAuthority = {
+    reserve: async () => null, consume: async () => true,
+    reserveExplained: async accountId => ({
+      grant: { accountId, ownerBootId: 'owner', nonce: 'one', expiresAt: Date.now() + 60_000 },
+      refusal: null, ownerDecidedAtMs: 1001,
+    }),
+    consumeExplained: async () => {
+      closed = true;
+      return { consumed: true, refusal: null, ownerDecidedAtMs: 1013 };
+    },
+  };
+  h.runtime.service.options.capacity = wrapOriginCapacityClient(client, () => closed);
+  await request(h.app).post('/telegram/reply/42').set('Authorization', 'Bearer agent-test')
+    .set('X-Instar-Origin-Session', h.sessionToken).send({ text: 'The caller closed after consumption.' });
+  expect(h.network).not.toHaveBeenCalled();
+  const row = (await h.runtime.store.listOrigins()).records[0];
+  expect(row.attempts[0]).toMatchObject({ outcome: 'known-failed', capacityEvidence: {
+    ownerVerdict: 'consumed', explanation: 'invalid', reserveOwnerDecidedAtMs: 1001, consumeOwnerDecidedAtMs: 1013,
+  } });
 });

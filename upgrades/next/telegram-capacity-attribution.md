@@ -15,3 +15,5 @@ The system is gaining better evidence about why a Telegram update waits. This do
 ## Summary of New Capabilities
 
 Authorized attempt readback can explain capacity refusals without changing send permission or retry behavior.
+
+Capacity evidence can also include the owner process's clock reading when it finished deciding whether to reserve or consume a grant. Older owners omit that reading. The one-worker IPC check passed all 12 cases.

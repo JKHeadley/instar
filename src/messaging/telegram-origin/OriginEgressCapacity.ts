@@ -29,9 +29,9 @@ export type OriginCapacityRefusalCause =
   | 'grant-expired' | 'consume-refused' | 'wrong-owner' | 'unknown-grant' | 'already-consumed' | 'grant-mismatch'
   | 'legacy-unexplained' | 'ipc-timeout' | 'ipc-unavailable' | 'ipc-protocol';
 export interface OriginCapacityRefusal { cause: OriginCapacityRefusalCause; leaseFreshness: LeaseFreshness | null }
-export type OriginCapacityDecision = ({ grant: OriginCapacityGrant; refusal: null } | { grant: null; refusal: OriginCapacityRefusal }) & { explanation?: 'complete' | 'legacy-unexplained' | 'invalid' };
+export type OriginCapacityDecision = ({ grant: OriginCapacityGrant; refusal: null } | { grant: null; refusal: OriginCapacityRefusal }) & { ownerDecidedAtMs?: number; explanation?: 'complete' | 'legacy-unexplained' | 'invalid' };
 
-export type OriginConsumeDecision = { observedOwnerVerdict?: 'consumed'; consumed: boolean; refusal: OriginCapacityRefusal | null; explanation?: 'complete' | 'legacy-unexplained' | 'invalid' };
+export type OriginConsumeDecision = { ownerDecidedAtMs?: number; observedOwnerVerdict?: 'consumed'; consumed: boolean; refusal: OriginCapacityRefusal | null; explanation?: 'complete' | 'legacy-unexplained' | 'invalid' };
 export interface OriginCapacityAuthority {
   readonly diagnosticTransport?: 'ipc';
   consumeExplained?(grant: OriginCapacityGrant): Promise<OriginConsumeDecision>;

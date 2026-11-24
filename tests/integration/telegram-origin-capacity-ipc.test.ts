@@ -24,7 +24,10 @@ describe('credential owner capacity over bounded notice IPC', () => {
     expect(await main.reserve('unregistered')).toBeNull();
     expect(await Promise.all(grants.map((grant, index) => index === 9 ? owner.consume(grant!) : main.consume(grant!))))
       .toEqual(Array(10).fill(true));
-    expect(await second.consume(grants[0]!)).toBe(false);
+    const duplicate = await second.consumeExplained!(grants[0]!);
+    expect(duplicate).toMatchObject({ consumed: false, ownerDecidedAtMs: expect.any(Number) });
+    const denied = await main.reserveExplained!('unregistered');
+    expect(denied).toMatchObject({ grant: null, ownerDecidedAtMs: expect.any(Number) });
     now += ORIGIN_CAPACITY_WINDOW_MS;
     const old = (await main.reserve('123'))!; live = false;
     expect(await second.consume(old)).toBe(false); expect(await main.reserve('123')).toBeNull();
@@ -111,4 +114,17 @@ it('lets a legacy-shaped client consume an upgraded owner grant exactly once', a
   expect(grant).toBeTruthy();
   expect((await legacyCall({ op: 'capacity-consume', grant })).consumed).toBe(true);
   expect((await legacyCall({ op: 'capacity-consume', grant })).consumed).toBe(false);
+});
+
+it('preserves the two owner clock readings without substituting the client clock', async () => {
+  const grant = fixtureGrant();
+  const socket = await replyServer((request, stream) => {
+    const decision = request.op === 'capacity-reserve'
+      ? { grant, refusal: null, ownerDecidedAtMs: 1001 }
+      : { consumed: true, refusal: null, ownerDecidedAtMs: 1013 };
+    stream.end(JSON.stringify(decision) + '\n');
+  });
+  const client = originCapacityClient(socket);
+  expect(await client.reserveExplained!('123')).toMatchObject({ grant, ownerDecidedAtMs: 1001 });
+  expect(await client.consumeExplained!(grant)).toMatchObject({ consumed: true, ownerDecidedAtMs: 1013 });
 });

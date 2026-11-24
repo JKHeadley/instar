@@ -8,6 +8,7 @@ export const CAPACITY_CAUSES: readonly OriginCapacityRefusalCause[] = Object.fre
 export interface CapacityEvidence {
   version: 1; authority: 'direct' | 'ipc' | 'legacy'; stage: 'reserve' | 'consume' | 'pre-network' | 'network-start';
   cause: OriginCapacityRefusalCause | null; ownerVerdict: 'granted' | 'consumed' | 'refused' | 'unknown';
+  reserveOwnerDecidedAtMs?: number; consumeOwnerDecidedAtMs?: number;
   reserveStartedAtMs: number | null; reserveEndedAtMs: number | null; consumeStartedAtMs: number | null;
   consumeEndedAtMs: number | null; checkedAtMs: number | null; grantExpiresAtMs: number | null;
   reserveDurationMs: number | null; consumeDurationMs: number | null;
@@ -24,7 +25,10 @@ export function sanitizeCapacityEvidence(input: unknown): StoredCapacityEvidence
   try {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return invalid();
     const x = input as CapacityEvidence;
-    if (Object.keys(x).sort().join(',') !== keys.join(',') || x.version !== 1 ||
+    const ownerTimes = ['reserveOwnerDecidedAtMs', 'consumeOwnerDecidedAtMs'] as const;
+    const present = ownerTimes.filter(key => Object.hasOwn(x, key));
+    if (present.some(key => !Number.isSafeInteger(x[key]) || x[key]! < 0)) return invalid();
+    if (Object.keys(x).sort().join(',') !== [...keys, ...present].sort().join(',') || x.version !== 1 ||
       !['direct', 'ipc', 'legacy'].includes(x.authority) || !['reserve', 'consume', 'pre-network', 'network-start'].includes(x.stage) ||
       !['granted', 'consumed', 'refused', 'unknown'].includes(x.ownerVerdict) ||
       !['complete', 'legacy-unexplained', 'invalid'].includes(x.explanation) || typeof x.clockUncertain !== 'boolean' ||

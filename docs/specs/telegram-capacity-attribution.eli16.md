@@ -9,3 +9,5 @@ These diagnostics cannot grant permission, send another message or change when a
 The evidence belongs to the same stored attempt as the delivery result. If storing the optional evidence fails, a fixed unavailable status distinguishes that failure from an older attempt without diagnostics. The actual delivery result still follows its existing safe recording rules. Readback and archive records retain the status where supported; an older rolled-back writer may omit new diagnostic details, which is a disclosed limit.
 
 The delayed Windows reply already recovered through the normal automatic queue. That does not establish why its earlier attempts failed. This work first makes the next failure explainable. The actual cause still needs observed evidence before a separate repair is chosen, and neither a local test nor shipping diagnostics means delivery is proven restored everywhere.
+
+The owner now sends its own clock reading with each decision. If the caller closes after the owner consumes a grant, the record can show when the owner decided and why the caller still stopped before contacting Telegram. Timestamps help explain delays. They confer no permission to send.

@@ -104,6 +104,7 @@ export async function dispatchOriginBotEgress(input: {
         const decision = authority.reserveExplained
           ? await authority.reserveExplained(request.accountId)
           : { grant: await authority.reserve(request.accountId), refusal: null, explanation: 'legacy-unexplained' as const };
+        if ('ownerDecidedAtMs' in decision && typeof decision.ownerDecidedAtMs === 'number') evidence.reserveOwnerDecidedAtMs = decision.ownerDecidedAtMs;
         evidence.reserveEndedAtMs = Date.now(); evidence.reserveDurationMs = performance.now() - reserveMono;
         clock(evidence.reserveStartedAtMs, evidence.reserveEndedAtMs, evidence.reserveDurationMs);
         evidence.explanation = decision.explanation ?? 'complete';
@@ -122,6 +123,7 @@ export async function dispatchOriginBotEgress(input: {
         evidence.remainingAtConsumeMs = grant.expiresAt - evidence.consumeStartedAtMs;
         const consumed = authority.consumeExplained ? await authority.consumeExplained(grant)
           : { consumed: await authority.consume(grant), refusal: null, explanation: 'legacy-unexplained' as const };
+        if ('ownerDecidedAtMs' in consumed && typeof consumed.ownerDecidedAtMs === 'number') evidence.consumeOwnerDecidedAtMs = consumed.ownerDecidedAtMs;
         evidence.consumeEndedAtMs = Date.now(); evidence.consumeDurationMs = performance.now() - consumeMono;
         clock(evidence.consumeStartedAtMs, evidence.consumeEndedAtMs, evidence.consumeDurationMs);
         evidence.explanation = consumed.explanation ?? 'complete';

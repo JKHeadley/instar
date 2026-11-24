@@ -42,12 +42,12 @@ export async function listenOriginNotices(socketPath: string, notifier: Telegram
         if (capacity && input?.op === 'capacity-reserve' && Object.keys(input).sort().join(',') === 'accountId,op' &&
           typeof input.accountId === 'string' && input.accountId.length <= 128) {
           const decision = capacity.reserveExplained ? await capacity.reserveExplained(input.accountId) : { grant: await capacity.reserve(input.accountId) };
-          socket.end(JSON.stringify(decision) + '\n'); return;
+          socket.end(JSON.stringify({ ...decision, ownerDecidedAtMs: Date.now() }) + '\n'); return;
         }
         if (capacity && input?.op === 'capacity-consume' && Object.keys(input).sort().join(',') === 'grant,op' &&
           validCapacityGrant(input.grant)) {
           const decision = capacity.consumeExplained ? await capacity.consumeExplained(input.grant) : { consumed: await capacity.consume(input.grant) };
-          socket.end(JSON.stringify(decision) + '\n'); return;
+          socket.end(JSON.stringify({ ...decision, ownerDecidedAtMs: Date.now() }) + '\n'); return;
         }
         if (!input || Object.keys(input).sort().join(',') !== 'destinationId,op' ||
           !['request', 'status'].includes(input.op) || !authorizedIds().includes(input.destinationId)) {
@@ -118,6 +118,10 @@ export function originCapacityClient(socketPath: string): OriginCapacityAuthorit
     } catch { finish(undefined, 'ipc-protocol'); } });
   });
   const no = (cause: OriginCapacityRefusalCause): OriginCapacityRefusal => ({ cause, leaseFreshness: null });
+  // Diagnostic metadata never changes the underlying grant or consume verdict.
+  const ownerTime = (r: Record<string, unknown>) =>
+    typeof r.ownerDecidedAtMs === 'number' && Number.isSafeInteger(r.ownerDecidedAtMs) && r.ownerDecidedAtMs >= 0
+      ? { ownerDecidedAtMs: r.ownerDecidedAtMs } : {};
   const quality = (r: Record<string, unknown>, positive: boolean, stage: 'reserve' | 'consume') => {
     if (!Object.hasOwn(r, 'refusal')) return { refusal: positive ? null : no('legacy-unexplained'), explanation: 'legacy-unexplained' as const };
     if (positive) return { refusal: null, explanation: r.refusal === null ? 'complete' as const : 'invalid' as const };
@@ -132,15 +136,15 @@ export function originCapacityClient(socketPath: string): OriginCapacityAuthorit
       try {
         const r = await call({ op: 'capacity-reserve', accountId });
         if (r.grant !== null && (!validCapacityGrant(r.grant) || r.grant.accountId !== accountId)) throw new CapacityIpcError('ipc-protocol');
-        if (r.grant === null) return { grant: null, ...quality(r, false, 'reserve') } as import('./OriginEgressCapacity.js').OriginCapacityDecision;
-        return { grant: r.grant as OriginCapacityGrant, refusal: null, explanation: quality(r, true, 'reserve').explanation };
+        if (r.grant === null) return { grant: null, ...ownerTime(r), ...quality(r, false, 'reserve') } as import('./OriginEgressCapacity.js').OriginCapacityDecision;
+        return { grant: r.grant as OriginCapacityGrant, ...ownerTime(r), refusal: null, explanation: quality(r, true, 'reserve').explanation };
       } catch (e) { return { grant: null, refusal: no(e instanceof CapacityIpcError ? e.cause : 'ipc-unavailable') }; }
     },
     consumeExplained: async grant => {
       try {
         const r = await call({ op: 'capacity-consume', grant });
         if (typeof r.consumed !== 'boolean') throw new CapacityIpcError('ipc-protocol');
-        return { consumed: r.consumed, ...quality(r, r.consumed, 'consume') };
+        return { consumed: r.consumed, ...ownerTime(r), ...quality(r, r.consumed, 'consume') };
       } catch (e) { return { consumed: false, refusal: no(e instanceof CapacityIpcError ? e.cause : 'ipc-unavailable') }; }
     },
   };

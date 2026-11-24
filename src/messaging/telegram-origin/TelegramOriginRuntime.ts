@@ -1384,7 +1384,7 @@ export function wrapOriginCapacityClient(client: OriginCapacityAuthority, closed
           if (closed()) return { consumed: false, refusal: { cause: 'owner-closed', leaseFreshness: null } };
           const result = await client.consumeExplained!(grant);
           if (!result.consumed) return result; // Preserve the first received refusal and the old short-circuit order.
-          return closed() ? { consumed: false, refusal: null, explanation: 'invalid', observedOwnerVerdict: 'consumed' } : result;
+          return closed() ? { ...result, consumed: false, refusal: null, explanation: 'invalid', observedOwnerVerdict: 'consumed' } : result;
         },
   };
 }
