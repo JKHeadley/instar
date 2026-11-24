@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "console-accounts-action-lifecycle",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-24T07:49:37.780Z",
+  "artifactPath": "upgrades/side-effects/console-accounts-action-lifecycle.md",
+  "artifactSha256": "fe000483b73d01f89b08c3af8d74b8ef6dd8e54166c214a2512d9445034de20a",
+  "coveredFiles": [
+    "dashboard/console/accounts.js",
+    "dashboard/console/ui.js",
+    "tests/unit/console-accounts-lifecycle.test.ts",
+    "upgrades/next/console-accounts-action-lifecycle.md",
+    "upgrades/side-effects/console-accounts-action-lifecycle.eli16.md",
+    "upgrades/side-effects/console-accounts-action-lifecycle.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This reversible browser repair scopes dialog updates to their owning view. Server authority, persisted account state, and request payloads are unchanged.",
+  "eli16Path": "upgrades/side-effects/console-accounts-action-lifecycle.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-accounts-action-lifecycle.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
