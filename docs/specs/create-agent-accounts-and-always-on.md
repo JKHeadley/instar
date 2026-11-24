@@ -43,7 +43,7 @@ Each item names its file and line.
    - No account found: sign-in runs as today.
    - One or more found: it writes `install-progress.json` with `status: "awaiting-person"`, `waitingFor: "account-choice"` and `accounts: [{ id, label, plan?, borrowedFrom? }]`, then stops.
    - The answers file gains `account: { use: <id> } | { new: true }`. A `--resume` reads it; an id that no longer matches a found account is refused with a plain reason.
-   - An older Mac app that doesn't know `account-choice` sees a waiting state it doesn't understand. It shows its generic "Continue" screen. Continuing without an answer means "use the default folder" when that folder is signed in (today's behaviour), and otherwise goes to sign-in.
+   - An older Mac app that doesn't know `account-choice` sees a waiting state it doesn't understand. It shows its generic "Continue" screen with the step's instruction. Continuing without an answer never picks an account: the step asks again, and its instruction says to update the Instar app if no choice appears. (Amended 2026-11-21: the earlier "use the default folder" fallback claimed an account the person never chose, which Justin ruled out on 2026-11-19.)
 3. **Using an existing account.**
    - **The default folder:** the new agent's pool gets it as its first account, as today.
    - **A folder inside another agent's home:** it is added with `borrowed: { from: <agent> }`, a new pool field. Sharing a folder is the same posture as agents sharing the default `~/.claude` today. The `claude` and `codex` tools refresh their own sign-in when a session runs, so two agents on one folder can race on a refresh exactly as they can now; this change does not make that worse, and it does not claim to fix it.
@@ -99,7 +99,7 @@ This is the Direct (unsandboxed) Mac build only. The sandboxed build cannot read
 
 - **Unit:**
   - account discovery against a fixture home holding two Claude folders, one with the same email, one Codex folder and a keyring-stored Codex;
-  - the `account-choice` state, both answers, a stale id, and the older-app fallback both with and without a signed-in default folder;
+  - the `account-choice` state, both answers, a stale id, and a resume without an answer, which asks again and never picks an account;
   - the pool written for `use`, for `new` (next free folder on a re-run) and for a borrowed folder;
   - the FileVault on/off wording;
   - the Always available plist; the undo record only restoring values still Instar's; the LaunchAgent turned off and back on;

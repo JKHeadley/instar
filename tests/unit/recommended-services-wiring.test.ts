@@ -72,7 +72,7 @@ describe('recommended services wiring', () => {
     expect(routes).toContain("configured: () => telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown }),");
     expect(routes).toContain('probe: (token, chatId) => probeTelegram(token, chatId),');
     expect(routes).toContain("const entry = { type: 'telegram', enabled: true, config: { token, chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 } };");
-    expect(routes).toContain("requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },");
+    expect(routes).toContain("requestRestart: async (reason) => (await ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram')) === true,");
     // Rollout step 5: the existing-agents switch is read live from the config.
     expect(routes).toContain('existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,');
     // Cloudflare: the real API client, this agent's tunnel block (remembered until the restart), one public read, the planned restart.
@@ -82,7 +82,7 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('cfg.tunnel = restoredTunnelBlock(cfg.tunnel as Record<string, unknown> | undefined, previous);');
     expect(routes).toContain('const tunnelFromConfig = (): TunnelSettings | null => tunnelSettingsFrom(ctx.config.tunnel);');
     expect(routes).toContain('const r = await fetch(`https://${hostname}/health`, { signal: AbortSignal.timeout(8000), redirect: \'manual\' });');
-    expect(routes).toContain("requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare'); return r === true; },");
+    expect(routes).toContain("requestRestart: async (reason) => (await ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare')) === true,");
     // The key route refuses a Cloudflare value the sync could not use, before anything is stored.
     expect(read('src/server/recommendedServiceRoutes.ts')).toContain("if (row.id === 'cloudflare-domain' && !parseCloudflareSecret(value)) {");
     const adapter = fs.readFileSync(path.join(root, 'src/messaging/TelegramAdapter.ts'), 'utf8');

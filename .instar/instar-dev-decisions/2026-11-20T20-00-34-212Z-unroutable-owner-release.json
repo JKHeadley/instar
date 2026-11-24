@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-20T20:00:34.212Z",
+  "slug": "unroutable-owner-release",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 482,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionRouter.ts",
+      "src/core/StaleOwnerReleaseEngine.ts",
+      "src/core/types.ts",
+      "src/core/unroutableOwner.ts",
+      "src/data/awareness/unroutable-owner-release.md",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 464,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

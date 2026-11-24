@@ -42,6 +42,7 @@ import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 import type { AccessStamp } from './TeamAccessMerge.js';
+import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
 export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
@@ -84,7 +85,7 @@ export interface AppEventBase {
  * `ownerPerson` (people and roles §3.4): set when an MSP phone created the conversation, namespaced
  * by the machine whose user registry the id belongs to. Absent ⇒ the owner's conversation.
  */
-export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string; ownerPerson?: ConversationOwner }
+export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string; ownerPerson?: ConversationOwner; creationContext?: AppCreationContext }
 export interface LabelEvent extends AppEventBase { kind: 'label'; title: string; setAt: string }
 export interface TombstoneEvent extends AppEventBase { kind: 'tombstone' }
 export interface MessageEvent extends AppEventBase {
@@ -110,8 +111,11 @@ export interface MessageEvent extends AppEventBase {
   /**
    * Work Board §2: set ONLY by the server-side append of a `Work board:` line, never accepted from a
    * request body. An older build's validator drops it and falls back to the line's own prefix.
+   * `work-board-note` (agent-work-cards-default §2): the agent's progress note, written through the notes route.
    */
-  systemSource?: 'work-board';
+  systemSource?: 'work-board' | 'work-board-note';
+  /** agent-work-cards-default §2: the binding of the session that wrote a `work-board-note` (audit only; never authority). */
+  writerBinding?: string;
   /** team-roles-and-access, "Step 2b": what lets any machine judge who may read this. Absent on older events, which every grant opens. */
   accessStamp?: AccessStamp;
 }
@@ -223,8 +227,9 @@ export interface BrowsedMessage {
   /** Unread (mobile-unread-messages §3.4): the sender's registry person, so a count can tell a reader's own rows. */
   senderPerson?: ConversationOwner;
   agentOrigin?: MessageOriginEvidence;
-  /** Work Board §2: this line was written by the work board, not by the agent. */
-  systemSource?: 'work-board';
+  /** Work Board §2: this line was written by the work board, not by the agent; `work-board-note` is the agent's own progress note (agent-work-cards-default §2). */
+  systemSource?: 'work-board' | 'work-board-note';
+  writerBinding?: string;
   accessStamp?: AccessStamp;
 }
 
@@ -297,7 +302,9 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       const title = cleanConversationTitle(r.title);
       if (!title) return null;
       const ownerPerson = validConversationOwner(r.ownerPerson);
-      return { ...base, kind: 'created', title, ...(ownerPerson ? { ownerPerson } : {}) };
+      const creationContext = r.creationContext === undefined ? undefined : validateAppCreationContext(r.creationContext);
+      if (creationContext === null) return null;
+      return { ...base, kind: 'created', title, ...(ownerPerson ? { ownerPerson } : {}), ...(creationContext ? { creationContext } : {}) };
     }
     case 'label': {
       const title = cleanConversationTitle(r.title);
@@ -339,8 +346,12 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
         const agentOrigin = validateMessageOriginEvidence(r.agentOrigin);
         if (agentOrigin && agentOrigin.machineId === machineId) out.agentOrigin = agentOrigin;
       }
-      // Work Board §2: a server-written card line. Only on an agent-role plain message; any other value is dropped.
-      if (r.role === 'agent' && r.kind === 'message' && r.systemSource === 'work-board') (out as MessageEvent).systemSource = 'work-board';
+      // Work Board §2: a server-written card line, or (agent-work-cards-default §2) the agent's progress note. Only on an
+      // agent-role plain message; any other value is dropped. An older build drops `work-board-note` and keeps the line.
+      if (r.role === 'agent' && r.kind === 'message' && (r.systemSource === 'work-board' || r.systemSource === 'work-board-note')) {
+        (out as MessageEvent).systemSource = r.systemSource;
+        if (r.systemSource === 'work-board-note') { const wb = str(r.writerBinding, 200); if (wb) (out as MessageEvent).writerBinding = wb; }
+      }
       return out;
     }
     case 'delivery': {
@@ -467,6 +478,11 @@ export interface AppConversationStoreOptions {
   onLocalAppend?: (event: AppEvent) => void;
 }
 
+interface CreatedEvidenceBase {
+  event: CreatedEvent;
+  contexts: Map<string, AppCreationContext>;
+}
+
 export class AppConversationStore {
   readonly dir: string;
   private readonly deletedDir: string;
@@ -476,6 +492,13 @@ export class AppConversationStore {
   private onLocalAppend: ((event: AppEvent) => void) | undefined;
   private readonly appendListeners = new Set<(event: AppEvent, how: { replicated: boolean }) => void>();
   private stamps: AccessStamps | null = null;
+  // Durable observations retain conflicting/complete copies before event-id suppression.
+  // Retention: append-only alongside the canonical conversation files; no automatic expiry.
+  private readonly creationEvidence = new Map<string, Map<string, Map<string, CreatedEvidenceBase>>>();
+  private creationEvidenceUnreadable = false;
+  private creationVersion = 0;
+  private lastDataVersion = 0;
+  private evidenceDataVersion = 0;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -485,6 +508,8 @@ export class AppConversationStore {
     fs.mkdirSync(this.deletedDir, { recursive: true, mode: 0o700 });
     this.db = this.openIndex();
     registerSqliteHandle(() => { try { this.db.close(); } catch { /* @silent-fallback-ok — already closed */ } });
+    this.loadCreationEvidence();
+    this.evidenceDataVersion = Number(this.db.pragma('data_version', { simple: true }));
     this.catchUp();
   }
 
@@ -525,6 +550,7 @@ export class AppConversationStore {
       const cols = new Set((db.prepare('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map((c) => c.name));
       if (!cols.has('ownerMachine')) db.exec('ALTER TABLE conversations ADD COLUMN ownerMachine TEXT');
       if (!cols.has('ownerUser')) db.exec('ALTER TABLE conversations ADD COLUMN ownerUser TEXT');
+      if (!cols.has('creationRecord')) db.exec('ALTER TABLE conversations ADD COLUMN creationRecord TEXT');
       const ok = db.pragma('quick_check', { simple: true });
       if (ok !== 'ok') throw new Error(`index quick_check: ${String(ok)}`);
       return db;
@@ -641,6 +667,39 @@ export class AppConversationStore {
     return `${crypto.createHash('sha256').update(canonicalKey).digest('hex')}.jsonl`;
   }
 
+  /**
+   * agent-work-cards-default §2 "Progress notes land in the conversation first": the replicated-journal emit is
+   * RESERVED before anything is written, and the durable local append runs only when the emit was accepted (enqueued
+   * for replication). A refused emit (`rate-limited`, or any other non-accepted outcome) writes nothing anywhere and
+   * is returned to the caller to retry; there is no rollback and no spool because nothing was written first.
+   * With no reserving hook configured (a single machine, or a test), this is a plain `append`.
+   */
+  appendWithEmit(input: AppEvent): { appended: boolean; ingestSeq: number; outcome: 'appended' | 'duplicate' | 'rate-limited' | 'not-accepted' } {
+    const stamp = (input.kind === 'message' || input.kind === 'media-message') && !input.accessStamp ? this.stamps?.stamp(input) ?? null : null;
+    const event = stamp ? { ...input, accessStamp: stamp } as AppEvent : input;
+    const canonicalKey = canonicalConversationKey(event.conversationKey);
+    const existing = this.db.prepare('SELECT ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, event.eventId) as { ingestSeq: number } | undefined;
+    if (existing) {
+      // Even a duplicate may carry creation evidence stripped by an older codec.
+      if (event.kind === 'created') this.write(event);
+      return { appended: false, ingestSeq: existing.ingestSeq, outcome: 'duplicate' };
+    }
+    if (this.reserveEmit) {
+      const r = this.reserveEmit(event);
+      const accepted = r.outcome === 'emitted' || r.outcome === 'disabled' || r.outcome === 'skipped';
+      if (!accepted) return { appended: false, ingestSeq: 0, outcome: /rate-limited/.test(r.outcome) ? 'rate-limited' : 'not-accepted' };
+      const w = this.write(event);
+      if (w.appended) this.notifyAppended(event, false);
+      return { ...w, outcome: w.appended ? 'appended' : 'duplicate' };
+    }
+    const r = this.append(event);
+    return { ...r, outcome: r.appended ? 'appended' : 'duplicate' };
+  }
+
+  /** The emit the reserving append runs FIRST (the same emitter the replication hook uses, returning its outcome). */
+  setReservingReplicationHook(hook: ((event: AppEvent) => { outcome: string }) | undefined): void { this.reserveEmit = hook; }
+  private reserveEmit: ((event: AppEvent) => { outcome: string }) | undefined;
+
   /** Append a locally-created event (dedup by eventId). The replication hook fires on a new commit. */
   append(input: AppEvent): { appended: boolean; ingestSeq: number } {
     const stamp = (input.kind === 'message' || input.kind === 'media-message') && !input.accessStamp ? this.stamps?.stamp(input) ?? null : null;
@@ -665,9 +724,24 @@ export class AppConversationStore {
   useAccessStamps(stamps: AccessStamps): void { this.stamps = stamps; }
 
   private write(event: AppEvent): { appended: boolean; ingestSeq: number } {
+    if (event.kind === 'created') {
+      const normalized = validateAppEvent(event);
+      if (!normalized || normalized.kind !== 'created') throw new Error('invalid app creation evidence');
+      event = normalized;
+      const evidenceVersion = Number(this.db.pragma('data_version', { simple: true }));
+      if (this.evidenceDataVersion && evidenceVersion !== this.evidenceDataVersion) this.loadCreationEvidence();
+      this.evidenceDataVersion = evidenceVersion;
+      // A pre-upgrade index may not have replayed its canonical base into the new evidence cache.
+      const original = this.getEvent(event.conversationKey, event.eventId);
+      if (original?.kind === 'created') this.observeCreated(original, false);
+      this.observeCreated(event, true);
+    }
     const canonicalKey = canonicalConversationKey(event.conversationKey);
     const existing = this.db.prepare('SELECT ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, event.eventId) as { ingestSeq: number } | undefined;
-    if (existing) return { appended: false, ingestSeq: existing.ingestSeq };
+    if (existing) {
+      if (event.kind === 'created') this.indexCreationRecord(event);
+      return { appended: false, ingestSeq: existing.ingestSeq };
+    }
     const file = this.db.prepare('SELECT fileName, nextIngestSeq FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number } | undefined;
     const fileName = file?.fileName ?? this.fileNameFor(canonicalKey);
     const ingestSeq = file?.nextIngestSeq ?? 1;
@@ -728,6 +802,7 @@ export class AppConversationStore {
 
   /** Apply one event to the index tables. Idempotent per (canonicalKey, eventId). */
   private indexEvent(ev: StoredAppEvent, fileName: string, byteOffset: number, byteLength: number): void {
+    if (ev.kind === 'created') this.observeCreated(ev, false);
     const canonicalKey = canonicalConversationKey(ev.conversationKey);
     // The file's current location is the one being indexed (a moved-to-deleted file re-points it).
     this.db.prepare('INSERT INTO files (canonicalKey, fileName, indexedBytes, nextIngestSeq) VALUES (?, ?, 0, 1) ON CONFLICT(canonicalKey) DO UPDATE SET fileName = excluded.fileName')
@@ -736,7 +811,8 @@ export class AppConversationStore {
       .run(canonicalKey, ev.ingestSeq, ev.eventId, 'messageId' in ev ? ev.messageId : null, ev.kind, ev.at, ev.machineId, byteOffset, byteLength);
     this.db.prepare('UPDATE files SET nextIngestSeq = MAX(nextIngestSeq, ?) WHERE canonicalKey = ?').run(ev.ingestSeq + 1, canonicalKey);
     if (ins.changes === 0) return;
-    this.db.prepare('INSERT OR IGNORE INTO conversations (canonicalKey, conversationKey) VALUES (?, ?)').run(canonicalKey, ev.conversationKey);
+    const newConversation = this.db.prepare('INSERT OR IGNORE INTO conversations (canonicalKey, conversationKey) VALUES (?, ?)').run(canonicalKey, ev.conversationKey);
+    if (newConversation.changes) this.creationVersion++;
     switch (ev.kind) {
       case 'created':
       case 'label': {
@@ -750,9 +826,11 @@ export class AppConversationStore {
           this.db.prepare('UPDATE conversations SET createdAt = ?, ownerMachine = ?, ownerUser = ? WHERE canonicalKey = ?')
             .run(ev.at, ev.ownerPerson?.machineId ?? null, ev.ownerPerson?.userId ?? null, canonicalKey);
         }
+        if (ev.kind === 'created') this.indexCreationRecord(ev);
         return;
       }
       case 'tombstone':
+        this.creationVersion++;
         this.tombstoneMediaRefs(canonicalKey);
         this.db.prepare('UPDATE conversations SET tombstoned = 1 WHERE canonicalKey = ?').run(canonicalKey);
         return;
@@ -951,6 +1029,146 @@ export class AppConversationStore {
     } catch { return null; } finally { fs.closeSync(fd); } // @silent-fallback-ok — an unreadable row reads as absent
   }
 
+  private creationEvidencePath(): string { return path.join(this.dir, 'creation-evidence.jsonl'); }
+
+  /** Only new evidence is appended; identical stripped copies add no information. */
+  private observeCreated(event: CreatedEvent, durable: boolean): void {
+    const key = canonicalConversationKey(event.conversationKey);
+    const byId = this.creationEvidence.get(key);
+    const bases = byId?.get(event.eventId);
+    const digest = creationBaseDigest(event);
+    const held = bases?.get(digest);
+    const contextHash = event.creationContext ? creationContextDigest(event.creationContext) : null;
+    if (held && (!contextHash || held.contexts.has(contextHash))) return;
+    if (durable) {
+      if (this.creationEvidenceUnreadable) throw new Error('creation evidence log is unreadable; refusing to acknowledge new evidence');
+      const file = this.creationEvidencePath();
+      const created = !fs.existsSync(file);
+      const fd = fs.openSync(file, 'a', 0o600); /* state-registry: app-conversations */
+      try {
+        const bytes = Buffer.from(`${JSON.stringify({ v: 1, event })}\n`);
+        let offset = 0;
+        while (offset < bytes.length) offset += fs.writeSync(fd, bytes, offset, bytes.length - offset);
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
+      if (created) this.fsyncDir(this.dir);
+    }
+    const ids = byId ?? new Map<string, Map<string, CreatedEvidenceBase>>();
+    const variants = bases ?? new Map<string, CreatedEvidenceBase>();
+    const base = held ?? { event: { ...event, creationContext: undefined }, contexts: new Map<string, AppCreationContext>() };
+    if (event.creationContext && contextHash) base.contexts.set(contextHash, event.creationContext);
+    variants.set(digest, base); ids.set(event.eventId, variants); this.creationEvidence.set(key, ids);
+    this.creationVersion++;
+  }
+
+  /** Replay observations without truncation, writes, repair, or a per-row file scan. */
+  private loadCreationEvidence(): void {
+    let fd: number;
+    try { fd = fs.openSync(this.creationEvidencePath(), 'r'); }
+    catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      this.creationEvidenceUnreadable = true;
+      this.reportOnce('creation-evidence-read', 'creation evidence could not be read; placement evidence is unavailable');
+      return;
+    }
+    try {
+      const chunk = Buffer.alloc(64 * 1024);
+      let carry = Buffer.alloc(0), pos = 0;
+      for (;;) {
+        const n = fs.readSync(fd, chunk, 0, chunk.length, pos);
+        if (!n) break;
+        pos += n;
+        const bytes = Buffer.concat([carry, chunk.subarray(0, n)]);
+        let start = 0;
+        for (let i = 0; i < bytes.length; i++) {
+          if (bytes[i] !== 10) continue;
+          if (i > start) {
+            try {
+              const raw = JSON.parse(bytes.subarray(start, i).toString('utf8')) as { v?: unknown; event?: unknown };
+              const event = raw.v === 1 ? validateAppEvent(raw.event) : null;
+              if (!event || event.kind !== 'created') throw new Error('invalid creation observation');
+              this.observeCreated(event, false);
+            } catch { this.creationEvidenceUnreadable = true; /* @silent-fallback-ok: reported once below and all placement evidence becomes unavailable. */ }
+          }
+          start = i + 1;
+        }
+        carry = Buffer.from(bytes.subarray(start));
+        if (carry.length > MAX_LINE_BYTES) { this.creationEvidenceUnreadable = true; break; }
+      }
+      if (carry.length) this.creationEvidenceUnreadable = true;
+    } catch { this.creationEvidenceUnreadable = true; /* @silent-fallback-ok: reported once below and all placement evidence becomes unavailable. */ }
+    finally { fs.closeSync(fd); }
+    if (this.creationEvidenceUnreadable) this.reportOnce('creation-evidence-read', 'creation evidence has an unreadable observation; placement evidence is unavailable');
+  }
+
+  private parseCreationRecord(raw: unknown): CreatedEvent | null {
+    if (typeof raw !== 'string') return null;
+    try { const ev = validateAppEvent(JSON.parse(raw)); return ev?.kind === 'created' ? ev : null; }
+    catch { return null; /* @silent-fallback-ok: malformed historical evidence is explicitly unknown, never authoritative placement. */ }
+  }
+
+  private completeCreated(event: CreatedEvent): CreatedEvent {
+    const bases = this.creationEvidence.get(canonicalConversationKey(event.conversationKey))?.get(event.eventId);
+    const held = bases?.get(creationBaseDigest(event));
+    const context = held?.contexts.size === 1 ? held.contexts.values().next().value : undefined;
+    return { ...event, ...(context ? { creationContext: validateAppCreationContext(context)! } : {}) };
+  }
+
+  private indexCreationRecord(event: CreatedEvent): void {
+    const key = canonicalConversationKey(event.conversationKey);
+    const row = this.db.prepare('SELECT creationRecord FROM conversations WHERE canonicalKey = ?').get(key) as { creationRecord: unknown } | undefined;
+    if (!row) return;
+    const prior = this.parseCreationRecord(row.creationRecord);
+    const chosen = !prior || compareCreatedEvidence(event, prior) < 0 ? event : prior;
+    const conflict = this.snapshotHasCreationConflict(row.creationRecord) || this.observedCreationConflict(key);
+    this.db.prepare('UPDATE conversations SET creationRecord = ? WHERE canonicalKey = ?').run(JSON.stringify({
+      ...this.completeCreated(chosen), ...(conflict ? { creationEvidenceConflict: true } : {}),
+    }), key);
+  }
+
+  private rawCreationRecord(key: string): CreatedEvent | null {
+    const r = this.db.prepare('SELECT creationRecord FROM conversations WHERE canonicalKey = ?').get(canonicalConversationKey(key)) as { creationRecord: unknown } | undefined;
+    return r ? this.parseCreationRecord(r.creationRecord) : null;
+  }
+
+  private snapshotHasCreationConflict(raw: unknown): boolean {
+    if (typeof raw !== 'string') return false;
+    try { return (JSON.parse(raw) as { creationEvidenceConflict?: unknown }).creationEvidenceConflict === true; }
+    catch { return true; /* @silent-fallback-ok: unreadable evidence is conservatively conflicting, suppressing placement without losing the chat. */ }
+  }
+
+  private observedCreationConflict(key: string): boolean {
+    if (this.creationEvidenceUnreadable) return true;
+    for (const variants of this.creationEvidence.get(canonicalConversationKey(key))?.values() ?? []) {
+      if (variants.size > 1 || [...variants.values()].some((value) => value.contexts.size > 1)) return true;
+    }
+    return false;
+  }
+
+  hasCreationConflict(key: string): boolean {
+    const indexed = this.db.prepare('SELECT creationRecord FROM conversations WHERE canonicalKey = ?').get(canonicalConversationKey(key)) as { creationRecord: unknown } | undefined;
+    if (this.observedCreationConflict(key) || this.snapshotHasCreationConflict(indexed?.creationRecord)) return true;
+    const record = this.rawCreationRecord(key);
+    const owner = this.getConversation(key)?.ownerPerson ?? null;
+    return !!record && ((record.ownerPerson?.machineId ?? null) !== (owner?.machineId ?? null) || (record.ownerPerson?.userId ?? null) !== (owner?.userId ?? null));
+  }
+
+  /** Historical evidence only. A missing/stripped legacy context remains absent. */
+  getCreationRecord(key: string): CreatedEvent | null {
+    if (this.hasCreationConflict(key)) return null;
+    const record = this.rawCreationRecord(key);
+    return record ? this.completeCreated(record) : null;
+  }
+
+  /** Changes on new context/index evidence; external writers invalidate the cached projection too. */
+  get creationGeneration(): number {
+    const version = Number(this.db.pragma('data_version', { simple: true }));
+    if (version !== this.lastDataVersion) { this.lastDataVersion = version; this.creationVersion++; }
+    return this.creationVersion;
+  }
+  get generation(): number { return this.creationGeneration; }
+  getCreationGeneration(): number { return this.creationGeneration; }
+
   /** One event by id (the Telegram history join, §4.9), or null. */
   getEvent(conversationKey: string, eventId: string): StoredAppEvent | null {
     const canonicalKey = canonicalConversationKey(conversationKey);
@@ -973,12 +1191,21 @@ export class AppConversationStore {
    * `<activity>|<canonicalKey>`. App-sent Telegram/Slack messages kept here (§4.9) are not listed.
    */
   listConversations(opts: { limit?: number; cursor?: string | null } = {}): { conversations: ConversationSummary[]; nextCursor: string | null } {
+    return this.nativeConversationPage(opts, true);
+  }
+
+  /** Internal creation graph inventory; archived-card hiding is a user-list preference only. */
+  creationInventoryPage(opts: { limit?: number; cursor?: string | null } = {}): { conversations: ConversationSummary[]; nextCursor: string | null } {
+    return this.nativeConversationPage(opts, false);
+  }
+
+  private nativeConversationPage(opts: { limit?: number; cursor?: string | null }, applyHiddenFilter: boolean): { conversations: ConversationSummary[]; nextCursor: string | null } {
     const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
     const act = `COALESCE(lastActivity, createdAt, '')`;
     // Work Board §2: conversations of archived or removed cards are left out BEFORE paging. If the
     // card store cannot be read, everything is shown (hiding must never fail closed on a list).
     let hidden: Set<string> | null = null;
-    try { hidden = this.hiddenConversationKeys?.() ?? null; } catch { hidden = null; /* @silent-fallback-ok: an unreadable card store shows every conversation */ }
+    try { hidden = applyHiddenFilter ? this.hiddenConversationKeys?.() ?? null : null; } catch { hidden = null; /* @silent-fallback-ok: an unreadable card store shows every conversation */ }
     const isHidden = (r: Record<string, unknown>): boolean => !!hidden && hidden.size > 0 && hidden.has(String(r.canonicalKey).replace(/^app:/, ''));
     const kept: Array<Record<string, unknown>> = [];
     let cursor = opts.cursor && opts.cursor.includes('|') ? opts.cursor : null;

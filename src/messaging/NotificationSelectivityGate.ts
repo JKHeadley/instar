@@ -184,11 +184,18 @@ export class NotificationSelectivityGate {
     if (category === 'pairing-outcome') {
       return envelope?.inboundMessageId ? result('deliver', 'requested-follow-up') : result('record', 'unanchored-follow-up');
     }
-    // Owner decision (cos-owner-decision-delivery): a button only the owner can answer is a decision,
-    // not a report. Stamped only in-process by TelegramAdapter.sendOfferList; no producer or request
-    // maps to it. A per-topic budget keeps a looping sender from flooding the owner.
+    // Owner decision (cos-owner-decision-delivery): an offer or armed exact-change confirmation
+    // needs a human answer, not a quiet report. Only trusted in-process sends stamp this category
+    // (sendOfferList or the profile-confirmation producer); request metadata cannot mint it.
+    // A per-topic budget keeps a looping sender from flooding the owner.
     if (category === 'owner-decision') {
       return this.budget(`owner-decision:${topicId}`, 10) ? result('deliver', 'owner-decision') : result('record', 'owner-decision-budget');
+    }
+    // Promise notice (overdue-promise-follow-through §3.5): a check-in or late line about a promise the
+    // agent made in this topic. Stamped only by the reminder reconciler's send in routes.ts (a named
+    // producer); the reconciler already caps it per topic and per hour, and this budget is the backstop.
+    if (category === 'promise-notice') {
+      return this.budget(`promise-notice:${topicId}`, 6) ? result('deliver', 'promise-notice') : result('record', 'promise-notice-budget');
     }
     if (CONVERSATION_CATEGORIES.has(category)) {
       // Never-Silent Conversation: the notice that a person's message went unanswered is the ONE

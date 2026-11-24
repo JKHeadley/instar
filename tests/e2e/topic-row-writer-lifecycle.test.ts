@@ -109,10 +109,11 @@ describe('TopicRowWriter across real processes and a restart', () => {
     expect(ctor).toContain("liveConfig.get<boolean>('contextBudget.enabled', false)");
     expect(ctor).toContain('topicMemory: () => topicMemory');
 
-    // Telegram: the dual-write goes through the key rule.
+    // Telegram: the dual-write goes through the key rule, via writeTelegramLogRow so a
+    // local live delivery supersedes a restored copy (topic-history-import spec).
     const tg = src.indexOf('telegram.onMessageLogged = (entry) => {');
     expect(tg).toBeGreaterThan(built);
-    expect(src.slice(tg, tg + 1500)).toContain("topicRowWriter.writeRow({ channel: 'telegram', nativeId: entry.messageId }");
+    expect(src.slice(tg, tg + 1500)).toContain('writeTelegramLogRow(topicRowWriter, tm, entry.messageId, body)');
 
     // Slack: through writeSlackLogRow, and the old cast-to-0 key is gone.
     const sl = src.indexOf('_slackAdapter.onMessageLogged = (entry) => {');

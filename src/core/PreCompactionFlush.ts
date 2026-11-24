@@ -298,6 +298,8 @@ export class PreCompactionFlush {
       .replace(/^-+|-+$/g, '')
       .slice(0, 48);
     if (!slug) return null;
+    // bounded-input-reviewed: model OUTPUT held to the "max 500 chars" contract its own prompt sets, before storage.
+    // A declared storage budget (Expected Capacity Enforcement), not a cut of judgment input.
     const body = rawBody.trim().slice(0, 500);
     if (!body) return null;
     return { slug, body };
@@ -347,6 +349,8 @@ export class PreCompactionFlush {
       const memoryDir = path.join(this.deps.projectDir, '.instar', 'memory');
       fs.mkdirSync(memoryDir, { recursive: true });
       const file = path.join(memoryDir, `learning_precompact_${ts}_${fact.slug}.md`);
+// bounded-input-reviewed: a one-line frontmatter description (120 chars) for a stored memory file; the full
+// fact body is written in the same file below it, so no reader loses content.
       const body = [
         '---',
         `name: precompact-${fact.slug}`,
@@ -372,6 +376,8 @@ export class PreCompactionFlush {
       const indexPath = path.join(this.deps.projectDir, '.instar', 'MEMORY.md');
       if (!fs.existsSync(indexPath)) return;
       const existing = fs.readFileSync(indexPath, 'utf8');
+      // bounded-input-reviewed: a MEMORY.md index pointer line; the 120-char text is a label and the linked file
+      // holds the full fact. Storage/display, not judgment input.
       const newLines = facts.map(
         (f) => `- [precompact: ${f.slug}](memory/learning_precompact_*_${f.slug}.md) — ${f.body.split('\n')[0].slice(0, 120)} (flush ${flushId})`,
       );

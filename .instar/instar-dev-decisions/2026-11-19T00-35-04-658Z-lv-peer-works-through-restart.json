@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-19T00:35:04.658Z",
+  "slug": "lv-peer-works-through-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 594,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/awareness/local-verify-peer-restart.md",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/peerTrust.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 557,
+    "deletedLines": 37
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "control-loop edges: pending restart -> peer dispatch (bounded by maxAttemptsPerEntry and one refund per entry per head); epoch change -> adopt/wait/abandon (acts once per attempt per epoch, then current; waiting bounded by the progress judgment and the 150-min backstop); 60-min review point -> end on evidence (acts once at the review point or the backstop). Steady state: no repeated action without a brake."
+    },
+    "component": "LocalVerifyService"
+  },
+  "verdict": "pass"
+}

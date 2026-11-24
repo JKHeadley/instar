@@ -39,6 +39,12 @@ export interface AspInboundEntry {
   messageId?: number;
   senderName?: string;
   fromUser?: boolean;
+  /**
+   * `mobile-device` for a message typed in the native app (SEC-106 decision 5). An app message is the
+   * owner's phone by construction and is never agent-signed through Telegram; its id is server-minted
+   * and shares the (topic, id) key space with Telegram, so it is neither classified nor remembered.
+   */
+  via?: 'mobile-device';
 }
 
 export interface AspClassificationRecord {
@@ -82,6 +88,10 @@ export interface AspClassifierCounters {
   recorded: number;
   /** Entries skipped because they were explicitly OUTBOUND (this agent's own sends). */
   skippedOutbound: number;
+  /** Native-app entries skipped (SEC-106 decision 5). */
+  skippedApp: number;
+  /** A later non-verified classification of the SAME text that left a resident agent-verified verdict in place. */
+  downgradeRefused: number;
 }
 
 const TAG_HINT = '⟦asp1 ';
@@ -98,6 +108,23 @@ const TAG_HINT = '⟦asp1 ';
 export interface AspRecentVerdict {
   classification: AspVerdict['classification'];
   agentId: string | null;
+  /**
+   * sha256 of the text this verdict was computed over (SEC-106 decisions 5 and 5a). A read must
+   * present the hash of the message it is labelling; a different hash is a different message that
+   * shared the (topic, id) key, and its verdict is never lent to this one.
+   */
+  textHash: string;
+}
+
+/** The outcome of a text-bound read (SEC-106 decision 5a). */
+export type AspVerdictLookup =
+  | { kind: 'hit'; verdict: AspRecentVerdict }
+  | { kind: 'miss' }
+  | { kind: 'hash-mismatch' };
+
+/** The hash every classifier write and read uses for a message's classified text. */
+export function aspTextHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 const RECENT_VERDICT_CAP = 1000;
@@ -111,7 +138,7 @@ export class AspInboundClassifier {
   private readonly now: () => number;
   readonly counters: AspClassifierCounters = {
     seen: 0, human: 0, agentVerified: 0, rejected: 0, errors: 0, recorded: 0,
-    skippedOutbound: 0,
+    skippedOutbound: 0, skippedApp: 0, downgradeRefused: 0,
   };
   private readonly recent = new Map<string, AspRecentVerdict>();
 
@@ -142,6 +169,12 @@ export class AspInboundClassifier {
       // does not supply it silently loses nothing. Fails toward recording.
       if (entry.fromUser === false) {
         this.counters.skippedOutbound += 1;
+        return null;
+      }
+
+      // App messages are kept out entirely (SEC-106 decision 5): neither classified nor remembered.
+      if (entry.via === 'mobile-device') {
+        this.counters.skippedApp += 1;
         return null;
       }
 
@@ -184,23 +217,54 @@ export class AspInboundClassifier {
   }
 
   /**
-   * The verdict recorded for one inbound message, by (topic, message id) —
-   * for the routing path, which runs AFTER log-time classification and must
-   * not verify again. `null` when the message was never classified here
-   * (no id, evicted, or arrived before this process started).
+   * The verdict recorded for one inbound message, by (topic, message id), BOUND
+   * to the message's text (SEC-106 decision 5a) — for the routing path, which
+   * runs AFTER log-time classification and must not verify again. The caller
+   * passes `aspTextHash` of the text the log site classified (see
+   * `aspClassifiedText`); a stored verdict for different text is a different
+   * message sharing the key and is never returned. `miss` when the message was
+   * never classified here (no id, evicted, or arrived before this process started).
    */
-  verdictFor(topicId: number | null | undefined, messageId: number | null | undefined): AspRecentVerdict | null {
-    if (typeof messageId !== 'number' || !Number.isFinite(messageId)) return null;
-    return this.recent.get(recentKey(topicId, messageId)) ?? null;
+  lookupVerdict(
+    topicId: number | null | undefined,
+    messageId: number | null | undefined,
+    textHash: string,
+  ): AspVerdictLookup {
+    if (typeof messageId !== 'number' || !Number.isFinite(messageId)) return { kind: 'miss' };
+    const stored = this.recent.get(recentKey(topicId, messageId));
+    if (!stored) return { kind: 'miss' };
+    if (typeof textHash !== 'string' || stored.textHash !== textHash) return { kind: 'hash-mismatch' };
+    return { kind: 'hit', verdict: stored };
+  }
+
+  /** Text-bound read, verdict or null (a mismatch reads as null). */
+  verdictFor(
+    topicId: number | null | undefined,
+    messageId: number | null | undefined,
+    textHash: string,
+  ): AspRecentVerdict | null {
+    const r = this.lookupVerdict(topicId, messageId, textHash);
+    return r.kind === 'hit' ? r.verdict : null;
   }
 
   private remember(entry: AspInboundEntry, verdict: AspVerdict): void {
     if (typeof entry.messageId !== 'number' || !Number.isFinite(entry.messageId)) return;
     const key = recentKey(entry.topicId, entry.messageId);
+    const textHash = aspTextHash(entry.text);
+    const prior = this.recent.get(key);
+    // SEC-106 decision 5: the same message classified again (a lifeline re-forward whose nonce is
+    // already used) never downgrades a resident agent-verified verdict. Different text under the
+    // same key is a different message and replaces the entry normally.
+    if (prior && prior.textHash === textHash && prior.classification === 'agent-verified'
+      && verdict.classification !== 'agent-verified') {
+      this.counters.downgradeRefused += 1;
+      return;
+    }
     this.recent.delete(key);
     this.recent.set(key, {
       classification: verdict.classification,
       agentId: 'agentId' in verdict ? verdict.agentId ?? null : null,
+      textHash,
     });
     while (this.recent.size > RECENT_VERDICT_CAP) {
       const oldest = this.recent.keys().next().value;

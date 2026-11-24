@@ -9,6 +9,7 @@ import { erasureControls } from './conversation-erasure.js';
 import { machineControls } from './conversation-machines.js';
 import { renderSuggestions } from './conversation-suggestions.js';
 import { openMakeCard, sourceKeyFor, messageIdFor } from './make-card.js';
+import { mountSourceCards } from './conversation-source-cards.js';
 
 const PAGE = '#/work/conversations';
 const ROOTS = '/conversation-graph/roots';
@@ -217,6 +218,13 @@ export async function renderConversations(main, ctx) {
       const history = await transcript(node, controller, current, main, retry);
       if (!current() || !history) return;
       body.append(history);
+      const sourceKey = sourceKeyFor(node.ref);
+      if (sourceKey) {
+        const sourceCards = el('section', { class: 'list-section conversation-source-cards' });
+        body.append(sourceCards);
+        void mountSourceCards({ host: sourceCards, key: sourceKey,
+          read: path => read(path, controller.signal), current, unlock: () => unlock(main, retry) });
+      }
     }
     if (node.kind === 'conversation' && !node.openUrl && !node.source) body.append(note('The original conversation is not available here yet.'));
     if (model.children.length || model.nextCursor) {

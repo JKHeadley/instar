@@ -85,6 +85,18 @@ export default class LocalVerifyUnhandledErrorsReporter {
   }
 
   onFinished(_files?: unknown, errors: unknown[] = []): void {
+    // The process's tests are over: write one last progress snapshot outside the throttle, with
+    // nothing running and every started file counted as finished. Without it a completion inside
+    // the 5-second throttle leaves a snapshot that still lists finished files as running, and a
+    // reader that judges progress from these files (a helper's attempt past its review point,
+    // docs/specs/local-verify-peer-works-through-restart.md E) would size its stall window on
+    // them. A process that is killed never gets here, and its snapshot stays as the forensics want it.
+    const progress = process.env.LOCAL_VERIFY_PROGRESS_FILE;
+    if (progress) {
+      for (const file of this.started.keys()) this.finished.add(file);
+      this.started.clear();
+      this.writeProgress(progress, Date.now());
+    }
     const out = process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
     if (!out) return;
     const body: UnhandledErrorsFile = {

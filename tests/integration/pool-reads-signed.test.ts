@@ -213,6 +213,17 @@ describe('signed pool reads between machines with different tokens', () => {
     expect((status.body.bearerFallbackNeededBy as Array<{ kinds: string[] }>)[0].kinds).toContain('transcript');
   });
 
+  it('SEC-114: a no-handler answer from a peer seen at a serving version is refused, never a bearer hop', async () => {
+    const server = await servingMachine({ verbs: 'none' });
+    const forged = async () => ({ status: 501, ok: false, reason: 'no-handler' });
+    const a = await askingMachine({ server, peerVersion: '1.3.1800', meshSignedRead: forged });
+    const t = await a.get(`/sessions/echo-remote/transcript?machineId=${SERVER}`);
+    expect(t.status).toBe(502);
+    const counts = (await a.get('/pool/signed-reads')).body.counts as { bearerReads: number; fallbacksRefused: number };
+    expect(counts.bearerReads).toBe(0);
+    expect(counts.fallbacksRefused).toBe(1);
+  });
+
   it('claim-unauthorized from a peer advertising the new version is a refusal, never a bearer hop', async () => {
     // An older machine's RBAC default answers an unknown verb this way; so does a real denial.
     const server = await servingMachine({ verbs: 'none' });

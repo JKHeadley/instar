@@ -104,3 +104,7 @@ Not required. See the header.
 - Ladder registry tests: `feature-ladders-coverage`, `MaturationLadder`, `FeatureMaturationPlanGate-ladder`.
 - Identity single-writer guard: `tests/unit/threadline/identity-single-writer.test.ts` names `core/AgentLinks.ts` as a read-only importer of the key-file module and asserts it reads with `repair: false` and has no write call (Local Verify fix 2026-11-18: the guard's fixed importer list had not been updated for the new reader).
 - `tsc --noEmit` clean.
+
+## Refresh against main
+
+The merge keeps current server imports and adds the agent link routes. It preserves all current feature ladder entries and adds the existing default-off agent link entry. The independent review found no change to identity verification, bearer authentication, the signed-device requirement or the default-off setting. Focused checks passed: 53 unit, 4 HTTP and 3 production server tests.

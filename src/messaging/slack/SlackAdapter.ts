@@ -210,6 +210,8 @@ export class SlackAdapter implements MessagingAdapter {
   private botUserId: string | null = null;
   /** VERIFIED connected team id from `auth.test` at start (null until verified). */
   private connectedTeamId: string | null = null;
+  /** The workspace address from `auth.test` (`https://<team>.slack.com/`), for message permalinks; null until read. */
+  private workspaceUrl: string | null = null;
 
   // Threads-as-first-class-sessions (§5.3). Resolved once from config. When a
   // channel is opted in, a message carrying a thread_ts routes to a session keyed
@@ -458,6 +460,7 @@ export class SlackAdapter implements MessagingAdapter {
       const authResult = await this.apiClient.call('auth.test', {}) as Record<string, unknown>;
       this.botUserId = authResult.user_id as string ?? null;
       this.connectedTeamId = typeof authResult.team_id === 'string' ? authResult.team_id : null;
+      this.workspaceUrl = typeof authResult.url === 'string' ? authResult.url : null;
       if (this.botUserId) {
         console.log(`[slack] Bot user ID: ${this.botUserId}${this.connectedTeamId ? ` (team ${this.connectedTeamId})` : ''}`);
         reportBotOnlyAuthorization(this.config.authorizedUserIds, this.botUserId);
@@ -762,6 +765,9 @@ export class SlackAdapter implements MessagingAdapter {
    */
   getConnectedTeamId(): string | null { return this.connectedTeamId; }
 
+  /** The workspace address Slack reported at start, or null (docs/specs/waiting-on-you-links.md §1). */
+  getWorkspaceUrl(): string | null { return this.workspaceUrl; }
+
   /** Get the current workspace behavior config. */
   getWorkspaceConfig(): { mode: SlackWorkspaceMode; autoJoinChannels: boolean; respondMode: SlackRespondMode } {
     return {
@@ -860,6 +866,15 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   /** Check if a user is authorized. */
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in an incoming message before anything keeps it. Returns the
+   * text to use; null or a throw leaves the message unchanged (the operator channel fails toward delivery).
+   */
+  public inboundCredentialMasker: ((input: {
+    text: string; channelId: string; ts: string; userId: string;
+    authorized: boolean; notFromThePerson: boolean; externalOrGuest: boolean;
+  }) => string | null) | null = null;
+
   isAuthorized(userId: string): boolean {
     return this.authorizedUsers.has(userId);
   }
@@ -1651,7 +1666,7 @@ export class SlackAdapter implements MessagingAdapter {
 
   private async _handleMessage(event: Record<string, unknown>): Promise<void> {
     const userId = event.user as string;
-    const text = event.text as string ?? '';
+    let text = event.text as string ?? '';
     const channelId = event.channel as string;
     const ts = event.ts as string;
     const threadTs = event.thread_ts as string | undefined;
@@ -1662,6 +1677,22 @@ export class SlackAdapter implements MessagingAdapter {
     const subtype = event.subtype as string | undefined;
     if (subtype && subtype !== 'file_share') return;
     if (!userId || !channelId) return;
+
+    // SEC-164 §3.5: mask live keys before the trust-account receipt, the ring buffer, the log or the
+    // session. History-recovery replays come through here too, and mask to the same text.
+    if (this.inboundCredentialMasker && text) {
+      try {
+        const userTeam = event.user_team as string | undefined;
+        const team = event.team as string | undefined;
+        const masked = this.inboundCredentialMasker({
+          text, channelId, ts, userId,
+          authorized: this.isAuthorized(userId),
+          notFromThePerson: !!event.bot_id,
+          externalOrGuest: !!(userTeam && team && userTeam !== team),
+        });
+        if (typeof masked === 'string') { text = masked; event.text = masked; }
+      } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+    }
 
     // Trust-journey decision 5: a direct-message reply that arrived from Slack itself (Socket Mode
     // or the history recovery, which never returns threaded replies) is offered to the account path
@@ -1906,6 +1937,7 @@ export class SlackAdapter implements MessagingAdapter {
             if (textContent) {
               // A shared file's contents are person text too (§3c): typed tags in them are inert.
               const safeContent = escapeTypedPathTags(textContent);
+              // bounded-input-reviewed: already DISCLOSED in-band ("[truncated, full content saved to <path>]") with a pointer to the whole file, which the session can read.
               const truncated = safeContent.length > 10000 ? safeContent.slice(0, 10000) + '\n... [truncated, full content saved to ' + savedPath + ']' : safeContent;
               cleanText = cleanText
                 ? `${cleanText}\n\n[User shared "${title}"]\n\`\`\`\n${truncated}\n\`\`\``

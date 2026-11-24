@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-18T15:58:44.085Z",
+  "slug": "promise-notice-delivers",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-notification-selectivity.mjs",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/notificationStampers.ts",
+      "src/monitoring/CheckInReminderReconciler.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

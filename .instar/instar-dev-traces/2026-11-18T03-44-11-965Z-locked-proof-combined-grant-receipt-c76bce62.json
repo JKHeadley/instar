@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "locked-proof-combined-grant-receipt",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T03:44:11.965Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-combined-grant-receipt.md",
+  "artifactSha256": "e0c52c7fe945e1e99dd013edefab0594ea247f7538c43bd9bf07e5abcff9985f",
+  "coveredFiles": [
+    "upgrades/next/locked-proof-guard-ack.md",
+    "upgrades/next/locked-proof-next-grant.md",
+    "upgrades/side-effects/locked-proof-combined-grant-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only combined release headings required by normal push gate; executable source unchanged.",
+  "eli16Path": "docs/specs/locked-proof-combined-grant-receipt.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-combined-grant-receipt.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -25,7 +25,7 @@ describe('promotion catch-up policy', () => {
     const config: JobSchedulerConfig = { jobsFile, enabled: true, startupGraceMs: 60_000,
       maxParallelJobs: 1, gateRetries: 1,
       quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } };
-    requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
+    await requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
       machineId: 'm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }, true);
     scheduler = new JobScheduler(config, mockSM as any, project.state, project.stateDir);
     scheduler.setPromotionLeaseProvider(() => ({ leaseEpoch: 3,
@@ -50,7 +50,7 @@ describe('promotion catch-up policy', () => {
   it('asks for run-once when another holder could have launched the job', async () => {
     const jobs = [job('run-once-explicit', 'run-once')];
     const jobsFile = createSampleJobsFile(project.stateDir, jobs);
-    requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
+    await requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
       machineId: 'm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }, true);
     scheduler = new JobScheduler({ jobsFile, enabled: true, startupGraceMs: 60_000,
       maxParallelJobs: 1, gateRetries: 1,
@@ -69,7 +69,7 @@ describe('promotion catch-up policy', () => {
   it('retries an undelivered ask and keeps it from auto-running on a later normal boot', async () => {
     const jobs = [job('needs-review')];
     const jobsFile = createSampleJobsFile(project.stateDir, jobs);
-    requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
+    await requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
       machineId: 'm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }, true);
     const config: JobSchedulerConfig = { jobsFile, enabled: true, startupGraceMs: 60_000,
       maxParallelJobs: 1, gateRetries: 1,
@@ -96,7 +96,7 @@ describe('promotion catch-up policy', () => {
   it('degrades run-once to ask when the live lease epoch cannot verify the stamp', async () => {
     const jobs = [job('run-once-explicit', 'run-once')];
     const jobsFile = createSampleJobsFile(project.stateDir, jobs);
-    requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
+    await requestRoleRestart({ stateDir: project.stateDir, leaseEpoch: 3,
       machineId: 'm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }, true);
     scheduler = new JobScheduler({ jobsFile, enabled: true, startupGraceMs: 60_000,
       maxParallelJobs: 1, gateRetries: 1,

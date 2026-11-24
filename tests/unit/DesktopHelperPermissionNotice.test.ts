@@ -7,13 +7,13 @@ const base = { displayCount: 1, sessionActive: true, ready: false };
 const missing = { ...base, screenPermission: false, inputPermission: false, helperChange: change };
 const granted = { ...base, ready: true, screenPermission: true, inputPermission: true };
 
-function notice(probes: unknown[], claim = () => true) {
+function notice(probes: unknown[], claim = () => true, recentlyUsed = () => true) {
   const raise = vi.fn(async () => undefined);
   const clear = vi.fn();
   const release = vi.fn();
   let i = 0;
   const subject = new DesktopHelperPermissionNotice({
-    machineLabel: 'the Mini', machineId: 'm_1', sourceHash: () => 'a'.repeat(64), claim, raise, clear, release,
+    machineLabel: 'the Mini', machineId: 'm_1', sourceHash: () => 'a'.repeat(64), claim, raise, clear, release, recentlyUsed,
     probe: async () => probes[Math.min(i++, probes.length - 1)] as never,
   });
   return { subject, raise, clear, release };
@@ -53,6 +53,30 @@ describe('desktop helper permission wording', () => {
 });
 
 describe('DesktopHelperPermissionNotice', () => {
+  it('raises no card on a Mac nobody has used Remote Desktop on, and leaves the claim for a sibling', async () => {
+    const claim = vi.fn(() => true);
+    const { subject, raise } = notice([missing], claim, () => false);
+    await subject.check();
+    expect(raise).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it('raises once Remote Desktop is used on that Mac', async () => {
+    let used = false;
+    const { subject, raise } = notice([missing], () => true, () => used);
+    await subject.check();
+    expect(raise).not.toHaveBeenCalled();
+    used = true;
+    await subject.check();
+    expect(raise).toHaveBeenCalledOnce();
+  });
+
+  it('still closes an open card when permission comes back, used or not', async () => {
+    const { subject, clear } = notice([granted], () => true, () => false);
+    await subject.check();
+    expect(clear).toHaveBeenCalledOnce();
+  });
+
   it('raises once with the plain reason, then closes itself when granted', async () => {
     const { subject, raise, clear } = notice([missing, missing, granted]);
     await subject.check();

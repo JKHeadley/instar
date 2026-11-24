@@ -155,6 +155,32 @@ describe('Slack from the app — production wiring', () => {
     ]);
     // The second person is named, not "Someone" or their id (fb-4db533fa-9d9).
     expect(hist.body.messages[0].senderName).toBe('Gear Test');
+
+    // The opt-in page diff is alive on this same production path, with real device signatures.
+    const feedPath = `/mobile/chat/slack/${conversationId}/messages?machine=${encodeURIComponent(machine)}&knownRows=`;
+    const baseline = await send('GET', feedPath);
+    expect(baseline.status).toBe(200);
+    expect(baseline.body.messages).toEqual(hist.body.messages);
+    expect(baseline.body.changeFeed.rowHashes).toHaveLength(hist.body.messages.length);
+    const knownRows = encodeURIComponent(baseline.body.changeFeed.rowHashes.join(','));
+    const idle = await send('GET', `${feedPath}${knownRows}`);
+    expect(idle.status).toBe(200);
+    expect(idle.body.messages).toEqual([]);
+    expect(idle.body.changeFeed).toEqual(baseline.body.changeFeed);
+
+    const next = await send('POST', `/mobile/chat/slack/${conversationId}`, {
+      machine, text: 'A second message after the baseline.', requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(next.status).toBe(200);
+    expect(next.body.outcome).toBe('delivered');
+    const changed = await send('GET', `${feedPath}${knownRows}`);
+    expect(changed.status).toBe(200);
+    expect(changed.body.messages).toHaveLength(1);
+    expect(changed.body.messages[0]).toMatchObject({
+      eventId: next.body.eventId, text: 'A second message after the baseline.',
+      deliveryState: 'delivered', originVerified: 'verified',
+    });
+    expect(changed.body.changeFeed.rowHashes).toHaveLength(baseline.body.messages.length + 1);
   });
 
   it('with no owner id set, Slack rows are withheld and the send route says why', async () => {

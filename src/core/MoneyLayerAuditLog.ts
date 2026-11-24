@@ -45,6 +45,13 @@ export const MONEY_AUDIT_ROW_TYPES = {
   'restart-initiated': { channel: 'audit', pregate: true },
   'restart-observed-ready': { channel: 'audit', pregate: true },
   'config-inspect': { channel: 'audit', pregate: true },
+  // gemini-payg §8: the one-PIN go-live commit (intent hash + machine only — no caps
+  // figures, so it is as pre-gate readable as an enable). The apply, release and stop
+  // rows carry money detail and are withheld pre-gate.
+  'gemini-payg-setup-committed': { channel: 'authority', pregate: true },
+  'gemini-payg-intent-applied': { channel: 'audit', pregate: false },
+  'gemini-payg-release': { channel: 'audit', pregate: false },
+  'gemini-payg-stop-action': { channel: 'audit', pregate: false },
   // Freeze/unfreeze are AUTHORITY rows (they change what may spend) but are
   // partially pre-gate readable: an operator must be able to see WHY spending
   // stopped. Timing history is withheld — see redactForPregate().
