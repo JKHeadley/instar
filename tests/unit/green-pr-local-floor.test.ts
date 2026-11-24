@@ -460,6 +460,63 @@ describe('merge line hand-off (CMT-980): tick({ handoff })', () => {
   const two = () => [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200', headRefName: 'echo/two' })];
   const both = new Set(['100:sha100:main', '200:sha200:main']);
 
+  it('reads an exact verified handoff outside the oldest authored listing without bypassing ordinary gates', async () => {
+    const target = pr({ number: 3714, headRefOid: 'sha3714', headRefName: 'fix/busy-followup', authorLogin: 'echo-bot', isCrossRepository: false });
+    const h = harness([]);
+    const lookups: number[] = [];
+    Object.assign(h.deps, { refetchHandoffPr: async (n: number) => { lookups.push(n); return target; } });
+    h.deps.listOpenPrs = async () => { throw new Error('discovery must not be called for exact handoff'); };
+    h.deps.refetchPr = async () => ({ title: target.title, labels: [], isDraft: false, headRefOid: target.headRefOid, state: 'OPEN' });
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(['3714:sha3714:main']) }).lv);
+    expect(await w.tick({ handoff: { pr: 3714, head: 'sha3714' } })).toEqual({ acted: true, reason: 'merged' });
+    expect(lookups).toEqual([3714]);
+    expect(h.runCalls).toEqual([expect.objectContaining({ pr: 3714, headRefOid: 'sha3714', strategy: 'sync' })]);
+  });
+
+  it.each([
+    ['held', { labels: ['hold'] }, true, 'held'],
+    ['draft', { isDraft: true }, true, 'held'],
+    ['fork', { isCrossRepository: true }, true, 'not-agent-namespace'],
+    ['other author', { authorLogin: 'someone-else' }, true, 'not-agent-namespace'],
+    ['moved head', { headRefOid: 'new' }, true, 'head-moved'],
+    ['no record', {}, false, 'no-verify-record'],
+  ])('the exact lookup preserves %s refusal', async (_name, over, hasRecord, reason) => {
+    const target = pr({ number: 3714, headRefOid: 'sha3714', headRefName: 'fix/busy-followup', authorLogin: 'echo-bot', isCrossRepository: false, ...over });
+    const h = harness([]); h.deps.refetchHandoffPr = async () => target;
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(hasRecord ? ['3714:sha3714:main'] : []) }).lv);
+    expect(await w.tick({ handoff: { pr: 3714, head: 'sha3714' } })).toEqual({ acted: false, reason: `handoff-not-eligible:${reason}` });
+    expect(h.runCalls).toEqual([]);
+  });
+
+  it('an unreadable exact lookup is not replaced by another listed merge candidate', async () => {
+    const h = harness(two()); h.deps.refetchHandoffPr = async () => { throw new Error('read failed'); };
+    const w = new GreenPrAutoMerger(h.deps, cfg); w.attachLocalVerify(hook({ records: both }).lv);
+    expect(await w.tick({ handoff: { pr: 3714, head: 'sha3714' } })).toEqual({ acted: false, reason: 'handoff-read-failed' });
+    expect(h.runCalls).toEqual([]);
+  });
+
+  it.each([true, false])('an exact target read (found=%s) cannot clear unrelated discovery state or red alerts', async (found) => {
+    const target = pr({ number: 3714, headRefOid: 'sha3714', headRefName: 'fix/busy-followup', authorLogin: 'echo-bot', isCrossRepository: false });
+    const h = harness([]);
+    h.state.snapshot = { at: 1234, entries: [{ pr: 99, headRefName: 'echo/other', headRefOid: 'other', kind: 'mergeable' }] };
+    h.state.notAgentOwned = [{ pr: 88, headRefName: 'foreign', headRefOid: 'foreign', reason: 'author-mismatch', hasVerifyRecord: false, firstSeenAt: 1234 }];
+    h.state.namespaceMismatch = { firstSeenAt: 1234, lastSeenAt: 1234, namespace: 'echo', openPrCount: 1, sampleBranches: ['foreign'], fingerprint: 'old' };
+    h.state.redPrRaised = { 99: { at: 1234, firstFailAt: 1234, hours: 3, checks: ['unit'] } };
+    h.state.lastSuccessfulListAt = 1234;
+    const before = structuredClone({ snapshot: h.state.snapshot, notAgentOwned: h.state.notAgentOwned,
+      namespaceMismatch: h.state.namespaceMismatch, redPrRaised: h.state.redPrRaised, lastSuccessfulListAt: h.state.lastSuccessfulListAt });
+    h.deps.refetchHandoffPr = async () => found ? target : null;
+    h.deps.listOpenPrs = async () => { throw new Error('no full discovery'); };
+    h.deps.refetchPr = async () => ({ title: target.title, labels: [], isDraft: false, headRefOid: target.headRefOid, state: 'OPEN' });
+    const w = new GreenPrAutoMerger(h.deps, cfg); w.attachLocalVerify(hook({ records: new Set(['3714:sha3714:main']) }).lv);
+    expect((await w.tick({ handoff: { pr: 3714, head: 'sha3714' } })).acted).toBe(found);
+    expect({ snapshot: h.state.snapshot, notAgentOwned: h.state.notAgentOwned, namespaceMismatch: h.state.namespaceMismatch,
+      redPrRaised: h.state.redPrRaised, lastSuccessfulListAt: h.state.lastSuccessfulListAt }).toEqual(before);
+    expect(h.audits.some((a) => a.event === 'red-pr-cleared' || a.event === 'namespace-mismatch-recovered')).toBe(false);
+  });
+
   it('merges exactly the handed-off PR with strategy sync — not the oldest candidate — and requests no verifies', async () => {
     const h = harness(two());
     const hk = hook({ records: both });
