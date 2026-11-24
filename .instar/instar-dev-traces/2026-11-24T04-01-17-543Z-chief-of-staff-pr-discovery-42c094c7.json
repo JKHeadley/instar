@@ -51,5 +51,10 @@
       "iterations": 6,
       "verified": true
     }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The lookup runs once on an authenticated HTTP request, uses bounded provider pagination and shares in-flight work. The retry timestamp only gates a later request and never schedules another action."
   }
 }
