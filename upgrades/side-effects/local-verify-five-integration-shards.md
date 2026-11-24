@@ -3,7 +3,7 @@
 **Version / slug:** local-verify-five-integration-shards
 **Date:** 2026-11-24
 **Author:** Echo
-**Second-pass reviewer:** not required
+**Second-pass reviewer:** Independent Codex reviewer
 
 ## Summary of the change
 
@@ -52,3 +52,9 @@ Return the integration count to four for the next run. Reverting the code restor
 ## Evidence
 
 Seven targeted service and runner tests and three agent-guide tests passed. A TypeScript check and the normal commit checks verify the updated code. The five-process result is a planning estimate until a live comparison is complete.
+
+## Second-pass review of the opt-in trial
+
+**Reviewer:** Independent Codex reviewer, read-only subagent
+
+An independent read-only reviewer checked commit `784dd9596`. Verdict: **concur**. The service and child use the same integer and per-lane limits. Existing valid settings and defaults are preserved. Five processes use the same file partition, first-part exclusion, deadlines, coverage checks, and failure handling. The agent-guide migration is narrowly scoped to the previous wording and is idempotent. The merged diff passes git's whitespace check. This review establishes correctness of the setting path. Wall time and resource contention require the live comparison.

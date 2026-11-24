@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "local-verify-five-integration-shards",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-24T20:28:29.717Z",
+  "artifactPath": "upgrades/side-effects/local-verify-five-integration-shards.md",
+  "artifactSha256": "ac672d452dc1bd4ab100baa3b8faec5879ba08fff9653fc8204e2a1ddc608d7f",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T20-14-58-156Z-permanent-agent-links.json",
+    ".instar/instar-dev-decisions/2026-11-24T20-16-23-537Z-local-verify-five-integration-shards.json",
+    ".instar/instar-dev-traces/2026-11-24T20-15-54-277Z-local-verify-five-integration-shards-00cda4c7.json",
+    "docs/specs/local-verify-five-integration-shards.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/local-verify-five-integration-shards.md",
+    "upgrades/side-effects/local-verify-five-integration-shards.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The fifth process is opt-in and the guide migration updates explanatory text.",
+  "eli16Path": "docs/specs/local-verify-five-integration-shards.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-five-integration-shards.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
