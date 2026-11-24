@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "work-card-plain-language",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-24T20:18:30.106Z",
+  "artifactPath": "upgrades/side-effects/work-card-plain-language.md",
+  "artifactSha256": "f35e0a80f652f8e5024558987608cff94951443020708b1b3c261cecfa80262c",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T20-18-15-829Z-work-card-plain-language.json",
+    "dashboard/console/work-model.js",
+    "src/core/ChiefOfStaffWaitCards.ts",
+    "src/core/ProjectAppCustomFold.ts",
+    "src/core/WorkBoardRequestGate.ts",
+    "src/core/WorkBoardService.ts",
+    "src/core/workBoardViews.ts",
+    "src/server/ProjectAppCustomSource.ts",
+    "tests/unit/ProjectAppCustomSource.test.ts",
+    "tests/unit/chief-of-staff-wait-cards.test.ts",
+    "tests/unit/console-work-model.test.ts",
+    "upgrades/next/work-card-plain-language.md",
+    "upgrades/side-effects/work-card-plain-language.eli16.md",
+    "upgrades/side-effects/work-card-plain-language.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read projection and reversible wording checks preserve exact stored approval binding",
+  "eli16Path": "upgrades/side-effects/work-card-plain-language.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-card-plain-language.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

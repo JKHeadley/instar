@@ -15,6 +15,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import { versionCardDisplayNeed } from './ProjectAppCustomFold.js';
 import { workCardPlainLanguageIssue } from './WorkCardPlainLanguage.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
@@ -624,7 +625,7 @@ export class WorkBoardService {
    * phone create names its id the same way (derived from the owner and the request id), so a retry finds one card.
    * `dryRun`: run every check (including the store's record shape) and write nothing.
    */
-  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string; counted?: boolean }, opts?: { dryRun?: boolean; checkRequestCopy?: boolean }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
+  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string; counted?: boolean }, opts?: { dryRun?: boolean }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
     if (p.kind === 'session') return refuse(403, 'scoped-session-cannot-create');
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const fields: Record<string, unknown> = {};
@@ -646,10 +647,11 @@ export class WorkBoardService {
     if (fields.carrier === undefined) fields.carrier = 'agent';
     if (Array.isArray(fields.refs) && (fields.refs as unknown[]).length > MAX_REFS) return refuse(400, 'too-many-refs', { limit: MAX_REFS });
     const t = this.checkText(fields); if (t) return t;
-    if (p.kind === 'agent' && (!p.server || opts?.checkRequestCopy)) {
+    if (p.kind === 'agent') {
       // The gate binds the complete sender-verified owner request. It must remain verbatim.
       const preserveOriginalRequest = p.server === true && recordOwnerRequest(fields);
-      const issue = workCardPlainLanguageIssue(fields, { preserveOriginalRequest });
+      const need = serverCard && typeof fields.need === 'string' ? versionCardDisplayNeed(serverCard.cardId, fields.need) : fields.need;
+      const issue = workCardPlainLanguageIssue({ ...fields, need }, { preserveOriginalRequest });
       if (issue) return refuse(422, 'card-text-needs-rewrite', issue);
     }
     const linkErr = this.checkAttachmentLinks(undefined, fields.links); if (linkErr) return linkErr;
@@ -827,8 +829,10 @@ export class WorkBoardService {
     }
     if (Array.isArray(changed.doneWhen) && (changed.doneWhen as DoneWhenItem[]).length === 0) return refuse(400, 'done-item-required');
     const t = this.checkText(changed); if (t) return t;
-    if (p.kind === 'agent' && !p.server) {
-      const issue = workCardPlainLanguageIssue(changed);
+    if (p.kind === 'agent') {
+      const need = opts.serverOwnedRewrite && typeof changed.need === 'string'
+        ? versionCardDisplayNeed(cardId, changed.need) : changed.need;
+      const issue = workCardPlainLanguageIssue({ ...changed, need });
       if (issue) return refuse(422, 'card-text-needs-rewrite', issue);
     }
     const le = this.checkAttachmentLinks(cardId, changed.links); if (le) return le;

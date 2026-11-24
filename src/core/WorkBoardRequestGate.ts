@@ -316,7 +316,7 @@ export class WorkBoardRequestGate {
       fields.recordedAsHash = requestTextHashOf(c.userRequest);
     }
     if (fields.source === undefined) delete fields.source;
-    const r = this.d.svc.createCard({ kind: 'agent', server: true }, fields, { cardId, counted: !opts.backfill }, { checkRequestCopy: true });
+    const r = this.d.svc.createCard({ kind: 'agent', server: true }, fields, { cardId, counted: !opts.backfill });
     if (!r.ok) {
       if (r.error === 'card-exists') {
         const linked = this.ensureRef(cardId, refId);

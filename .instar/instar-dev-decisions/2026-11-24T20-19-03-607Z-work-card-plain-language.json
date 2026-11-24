@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-24T20:19:03.607Z",
+  "slug": "work-card-plain-language",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffWaitCards.ts",
+      "src/core/ProjectAppCustomFold.ts",
+      "src/core/WorkBoardRequestGate.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/workBoardViews.ts",
+      "src/server/ProjectAppCustomSource.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -13,3 +13,7 @@ The board points out the exact field that contains a recognized internal term, c
 ## What your approval means
 
 Your original request remains in your own words wherever the board has verified its source. Your approval keeps its existing meaning. The check helps catch known writing problems before you see a draft, and people still need to review whether the card gives you enough information to make a decision.
+
+## Cards the system prepares
+
+A new app version can keep the technical details needed to bind your approval to that exact version while showing you only the words that explain the change. When a project check uses unclear wording, the waiting card points you to the project conversation where you can review the full request.

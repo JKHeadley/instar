@@ -18,6 +18,7 @@
  * only a person's tap approves anything on the board, and a card done here is labelled as the agent's own evidence.
  */
 
+import { workCardPlainLanguageIssue } from './WorkCardPlainLanguage.js';
 import { createHash } from 'node:crypto';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { compareHlc, sameValue } from './WorkCardStore.js';
@@ -213,7 +214,8 @@ export function waitAsk(kind: WaitKind, note: string | null): string {
 
 /** The card's text, a pure function of the wait (no clock time beyond the wait's own start). */
 export function composeWaitCard(p: WaitCardProject, kind: WaitKind, doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null, note: string | null, waitSince: string, _waitRef: string, limits: { need: number; title: number } = { need: 4000, title: 300 }, opts: { again?: boolean } = {}): { title: string; need: string; recommendation: string; whyYou: string; brief: WaitCardBrief } {
-  const fullTitle = kind === 'confirm' ? `${p.title} looks done and needs your OK` : `${p.title} is waiting on you`;
+  const titleName = workCardPlainLanguageIssue({ title: p.title }) ? 'This project' : p.title;
+  const fullTitle = kind === 'confirm' ? `${titleName} looks done and needs your OK` : `${titleName} is waiting on you`;
   const title = fullTitle.length <= limits.title ? fullTitle : (kind === 'confirm' ? 'A project looks done and needs your OK' : 'A project is waiting on you').slice(0, limits.title);
   const status = (d: { id: string; kind: string }): BriefCheckStatus => {
     if (d.kind === 'judgment') return 'needs-you';
@@ -223,10 +225,12 @@ export function composeWaitCard(p: WaitCardProject, kind: WaitKind, doneItems: R
   const STATUS_WORDS: Record<BriefCheckStatus, string> = { passes: 'passes', fails: 'fails', unknown: 'not checked yet', 'needs-you': 'needs your judgment' };
   const items = p.doneDefinition.filter((d) => d && d.id && d.text);
   const ITEM_MAX = 200;
-  const itemText = (d: { text: string }) => { const raw = inertText(String(d.text)); return raw.length > ITEM_MAX ? `${raw.slice(0, ITEM_MAX - 1)}…` : raw; };
+  const itemText = (d: { text: string }) => { const text = String(d.text);
+    const raw = inertText(workCardPlainLanguageIssue({ need: text }) ? 'See the project conversation for this completion check.' : text); return raw.length > ITEM_MAX ? `${raw.slice(0, ITEM_MAX - 1)}…` : raw; };
   const itemLine = (d: { id: string; kind: string; text: string }) => `- ${itemText(d)} (${STATUS_WORDS[status(d)]})`;
-  const goal = p.goal.trim() ? inertText(p.goal) : '';
-  const said = note && note.trim() ? inertText(note) : '';
+  const goal = p.goal.trim() ? inertText(workCardPlainLanguageIssue({ need: p.goal }) ? 'See the project conversation for its goal.' : p.goal) : '';
+  const noteNeedsRewrite = note && workCardPlainLanguageIssue({ need: note });
+  const said = note && note.trim() && !noteNeedsRewrite ? inertText(note) : '';
   const lines: string[] = [];
   lines.push(kind === 'confirm'
     ? 'Every automatic check of this project passes. The items below that need your judgment are yours to check.'
@@ -238,6 +242,7 @@ export function composeWaitCard(p: WaitCardProject, kind: WaitKind, doneItems: R
     const cut = note!.length >= STORED_NOTE_MAX;
     lines.push(`The Chief of Staff's check said: "${said}"${cut ? ' (shortened; the project conversation has the rest)' : ''}`);
   }
+  if (noteNeedsRewrite) lines.push('Open the project conversation to read the request and reply there.');
   lines.push(`Waiting on you${opts.again ? ' again' : ''} since ${humanTimeUtc(waitSince)}.`);
   // Within the owner-set need limit (work-board-asks, Fixed limits; a write over it is refused, never cut): drop
   // checklist items from the end, saying how many and where the whole list is, then shorten the goal.
@@ -257,7 +262,7 @@ export function composeWaitCard(p: WaitCardProject, kind: WaitKind, doneItems: R
     : 'The Chief of Staff marks a project waiting on you only when its next step needs your answer. It does not decide for you.';
   const since = Date.parse(waitSince);
   const brief: WaitCardBrief = {
-    ask: waitAsk(kind, note),
+    ask: noteNeedsRewrite ? (kind === 'confirm' ? 'Review the completion checks in the project conversation.' : 'Read the decision in the project conversation and reply there.') : waitAsk(kind, note),
     ...(goal ? { goal: goal.length > BRIEF_GOAL_MAX ? `${goal.slice(0, BRIEF_GOAL_MAX - 1)}…` : goal } : {}),
     ...(items.length ? { checks: items.slice(0, BRIEF_ITEMS_MAX).map((d) => ({ text: itemText(d), status: status(d) })) } : {}),
     ...(said ? { chiefSaid: said } : {}),

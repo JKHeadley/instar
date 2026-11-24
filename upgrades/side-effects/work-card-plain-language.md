@@ -10,11 +10,11 @@ Some technical language is useful to an owner. Common product names remain usabl
 
 ## Under-block
 
-This check is a structural writing floor. It does not infer the meaning of arbitrary jargon or whether a completion item expresses the right outcome. Server-owned templates such as custom app version cards use stored approval material that requires a separate owner-facing projection. They keep their existing behavior in this draft.
+This check is a structural writing floor. It does not infer the meaning of arbitrary jargon or whether a completion item expresses the right outcome. System card text uses the same check. Existing Chief of Staff wait cards refresh their wording when a newer project check is recorded. The app version reference is removed from the display as soon as the new server reads the card.
 
 ## Level Of Abstraction
 
-Work Board validates the text before it records a card. The commitment route uses the same projected fields before it records an eligible new request. Technical references remain available in structured source fields and link destinations.
+Work Board validates the text before it records a card. The commitment route uses the same projected fields before it records an eligible new request. Technical references remain available in structured source fields and link destinations. An app version keeps its exact version marker in canonical approval material. The server removes it only from the displayed need and only when it matches the card’s derived identity.
 
 ## Signal Versus Authority
 
@@ -34,4 +34,8 @@ Revert the guard, request preflight and guidance. Existing cards retain the huma
 
 ## Evidence
 
-The focused suite covers text patterns, nested fields, intact technical references and original request scope, HTTP create and update, and a production server lifecycle. Independent review identified internal producer approval material and a request retry risk. The implementation now isolates those producers and returns a rewrite instruction before recording an eligible commitment.
+The focused suite covers text patterns, nested fields, intact technical references and original request scope, HTTP create and update, and a production server lifecycle. Independent review identified internal producer approval material and a request retry risk. The implementation checks system writers and returns a rewrite instruction before recording an eligible commitment. An app version with identical visible wording must still get a different approval hash. A project wait with internal wording directs the reader to its project conversation and preserves the original in the project record.
+
+## 6b. Operator-surface quality
+
+The card keeps its main action at the top. The project conversation link appears in Details and opens the project rather than exposing a conversation number. Version cards show the change note and the possible effects before any supporting information. The internal version marker remains in the stored approval record. Existing destructive and secondary controls keep their positions. The new link is a short sentence that fits at phone width, and the existing card layout handles wrapping. Focused tests cover the link destination and card copy. A live phone-width review remains part of rollout verification.

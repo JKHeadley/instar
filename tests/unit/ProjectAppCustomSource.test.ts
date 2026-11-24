@@ -58,6 +58,16 @@ describe('ProjectAppCustomSource — creating an app', () => {
 });
 
 describe('ProjectAppCustomSource — source, the version card and the served version', () => {
+  it('refuses to save a change note the approval card cannot show clearly', () => {
+    const { h, appId } = created();
+    expect(h.source.writeSource(appId, HTML1, 'Finish PR 3642')).toMatchObject({
+      status: 422, error: 'card-text-needs-rewrite',
+    });
+    expect(h.svc.view(versionCardId(appId, 'serve'))).toBeNull();
+    expect(h.source.writeSource(appId, HTML1, 'The app now shows all ten example deals.'))
+      .toMatchObject({ ok: true, card: { state: 'opened' } });
+  });
+
   it('a source write opens exactly one card, sends one notice, and nothing serves until the owner\'s phone approves', () => {
     const { h, appId } = created();
     const w = h.source.writeSource(appId, HTML1, 'First version: ten made-up deals');
@@ -66,6 +76,11 @@ describe('ProjectAppCustomSource — source, the version card and the served ver
     expect(card.title).toBe('Run Sales pipeline new version for Example: sales pipeline?');
     expect(card.need).toContain('First version: ten made-up deals');
     expect(card.need).toContain(`For support: app ${appId}, version ${sha(HTML1)}, request 1`);
+    const visible = cardJson(h.svc, h.svc.view(card.cardId)!, { personKey: OWNER, isOwner: true, isAgent: false }, (k) => k, { phoneOnly: true });
+    expect(visible.need).toContain('First version: ten made-up deals');
+    expect(visible.need).not.toContain('For support:');
+    expect(visible.need).not.toContain(sha(HTML1));
+    expect(visible.materialHash).toBe(card.materialHash);
     // The record keeps outward (it is what makes the card need its own approve under every policy);
     // the display drops the outward wording for phone-only cards (see the cardJson test below).
     expect(card.outward).toBe(true);
@@ -147,6 +162,20 @@ describe('ProjectAppCustomSource — source, the version card and the served ver
 describe('ProjectAppCustomSource — the version card closes once the phone\'s approve serves it', () => {
   const OWNER_VIEW = { personKey: OWNER, isOwner: true, isAgent: false };
   const json = (h: ReturnType<typeof makeHarness>, cardId: string) => cardJson(h.svc, h.svc.view(cardId)!, OWNER_VIEW, (k) => k, { phoneOnly: h.source.isVersionCard(cardId) });
+
+  it('keeps a new version distinct when the approval copy is identical', () => {
+    const { h, appId } = created();
+    const id = versionCardId(appId, 'serve');
+    const note = 'The report shows a new sample value.';
+    expect(h.source.writeSource(appId, '<p>A</p>', note)).toMatchObject({ ok: true, card: { state: 'opened' } });
+    const first = json(h, id);
+    expect(phoneApprove(h, id)).toMatchObject({ ok: true });
+    expect(h.source.writeSource(appId, '<p>B</p>', note)).toMatchObject({ ok: true, card: { state: 'rewritten' } });
+    const next = json(h, id);
+    expect(next.need).toBe(first.need);
+    expect(next.materialHash).not.toBe(first.materialHash);
+    expect(next.approved).toBe(false);
+  });
 
   it('approve → done and out of Needs you; v2 → needs approval again; v2 approve → done again', () => {
     const { h, appId } = created();
@@ -440,13 +469,13 @@ describe('checkAppVersion — the automated version check (a signal)', () => {
   it('one finding per pattern', () => {
     const one = (s: string) => checkAppVersion(s);
     expect(one('<a href="https://evil.example.com">x</a>')[0]).toMatch(/outside web address/);
-    expect(one('<script>const c = new RTCPeerConnection()</script>')[0]).toMatch(/peer-to-peer/);
+    expect(one('<script>const c = new RTCPeerConnection()</script>')[0]).toMatch(/may send data outside/);
     expect(one('<input type="password">')[0]).toMatch(/password/);
     expect(one('<input placeholder="Enter your PIN">')[0]).toMatch(/password, PIN or code/);
-    expect(one('<script>Function("return 1")()</script>')[0]).toMatch(/eval or Function/);
+    expect(one('<script>Function("return 1")()</script>')[0]).toMatch(/builds and runs code from text/);
     expect(one('<script>' + 'a;'.repeat(3000) + '</script>')[0]).toMatch(/very long single lines/);
     const blob = one('<img src="data:image/png;base64,' + 'A'.repeat(51 * 1024) + '">');
-    expect(blob.some((x) => /embedded blob/.test(x))).toBe(true);
+    expect(blob.some((x) => /large block of data/.test(x))).toBe(true);
     expect(one('<svg xmlns="http://www.w3.org/2000/svg"></svg>')).toEqual([]);
     for (const x of checkAppVersion('<a href="https://evil.example.com/steal">x</a>')) expect(x).not.toContain('evil');
   });

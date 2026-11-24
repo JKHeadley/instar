@@ -59,6 +59,9 @@ describe('card source links', () => {
     expect(link.label).not.toContain(id);
   });
   it('does not infer a source and names unsupported sources without a bad link', () => {
+    expect(cardSourceLink(card({ serverOwned: true, projectKey: 'telegram:142440' }))).toEqual({
+      href: '#/work/chats?c=telegram%3A142440', label: 'Open the project conversation',
+    });
     expect(cardSourceLink(card())).toBeNull();
     expect(cardSourceLink(card({ source: { conversationKey: 'javascript:alert(1)', messageId: 'x' } }))).toEqual({ href: null, label: 'The original message cannot be opened here.' });
     expect(cardSourceLink(card({ source: { conversationKey: 'telegram:12', messageId: '' } }))).toEqual({ href: '#/work/chats?c=telegram%3A12', label: 'Original conversation', note: 'The exact message is unavailable.' });
