@@ -50,7 +50,7 @@ export async function reportTelegramInjectionFailure(
         'Do not resend automatically. An identity binding or notice acknowledgement does not prove delivery.',
     });
     outcome.followThroughRecorded = true;
-  } catch { degrade('failure-follow-through-unavailable'); }
+  } catch { /* @silent-fallback-ok: report the failed tracking write and leave its outcome false. */ degrade('failure-follow-through-unavailable'); }
   try {
     let notice = TELEGRAM_INJECTION_REFUSAL_NOTICE;
     if (outcome.followThroughRecorded) notice += ' I have recorded a follow-up to investigate and report what can be verified.';
@@ -61,7 +61,7 @@ export async function reportTelegramInjectionFailure(
     else if (receipt && typeof receipt === 'object' && typeof (receipt as { messageId?: unknown }).messageId === 'number'
       && (receipt as { messageId: number }).messageId > 0) outcome.notice = 'delivered';
     else { outcome.notice = 'unconfirmed'; degrade('failure-notice-delivery-unconfirmed'); }
-  } catch { degrade('failure-notice-send-failed'); }
+  } catch { /* @silent-fallback-ok: report the failed send and retain the failed notice outcome. */ degrade('failure-notice-send-failed'); }
   if (!outcome.attentionPersisted && !outcome.followThroughRecorded && outcome.notice !== 'delivered' && outcome.notice !== 'recorded') {
     degrade('failure-visibility-and-follow-through-unsecured');
   }

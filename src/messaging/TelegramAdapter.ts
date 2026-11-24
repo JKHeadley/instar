@@ -6469,6 +6469,17 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch { /* file doesn't exist yet */ }
   }
 
+  /** Saving attention is historically best-effort; verify disk before claiming durability. */
+  isAttentionItemPersisted(item: AttentionItem): boolean {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.attentionFilePath, 'utf8')) as { items?: AttentionItem[] };
+      return Array.isArray(data.items) && data.items.some(row => row.id === item.id && JSON.stringify(row) === JSON.stringify(item));
+    } catch {
+      // @silent-fallback-ok: false is an unconfirmed disk read, which the caller reports explicitly.
+      return false;
+    }
+  }
+
   private saveAttentionItems(): void {
     try {
       const dir = path.dirname(this.attentionFilePath);
@@ -6480,14 +6491,6 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       console.error(`[telegram] Failed to save attention items: ${err}`);
     }
-  }
-
-  /** Saving attention is historically best-effort; verify disk before claiming durability. */
-  isAttentionItemPersisted(item: AttentionItem): boolean {
-    try {
-      const data = JSON.parse(fs.readFileSync(this.attentionFilePath, 'utf8')) as { items?: AttentionItem[] };
-      return Array.isArray(data.items) && data.items.some(row => row.id === item.id && JSON.stringify(row) === JSON.stringify(item));
-    } catch { return false; }
   }
 
   private escapeHtml(text: string): string {

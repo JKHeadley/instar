@@ -86,3 +86,9 @@ The one supported private Node 24 test-as-self --no-roundtrip invocation exited 
 ## Class-Closure Declaration
 
 `unbounded-self-action`: `n/a`. The added loss notice and durable source record execute once per inbound dispatch refusal, driven by the received message, not a new timer or autonomous retry/controller. Existing CommitmentTracker externalKey dedup and existing PromiseBeacon caps/cadence are reused unchanged. This increment starts no replay, retry, respawn, restart, kill or new recurring loop.
+
+## Fallback scanner repair
+
+The retained full run counted 497 against the ceiling of 493. Two catches explicitly report a degradation but the scanner treated the reporting helper's name as a fallback signal. The attention disk read returns an unconfirmed result that the caller reports. It also sat next to the older save catch, so the scanner attributed that return to the save catch as well. The repair documents the already reported outcomes using the scanner's documented annotation and moves the unchanged readback method above the save method.
+
+Independent review concurred. No permission, outcome, receipt, comparison, or threshold changed. The same scanner reports 493 on the repaired tree.
