@@ -260,6 +260,9 @@ import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, sl
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { SameNetworkListener } from './sameNetworkListener.js';
 import { sameNetworkGate, homeAddressInUse } from './phoneSetupRoutes.js';
+import { ThrowawayOwnerChat, standInEverUsed } from './throwawayOwnerChat.js';
+import { mountThrowawayOwnerChatRoutes } from './throwawayOwnerChatRoutes.js';
+import type { OwnerChatSurface } from '../messaging/ownerChatTap.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
 import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
 import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
@@ -566,6 +569,8 @@ export class AgentServer {
   private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  /** The stand-in owner chat for a throwaway agent with no owner (docs/specs/throwaway-owner-chat.md); null on every other agent. */
+  throwawayOwnerChat: ThrowawayOwnerChat | null = null;
   /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
   readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
@@ -2502,6 +2507,17 @@ export class AgentServer {
       res.json({ stepUpToken: proof.token, stepUpExpiresAt: proof.expiresAt });
     });
 
+    // The stand-in owner chat (docs/specs/throwaway-owner-chat.md): built only for a home that asked
+    // for it or ran it before; live only while its four conditions hold. Never assigned to options.telegram.
+    const standIn = this.config.stateDir && this.config.projectDir ? ThrowawayOwnerChat.forBoot({
+      projectDir: this.config.projectDir,
+      stateDir: this.config.stateDir,
+      adapterStarted: () => !!(options.telegram || options.slack || options.whatsapp || options.imessage),
+      log: (line) => console.log(line),
+    }) : null;
+    this.throwawayOwnerChat = standIn;
+    // The owner's private chat the approval flows use: Telegram when configured, else a live stand-in.
+    const ownerChat = (): OwnerChatSurface | null => options.telegram ?? (standIn && !standIn.isOff() ? standIn : null);
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
@@ -2537,14 +2553,16 @@ export class AgentServer {
       // A new browser's owner notice (dashboard-conversations-browser-device §4.2 step 10).
       raiseBrowserNotice: (item, opts) => this.raiseBrowserNotice(item, opts),
       ownerDM: async (text, declineData, approveData) => {
-        if (!options.telegram) return null;
-        return options.telegram.sendOwnerDMWithButton(text, [
+        const chat = ownerChat();
+        if (!chat) return null;
+        return chat.sendOwnerDMWithButton(text, [
           ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
           ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
         ], { reportHeld: true });
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
-      telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // The throwaway stand-in counts as an owner chat while live; it has no owner user id (telegramOwnerId stays Telegram's).
+      telegramOwnerPresent: () => (options.telegram ? !!options.telegram.getOwnerUserId?.() : standIn?.ownerChatPresent() === true),
       // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
       readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
       // People and roles: the Telegram owner id decides which registry profile is the owner.
@@ -2668,22 +2686,28 @@ export class AgentServer {
         }),
       });
       mp.push.start();
-      if (options.telegram) {
+      // Every owner-chat surface present gets the same Approve/Decline handlers: the adapter, and the
+      // throwaway stand-in whether live or shut off (its shut-off sweep presses Decline through them).
+      for (const chat of [options.telegram, standIn].filter((c): c is NonNullable<typeof c> => !!c) as OwnerChatSurface[]) {
         // The tap's wording follows the device's kind (dashboard-conversations-browser-device §4.7),
         // read before the nonce is consumed.
-        options.telegram.mobileDeclineHandler = (nonce) => {
+        chat.mobileDeclineHandler = (nonce) => {
           const client = mp.nonceClient(nonce);
           return { result: mp.declineByNonce(nonce), client };
         };
-        options.telegram.mobileApproveHandler = (nonce) => {
+        chat.mobileApproveHandler = (nonce) => {
           const client = mp.nonceClient(nonce);
           const outcome = mp.approveByNonce(nonce);
           return outcome === 'approved' ? { outcome, text: '', client }
             : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? (client === 'browser' ? 'This browser setup has already ended.' : 'This pairing has already ended.') : APPROVE_REFUSAL[outcome].detail, client };
         };
+      }
+      if (options.telegram) {
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
+      // A stand-in that is off (refused at boot after an earlier build, or shut off) ends what it carried, now that its handlers are wired.
+      standIn?.finishShutOff();
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -2873,6 +2897,8 @@ export class AgentServer {
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
       };
+      // A throwaway home that ran the stand-in owner chat is never paired with another machine (throwaway-owner-chat §2.4).
+      machineRouteContext.pairBlocked = () => ((this.config.stateDir && standInEverUsed(this.config.stateDir)) || (this.throwawayOwnerChat && !this.throwawayOwnerChat.isOff()) ? 'stand-in-owner-chat-used' : null);
       machineRouteContext.teamJoinBlocked = (enforcement) => {
         if (enforcement >= TEAM_ENFORCEMENT_VERSION) return false;
         if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
@@ -8317,6 +8343,8 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      // The stand-in owner chat's test routes: mounted only when it passed its conditions at this boot.
+      if (this.throwawayOwnerChat?.builtLive) mountThrowawayOwnerChatRoutes(this.app, this.throwawayOwnerChat, { authToken: () => configRef.authToken, port: () => this.config.port });
       // Organization pack (docs/specs/org-pack-and-join.md): bearer preparation, owner-device acts.
       {
         const pairing = this.mobilePairing;

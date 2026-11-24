@@ -16,6 +16,7 @@
  * Part of Phase 1-6 of the multi-machine spec.
  */
 
+import { standInEverUsed } from '../server/throwawayOwnerChat.js';
 import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
 import { getInstarVersion } from '../core/Config.js';
 import fs from 'node:fs';
@@ -442,6 +443,10 @@ export async function startPairing(options: PairOptions): Promise<void> {
     process.exit(1);
   }
 
+  if (standInEverUsed(config.stateDir)) {
+    console.log(pc.red('This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.'));
+    process.exit(1);
+  }
   const mgr = new MachineIdentityManager(config.stateDir);
 
   if (!mgr.hasIdentity()) {
@@ -589,6 +594,10 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // resolveJoinDir honors --dir (incl. for git URLs — the §1.3 fix); without
   // --dir it falls back to the historical <cwd>/<repoName> for git URLs.
   const projectDir = resolveJoinDir(repoUrl, options);
+  if (standInEverUsed(path.join(projectDir, '.instar'))) {
+    console.log(pc.red('This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.'));
+    process.exit(1);
+  }
   const isGitUrl = repoUrl.includes('github.com') || repoUrl.includes('.git') || repoUrl.startsWith('git@');
 
   if (isGitUrl) {
