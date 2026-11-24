@@ -81,3 +81,7 @@ The opt-in doorway reader now treats skipped malformed records and unterminated 
 The observation store can publish a bounded cursor with an exact generation, per-door observation digests, admission references, and a diagnostic run window. It uses the state directory's shared writer lease, validates the expected generation, atomically replaces the cursor, and syncs its directory. Corrupt cursors and stale writers fail closed. The cursor is machine-local and grants no cleanup authority. The next caller must acquire the lease from the cursor's canonical state directory, verify references against the exact ledger and artifacts, and coordinate readers before removing any artifact. No scheduler or HTTP caller publishes or consumes the cursor in this checkpoint. Reverting the code simply leaves any fixture cursor unused.
 
 Independent review concurred with the advisory cursor after confirming all writers for the shared cursor use the same scope.
+
+## Exact cursor reference verification
+
+The verifier checks supplied cursor references against a complete local ledger snapshot. Observation references must match the digest and doorway in a committed artifact. Admission references must match the exact run and its recorded doorway start. Diagnostic references must name local, trusted runs of the packaged scan. The verifier checks the supplied references. The caller still owns selection of the complete reference set, custody of the ledger snapshot, and coordination with readers and writers. No production caller or cleanup action is introduced.

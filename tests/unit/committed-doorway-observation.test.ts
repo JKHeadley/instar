@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ScheduledDoorwayObservationStore } from '../../src/core/ScheduledDoorwayObservationStore.js';
@@ -110,6 +111,25 @@ describe('scheduled doorway evidence reconciliation', () => {
       cadence: schedule, nowMs,
     });
   };
+
+  it('verifies exact cursor references and rejects missing or untrusted evidence', () => {
+    const runId = committed();
+    vi.setSystemTime(Date.parse(TIME) + 1000);
+    const pending = newer(undefined, undefined, true);
+    const snapshot = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
+    const references = {
+      observations: [{ doorId: 'alpha', runId, digest: scheduledDoorwayObservationDigest(store.readStaged(runId)!) }],
+      admissions: [{ doorId: 'alpha', runId: pending }],
+      diagnosticRunIds: [runId, pending],
+    };
+    const verify = (value = references, data = snapshot) => verifyDoorwayRetentionReferences('local-test', value, data, store);
+    expect(verify()).toBe(true);
+    expect(verify(references, { ...snapshot, complete: false })).toBe(false);
+    expect(verify({ ...references, observations: [{ ...references.observations[0], doorId: 'beta' }] })).toBe(false);
+    expect(verify({ ...references, observations: [{ ...references.observations[0], digest: 'wrong' }] })).toBe(false);
+    expect(verify({ ...references, admissions: [{ doorId: 'alpha', runId: 'missing' }] })).toBe(false);
+    expect(verify(references, { ...snapshot, runs: snapshot.runs.map(run => ({ ...run, machineId: 'foreign' })) })).toBe(false);
+  });
 
   it('retains a past observation and exposes a newer interrupted admission after restart', () => {
     const prior = committed();
