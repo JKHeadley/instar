@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T00:31:35.029Z",
+  "slug": "source-grounded-offline-validator",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 175,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/source_grounded_validate.mjs"
+    ],
+    "addedLines": 175,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
