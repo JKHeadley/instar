@@ -1,0 +1,7 @@
+# No-Auth Fixture Cases Inherit Ambient Authentication
+
+ClaudeCliIntelligenceProvider-key.test.ts creates a fake binary that writes the inherited CLAUDE_CODE_OAUTH_TOKEN to its owned seen file and succeeds whenever that value is nonempty. Its no-key case expects auth refusal but never saves/clears this environment variable. configureClaudeChildAuth(null) clears a module callback only; applyClaudeChildAuth deliberately leaves environment unchanged when no key is configured. The ordinary provider path copies process.env, so a nonempty ambient token changes the expected outcome and can be copied to the temporary fixture file. The test also leaves its mkdtemp directories without tracked cleanup.
+
+claudeReviewerLogin.test.ts saves/clears/restores CLAUDE_CONFIG_DIR, but its ordinary-call no-auth case uses the same inherited token behavior. Its hardened reviewer path has a separate allowlisted child environment and should not be conflated with this ordinary path.
+
+These are conditional fixture coupling defects. No current credential presence, actual exposure or historical failure is claimed. No environment credential values were inspected. A separate small test-only repair should save, clear and restore the relevant inherited authentication variables at fixture boundaries and clean owned paths, preserving configured-key success, inherited-login behavior when explicitly tested, and production environment semantics. No unsafe baseline should copy an ambient credential to a fake binary.
