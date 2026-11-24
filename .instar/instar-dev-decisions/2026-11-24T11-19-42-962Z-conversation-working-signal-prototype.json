@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-24T11:19:42.962Z",
+  "slug": "conversation-working-signal-prototype",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/CodexWorkingRelay.ts matches relay / delivery path",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 676,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CodexWorkingFrameTap.ts",
+      "src/core/CodexWorkingLaunch.ts",
+      "src/core/CodexWorkingPeerVerifier.ts",
+      "src/core/CodexWorkingProtocol.ts",
+      "src/core/CodexWorkingRelay.ts",
+      "src/core/CodexWorkingTurn.ts",
+      "src/native/codex-working/macos/instar-codex-peer-pid.c"
+    ],
+    "addedLines": 676,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "An explicit disposable caller owns one app-server child and one relay. Startup polling is bounded and cannot spawn replacements; close only reaps the same owned process. There is no production caller, scheduled action or automated recovery loop."
+  },
+  "verdict": "pass"
+}

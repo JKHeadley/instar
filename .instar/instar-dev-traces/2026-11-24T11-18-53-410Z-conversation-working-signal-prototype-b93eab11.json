@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "slug": "conversation-working-signal-prototype",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-24T11:18:53.410Z",
+  "artifactPath": "upgrades/side-effects/conversation-working-signal-prototype.md",
+  "artifactSha256": "9f5e64f30d77580d7c62ae0816f8d2414239424a0aabefc8e599198d8ea65eaa",
+  "specPath": "docs/specs/conversation-working-signal-prototype.md",
+  "coveredFiles": [
+    "src/core/CodexWorkingFrameTap.ts",
+    "src/core/CodexWorkingLaunch.ts",
+    "src/core/CodexWorkingPeerVerifier.ts",
+    "src/core/CodexWorkingProtocol.ts",
+    "src/core/CodexWorkingRelay.ts",
+    "src/core/CodexWorkingTurn.ts",
+    "src/native/codex-working/macos/instar-codex-peer-pid.c",
+    "tests/fixtures/codex-working-signal/probe.mjs",
+    "tests/unit/codex-working-frame-tap.test.ts",
+    "tests/unit/codex-working-protocol.test.ts",
+    "tests/unit/codex-working-relay.test.ts",
+    "tests/unit/codex-working-turn.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "ran",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/conversation-working-signal-prototype-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "An explicit disposable caller owns one app-server child and one relay. Startup polling is bounded and cannot spawn replacements; close only reaps the same owned process. There is no production caller, scheduled action or automated recovery loop."
+  }
+}
