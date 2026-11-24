@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T16:49:09.273Z",
+  "slug": "work-discovery-console",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/work-discovery-read.md"
+    ],
+    "addedLines": 2,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
