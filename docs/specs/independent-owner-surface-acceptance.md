@@ -3,7 +3,14 @@ title: "Independent Acceptance for Owner-Facing Work"
 slug: "independent-owner-surface-acceptance"
 author: "echo"
 tier: 2
+approved: true
+approved-by: "Chief of Staff, Camera-only scope, handoff fd27e9cb-bf06-4571-a7d8-603b9ca40bd4"
 eli16-overview: "docs/specs/independent-owner-surface-acceptance.eli16.md"
+review-convergence: "2026-11-24T22:04:00.219Z"
+review-iterations: 9
+review-completed-at: "2026-11-24T22:04:00.219Z"
+review-report: "docs/specs/reports/independent-owner-surface-acceptance-convergence.md"
+cross-model-review: "codex-cli:gpt-6.2-astra and Claude Fable 5.2"
 ---
 
 # Independent Acceptance for Owner-Facing Work
@@ -22,7 +29,7 @@ The project supplies a private evidence manifest covering the actual entry point
 
 Use strict sessionProducer credential verification and authoritative local live-session assignment lookup for receipt submission. Require the exact assigned stable principal and assignment epoch. Reject fallbacks, generic bearer alone, expired credentials, the builder roster and caller-supplied identity. The coordinator lease holder rechecks the live session incarnation and assignment inside the serialized append and writes a domain-tagged canonical signature over the project binding, milestone, event type, coordinator lease epoch, verifier assignment epoch, sequence and full payload. The lease epoch selects the historical signing authority. The assignment epoch binds the verifier. This trust boundary covers supported interfaces. A compromised holder or unrestricted host principal can access the underlying credentials.
 
-Store Pass, Fail or Pending with the active revision, candidate, artifact hashes, reason, verified principal and server sequence. Pass requires a protected verifier evidence record separate from the immutable project manifest. It binds the unique fresh request, active revision, installed build identity, observed result and independently obtained before-and-after state hashes. A reused request or earlier readback cannot qualify. Canonical request identities are idempotent only for an exact payload. A later Fail or Pending supersedes a Pass. Before issuing a fresh request to retest an active Pass, the assigned verifier commits Pending through the same reservation lock. A reservation that won first remains terminal. In the Camera pilot, use the server-side Camera acceptance receipt write lock keyed by the milestone and active revision. Under that lock the server refuses to issue a fresh verifier request while Pass is active. The verifier must first commit and fsync a Pending receipt for that revision. Changing candidate, manifest, assignment or acceptance line requires a fresh attempt. An unknown, incomplete or contradictory record holds completion.
+Store Pass, Fail or Pending with the active revision, candidate, artifact hashes, reason, verified principal and server sequence. Pass must cite a server-issued request for the active revision and requires a protected verifier evidence record separate from the immutable project manifest. It binds the unique fresh request, active revision, installed build identity, observed result and independently obtained before-and-after state hashes. A reused request or earlier readback cannot qualify. Canonical request identities are idempotent only for an exact payload. A later Fail or Pending supersedes a Pass. In the broader completion stage, the assigned verifier commits Pending through the reservation lock before a retest. A reservation that won first remains terminal. In the Camera pilot, use the server-side Camera acceptance receipt write lock keyed by the milestone and active revision. Under that lock the server refuses to issue a fresh verifier request while Pass is active. The verifier must first commit and fsync a Pending receipt for that revision. Changing candidate, manifest, assignment or acceptance line requires a fresh attempt. An unknown, incomplete or contradictory record holds completion.
 
 In the automatic close path in ChiefOfStaffLoop.checkProject, check the active receipt before recording closure or mirroring initiative completion. For the registered pilot, replace the disposable in-memory completion note with one signed durable accepted-completion intent. The intent stages the owner notice and leaves the project and initiative open. The dispatch reservation described below is the automatic closure event. At reservation the current project-wide automatic close conditions and exact project binding must still pass. The normal project fold projects closure from the reservation, and initiative mirroring catches up idempotently after restart. Any owner closure or reservation is terminal for that milestone across revisions and destination changes. A Fail after intent but before reservation leaves both open, including after restart. Decisions recorded after reservation are retained for review and leave the already recorded closure intact. Existing owner-initiated Finish and Confirm Done remain available. Serialize their durable closure with reservation. If owner closure wins, retire the intent without a verified notice, including on restart. If reservation wins, owner closure is already satisfied. Ordinary chat, review requests, consent and draft publication retain their paths.
 
@@ -55,9 +62,18 @@ Use a complete Chief of Staff journal read at startup and verify each canonical 
 
 Camera pilot release requires three test tiers. Unit tests check full grant-set comparisons for all four trials, including deletion and mutation of the second-computer grant, plus redirect, stale candidate and missing evidence. Integration tests cover authenticated receipt submission, builder rejection, and the server refusing a fresh verifier request while Pass is active. Race tests cover both orders under the receipt write lock and show that a crash after fsync of Pending leaves acceptance on hold. A production lifecycle test checks durable receipt recovery after restart, exact-candidate binding and the same request refusal after restart. Run the four trials on the real phone before recording Pass and include the required side-effects artifact.
 
-## First build scope and follow-ups
+## First build scope and later stages
 
-The first implementation is limited to the Camera computer-link acceptance line. The pilot receipt and gate report a decision for the exact Camera candidate. General enrollment, automatic project closure and owner notices are follow-ups. Their dispatcher, reservation, delivery, handoff and closure tests gate those later changes.
+The first implementation is limited to the Camera computer-link acceptance line. The pilot receipt and gate report a decision for the exact Camera candidate. General enrollment, automatic project closure and owner notices are part of the broader completion stage in Proposed design. Their dispatcher, reservation, delivery, handoff and closure tests gate those later changes.
+
+## Maturation plan
+
+- **test-agent-live:** Run the Camera unit, HTTP and restart suites in an isolated test agent with synthetic evidence.
+- **dev-agent-live:** Enable the Camera pilot on Echo only after authenticated receipt storage and request handling pass those tests.
+- **fleet:** Keep enrollment limited to the single Camera milestone. Broader enrollment belongs to the separately reviewed completion stage.
+- **graduation criterion:** An independent verifier records a Pass for all four real-phone trials and a restart preserves the exact result. A real wrong-candidate or stale request stays held.
+- **dark-window:** Review within 28 days of the prototype merge. If the pilot has no verified Pass, keep it dark and record why on the draft.
+- **ladder:** One registered development-agent pilot. Broader use requires a separate reviewed stage.
 
 ## Open questions
 
