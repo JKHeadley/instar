@@ -64,3 +64,19 @@ export function projectSuggestionSources(loop: ProjectsReader, telegramChatId: s
   }
   return out;
 }
+
+/**
+ * The Chief of Staff projects as the phone tree's Project labels (work-front-doors stage 2, "Mobile hierarchy
+ * routes"): each project's conversation, title, and the conversation key the Work page uses ("telegram:<topic>",
+ * "app:<key>"). A project whose conversation has no such key is left out.
+ */
+export function treeProjects(sources: Array<{ ref: ConversationRef; title: string }>): Array<{ ref: ConversationRef; title: string; conversationKey: string }> {
+  const out: Array<{ ref: ConversationRef; title: string; conversationKey: string }> = [];
+  for (const s of sources) {
+    const r = s?.ref;
+    const key = r?.platform === 'telegram' && Number.isSafeInteger(r.topicId) && r.topicId > 0 ? `telegram:${r.topicId}`
+      : r?.platform === 'app' && typeof r.conversationKey === 'string' && r.conversationKey ? `app:${r.conversationKey}` : null;
+    if (key && typeof s.title === 'string') out.push({ ref: r, title: s.title, conversationKey: key });
+  }
+  return out;
+}
