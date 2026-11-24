@@ -23,6 +23,7 @@
  *     strictly finer-grained than a compound row, never coarser.
  */
 
+import { CODEX_CLI_FRAMEWORK, CODEX_MOVING_MODEL_DEFAULT } from './frameworkFacts.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import crypto from 'node:crypto';
@@ -498,7 +499,10 @@ export function resolveFlagValue(entry: CoherenceCriticalFlag, view: CoherenceCo
   // machine falls back to the CLI login's own default.
   if (entry.key.startsWith('defaultModel.')) {
     const model = getByPath(cfg, entry.configPath);
-    return typeof model === 'string' && model.trim().length > 0 ? clampValue(model.trim()) : DEFAULT_MODEL_UNSET;
+    if (typeof model === 'string' && model.trim().length > 0) return clampValue(model.trim());
+    return entry.key === `defaultModel.${CODEX_CLI_FRAMEWORK}`
+      ? clampValue(CODEX_MOVING_MODEL_DEFAULT)
+      : DEFAULT_MODEL_UNSET;
   }
 
   // Boolean-fold path (raw / dev-gate / dev-gate+dryRun with an optional dryRun fold).

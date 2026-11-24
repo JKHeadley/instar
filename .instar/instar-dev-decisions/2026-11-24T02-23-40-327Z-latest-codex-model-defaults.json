@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-24T02:23:40.327Z",
+  "slug": "latest-codex-model-defaults",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 200,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/Config.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicProfileResolver.ts",
+      "src/core/dashboardTopicProfile.ts",
+      "src/core/frameworkFacts.ts",
+      "src/core/frameworkModelDefaults.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/types.ts",
+      "src/data/awareness/codex-model-defaults.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 159,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
