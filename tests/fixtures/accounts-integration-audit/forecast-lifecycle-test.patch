@@ -1,0 +1,30 @@
+--- a/tests/unit/console-accounts-lifecycle.test.ts
++++ b/tests/unit/console-accounts-lifecycle.test.ts
+@@ -105,7 +105,8 @@
+   life = createLifecycle();
+   ctx = life.begin('capacity/accounts');
+ });
+-afterEach(() => {
++afterEach(async () => {
++  await settle();
+   life.dispose();
+   closeSheet();
+   forgetOperatorSession();
+@@ -152,6 +153,7 @@
+     click('Cancel this sign-in');
+     await settle(850);
+     expect(document.querySelector('[role=dialog]')).toBeNull();
+-    expect(get).toHaveBeenCalledTimes(8);
++    expect(get.mock.calls.filter(([path]) => path !== '/quota-pacing')).toHaveLength(8);
++    expect(get.mock.calls.filter(([path]) => path === '/quota-pacing')).toHaveLength(2);
+     expect(writes(fetch)).toEqual([start, cancel]);
+   });
+@@ -292,6 +294,7 @@
+     pending.resolve(reply({ completion: { state: 'done' } }));
+     await settle(4000);
+     expectNextDialog();
+-    expect(get).toHaveBeenCalledTimes(4);
++    expect(get.mock.calls.filter(([path]) => path !== '/quota-pacing')).toHaveLength(4);
++    expect(get.mock.calls.filter(([path]) => path === '/quota-pacing')).toHaveLength(1);
+     expect(fetch.mock.calls.filter(([path]) => path.includes('/completion?'))).toHaveLength(1);
+   });

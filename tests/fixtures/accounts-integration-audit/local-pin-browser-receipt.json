@@ -1,0 +1,45 @@
+{
+  "accounts": "999d624854a784efc594b3755c2edecdbfdfde29",
+  "identity": "bf7ba11fc8094568e5f63c62a32984e2224263e8",
+  "base": "1d6be3d585b283f0dbaf87c10a2be88958386a11",
+  "fixturePaths": {
+    "dashboard/console/accounts-model.js": "4bc2c7e4c6687641890eb8c69453cc630fcb7bfe07bb5670ee566889ddc6905b",
+    "dashboard/console/accounts.js": "5b8161e307730fa802303afd622190e6181b9a3f77d6358a0e8d44b5b4b35123",
+    "dashboard/console/auto-repair-model.js": "16a757a3aedf1e8c7d7f0e58d6c7f10de60a7100d4e111ed179947b1794f0faf",
+    "dashboard/console/browser-device.js": "638f60780a2d79b4340b3e61b8ae7dac8463c210499a368bf6ce4f9841e4cf1b",
+    "dashboard/console/display-identity.js": "a31595fed8122e8e297db1288546a18ccb5cd6750739974894a5bb55b81ffdfc",
+    "dashboard/console/home-model.js": "f9b332caa3a423a5c09cab9d5eff738533a7659394931748b68ae77bdbe9d8ae",
+    "dashboard/console/nav-model.js": "e8fbc4bd94d5456003cbddb00439c52ade8a5081ac8317ed01f697dcfb0d51ac",
+    "dashboard/console/page-lifecycle.js": "88a308dfe64eba840314f73d51335aec616f2695b71f6c4d4945f75a4a6c52cb",
+    "dashboard/console/signin-progress-model.js": "6763ba74f5a128115aaa1ec7450bcddb7769d6521f6cd4c4e0545bb311ab89ee",
+    "dashboard/console/topic-names.js": "0a160e2c10c645ff83451d6769e607f22bafe1470efb65d6e1b1af331b118467",
+    "dashboard/console/ui.js": "be0a6690cec0dd49f4cf884619c458dc4ae2ca4ec973a3474185d0ec1a28350a",
+    "dashboard/console/unreachable-model.js": "c1f90dec7d0efdb20082448463e8a9ad9e189896333d1028568519e4b4ec9d1b",
+    "dashboard/local-access.js": "304b7a5276480e4c3fc0857d9d82cde1dd6fceee24c09d66f7a2923e03f53dc8"
+  },
+  "results": [
+    {
+      "test": "leave-during-challenge",
+      "signedProofVerified": true,
+      "approvedRepairRequests": 0,
+      "sessionPresent": false,
+      "dialog": "Replacement dialog"
+    },
+    {
+      "test": "leave-during-unlock",
+      "signedProofVerified": true,
+      "approvedRepairRequests": 0,
+      "sessionPresent": false,
+      "dialog": "Replacement dialog"
+    },
+    {
+      "test": "stay-current",
+      "signedProofVerified": true,
+      "approvedRepairRequests": 1,
+      "sessionPresent": true,
+      "dialog": "Turn on automatic sign-in repair"
+    }
+  ],
+  "errors": [],
+  "scope": "Prior disposable browser replay. Module digests exclude the harness, which is portable in this checkpoint."
+}

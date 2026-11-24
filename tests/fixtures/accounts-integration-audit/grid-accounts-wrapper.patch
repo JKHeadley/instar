@@ -1,0 +1,10 @@
+--- a/dashboard/console/accounts.js
++++ b/dashboard/console/accounts.js
+@@ -79,6 +79,6 @@
+   const list = el('div', { class: 'page-sections acct-list' }, el('section', { class: 'list-section' },
+     el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Weekly reset, soonest first' }), el('span', { class: 'list-count', text: String(page.accounts.length) })),
+-    el('div', { class: 'list-rows' }, page.accounts.map((a) => {
++    el('div', { class: 'list-rows acct-card-grid' }, page.accounts.map((a) => {
+       const pct = a.tight ? Math.round(a.tight.pct) : null;
+       // One labelled line per limit that applies (5-hour only when the account has one), each with
+       // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
