@@ -19,7 +19,7 @@ export const AGENT_LINK_WEB_BASE = 'https://instar.sh/a#';
 export const AGENT_LINK_APP_BASE = 'instar://a#';
 export const PROOF_DOMAIN = 'instar-agent-link-proof-v1';
 
-export type AgentLinkTarget = 'home' | 'doc' | 'conversation';
+export type AgentLinkTarget = 'home' | 'doc' | 'conversation' | 'card';
 
 export interface AgentLink {
   id: string;
@@ -33,7 +33,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TG_RE = /^tg:[1-9][0-9]{0,15}$/;
 /** The server's comment-key pattern (src/documents/rows.ts isCommentKey). */
 const COMMENT_RE = /^[A-Za-z0-9._:-]{1,200}:[0-9a-f-]{36}$/;
-const FIELDS: Record<AgentLinkTarget, readonly string[]> = { home: [], doc: ['r', 'c'], conversation: ['r'] };
+const FIELDS: Record<AgentLinkTarget, readonly string[]> = { home: [], doc: ['r', 'c'], conversation: ['r'], card: ['r'] };
 const KEYS = ['v', 'i', 't', 'r', 'c'];
 
 /**
@@ -50,6 +50,7 @@ function validRef(target: AgentLinkTarget, ref: string | null): boolean {
   if (target === 'home') return ref === null;
   if (ref === null) return false;
   if (target === 'doc') return UUID_RE.test(ref);
+  if (target === 'card') return /^wc_[0-9a-f]{16}$/.test(ref);
   return UUID_RE.test(ref) || isTgRef(ref);
 }
 
@@ -107,7 +108,7 @@ export type BuildLinkResult =
  */
 export function buildAgentLink(canonicalId: string, input: { target?: unknown; ref?: unknown; comment?: unknown }): BuildLinkResult {
   const target = input.target;
-  if (target !== 'home' && target !== 'doc' && target !== 'conversation') return { ok: false, error: 'bad-target' };
+  if (target !== 'home' && target !== 'doc' && target !== 'conversation' && target !== 'card') return { ok: false, error: 'bad-target' };
   let ref: string | null = null;
   if (input.ref !== undefined && input.ref !== null) {
     if (typeof input.ref === 'number' && target === 'conversation') ref = `tg:${input.ref}`;

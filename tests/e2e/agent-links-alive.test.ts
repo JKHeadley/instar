@@ -120,6 +120,9 @@ describe('permanent agent links — production wiring', () => {
     expect(built.body.url).toBe(`https://instar.sh/a#v=1&i=${computeCanonicalId(pub)}&t=conversation&r=tg:144473`);
     expect(parseAgentLink(built.body.url.split('#')[1])).toMatchObject({ id: computeCanonicalId(pub), target: 'conversation', ref: 'tg:144473' });
     expect(built.body.warning).toBeUndefined();
+    const card = await request(app).post('/agent-links').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'links-e2e').send({ target: 'card', ref: 'wc_0123456789abcdef' });
+    expect(card.status).toBe(200);
+    expect(parseAgentLink(card.body.url.split('#')[1])).toMatchObject({ target: 'card', ref: 'wc_0123456789abcdef' });
     const bad = await request(app).post('/agent-links').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'links-e2e').send({ target: 'settings' });
     expect(bad.status).toBe(400);
     // Without the token the builder is refused (Bearer gate).

@@ -109,6 +109,16 @@
     "ref": "tg:144473",
     "comment": null
    }
+  },
+  {
+   "name": "work card",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=wc_0123456789abcdef",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "card",
+    "ref": "wc_0123456789abcdef",
+    "comment": null
+   }
   }
  ],
  "reject": [
@@ -211,6 +221,38 @@
   {
    "name": "percent other than colon in ref",
    "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg%2F1"
+  },
+  {
+   "name": "card missing ref",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card"
+  },
+  {
+   "name": "card short id",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=wc_1"
+  },
+  {
+   "name": "card uppercase",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=wc_0123456789abcdeF"
+  },
+  {
+   "name": "card UUID",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=12345678-1234-1234-1234-123456789abc"
+  },
+  {
+   "name": "card path",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=../api"
+  },
+  {
+   "name": "card comment",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=wc_0123456789abcdef&c=p:12345678-1234-1234-1234-123456789abc"
+  },
+  {
+   "name": "card redirect",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=wc_0123456789abcdef&url=https://evil.example"
+  },
+  {
+   "name": "card duplicate ref",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=card&r=wc_0123456789abcdef&r=wc_0123456789abcdef"
   }
  ]
 }
