@@ -235,6 +235,7 @@ import { documentDecisionRootOf } from './documentDecisionRoot.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
+import { createAgentLinkRoutes } from './agentLinkRoutes.js';
 import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
 import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLiveWiring.js';
 import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
@@ -2565,6 +2566,10 @@ export class AgentServer {
       telegramOwnerPresent: () => (options.telegram ? !!options.telegram.getOwnerUserId?.() : standIn?.ownerChatPresent() === true),
       // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
       readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
+      // Permanent agent links (docs/specs/permanent-agent-links.md): off unless `agentLinks.enabled` is true, read live.
+      agentLinksEnabled: () => (options.liveConfig?.get
+        ? options.liveConfig.get<unknown>('agentLinks.enabled', false)
+        : (options.config as { agentLinks?: { enabled?: unknown } }).agentLinks?.enabled) === true,
       // People and roles: the Telegram owner id decides which registry profile is the owner.
       telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
       // The same namespace the app conversation store stamps (people and roles §5).
@@ -7939,6 +7944,20 @@ export class AgentServer {
     this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
     // Old-link guarantee backstop (§3.9b): the viewer itself refuses new pages while documents replace them.
     options.viewer?.setNewViewGuard?.(() => this.documentsReplaceViews());
+    // Permanent agent links: the agent-facing link builder (docs/specs/permanent-agent-links.md §2b; Bearer).
+    this.app.use(createAgentLinkRoutes({
+      stateDir: options.config.stateDir,
+      enabled: () => (options.liveConfig?.get
+        ? options.liveConfig.get<unknown>('agentLinks.enabled', false)
+        : (options.config as { agentLinks?: { enabled?: unknown } }).agentLinks?.enabled) === true,
+      splitMachines: () => {
+        const h = this.agentIdentityRuntime?.coherence.health();
+        if (!h || !h.selfDisk) return [];
+        return Object.values(h.siblingsPublish)
+          .filter((s) => s.status === 'observed' && s.fingerprint !== null && s.fingerprint !== h.selfDisk)
+          .map((s) => s.nickname);
+      },
+    }));
     // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
     this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
     // gemini-payg-metered-lane: POST /intelligence/gemini, /intelligence/gemini/review,
