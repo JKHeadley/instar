@@ -29,7 +29,7 @@ import { validateSettingsPatch, transcriptLineFor, lineIdFor } from '../core/Wor
 import { cardJson, boardJson, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
 import { sourceCardQuery, sourceCardsJson } from '../core/workSourceCards.js';
 import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
-import { isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
+import { isAgentInternalCard, isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
 import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
 // agent-work-cards-default: POST /work-board/cards/:id/notes (agent / scoped session bound to the card or its source);
 // POST /work-board/not-started/approve and /approve-and-widen (the team owner's aggregated-row controls, PIN).
@@ -71,6 +71,8 @@ export interface WorkBoardRouteDeps {
   appendLine: (conversationKey: string, lineId: string, text: string) => Promise<void>;
   /** Create the card's conversation (idempotent: the key is derived from the card id). */
   ensureConversation: (cardId: string, conversationKey: string, title: string) => Promise<void>;
+  /** Read-only: whether this card has a materialized conversation worth opening. */
+  conversationAvailable?: (cardId: string) => boolean;
   /** Remove the card's conversation and its files after a redact. */
   removeConversation: (conversationKey: string) => Promise<void>;
   behind: () => BehindInfo | null;
@@ -191,6 +193,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
     brokenAttachments: deps.brokenAttachments(v),
     phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
+    conversationAvailable: deps.conversationAvailable?.(v.card.cardId),
     projectTitle: v.card.projectKey ? deps.projectTitle?.(v.card.projectKey) ?? null : null,
     lastNote: deps.notes?.last(v.card.cardId) ?? null,
   });
@@ -222,7 +225,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
   // ── reads ──────────────────────────────────────────────────────────────────
 
   /** The board as this request's caller sees it, as a status and a body (the Needs-you read uses it too). */
-  const boardRead = (req: Request, opts: { full?: boolean } = {}): { status: number; body: unknown } => {
+  const boardRead = (req: Request, opts: { full?: boolean; agentCardsOnly?: boolean } = {}): { status: number; body: unknown } => {
     if (!deps.enabled()) return { status: 503, body: { error: 'work-board-disabled' } };
     const svc = deps.svc();
     if (!svc) return { status: 503, body: { error: 'work-board-starting' } };
@@ -230,11 +233,12 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     if (c.kind === 'session') return { status: 403, body: { error: 'scoped-session-reads-its-own-card-only' } };
     const viewer = viewerFor(c);
     if (!viewer) return { status: 401, body: { error: 'unauthorized' } };
+    if (opts.agentCardsOnly && !viewer.isOwner && !viewer.isAgent) return { status: 403, body: { error: 'owner-only' } };
     const donePage = Number.parseInt(String(req.query?.donePage ?? '0'), 10) || 0;
-    const board = boardJson(svc, viewer, (ck) => c.kind === 'device' && c.mayRead(ck), deps.displayName, { softOpenCards: deps.settings().softOpenCards, donePage, extraFor: extraFor(svc), full: opts.full === true });
+    const board = boardJson(svc, viewer, (ck) => c.kind === 'device' && c.mayRead(ck), deps.displayName, { softOpenCards: deps.settings().softOpenCards, donePage, extraFor: extraFor(svc), full: opts.full === true, agentCardsOnly: opts.agentCardsOnly === true });
     const ctl = deps.controller();
     // `viewer.canTap`: the team owner (a phone proves each tap with Face ID; the console with the PIN).
-    return { status: 200, body: { ...board, viewer: { isOwner: viewer.isOwner || c.kind === 'bearer', canTap: viewer.isOwner || c.kind === 'bearer' }, ...(viewer.isAgent || viewer.isOwner ? { pickups: ctl?.status() ?? null } : {}), behind: deps.behind(), settings: viewer.isOwner || viewer.isAgent ? deps.settings() : undefined } };
+    return { status: 200, body: { ...board, viewer: { isOwner: viewer.isOwner || c.kind === 'bearer', canTap: viewer.isOwner || c.kind === 'bearer' }, ...(viewer.isAgent || viewer.isOwner ? { pickups: ctl?.status(v => isAgentInternalCard(v.card) === (opts.agentCardsOnly === true)) ?? null } : {}), behind: deps.behind(), settings: viewer.isOwner || viewer.isAgent ? deps.settings() : undefined } };
   };
   deps.exposeBoardRead?.(boardRead);
   const listBoard = (req: Request, res: Response) => {
@@ -251,7 +255,8 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
       res.json({ ...sourceCardsJson(svc, viewer, source.key, source.page, deps.displayName, extraFor(svc)), behind: deps.behind() });
       return;
     }
-    const r = boardRead(req); // the board page keeps its cut lanes
+    if (req.query.view !== undefined && req.query.view !== 'agent') { res.status(400).json({ error: 'invalid-work-board-view' }); return; }
+    const r = boardRead(req, { agentCardsOnly: req.query.view === 'agent' }); // explicit board navigation only
     res.status(r.status).json(r.body);
   };
   router.get('/work-board', listBoard);

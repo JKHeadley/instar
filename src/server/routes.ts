@@ -151,6 +151,7 @@ import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../c
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
+import { mountChiefOfStaffPrSearch } from './chiefOfStaffPrSearchRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -900,6 +901,7 @@ import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
+import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
 import { DISPATCH_ORIGIN_KEYS } from '../config/bearerConfigWrite.js';
 import { cleanTitle as cleanDispatchTitle } from '../core/DispatchManager.js';
 
@@ -3382,6 +3384,7 @@ export function createRoutes(ctx: RouteContext): Router {
     displayName: workBoardName,
     appendLine: async (conversationKey, lineId, text) => { ctx.workBoard?.()?.appendLine(conversationKey, lineId, text); },
     ensureConversation: async (cardId) => { ctx.workBoard?.()?.ensureConversation(cardId); },
+    conversationAvailable: (cardId) => ctx.workBoard?.()?.conversationAvailable(cardId) ?? false,
     removeConversation: async (conversationKey) => { ctx.workBoard?.()?.removeConversation(conversationKey); },
     // The behind machine's nickname rides along so the page names it instead of printing its id.
     behind: () => {
@@ -10194,6 +10197,12 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
     }
+  });
+  mountChiefOfStaffPrSearch(router, {
+    ownerToken: () => ctx.config.authToken,
+    enabled: () => ctx.config.developmentAgent === true && !!ctx.chiefOfStaffLoop
+      && (ctx.liveConfig?.get<boolean | undefined>('chiefOfStaff.enabled', ctx.config.chiefOfStaff?.enabled) !== false),
+    stateDir: ctx.config.stateDir,
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -39460,6 +39469,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             + 'pays, or admit a session lane that spends against an unmetered pool. Set them in '
             + '.instar/config.json (or via the '
             + 'per-framework env lever) so the change is an operator act on the machine.',
+        });
+        return;
+      }
+    }
+
+    // ── ORIGIN AND ROUTING FENCE (SEC-151): the public address, the relay addresses, what a
+    // peer-started session may touch, and which framework runs. The config file only.
+    {
+      const fencedPaths = operatorOnlyPathsInPatch(patch);
+      if (fencedPaths.length > 0) {
+        res.status(400).json({
+          error: `${fencedPaths.join(', ')} ${fencedPaths.length === 1 ? 'is' : 'are'} not patchable via the API — `
+            + 'these decide where the agent is reachable or connects, what a peer-started session may do, or which '
+            + 'framework runs. Set them in .instar/config.json so the change is an operator act on the machine.',
+          fenced: fencedPaths,
         });
         return;
       }

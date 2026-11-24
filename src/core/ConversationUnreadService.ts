@@ -61,6 +61,8 @@ export type UnreadAppStore = {
   listConversations(opts?: { limit?: number; cursor?: string | null }): { conversations: ConversationSummary[]; nextCursor: string | null };
   eventAt(conversationKey: string, eventId: string): string | null;
   newestIngestSeq(conversationKey: string): number;
+  /** Owner discovery excludes internal work even when old history or a push trigger still names it. */
+  isHiddenConversation?(conversationKey: string): boolean;
 };
 
 export interface ConversationUnreadDeps {
@@ -213,6 +215,7 @@ export class ConversationUnreadService {
   }
 
   private rowFieldsUnguarded(reader: Reader, row: { platform: 'app' | 'telegram' | 'slack'; id: string | number; lastActivity: string | null; machine?: string | null }): UnreadFields | null {
+    if (row.platform === 'app' && this.deps.app?.isHiddenConversation?.(String(row.id))) return null;
     const ref = this.refOfRow(row);
     if (!ref || !this.mayRead(reader, ref)) return null;
     const stored = this.store.storedPosition(reader.key, ref);
@@ -400,7 +403,7 @@ export class ConversationUnreadService {
         }
         cursor = page.nextCursor;
       } while (cursor && ++pages < 25);
-      if (triggering && !sawTrigger && this.mayRead(reader, `app:${triggering.conversationKey.toLowerCase()}`)) total += 1;
+      if (triggering && !sawTrigger && !this.deps.app.isHiddenConversation?.(triggering.conversationKey) && this.mayRead(reader, `app:${triggering.conversationKey.toLowerCase()}`)) total += 1;
       return total;
     } catch (err) {
       this.deps.report?.('ConversationUnread.badge', err instanceof Error ? err.message : String(err)); // @silent-fallback-ok — the push still sends without a badge

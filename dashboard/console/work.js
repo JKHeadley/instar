@@ -68,8 +68,13 @@ export async function renderWork(main, ctx) {
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the work board' })));
   const query = queryOf();
   const page = donePageFrom(query);
+  const agentView = new URLSearchParams(query).get('view') === 'agent';
+  const boardParams = new URLSearchParams();
+  if (page) boardParams.set('donePage', String(page));
+  if (agentView) boardParams.set('view', 'agent');
+  const boardPath = '/work-board' + (boardParams.size ? '?' + boardParams : '');
   // Projects (work-front-doors stage 2a) are read alongside the board; a failed read is named, never empty.
-  const [r, pr] = await Promise.all([get(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : get('/work/projects')]);
+  const [r, pr] = await Promise.all([get(boardPath), page || agentView ? Promise.resolve(null) : get('/work/projects')]);
   // "Open project" from the conversation list arrives as ?project=<key>: that project's row opens.
   const openKey = (() => { try { return new URLSearchParams(query).get('project'); } catch { return null; } })();
   const projects = pr ? projectsSection(pr.ok ? pr.data : null, { openKey }) : null;
@@ -103,7 +108,7 @@ export async function renderWork(main, ctx) {
 
   // Each waiting card opens on a click and carries its own buttons.
   // warning-path: row
-  const head = pageHead({ eyebrow: EYEBROW, headline: headline(board), sub: 'Cards the agent and you agreed on. A card moves only when one of you acts.', tone: board.waitingOnYou ? 'attn' : 'ok', noAsk: true });
+  const head = pageHead({ eyebrow: EYEBROW, headline: agentView ? 'The agent’s internal cards' : headline(board), sub: agentView ? 'Work the agent manages, with its current status.' : 'Cards the agent and you agreed on. A card moves only when one of you acts.', tone: board.waitingOnYou ? 'attn' : 'ok', noAsk: true });
   const notes = [behindLine(board.behind), pickupLine(board.pickups)].filter(Boolean).map((t) => note(t));
 
   const done = board.lanes.done;
@@ -111,11 +116,13 @@ export async function renderWork(main, ctx) {
   const doneSec = laneSection(LANES[3], done.cards, refresh, { count: done.total, folded: true, open: page > 0 });
   const doneBody = doneSec.querySelector('.work-lane-body');
   if (paging.line) doneBody.append(el('p', { class: 'need-sub', text: paging.line }));
-  const pager = [paging.prev, paging.next].filter(Boolean).map((p) => el('a', { class: 'link-btn', href: p.href, text: p.text }));
+  const pager = [paging.prev, paging.next].filter(Boolean).map((p) => el('a', { class: 'link-btn', href: agentView ? p.href + (p.href.includes('?') ? '&' : '?') + 'view=agent' : p.href, text: p.text }));
   if (pager.length) doneBody.append(el('p', { class: 'confirm-row' }, pager));
 
   setKids(main, el('div', { class: 'work-page' },
     head,
+    el('p', { class: 'confirm-row' }, el('a', { class: 'btn-quiet btn-inline', href: agentView ? '#/work/board' : '#/work/board?view=agent', text: agentView ? 'Back to your work' : 'View the agent’s internal cards' })),
+    agentView ? note('Internal work stays here. It does not add to your requests or conversations.') : null,
     lead,
     notes,
     // Projects come right after what is waiting on you (a page leads with the need), before the other lanes.
@@ -426,7 +433,7 @@ function checkRow(text, status, extra = []) {
 
 /** The card's conversation as a chat: read here with the page's own sign-in; replies go through the full conversation. */
 function conversationPanel(card) {
-  if (!card.conversationKey) return null;
+  if (!card.conversationKey || card.conversationAvailable === false) return null;
   const href = hashFor({ kind: 'app', id: card.conversationKey });
   const list = el('ol', { class: 'wc-chat-list', 'aria-live': 'polite' }, el('li', { class: 'wc-chat-empty', text: 'Loading the conversation…' }));
   const panel = el('aside', { class: 'wc-chat', 'aria-label': 'Conversation' },

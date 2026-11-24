@@ -2,6 +2,7 @@
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { migrateConversationSearchGuidance } from '../scaffold/conversationSearchGuidance.js';
 import { APPROVAL_WHERE_REQUIRED_SKILL_TEXT, applySkillSentenceChanges } from './approvalWhereRequiredSkillText.js';
 import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
@@ -10205,8 +10206,9 @@ setTimeout(() => process.exit(0), 2000);
     // The marked feature-notes block is held out while the chain runs (a one-line stand-in keeps
     // its place), so entry text never takes part in the `content.includes(marker)` guards below.
     const heldFeatureNotes = holdRegistryBlock(input);
-    let content = heldFeatureNotes.text;
-    let patched = false;
+    let content = migrateConversationSearchGuidance(heldFeatureNotes.text);
+    let patched = content !== heldFeatureNotes.text;
+    if (patched) result.upgraded.push('CLAUDE.md: replaced legacy memory search pointers with conversation search');
     // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
     // as a scope fact. Inserted after the "Ask Permission" trap when that
     // paragraph is present, else appended to the end of the file.
@@ -11784,28 +11786,22 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
-    // Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line.
-    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes('/mobile/conversations/search')) {
+    // Mobile app search guidance has its own bullet. The Registry First link does not replace it.
+    const keywordSearchLine = APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port));
+    const fullSearchLine = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
+    if (content.includes(keywordSearchLine)) {
+      content = content.replace(keywordSearchLine, fullSearchLine);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
+    } else if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !/^- Search conversations by keyword[^\n]*\/mobile\/conversations\/search/m.test(content)) {
       const lines = content.split('\n');
-      const listPinsAt = lines.findIndex((l) => l === APP_CONVERSATIONS_LIST_PINS_LINE);
-      const at = listPinsAt >= 0 ? listPinsAt : lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      const listPinsAt = lines.indexOf(APP_CONVERSATIONS_LIST_PINS_LINE);
+      const at = listPinsAt >= 0 ? listPinsAt : lines.indexOf(APP_CONVERSATIONS_PINS_LINE);
       if (at >= 0) {
-        lines.splice(at + 1, 0, APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port)));
+        lines.splice(at + 1, 0, fullSearchLine);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation search line');
-      }
-    }
-
-    // Meaning search (conversation-search §4): the keyword-only search line becomes the keyword-and-meaning line.
-    if (content.includes('/mobile/conversations/search') && !content.includes('mode=meaning')) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port)));
-      if (at >= 0) {
-        lines[at] = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
-        content = lines.join('\n');
-        patched = true;
-        result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
       }
     }
 
