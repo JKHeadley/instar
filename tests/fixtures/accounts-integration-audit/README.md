@@ -4,7 +4,7 @@ This directory captures WIP evidence and merge resolutions. The saved Accounts b
 
 ## Responsive detail grids
 
-The grid branch at `3fedcfd22c3740f900b32c6757bb39bb243f71c1` and the Accounts repair conflict in the Accounts list wrapper. Keep one list sorted by weekly reset, and add `acct-card-grid` to the wrapper around `page.accounts.map`. The grid branch supplies the necessary CSS and router class. `grid-accounts-wrapper.patch` is the minimal hand resolution against the Accounts parent. The conflict was confirmed by a file-level three-way merge. No combined visual check ran.
+The grid branch at `3fedcfd22c3740f900b32c6757bb39bb243f71c1` and the Accounts repair conflict in the Accounts list wrapper. Keep one list sorted by weekly reset, and add `acct-card-grid` to the wrapper around `page.accounts.map`. The grid branch supplies the necessary CSS and router class. `grid-accounts-wrapper.patch` is the minimal hand resolution against the Accounts parent. The conflict was confirmed by a file-level three-way merge. The combined layout checks are recorded below.
 
 ## Weekly allowance forecast
 
