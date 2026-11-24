@@ -339,6 +339,8 @@ export const SOMEONE_ELSES_WORK_TRAP = `${SOMEONE_ELSES_WORK_TRAP_MARKER} — Th
  * Generate CLAUDE.md for a fresh project.
  * This is the standalone version — not the append-to-existing version.
  */
+export const WORK_CARD_COPY_AWARENESS = '- Write card titles, descriptions and done items as things the person can understand and see. Keep internal references in source fields. If the board returns card-text-needs-rewrite, rewrite the field it names and retry the same request.';
+
 export function generateClaudeMd(
   projectName: string,
   agentName: string,
@@ -917,6 +919,7 @@ ${PREFERENCES_LIST_CLAUDEMD_LINE(port)}
 
 **Work Board** — Where I ask a person for a decision, answer or sign-off on work, and track it to done.
 - Open a card: \`POST /work-board/cards\` with a title, the need, \`doneWhen\`, and \`outward: true\` when the work sends outside the team or spends money.
+${WORK_CARD_COPY_AWARENESS}
 - Ask with a \`waiting-on\` record (\`principal: "owner"\`) plus a chat reply on the card, then record \`evidence\` and \`claimed-done\`.
 - Read: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/work-board\` (503 = off) for lanes and statuses; \`/work-board/cards/ID\` for one card.
 - Permissions, secrets, plans, blockers, attention items, Chief of Staff sign-offs and commitments keep their own home; a card is not a substitute for them.

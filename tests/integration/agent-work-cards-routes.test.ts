@@ -83,6 +83,13 @@ describe('agent work cards over HTTP', () => {
   afterAll(() => { project.cleanup(); });
   const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
+  it('asks for clearer commitment card copy before recording a second request', async () => {
+    const draft = { type: 'one-time-action', userRequest: 'Finish PR 3596', agentResponse: 'You can see the updated venue list.', topicId: 42, source: 'agent', followThroughOptOutReason: 'tracked on the work board' };
+    const refused = await request(app).post('/commitments').set(auth()).send(draft);
+    expect(refused.status).toBe(422);
+    expect(refused.body).toMatchObject({ error: 'card-text-needs-rewrite', field: 'userRequest' });
+  });
+
   it('the owner\'s sender-verified request becomes a request-approved card by itself; the response carries the derived cardId; the card asks nothing', async () => {
     telegramRows.set('42:1001', { text: OWNER_TEXT, fromUser: true, forwarded: false, telegramUserId: 777 });
     const r = await request(app).post('/commitments').set(auth()).send({ type: 'one-time-action', userRequest: 'fix the venue list', agentResponse: 'I will tidy it today', topicId: 42, source: 'agent', sourceMessageId: '1001', externalKey: 'req:42:1001', followThroughOptOutReason: 'tracked on the work board' });

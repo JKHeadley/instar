@@ -148,7 +148,7 @@ import {
   APPROVAL_NOT_CHORE_TRAP,
   APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
-import { generateClaudeMd, RETIRED_DOC_DELIVERY_ROWS, RETIRED_AGENT_PRINCIPLE_WORDING, PRIVATE_VIEWS_SENTENCE } from '../scaffold/templates.js';
+import { generateClaudeMd, RETIRED_DOC_DELIVERY_ROWS, RETIRED_AGENT_PRINCIPLE_WORDING, PRIVATE_VIEWS_SENTENCE, WORK_CARD_COPY_AWARENESS } from '../scaffold/templates.js';
 import {
   CLAUDE_MD_DIFFERING_LINES_REL,
   CLAUDE_MD_LEGACY_BACKUP_REL,
@@ -12252,6 +12252,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
 
+    if (!content.includes(WORK_CARD_COPY_AWARENESS)) {
+      const workBoardOpen = /^- Open a card: `POST \/work-board\/cards`[^\n]*$/m;
+      if (workBoardOpen.test(content)) {
+        content = content.replace(workBoardOpen, line => `${line}\n${WORK_CARD_COPY_AWARENESS}`);
+        result.upgraded.push('CLAUDE.md: Work Board plain-language rewrite guidance');
+      }
+    }
     const oldClaimAwareness = '- **Verify Before Done (observe-only v1).** Before claiming a same-turn action is complete, rely on real structural evidence from the tool that performed it. A Claude Stop hook reads only a bounded local transcript tail, emits scrubbed structural `TurnEvidence` (tool/action/safe target/success — never commands, results, secrets, or the transcript path), and records advisory completion-claim observations. It never blocks or rewrites a response. Prior-turn and background outcomes are explicitly not accused. The feature is dev-gated, dry-run first, and dark on the fleet; non-Claude frameworks no-op until they have an equivalent verified trace.';
     const claimAwarenessV2 = '- **Claim Verification awareness v2 (observe-only v1 runtime).** A Claude Stop hook submits every bounded authored response plus scrubbed structural `TurnEvidence` to one dark claim observer. It extracts factual claims, applies deterministic criticality floors, and checks only finite canonical sources; unsupported capacity, pull-request, attribution, and external facts stay `unverifiable`. It never blocks, rewrites, delays, sends, corrects, or authorizes an action. Audit and benchmark rows are metadata-only, local-origin, pool-visible only as privacy-thresholded observations, and automation-ineligible. Metrics are server-admitted only; non-Claude frameworks remain unsupported until they provide an equivalent authenticated scrubbed hook.';
     if (content.includes(oldClaimAwareness)) {

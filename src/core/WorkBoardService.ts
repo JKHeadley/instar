@@ -15,11 +15,12 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import { workCardPlainLanguageIssue } from './WorkCardPlainLanguage.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
   materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
-  normalizeRequestText, isAgentInternalCard,
+  normalizeRequestText, requestTextHashOf, isAgentInternalCard,
   MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
   type WorkRecordType, type SystemRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal, type CardRef, type HoldLiftReason,
@@ -160,7 +161,7 @@ export interface CardView {
 }
 
 /** Why the holder did not write a requested card yet (agent-work-cards-default §3): terminal reasons leave the needs-card set; retryable ones stay. */
-export const TERMINAL_CARD_REASONS: ReadonlySet<string> = new Set(['not-operator-conversation', 'backfill-skipped-stale', 'card-exists-linked', 'invalid-record', 'over-limit', 'credential-refused', 'done-item-required']);
+export const TERMINAL_CARD_REASONS: ReadonlySet<string> = new Set(['not-operator-conversation', 'backfill-skipped-stale', 'card-exists-linked', 'invalid-record', 'over-limit', 'credential-refused', 'done-item-required', 'card-text-needs-rewrite']);
 export const RETRYABLE_CARD_REASONS: ReadonlySet<string> = new Set(['mixed-versions', 'daily-card-ceiling', 'store-unavailable', 'rate-limited', 'crash-before-gate']);
 
 /** Deterministic transcript-line id for a record (so a repeat append is a no-op and a surface can recognise the line). */
@@ -172,6 +173,12 @@ export function newCardId(): string { return `wc_${randomBytes(8).toString('hex'
 
 const CREATE_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'source', 'whyYou', 'covers', 'mirror', 'brief', 'refs', ...GATE_ONLY_FIELDS] as const;
 const EDIT_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links', 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief', 'refs'] as const;
+
+function recordOwnerRequest(fields: Record<string, unknown>): boolean {
+  const requester = fields.requester as { isOwner?: unknown } | undefined;
+  return requester?.isOwner === true && typeof fields.need === 'string'
+    && typeof fields.requestTextHash === 'string' && requestTextHashOf(fields.need) === fields.requestTextHash;
+}
 
 /** An agent-work card (agent-work-cards-default §1) as the WRITE sees it: agent-carried, inward, no recommendation, no owner-confirms item. */
 export function isAgentWorkInput(fields: Record<string, unknown>): boolean {
@@ -617,7 +624,7 @@ export class WorkBoardService {
    * phone create names its id the same way (derived from the owner and the request id), so a retry finds one card.
    * `dryRun`: run every check (including the store's record shape) and write nothing.
    */
-  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string; counted?: boolean }, opts?: { dryRun?: boolean }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
+  createCard(p: WorkPrincipal, input: Record<string, unknown>, serverCard?: { cardId: string; counted?: boolean }, opts?: { dryRun?: boolean; checkRequestCopy?: boolean }): Result<{ cardId: string; conversationKey: string; overSoftBudget?: { waiting: number; softOpenCards: number } }> {
     if (p.kind === 'session') return refuse(403, 'scoped-session-cannot-create');
     if (p.kind === 'person' && !p.isOwner) return refuse(403, 'owner-required');
     const fields: Record<string, unknown> = {};
@@ -639,6 +646,12 @@ export class WorkBoardService {
     if (fields.carrier === undefined) fields.carrier = 'agent';
     if (Array.isArray(fields.refs) && (fields.refs as unknown[]).length > MAX_REFS) return refuse(400, 'too-many-refs', { limit: MAX_REFS });
     const t = this.checkText(fields); if (t) return t;
+    if (p.kind === 'agent' && (!p.server || opts?.checkRequestCopy)) {
+      // The gate binds the complete sender-verified owner request. It must remain verbatim.
+      const preserveOriginalRequest = p.server === true && recordOwnerRequest(fields);
+      const issue = workCardPlainLanguageIssue(fields, { preserveOriginalRequest });
+      if (issue) return refuse(422, 'card-text-needs-rewrite', issue);
+    }
     const linkErr = this.checkAttachmentLinks(undefined, fields.links); if (linkErr) return linkErr;
     // A named id: the server's own cards (agent), or the owner's idempotent phone create (docs/specs/phone-work-cards.md).
     if (serverCard && (!(p.kind === 'agent' || (p.kind === 'person' && p.isOwner)) || !isCardId(serverCard.cardId))) return refuse(400, 'bad-server-card');
@@ -814,6 +827,10 @@ export class WorkBoardService {
     }
     if (Array.isArray(changed.doneWhen) && (changed.doneWhen as DoneWhenItem[]).length === 0) return refuse(400, 'done-item-required');
     const t = this.checkText(changed); if (t) return t;
+    if (p.kind === 'agent' && !p.server) {
+      const issue = workCardPlainLanguageIssue(changed);
+      if (issue) return refuse(422, 'card-text-needs-rewrite', issue);
+    }
     const le = this.checkAttachmentLinks(cardId, changed.links); if (le) return le;
     const w = this.write('edited', cardId, { ...changed, by: this.byOf(p), at: new Date(this.deps.now()).toISOString() });
     if (!w.ok) return w;
